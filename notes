@@ -43,3 +43,30 @@ to be as clean and orderly as possible for maintenance going forward.
 
 Considering what you've read already and the goals I've stated here, make a
 plan and discuss.
+
+------------------------------------------------------------------------------
+
+The concepts of regions are kind of baked into the code various places. I see
+them at:
+preprocessor-charts/src/lib.rs:780
+preprocessor-cli/src/main.rs:128
+I bet they were even more implicit in the original source. But let's be
+very explicit here. Let's have the set of regions be defined in one
+place and then referenced symbolically.
+
+------------------------------------------------------------------------------
+
+   - tpp implementation and parity in Rust
+  - csup implementation and parity in Rust
+  - turning today_s chart validation from _targeted runs plus regression commands_ into a more complete repeatable harness
+  - accounting for legacy artifact families outside the current chart slice: things like WAC/ONC/TPC/terrain/topo/VFR area/CAN_ADS
+    and other avare/extra/ outputs
+  - deciding how much output parity we require beyond structure and provenance, for example sampled visual diffs or stronger
+    artifact-hash expectations
+
+------------------------------------------------------------------------------
+
+Once we know we're creating equivalent content, we're free to reorganize it.
+Does the avare android app unpack those zip files? I think it would be more
+awesome to just fetch content out of them as we run.
+

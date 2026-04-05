@@ -4,6 +4,7 @@ members = [ "preprocessor-charts",
   "preprocessor-csup",
   "preprocessor-core",
   "preprocessor-fetch",
+  "preprocessor-tpp",
   "preprocessor-tools",
 ]
 resolver = "2"

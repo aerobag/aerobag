@@ -124,6 +124,35 @@ impl Region {
         }
     }
 
+    pub fn from_code(value: &str) -> Option<Self> {
+        match value {
+            "AK" => Some(Self::Ak),
+            "PAC" => Some(Self::Pac),
+            "NW" => Some(Self::Nw),
+            "SW" => Some(Self::Sw),
+            "NC" => Some(Self::Nc),
+            "EC" => Some(Self::Ec),
+            "SC" => Some(Self::Sc),
+            "NE" => Some(Self::Ne),
+            "SE" => Some(Self::Se),
+            _ => None,
+        }
+    }
+
+    pub fn state_codes(self) -> &'static [&'static str] {
+        match self {
+            Self::Ak => &["AK"],
+            Self::Pac => &["HI", "XX"],
+            Self::Nw => &["WA", "MT", "WY", "ID", "OR"],
+            Self::Sw => &["CA", "NV", "UT", "CO", "NM", "AZ"],
+            Self::Nc => &["ND", "MN", "IA", "MO", "KS", "NE", "SD"],
+            Self::Ec => &["WI", "MI", "OH", "IN", "IL"],
+            Self::Sc => &["OK", "AR", "MS", "LA", "TX"],
+            Self::Ne => &["NY", "ME", "VT", "NH", "MA", "RI", "CT", "NJ", "DE", "MD", "DC", "VA", "WV", "PA"],
+            Self::Se => &["KY", "NC", "SC", "GA", "FL", "AL", "TN", "PR", "VI"],
+        }
+    }
+
     pub fn bounds(self) -> RegionBounds {
         match self {
             Self::Ak => RegionBounds {

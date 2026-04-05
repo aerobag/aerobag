@@ -170,7 +170,7 @@ fn legacy_sec_provenance_self_compare_matches() {
 fn csup_native_dedup_packages_match_legacy_entries() {
     let root = repo_root();
     let legacy = path_string(root.join("runs/20260405T154700Z/work/csup"));
-    let rust = path_string(root.join("rust-runs/csup-native-check-dedup/work/csup"));
+    let rust = path_string(root.join("rust-runs/csup-native-check-globorder/work/csup"));
 
     let stdout = run_cli(&[
         "compare-csup-packages",
@@ -183,9 +183,7 @@ fn csup_native_dedup_packages_match_legacy_entries() {
     for region in ["AK", "EC", "NC", "NE", "NW", "PAC", "SC", "SE", "SW"] {
         assert!(
             stdout.contains(&format!(
-                "{region} manifest_entries=match"
-            )) || stdout.contains(&format!(
-                "{region} manifest_bytes=mismatch manifest_entries=match"
+                "{region} manifest_bytes=match manifest_entries=match"
             )),
             "missing csup package parity line for {region}\n{stdout}"
         );
@@ -197,7 +195,7 @@ fn csup_native_dedup_packages_match_legacy_entries() {
 fn csup_native_dedup_provenance_matches_legacy() {
     let root = repo_root();
     let legacy = path_string(root.join("runs/20260405T154700Z/meta/provenance/csup"));
-    let rust = path_string(root.join("rust-runs/csup-native-check-dedup/meta/provenance/csup"));
+    let rust = path_string(root.join("rust-runs/csup-native-check-globorder/meta/provenance/csup"));
 
     let stdout = run_cli(&[
         "compare-provenance",
@@ -210,4 +208,26 @@ fn csup_native_dedup_provenance_matches_legacy() {
     assert!(stdout.contains("source_urls left=1 right=1 status=match"));
     assert!(stdout.contains("downloads left=1 right=1 status=match"));
     assert!(stdout.contains("extracts left=1 right=1 status=match"));
+}
+
+#[test]
+fn tpp_ne_native_packages_match_legacy() {
+    let root = repo_root();
+    let legacy = path_string(root.join("runs/20260405T154700Z-tpp-retry/work/tpp-ne"));
+    let rust = path_string(root.join("rust-runs/tpp-ne-native-check/work/tpp-ne"));
+
+    let stdout = run_cli(&[
+        "compare-tpp-packages",
+        "--region",
+        "NE",
+        "--legacy-work-dir",
+        &legacy,
+        "--rust-work-dir",
+        &rust,
+    ]);
+
+    assert!(
+        stdout.contains("NE manifest_bytes=match manifest_entries=match legacy_members=3278 rust_members=3278 members=match"),
+        "missing tpp package parity line\n{stdout}"
+    );
 }

@@ -287,3 +287,46 @@ If the next session starts with no further instruction, do this:
   - Important implementation note:
     - The remaining manifest-byte mismatch is likely due to legacy `glob`/filesystem ordering subtleties.
     - Rust now preserves XML airport order and deduplicates repeated XML airport entries, which was enough to eliminate true content mismatches.
+
+- 2026-04-05T23:55:24Z:
+  - Reconciled the still-dirty [`rust-preprocessor/preprocessor-csup/src/lib.rs`](/root/aerobag/rust-preprocessor/preprocessor-csup/src/lib.rs) state.
+  - It was not unrelated drift; it was the real post-commit `csup` packaging-order fix that removed airport-list-driven packaging and switched to recursive directory traversal order.
+  - Current `csup` parity baseline should use:
+    - work dir [`rust-runs/csup-native-check-globorder/work/csup`](/root/aerobag/rust-runs/csup-native-check-globorder/work/csup)
+    - provenance dir [`rust-runs/csup-native-check-globorder/meta/provenance/csup`](/root/aerobag/rust-runs/csup-native-check-globorder/meta/provenance/csup)
+  - Regression coverage was updated accordingly in [`rust-preprocessor/preprocessor-cli/tests/chart_parity.rs`](/root/aerobag/rust-preprocessor/preprocessor-cli/tests/chart_parity.rs), and `csup` now requires `manifest_bytes=match`.
+  - Added a new lightweight Rust `tpp` implementation in:
+    - [`rust-preprocessor/preprocessor-tpp/src/lib.rs`](/root/aerobag/rust-preprocessor/preprocessor-tpp/src/lib.rs)
+    - helper script [`rust-preprocessor/preprocessor-tpp/scripts/find_plate_pages.py`](/root/aerobag/rust-preprocessor/preprocessor-tpp/scripts/find_plate_pages.py)
+  - CLI additions in [`rust-preprocessor/preprocessor-cli/src/main.rs`](/root/aerobag/rust-preprocessor/preprocessor-cli/src/main.rs):
+    - `run-native-tpp --region ...`
+    - `compare-tpp-packages --region ...`
+  - Shared region modeling in [`rust-preprocessor/preprocessor-core/src/lib.rs`](/root/aerobag/rust-preprocessor/preprocessor-core/src/lib.rs) now also includes:
+    - `Region::from_code(...)`
+    - `Region::state_codes()`
+  - Important implementation choices:
+    - `pdftotext` was considered and rejected because it is not part of the legacy toolchain here.
+    - MIN page selection uses a tiny Python helper with `pypdf`, which mirrors the legacy dependency more closely.
+    - APD `UserComment` values are copied from the Outer World Apps six-value payload in `avare_aptdiags.php`, joined with `|`.
+    - Georeferenced non-APD/non-MIN plate comments use the same legacy formula derived from `gdalinfo` corner DMS coordinates after `gdalwarp` to EPSG:3857.
+  - First Rust `tpp-ne` offline parity run showed:
+    - `manifest_entries=match`
+    - `members=match`
+    - `manifest_bytes=mismatch`
+  - Root cause was package ordering: Rust directory walk order did not match legacy Python `glob.glob("plates/**/*-STATE-*.png", recursive=True)`.
+  - Fixed `tpp` package ordering by enumerating regional PNGs with the same Python glob strategy used by legacy.
+  - Clean rerun baseline:
+    - Rust work dir [`rust-runs/tpp-ne-native-check/work/tpp-ne`](/root/aerobag/rust-runs/tpp-ne-native-check/work/tpp-ne)
+  - Current `tpp-ne` package parity result against legacy retry baseline:
+    - legacy [`runs/20260405T154700Z-tpp-retry/work/tpp-ne`](/root/aerobag/runs/20260405T154700Z-tpp-retry/work/tpp-ne)
+      vs Rust [`rust-runs/tpp-ne-native-check/work/tpp-ne`](/root/aerobag/rust-runs/tpp-ne-native-check/work/tpp-ne)
+      - `NE manifest_bytes=match manifest_entries=match legacy_members=3278 rust_members=3278 members=match`
+  - Regression coverage now includes:
+    - `tpp_ne_native_packages_match_legacy`
+  - Verification:
+    - `cargo test -p preprocessor-tpp` passed
+    - `cargo test -p preprocessor-cli` passed with 9 tests
+  - Remaining `tpp` gaps:
+    - this is package parity for `NE` from an offline populated legacy work dir
+    - native `tpp` provenance parity is not yet demonstrated
+    - broader region coverage is not yet validated

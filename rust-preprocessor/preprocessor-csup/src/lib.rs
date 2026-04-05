@@ -1,9 +1,4 @@
-use std::{
-    collections::HashSet,
-    fs,
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use std::{fs, path::{Path, PathBuf}, time::Instant};
 
 use anyhow::{Context, bail};
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
@@ -56,11 +51,11 @@ pub fn run_native_csup(request: &NativeCsupRunRequest) -> anyhow::Result<NativeC
     }
 
     let render_start = Instant::now();
-    let airports = render_csup_pages(&work_dir)?;
+    render_csup_pages(&work_dir)?;
     let render_elapsed_ms = render_start.elapsed().as_millis();
 
     let package_start = Instant::now();
-    let package_count = package_csup_regions(&work_dir, &provenance_dir, &airports)?;
+    let package_count = package_csup_regions(&work_dir, &provenance_dir)?;
     let package_elapsed_ms = package_start.elapsed().as_millis();
 
     Ok(NativeCsupRunResult {
@@ -78,14 +73,14 @@ fn stage_work_dir(source_repo: &Path, run_root: &Path) -> anyhow::Result<PathBuf
     Ok(work_dir)
 }
 
-fn render_csup_pages(work_dir: &Path) -> anyhow::Result<Vec<AirportRecord>> {
+fn render_csup_pages(work_dir: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(work_dir.join("afd")).context("failed to create afd dir")?;
     uppercase_pdf_names(work_dir)?;
     let airports = parse_airports(&find_xml_path(work_dir)?)?;
     for airport in &airports {
         render_airport_pages(work_dir, airport)?;
     }
-    Ok(airports)
+    Ok(())
 }
 
 fn uppercase_pdf_names(work_dir: &Path) -> anyhow::Result<()> {
@@ -227,7 +222,6 @@ fn png_exists_for_base(apt_dir: &Path, output_base: &str) -> anyhow::Result<bool
 fn package_csup_regions(
     work_dir: &Path,
     provenance_dir: &Path,
-    airports: &[AirportRecord],
 ) -> anyhow::Result<usize> {
     let manifest_cycle = current_cycle_manifest();
     let mut package_records = Vec::with_capacity(Region::ALL.len());
@@ -240,7 +234,7 @@ fn package_csup_regions(
         remove_if_exists(&manifest_path)?;
         remove_if_exists(&zip_path)?;
 
-        let selected = collect_region_pngs(work_dir, region.code(), airports)?;
+        let selected = collect_region_pngs(work_dir, region.code())?;
 
         let mut manifest_text = String::new();
         manifest_text.push_str(&manifest_cycle);
@@ -288,37 +282,35 @@ fn package_csup_regions(
     Ok(Region::ALL.len())
 }
 
-fn collect_region_pngs(
-    work_dir: &Path,
-    region_code: &str,
-    airports: &[AirportRecord],
-) -> anyhow::Result<Vec<String>> {
-    let mut paths = Vec::new();
-    let mut seen = HashSet::new();
-    for airport in airports {
-        let apt_dir = work_dir.join("afd").join(&airport.apt_id);
-        if !apt_dir.is_dir() {
-            continue;
-        }
-        let mut names = Vec::new();
-        for file_entry in fs::read_dir(&apt_dir).with_context(|| format!("failed to read {}", apt_dir.display()))? {
-            let file_entry = file_entry?;
-            if !file_entry.file_type()?.is_file() {
-                continue;
-            }
-            let name = file_entry.file_name().to_string_lossy().to_string();
-            if name.starts_with(&format!("CSUP-{region_code}_")) && name.ends_with(".png") {
-                names.push(name);
+fn collect_region_pngs(work_dir: &Path, region_code: &str) -> anyhow::Result<Vec<String>> {
+    fn visit(dir: &Path, root: &Path, region_code: &str, out: &mut Vec<String>) -> anyhow::Result<()> {
+        for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("failed to stat {}", path.display()))?;
+            if file_type.is_dir() {
+                visit(&path, root, region_code, out)?;
+            } else if file_type.is_file() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(&format!("CSUP-{region_code}_")) && name.ends_with(".png") {
+                    let relative = path
+                        .strip_prefix(root)
+                        .with_context(|| format!("failed to relativize {}", path.display()))?;
+                    out.push(relative.to_string_lossy().replace('\\', "/"));
+                }
             }
         }
-        names.sort();
-        for name in names {
-            let relative = format!("afd/{}/{name}", airport.apt_id);
-            if seen.insert(relative.clone()) {
-                paths.push(relative);
-            }
-        }
+        Ok(())
     }
+
+    let afd_dir = work_dir.join("afd");
+    if !afd_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut paths = Vec::new();
+    visit(&afd_dir, work_dir, region_code, &mut paths)?;
     Ok(paths)
 }
 

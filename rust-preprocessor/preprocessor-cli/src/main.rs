@@ -11,6 +11,7 @@ use preprocessor_charts::{
     run_native_family,
 };
 use preprocessor_csup::{NativeCsupRunRequest, run_native_csup};
+use preprocessor_tpp::{NativeTppRunRequest, run_native_tpp};
 use preprocessor_core::{
     CaptureManifest, ChartFamily, ConcurrencyConfig, ExpectedTileCounts, Parallelism, Region,
     WorkKind,
@@ -48,6 +49,7 @@ fn usage() -> &'static str {
   preprocessor-cli compare-chart-packages --family <sec|tac|enr-l> --legacy-work-dir <path> --rust-work-dir <path>
   preprocessor-cli compare-chart-tile-paths --family <sec|tac|enr-l> --legacy-work-dir <path> --rust-work-dir <path>
   preprocessor-cli compare-csup-packages --legacy-work-dir <path> --rust-work-dir <path>
+  preprocessor-cli compare-tpp-packages --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --legacy-work-dir <path> --rust-work-dir <path>
   preprocessor-cli compare-provenance --left-provenance-dir <path> --right-provenance-dir <path>
   preprocessor-cli print-cache-layout --cache-root <path> --url <url> --sha256 <sha256>
   preprocessor-cli print-tool-example --cwd <path>
@@ -57,6 +59,7 @@ fn usage() -> &'static str {
   preprocessor-cli package-regions --family <sec|tac|enr-l> --work-dir <path>
   preprocessor-cli run-native-chart --family <sec|tac|enr-l> --source-repo <path> --run-root <path> --cpu-jobs <count> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-native-csup --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
+  preprocessor-cli run-native-tpp --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-chart --family <sec|tac|enr-l> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
 }
 
@@ -132,6 +135,14 @@ fn compare_csup_packages(legacy_work_dir: &Path, rust_work_dir: &Path) -> anyhow
     compare_named_packages("CSUP", legacy_work_dir, rust_work_dir)
 }
 
+fn compare_tpp_packages(
+    region: Region,
+    legacy_work_dir: &Path,
+    rust_work_dir: &Path,
+) -> anyhow::Result<()> {
+    compare_single_named_package(region, "TPP", legacy_work_dir, rust_work_dir)
+}
+
 fn compare_chart_packages(
     chart_name: &str,
     legacy_work_dir: &Path,
@@ -198,6 +209,67 @@ fn compare_named_packages(
             member_status
         );
     }
+
+    Ok(())
+}
+
+fn compare_single_named_package(
+    region: Region,
+    suffix: &str,
+    legacy_work_dir: &Path,
+    rust_work_dir: &Path,
+) -> anyhow::Result<()> {
+    let region = region.code();
+    let manifest_name = format!("{region}_{suffix}");
+    let zip_name = format!("{region}_{suffix}.zip");
+    let legacy_manifest = legacy_work_dir.join(&manifest_name);
+    let rust_manifest = rust_work_dir.join(&manifest_name);
+    let legacy_zip = legacy_work_dir.join(&zip_name);
+    let rust_zip = rust_work_dir.join(&zip_name);
+
+    let legacy_manifest_hash = hash_file(&legacy_manifest)?;
+    let rust_manifest_hash = hash_file(&rust_manifest)?;
+    let manifest_bytes_status = if legacy_manifest_hash == rust_manifest_hash {
+        "match"
+    } else {
+        "mismatch"
+    };
+    let legacy_manifest_lines = fs::read_to_string(&legacy_manifest)
+        .with_context(|| format!("failed to read {}", legacy_manifest.display()))?
+        .lines()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let rust_manifest_lines = fs::read_to_string(&rust_manifest)
+        .with_context(|| format!("failed to read {}", rust_manifest.display()))?
+        .lines()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let mut legacy_manifest_set = legacy_manifest_lines.clone();
+    let mut rust_manifest_set = rust_manifest_lines.clone();
+    legacy_manifest_set.sort();
+    rust_manifest_set.sort();
+    let manifest_entries_status = if legacy_manifest_set == rust_manifest_set {
+        "match"
+    } else {
+        "mismatch"
+    };
+
+    let legacy_members = read_zip_members(&legacy_zip)?;
+    let rust_members = read_zip_members(&rust_zip)?;
+    let member_status = if legacy_members == rust_members {
+        "match"
+    } else {
+        "mismatch"
+    };
+
+    println!(
+        "{region} manifest_bytes={} manifest_entries={} legacy_members={} rust_members={} members={}",
+        manifest_bytes_status,
+        manifest_entries_status,
+        legacy_members.len(),
+        rust_members.len(),
+        member_status
+    );
 
     Ok(())
 }
@@ -344,6 +416,10 @@ fn parse_family(value: &str) -> anyhow::Result<ChartFamily> {
         "enr-l" => Ok(ChartFamily::EnrL),
         _ => anyhow::bail!("unknown family: {value}"),
     }
+}
+
+fn parse_region(value: &str) -> anyhow::Result<Region> {
+    Region::from_code(value).ok_or_else(|| anyhow::anyhow!("unknown region: {value}"))
 }
 
 fn parallelism_name(value: Parallelism) -> &'static str {
@@ -502,6 +578,30 @@ fn main() -> anyhow::Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
             );
             compare_csup_packages(&legacy_work_dir, &rust_work_dir)?;
+        }
+        Some("compare-tpp-packages") => {
+            if args.get(2).map(String::as_str) != Some("--region")
+                || args.get(4).map(String::as_str) != Some("--legacy-work-dir")
+                || args.get(6).map(String::as_str) != Some("--rust-work-dir")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let region = parse_region(
+                args.get(3)
+                    .map(String::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            )?;
+            let legacy_work_dir = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let rust_work_dir = PathBuf::from(
+                args.get(7)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            compare_tpp_packages(region, &legacy_work_dir, &rust_work_dir)?;
         }
         Some("print-cache-layout") => {
             if args.get(2).map(String::as_str) != Some("--cache-root")
@@ -801,6 +901,65 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             let result = run_native_csup(&NativeCsupRunRequest {
+                source_repo,
+                run_root,
+                prefetch_source_urls,
+                fetch_jobs,
+            })?;
+            println!("prefetch_elapsed_ms {}", result.prefetch_elapsed_ms);
+            println!("render_elapsed_ms {}", result.render_elapsed_ms);
+            println!("package_elapsed_ms {}", result.package_elapsed_ms);
+            println!("package_count {}", result.package_count);
+            println!("work_dir {}", result.work_dir.display());
+        }
+        Some("run-native-tpp") => {
+            if args.get(2).map(String::as_str) != Some("--region")
+                || args.get(4).map(String::as_str) != Some("--source-repo")
+                || args.get(6).map(String::as_str) != Some("--run-root")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let region = parse_region(
+                args.get(3)
+                    .map(String::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            )?;
+            let source_repo = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let run_root = PathBuf::from(
+                args.get(7)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let mut prefetch_source_urls = None;
+            let mut fetch_jobs = 4_usize;
+            let mut index = 8;
+            while index < args.len() {
+                match args.get(index).map(String::as_str) {
+                    Some("--prefetch-source-urls") => {
+                        prefetch_source_urls = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--fetch-jobs") => {
+                        fetch_jobs = args
+                            .get(index + 1)
+                            .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                            .parse()
+                            .context("failed to parse fetch jobs")?;
+                        index += 2;
+                    }
+                    _ => anyhow::bail!("{}", usage()),
+                }
+            }
+            let result = run_native_tpp(&NativeTppRunRequest {
+                region,
                 source_repo,
                 run_root,
                 prefetch_source_urls,

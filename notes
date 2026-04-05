@@ -1,0 +1,45 @@
+First thing we're going to do is reproduce and clean up the preprocessing
+pipeline. The current one is janky and has no tests or anything to keep it out
+of trouble.
+
+Here's what I think happens:
+
+- Certain image data layers are rendered as tiles for dynamic fetching. This includes the WAC, Sectionals, TACs, IFR High & Low, a few specialty charts (like the
+Portland inset and the Grand Canyon). I assume these all use the standard
+mercator quadtree. (whenever I make assumptions, correct me if they're wrong!)
+
+- Other image data are small enough that they're standalone, like approach plates,
+af/d ("chart supplement" as the kids call them these days). Some of these
+have georeferencing data, but rather than squish the chart to a standard geo
+layout, the client goes the opposite direction from the tiling approach: it
+renders the chart roughly in its original pixels, and draws a little airplane
+by mapping geo coordinates to plate coordinates.
+    - Some of the georeference data is collected by the Avare folks. Can we
+    fetch it from a database they provide?
+
+
+We're going to write our preprocessor in Rust.
+It will have an intelligent fetching-and-caching layer so we're not hitting the
+upstream image sources over-and-over during testing.
+It will organize its work in a way that reveals a lot of parallelism, since the
+tile rendering task is pretty parallelizable. We want to get a lot of benefit
+from the 20 cores on my server.
+
+One thing we should do is run a copy of the original preprocessor and collect
+logs of all the tiles it made, and figure out how to use that info to write
+tests to ensure that our version doesn't introduce new gaps.
+
+We can do some quick prototypes here, but once we really start chewing through
+data, we'll move that work onto a container on my server to exploit its many
+cores. If you think we can exploit a GPU, I can give you one of those too.
+
+I think our first cut should reproduce the layout & data format of the original
+tool directly, so we can compare their output straight across and confirm
+that the tiles match: all the same tiles selected, and sample a bunch to confirm
+they basically match visually.
+
+I understand the original code is a hodge-podge of scripts. I'd like our thing
+to be as clean and orderly as possible for maintenance going forward.
+
+Considering what you've read already and the goals I've stated here, make a
+plan and discuss.

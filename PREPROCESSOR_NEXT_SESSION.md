@@ -254,3 +254,36 @@ If the next session starts with no further instruction, do this:
   - Verification:
     - `cargo test -p preprocessor-charts` passed
     - `cargo test -p preprocessor-cli` passed
+
+- 2026-04-05 23:17:50Z:
+  - Added a new lightweight Rust `csup` implementation in:
+    - [`rust-preprocessor/preprocessor-csup/src/lib.rs`](/root/aerobag/rust-preprocessor/preprocessor-csup/src/lib.rs)
+    - wired through [`rust-preprocessor/preprocessor-cli/src/main.rs`](/root/aerobag/rust-preprocessor/preprocessor-cli/src/main.rs)
+  - Current model:
+    - Rust handles staging, cycle/manifest writing, XML parsing, provenance capture, and region packaging.
+    - It still delegates PDF-to-PNG rendering to ImageMagick `mogrify`.
+    - It can reuse a populated legacy `csup` work dir offline and skip rerendering PNGs that already exist.
+  - Added CLI commands:
+    - `run-native-csup`
+    - `compare-csup-packages`
+  - Added tests in [`rust-preprocessor/preprocessor-cli/tests/chart_parity.rs`](/root/aerobag/rust-preprocessor/preprocessor-cli/tests/chart_parity.rs):
+    - `csup_native_dedup_packages_match_legacy_entries`
+    - `csup_native_dedup_provenance_matches_legacy`
+  - `cargo test -p preprocessor-cli` now passes with 8 tests.
+  - Provenance parity for `csup` is clean between:
+    - legacy [`runs/20260405T154700Z/meta/provenance/csup`](/root/aerobag/runs/20260405T154700Z/meta/provenance/csup)
+    - Rust [`rust-runs/csup-native-check-dedup/meta/provenance/csup`](/root/aerobag/rust-runs/csup-native-check-dedup/meta/provenance/csup)
+  - Output was:
+    - `source_urls left=1 right=1 status=match`
+    - `downloads left=1 right=1 status=match`
+    - `extracts left=1 right=1 status=match`
+  - Package parity status for Rust [`rust-runs/csup-native-check-dedup/work/csup`](/root/aerobag/rust-runs/csup-native-check-dedup/work/csup) against legacy [`runs/20260405T154700Z/work/csup`](/root/aerobag/runs/20260405T154700Z/work/csup):
+    - all 9 regions: `manifest_entries=match`
+    - all 9 regions: `members=match`
+    - all 9 regions: `manifest_bytes=mismatch`
+  - Interpretation:
+    - the remaining `csup` gap is manifest line ordering only, not missing or extra packaged content.
+    - zip member sets and provenance inputs already match.
+  - Important implementation note:
+    - The remaining manifest-byte mismatch is likely due to legacy `glob`/filesystem ordering subtleties.
+    - Rust now preserves XML airport order and deduplicates repeated XML airport entries, which was enough to eliminate true content mismatches.

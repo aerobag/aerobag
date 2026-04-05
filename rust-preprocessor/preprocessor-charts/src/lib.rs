@@ -767,7 +767,7 @@ fn package_regions_from_spec(
         if provenance_dir.is_some() {
             package_records.push(PackageOutputRecord {
                 label: spec.family.capture_label().to_string(),
-                chart: spec.chart_name.to_string(),
+                chart: Some(spec.chart_name.to_string()),
                 region: region.code().to_string(),
                 manifest: manifest_name,
                 manifest_sha256: hash_file(&manifest_path)?,

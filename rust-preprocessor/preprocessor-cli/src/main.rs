@@ -10,6 +10,7 @@ use preprocessor_charts::{
     likely_current_bottleneck, package_family_regions, phase_plan, run_family,
     run_native_family,
 };
+use preprocessor_csup::{NativeCsupRunRequest, run_native_csup};
 use preprocessor_core::{
     CaptureManifest, ChartFamily, ConcurrencyConfig, ExpectedTileCounts, Parallelism, Region,
     WorkKind,
@@ -46,6 +47,7 @@ fn usage() -> &'static str {
   preprocessor-cli compare-sec-packages --legacy-work-dir <path> --rust-work-dir <path>
   preprocessor-cli compare-chart-packages --family <sec|tac|enr-l> --legacy-work-dir <path> --rust-work-dir <path>
   preprocessor-cli compare-chart-tile-paths --family <sec|tac|enr-l> --legacy-work-dir <path> --rust-work-dir <path>
+  preprocessor-cli compare-csup-packages --legacy-work-dir <path> --rust-work-dir <path>
   preprocessor-cli compare-provenance --left-provenance-dir <path> --right-provenance-dir <path>
   preprocessor-cli print-cache-layout --cache-root <path> --url <url> --sha256 <sha256>
   preprocessor-cli print-tool-example --cwd <path>
@@ -54,6 +56,7 @@ fn usage() -> &'static str {
   preprocessor-cli build-tiles --family <sec|tac|enr-l> --work-dir <path> --cpu-jobs <count>
   preprocessor-cli package-regions --family <sec|tac|enr-l> --work-dir <path>
   preprocessor-cli run-native-chart --family <sec|tac|enr-l> --source-repo <path> --run-root <path> --cpu-jobs <count> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
+  preprocessor-cli run-native-csup --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-chart --family <sec|tac|enr-l> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
 }
 
@@ -125,15 +128,27 @@ fn compare_sec_packages(legacy_work_dir: &Path, rust_work_dir: &Path) -> anyhow:
     compare_chart_packages("SEC", legacy_work_dir, rust_work_dir)
 }
 
+fn compare_csup_packages(legacy_work_dir: &Path, rust_work_dir: &Path) -> anyhow::Result<()> {
+    compare_named_packages("CSUP", legacy_work_dir, rust_work_dir)
+}
+
 fn compare_chart_packages(
     chart_name: &str,
     legacy_work_dir: &Path,
     rust_work_dir: &Path,
 ) -> anyhow::Result<()> {
+    compare_named_packages(chart_name, legacy_work_dir, rust_work_dir)
+}
+
+fn compare_named_packages(
+    suffix: &str,
+    legacy_work_dir: &Path,
+    rust_work_dir: &Path,
+) -> anyhow::Result<()> {
     for region in Region::ALL {
         let region = region.code();
-        let manifest_name = format!("{region}_{chart_name}");
-        let zip_name = format!("{region}_{chart_name}.zip");
+        let manifest_name = format!("{region}_{suffix}");
+        let zip_name = format!("{region}_{suffix}.zip");
         let legacy_manifest = legacy_work_dir.join(&manifest_name);
         let rust_manifest = rust_work_dir.join(&manifest_name);
         let legacy_zip = legacy_work_dir.join(&zip_name);
@@ -470,6 +485,24 @@ fn main() -> anyhow::Result<()> {
             );
             compare_chart_tile_paths(family, &legacy_work_dir, &rust_work_dir)?;
         }
+        Some("compare-csup-packages") => {
+            if args.get(2).map(String::as_str) != Some("--legacy-work-dir")
+                || args.get(4).map(String::as_str) != Some("--rust-work-dir")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let legacy_work_dir = PathBuf::from(
+                args.get(3)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let rust_work_dir = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            compare_csup_packages(&legacy_work_dir, &rust_work_dir)?;
+        }
         Some("print-cache-layout") => {
             if args.get(2).map(String::as_str) != Some("--cache-root")
                 || args.get(4).map(String::as_str) != Some("--url")
@@ -725,6 +758,58 @@ fn main() -> anyhow::Result<()> {
             println!("tile_elapsed_ms {}", result.tile_elapsed_ms);
             println!("package_count {}", result.package_count);
             println!("package_elapsed_ms {}", result.package_elapsed_ms);
+            println!("work_dir {}", result.work_dir.display());
+        }
+        Some("run-native-csup") => {
+            if args.get(2).map(String::as_str) != Some("--source-repo")
+                || args.get(4).map(String::as_str) != Some("--run-root")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let source_repo = PathBuf::from(
+                args.get(3)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let run_root = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let mut prefetch_source_urls = None;
+            let mut fetch_jobs = 4_usize;
+            let mut index = 6;
+            while index < args.len() {
+                match args.get(index).map(String::as_str) {
+                    Some("--prefetch-source-urls") => {
+                        prefetch_source_urls = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--fetch-jobs") => {
+                        fetch_jobs = args
+                            .get(index + 1)
+                            .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                            .parse()
+                            .context("failed to parse fetch jobs")?;
+                        index += 2;
+                    }
+                    _ => anyhow::bail!("{}", usage()),
+                }
+            }
+            let result = run_native_csup(&NativeCsupRunRequest {
+                source_repo,
+                run_root,
+                prefetch_source_urls,
+                fetch_jobs,
+            })?;
+            println!("prefetch_elapsed_ms {}", result.prefetch_elapsed_ms);
+            println!("render_elapsed_ms {}", result.render_elapsed_ms);
+            println!("package_elapsed_ms {}", result.package_elapsed_ms);
+            println!("package_count {}", result.package_count);
             println!("work_dir {}", result.work_dir.display());
         }
         Some("run-chart") => {

@@ -121,7 +121,7 @@ pub struct ExtractRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageOutputRecord {
     pub label: String,
-    pub chart: String,
+    pub chart: Option<String>,
     pub region: String,
     pub manifest: String,
     pub manifest_sha256: String,
@@ -251,8 +251,7 @@ pub fn write_package_outputs_jsonl(
     let mut file =
         File::create(&path).with_context(|| format!("failed to create {}", path.display()))?;
     for record in records {
-        let value = serde_json::json!({
-            "chart": record.chart,
+        let mut value = serde_json::json!({
             "event": "package_output",
             "label": record.label,
             "manifest": record.manifest,
@@ -261,6 +260,9 @@ pub fn write_package_outputs_jsonl(
             "zip": record.zip,
             "zip_sha256": record.zip_sha256,
         });
+        if let Some(chart) = &record.chart {
+            value["chart"] = serde_json::Value::String(chart.clone());
+        }
         serde_json::to_writer(&mut file, &value).context("failed to encode package output jsonl")?;
         file.write_all(b"\n")
             .context("failed to write package output newline")?;

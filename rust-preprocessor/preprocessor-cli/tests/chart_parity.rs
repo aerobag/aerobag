@@ -165,3 +165,49 @@ fn legacy_sec_provenance_self_compare_matches() {
     assert!(stdout.contains("downloads left=55 right=55 status=match"));
     assert!(stdout.contains("extracts left=55 right=55 status=match"));
 }
+
+#[test]
+fn csup_native_dedup_packages_match_legacy_entries() {
+    let root = repo_root();
+    let legacy = path_string(root.join("runs/20260405T154700Z/work/csup"));
+    let rust = path_string(root.join("rust-runs/csup-native-check-dedup/work/csup"));
+
+    let stdout = run_cli(&[
+        "compare-csup-packages",
+        "--legacy-work-dir",
+        &legacy,
+        "--rust-work-dir",
+        &rust,
+    ]);
+
+    for region in ["AK", "EC", "NC", "NE", "NW", "PAC", "SC", "SE", "SW"] {
+        assert!(
+            stdout.contains(&format!(
+                "{region} manifest_entries=match"
+            )) || stdout.contains(&format!(
+                "{region} manifest_bytes=mismatch manifest_entries=match"
+            )),
+            "missing csup package parity line for {region}\n{stdout}"
+        );
+    }
+    assert!(stdout.contains("members=match"), "expected members=match output\n{stdout}");
+}
+
+#[test]
+fn csup_native_dedup_provenance_matches_legacy() {
+    let root = repo_root();
+    let legacy = path_string(root.join("runs/20260405T154700Z/meta/provenance/csup"));
+    let rust = path_string(root.join("rust-runs/csup-native-check-dedup/meta/provenance/csup"));
+
+    let stdout = run_cli(&[
+        "compare-provenance",
+        "--left-provenance-dir",
+        &legacy,
+        "--right-provenance-dir",
+        &rust,
+    ]);
+
+    assert!(stdout.contains("source_urls left=1 right=1 status=match"));
+    assert!(stdout.contains("downloads left=1 right=1 status=match"));
+    assert!(stdout.contains("extracts left=1 right=1 status=match"));
+}

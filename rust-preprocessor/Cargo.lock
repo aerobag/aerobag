@@ -207,6 +207,7 @@ dependencies = [
  "anyhow",
  "preprocessor-charts",
  "preprocessor-core",
+ "preprocessor-csup",
  "preprocessor-fetch",
  "preprocessor-tools",
  "serde_json",
@@ -218,6 +219,18 @@ name = "preprocessor-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "preprocessor-csup"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "preprocessor-core",
+ "preprocessor-fetch",
+ "preprocessor-tools",
+ "roxmltree",
 ]
 
 [[package]]
@@ -255,6 +268,12 @@ checksum = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rustversion"

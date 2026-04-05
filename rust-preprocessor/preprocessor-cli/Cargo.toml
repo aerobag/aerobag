@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 preprocessor-charts = { path = "../preprocessor-charts" }
+preprocessor-csup = { path = "../preprocessor-csup" }
 preprocessor-core = { path = "../preprocessor-core" }
 preprocessor-fetch = { path = "../preprocessor-fetch" }
 preprocessor-tools = { path = "../preprocessor-tools" }

@@ -1,0 +1,796 @@
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+use anyhow::Context;
+use preprocessor_charts::{
+    ChartRunRequest, NativeChartRunRequest, build_family_tiles, build_family_vrts,
+    likely_current_bottleneck, package_family_regions, phase_plan, run_family,
+    run_native_family,
+};
+use preprocessor_core::{
+    CaptureManifest, ChartFamily, ConcurrencyConfig, ExpectedTileCounts, Parallelism, Region,
+    WorkKind,
+};
+use preprocessor_fetch::{
+    CacheLayout, hash_text, manifest_path_for_run, manifest_summary, read_download_records,
+    read_extract_records, read_source_url_set,
+};
+use preprocessor_tools::{comparison_targets, ToolInvocation};
+use sha2::{Digest, Sha256};
+
+fn load_manifest(run_root: &PathBuf) -> anyhow::Result<CaptureManifest> {
+    let manifest_path = manifest_path_for_run(&run_root.display().to_string());
+    let bytes = fs::read(&manifest_path)
+        .with_context(|| format!("failed to read manifest at {manifest_path}"))?;
+    let manifest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("failed to parse manifest at {manifest_path}"))?;
+    Ok(manifest)
+}
+
+fn print_partial_run_hint(run_root: &PathBuf) {
+    println!(
+        "run {} does not have meta/manifest.json yet",
+        run_root.display()
+    );
+    println!("the legacy capture is probably still in flight");
+}
+
+fn usage() -> &'static str {
+    "usage:
+  preprocessor-cli print-baseline
+  preprocessor-cli inspect-run --run-root <path>
+  preprocessor-cli compare-tile-counts --run-root <path>
+  preprocessor-cli compare-sec-packages --legacy-work-dir <path> --rust-work-dir <path>
+  preprocessor-cli compare-chart-packages --family <sec|tac|enr-l> --legacy-work-dir <path> --rust-work-dir <path>
+  preprocessor-cli compare-chart-tile-paths --family <sec|tac|enr-l> --legacy-work-dir <path> --rust-work-dir <path>
+  preprocessor-cli compare-provenance --left-provenance-dir <path> --right-provenance-dir <path>
+  preprocessor-cli print-cache-layout --cache-root <path> --url <url> --sha256 <sha256>
+  preprocessor-cli print-tool-example --cwd <path>
+  preprocessor-cli explain-chart --family <sec|tac|enr-l> --cpus <count>
+  preprocessor-cli build-vrts --family <sec|tac|enr-l> --work-dir <path> --cpu-jobs <count>
+  preprocessor-cli build-tiles --family <sec|tac|enr-l> --work-dir <path> --cpu-jobs <count>
+  preprocessor-cli package-regions --family <sec|tac|enr-l> --work-dir <path>
+  preprocessor-cli run-native-chart --family <sec|tac|enr-l> --source-repo <path> --run-root <path> --cpu-jobs <count> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
+  preprocessor-cli run-chart --family <sec|tac|enr-l> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
+}
+
+fn count_lines(path: &PathBuf) -> anyhow::Result<u64> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(text.lines().count() as u64)
+}
+
+fn hash_file(path: &Path) -> anyhow::Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn read_zip_members(path: &Path) -> anyhow::Result<Vec<String>> {
+    let output = Command::new("unzip")
+        .arg("-Z1")
+        .arg(path)
+        .output()
+        .with_context(|| format!("failed to list zip members for {}", path.display()))?;
+    if !output.status.success() {
+        anyhow::bail!("unzip -Z1 failed for {}", path.display());
+    }
+    let text = String::from_utf8(output.stdout).context("zip member output was not utf-8")?;
+    let mut members = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    members.sort();
+    Ok(members)
+}
+
+fn read_tile_paths(tiles_root: &Path) -> anyhow::Result<Vec<String>> {
+    fn visit(root: &Path, current: &Path, acc: &mut Vec<String>) -> anyhow::Result<()> {
+        let mut entries = fs::read_dir(current)
+            .with_context(|| format!("failed to read directory {}", current.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .with_context(|| format!("failed to iterate directory {}", current.display()))?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("failed to read file type for {}", path.display()))?;
+            if file_type.is_dir() {
+                visit(root, &path, acc)?;
+            } else if file_type.is_file() {
+                let relative = path
+                    .strip_prefix(root)
+                    .with_context(|| format!("failed to relativize {}", path.display()))?;
+                acc.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+        Ok(())
+    }
+
+    let mut paths = Vec::new();
+    if tiles_root.is_dir() {
+        visit(tiles_root, tiles_root, &mut paths)?;
+    }
+    Ok(paths)
+}
+
+fn compare_sec_packages(legacy_work_dir: &Path, rust_work_dir: &Path) -> anyhow::Result<()> {
+    compare_chart_packages("SEC", legacy_work_dir, rust_work_dir)
+}
+
+fn compare_chart_packages(
+    chart_name: &str,
+    legacy_work_dir: &Path,
+    rust_work_dir: &Path,
+) -> anyhow::Result<()> {
+    for region in Region::ALL {
+        let region = region.code();
+        let manifest_name = format!("{region}_{chart_name}");
+        let zip_name = format!("{region}_{chart_name}.zip");
+        let legacy_manifest = legacy_work_dir.join(&manifest_name);
+        let rust_manifest = rust_work_dir.join(&manifest_name);
+        let legacy_zip = legacy_work_dir.join(&zip_name);
+        let rust_zip = rust_work_dir.join(&zip_name);
+
+        let legacy_manifest_hash = hash_file(&legacy_manifest)?;
+        let rust_manifest_hash = hash_file(&rust_manifest)?;
+        let manifest_bytes_status = if legacy_manifest_hash == rust_manifest_hash {
+            "match"
+        } else {
+            "mismatch"
+        };
+        let legacy_manifest_lines = fs::read_to_string(&legacy_manifest)
+            .with_context(|| format!("failed to read {}", legacy_manifest.display()))?
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let rust_manifest_lines = fs::read_to_string(&rust_manifest)
+            .with_context(|| format!("failed to read {}", rust_manifest.display()))?
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let mut legacy_manifest_set = legacy_manifest_lines.clone();
+        let mut rust_manifest_set = rust_manifest_lines.clone();
+        legacy_manifest_set.sort();
+        rust_manifest_set.sort();
+        let manifest_entries_status = if legacy_manifest_set == rust_manifest_set {
+            "match"
+        } else {
+            "mismatch"
+        };
+
+        let legacy_members = read_zip_members(&legacy_zip)?;
+        let rust_members = read_zip_members(&rust_zip)?;
+        let member_status = if legacy_members == rust_members {
+            "match"
+        } else {
+            "mismatch"
+        };
+
+        println!(
+            "{region} manifest_bytes={} manifest_entries={} legacy_members={} rust_members={} members={}",
+            manifest_bytes_status,
+            manifest_entries_status,
+            legacy_members.len(),
+            rust_members.len(),
+            member_status
+        );
+    }
+
+    Ok(())
+}
+
+fn compare_chart_tile_paths(
+    family: ChartFamily,
+    legacy_work_dir: &Path,
+    rust_work_dir: &Path,
+) -> anyhow::Result<()> {
+    let spec = match family {
+        ChartFamily::Sec => ("SEC", "0"),
+        ChartFamily::Tac => ("TAC", "1"),
+        ChartFamily::EnrL => ("ENR_L", "3"),
+    };
+
+    let legacy_tiles_root = legacy_work_dir.join("tiles").join(spec.1);
+    let rust_tiles_root = rust_work_dir.join("tiles").join(spec.1);
+    let legacy_paths = read_tile_paths(&legacy_tiles_root)?;
+    let rust_paths = read_tile_paths(&rust_tiles_root)?;
+
+    let status = if legacy_paths == rust_paths {
+        "match"
+    } else {
+        "mismatch"
+    };
+    println!(
+        "{} legacy_tile_paths={} rust_tile_paths={} status={}",
+        spec.0,
+        legacy_paths.len(),
+        rust_paths.len(),
+        status
+    );
+
+    if legacy_paths != rust_paths {
+        let legacy_set = legacy_paths.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+        let rust_set = rust_paths.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+        for missing in legacy_set.difference(&rust_set).take(10) {
+            println!("missing_in_rust {}", missing);
+        }
+        for extra in rust_set.difference(&legacy_set).take(10) {
+            println!("extra_in_rust {}", extra);
+        }
+    }
+
+    Ok(())
+}
+
+fn print_set_diff(
+    label: &str,
+    left: &std::collections::BTreeSet<String>,
+    right: &std::collections::BTreeSet<String>,
+) {
+    for missing in left.difference(right).take(10) {
+        println!("{label} missing_in_right {}", missing);
+    }
+    for extra in right.difference(left).take(10) {
+        println!("{label} extra_in_right {}", extra);
+    }
+}
+
+fn compare_provenance(left_provenance_dir: &Path, right_provenance_dir: &Path) -> anyhow::Result<()> {
+    let left_source_urls = read_source_url_set(left_provenance_dir.join("source_urls.jsonl"))?;
+    let right_source_urls = read_source_url_set(right_provenance_dir.join("source_urls.jsonl"))?;
+    let source_url_status = if left_source_urls == right_source_urls {
+        "match"
+    } else {
+        "mismatch"
+    };
+    println!(
+        "source_urls left={} right={} status={}",
+        left_source_urls.len(),
+        right_source_urls.len(),
+        source_url_status
+    );
+    if left_source_urls != right_source_urls {
+        print_set_diff("source_urls", &left_source_urls, &right_source_urls);
+    }
+
+    let left_downloads = read_download_records(left_provenance_dir.join("downloads.jsonl"))?;
+    let right_downloads = read_download_records(right_provenance_dir.join("downloads.jsonl"))?;
+    let download_status = if left_downloads == right_downloads {
+        "match"
+    } else {
+        "mismatch"
+    };
+    println!(
+        "downloads left={} right={} status={}",
+        left_downloads.len(),
+        right_downloads.len(),
+        download_status
+    );
+    if left_downloads != right_downloads {
+        for missing in left_downloads.difference(&right_downloads).take(10) {
+            println!(
+                "downloads missing_in_right url={} file={} sha256={}",
+                missing.url, missing.file, missing.sha256
+            );
+        }
+        for extra in right_downloads.difference(&left_downloads).take(10) {
+            println!(
+                "downloads extra_in_right url={} file={} sha256={}",
+                extra.url, extra.file, extra.sha256
+            );
+        }
+    }
+
+    let left_extracts = read_extract_records(left_provenance_dir.join("downloads.jsonl"))?;
+    let right_extracts = read_extract_records(right_provenance_dir.join("downloads.jsonl"))?;
+    let extract_status = if left_extracts == right_extracts {
+        "match"
+    } else {
+        "mismatch"
+    };
+    println!(
+        "extracts left={} right={} status={}",
+        left_extracts.len(),
+        right_extracts.len(),
+        extract_status
+    );
+    if left_extracts != right_extracts {
+        for missing in left_extracts.difference(&right_extracts).take(10) {
+            println!(
+                "extracts missing_in_right archive={} members={}",
+                missing.archive,
+                missing.members.join(",")
+            );
+        }
+        for extra in right_extracts.difference(&left_extracts).take(10) {
+            println!(
+                "extracts extra_in_right archive={} members={}",
+                extra.archive,
+                extra.members.join(",")
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_family(value: &str) -> anyhow::Result<ChartFamily> {
+    match value {
+        "sec" => Ok(ChartFamily::Sec),
+        "tac" => Ok(ChartFamily::Tac),
+        "enr-l" => Ok(ChartFamily::EnrL),
+        _ => anyhow::bail!("unknown family: {value}"),
+    }
+}
+
+fn parallelism_name(value: Parallelism) -> &'static str {
+    match value {
+        Parallelism::Serial => "serial",
+        Parallelism::Bounded => "bounded",
+        Parallelism::Wide => "wide",
+    }
+}
+
+fn work_kind_name(value: WorkKind) -> &'static str {
+    match value {
+        WorkKind::Network => "network",
+        WorkKind::Extract => "extract",
+        WorkKind::Cpu => "cpu",
+        WorkKind::Io => "io",
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = env::args().collect();
+
+    match args.get(1).map(String::as_str) {
+        Some("inspect-run") => {
+            if args.get(2).map(String::as_str) != Some("--run-root") {
+                anyhow::bail!("{}", usage());
+            }
+            let run_root = PathBuf::from(
+                args.get(3)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let manifest = match load_manifest(&run_root) {
+                Ok(manifest) => manifest,
+                Err(err) if err.to_string().contains("failed to read manifest") => {
+                    print_partial_run_hint(&run_root);
+                    return Ok(());
+                }
+                Err(err) => return Err(err),
+            };
+            println!("{}", manifest_summary(&manifest));
+            for capture in &manifest.captures {
+                let targets = comparison_targets(capture).join(", ");
+                println!("{}: {}", capture.label, targets);
+            }
+        }
+        Some("print-baseline") => {
+            let baseline = ExpectedTileCounts::CURRENT_BASELINE;
+            println!("SEC {}", baseline.sec);
+            println!("TAC {}", baseline.tac);
+            println!("ENR_L {}", baseline.enr_l);
+        }
+        Some("compare-tile-counts") => {
+            if args.get(2).map(String::as_str) != Some("--run-root") {
+                anyhow::bail!("{}", usage());
+            }
+            let run_root = PathBuf::from(
+                args.get(3)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            for family in [ChartFamily::Sec, ChartFamily::Tac, ChartFamily::EnrL] {
+                let label = family.capture_label();
+                let path = run_root.join("meta").join(format!("{label}.tile-paths.txt"));
+                let actual = count_lines(&path)?;
+                let expected = family.baseline_tile_count();
+                let status = if actual == expected { "match" } else { "mismatch" };
+                println!("{label} expected={expected} actual={actual} status={status}");
+            }
+        }
+        Some("compare-sec-packages") => {
+            if args.get(2).map(String::as_str) != Some("--legacy-work-dir")
+                || args.get(4).map(String::as_str) != Some("--rust-work-dir")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let legacy_work_dir = PathBuf::from(
+                args.get(3)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let rust_work_dir = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            compare_sec_packages(&legacy_work_dir, &rust_work_dir)?;
+        }
+        Some("compare-chart-packages") => {
+            if args.get(2).map(String::as_str) != Some("--family")
+                || args.get(4).map(String::as_str) != Some("--legacy-work-dir")
+                || args.get(6).map(String::as_str) != Some("--rust-work-dir")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let family = parse_family(
+                args.get(3)
+                    .map(String::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            )?;
+            let chart_name = match family {
+                ChartFamily::Sec => "SEC",
+                ChartFamily::Tac => "TAC",
+                ChartFamily::EnrL => "ENR_L",
+            };
+            let legacy_work_dir = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let rust_work_dir = PathBuf::from(
+                args.get(7)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            compare_chart_packages(chart_name, &legacy_work_dir, &rust_work_dir)?;
+        }
+        Some("compare-chart-tile-paths") => {
+            if args.get(2).map(String::as_str) != Some("--family")
+                || args.get(4).map(String::as_str) != Some("--legacy-work-dir")
+                || args.get(6).map(String::as_str) != Some("--rust-work-dir")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let family = parse_family(
+                args.get(3)
+                    .map(String::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            )?;
+            let legacy_work_dir = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let rust_work_dir = PathBuf::from(
+                args.get(7)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            compare_chart_tile_paths(family, &legacy_work_dir, &rust_work_dir)?;
+        }
+        Some("print-cache-layout") => {
+            if args.get(2).map(String::as_str) != Some("--cache-root")
+                || args.get(4).map(String::as_str) != Some("--url")
+                || args.get(6).map(String::as_str) != Some("--sha256")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let cache_root = PathBuf::from(
+                args.get(3)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let url = args
+                .get(5)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?;
+            let sha256 = args
+                .get(7)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?;
+            let layout = CacheLayout::new(cache_root);
+            println!("url_hash {}", hash_text(&url));
+            println!("blob {}", layout.blob_path(&sha256).display());
+            println!("http {}", layout.http_metadata_path(&url).display());
+            println!("object {}", layout.object_metadata_path("example-source").display());
+        }
+        Some("compare-provenance") => {
+            if args.get(2).map(String::as_str) != Some("--left-provenance-dir")
+                || args.get(4).map(String::as_str) != Some("--right-provenance-dir")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let left_provenance_dir = PathBuf::from(
+                args.get(3)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let right_provenance_dir = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            compare_provenance(&left_provenance_dir, &right_provenance_dir)?;
+        }
+        Some("print-tool-example") => {
+            if args.get(2).map(String::as_str) != Some("--cwd") {
+                anyhow::bail!("{}", usage());
+            }
+            let cwd = PathBuf::from(
+                args.get(3)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let invocation = ToolInvocation {
+                program: "gdalwarp".to_string(),
+                args: vec![
+                    "-of".to_string(),
+                    "vrt".to_string(),
+                    "input.tif".to_string(),
+                    "output.vrt".to_string(),
+                ],
+                cwd,
+                label: "example-gdalwarp".to_string(),
+                env: Vec::new(),
+                stdin_text: None,
+            };
+            println!("{}", invocation.render_command_line());
+            let logs = invocation.log_paths("logs");
+            println!("stdout {}", logs.stdout.display());
+            println!("stderr {}", logs.stderr.display());
+        }
+        Some("explain-chart") => {
+            if args.get(2).map(String::as_str) != Some("--family")
+                || args.get(4).map(String::as_str) != Some("--cpus")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let family = parse_family(
+                args.get(3)
+                    .map(String::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            )?;
+            let cpus: usize = args
+                .get(5)
+                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                .parse()
+                .context("failed to parse cpu count")?;
+            let concurrency = ConcurrencyConfig::recommended_for_machine(cpus);
+            println!("family {}", family.capture_label());
+            println!("likely_bottleneck {}", likely_current_bottleneck());
+            println!(
+                "recommended_jobs fetch={} extract={} cpu={} zip={}",
+                concurrency.fetch_jobs,
+                concurrency.extract_jobs,
+                concurrency.cpu_jobs,
+                concurrency.zip_jobs
+            );
+            for phase in phase_plan(family, &concurrency) {
+                println!(
+                    "phase {} kind={} legacy={} rust={} jobs={} bottleneck={} note={}",
+                    phase.name,
+                    work_kind_name(phase.work_kind),
+                    parallelism_name(phase.legacy_parallelism),
+                    parallelism_name(phase.rust_parallelism),
+                    phase.recommended_jobs,
+                    phase.expected_bottleneck,
+                    phase.note
+                );
+            }
+        }
+        Some("build-vrts") => {
+            if args.get(2).map(String::as_str) != Some("--family")
+                || args.get(4).map(String::as_str) != Some("--work-dir")
+                || args.get(6).map(String::as_str) != Some("--cpu-jobs")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let family = parse_family(
+                args.get(3)
+                    .map(String::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            )?;
+            let work_dir = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let cpu_jobs: usize = args
+                .get(7)
+                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                .parse()
+                .context("failed to parse cpu jobs")?;
+            let result = build_family_vrts(family, &work_dir, cpu_jobs)?;
+            println!("family {}", result.family.capture_label());
+            println!("vrt_count {}", result.vrt_count);
+            println!("elapsed_ms {}", result.elapsed_ms);
+            println!("main_vrt {}", result.main_vrt.display());
+        }
+        Some("build-tiles") => {
+            if args.get(2).map(String::as_str) != Some("--family")
+                || args.get(4).map(String::as_str) != Some("--work-dir")
+                || args.get(6).map(String::as_str) != Some("--cpu-jobs")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let family = parse_family(
+                args.get(3)
+                    .map(String::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            )?;
+            let work_dir = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let cpu_jobs: usize = args
+                .get(7)
+                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                .parse()
+                .context("failed to parse cpu jobs")?;
+            let result = build_family_tiles(family, &work_dir, cpu_jobs)?;
+            println!("family {}", result.family.capture_label());
+            println!("tile_count {}", result.tile_count);
+            println!("elapsed_ms {}", result.elapsed_ms);
+            println!("tiles_root {}", result.tiles_root.display());
+        }
+        Some("package-regions") => {
+            if args.get(2).map(String::as_str) != Some("--family")
+                || args.get(4).map(String::as_str) != Some("--work-dir")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let family = parse_family(
+                args.get(3)
+                    .map(String::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            )?;
+            let work_dir = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let result = package_family_regions(family, &work_dir)?;
+            println!("family {}", result.family.capture_label());
+            println!("package_count {}", result.package_count);
+            println!("elapsed_ms {}", result.elapsed_ms);
+        }
+        Some("run-native-chart") => {
+            if args.get(2).map(String::as_str) != Some("--family")
+                || args.get(4).map(String::as_str) != Some("--source-repo")
+                || args.get(6).map(String::as_str) != Some("--run-root")
+                || args.get(8).map(String::as_str) != Some("--cpu-jobs")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let family = parse_family(
+                args.get(3)
+                    .map(String::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            )?;
+            let source_repo = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let run_root = PathBuf::from(
+                args.get(7)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let cpu_jobs: usize = args
+                .get(9)
+                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                .parse()
+                .context("failed to parse cpu jobs")?;
+            let mut prefetch_source_urls = None;
+            let mut fetch_jobs = 4_usize;
+            let mut index = 10;
+            while index < args.len() {
+                match args.get(index).map(String::as_str) {
+                    Some("--prefetch-source-urls") => {
+                        prefetch_source_urls = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--fetch-jobs") => {
+                        fetch_jobs = args
+                            .get(index + 1)
+                            .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                            .parse()
+                            .context("failed to parse fetch jobs")?;
+                        index += 2;
+                    }
+                    _ => anyhow::bail!("{}", usage()),
+                }
+            }
+            let result = run_native_family(&NativeChartRunRequest {
+                family,
+                source_repo,
+                run_root,
+                cpu_jobs,
+                prefetch_source_urls,
+                fetch_jobs,
+            })?;
+            println!("family {}", result.family.capture_label());
+            println!("prefetch_elapsed_ms {}", result.prefetch_elapsed_ms);
+            println!("vrt_count {}", result.vrt_count);
+            println!("vrt_elapsed_ms {}", result.vrt_elapsed_ms);
+            println!("tile_count {}", result.tile_count);
+            println!("tile_elapsed_ms {}", result.tile_elapsed_ms);
+            println!("package_count {}", result.package_count);
+            println!("package_elapsed_ms {}", result.package_elapsed_ms);
+            println!("work_dir {}", result.work_dir.display());
+        }
+        Some("run-chart") => {
+            if args.get(2).map(String::as_str) != Some("--family")
+                || args.get(4).map(String::as_str) != Some("--source-repo")
+                || args.get(6).map(String::as_str) != Some("--run-root")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let family = parse_family(
+                args.get(3)
+                    .map(String::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            )?;
+            let source_repo = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let run_root = PathBuf::from(
+                args.get(7)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let mut prefetch_source_urls = None;
+            let mut fetch_jobs = 4_usize;
+            let mut index = 8;
+            while index < args.len() {
+                match args.get(index).map(String::as_str) {
+                    Some("--prefetch-source-urls") => {
+                        prefetch_source_urls = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--fetch-jobs") => {
+                        fetch_jobs = args
+                            .get(index + 1)
+                            .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                            .parse()
+                            .context("failed to parse fetch jobs")?;
+                        index += 2;
+                    }
+                    _ => anyhow::bail!("{}", usage()),
+                }
+            }
+            let result = run_family(&ChartRunRequest {
+                family,
+                source_repo,
+                run_root,
+                prefetch_source_urls,
+                fetch_jobs,
+            })?;
+            println!("family {}", result.family.capture_label());
+            println!("prefetch_elapsed_ms {}", result.prefetch_elapsed_ms);
+            println!("legacy_elapsed_ms {}", result.outcome.elapsed_ms);
+            println!("elapsed_ms {}", result.outcome.elapsed_ms);
+            println!("tile_count {}", result.tile_count);
+            println!("stdout {}", result.outcome.logs.stdout.display());
+            println!("stderr {}", result.outcome.logs.stderr.display());
+            println!("work_dir {}", result.work_dir.display());
+        }
+        _ => anyhow::bail!("{}", usage()),
+    }
+
+    Ok(())
+}

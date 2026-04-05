@@ -1,0 +1,16 @@
+[package]
+name = "preprocessor-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow.workspace = true
+preprocessor-charts = { path = "../preprocessor-charts" }
+preprocessor-core = { path = "../preprocessor-core" }
+preprocessor-fetch = { path = "../preprocessor-fetch" }
+preprocessor-tools = { path = "../preprocessor-tools" }
+serde_json.workspace = true
+sha2.workspace = true

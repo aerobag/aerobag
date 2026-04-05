@@ -4,6 +4,7 @@ pub mod errors;
 pub mod geometry;
 pub mod ids;
 pub mod planning;
+pub mod state;
 
 pub use catalog::{
     CatalogBundle, CatalogFamily, CatalogHandle, CatalogPackage, CatalogRegion, ChartCoverage,
@@ -17,6 +18,7 @@ pub use errors::{AppError, AppErrorKind, AppResult};
 pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord};
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use planning::{FlightPlan, NavRef, PlanLeg};
+pub use state::{AppEvent, AppState};
 
 pub fn load_catalog(catalog_json: &str) -> AppResult<CatalogHandle> {
     let bundle: CatalogBundle = serde_json::from_str(catalog_json).map_err(|err| AppError {

@@ -83,3 +83,41 @@ impl PackageId {
         format!("{region}_{family}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn package_name_matches_legacy_sectional_contract() {
+        let id = PackageId {
+            region: RegionId::Ne,
+            family: ChartFamilyId::Sectional,
+            cycle: "2026-04-16".to_string(),
+        };
+
+        assert_eq!(id.package_name(), "NE_SEC");
+    }
+
+    #[test]
+    fn package_name_matches_legacy_ifr_low_contract() {
+        let id = PackageId {
+            region: RegionId::Pac,
+            family: ChartFamilyId::IfrLow,
+            cycle: "2026-04-16".to_string(),
+        };
+
+        assert_eq!(id.package_name(), "PAC_ENR_L");
+    }
+
+    #[test]
+    fn package_name_matches_legacy_flyway_contract() {
+        let id = PackageId {
+            region: RegionId::Sw,
+            family: ChartFamilyId::Flyway,
+            cycle: "2026-04-16".to_string(),
+        };
+
+        assert_eq!(id.package_name(), "SW_FLY");
+    }
+}

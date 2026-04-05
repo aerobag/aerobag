@@ -1,6 +1,7 @@
 use app_core::{
     AirportId, CatalogBundle, CatalogFamily, CatalogPackage, CatalogRegion, ChartCoverage,
-    ChartFamilyId, ChartId, ChartRecord, PackageId, PlateId, PlateRecord, RegionId,
+    ChartFamilyId, ChartId, ChartRecord, GeometryBundle, PackageId, PlateId, PlateRecord,
+    PolygonRecord, RegionId,
 };
 
 pub fn sample_catalog() -> CatalogBundle {
@@ -71,5 +72,44 @@ pub fn sample_catalog() -> CatalogBundle {
             asset_base_path: "plates/KBOS/IAP-ILS-RWY-04R".to_string(),
         }],
         supplements: Vec::new(),
+    }
+}
+
+pub fn sample_geometry() -> GeometryBundle {
+    GeometryBundle {
+        schema_version: 1,
+        polygons: vec![PolygonRecord {
+            id: "sectional:boston".to_string(),
+            points: vec![[-72.0, 43.0], [-72.0, 41.0], [-69.0, 41.0], [-69.0, 43.0]],
+        }],
+    }
+}
+
+pub fn sample_catalog_json() -> String {
+    serde_json::to_string(&sample_catalog()).expect("sample catalog should serialize")
+}
+
+pub fn sample_geometry_json() -> String {
+    serde_json::to_string(&sample_geometry()).expect("sample geometry should serialize")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sample_catalog_round_trips_to_json() {
+        let json = sample_catalog_json();
+        let parsed: CatalogBundle = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.cycle, "2026-04-16");
+        assert_eq!(parsed.packages[0].package_name, "NE_SEC");
+    }
+
+    #[test]
+    fn sample_geometry_round_trips_to_json() {
+        let json = sample_geometry_json();
+        let parsed: GeometryBundle = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.polygons.len(), 1);
+        assert_eq!(parsed.polygons[0].id, "sectional:boston");
     }
 }

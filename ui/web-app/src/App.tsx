@@ -18,6 +18,8 @@ type SurfaceSize = {
 };
 
 export default function App() {
+  const locationSearch = typeof window !== "undefined" ? window.location.search : "";
+  const debugTileLabels = new URLSearchParams(locationSearch).has("debugTiles");
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [selectedMapId, setSelectedMapId] = useState<string>(mapViews[0].id);
   const selectedMap = useMemo(
@@ -179,19 +181,23 @@ export default function App() {
       >
         <div className="mapBackdrop" />
         {tiles.map((tile) => (
-          <img
+          <div
             key={`${tile.zoom}-${tile.x}-${tile.yTms}`}
             className="mapTile"
-            src={tile.src}
-            alt=""
-            draggable={false}
             style={{
               left: `${tile.left}px`,
               top: `${tile.top}px`,
               width: `${tile.size}px`,
               height: `${tile.size}px`,
             }}
-          />
+          >
+            <img className="mapTileImage" src={tile.src} alt="" draggable={false} />
+            {debugTileLabels ? (
+              <div className="tileLabel">
+                z{tile.zoom} x{tile.x} y{tile.yTms}
+              </div>
+            ) : null}
+          </div>
         ))}
 
         <section className="hud hudTop">
@@ -200,12 +206,17 @@ export default function App() {
           <p className="lede">
             Drag to pan. Wheel or pinch to zoom. Web streams the unpacked sectional tiles on demand; Android installs the package locally.
           </p>
+          <p className="debugFlag">
+            search={locationSearch || "(empty)"} debugTiles={debugTileLabels ? "on" : "off"}
+          </p>
           <div className="selectorRow" role="tablist" aria-label="Chart package">
             {mapViews.map((mapOption) => (
               <button
                 key={mapOption.id}
                 type="button"
                 className={`selectorButton${mapOption.id === selectedMap.id ? " isActive" : ""}`}
+                onPointerDown={(event) => event.stopPropagation()}
+                onPointerUp={(event) => event.stopPropagation()}
                 onClick={() => setSelectedMapId(mapOption.id)}
               >
                 {mapOption.label}

@@ -75,6 +75,8 @@ What it does now:
 - offers real package switching between `NW Sectional` and `SW Sectional`
 - serves extracted sectional tiles from:
   - [ui/web-app/public/sectional-packages](/root/aerobag/ui/web-app/public/sectional-packages)
+- web sectional stitching is now visually correct after switching tile rendering from CSS `background-image` boxes to real stretched `<img>` elements
+- web tile-address debugging exists behind `?debugTiles=1`
 
 Operational note:
 - [ui/web-app/vite.config.ts](/root/aerobag/ui/web-app/vite.config.ts) allows host `aerobag-dev.iac.jonh.net` so the Vite dev server can be opened through the remote browser path already in use
@@ -83,6 +85,9 @@ Operational note:
   - fixture/package generation
   - WASM generation
   from both `npm run dev` and `npm run build`
+- important Vite caveat:
+  - if the live dev server on `:8080` starts returning `text/html` for `/sectional-packages/.../*.webp`, kill the full `npm run dev -> sh -c ... -> node vite` process chain and restart one fresh server
+  - this has happened when the `public/sectional-packages` tree changed under a long-lived dev server
 
 ### Android prototype
 

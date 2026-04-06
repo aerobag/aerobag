@@ -1,6 +1,7 @@
 package net.jonh.aerobag.prototype
 
 import android.graphics.BitmapFactory
+import android.graphics.Paint
 import android.os.Bundle
 import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentWidth
@@ -42,6 +44,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -103,6 +106,7 @@ private fun MapExplorerScreen() {
     }
     var viewport by remember(selectedMap.id) { mutableStateOf(createInitialViewport(selectedMap.mapView)) }
     var interactionLabel by remember { mutableStateOf("idle") }
+    var debugTileLabels by remember { mutableStateOf(true) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     var installingPackage by remember { mutableStateOf<String?>(null) }
     var installRevision by remember { mutableStateOf(0) }
@@ -177,6 +181,20 @@ private fun MapExplorerScreen() {
                 widthPx = widthPx,
                 heightPx = heightPx,
             )
+        }
+    }
+    val tileLabelPaint = remember {
+        Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.WHITE
+            textSize = 24f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
+        }
+    }
+    val tileLabelBackgroundPaint = remember {
+        Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.argb(224, 14, 22, 28)
         }
     }
 
@@ -359,33 +377,41 @@ private fun MapExplorerScreen() {
                         ),
                     )
                 }
+                if (debugTileLabels) {
+                    val label = "z${tile.zoom} x${tile.x} y${tile.yTms}"
+                    val padding = 8f
+                    val baseline = tileRect.topPx + 30f
+                    val textWidth = tileLabelPaint.measureText(label)
+                    val rectLeft = tileRect.leftPx + 6f
+                    val rectTop = tileRect.topPx + 6f
+                    val rectRight = rectLeft + textWidth + padding * 2f
+                    val rectBottom = rectTop + 30f
+                    drawContext.canvas.nativeCanvas.apply {
+                        drawRoundRect(
+                            rectLeft,
+                            rectTop,
+                            rectRight,
+                            rectBottom,
+                            8f,
+                            8f,
+                            tileLabelBackgroundPaint,
+                        )
+                        drawText(label, rectLeft + padding, baseline, tileLabelPaint)
+                    }
+                }
             }
         }
 
         Card(
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .padding(18.dp),
+                .padding(8.dp)
+                .widthIn(max = 250.dp),
         ) {
             Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
             ) {
-                Text(
-                    text = "Aerobag",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = Color(0xFF0D6F67),
-                )
-                Text(
-                    text = selectedMap.mapView.chartName,
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    text = "Drag to pan. Pinch to zoom. Web streams unpacked sectionals; Android installs the zip locally and reads tiles from app storage.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xFF52656D),
-                )
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -396,14 +422,26 @@ private fun MapExplorerScreen() {
                         val isSelected = mapOption.id == selectedMap.id
                         if (isSelected) {
                             Button(onClick = { }) {
-                                Text(mapOption.label)
+                                Text(
+                                    text = mapOption.regionId.uppercase(),
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
                             }
                         } else {
                             OutlinedButton(onClick = { selectedMapId = mapOption.id }) {
-                                Text(mapOption.label)
+                                Text(
+                                    text = mapOption.regionId.uppercase(),
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
                             }
                         }
                     }
+                }
+                OutlinedButton(onClick = { debugTileLabels = !debugTileLabels }) {
+                    Text(
+                        text = if (debugTileLabels) "Hide labels" else "Show labels",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
                 }
                 if (selectedMap.mapView.storageKind == TileStorageKind.SectionalPackage) {
                     val packageName = selectedMap.mapView.packageName.orEmpty()
@@ -434,15 +472,15 @@ private fun MapExplorerScreen() {
                         }
                         Text(
                             text = if (isInstalled) "Local package ready" else "Not installed yet",
-                            style = MaterialTheme.typography.labelMedium,
+                            style = MaterialTheme.typography.labelSmall,
                             color = Color(0xFF52656D),
                             modifier = Modifier.align(Alignment.CenterVertically),
                         )
                     }
                 }
                 Text(
-                    text = "Input $interactionLabel",
-                    style = MaterialTheme.typography.labelMedium,
+                    text = "${selectedMap.mapView.chartName} • $interactionLabel",
+                    style = MaterialTheme.typography.labelSmall,
                     color = Color(0xFF52656D),
                 )
             }
@@ -451,11 +489,12 @@ private fun MapExplorerScreen() {
         Card(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(18.dp),
+                .padding(8.dp)
+                .widthIn(max = 150.dp),
         ) {
             Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 MetricRow("Latitude", "%.4f".format(center.first))
                 MetricRow("Longitude", "%.4f".format(center.second))
@@ -479,7 +518,7 @@ private fun MetricRow(label: String, value: String) {
         modifier = Modifier
             .fillMaxWidth()
             .border(1.dp, Color(0x1F182128), MaterialTheme.shapes.medium)
-            .padding(12.dp),
+            .padding(horizontal = 10.dp, vertical = 8.dp),
     ) {
         Text(
             text = label,
@@ -488,7 +527,7 @@ private fun MetricRow(label: String, value: String) {
         )
         Text(
             text = value,
-            style = MaterialTheme.typography.bodyLarge,
+            style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Bold,
         )
     }

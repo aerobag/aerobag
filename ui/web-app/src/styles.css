@@ -66,8 +66,41 @@ button {
   position: absolute;
   display: block;
   pointer-events: none;
-  image-rendering: auto;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  background: rgba(255, 120, 80, 0.08);
+  overflow: hidden;
+}
+
+.mapTileImage {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  pointer-events: none;
+  user-select: none;
+}
+
+.tileLabel {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 1;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: rgba(14, 22, 28, 0.88);
+  color: #f5f8fa;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-shadow: none;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.debugFlag {
+  margin: 12px 0 0;
+  color: #9a2d00;
+  font-size: 0.86rem;
+  font-weight: 700;
 }
 
 .hud {

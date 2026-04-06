@@ -181,7 +181,7 @@ export default function App() {
         ))}
 
         <section className="hud hudTop">
-          <p className="eyebrow">Avare Web Prototype</p>
+          <p className="eyebrow">Aerobag</p>
           <h1>{mapView.chart_name}</h1>
           <p className="lede">
             Drag to pan. Wheel or pinch to zoom. The surface is driven by lat, lon, and continuous zoom over the tiled chart.

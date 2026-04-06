@@ -349,7 +349,7 @@ private fun MapExplorerScreen() {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    text = "Avare Android Prototype",
+                    text = "Aerobag",
                     style = MaterialTheme.typography.labelLarge,
                     color = Color(0xFF0D6F67),
                 )

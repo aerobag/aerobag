@@ -77,6 +77,32 @@ data class MapProbe(
     val lon: Double,
 )
 
+data class MapViewportSeed(
+    val lat: Double,
+    val lon: Double,
+    val zoom: Double,
+)
+
+data class TileLevelAvailability(
+    val zoom: Int,
+    val xMin: Int,
+    val xMax: Int,
+    val yTmsMin: Int,
+    val yTmsMax: Int,
+)
+
+data class MapView(
+    val chartFamily: MapChartFamily,
+    val chartName: String,
+    val chartIndex: Int,
+    val tileRoot: String,
+    val tileSize: Int,
+    val minZoom: Double,
+    val maxZoom: Double,
+    val initialViewport: MapViewportSeed,
+    val levels: List<TileLevelAvailability>,
+)
+
 data class MapTileView(
     val chartFamily: MapChartFamily,
     val chartName: String,

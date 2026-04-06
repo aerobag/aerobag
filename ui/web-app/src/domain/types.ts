@@ -153,6 +153,27 @@ export type ContentFixtureBundle = {
     lat: number;
     lon: number;
   };
+  map_view: {
+    chart_family: ChartFamilyId;
+    chart_name: string;
+    chart_index: number;
+    tile_root: string;
+    tile_size: number;
+    min_zoom: number;
+    max_zoom: number;
+    initial_viewport: {
+      lat: number;
+      lon: number;
+      zoom: number;
+    };
+    levels: Array<{
+      zoom: number;
+      x_min: number;
+      x_max: number;
+      y_tms_min: number;
+      y_tms_max: number;
+    }>;
+  };
   map_tile_view: {
     chart_family: ChartFamilyId;
     chart_name: string;

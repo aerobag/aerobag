@@ -1,15 +1,12 @@
 :root {
   color-scheme: light;
   --bg: #f3efe4;
-  --ink: #182128;
-  --muted: #5f6f76;
-  --panel: rgba(255, 251, 244, 0.78);
-  --edge: rgba(24, 33, 40, 0.12);
+  --ink: #132129;
+  --muted: #52656d;
+  --panel: rgba(252, 248, 241, 0.88);
+  --edge: rgba(19, 33, 41, 0.12);
   --accent: #0d6f67;
-  --accent-soft: rgba(13, 111, 103, 0.12);
-  --warn: #935224;
-  --warn-soft: rgba(147, 82, 36, 0.14);
-  --shadow: 0 24px 70px rgba(31, 42, 46, 0.12);
+  --shadow: 0 24px 70px rgba(19, 33, 41, 0.18);
   font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
 }
 
@@ -17,243 +14,175 @@
   box-sizing: border-box;
 }
 
-body {
+html,
+body,
+#root {
   margin: 0;
+  width: 100%;
+  height: 100%;
+}
+
+body {
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, rgba(13, 111, 103, 0.18), transparent 30%),
-    radial-gradient(circle at 85% 15%, rgba(147, 82, 36, 0.16), transparent 22%),
+    radial-gradient(circle at top left, rgba(13, 111, 103, 0.16), transparent 30%),
     linear-gradient(180deg, #f6f1e7 0%, var(--bg) 100%);
   color: var(--ink);
 }
 
-button,
-input {
+button {
   font: inherit;
 }
 
-.shell {
-  max-width: 1120px;
-  margin: 0 auto;
-  padding: 48px 20px 72px;
+.mapShell {
+  width: 100%;
+  height: 100%;
 }
 
-.hero {
-  margin-bottom: 28px;
+.mapSurface {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+}
+
+.mapSurface:active {
+  cursor: grabbing;
+}
+
+.mapBackdrop {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.38), transparent 40%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(11, 78, 95, 0.08)),
+    #dce4e4;
+}
+
+.mapTile {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+  image-rendering: auto;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.hud {
+  position: absolute;
+  z-index: 2;
+  max-width: min(30rem, calc(100vw - 32px));
+  padding: 18px 20px;
+  border: 1px solid var(--edge);
+  border-radius: 22px;
+  background: var(--panel);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+}
+
+.hudTop {
+  top: 18px;
+  left: 18px;
+}
+
+.hudBottom {
+  left: 18px;
+  bottom: 18px;
 }
 
 .eyebrow {
-  margin: 0 0 10px;
+  margin: 0 0 8px;
   color: var(--accent);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 700;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.15em;
   text-transform: uppercase;
 }
 
-.hero h1 {
+.hud h1 {
   margin: 0;
-  max-width: 11ch;
-  font-size: clamp(2.7rem, 6vw, 5.5rem);
+  font-size: clamp(2rem, 4vw, 3.8rem);
   line-height: 0.92;
   letter-spacing: -0.04em;
 }
 
 .lede {
-  max-width: 56rem;
-  margin: 16px 0 0;
+  margin: 14px 0 0;
   color: var(--muted);
-  font-size: 1.05rem;
-  line-height: 1.6;
-}
-
-.backend {
-  display: inline-flex;
-  margin: 18px 0 0;
-  padding: 9px 12px;
-  border-radius: 999px;
-  background: rgba(24, 33, 40, 0.08);
-  color: var(--muted);
-  font-size: 0.86rem;
- }
-
-.grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
-}
-
-.panel {
-  padding: 24px;
-  border: 1px solid var(--edge);
-  border-radius: 28px;
-  background: var(--panel);
-  backdrop-filter: blur(8px);
-  box-shadow: var(--shadow);
-}
-
-.panel h2 {
-  margin: 0 0 16px;
-  font-size: 1.2rem;
+  font-size: 1rem;
+  line-height: 1.55;
 }
 
 .facts {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin: 0 0 24px;
+  gap: 10px;
+  margin: 0;
 }
 
 .facts div {
-  padding: 14px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.55);
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.56);
 }
 
 .facts dt {
   margin-bottom: 6px;
   color: var(--muted);
-  font-size: 0.8rem;
-  text-transform: uppercase;
+  font-size: 0.78rem;
   letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .facts dd {
   margin: 0;
-  font-weight: 600;
-}
-
-.controls {
-  margin: 0 0 20px;
-  padding: 0;
-  border: 0;
-}
-
-.controls legend {
-  margin-bottom: 10px;
   font-weight: 700;
 }
 
-.radio {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 0;
-}
-
-.status {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 16px 18px;
-  border-radius: 18px;
-  margin-bottom: 18px;
-}
-
-.status.ok {
-  background: var(--accent-soft);
-}
-
-.status.warn {
-  background: var(--warn-soft);
-}
-
-.report {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 12px;
-}
-
-.reportItem {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 16px 18px;
-  border-radius: 18px;
-  border: 1px solid var(--edge);
-  background: rgba(255, 255, 255, 0.58);
-}
-
-.reportItem h3 {
-  margin: 0 0 6px;
-  font-size: 1rem;
-}
-
-.reportItem p {
-  margin: 0;
-  color: var(--muted);
-}
-
-.badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-content: flex-start;
-  justify-content: flex-end;
-}
-
-.badge {
-  padding: 7px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--edge);
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-
-.badge.solid {
-  background: rgba(24, 33, 40, 0.08);
-  color: var(--ink);
-}
-
-.tileViewport {
-  margin-top: 18px;
-  overflow-x: auto;
-}
-
-.tileGrid {
-  position: relative;
-  display: grid;
-  width: max-content;
-  border-radius: 18px;
-  overflow: hidden;
-  border: 1px solid var(--edge);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
-}
-
-.tileImage {
-  display: block;
-  background: rgba(24, 33, 40, 0.06);
-}
-
-.probeMarker {
+.zoomControls {
   position: absolute;
-  width: 14px;
-  height: 14px;
-  margin-left: -7px;
-  margin-top: -7px;
-  border-radius: 999px;
-  background: #e44d2e;
-  border: 2px solid white;
-  box-shadow: 0 0 0 3px rgba(228, 77, 46, 0.22);
-  pointer-events: none;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2;
+  display: grid;
+  gap: 10px;
 }
 
-@media (max-width: 900px) {
-  .grid {
-    grid-template-columns: 1fr;
+.zoomControls button {
+  width: 56px;
+  height: 56px;
+  border: 1px solid var(--edge);
+  border-radius: 18px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 1.6rem;
+  box-shadow: var(--shadow);
+}
+
+@media (max-width: 720px) {
+  .hud {
+    max-width: calc(100vw - 24px);
+    padding: 14px 16px;
+  }
+
+  .hudTop {
+    top: 12px;
+    left: 12px;
+  }
+
+  .hudBottom {
+    left: 12px;
+    bottom: 12px;
   }
 
   .facts {
     grid-template-columns: 1fr;
   }
 
-  .reportItem {
-    flex-direction: column;
-  }
-
-  .badges {
-    justify-content: flex-start;
+  .zoomControls {
+    right: 12px;
+    bottom: 12px;
   }
 }

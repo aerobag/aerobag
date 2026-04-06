@@ -42,9 +42,11 @@ WGS84.ImportFromEPSG(4326)
 WEB_MERCATOR.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 WGS84.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 TO_WGS84 = osr.CoordinateTransformation(WEB_MERCATOR, WGS84)
-TILE_RADIUS = 1
-TILE_ZOOM = 10
 TILE_SIZE = 256
+TILE_LEVELS = {
+    9: 6,
+    10: 10,
+}
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -86,22 +88,44 @@ def tile_paths(center_x: int, center_y_tms: int, radius: int) -> list[tuple[int,
     return paths
 
 
-def copy_tile_subset(center_x: int, center_y_tms: int) -> list[dict]:
-    tile_pairs = tile_paths(center_x, center_y_tms, TILE_RADIUS)
-    available_tiles = []
+def clear_tile_roots() -> None:
     for destination_root in [CANONICAL_TILE_ROOT, WEB_TILE_ROOT, ANDROID_TILE_ROOT]:
+        target_root = destination_root / "charts-tac" / "1"
+        if target_root.exists():
+            shutil.rmtree(target_root)
+
+
+def copy_tile_subset(tile_windows: dict[int, tuple[int, int, int]]) -> list[dict]:
+    clear_tile_roots()
+    levels = []
+    for zoom, (center_x, center_y_tms, radius) in tile_windows.items():
+        tile_pairs = tile_paths(center_x, center_y_tms, radius)
+        available_pairs = []
+        for destination_root in [CANONICAL_TILE_ROOT, WEB_TILE_ROOT, ANDROID_TILE_ROOT]:
+            for x, y in tile_pairs:
+                source = BOSTON_TAC_TILE_ROOT / str(zoom) / str(x) / f"{y}.webp"
+                if not source.exists():
+                    continue
+                target = destination_root / "charts-tac" / "1" / str(zoom) / str(x) / f"{y}.webp"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+
         for x, y in tile_pairs:
-            source = BOSTON_TAC_TILE_ROOT / str(TILE_ZOOM) / str(x) / f"{y}.webp"
-            if not source.exists():
-                continue
-            target = destination_root / "charts-tac" / "1" / str(TILE_ZOOM) / str(x) / f"{y}.webp"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
-    for x, y in tile_pairs:
-        source = BOSTON_TAC_TILE_ROOT / str(TILE_ZOOM) / str(x) / f"{y}.webp"
-        if source.exists():
-            available_tiles.append({"x": x, "y_tms": y})
-    return available_tiles
+            source = BOSTON_TAC_TILE_ROOT / str(zoom) / str(x) / f"{y}.webp"
+            if source.exists():
+                available_pairs.append((x, y))
+
+        levels.append(
+            {
+                "zoom": zoom,
+                "x_min": min(x for x, _ in available_pairs),
+                "x_max": max(x for x, _ in available_pairs),
+                "y_tms_min": min(y for _, y in available_pairs),
+                "y_tms_max": max(y for _, y in available_pairs),
+            }
+        )
+
+    return sorted(levels, key=lambda item: item["zoom"])
 
 
 def pick_bos_plate() -> tuple[str, str, str]:
@@ -126,8 +150,11 @@ def build_fixture() -> dict:
     cycle = "2026-04-16"
     boston_tac_polygon = load_wgs84_polygon(BOSTON_TAC_GEOJSON)
     probe_lat, probe_lon = bounds_center(boston_tac_polygon)
-    center_x, _center_y_xyz, center_y_tms, offset_x, offset_y = web_mercator_tile(probe_lat, probe_lon, TILE_ZOOM)
-    available_tiles = copy_tile_subset(center_x, center_y_tms)
+    tile_windows = {}
+    for zoom, radius in TILE_LEVELS.items():
+        center_x, _center_y_xyz, center_y_tms, _offset_x, _offset_y = web_mercator_tile(probe_lat, probe_lon, zoom)
+        tile_windows[zoom] = (center_x, center_y_tms, radius)
+    level_bounds = copy_tile_subset(tile_windows)
 
     packages = []
     regions_seen = set()
@@ -243,6 +270,21 @@ def build_fixture() -> dict:
                 }
             ],
         },
+        "map_view": {
+            "chart_family": "tac",
+            "chart_name": "Boston TAC",
+            "chart_index": 1,
+            "tile_root": "charts-tac",
+            "tile_size": TILE_SIZE,
+            "min_zoom": 8.6,
+            "max_zoom": 10.8,
+            "initial_viewport": {
+                "lat": probe_lat,
+                "lon": probe_lon,
+                "zoom": 9.6,
+            },
+            "levels": level_bounds,
+        },
         "initial_probe": {
             "family": "tac",
             "lat": probe_lat,
@@ -253,14 +295,13 @@ def build_fixture() -> dict:
             "chart_name": "Boston TAC",
             "chart_index": 1,
             "tile_root": "charts-tac",
-            "zoom": TILE_ZOOM,
+            "zoom": 10,
             "tile_size": TILE_SIZE,
-            "radius": TILE_RADIUS,
-            "center_x": center_x,
-            "center_y_tms": center_y_tms,
-            "probe_offset_x": offset_x,
-            "probe_offset_y": offset_y,
-            "available_tiles": available_tiles,
+            "radius": TILE_LEVELS[10],
+            "center_x": tile_windows[10][0],
+            "center_y_tms": tile_windows[10][1],
+            "probe_offset_x": 0.0,
+            "probe_offset_y": 0.0,
         },
         "flight_plan": {
             "id": "plan-1",

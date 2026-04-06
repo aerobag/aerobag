@@ -10,6 +10,7 @@ data class ContentFixture(
     val catalog: Catalog,
     val catalogJson: String,
     val geometryJson: String,
+    val mapView: MapView,
     val initialProbe: MapProbe,
     val mapTileView: MapTileView,
     val samplePlan: FlightPlan,
@@ -21,6 +22,7 @@ data class ContentFixture(
 private data class WireContentFixture(
     val catalog: WireCatalog,
     val geometry: WireGeometryBundle,
+    val map_view: WireMapView,
     val initial_probe: WireInitialProbe,
     val map_tile_view: WireMapTileView,
     val flight_plan: WireFlightPlan,
@@ -44,6 +46,7 @@ object SampleData {
             catalog = fixture.catalog.toUiCatalog(),
             catalogJson = fixtureElement.getValue("catalog").toString(),
             geometryJson = fixtureElement.getValue("geometry").toString(),
+            mapView = fixture.map_view.toUi(),
             initialProbe = fixture.initial_probe.toUi(),
             mapTileView = fixture.map_tile_view.toUi(),
             samplePlan = fixture.flight_plan.toUiFlightPlan(),
@@ -52,6 +55,33 @@ object SampleData {
         )
     }
 }
+
+private fun WireMapView.toUi() = MapView(
+    chartFamily = when (chart_family) {
+        WireChartFamilyId.Sectional -> MapChartFamily.Sectional
+        WireChartFamilyId.Tac -> MapChartFamily.Tac
+    },
+    chartName = chart_name,
+    chartIndex = chart_index,
+    tileRoot = tile_root,
+    tileSize = tile_size,
+    minZoom = min_zoom,
+    maxZoom = max_zoom,
+    initialViewport = MapViewportSeed(
+        lat = initial_viewport.lat,
+        lon = initial_viewport.lon,
+        zoom = initial_viewport.zoom,
+    ),
+    levels = levels.map {
+        TileLevelAvailability(
+            zoom = it.zoom,
+            xMin = it.x_min,
+            xMax = it.x_max,
+            yTmsMin = it.y_tms_min,
+            yTmsMax = it.y_tms_max,
+        )
+    },
+)
 
 private fun WireInitialProbe.toUi() = MapProbe(
     family = when (family) {

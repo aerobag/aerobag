@@ -287,6 +287,36 @@
       }
     ]
   },
+  "map_view": {
+    "chart_family": "tac",
+    "chart_name": "Boston TAC",
+    "chart_index": 1,
+    "tile_root": "charts-tac",
+    "tile_size": 256,
+    "min_zoom": 8.6,
+    "max_zoom": 10.8,
+    "initial_viewport": {
+      "lat": 42.24,
+      "lon": -70.94920200000001,
+      "zoom": 9.6
+    },
+    "levels": [
+      {
+        "zoom": 9,
+        "x_min": 149,
+        "x_max": 157,
+        "y_tms_min": 317,
+        "y_tms_max": 323
+      },
+      {
+        "zoom": 10,
+        "x_min": 300,
+        "x_max": 314,
+        "y_tms_min": 634,
+        "y_tms_max": 647
+      }
+    ]
+  },
   "initial_probe": {
     "family": "tac",
     "lat": 42.24,
@@ -299,49 +329,11 @@
     "tile_root": "charts-tac",
     "zoom": 10,
     "tile_size": 256,
-    "radius": 1,
+    "radius": 10,
     "center_x": 310,
     "center_y_tms": 644,
-    "probe_offset_x": 0.1889365333332762,
-    "probe_offset_y": 0.20588652363562687,
-    "available_tiles": [
-      {
-        "x": 309,
-        "y_tms": 645
-      },
-      {
-        "x": 310,
-        "y_tms": 645
-      },
-      {
-        "x": 311,
-        "y_tms": 645
-      },
-      {
-        "x": 309,
-        "y_tms": 644
-      },
-      {
-        "x": 310,
-        "y_tms": 644
-      },
-      {
-        "x": 311,
-        "y_tms": 644
-      },
-      {
-        "x": 309,
-        "y_tms": 643
-      },
-      {
-        "x": 310,
-        "y_tms": 643
-      },
-      {
-        "x": 311,
-        "y_tms": 643
-      }
-    ]
+    "probe_offset_x": 0.0,
+    "probe_offset_y": 0.0
   },
   "flight_plan": {
     "id": "plan-1",

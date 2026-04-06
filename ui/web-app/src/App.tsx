@@ -1,315 +1,231 @@
-import { useEffect, useState } from "react";
-import { loadBestAvailableAdapter } from "./domain/appCoreAdapter";
-import { ContentViewModel } from "./domain/contentViewModel";
-import { initialProbe, installedInventory, mapTileView, remoteOnlyInventory, sampleCatalog, sampleGeometry, samplePlan } from "./domain/sampleData";
-import type { AppState, ChartFamilyId, ContentPolicy } from "./domain/types";
-import type { AppCoreAdapter } from "./domain/appCoreAdapter";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { mapView } from "./domain/sampleData";
+import {
+  applyPinchGesture,
+  createInitialViewport,
+  createPinchSnapshot,
+  dragViewport,
+  renderTiles,
+  viewportCenterLatLon,
+  zoomAroundPoint,
+  type MapViewportState,
+  type ScreenPoint,
+} from "./domain/mapViewport";
 
-const policyOptions: Array<{ value: ContentPolicy; label: string }> = [
-  { value: "StreamAllowed", label: "Stream Allowed" },
-  { value: "PreferLocal", label: "Prefer Local" },
-  { value: "OfflineRequired", label: "Offline Required" },
-];
+type SurfaceSize = {
+  width: number;
+  height: number;
+};
 
 export default function App() {
-  const [adapter, setAdapter] = useState<AppCoreAdapter | null>(null);
-  const [model, setModel] = useState<ContentViewModel | null>(null);
-  const [state, setState] = useState<AppState | null>(null);
-  const [inventoryMode, setInventoryMode] = useState<"remote" | "installed">("remote");
-  const [backendLabel, setBackendLabel] = useState("Loading adapter...");
-  const [selectedFamily, setSelectedFamily] = useState<ChartFamilyId>(initialProbe.family);
-  const [probeLat, setProbeLat] = useState(initialProbe.lat);
-  const [probeLon, setProbeLon] = useState(initialProbe.lon);
-  const [selectedChart, setSelectedChart] = useState<typeof sampleCatalog.charts[number] | null>(null);
-
-  const offshoreProbe = {
-    lat: initialProbe.lat + 4,
-    lon: initialProbe.lon + 4,
-  };
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const viewportRef = useRef<MapViewportState>(createInitialViewport(mapView));
+  const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
+  const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
+  const pinchRef = useRef<ReturnType<typeof createPinchSnapshot> | null>(null);
+  const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
+  const [viewport, setViewport] = useState<MapViewportState>(() => createInitialViewport(mapView));
 
   useEffect(() => {
-    let cancelled = false;
+    viewportRef.current = viewport;
+  }, [viewport]);
 
-    async function bootstrap() {
-      const loaded = await loadBestAvailableAdapter();
-      const nextModel = new ContentViewModel(loaded.adapter);
-      let next = await nextModel.loadPlan(samplePlan);
-      next = await nextModel.setPolicy("StreamAllowed");
-      next = await nextModel.refresh(remoteOnlyInventory);
-      const nextChart = await loaded.adapter.chartForPosition(
-        sampleCatalog,
-        sampleGeometry,
-        initialProbe.family,
-        initialProbe.lat,
-        initialProbe.lon,
-      );
-      if (!cancelled) {
-        setAdapter(loaded.adapter);
-        setModel(nextModel);
-        setState(next);
-        setSelectedChart(nextChart);
-        setBackendLabel(`${loaded.backend.toUpperCase()}: ${loaded.detail}`);
-      }
+  useEffect(() => {
+    if (!containerRef.current) {
+      return;
     }
-
-    void bootstrap();
-    return () => {
-      cancelled = true;
-    };
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) {
+        return;
+      }
+      setSurfaceSize({
+        width: entry.contentRect.width,
+        height: entry.contentRect.height,
+      });
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
   }, []);
 
-  async function handlePolicyChange(policy: ContentPolicy) {
-    if (!model || !state) {
-      return;
+  const center = useMemo(() => viewportCenterLatLon(viewport), [viewport]);
+  const tiles = useMemo(() => {
+    if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      return [];
     }
-    const next = await model.setPolicy(policy);
-    setState(next);
+    return renderTiles(mapView, viewport, surfaceSize.width, surfaceSize.height);
+  }, [surfaceSize, viewport]);
+
+  function updateViewport(next: MapViewportState) {
+    viewportRef.current = next;
+    setViewport(next);
   }
 
-  async function handleInventoryChange(mode: "remote" | "installed") {
-    if (!model || !state) {
-      return;
+  function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    const point = { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY };
+    activePointersRef.current.set(event.pointerId, point);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    if (activePointersRef.current.size === 1) {
+      dragRef.current = { id: event.pointerId, last: point };
+      pinchRef.current = null;
+    } else if (activePointersRef.current.size >= 2 && surfaceSize.width > 0 && surfaceSize.height > 0) {
+      const [first, second] = Array.from(activePointersRef.current.values());
+      pinchRef.current = createPinchSnapshot(
+        viewportRef.current,
+        first,
+        second,
+        surfaceSize.width,
+        surfaceSize.height,
+      );
+      dragRef.current = null;
     }
-    setInventoryMode(mode);
-    const next = await model.refresh(mode === "installed" ? installedInventory : remoteOnlyInventory);
-    setState(next);
   }
 
-  async function handleProbeSelection(nextFamily: ChartFamilyId, nextLat: number, nextLon: number) {
-    if (!adapter) {
+  function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
-    setSelectedFamily(nextFamily);
-    setProbeLat(nextLat);
-    setProbeLon(nextLon);
-    const nextChart = await adapter.chartForPosition(sampleCatalog, sampleGeometry, nextFamily, nextLat, nextLon);
-    setSelectedChart(nextChart);
+    const point = { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY };
+    if (!activePointersRef.current.has(event.pointerId)) {
+      return;
+    }
+    activePointersRef.current.set(event.pointerId, point);
+    const pointers = Array.from(activePointersRef.current.entries());
+    if (pointers.length === 1 && dragRef.current?.id === event.pointerId) {
+      const dx = point.x - dragRef.current.last.x;
+      const dy = point.y - dragRef.current.last.y;
+      updateViewport(dragViewport(viewportRef.current, dx, dy));
+      dragRef.current = { id: event.pointerId, last: point };
+      return;
+    }
+    if (pointers.length >= 2) {
+      const [first, second] = pointers;
+      if (!pinchRef.current) {
+        pinchRef.current = createPinchSnapshot(
+          viewportRef.current,
+          first[1],
+          second[1],
+          surfaceSize.width,
+          surfaceSize.height,
+        );
+      }
+      updateViewport(
+        applyPinchGesture(
+          pinchRef.current,
+          first[1],
+          second[1],
+          mapView,
+          surfaceSize.width,
+          surfaceSize.height,
+        ),
+      );
+    }
   }
 
-  if (!state) {
-    return (
-      <main className="shell">
-        <section className="hero">
-          <p className="eyebrow">Avare Web Prototype</p>
-          <h1>Loading shared content model</h1>
-          <p className="lede">{backendLabel}</p>
-        </section>
-      </main>
+  function handlePointerRelease(event: React.PointerEvent<HTMLDivElement>) {
+    activePointersRef.current.delete(event.pointerId);
+    pinchRef.current = null;
+    const remaining = Array.from(activePointersRef.current.entries());
+    if (remaining.length === 1) {
+      dragRef.current = { id: remaining[0][0], last: remaining[0][1] };
+    } else {
+      dragRef.current = null;
+    }
+  }
+
+  function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
+    if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      return;
+    }
+    event.preventDefault();
+    const nextZoom = viewport.zoom - event.deltaY / 360;
+    updateViewport(
+      zoomAroundPoint(
+        viewport,
+        mapView,
+        { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY },
+        surfaceSize.width,
+        surfaceSize.height,
+        nextZoom,
+      ),
+    );
+  }
+
+  function nudgeZoom(delta: number) {
+    if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      return;
+    }
+    updateViewport(
+      zoomAroundPoint(
+        viewport,
+        mapView,
+        { x: surfaceSize.width / 2, y: surfaceSize.height / 2 },
+        surfaceSize.width,
+        surfaceSize.height,
+        viewport.zoom + delta,
+      ),
     );
   }
 
   return (
-    <main className="shell">
-      <section className="hero">
-        <p className="eyebrow">Avare Web Prototype</p>
-        <h1>Content parity without offline symmetry</h1>
-        <p className="lede">
-          The desktop browser streams content on demand while preserving the same planning and content
-          semantics the Android app will use offline.
-        </p>
-        <p className="backend">{backendLabel}</p>
-      </section>
+    <main className="mapShell">
+      <div
+        ref={containerRef}
+        className="mapSurface"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerRelease}
+        onPointerCancel={handlePointerRelease}
+        onPointerLeave={handlePointerRelease}
+        onWheel={handleWheel}
+      >
+        <div className="mapBackdrop" />
+        {tiles.map((tile) => (
+          <img
+            key={`${tile.zoom}-${tile.x}-${tile.yTms}`}
+            className="mapTile"
+            src={tile.src}
+            alt=""
+            draggable={false}
+            style={{
+              left: `${tile.left}px`,
+              top: `${tile.top}px`,
+              width: `${tile.size}px`,
+              height: `${tile.size}px`,
+            }}
+          />
+        ))}
 
-      <section className="grid">
-        <article className="panel">
-          <h2>Prototype inputs</h2>
-          <dl className="facts">
-            <div>
-              <dt>Cycle</dt>
-              <dd>{sampleCatalog.cycle}</dd>
-            </div>
-            <div>
-              <dt>Plan</dt>
-              <dd>{samplePlan.name}</dd>
-            </div>
-            <div>
-              <dt>Route</dt>
-              <dd>{samplePlan.departure} to {samplePlan.destination}</dd>
-            </div>
-          </dl>
-
-          <fieldset className="controls">
-            <legend>Content policy</legend>
-            {policyOptions.map((option) => (
-              <label key={option.value} className="radio">
-                <input
-                  type="radio"
-                  name="policy"
-                  checked={state.content_policy === option.value}
-                  onChange={() => void handlePolicyChange(option.value)}
-                />
-                <span>{option.label}</span>
-              </label>
-            ))}
-          </fieldset>
-
-          <fieldset className="controls">
-            <legend>Inventory mode</legend>
-            <label className="radio">
-              <input
-                type="radio"
-                name="inventory"
-                checked={inventoryMode === "remote"}
-                onChange={() => void handleInventoryChange("remote")}
-              />
-              <span>Remote only cache</span>
-            </label>
-            <label className="radio">
-              <input
-                type="radio"
-                name="inventory"
-                checked={inventoryMode === "installed"}
-                onChange={() => void handleInventoryChange("installed")}
-              />
-              <span>Installed package</span>
-            </label>
-          </fieldset>
-        </article>
-
-        <article className="panel">
-          <h2>Shared-state result</h2>
-          <div className={`status ${state.last_content_report?.fully_satisfied ? "ok" : "warn"}`}>
-            <strong>
-              {state.last_content_report?.fully_satisfied ? "Ready for this policy" : "Coverage gap"}
-            </strong>
-            <span>
-              {state.last_content_report?.fully_satisfied
-                ? "The current content strategy satisfies the plan."
-                : "This plan needs local content before the policy is satisfied."}
-            </span>
-          </div>
-
-          <ul className="report">
-            {state.last_content_report?.items.map((item) => (
-              <li key={item.label} className="reportItem">
-                <div>
-                  <h3>{item.label}</h3>
-                  <p>{item.availability.availability}</p>
-                </div>
-                <div className="badges">
-                  <span className={item.availability.offline_usable ? "badge solid" : "badge"}>
-                    offline {item.availability.offline_usable ? "yes" : "no"}
-                  </span>
-                  <span className={item.availability.cached ? "badge solid" : "badge"}>
-                    cached {item.availability.cached ? "yes" : "no"}
-                  </span>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </article>
-
-        <article className="panel">
-          <h2>Map lookup</h2>
+        <section className="hud hudTop">
+          <p className="eyebrow">Avare Web Prototype</p>
+          <h1>{mapView.chart_name}</h1>
           <p className="lede">
-            This is the first real map-layer seam: the shared Rust core picks a chart from catalog metadata and
-            transformed cutline geometry.
+            Drag to pan. Wheel or pinch to zoom. The surface is driven by lat, lon, and continuous zoom over the tiled chart.
           </p>
+        </section>
 
-          <fieldset className="controls">
-            <legend>Chart family</legend>
-            <label className="radio">
-              <input
-                type="radio"
-                name="family"
-                checked={selectedFamily === "tac"}
-                onChange={() => void handleProbeSelection("tac", probeLat, probeLon)}
-              />
-              <span>TAC</span>
-            </label>
-            <label className="radio">
-              <input
-                type="radio"
-                name="family"
-                checked={selectedFamily === "sectional"}
-                onChange={() => void handleProbeSelection("sectional", probeLat, probeLon)}
-              />
-              <span>Sectional</span>
-            </label>
-          </fieldset>
-
-          <fieldset className="controls">
-            <legend>Probe point</legend>
-            <label className="radio">
-              <input
-                type="radio"
-                name="probe"
-                checked={probeLat === initialProbe.lat && probeLon === initialProbe.lon}
-                onChange={() => void handleProbeSelection(selectedFamily, initialProbe.lat, initialProbe.lon)}
-              />
-              <span>Boston center</span>
-            </label>
-            <label className="radio">
-              <input
-                type="radio"
-                name="probe"
-                checked={probeLat === offshoreProbe.lat && probeLon === offshoreProbe.lon}
-                onChange={() => void handleProbeSelection(selectedFamily, offshoreProbe.lat, offshoreProbe.lon)}
-              />
-              <span>Offshore gap</span>
-            </label>
-          </fieldset>
-
+        <section className="hud hudBottom">
           <dl className="facts">
             <div>
-              <dt>Lat</dt>
-              <dd>{probeLat.toFixed(4)}</dd>
+              <dt>Latitude</dt>
+              <dd>{center.lat.toFixed(4)}</dd>
             </div>
             <div>
-              <dt>Lon</dt>
-              <dd>{probeLon.toFixed(4)}</dd>
+              <dt>Longitude</dt>
+              <dd>{center.lon.toFixed(4)}</dd>
             </div>
             <div>
-              <dt>Chart</dt>
-              <dd>{selectedChart?.display_name ?? "No matching chart"}</dd>
+              <dt>Zoom</dt>
+              <dd>{viewport.zoom.toFixed(2)}</dd>
             </div>
           </dl>
+        </section>
 
-          {selectedChart?.display_name === mapTileView.chart_name ? (
-            <div className="tileViewport">
-              <div
-                className="tileGrid"
-                style={{
-                  gridTemplateColumns: `repeat(${mapTileView.radius * 2 + 1}, ${mapTileView.tile_size / 2}px)`,
-                }}
-              >
-                {tileCells(mapTileView).map((tile) => (
-                  <img
-                    key={`${tile.x}-${tile.yTms}`}
-                    className="tileImage"
-                    src={`/prototype-tiles/${mapTileView.tile_root}/${mapTileView.chart_index}/${mapTileView.zoom}/${tile.x}/${tile.yTms}.webp`}
-                    alt={`Chart tile ${tile.x}/${tile.yTms}`}
-                    width={mapTileView.tile_size / 2}
-                    height={mapTileView.tile_size / 2}
-                  />
-                ))}
-                <div
-                  className="probeMarker"
-                  style={{
-                    left: `${(mapTileView.radius + mapTileView.probe_offset_x) * (mapTileView.tile_size / 2)}px`,
-                    top: `${(mapTileView.radius + mapTileView.probe_offset_y) * (mapTileView.tile_size / 2)}px`,
-                  }}
-                />
-              </div>
-            </div>
-          ) : (
-            <p className="lede">No tile viewport is loaded for this chart selection yet.</p>
-          )}
-        </article>
-      </section>
+        <div className="zoomControls">
+          <button type="button" onClick={() => nudgeZoom(0.35)}>+</button>
+          <button type="button" onClick={() => nudgeZoom(-0.35)}>-</button>
+        </div>
+      </div>
     </main>
   );
-}
-
-function tileCells(view: typeof mapTileView): Array<{ x: number; yTms: number }> {
-  const cells: Array<{ x: number; yTms: number }> = [];
-  for (let dy = view.radius; dy >= -view.radius; dy -= 1) {
-    for (let dx = -view.radius; dx <= view.radius; dx += 1) {
-      cells.push({
-        x: view.center_x + dx,
-        yTms: view.center_y_tms + dy,
-      });
-    }
-  }
-  return cells;
 }

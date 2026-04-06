@@ -300,6 +300,35 @@ data class WireInitialProbe(
 )
 
 @Serializable
+data class WireMapViewportSeed(
+    val lat: Double,
+    val lon: Double,
+    val zoom: Double,
+)
+
+@Serializable
+data class WireTileLevelAvailability(
+    val zoom: Int,
+    val x_min: Int,
+    val x_max: Int,
+    val y_tms_min: Int,
+    val y_tms_max: Int,
+)
+
+@Serializable
+data class WireMapView(
+    val chart_family: WireChartFamilyId,
+    val chart_name: String,
+    val chart_index: Int,
+    val tile_root: String,
+    val tile_size: Int,
+    val min_zoom: Double,
+    val max_zoom: Double,
+    val initial_viewport: WireMapViewportSeed,
+    val levels: List<WireTileLevelAvailability>,
+)
+
+@Serializable
 data class WireMapTileView(
     val chart_family: WireChartFamilyId,
     val chart_name: String,

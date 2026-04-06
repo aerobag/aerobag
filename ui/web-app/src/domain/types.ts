@@ -14,6 +14,7 @@ export type RegionId = "ne" | "nc" | "nw" | "se" | "sc" | "sw" | "ec" | "ak" | "
 export type ContentPolicy = "OfflineRequired" | "PreferLocal" | "StreamAllowed";
 
 export type ContentAvailability = "LocalOnly" | "RemoteOnly" | "LocalAndRemote" | "Unavailable";
+export type TileStorageKind = "asset_tree" | "sectional_package";
 
 export type FlightPlan = {
   id: string;
@@ -158,9 +159,12 @@ export type ContentFixtureBundle = {
     chart_name: string;
     chart_index: number;
     tile_root: string;
+    tile_url_root: string;
     tile_size: number;
     min_zoom: number;
     max_zoom: number;
+    storage_kind: TileStorageKind;
+    package_name: string | null;
     initial_viewport: {
       lat: number;
       lon: number;
@@ -174,6 +178,12 @@ export type ContentFixtureBundle = {
       y_tms_max: number;
     }>;
   };
+  map_views?: Array<{
+    id: string;
+    label: string;
+    region_id: RegionId;
+    map_view: ContentFixtureBundle["map_view"];
+  }>;
   map_tile_view: {
     chart_family: ChartFamilyId;
     chart_name: string;

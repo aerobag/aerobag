@@ -65,7 +65,12 @@ Verified:
 
 Current web build behavior:
 - `npm run build` now regenerates `public/generated/app_wasm.js` and `public/generated/app_wasm_bg.wasm`
+- `npm run dev` and `npm run build` now also rerun:
+  - [ui/scripts/generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py)
+- that generator also extracts real `NW_SEC` / `SW_SEC` web tiles into:
+  - [ui/web-app/public/sectional-packages](/root/aerobag/ui/web-app/public/sectional-packages)
 - [ui/web-app/.gitignore](/root/aerobag/ui/web-app/.gitignore) ignores `public/generated`
+- [ui/web-app/.gitignore](/root/aerobag/ui/web-app/.gitignore) also ignores `public/sectional-packages`
 - the web prototype fixture is generated and checked in at:
   - [ui/shared-fixtures/content-prototype/content_fixture.json](/root/aerobag/ui/shared-fixtures/content-prototype/content_fixture.json)
   - copied into [ui/web-app/src/domain/generated/contentFixture.json](/root/aerobag/ui/web-app/src/domain/generated/contentFixture.json)
@@ -209,7 +214,19 @@ hw.keyboard = yes
 Shared fixture loading on Android:
 - the Android app loads its prototype fixture from assets:
   - [ui/android-app/app/src/main/assets/fixtures/contentFixture.json](/root/aerobag/ui/android-app/app/src/main/assets/fixtures/contentFixture.json)
-- if the shared fixture changes, regenerate and copy it before rebuilding the Android app
+- the Android Gradle build now reruns the generator automatically before `preBuild`
+
+Sectional package staging on Android:
+- the real package artifacts are copied into generated APK assets during the build from:
+  - `/root/aerobag/runs/20260406T032350Z-validation/native/charts-sec/work/charts-sec/NW_SEC.zip`
+  - `/root/aerobag/runs/20260406T032350Z-validation/native/charts-sec/work/charts-sec/SW_SEC.zip`
+- the staging task is:
+  - `stagePrototypeSectionalPackages`
+- the generated asset location is:
+  - `ui/android-app/app/build/generated/prototypeAssets/sectional-packages`
+- at runtime, the app installs the selected zip into:
+  - `context.filesDir/sectional-packages/<PACKAGE>.zip`
+- tile rendering then reads directly from the installed zip, not from an unpacked tree
 
 Package install path discovered:
 
@@ -248,7 +265,10 @@ Generator:
 
 Current source inputs:
 - sectional package provenance from:
-  - `/root/aerobag/rust-runs/sec-20260405T1619Z/work/rust-runs/sec-20260405T1619Z/meta/provenance/charts-sec/package_outputs.jsonl`
+  - `/root/aerobag/runs/20260406T032350Z-validation/native/charts-sec/meta/provenance/charts-sec/package_outputs.jsonl`
+- sectional package zips from:
+  - `/root/aerobag/runs/20260406T032350Z-validation/native/charts-sec/work/charts-sec/NW_SEC.zip`
+  - `/root/aerobag/runs/20260406T032350Z-validation/native/charts-sec/work/charts-sec/SW_SEC.zip`
 - BOS TPP data from:
   - `/root/aerobag/runs/20260405T154700Z-tpp-retry/work/tpp-ne/plates/BOS`
 
@@ -258,6 +278,11 @@ Command:
 cd /root/aerobag
 python3 ui/scripts/generate_content_fixture.py
 ```
+
+What it does now:
+- refreshes the shared fixture JSON consumed by both web and Android
+- refreshes the TAC demo subset used for chart-lookup tests
+- extracts the real `NW` and `SW` sectional package tile trees for the web prototype
 
 Generator behavior:
 - reads preprocessor package provenance and plate outputs

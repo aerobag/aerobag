@@ -192,7 +192,7 @@ export function renderTiles(
         top,
         size: tileScreenSize,
         zoom: level.zoom,
-        src: `/prototype-tiles/${mapView.tile_root}/${mapView.chart_index}/${level.zoom}/${x}/${yTms}.webp`,
+        src: `${mapView.tile_url_root}/${mapView.chart_index}/${level.zoom}/${x}/${yTms}.webp`,
       });
     }
   }

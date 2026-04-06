@@ -10,9 +10,12 @@ class MapViewportTest {
         chartName = "Boston TAC",
         chartIndex = 1,
         tileRoot = "charts-tac",
+        tileUrlRoot = "/prototype-tiles/charts-tac",
         tileSize = 256,
         minZoom = 8.6,
         maxZoom = 10.8,
+        storageKind = TileStorageKind.AssetTree,
+        packageName = null,
         initialViewport = MapViewportSeed(
             lat = 42.24,
             lon = -70.949202,

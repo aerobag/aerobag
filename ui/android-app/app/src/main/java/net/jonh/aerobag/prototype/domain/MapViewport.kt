@@ -209,8 +209,11 @@ fun renderTiles(
     return tiles
 }
 
+fun tileRelativePath(mapView: MapView, tile: RenderTile): String =
+    "${mapView.tileRoot}/${mapView.chartIndex}/${tile.zoom}/${tile.x}/${tile.yTms}.webp"
+
 fun tileAssetPath(mapView: MapView, tile: RenderTile): String =
-    "tiles/${mapView.tileRoot}/${mapView.chartIndex}/${tile.zoom}/${tile.x}/${tile.yTms}.webp"
+    "tiles/${tileRelativePath(mapView, tile)}"
 
 private fun pickLevel(mapView: MapView, zoom: Double): TileLevelAvailability =
     mapView.levels.minBy { kotlin.math.abs(it.zoom - zoom) }

@@ -18,6 +18,9 @@ val rustcBinary = "$rustToolchainBin/rustc"
 val rustProjectDir = file("../../core-rust")
 val rustJniLibsDir = layout.buildDirectory.dir("generated/rustJniLibs")
 val rustOutputAbiDir = layout.buildDirectory.dir("generated/rustJniLibs/x86_64")
+val generatedPrototypeAssetsDir = layout.buildDirectory.dir("generated/prototypeAssets")
+val sectionalPackageRunDir = file("../../../runs/20260406T032350Z-validation/native/charts-sec/work/charts-sec")
+val uiFixtureGenerator = file("../../scripts/generate_content_fixture.py")
 
 val buildRustX86_64Android by tasks.registering(Exec::class) {
     workingDir = rustProjectDir
@@ -33,6 +36,18 @@ val copyRustX86_64Library by tasks.registering(Copy::class) {
     from(File(rustProjectDir, "target/$rustTarget/debug/libapp_ffi.so"))
     into(rustOutputAbiDir)
     rename { "libapp_ffi.so" }
+}
+
+val generatePrototypeFixture by tasks.registering(Exec::class) {
+    workingDir = rootDir.parentFile.parentFile
+    commandLine("python3", uiFixtureGenerator.absolutePath)
+}
+
+val stagePrototypeSectionalPackages by tasks.registering(Copy::class) {
+    dependsOn(generatePrototypeFixture)
+    from(File(sectionalPackageRunDir, "NW_SEC.zip"))
+    from(File(sectionalPackageRunDir, "SW_SEC.zip"))
+    into(generatedPrototypeAssetsDir.map { it.dir("sectional-packages") })
 }
 
 android {
@@ -73,6 +88,7 @@ android {
         compose = true
     }
     sourceSets.getByName("main").jniLibs.srcDir(rustJniLibsDir)
+    sourceSets.getByName("main").assets.srcDir(generatedPrototypeAssetsDir)
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -82,6 +98,8 @@ android {
 
 tasks.named("preBuild") {
     dependsOn(copyRustX86_64Library)
+    dependsOn(generatePrototypeFixture)
+    dependsOn(stagePrototypeSectionalPackages)
 }
 
 dependencies {

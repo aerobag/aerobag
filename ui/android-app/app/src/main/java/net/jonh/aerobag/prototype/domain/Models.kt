@@ -71,6 +71,11 @@ enum class MapChartFamily {
     Tac,
 }
 
+enum class TileStorageKind {
+    AssetTree,
+    SectionalPackage,
+}
+
 data class MapProbe(
     val family: MapChartFamily,
     val lat: Double,
@@ -96,11 +101,21 @@ data class MapView(
     val chartName: String,
     val chartIndex: Int,
     val tileRoot: String,
+    val tileUrlRoot: String,
     val tileSize: Int,
     val minZoom: Double,
     val maxZoom: Double,
+    val storageKind: TileStorageKind,
+    val packageName: String?,
     val initialViewport: MapViewportSeed,
     val levels: List<TileLevelAvailability>,
+)
+
+data class MapViewOption(
+    val id: String,
+    val label: String,
+    val regionId: String,
+    val mapView: MapView,
 )
 
 data class MapTileView(

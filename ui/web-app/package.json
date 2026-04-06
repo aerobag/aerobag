@@ -4,9 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "prepare:fixture": "python3 ../scripts/generate_content_fixture.py",
     "build:wasm": "./scripts/build-wasm.sh",
-    "dev": "npm run build:wasm && vite",
-    "build": "npm run build:wasm && tsc --noEmit && vite build",
+    "dev": "npm run prepare:fixture && npm run build:wasm && vite",
+    "build": "npm run prepare:fixture && npm run build:wasm && tsc --noEmit && vite build",
     "test": "vitest run"
   },
   "dependencies": {

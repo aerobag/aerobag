@@ -129,6 +129,15 @@ enum class WireChartFamilyId {
 }
 
 @Serializable
+enum class WireTileStorageKind {
+    @SerialName("asset_tree")
+    AssetTree,
+
+    @SerialName("sectional_package")
+    SectionalPackage,
+}
+
+@Serializable
 enum class WireRegionId {
     @SerialName("ne")
     Ne,
@@ -321,11 +330,22 @@ data class WireMapView(
     val chart_name: String,
     val chart_index: Int,
     val tile_root: String,
+    val tile_url_root: String,
     val tile_size: Int,
     val min_zoom: Double,
     val max_zoom: Double,
+    val storage_kind: WireTileStorageKind,
+    val package_name: String? = null,
     val initial_viewport: WireMapViewportSeed,
     val levels: List<WireTileLevelAvailability>,
+)
+
+@Serializable
+data class WireMapViewOption(
+    val id: String,
+    val label: String,
+    val region_id: WireRegionId,
+    val map_view: WireMapView,
 )
 
 @Serializable

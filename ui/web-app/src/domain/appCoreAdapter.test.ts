@@ -1,6 +1,48 @@
 import { describe, expect, it } from "vitest";
 import { loadBestAvailableAdapter, MockAppCoreAdapter } from "./appCoreAdapter";
-import { sampleCatalog, sampleGeometry, initialProbe } from "./sampleData";
+import type { CatalogJson } from "./types";
+
+const chartCatalog: CatalogJson = {
+  schema_version: 1,
+  cycle: "2026-04-16",
+  catalog_revision: "test",
+  families: [],
+  regions: [],
+  packages: [],
+  charts: [
+    {
+      id: { family: "tac", name: "Boston TAC", cycle: "2026-04-16" },
+      family_id: "tac",
+      name: "Boston TAC",
+      display_name: "Boston TAC",
+      cycle: "2026-04-16",
+      region_ids: ["ne"],
+      max_zoom: 11,
+      tile_path_template: "tiles/1/{z}/{x}/{y}.webp",
+      coverage: {
+        kind: "polygon_ref",
+        value: { polygon_id: "tac:boston" },
+      },
+    },
+  ],
+  plates: [],
+  supplements: [],
+};
+
+const geometry = {
+  polygons: [
+    {
+      id: "tac:boston",
+      points: [
+        [-71.2, 42.2],
+        [-70.8, 42.2],
+        [-70.8, 42.5],
+        [-71.2, 42.5],
+        [-71.2, 42.2],
+      ],
+    },
+  ],
+};
 
 describe("loadBestAvailableAdapter", () => {
   it("falls back to the mock adapter when the generated wasm module is missing", async () => {
@@ -24,14 +66,14 @@ describe("loadBestAvailableAdapter", () => {
     expect(loaded.detail).toContain("Rust WASM");
   });
 
-  it("mock chart lookup finds the generated Boston TAC for the initial probe", async () => {
+  it("mock chart lookup finds the configured TAC polygon", async () => {
     const adapter = new MockAppCoreAdapter();
     const chart = await adapter.chartForPosition(
-      sampleCatalog,
-      sampleGeometry,
-      initialProbe.family,
-      initialProbe.lat,
-      initialProbe.lon,
+      chartCatalog,
+      geometry,
+      "tac",
+      42.35,
+      -71.0,
     );
 
     expect(chart?.display_name).toBe("Boston TAC");

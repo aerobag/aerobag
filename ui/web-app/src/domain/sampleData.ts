@@ -6,7 +6,16 @@ const contentFixture = fixture as ContentFixtureBundle;
 export const sampleCatalog = contentFixture.catalog;
 export const sampleGeometry = contentFixture.geometry;
 export const initialProbe = contentFixture.initial_probe;
-export const mapView = contentFixture.map_view;
+export const mapViews =
+  contentFixture.map_views ?? [
+    {
+      id: "default",
+      label: contentFixture.map_view.chart_name,
+      region_id: "nw",
+      map_view: contentFixture.map_view,
+    },
+  ];
+export const mapView = mapViews[0].map_view;
 export const mapTileView = contentFixture.map_tile_view;
 export const samplePlan = contentFixture.flight_plan;
 export const remoteOnlyInventory = contentFixture.remote_only_inventory;

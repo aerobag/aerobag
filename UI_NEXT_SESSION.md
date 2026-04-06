@@ -64,7 +64,7 @@ Important files:
 
 What it does now:
 - renders a full-page tiled `Map` explorer surface
-- uses real TAC tile output copied from the preprocessor runs
+- uses real sectional packages for `NW` and `SW`, sourced from the preprocessor outputs
 - supports:
   - drag pan
   - wheel zoom
@@ -72,11 +72,17 @@ What it does now:
 - uses continuous `lat/lon/zoom` viewport math instead of the old embedded fixed viewport
 - no longer shows the old floating `+` / `-` zoom buttons
 - still uses the shared Rust/WASM seam for chart lookup and shared data contracts
+- offers real package switching between `NW Sectional` and `SW Sectional`
+- serves extracted sectional tiles from:
+  - [ui/web-app/public/sectional-packages](/root/aerobag/ui/web-app/public/sectional-packages)
 
 Operational note:
 - [ui/web-app/vite.config.ts](/root/aerobag/ui/web-app/vite.config.ts) allows host `aerobag-dev.iac.jonh.net` so the Vite dev server can be opened through the remote browser path already in use
 - [ui/web-app/scripts/build-wasm.sh](/root/aerobag/ui/web-app/scripts/build-wasm.sh) now builds `app-wasm` and generates browser bindings into `public/generated`
-- [ui/web-app/package.json](/root/aerobag/ui/web-app/package.json) runs that generation step from both `npm run dev` and `npm run build`
+- [ui/web-app/package.json](/root/aerobag/ui/web-app/package.json) now runs:
+  - fixture/package generation
+  - WASM generation
+  from both `npm run dev` and `npm run build`
 
 ### Android prototype
 
@@ -98,7 +104,10 @@ Important files:
 
 What it does now:
 - renders a full-page tiled `Map` explorer surface in Compose
-- uses the same real TAC tile bundle and viewport model as the web side
+- uses the same shared map-view metadata as the web side
+- stages `NW_SEC.zip` and `SW_SEC.zip` from the real preprocessor run into generated APK assets during build
+- installs the selected sectional zip into app-local storage on demand
+- reads rendered tiles directly from the installed zip in app-local storage
 - supports:
   - drag pan
   - pinch zoom in app logic
@@ -111,6 +120,8 @@ What it does now:
   - JSON/wire-format knowledge like the required `content_policy` field and Rust-style `NavRef` enum shape
   - viewport math invariants like anchored zoom and pinch-anchor preservation
 - Android tile rendering is now done as a single `Canvas` draw pass to avoid seams between tiles at high zoom
+- package-install runtime logic lives in:
+  - [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SectionalPackages.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SectionalPackages.kt)
 
 ## Verified Commands
 
@@ -137,6 +148,7 @@ Coverage currently includes:
 - fixture round-trip tests
 - WASM JSON boundary tests
 - viewport math tests on web and Android
+- Android tile-path tests for package-backed zip loading
 
 ### Web prototype
 
@@ -180,6 +192,7 @@ cd /root/aerobag/ui/android-app
 
 Last known result:
 - passed
+- the build now auto-runs [generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py) and stages `NW_SEC.zip` / `SW_SEC.zip`
 
 Install / run on emulator:
 

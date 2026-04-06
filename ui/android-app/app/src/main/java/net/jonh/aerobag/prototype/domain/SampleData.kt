@@ -11,6 +11,7 @@ data class ContentFixture(
     val catalogJson: String,
     val geometryJson: String,
     val mapView: MapView,
+    val mapViews: List<MapViewOption>,
     val initialProbe: MapProbe,
     val mapTileView: MapTileView,
     val samplePlan: FlightPlan,
@@ -23,6 +24,7 @@ private data class WireContentFixture(
     val catalog: WireCatalog,
     val geometry: WireGeometryBundle,
     val map_view: WireMapView,
+    val map_views: List<WireMapViewOption> = emptyList(),
     val initial_probe: WireInitialProbe,
     val map_tile_view: WireMapTileView,
     val flight_plan: WireFlightPlan,
@@ -47,6 +49,16 @@ object SampleData {
             catalogJson = fixtureElement.getValue("catalog").toString(),
             geometryJson = fixtureElement.getValue("geometry").toString(),
             mapView = fixture.map_view.toUi(),
+            mapViews = fixture.map_views.map { it.toUi() }.ifEmpty {
+                listOf(
+                    MapViewOption(
+                        id = "default",
+                        label = fixture.map_view.chart_name,
+                        regionId = "nw",
+                        mapView = fixture.map_view.toUi(),
+                    ),
+                )
+            },
             initialProbe = fixture.initial_probe.toUi(),
             mapTileView = fixture.map_tile_view.toUi(),
             samplePlan = fixture.flight_plan.toUiFlightPlan(),
@@ -64,9 +76,15 @@ private fun WireMapView.toUi() = MapView(
     chartName = chart_name,
     chartIndex = chart_index,
     tileRoot = tile_root,
+    tileUrlRoot = tile_url_root,
     tileSize = tile_size,
     minZoom = min_zoom,
     maxZoom = max_zoom,
+    storageKind = when (storage_kind) {
+        WireTileStorageKind.AssetTree -> TileStorageKind.AssetTree
+        WireTileStorageKind.SectionalPackage -> TileStorageKind.SectionalPackage
+    },
+    packageName = package_name,
     initialViewport = MapViewportSeed(
         lat = initial_viewport.lat,
         lon = initial_viewport.lon,
@@ -81,6 +99,23 @@ private fun WireMapView.toUi() = MapView(
             yTmsMax = it.y_tms_max,
         )
     },
+)
+
+private fun WireMapViewOption.toUi() = MapViewOption(
+    id = id,
+    label = label,
+    regionId = when (region_id) {
+        WireRegionId.Ne -> "ne"
+        WireRegionId.Nc -> "nc"
+        WireRegionId.Nw -> "nw"
+        WireRegionId.Se -> "se"
+        WireRegionId.Sc -> "sc"
+        WireRegionId.Sw -> "sw"
+        WireRegionId.Ec -> "ec"
+        WireRegionId.Ak -> "ak"
+        WireRegionId.Pac -> "pac"
+    },
+    mapView = map_view.toUi(),
 )
 
 private fun WireInitialProbe.toUi() = MapProbe(

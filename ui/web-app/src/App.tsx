@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { mapView } from "./domain/sampleData";
+import { mapViews } from "./domain/sampleData";
 import {
   applyPinchGesture,
   createInitialViewport,
@@ -19,16 +19,30 @@ type SurfaceSize = {
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const viewportRef = useRef<MapViewportState>(createInitialViewport(mapView));
+  const [selectedMapId, setSelectedMapId] = useState<string>(mapViews[0].id);
+  const selectedMap = useMemo(
+    () => mapViews.find((view) => view.id === selectedMapId) ?? mapViews[0],
+    [selectedMapId],
+  );
+  const viewportRef = useRef<MapViewportState>(createInitialViewport(selectedMap.map_view));
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<ReturnType<typeof createPinchSnapshot> | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
-  const [viewport, setViewport] = useState<MapViewportState>(() => createInitialViewport(mapView));
+  const [viewport, setViewport] = useState<MapViewportState>(() => createInitialViewport(selectedMap.map_view));
 
   useEffect(() => {
     viewportRef.current = viewport;
   }, [viewport]);
+
+  useEffect(() => {
+    const nextViewport = createInitialViewport(selectedMap.map_view);
+    viewportRef.current = nextViewport;
+    setViewport(nextViewport);
+    activePointersRef.current.clear();
+    dragRef.current = null;
+    pinchRef.current = null;
+  }, [selectedMap]);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -53,8 +67,8 @@ export default function App() {
     if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return [];
     }
-    return renderTiles(mapView, viewport, surfaceSize.width, surfaceSize.height);
-  }, [surfaceSize, viewport]);
+    return renderTiles(selectedMap.map_view, viewport, surfaceSize.width, surfaceSize.height);
+  }, [selectedMap, surfaceSize, viewport]);
 
   function updateViewport(next: MapViewportState) {
     viewportRef.current = next;
@@ -70,11 +84,11 @@ export default function App() {
       pinchRef.current = null;
     } else if (activePointersRef.current.size >= 2 && surfaceSize.width > 0 && surfaceSize.height > 0) {
       const [first, second] = Array.from(activePointersRef.current.values());
-      pinchRef.current = createPinchSnapshot(
-        viewportRef.current,
-        first,
-        second,
-        surfaceSize.width,
+          pinchRef.current = createPinchSnapshot(
+            viewportRef.current,
+            first,
+            second,
+            surfaceSize.width,
         surfaceSize.height,
       );
       dragRef.current = null;
@@ -101,11 +115,11 @@ export default function App() {
     if (pointers.length >= 2) {
       const [first, second] = pointers;
       if (!pinchRef.current) {
-        pinchRef.current = createPinchSnapshot(
-          viewportRef.current,
-          first[1],
-          second[1],
-          surfaceSize.width,
+          pinchRef.current = createPinchSnapshot(
+            viewportRef.current,
+            first[1],
+            second[1],
+            surfaceSize.width,
           surfaceSize.height,
         );
       }
@@ -114,7 +128,7 @@ export default function App() {
           pinchRef.current,
           first[1],
           second[1],
-          mapView,
+          selectedMap.map_view,
           surfaceSize.width,
           surfaceSize.height,
         ),
@@ -142,7 +156,7 @@ export default function App() {
     updateViewport(
       zoomAroundPoint(
         viewport,
-        mapView,
+        selectedMap.map_view,
         { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY },
         surfaceSize.width,
         surfaceSize.height,
@@ -182,10 +196,22 @@ export default function App() {
 
         <section className="hud hudTop">
           <p className="eyebrow">Aerobag</p>
-          <h1>{mapView.chart_name}</h1>
+          <h1>{selectedMap.map_view.chart_name}</h1>
           <p className="lede">
-            Drag to pan. Wheel or pinch to zoom. The surface is driven by lat, lon, and continuous zoom over the tiled chart.
+            Drag to pan. Wheel or pinch to zoom. Web streams the unpacked sectional tiles on demand; Android installs the package locally.
           </p>
+          <div className="selectorRow" role="tablist" aria-label="Chart package">
+            {mapViews.map((mapOption) => (
+              <button
+                key={mapOption.id}
+                type="button"
+                className={`selectorButton${mapOption.id === selectedMap.id ? " isActive" : ""}`}
+                onClick={() => setSelectedMapId(mapOption.id)}
+              >
+                {mapOption.label}
+              </button>
+            ))}
+          </div>
         </section>
 
         <section className="hud hudBottom">

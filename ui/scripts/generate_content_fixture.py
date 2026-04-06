@@ -4,7 +4,10 @@ from __future__ import annotations
 import json
 import math
 import shutil
+import zipfile
+from dataclasses import dataclass
 from pathlib import Path
+
 from osgeo import osr
 
 
@@ -16,8 +19,10 @@ ANDROID_OUT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "fixt
 CANONICAL_TILE_ROOT = UI_DIR / "shared-fixtures" / "content-prototype" / "tiles"
 WEB_TILE_ROOT = UI_DIR / "web-app" / "public" / "prototype-tiles"
 ANDROID_TILE_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "tiles"
+WEB_SECTIONAL_ROOT = UI_DIR / "web-app" / "public" / "sectional-packages"
 
-SEC_PACKAGE_OUTPUTS = ROOT / "rust-runs" / "sec-20260405T1619Z" / "work" / "rust-runs" / "sec-20260405T1619Z" / "meta" / "provenance" / "charts-sec" / "package_outputs.jsonl"
+SEC_PACKAGE_OUTPUTS = ROOT / "runs" / "20260406T032350Z-validation" / "native" / "charts-sec" / "meta" / "provenance" / "charts-sec" / "package_outputs.jsonl"
+SEC_PACKAGE_DIR = ROOT / "runs" / "20260406T032350Z-validation" / "native" / "charts-sec" / "work" / "charts-sec"
 TPP_PLATES_DIR = ROOT / "runs" / "20260405T154700Z-tpp-retry" / "work" / "tpp-ne" / "plates" / "BOS"
 BOSTON_TAC_GEOJSON = ROOT / "rust-runs" / "tac-native" / "work" / "charts-tac" / "TAC" / "Boston TAC.geojson"
 BOSTON_TAC_TILE_ROOT = ROOT / "runs" / "20260406T003224Z-validation" / "native" / "charts-tac" / "work" / "charts-tac" / "tiles" / "1"
@@ -34,6 +39,7 @@ REGION_DISPLAY_NAMES = {
     "ak": "Alaska",
     "pac": "Pacific",
 }
+SECTIONAL_REGIONS = ["nw", "sw"]
 
 WEB_MERCATOR = osr.SpatialReference()
 WEB_MERCATOR.ImportFromEPSG(3857)
@@ -43,10 +49,18 @@ WEB_MERCATOR.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 WGS84.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 TO_WGS84 = osr.CoordinateTransformation(WEB_MERCATOR, WGS84)
 TILE_SIZE = 256
-TILE_LEVELS = {
+TAC_TILE_LEVELS = {
     9: 6,
     10: 10,
 }
+
+
+@dataclass(frozen=True)
+class SectionalPackage:
+    manifest: str
+    region: str
+    zip_name: str
+    zip_sha256: str
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -88,15 +102,15 @@ def tile_paths(center_x: int, center_y_tms: int, radius: int) -> list[tuple[int,
     return paths
 
 
-def clear_tile_roots() -> None:
+def clear_tac_tile_roots() -> None:
     for destination_root in [CANONICAL_TILE_ROOT, WEB_TILE_ROOT, ANDROID_TILE_ROOT]:
         target_root = destination_root / "charts-tac" / "1"
         if target_root.exists():
             shutil.rmtree(target_root)
 
 
-def copy_tile_subset(tile_windows: dict[int, tuple[int, int, int]]) -> list[dict]:
-    clear_tile_roots()
+def copy_tac_tile_subset(tile_windows: dict[int, tuple[int, int, int]]) -> list[dict]:
+    clear_tac_tile_roots()
     levels = []
     for zoom, (center_x, center_y_tms, radius) in tile_windows.items():
         tile_pairs = tile_paths(center_x, center_y_tms, radius)
@@ -145,16 +159,131 @@ def pick_bos_plate() -> tuple[str, str, str]:
     return procedure_code, procedure_name, asset_base_path
 
 
+def load_selected_sectional_packages() -> list[SectionalPackage]:
+    selected = []
+    for entry in load_jsonl(SEC_PACKAGE_OUTPUTS):
+        region = entry["region"].lower()
+        if region not in SECTIONAL_REGIONS:
+            continue
+        selected.append(
+            SectionalPackage(
+                manifest=entry["manifest"],
+                region=region,
+                zip_name=entry["zip"],
+                zip_sha256=entry["zip_sha256"],
+            )
+        )
+    selected.sort(key=lambda package: SECTIONAL_REGIONS.index(package.region))
+    if len(selected) != len(SECTIONAL_REGIONS):
+        raise RuntimeError(f"expected {SECTIONAL_REGIONS}, got {[package.region for package in selected]}")
+    return selected
+
+
+def clear_sectional_web_root() -> None:
+    if WEB_SECTIONAL_ROOT.exists():
+        shutil.rmtree(WEB_SECTIONAL_ROOT)
+
+
+def extract_zip_for_web(package: SectionalPackage) -> None:
+    zip_path = SEC_PACKAGE_DIR / package.zip_name
+    target_dir = WEB_SECTIONAL_ROOT / package.manifest
+    target_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as archive:
+        archive.extractall(target_dir)
+
+
+def compute_level_bounds_from_zip(package: SectionalPackage, chart_index: int = 0) -> list[dict]:
+    zip_path = SEC_PACKAGE_DIR / package.zip_name
+    zoom_levels: dict[int, dict[str, list[int]]] = {}
+    with zipfile.ZipFile(zip_path) as archive:
+        for name in archive.namelist():
+            parts = name.split("/")
+            if len(parts) != 5 or parts[0] != "tiles" or parts[1] != str(chart_index) or not parts[-1].endswith(".webp"):
+                continue
+            zoom = int(parts[2])
+            x = int(parts[3])
+            y_tms = int(parts[4].removesuffix(".webp"))
+            zoom_levels.setdefault(zoom, {"x": [], "y": []})
+            zoom_levels[zoom]["x"].append(x)
+            zoom_levels[zoom]["y"].append(y_tms)
+
+    return [
+        {
+            "zoom": zoom,
+            "x_min": min(values["x"]),
+            "x_max": max(values["x"]),
+            "y_tms_min": min(values["y"]),
+            "y_tms_max": max(values["y"]),
+        }
+        for zoom, values in sorted(zoom_levels.items())
+    ]
+
+
+def inverse_web_mercator(world_x: float, world_y: float) -> tuple[float, float]:
+    lon = (world_x / TILE_SIZE) * 360.0 - 180.0
+    n = math.pi - (2.0 * math.pi * world_y) / TILE_SIZE
+    lat = math.degrees(math.atan(math.sinh(n)))
+    return lat, lon
+
+
+def center_lat_lon_for_levels(levels: list[dict]) -> tuple[float, float]:
+    level = max(levels, key=lambda item: item["zoom"])
+    scale = 2 ** level["zoom"]
+    y_xyz_min = (scale - 1) - level["y_tms_max"]
+    y_xyz_max = (scale - 1) - level["y_tms_min"]
+    tile_world_size = TILE_SIZE / scale
+    world_x = ((level["x_min"] + level["x_max"] + 1) / 2.0) * tile_world_size
+    world_y = ((y_xyz_min + y_xyz_max + 1) / 2.0) * tile_world_size
+    return inverse_web_mercator(world_x, world_y)
+
+
+def build_sectional_map_option(package: SectionalPackage) -> dict:
+    levels = compute_level_bounds_from_zip(package)
+    center_lat, center_lon = center_lat_lon_for_levels(levels)
+    label = f"{package.region.upper()} Sectional"
+    return {
+        "id": f"sectional:{package.region}",
+        "label": label,
+        "region_id": package.region,
+        "map_view": {
+            "chart_family": "sectional",
+            "chart_name": label,
+            "chart_index": 0,
+            "tile_root": "tiles",
+            "tile_url_root": f"/sectional-packages/{package.manifest}/tiles",
+            "tile_size": TILE_SIZE,
+            "min_zoom": 4.2,
+            "max_zoom": 10.8,
+            "storage_kind": "sectional_package",
+            "package_name": package.manifest,
+            "initial_viewport": {
+                "lat": center_lat,
+                "lon": center_lon,
+                "zoom": 7.2,
+            },
+            "levels": levels,
+        },
+    }
+
+
 def build_fixture() -> dict:
     sec_outputs = load_jsonl(SEC_PACKAGE_OUTPUTS)
     cycle = "2026-04-16"
     boston_tac_polygon = load_wgs84_polygon(BOSTON_TAC_GEOJSON)
     probe_lat, probe_lon = bounds_center(boston_tac_polygon)
     tile_windows = {}
-    for zoom, radius in TILE_LEVELS.items():
+    for zoom, radius in TAC_TILE_LEVELS.items():
         center_x, _center_y_xyz, center_y_tms, _offset_x, _offset_y = web_mercator_tile(probe_lat, probe_lon, zoom)
         tile_windows[zoom] = (center_x, center_y_tms, radius)
-    level_bounds = copy_tile_subset(tile_windows)
+    tac_level_bounds = copy_tac_tile_subset(tile_windows)
+
+    selected_sectional_packages = load_selected_sectional_packages()
+    clear_sectional_web_root()
+    for package in selected_sectional_packages:
+        extract_zip_for_web(package)
+    sectional_map_views = [build_sectional_map_option(package) for package in selected_sectional_packages]
+    default_sectional_view = sectional_map_views[0]["map_view"]
+    default_sectional_level = max(default_sectional_view["levels"], key=lambda item: item["zoom"])
 
     packages = []
     regions_seen = set()
@@ -176,7 +305,7 @@ def build_fixture() -> dict:
                 "artifact_kind": "zip",
                 "relative_url": f"/{cycle}/{entry['zip']}",
                 "manifest_name": package_name,
-                "size_bytes": None,
+                "size_bytes": (SEC_PACKAGE_DIR / entry["zip"]).stat().st_size,
                 "checksum_sha256": entry["zip_sha256"],
             }
         )
@@ -270,42 +399,29 @@ def build_fixture() -> dict:
                 }
             ],
         },
-        "map_view": {
-            "chart_family": "tac",
-            "chart_name": "Boston TAC",
-            "chart_index": 1,
-            "tile_root": "charts-tac",
-            "tile_size": TILE_SIZE,
-            "min_zoom": 8.6,
-            "max_zoom": 10.8,
-            "initial_viewport": {
-                "lat": probe_lat,
-                "lon": probe_lon,
-                "zoom": 9.6,
-            },
-            "levels": level_bounds,
-        },
+        "map_view": default_sectional_view,
+        "map_views": sectional_map_views,
         "initial_probe": {
             "family": "tac",
-            "lat": probe_lat,
-            "lon": probe_lon,
+            "lat": 42.3656,
+            "lon": -71.0096,
         },
         "map_tile_view": {
-            "chart_family": "tac",
-            "chart_name": "Boston TAC",
-            "chart_index": 1,
-            "tile_root": "charts-tac",
-            "zoom": 10,
+            "chart_family": "sectional",
+            "chart_name": default_sectional_view["chart_name"],
+            "chart_index": default_sectional_view["chart_index"],
+            "tile_root": default_sectional_view["tile_root"],
+            "zoom": default_sectional_level["zoom"],
             "tile_size": TILE_SIZE,
-            "radius": TILE_LEVELS[10],
-            "center_x": tile_windows[10][0],
-            "center_y_tms": tile_windows[10][1],
+            "radius": 0,
+            "center_x": (default_sectional_level["x_min"] + default_sectional_level["x_max"]) // 2,
+            "center_y_tms": (default_sectional_level["y_tms_min"] + default_sectional_level["y_tms_max"]) // 2,
             "probe_offset_x": 0.0,
             "probe_offset_y": 0.0,
         },
         "flight_plan": {
             "id": "plan-1",
-            "name": "BOS local",
+            "name": "NW sectional prototype",
             "legs": [
                 {
                     "from": {"Airport": "BOS"},
@@ -317,7 +433,7 @@ def build_fixture() -> dict:
             "destination": "BOS",
             "alternate": None,
             "cruise_altitude_ft": 3000,
-            "notes": "Generated from preprocessor outputs",
+            "notes": "Generated from sectional package outputs",
             "updated_at_epoch_ms": 0,
             "version": 1,
         },
@@ -330,7 +446,7 @@ def build_fixture() -> dict:
             "installed_packages": [
                 {
                     "package_id": {
-                        "region": "ne",
+                        "region": selected_sectional_packages[0].region,
                         "family": "sectional",
                         "cycle": cycle,
                     },
@@ -339,6 +455,13 @@ def build_fixture() -> dict:
             ],
             "cached_tilesets": [],
             "cached_plates": [],
+        },
+        "tac_demo": {
+            "chart_name": "Boston TAC",
+            "tile_root": "charts-tac",
+            "tile_url_root": "/prototype-tiles/charts-tac",
+            "chart_index": 1,
+            "levels": tac_level_bounds,
         },
     }
 

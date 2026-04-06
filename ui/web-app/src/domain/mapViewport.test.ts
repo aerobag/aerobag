@@ -45,13 +45,13 @@ describe("mapViewport", () => {
     expect(secondWorldAfter.y).toBeCloseTo(snapshot.anchorTwoWorld.y, 8);
   });
 
-  it("initial viewport renders real TAC tiles and round-trips its center lat/lon", () => {
+  it("initial viewport renders real package tiles and round-trips its center lat/lon", () => {
     const viewport = createInitialViewport(mapView);
     const tiles = renderTiles(mapView, viewport, 1200, 900);
     const center = viewportCenterLatLon(viewport);
 
     expect(tiles.length).toBeGreaterThan(0);
-    expect(tiles.some((tile) => tile.zoom === 10)).toBe(true);
+    expect(tiles.every((tile) => tile.src.startsWith(mapView.tile_url_root))).toBe(true);
     expect(center.lat).toBeCloseTo(mapView.initial_viewport.lat, 3);
     expect(center.lon).toBeCloseTo(mapView.initial_viewport.lon, 3);
   });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { loadBestAvailableAdapter } from "./appCoreAdapter";
+import { loadBestAvailableAdapter, MockAppCoreAdapter } from "./appCoreAdapter";
+import { sampleCatalog, sampleGeometry, initialProbe } from "./sampleData";
 
 describe("loadBestAvailableAdapter", () => {
   it("falls back to the mock adapter when the generated wasm module is missing", async () => {
@@ -16,9 +17,23 @@ describe("loadBestAvailableAdapter", () => {
       replace_flight_plan_state: async (stateJson: string) => stateJson,
       set_content_policy_state: async (stateJson: string) => stateJson,
       refresh_content_state: async (stateJson: string) => stateJson,
+      chart_for_position: async () => "null",
     }));
 
     expect(loaded.backend).toBe("wasm");
     expect(loaded.detail).toContain("Rust WASM");
+  });
+
+  it("mock chart lookup finds the generated Boston TAC for the initial probe", async () => {
+    const adapter = new MockAppCoreAdapter();
+    const chart = await adapter.chartForPosition(
+      sampleCatalog,
+      sampleGeometry,
+      initialProbe.family,
+      initialProbe.lat,
+      initialProbe.lon,
+    );
+
+    expect(chart?.display_name).toBe("Boston TAC");
   });
 });

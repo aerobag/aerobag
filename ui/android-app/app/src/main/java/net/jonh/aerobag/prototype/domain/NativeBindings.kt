@@ -18,6 +18,14 @@ interface NativeBridge {
         catalogJson: String,
         inventoryJson: String,
     ): String
+
+    fun chartForPositionJson(
+        catalogJson: String,
+        geometryJson: String,
+        familyJson: String,
+        lat: Double,
+        lon: Double,
+    ): String
 }
 
 object NativeBindings : NativeBridge {
@@ -41,5 +49,13 @@ object NativeBindings : NativeBridge {
         stateJson: String,
         catalogJson: String,
         inventoryJson: String,
+    ): String
+
+    external override fun chartForPositionJson(
+        catalogJson: String,
+        geometryJson: String,
+        familyJson: String,
+        lat: Double,
+        lon: Double,
     ): String
 }

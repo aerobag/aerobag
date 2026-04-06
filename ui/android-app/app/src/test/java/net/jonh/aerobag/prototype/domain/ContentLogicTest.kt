@@ -1,6 +1,7 @@
 package net.jonh.aerobag.prototype.domain
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.serialization.encodeToString
@@ -122,6 +123,81 @@ class ContentLogicTest {
 
         assertEquals(""""RemoteOnly"""", encoded)
     }
+
+    @Test
+    fun mockMapLookupFindsBostonTacAtInitialProbe() {
+        val adapter = MockMapLookupAdapter(json)
+
+        val chart = adapter.chartForPosition(
+            catalogJson = SampleMapFixture.catalogJson,
+            geometryJson = SampleMapFixture.geometryJson,
+            family = SampleMapFixture.initialProbe.family,
+            lat = SampleMapFixture.initialProbe.lat,
+            lon = SampleMapFixture.initialProbe.lon,
+        )
+
+        assertEquals("Boston TAC", chart?.displayName)
+    }
+
+    @Test
+    fun mockMapLookupReturnsNullOutsideCoverage() {
+        val adapter = MockMapLookupAdapter(json)
+
+        val chart = adapter.chartForPosition(
+            catalogJson = SampleMapFixture.catalogJson,
+            geometryJson = SampleMapFixture.geometryJson,
+            family = SampleMapFixture.initialProbe.family,
+            lat = SampleMapFixture.initialProbe.lat + 4.0,
+            lon = SampleMapFixture.initialProbe.lon + 4.0,
+        )
+
+        assertNull(chart)
+    }
+
+    @Test
+    fun tileViewportBuildsCenteredTmsGrid() {
+        val cells = tileCells(
+            MapTileView(
+                chartFamily = MapChartFamily.Tac,
+                chartName = "Boston TAC",
+                chartIndex = 1,
+                tileRoot = "charts-tac",
+                zoom = 10,
+                tileSize = 256,
+                radius = 1,
+                centerX = 310,
+                centerYTms = 644,
+                probeOffsetX = 0.18,
+                probeOffsetY = 0.20,
+            ),
+        )
+
+        assertEquals(MapTileCell(309, 645), cells.first())
+        assertEquals(MapTileCell(310, 644), cells[4])
+        assertEquals(MapTileCell(311, 643), cells.last())
+    }
+
+    @Test
+    fun tileAssetPathMatchesCopiedPrototypeTileLayout() {
+        val path = tileAssetPath(
+            MapTileView(
+                chartFamily = MapChartFamily.Tac,
+                chartName = "Boston TAC",
+                chartIndex = 1,
+                tileRoot = "charts-tac",
+                zoom = 10,
+                tileSize = 256,
+                radius = 1,
+                centerX = 310,
+                centerYTms = 644,
+                probeOffsetX = 0.18,
+                probeOffsetY = 0.20,
+            ),
+            MapTileCell(310, 644),
+        )
+
+        assertEquals("tiles/charts-tac/1/10/310/644.webp", path)
+    }
 }
 
 private object SampleDataFixture {
@@ -182,6 +258,90 @@ private object SampleDataFixture {
     )
 }
 
+private object SampleMapFixture {
+    val catalogJson =
+        """
+        {
+          "schema_version": 1,
+          "cycle": "2026-04-16",
+          "catalog_revision": "2026-04-06T00:00:00Z",
+          "families": [
+            {
+              "id": "sectional",
+              "display_name": "VFR Sectional Charts",
+              "kind": "tiled_raster",
+              "max_zoom": 10,
+              "tile_size": 512
+            },
+            {
+              "id": "tac",
+              "display_name": "Terminal Area Charts",
+              "kind": "tiled_raster",
+              "max_zoom": 11,
+              "tile_size": 512
+            }
+          ],
+          "regions": [
+            {
+              "id": "ne",
+              "display_name": "Northeast",
+              "sort_order": 0
+            }
+          ],
+          "packages": [],
+          "charts": [
+            {
+              "id": {
+                "family": "tac",
+                "name": "Boston TAC",
+                "cycle": "2026-04-16"
+              },
+              "family_id": "tac",
+              "name": "Boston TAC",
+              "display_name": "Boston TAC",
+              "cycle": "2026-04-16",
+              "region_ids": ["ne"],
+              "max_zoom": 11,
+              "tile_path_template": "tiles/charts-tac/boston/{z}/{x}/{y}",
+              "coverage": {
+                "kind": "polygon_ref",
+                "value": {
+                  "polygon_id": "tac:boston"
+                }
+              }
+            }
+          ],
+          "plates": [],
+          "supplements": []
+        }
+        """.trimIndent()
+
+    val geometryJson =
+        """
+        {
+          "schema_version": 1,
+          "polygons": [
+            {
+              "id": "tac:boston",
+              "points": [
+                [-72.0, 41.0],
+                [-70.0, 41.0],
+                [-70.0, 43.0],
+                [-72.0, 43.0],
+                [-72.0, 41.0]
+              ]
+            }
+          ]
+        }
+        """.trimIndent()
+
+    val initialProbe = MapProbe(
+        family = MapChartFamily.Tac,
+        lat = 42.0,
+        lon = -71.0,
+    )
+}
+
 private class FakeNativeBridge(
     private val json: Json,
 ) : NativeBridge {
@@ -217,6 +377,44 @@ private class FakeNativeBridge(
         val inventory = json.decodeFromString<WireContentInventory>(inventoryJson).toUiForTesting()
         return json.encodeToString(mock.refreshContent(state, inventory).toWireForTesting())
     }
+
+    override fun chartForPositionJson(
+        catalogJson: String,
+        geometryJson: String,
+        familyJson: String,
+        lat: Double,
+        lon: Double,
+    ): String {
+        val family = when (json.decodeFromString<WireChartFamilyId>(familyJson)) {
+            WireChartFamilyId.Sectional -> MapChartFamily.Sectional
+            WireChartFamilyId.Tac -> MapChartFamily.Tac
+        }
+        val chart = MockMapLookupAdapter(json).chartForPosition(
+            catalogJson = catalogJson,
+            geometryJson = geometryJson,
+            family = family,
+            lat = lat,
+            lon = lon,
+        )
+        return chart?.let {
+            json.encodeToString(
+                WireChartRecord(
+                    id = WireChartId(
+                        family = family.toWireFamilyForTesting(),
+                        name = it.name,
+                        cycle = "2026-04-16",
+                    ),
+                    family_id = family.toWireFamilyForTesting(),
+                    name = it.name,
+                    display_name = it.displayName,
+                    cycle = "2026-04-16",
+                    region_ids = listOf(WireRegionId.Ne),
+                    max_zoom = 11,
+                    tile_path_template = "tiles/charts-tac/boston/{z}/{x}/{y}",
+                ),
+            )
+        } ?: "null"
+    }
 }
 
 private fun WireContentPolicy.toUi() = when (this) {
@@ -249,3 +447,8 @@ private fun WirePackageId.toUiForTesting() = PackageId(
     family = "sectional",
     cycle = cycle,
 )
+
+private fun MapChartFamily.toWireFamilyForTesting() = when (this) {
+    MapChartFamily.Sectional -> WireChartFamilyId.Sectional
+    MapChartFamily.Tac -> WireChartFamilyId.Tac
+}

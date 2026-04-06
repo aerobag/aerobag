@@ -66,6 +66,37 @@ data class Catalog(
     val plates: List<PlateRecord>,
 )
 
+enum class MapChartFamily {
+    Sectional,
+    Tac,
+}
+
+data class MapProbe(
+    val family: MapChartFamily,
+    val lat: Double,
+    val lon: Double,
+)
+
+data class MapTileView(
+    val chartFamily: MapChartFamily,
+    val chartName: String,
+    val chartIndex: Int,
+    val tileRoot: String,
+    val zoom: Int,
+    val tileSize: Int,
+    val radius: Int,
+    val centerX: Int,
+    val centerYTms: Int,
+    val probeOffsetX: Double,
+    val probeOffsetY: Double,
+)
+
+data class ChartLookupResult(
+    val family: MapChartFamily,
+    val name: String,
+    val displayName: String,
+)
+
 data class InstalledPackage(
     val packageId: PackageId,
     val integrityOk: Boolean,

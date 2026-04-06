@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 CORE_DIR="$ROOT_DIR/ui/core-rust"
 WEB_DIR="$ROOT_DIR/ui/web-app"
-OUT_DIR="$WEB_DIR/public/generated"
+OUT_DIR="$WEB_DIR/src/generated"
 
 if command -v wasm-bindgen >/dev/null 2>&1; then
   WASM_BINDGEN_BIN="$(command -v wasm-bindgen)"

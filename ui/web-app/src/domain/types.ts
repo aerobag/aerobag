@@ -64,7 +64,21 @@ export type CatalogJson = {
     size_bytes: number | null;
     checksum_sha256: string | null;
   }>;
-  charts: unknown[];
+  charts: Array<{
+    id: {
+      family: ChartFamilyId;
+      name: string;
+      cycle: string;
+    };
+    family_id: ChartFamilyId;
+    name: string;
+    display_name: string;
+    cycle: string;
+    region_ids: RegionId[];
+    max_zoom: number;
+    tile_path_template: string;
+    coverage: unknown;
+  }>;
   plates: Array<{
     id: {
       airport_id: string;
@@ -127,6 +141,31 @@ export type AppState = {
 
 export type ContentFixtureBundle = {
   catalog: CatalogJson;
+  geometry: {
+    schema_version: number;
+    polygons: Array<{
+      id: string;
+      points: number[][];
+    }>;
+  };
+  initial_probe: {
+    family: ChartFamilyId;
+    lat: number;
+    lon: number;
+  };
+  map_tile_view: {
+    chart_family: ChartFamilyId;
+    chart_name: string;
+    chart_index: number;
+    tile_root: string;
+    zoom: number;
+    tile_size: number;
+    radius: number;
+    center_x: number;
+    center_y_tms: number;
+    probe_offset_x: number;
+    probe_offset_y: number;
+  };
   flight_plan: FlightPlan;
   remote_only_inventory: ContentInventory;
   installed_inventory: ContentInventory;

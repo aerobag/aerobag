@@ -10,6 +10,13 @@
         "kind": "tiled_raster",
         "max_zoom": 10,
         "tile_size": 512
+      },
+      {
+        "id": "tac",
+        "display_name": "Terminal Area Charts",
+        "kind": "tiled_raster",
+        "max_zoom": 11,
+        "tile_size": 512
       }
     ],
     "regions": [
@@ -205,7 +212,30 @@
         "checksum_sha256": "f29518d2a8cc2a45e17901de3f18ba1df44892bb25f64be99eb602b10634a90a"
       }
     ],
-    "charts": [],
+    "charts": [
+      {
+        "id": {
+          "family": "tac",
+          "name": "Boston TAC",
+          "cycle": "2026-04-16"
+        },
+        "family_id": "tac",
+        "name": "Boston TAC",
+        "display_name": "Boston TAC",
+        "cycle": "2026-04-16",
+        "region_ids": [
+          "ne"
+        ],
+        "max_zoom": 11,
+        "tile_path_template": "tiles/1/{z}/{x}/{y}.webp",
+        "coverage": {
+          "kind": "polygon_ref",
+          "value": {
+            "polygon_id": "tac:boston"
+          }
+        }
+      }
+    ],
     "plates": [
       {
         "id": {
@@ -226,6 +256,92 @@
       }
     ],
     "supplements": []
+  },
+  "geometry": {
+    "schema_version": 1,
+    "polygons": [
+      {
+        "id": "tac:boston",
+        "points": [
+          [
+            -71.87625000000001,
+            42.9
+          ],
+          [
+            -69.55863000000001,
+            42.9
+          ],
+          [
+            -69.55863000000001,
+            41.25000000000001
+          ],
+          [
+            -71.87625000000001,
+            41.25000000000001
+          ],
+          [
+            -71.87625000000001,
+            42.9
+          ]
+        ]
+      }
+    ]
+  },
+  "initial_probe": {
+    "family": "tac",
+    "lat": 42.24,
+    "lon": -70.94920200000001
+  },
+  "map_tile_view": {
+    "chart_family": "tac",
+    "chart_name": "Boston TAC",
+    "chart_index": 1,
+    "tile_root": "charts-tac",
+    "zoom": 10,
+    "tile_size": 256,
+    "radius": 1,
+    "center_x": 310,
+    "center_y_tms": 644,
+    "probe_offset_x": 0.1889365333332762,
+    "probe_offset_y": 0.20588652363562687,
+    "available_tiles": [
+      {
+        "x": 309,
+        "y_tms": 645
+      },
+      {
+        "x": 310,
+        "y_tms": 645
+      },
+      {
+        "x": 311,
+        "y_tms": 645
+      },
+      {
+        "x": 309,
+        "y_tms": 644
+      },
+      {
+        "x": 310,
+        "y_tms": 644
+      },
+      {
+        "x": 311,
+        "y_tms": 644
+      },
+      {
+        "x": 309,
+        "y_tms": 643
+      },
+      {
+        "x": 310,
+        "y_tms": 643
+      },
+      {
+        "x": 311,
+        "y_tms": 643
+      }
+    ]
   },
   "flight_plan": {
     "id": "plan-1",

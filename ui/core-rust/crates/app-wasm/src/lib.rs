@@ -40,6 +40,18 @@ pub fn refresh_content_state(
         .map_err(|err| JsValue::from_str(&err))
 }
 
+#[wasm_bindgen]
+pub fn chart_for_position(
+    catalog_json: &str,
+    geometry_json: &str,
+    family_json: &str,
+    lat: f64,
+    lon: f64,
+) -> Result<String, JsValue> {
+    chart_for_position_json(catalog_json, geometry_json, family_json, lat, lon)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
 fn load_catalog_json(catalog_json: &str) -> Result<String, String> {
     let handle =
         app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
@@ -110,6 +122,23 @@ fn refresh_content_state_json(
     serde_json::to_string(&next).map_err(|err| err.to_string())
 }
 
+fn chart_for_position_json(
+    catalog_json: &str,
+    geometry_json: &str,
+    family_json: &str,
+    lat: f64,
+    lon: f64,
+) -> Result<String, String> {
+    let catalog = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
+    let geometry: app_core::GeometryBundle =
+        serde_json::from_str(geometry_json).map_err(|err| err.to_string())?;
+    let family: app_core::ChartFamilyId =
+        serde_json::from_str(family_json).map_err(|err| err.to_string())?;
+    let chart =
+        app_core::chart_for_position(&catalog, &geometry, family, lat, lon).map_err(|err| err.to_string())?;
+    serde_json::to_string(&chart).map_err(|err| err.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,7 +182,28 @@ mod tests {
                     "checksum_sha256": null
                 }
             ],
-            "charts": [],
+            "charts": [
+                {
+                    "id": {
+                        "family": "sectional",
+                        "name": "Boston",
+                        "cycle": "2026-04-16"
+                    },
+                    "family_id": "sectional",
+                    "name": "Boston",
+                    "display_name": "Boston",
+                    "cycle": "2026-04-16",
+                    "region_ids": ["ne"],
+                    "max_zoom": 10,
+                    "tile_path_template": "tiles/{chart_index}/{z}/{x}/{y}",
+                    "coverage": {
+                        "kind": "polygon_ref",
+                        "value": {
+                            "polygon_id": "sectional:boston"
+                        }
+                    }
+                }
+            ],
             "plates": [
                 {
                     "id": {
@@ -180,6 +230,25 @@ mod tests {
 
     fn empty_state_json() -> String {
         serde_json::to_string(&app_core::AppState::default()).unwrap()
+    }
+
+    fn sample_geometry_json() -> String {
+        serde_json::json!({
+            "schema_version": 1,
+            "polygons": [
+                {
+                    "id": "sectional:boston",
+                    "points": [
+                        [-72.0, 41.0],
+                        [-70.0, 41.0],
+                        [-70.0, 43.0],
+                        [-72.0, 43.0],
+                        [-72.0, 41.0]
+                    ]
+                }
+            ]
+        })
+        .to_string()
     }
 
     fn sample_plan_json() -> String {
@@ -248,5 +317,35 @@ mod tests {
 
         let refreshed: app_core::AppState = serde_json::from_str(&refreshed_json).unwrap();
         assert!(refreshed.last_content_report.as_ref().unwrap().fully_satisfied);
+    }
+
+    #[test]
+    fn chart_for_position_json_returns_matching_chart() {
+        let chart_json = chart_for_position_json(
+            &sample_catalog_json(),
+            &sample_geometry_json(),
+            &serde_json::to_string(&app_core::ChartFamilyId::Sectional).unwrap(),
+            42.0,
+            -71.0,
+        )
+        .unwrap();
+        let chart: Option<app_core::ChartRecord> = serde_json::from_str(&chart_json).unwrap();
+
+        assert_eq!(chart.unwrap().display_name, "Boston");
+    }
+
+    #[test]
+    fn chart_for_position_json_returns_null_outside_coverage() {
+        let chart_json = chart_for_position_json(
+            &sample_catalog_json(),
+            &sample_geometry_json(),
+            &serde_json::to_string(&app_core::ChartFamilyId::Sectional).unwrap(),
+            35.0,
+            -71.0,
+        )
+        .unwrap();
+        let chart: Option<app_core::ChartRecord> = serde_json::from_str(&chart_json).unwrap();
+
+        assert!(chart.is_none());
     }
 }

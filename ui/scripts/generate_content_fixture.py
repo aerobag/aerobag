@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import json
+import math
+import shutil
 from pathlib import Path
+from osgeo import osr
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -10,9 +13,14 @@ UI_DIR = ROOT / "ui"
 CANONICAL_OUT = UI_DIR / "shared-fixtures" / "content-prototype" / "content_fixture.json"
 WEB_OUT = UI_DIR / "web-app" / "src" / "domain" / "generated" / "contentFixture.json"
 ANDROID_OUT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "fixtures" / "contentFixture.json"
+CANONICAL_TILE_ROOT = UI_DIR / "shared-fixtures" / "content-prototype" / "tiles"
+WEB_TILE_ROOT = UI_DIR / "web-app" / "public" / "prototype-tiles"
+ANDROID_TILE_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "tiles"
 
 SEC_PACKAGE_OUTPUTS = ROOT / "rust-runs" / "sec-20260405T1619Z" / "work" / "rust-runs" / "sec-20260405T1619Z" / "meta" / "provenance" / "charts-sec" / "package_outputs.jsonl"
 TPP_PLATES_DIR = ROOT / "runs" / "20260405T154700Z-tpp-retry" / "work" / "tpp-ne" / "plates" / "BOS"
+BOSTON_TAC_GEOJSON = ROOT / "rust-runs" / "tac-native" / "work" / "charts-tac" / "TAC" / "Boston TAC.geojson"
+BOSTON_TAC_TILE_ROOT = ROOT / "runs" / "20260406T003224Z-validation" / "native" / "charts-tac" / "work" / "charts-tac" / "tiles" / "1"
 
 REGION_ORDER = ["ne", "nc", "nw", "se", "sc", "sw", "ec", "ak", "pac"]
 REGION_DISPLAY_NAMES = {
@@ -27,9 +35,73 @@ REGION_DISPLAY_NAMES = {
     "pac": "Pacific",
 }
 
+WEB_MERCATOR = osr.SpatialReference()
+WEB_MERCATOR.ImportFromEPSG(3857)
+WGS84 = osr.SpatialReference()
+WGS84.ImportFromEPSG(4326)
+WEB_MERCATOR.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+WGS84.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+TO_WGS84 = osr.CoordinateTransformation(WEB_MERCATOR, WGS84)
+TILE_RADIUS = 1
+TILE_ZOOM = 10
+TILE_SIZE = 256
+
 
 def load_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def load_wgs84_polygon(path: Path) -> list[list[float]]:
+    data = json.loads(path.read_text())
+    feature = data["features"][0]
+    ring = feature["geometry"]["coordinates"][0]
+    points = []
+    for x, y in ring:
+        lon, lat, _ = TO_WGS84.TransformPoint(x, y)
+        points.append([lon, lat])
+    return points
+
+
+def bounds_center(points: list[list[float]]) -> tuple[float, float]:
+    lons = [point[0] for point in points]
+    lats = [point[1] for point in points]
+    return (sum(lats) / len(lats), sum(lons) / len(lons))
+
+
+def web_mercator_tile(lat: float, lon: float, zoom: int) -> tuple[int, int, int, float, float]:
+    scale = 2**zoom
+    x_float = (lon + 180.0) / 360.0 * scale
+    y_float = (1.0 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2.0 * scale
+    x = int(x_float)
+    y_xyz = int(y_float)
+    y_tms = (scale - 1) - y_xyz
+    return x, y_xyz, y_tms, x_float - x, y_float - y_xyz
+
+
+def tile_paths(center_x: int, center_y_tms: int, radius: int) -> list[tuple[int, int]]:
+    paths = []
+    for dy in range(radius, -radius - 1, -1):
+        for dx in range(-radius, radius + 1):
+            paths.append((center_x + dx, center_y_tms + dy))
+    return paths
+
+
+def copy_tile_subset(center_x: int, center_y_tms: int) -> list[dict]:
+    tile_pairs = tile_paths(center_x, center_y_tms, TILE_RADIUS)
+    available_tiles = []
+    for destination_root in [CANONICAL_TILE_ROOT, WEB_TILE_ROOT, ANDROID_TILE_ROOT]:
+        for x, y in tile_pairs:
+            source = BOSTON_TAC_TILE_ROOT / str(TILE_ZOOM) / str(x) / f"{y}.webp"
+            if not source.exists():
+                continue
+            target = destination_root / "charts-tac" / "1" / str(TILE_ZOOM) / str(x) / f"{y}.webp"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+    for x, y in tile_pairs:
+        source = BOSTON_TAC_TILE_ROOT / str(TILE_ZOOM) / str(x) / f"{y}.webp"
+        if source.exists():
+            available_tiles.append({"x": x, "y_tms": y})
+    return available_tiles
 
 
 def pick_bos_plate() -> tuple[str, str, str]:
@@ -52,6 +124,10 @@ def pick_bos_plate() -> tuple[str, str, str]:
 def build_fixture() -> dict:
     sec_outputs = load_jsonl(SEC_PACKAGE_OUTPUTS)
     cycle = "2026-04-16"
+    boston_tac_polygon = load_wgs84_polygon(BOSTON_TAC_GEOJSON)
+    probe_lat, probe_lon = bounds_center(boston_tac_polygon)
+    center_x, _center_y_xyz, center_y_tms, offset_x, offset_y = web_mercator_tile(probe_lat, probe_lon, TILE_ZOOM)
+    available_tiles = copy_tile_subset(center_x, center_y_tms)
 
     packages = []
     regions_seen = set()
@@ -104,11 +180,39 @@ def build_fixture() -> dict:
                     "kind": "tiled_raster",
                     "max_zoom": 10,
                     "tile_size": 512,
-                }
+                },
+                {
+                    "id": "tac",
+                    "display_name": "Terminal Area Charts",
+                    "kind": "tiled_raster",
+                    "max_zoom": 11,
+                    "tile_size": 512,
+                },
             ],
             "regions": regions,
             "packages": packages,
-            "charts": [],
+            "charts": [
+                {
+                    "id": {
+                        "family": "tac",
+                        "name": "Boston TAC",
+                        "cycle": cycle,
+                    },
+                    "family_id": "tac",
+                    "name": "Boston TAC",
+                    "display_name": "Boston TAC",
+                    "cycle": cycle,
+                    "region_ids": ["ne"],
+                    "max_zoom": 11,
+                    "tile_path_template": "tiles/1/{z}/{x}/{y}.webp",
+                    "coverage": {
+                        "kind": "polygon_ref",
+                        "value": {
+                            "polygon_id": "tac:boston",
+                        },
+                    },
+                }
+            ],
             "plates": [
                 {
                     "id": {
@@ -129,6 +233,34 @@ def build_fixture() -> dict:
                 }
             ],
             "supplements": [],
+        },
+        "geometry": {
+            "schema_version": 1,
+            "polygons": [
+                {
+                    "id": "tac:boston",
+                    "points": boston_tac_polygon,
+                }
+            ],
+        },
+        "initial_probe": {
+            "family": "tac",
+            "lat": probe_lat,
+            "lon": probe_lon,
+        },
+        "map_tile_view": {
+            "chart_family": "tac",
+            "chart_name": "Boston TAC",
+            "chart_index": 1,
+            "tile_root": "charts-tac",
+            "zoom": TILE_ZOOM,
+            "tile_size": TILE_SIZE,
+            "radius": TILE_RADIUS,
+            "center_x": center_x,
+            "center_y_tms": center_y_tms,
+            "probe_offset_x": offset_x,
+            "probe_offset_y": offset_y,
+            "available_tiles": available_tiles,
         },
         "flight_plan": {
             "id": "plan-1",

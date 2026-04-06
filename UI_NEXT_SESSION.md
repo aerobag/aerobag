@@ -232,14 +232,14 @@ Observed behavior:
 
 ### Best next step now
 
-1. Build a small `Map` shell:
-   - chart family selector
-   - a fake lat/lon selector or click target
-   - current selected chart display
+1. Make the tile-backed `Map` slice more interactive:
+   - zoom selection against real available tiles
+   - movable probe within the viewport, not just canned points
+   - explicit handling for missing neighbor tiles / edges
 2. Expand content requirements beyond airport-linked plates:
    - route/region logic
    - chart-family requirements
-3. Pull chart geometry into the generated shared fixture so map lookup uses preprocessed data, not hand-built geometry.
+3. Pull more real chart families/geometry into the generated fixture beyond the first Boston TAC example.
 
 ### Completed since the earlier Android/WASM checkpoint
 
@@ -254,6 +254,25 @@ Observed behavior:
    - BOS plate metadata from the recovered `tpp-ne` run
 6. Current app checkpoint is good:
    - `adb shell am start -W -n net.jonh.aerobag.prototype/.MainActivity` returns `Status: ok`
+7. Added the first real `Map` lookup slice:
+   - fixture now includes `geometry` and `initial_probe`
+   - Rust `chart_for_position` is exposed through both WASM and JNI
+   - web and Android both show family/probe controls and the current matching chart
+   - the generated fixture currently uses a transformed Boston TAC cutline from the preprocessor outputs
+8. The `Map` slice now renders real TAC tiles on both platforms:
+   - the fixture includes `map_tile_view`
+   - the generator copies a small Boston TAC tile subset into:
+     - [ui/shared-fixtures/content-prototype/tiles](/root/aerobag/ui/shared-fixtures/content-prototype/tiles)
+     - [ui/web-app/public/prototype-tiles](/root/aerobag/ui/web-app/public/prototype-tiles)
+     - [ui/android-app/app/src/main/assets/tiles](/root/aerobag/ui/android-app/app/src/main/assets/tiles)
+   - Android and web now both render the same 3x3 tile viewport with a probe marker
+9. Android startup verification rule:
+   - do not trust `am start` by itself
+   - the correct checkpoint sequence is `adb logcat -c`, launch, then `adb logcat -d` and confirm no `FATAL EXCEPTION` / `AndroidRuntime`
+10. Web WASM/Vite integration:
+   - generated wasm-bindgen output now goes to [ui/web-app/src/generated](/root/aerobag/ui/web-app/src/generated), not `/public`
+   - loader explicitly calls the module default init function before using exports
+   - this avoids the earlier Vite `/public` import failure and the bundler-target WASM incompatibility
 
 ## Important Design Decisions Already Made
 
@@ -290,11 +309,10 @@ Do not blindly add them.
 ## If You Need A Very Short Resume Prompt
 
 Resume the UI prototype from `/root/aerobag/ui/web-app`, `/root/aerobag/ui/android-app`, and `/root/aerobag/ui/core-rust`.
-The web `Content` slice works and is tested.
-The Android `Content` slice builds and passes `./gradlew test`.
-The web app still falls back to a mock adapter because this environment lacks the WASM target and JS binding tools.
-The Android emulator is now usable through a VNC-backed virtual display, not plain forwarded X.
-The Android screen scroll bug was in `MainActivity.kt` and is fixed by using a screen-level `LazyColumn`.
+The `Content` slice is shared-core-backed on both platforms.
+The `Map` slice now renders real Boston TAC tiles on both platforms.
+The web dev server should be left running and allowed to hot-reload instead of being restarted repeatedly.
+When checking Android, always verify with logcat after launch.
 Next:
-- replace the Android mock content logic with the shared Rust core, or
-- continue with Rust FFI/WASM integration and the next `Map` slice.
+- make the tile-backed `Map` slice interactive, or
+- connect map selection to content requirements / planning state.

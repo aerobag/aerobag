@@ -123,6 +123,9 @@ enum class WireContentAvailability {
 enum class WireChartFamilyId {
     @SerialName("sectional")
     Sectional,
+
+    @SerialName("tac")
+    Tac,
 }
 
 @Serializable
@@ -260,7 +263,7 @@ data class WireCatalogPackage(
 
 @Serializable
 data class WireChartRecord(
-    val id: String,
+    val id: WireChartId,
     val family_id: WireChartFamilyId,
     val name: String,
     val display_name: String,
@@ -268,6 +271,47 @@ data class WireChartRecord(
     val region_ids: List<WireRegionId>,
     val max_zoom: Int,
     val tile_path_template: String,
+)
+
+@Serializable
+data class WireChartId(
+    val family: WireChartFamilyId,
+    val name: String,
+    val cycle: String,
+)
+
+@Serializable
+data class WireGeometryBundle(
+    val schema_version: Int,
+    val polygons: List<WirePolygonRecord>,
+)
+
+@Serializable
+data class WirePolygonRecord(
+    val id: String,
+    val points: List<List<Double>>,
+)
+
+@Serializable
+data class WireInitialProbe(
+    val family: WireChartFamilyId,
+    val lat: Double,
+    val lon: Double,
+)
+
+@Serializable
+data class WireMapTileView(
+    val chart_family: WireChartFamilyId,
+    val chart_name: String,
+    val chart_index: Int,
+    val tile_root: String,
+    val zoom: Int,
+    val tile_size: Int,
+    val radius: Int,
+    val center_x: Int,
+    val center_y_tms: Int,
+    val probe_offset_x: Double,
+    val probe_offset_y: Double,
 )
 
 @Serializable

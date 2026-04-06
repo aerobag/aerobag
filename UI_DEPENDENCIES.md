@@ -230,6 +230,7 @@ printf 'google-android-installers google-android-installers/mirror select https:
 
 Required:
 - Python 3
+- GDAL Python bindings (`osgeo.osr`) for coordinate transformation
 - access to the preprocessor output directories already present in this workspace
 
 Generator:
@@ -247,6 +248,51 @@ Command:
 cd /root/aerobag
 python3 ui/scripts/generate_content_fixture.py
 ```
+
+Generator behavior:
+- reads preprocessor package provenance and plate outputs
+- now also reads chart cutline GeoJSON from the preprocessor workspace
+- transforms chart geometry from `EPSG:3857` into WGS84 lat/lon points for the UI fixture
+- now also copies a small real TAC tile subset for the prototype map viewport
+
+Practical consequence:
+- the generated fixture now carries both catalog metadata and geometry for the map lookup slice
+- the fixture also carries `map_tile_view` metadata for the tile-backed map slice
+- if GDAL Python bindings are missing, fixture generation for the map slice will fail
+
+Current copied tile destinations:
+- [ui/shared-fixtures/content-prototype/tiles](/root/aerobag/ui/shared-fixtures/content-prototype/tiles)
+- [ui/web-app/public/prototype-tiles](/root/aerobag/ui/web-app/public/prototype-tiles)
+- [ui/android-app/app/src/main/assets/tiles](/root/aerobag/ui/android-app/app/src/main/assets/tiles)
+
+## Web Vite / WASM
+
+Important current setup:
+- wasm-bindgen output is generated into [ui/web-app/src/generated](/root/aerobag/ui/web-app/src/generated)
+- the web loader imports that generated module as source and calls its default init function
+- do not generate into `/public` and import from source code; Vite rejects that pattern
+- `wasm-bindgen --target bundler` was tried and rejected here because stock Vite needs extra wasm integration support for that path
+- the working path is `wasm-bindgen --target web` plus explicit init in the loader
+
+Operational note:
+- once the Vite dev server is up, prefer letting hot reload handle code changes
+- do not keep restarting Vite unless the process is actually dead
+
+## Android Runtime Verification
+
+Do not treat `adb shell am start -W -n ...` alone as proof that the app is healthy.
+
+Working checkpoint verification sequence:
+
+```bash
+adb logcat -c
+adb shell am start -W -n net.jonh.aerobag.prototype/.MainActivity
+adb logcat -d
+```
+
+Then verify:
+- no `FATAL EXCEPTION`
+- no `AndroidRuntime` crash from `net.jonh.aerobag.prototype`
 
 Current output targets:
 - canonical shared fixture:

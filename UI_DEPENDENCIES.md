@@ -1,0 +1,245 @@
+# UI Build Dependencies
+
+## Purpose
+
+Track every external tool or environment dependency discovered while building the UI prototype so later developers do not need to rediscover them by trial and error.
+
+## Shared Rust Core
+
+Required:
+- Rust toolchain
+- Cargo
+
+Observed on this machine:
+- `rustc 1.75.0`
+
+For native tests:
+- `cargo test`
+
+For web WASM output:
+- a Rust toolchain with `wasm32-unknown-unknown` stdlib installed
+- JS binding generation tooling:
+  - `wasm-bindgen` CLI or
+  - `wasm-pack`
+
+Current blocker on this machine:
+- `cargo build -p app-wasm --target wasm32-unknown-unknown` fails because the `wasm32-unknown-unknown` standard library is not installed
+- `rustup` is not present
+- `wasm-pack` is not present
+- `wasm-bindgen` CLI is not present
+
+## Web Prototype
+
+Required:
+- Node.js
+- npm
+
+Observed on this machine:
+- `node v18.19.0`
+- `npm 9.2.0`
+
+Verified:
+- `npm test`
+- `npm run build`
+
+## Android Prototype
+
+Required for source/build:
+- Java 17
+- modern Gradle wrapper
+- Android SDK
+- Android build-tools
+- Android platform packages matching the chosen `compileSdk`
+
+Required for local device/emulator workflow:
+- `adb`
+- Android emulator or physical device
+
+Observed gaps at the start of this session:
+- `java` missing
+- `gradle` missing
+- `adb` missing
+- `emulator` missing
+
+Actions taken:
+- started installing:
+  - `openjdk-17-jdk`
+  - `gradle`
+- confirmed installed:
+  - `openjdk 17.0.18`
+  - distro `gradle 4.4.1`
+
+Important note:
+- distro `gradle` here is `4.4.1`, which is too old for a modern Jetpack Compose Android app
+- use it only once to bootstrap a modern Gradle wrapper if necessary
+- do not rely on system Gradle as the long-term build path
+
+Wrapper decision:
+- bootstrap a modern Gradle wrapper for `ui/android-app`
+- target wrapper version: `8.7`
+- after wrapper creation, stop using system Gradle for project builds
+
+Actual wrapper bootstrap sequence used:
+
+```bash
+mkdir -p /tmp/android-wrapper-bootstrap
+cat >/tmp/android-wrapper-bootstrap/build.gradle <<'EOF'
+task wrapper(type: Wrapper) {
+    gradleVersion = '8.7'
+    distributionType = Wrapper.DistributionType.BIN
+}
+EOF
+gradle -p /tmp/android-wrapper-bootstrap wrapper
+```
+
+Then copy into the project:
+
+```bash
+mkdir -p /root/aerobag/ui/android-app/gradle/wrapper
+cp /tmp/android-wrapper-bootstrap/gradlew /root/aerobag/ui/android-app/gradlew
+cp /tmp/android-wrapper-bootstrap/gradlew.bat /root/aerobag/ui/android-app/gradlew.bat
+cp /tmp/android-wrapper-bootstrap/gradle/wrapper/gradle-wrapper.jar /root/aerobag/ui/android-app/gradle/wrapper/gradle-wrapper.jar
+cp /tmp/android-wrapper-bootstrap/gradle/wrapper/gradle-wrapper.properties /root/aerobag/ui/android-app/gradle/wrapper/gradle-wrapper.properties
+chmod +x /root/aerobag/ui/android-app/gradlew
+```
+
+Then verify:
+
+```bash
+cd /root/aerobag/ui/android-app
+./gradlew --version
+```
+
+Likely additional missing pieces after Java/Gradle:
+- Android SDK command-line tools
+- Android platform package for the selected SDK level
+- Android build-tools package
+- `adb`
+- emulator images if running locally on this box
+
+Android build config note:
+- with Kotlin `2.0.x`, Compose requires the `org.jetbrains.kotlin.plugin.compose` Gradle plugin
+- a modern wrapper alone is not enough; the Android app build must apply that plugin explicitly
+- Compose Material 3 UI dependencies do not by themselves provide XML theme resources for the manifest theme
+- for a Compose app using an XML theme such as `Theme.Material3.*`, also add:
+  - `com.google.android.material:material`
+
+Confirmed Android blocker after wrapper setup:
+- `./gradlew test` currently fails with:
+  - `SDK location not found`
+- required next step:
+  - install Android SDK tooling
+  - set `sdk.dir` in `ui/android-app/local.properties` or provide `ANDROID_HOME`
+
+Current SDK state after tooling install:
+- SDK root discovered at:
+  - `/usr/lib/android-sdk`
+- installed:
+  - `build-tools;34.0.0`
+  - `cmdline-tools;13.0`
+  - `platform-tools`
+  - `platforms;android-34`
+- selected emulator system image target:
+  - `system-images;android-34;google_apis;x86_64`
+
+Practical consequence:
+- `compileSdk 34` is the coherent choice here because build-tools `34.0.0` and platform `android-34` are installed
+- if a future developer changes `compileSdk`, they must also install the matching platform package
+
+Package install path discovered:
+
+- Installing `android-sdk` together with Google build-tools caused package conflicts.
+- Better path was:
+  - `adb`
+  - `google-android-build-tools-34.0.0-installer`
+  - `google-android-cmdline-tools-13.0-installer`
+
+Observed Debian packaging quirk:
+- `google-android-build-tools-34.0.0-installer` asks an interactive mirror-selection question.
+- The debconf key is:
+  - `google-android-installers/mirror`
+- The config script is:
+  - `/var/lib/dpkg/info/google-android-build-tools-34.0.0-installer.config`
+
+Noninteractive recovery sequence used after the installer got stuck in `whiptail`:
+
+1. Inspect the package config script to find the debconf key.
+2. Kill the hung `apt` / `dpkg` / `whiptail` processes.
+3. Preseed the mirror selection:
+
+```bash
+printf 'google-android-installers google-android-installers/mirror select https://dl.google.com\n' | debconf-set-selections
+```
+
+4. Resume package configuration noninteractively:
+
+```bash
+DEBIAN_FRONTEND=noninteractive dpkg --configure -a
+```
+
+This should be preferred over trying to drive the `whiptail` prompt remotely.
+
+## X11 / Remote Launch Notes
+
+For Android UI on this machine, likely options are:
+- Android emulator over X11 forwarding
+- emulator on the remote box with local forwarded display
+- physical device over `adb`
+
+Observed emulator runtime dependency:
+- `/usr/lib/android-sdk/emulator/emulator -version` initially failed with:
+  - `libpulse.so.0: cannot open shared object file`
+- required host package:
+  - `libpulse0`
+
+Install used:
+
+```bash
+apt-get install -y libpulse0
+```
+
+After that, this verification succeeded:
+
+```bash
+DISPLAY=localhost:10.0 /usr/lib/android-sdk/emulator/emulator -version
+```
+
+This still depends on installing:
+- creating an AVD definition
+- launching the emulator with `DISPLAY=localhost:10.0`
+
+Recommended first emulator target on this machine:
+- `system-images;android-34;google_apis;x86_64`
+
+Commands used to get this far:
+
+```bash
+yes | /usr/lib/android-sdk/cmdline-tools/13.0/bin/sdkmanager --install "system-images;android-34;google_apis;x86_64"
+echo no | /usr/lib/android-sdk/cmdline-tools/13.0/bin/avdmanager create avd -n aerobag34 -k "system-images;android-34;google_apis;x86_64" -d pixel_6
+DISPLAY=localhost:10.0 /usr/lib/android-sdk/emulator/emulator -avd aerobag34 -gpu swiftshader_indirect -no-snapshot-save
+```
+
+Observed hard blocker in this container:
+- the emulator reaches startup checks, finds the AVD and X11 display, then exits with:
+  - `x86_64 emulation currently requires hardware acceleration`
+  - `/dev/kvm is not found`
+- this is because the current environment is an unprivileged container without nested virtualization
+- fixing X11 alone is not sufficient
+
+Practical consequence:
+- if you want an Android emulator here, rebuild the container/host setup with nested virtualization and `/dev/kvm` available
+- otherwise use a physical Android device over `adb`
+
+## Next Dependency Checks To Run
+
+After Java/Gradle install completes:
+- `java -version`
+- `gradle -version`
+
+Then likely:
+- install Android SDK command-line tools
+- install `adb`
+- install emulator
+- install platform/build-tools packages
+
+Keep updating this file whenever a missing dependency is discovered.

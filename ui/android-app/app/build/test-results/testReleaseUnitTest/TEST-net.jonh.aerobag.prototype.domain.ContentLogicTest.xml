@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="net.jonh.aerobag.prototype.domain.ContentLogicTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-04-05T23:52:51" hostname="aerobag-dev" time="0.017">
+  <properties/>
+  <testcase name="emptyPlansAreRejected" classname="net.jonh.aerobag.prototype.domain.ContentLogicTest" time="0.005"/>
+  <testcase name="streamAllowedTreatsRemoteOnlyContentAsSatisfied" classname="net.jonh.aerobag.prototype.domain.ContentLogicTest" time="0.011"/>
+  <testcase name="offlineRequiredNeedsInstalledContent" classname="net.jonh.aerobag.prototype.domain.ContentLogicTest" time="0.001"/>
+  <testcase name="installedContentIsOfflineUsable" classname="net.jonh.aerobag.prototype.domain.ContentLogicTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

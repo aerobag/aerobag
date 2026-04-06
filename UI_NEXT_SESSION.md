@@ -1,6 +1,6 @@
 # UI Next Session Handoff
 
-Snapshot date: 2026-04-05
+Snapshot date: 2026-04-06
 
 ## What Was Built
 
@@ -77,6 +77,30 @@ What it does now:
   - `MOCK` fallback now
   - `WASM` later if generated bindings exist
 
+Operational note:
+- [ui/web-app/vite.config.ts](/root/aerobag/ui/web-app/vite.config.ts) allows host `aerobag-dev.iac.jonh.net` so the Vite dev server can be opened through the remote browser path already in use
+
+### Android prototype
+
+Location:
+- [ui/android-app](/root/aerobag/ui/android-app)
+
+Important files:
+- [ui/android-app/settings.gradle.kts](/root/aerobag/ui/android-app/settings.gradle.kts)
+- [ui/android-app/build.gradle.kts](/root/aerobag/ui/android-app/build.gradle.kts)
+- [ui/android-app/app/build.gradle.kts](/root/aerobag/ui/android-app/app/build.gradle.kts)
+- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/MainActivity.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/MainActivity.kt)
+- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/Models.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/Models.kt)
+- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SampleData.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SampleData.kt)
+- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/ContentLogic.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/ContentLogic.kt)
+- [ui/android-app/app/src/test/java/net/jonh/aerobag/prototype/domain/ContentLogicTest.kt](/root/aerobag/ui/android-app/app/src/test/java/net/jonh/aerobag/prototype/domain/ContentLogicTest.kt)
+
+What it does now:
+- mirrors the web `Content` slice in a native Compose shell
+- uses the same sample plan, policy choices, and inventory modes as the web prototype
+- keeps domain logic in Kotlin for now as a thin stand-in until Rust bindings are wired
+- includes unit tests for content-policy behavior
+
 ## Verified Commands
 
 ### Shared Rust core
@@ -120,6 +144,18 @@ npm test
 Last known result:
 - passed
 
+### Android prototype
+
+Test:
+
+```bash
+cd /root/aerobag/ui/android-app
+./gradlew test
+```
+
+Last known result:
+- passed
+
 Build:
 
 ```bash
@@ -130,7 +166,9 @@ npm run build
 Last known result:
 - passed
 
-## Current Blocker
+## Current Blockers
+
+### Web WASM blocker
 
 The browser app is prepared to use real Rust WASM bindings, but this environment cannot produce them yet.
 
@@ -155,6 +193,37 @@ Net result:
 
 This is an environment/toolchain blocker, not a UI architecture blocker.
 
+### Android emulator blocker
+
+The Android app builds and tests, and the emulator binary is installed, but this container cannot boot the AVD.
+
+Environment work completed:
+- installed Android platform 34
+- installed Android emulator
+- installed system image:
+  - `system-images;android-34;google_apis;x86_64`
+- created AVD:
+  - `aerobag34`
+- fixed emulator runtime dependency:
+  - `libpulse0`
+
+Observed launch attempt:
+
+```bash
+DISPLAY=localhost:10.0 /usr/lib/android-sdk/emulator/emulator -avd aerobag34 -gpu swiftshader_indirect -no-snapshot-save
+```
+
+Observed failure:
+- the emulator sees the AVD and reaches startup checks
+- then exits with:
+  - `x86_64 emulation currently requires hardware acceleration`
+  - `/dev/kvm is not found`
+
+Net result:
+- X11 forwarding is not the blocker
+- the blocker is lack of nested virtualization / KVM access in the current unprivileged container
+- for this environment, the next meaningful infra step is rebuilding the container/host setup with nested virtualization enabled
+
 ## What To Do Next
 
 ### Best next step if WASM toolchain becomes available
@@ -169,6 +238,16 @@ This is an environment/toolchain blocker, not a UI architecture blocker.
    - matching `.wasm` binary
 5. Confirm the web prototype switches from `MOCK` to `WASM` automatically.
 
+### Best next step if nested virtualization becomes available
+
+1. Recreate the environment with `/dev/kvm` available inside the container.
+2. Re-run:
+   - `DISPLAY=localhost:10.0 /usr/lib/android-sdk/emulator/emulator -avd aerobag34 -gpu swiftshader_indirect -no-snapshot-save`
+3. Once the emulator boots:
+   - `cd /root/aerobag/ui/android-app && ./gradlew installDebug`
+4. Verify the Compose `Content` slice visually.
+5. Then start replacing the Kotlin mock content logic with the shared Rust core boundary.
+
 ### Best next step if staying in the current environment
 
 Keep moving on prototype features that do not require actual WASM output:
@@ -181,7 +260,7 @@ Keep moving on prototype features that do not require actual WASM output:
 3. Expand content requirements beyond airport-linked plates:
    - route/region logic
    - chart-family requirements
-4. Start the Android-side shell around the same reducer/domain model.
+4. Use a physical Android device over `adb` instead of the local emulator, if one is available.
 
 ## Important Design Decisions Already Made
 
@@ -197,10 +276,12 @@ Keep moving on prototype features that do not require actual WASM output:
 There is a git repo initialized at:
 - `/root/aerobag/.git`
 
-Earlier commit from this session:
+Earlier commits from this work:
 - `b8304d9` `Add shared app state and wasm adapter tests`
+- `850ea60` `Add web content prototype and UI handoff`
+- `769c385` `Remove web build artifacts and dependencies`
 
-This handoff file was added after that commit and should be committed with the latest web prototype changes.
+This handoff file should now be committed with the Android scaffold and emulator checkpoint.
 
 ## Unrelated Workspace State
 
@@ -215,9 +296,12 @@ Do not blindly add them.
 
 ## If You Need A Very Short Resume Prompt
 
-Resume the UI prototype from `/root/aerobag/ui/web-app` and `/root/aerobag/ui/core-rust`.
-The content screen works and is tested.
-The web app currently falls back to a mock adapter because the environment lacks a usable `wasm32-unknown-unknown` Rust stdlib and JS binding toolchain.
+Resume the UI prototype from `/root/aerobag/ui/web-app`, `/root/aerobag/ui/android-app`, and `/root/aerobag/ui/core-rust`.
+The web `Content` slice works and is tested.
+The Android `Content` slice builds and passes `./gradlew test`.
+The web app still falls back to a mock adapter because this environment lacks the WASM target and JS binding tools.
+The Android emulator setup reached the KVM wall: the AVD exists, but x86_64 boot fails because `/dev/kvm` is unavailable in the current unprivileged container.
 Next either:
-- enable real WASM generation and wire `/generated/app_wasm.js`, or
-- continue with fixture files and the next `Map` prototype slice.
+- rebuild the container with nested virtualization and boot `aerobag34`, or
+- use a physical device over `adb`, or
+- continue with non-emulator work such as Rust FFI/WASM integration and the next `Map` slice.

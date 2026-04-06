@@ -330,3 +330,61 @@ If the next session starts with no further instruction, do this:
     - this is package parity for `NE` from an offline populated legacy work dir
     - native `tpp` provenance parity is not yet demonstrated
     - broader region coverage is not yet validated
+
+- 2026-04-06T00:10:16Z:
+  - Started the next major track: turning chart validation into a repeatable cold-start harness.
+  - Decided against making an HTTPS caching web proxy the primary cache mechanism.
+  - Reason:
+    - a normal forward proxy does not reliably give reusable body caching for all `https://` downloads without TLS interception/MITM and local CA trust plumbing across Python, `curl`, and the legacy tooling.
+    - the better primary mechanism here is a shared application-level fetch cache used by both legacy and Rust.
+  - Implemented a shared fetch cache contract on both sides:
+    - `FETCH_CACHE_ROOT`
+    - `FETCH_CACHE_MODE=fill|offline`
+  - Legacy side:
+    - patched centralized `download()` helpers in:
+      - [`avare-source/charts/common.py`](/root/aerobag/avare-source/charts/common.py)
+      - [`avare-source/csup/common.py`](/root/aerobag/avare-source/csup/common.py)
+      - [`avare-source/tpp/common.py`](/root/aerobag/avare-source/tpp/common.py)
+    - behavior:
+      - if file already exists in work dir, provenance records `source=local`
+      - else if a shared cached blob exists, copy it in and record `source=cache`
+      - else in `fill` mode download from network, store into cache, record `source=network`
+      - else in `offline` mode fail fast on cache miss
+    - cache layout used by legacy:
+      - `${FETCH_CACHE_ROOT}/blobs/<sha256>`
+      - `${FETCH_CACHE_ROOT}/http/<sha256(url)>.json`
+  - Legacy wrapper:
+    - [`legacy-capture/capture_inside_container.sh`](/root/aerobag/legacy-capture/capture_inside_container.sh) now exports:
+      - `FETCH_CACHE_ROOT="${CACHE_ROOT}/fetch"` by default
+      - `FETCH_CACHE_MODE=fill` by default
+    - and passes both through to each capture job
+  - Rust side:
+    - [`rust-preprocessor/preprocessor-fetch/src/lib.rs`](/root/aerobag/rust-preprocessor/preprocessor-fetch/src/lib.rs) now uses the same cache contract before running `curl`
+    - provenance download rows now also record `source=local|cache|network`
+    - Rust `offline` mode also fails fast on cache miss
+  - Verification:
+    - `python3 -m py_compile` passed for the three patched legacy `common.py` files
+    - `cargo test -p preprocessor-cli` passed with 9 tests after the Rust cache-layer changes
+  - Audit of how invasive the legacy changes are:
+    - top-level wrapper patch is tiny:
+      - [`legacy-capture/capture_inside_container.sh`](/root/aerobag/legacy-capture/capture_inside_container.sh) changed by only 5 insertions and 1 replacement
+    - repo-local legacy patches are now materially larger:
+      - charts `common.py`: `131 insertions, 3 deletions`
+      - csup `common.py`: `128 insertions, 4 deletions`
+      - tpp `common.py`: `128 insertions, 4 deletions`
+    - important nuance:
+      - those totals include both the earlier provenance instrumentation and the new shared-cache logic
+      - they are still concentrated in the centralized `download()` helper path, which is the least-bad place to touch legacy
+    - interpretation:
+      - legacy should now be treated as “legacy plus observability/cache shim”, not pristine upstream gold
+  - Current status:
+    - shared cache logic is implemented
+    - single-command orchestrator is not implemented yet
+    - no end-to-end proof run of `fill` then `offline` replay has been executed yet
+  - Resume suggestion:
+    1. build the orchestrator script/command for cold-start validation
+    2. point both legacy and native at one `FETCH_CACHE_ROOT`
+    3. run one `fill` pass
+    4. rerun in `offline` mode and require cache misses to fail
+  - Workspace note:
+    - there is an untracked top-level `resumes` file at the moment; I did not touch it or include it in any commit

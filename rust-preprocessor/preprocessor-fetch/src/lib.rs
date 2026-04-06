@@ -3,6 +3,7 @@ use preprocessor_core::CaptureManifest;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::{
+    env,
     collections::VecDeque,
     fs,
     fs::File,
@@ -325,14 +326,16 @@ impl PrefetchProvenanceRecorder {
         file_name: &str,
         sha256: &str,
         size: u64,
+        source: &str,
     ) -> anyhow::Result<()> {
         let value = serde_json::json!({
-            "downloaded": true,
+            "downloaded": source == "network",
             "event": "download",
             "file": file_name,
             "label": self.label,
             "sha256": sha256,
             "size": size,
+            "source": source,
             "url": url,
         });
         self.write_line(&value)
@@ -372,21 +375,24 @@ fn prefetch_one(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow::anyhow!("failed to derive filename from {url}"))?;
     let archive_path = dest_dir.join(file_name);
+    let mut source = "local";
 
     if !archive_path.is_file() {
-        let status = Command::new("curl")
-            .arg("-L")
-            .arg("--fail")
-            .arg("--silent")
-            .arg("--show-error")
-            .arg("--output")
-            .arg(file_name)
-            .arg(url)
-            .current_dir(dest_dir)
-            .status()
-            .with_context(|| format!("failed to fetch {url}"))?;
-        if !status.success() {
-            bail!("curl failed for {url}");
+        if let Some(cache_root) = env::var_os("FETCH_CACHE_ROOT") {
+            let layout = CacheLayout::new(cache_root);
+            if restore_cached_download(&layout, url, file_name, &archive_path)? {
+                source = "cache";
+            } else {
+                if env::var("FETCH_CACHE_MODE").unwrap_or_else(|_| "fill".to_string()) == "offline" {
+                    bail!("cache miss in offline mode for {url}");
+                }
+                fetch_network(url, file_name, dest_dir)?;
+                store_cached_download(&layout, url, file_name, &archive_path)?;
+                source = "network";
+            }
+        } else {
+            fetch_network(url, file_name, dest_dir)?;
+            source = "network";
         }
     }
 
@@ -395,7 +401,7 @@ fn prefetch_one(
         .with_context(|| format!("failed to stat {}", archive_path.display()))?
         .len();
     if let Some(recorder) = recorder {
-        recorder.record_download(url, file_name, &sha256, size)?;
+        recorder.record_download(url, file_name, &sha256, size, source)?;
     }
 
     if archive_path
@@ -419,6 +425,98 @@ fn prefetch_one(
         }
     }
 
+    Ok(())
+}
+
+fn fetch_network(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Result<()> {
+    let status = Command::new("curl")
+        .arg("-L")
+        .arg("--fail")
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--output")
+        .arg(file_name)
+        .arg(url)
+        .current_dir(dest_dir)
+        .status()
+        .with_context(|| format!("failed to fetch {url}"))?;
+    if !status.success() {
+        bail!("curl failed for {url}");
+    }
+    Ok(())
+}
+
+fn restore_cached_download(
+    layout: &CacheLayout,
+    url: &str,
+    file_name: &str,
+    archive_path: &Path,
+) -> anyhow::Result<bool> {
+    let metadata_path = layout.http_metadata_path(url);
+    if !metadata_path.is_file() {
+        return Ok(false);
+    }
+    let metadata_bytes = fs::read(&metadata_path)
+        .with_context(|| format!("failed to read {}", metadata_path.display()))?;
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&metadata_bytes).context("failed to parse cache metadata")?;
+    let Some(sha256) = metadata.get("sha256").and_then(|value| value.as_str()) else {
+        return Ok(false);
+    };
+    let blob_path = layout.blob_path(sha256);
+    if !blob_path.is_file() {
+        return Ok(false);
+    }
+    fs::copy(&blob_path, archive_path).with_context(|| {
+        format!(
+            "failed to copy cached blob {} to {}",
+            blob_path.display(),
+            archive_path.display()
+        )
+    })?;
+    if let Some(expected_name) = metadata.get("file").and_then(|value| value.as_str()) {
+        if expected_name != file_name {
+            bail!("cache filename mismatch for {url}: expected {expected_name}, got {file_name}");
+        }
+    }
+    Ok(true)
+}
+
+fn store_cached_download(
+    layout: &CacheLayout,
+    url: &str,
+    file_name: &str,
+    archive_path: &Path,
+) -> anyhow::Result<()> {
+    fs::create_dir_all(layout.blobs_dir())
+        .with_context(|| format!("failed to create {}", layout.blobs_dir().display()))?;
+    fs::create_dir_all(layout.http_dir())
+        .with_context(|| format!("failed to create {}", layout.http_dir().display()))?;
+    let sha256 = hash_file(archive_path)?;
+    let blob_path = layout.blob_path(&sha256);
+    if !blob_path.is_file() {
+        fs::copy(archive_path, &blob_path).with_context(|| {
+            format!(
+                "failed to copy {} to {}",
+                archive_path.display(),
+                blob_path.display()
+            )
+        })?;
+    }
+    let size = fs::metadata(archive_path)
+        .with_context(|| format!("failed to stat {}", archive_path.display()))?
+        .len();
+    let metadata = serde_json::json!({
+        "file": file_name,
+        "sha256": sha256,
+        "size": size,
+        "url": url,
+    });
+    fs::write(
+        layout.http_metadata_path(url),
+        serde_json::to_vec_pretty(&metadata).context("failed to encode cache metadata")?,
+    )
+    .with_context(|| format!("failed to write cache metadata for {url}"))?;
     Ok(())
 }
 

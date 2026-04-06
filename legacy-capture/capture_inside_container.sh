@@ -5,13 +5,15 @@ set -euo pipefail
 ROOT_DIR="${ROOT_DIR:-/work}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/capture}"
 CACHE_ROOT="${CACHE_ROOT:-/cache}"
+FETCH_CACHE_ROOT="${FETCH_CACHE_ROOT:-${CACHE_ROOT}/fetch}"
+FETCH_CACHE_MODE="${FETCH_CACHE_MODE:-fill}"
 RUN_ID="${RUN_ID:?RUN_ID is required}"
 RUN_DIR="${OUTPUT_ROOT}"
 LOG_DIR="${RUN_DIR}/logs"
 ARTIFACT_DIR="${RUN_DIR}/artifacts"
 META_DIR="${RUN_DIR}/meta"
 
-mkdir -p "${LOG_DIR}" "${ARTIFACT_DIR}" "${META_DIR}" "${CACHE_ROOT}"
+mkdir -p "${LOG_DIR}" "${ARTIFACT_DIR}" "${META_DIR}" "${CACHE_ROOT}" "${FETCH_CACHE_ROOT}"
 
 hash_file() {
     local file="$1"
@@ -58,6 +60,8 @@ run_capture() {
         cd "${work_dir}"
         CAPTURE_LABEL="${label}" \
         CAPTURE_META_DIR="${capture_meta_dir}" \
+        FETCH_CACHE_ROOT="${FETCH_CACHE_ROOT}" \
+        FETCH_CACHE_MODE="${FETCH_CACHE_MODE}" \
         "$@"
     ) >"${stdout_log}" 2>"${stderr_log}"
 

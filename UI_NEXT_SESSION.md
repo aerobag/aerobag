@@ -232,15 +232,28 @@ Observed behavior:
 
 ### Best next step now
 
-1. Replace inline TS/Kotlin sample data with checked-in shared fixture JSON files.
-2. Make both shells load those fixtures through the same contract instead of duplicated object literals.
-3. Add a small `Map` shell:
+1. Build a small `Map` shell:
    - chart family selector
    - a fake lat/lon selector or click target
    - current selected chart display
-4. Expand content requirements beyond airport-linked plates:
+2. Expand content requirements beyond airport-linked plates:
    - route/region logic
    - chart-family requirements
+3. Pull chart geometry into the generated shared fixture so map lookup uses preprocessed data, not hand-built geometry.
+
+### Completed since the earlier Android/WASM checkpoint
+
+1. Replaced inline TS/Kotlin sample data with checked-in shared fixture JSON files.
+2. Added a fixture exporter at [ui/scripts/generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py).
+3. Added the canonical generated fixture at [ui/shared-fixtures/content-prototype/content_fixture.json](/root/aerobag/ui/shared-fixtures/content-prototype/content_fixture.json).
+4. Wired both shells to consume the generated fixture:
+   - web imports [contentFixture.json](/root/aerobag/ui/web-app/src/domain/generated/contentFixture.json)
+   - Android loads [contentFixture.json](/root/aerobag/ui/android-app/app/src/main/assets/fixtures/contentFixture.json)
+5. The fixture currently draws from preprocessor outputs for:
+   - sectional package provenance
+   - BOS plate metadata from the recovered `tpp-ne` run
+6. Current app checkpoint is good:
+   - `adb shell am start -W -n net.jonh.aerobag.prototype/.MainActivity` returns `Status: ok`
 
 ## Important Design Decisions Already Made
 

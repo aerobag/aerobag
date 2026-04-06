@@ -66,6 +66,9 @@ Verified:
 Current web build behavior:
 - `npm run build` now regenerates `public/generated/app_wasm.js` and `public/generated/app_wasm_bg.wasm`
 - [ui/web-app/.gitignore](/root/aerobag/ui/web-app/.gitignore) ignores `public/generated`
+- the web prototype fixture is generated and checked in at:
+  - [ui/shared-fixtures/content-prototype/content_fixture.json](/root/aerobag/ui/shared-fixtures/content-prototype/content_fixture.json)
+  - copied into [ui/web-app/src/domain/generated/contentFixture.json](/root/aerobag/ui/web-app/src/domain/generated/contentFixture.json)
 
 ## Android Prototype
 
@@ -193,6 +196,11 @@ env GRADLE_USER_HOME=/root/aerobag/.gradle-user-home ./gradlew test installDebug
 
 because `/root/.gradle` is effectively read-only for wrapper lockfiles here
 
+Shared fixture loading on Android:
+- the Android app loads its prototype fixture from assets:
+  - [ui/android-app/app/src/main/assets/fixtures/contentFixture.json](/root/aerobag/ui/android-app/app/src/main/assets/fixtures/contentFixture.json)
+- if the shared fixture changes, regenerate and copy it before rebuilding the Android app
+
 Package install path discovered:
 
 - Installing `android-sdk` together with Google build-tools caused package conflicts.
@@ -217,6 +225,40 @@ Noninteractive recovery sequence used after the installer got stuck in `whiptail
 ```bash
 printf 'google-android-installers google-android-installers/mirror select https://dl.google.com\n' | debconf-set-selections
 ```
+
+## Shared Fixture Generation
+
+Required:
+- Python 3
+- access to the preprocessor output directories already present in this workspace
+
+Generator:
+- [ui/scripts/generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py)
+
+Current source inputs:
+- sectional package provenance from:
+  - `/root/aerobag/rust-runs/sec-20260405T1619Z/work/rust-runs/sec-20260405T1619Z/meta/provenance/charts-sec/package_outputs.jsonl`
+- BOS TPP data from:
+  - `/root/aerobag/runs/20260405T154700Z-tpp-retry/work/tpp-ne/plates/BOS`
+
+Command:
+
+```bash
+cd /root/aerobag
+python3 ui/scripts/generate_content_fixture.py
+```
+
+Current output targets:
+- canonical shared fixture:
+  - [ui/shared-fixtures/content-prototype/content_fixture.json](/root/aerobag/ui/shared-fixtures/content-prototype/content_fixture.json)
+- web copy:
+  - [ui/web-app/src/domain/generated/contentFixture.json](/root/aerobag/ui/web-app/src/domain/generated/contentFixture.json)
+- Android asset copy:
+  - [ui/android-app/app/src/main/assets/fixtures/contentFixture.json](/root/aerobag/ui/android-app/app/src/main/assets/fixtures/contentFixture.json)
+
+Practical conclusion:
+- the current `Content` slice no longer uses hand-authored sample catalog data
+- if the preprocessor output locations change, update the generator rather than patching web/Android fixtures by hand
 
 4. Resume package configuration noninteractively:
 

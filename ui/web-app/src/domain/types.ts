@@ -124,3 +124,10 @@ export type AppState = {
     }>;
   } | null;
 };
+
+export type ContentFixtureBundle = {
+  catalog: CatalogJson;
+  flight_plan: FlightPlan;
+  remote_only_inventory: ContentInventory;
+  installed_inventory: ContentInventory;
+};

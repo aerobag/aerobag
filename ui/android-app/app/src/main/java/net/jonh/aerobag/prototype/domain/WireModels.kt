@@ -129,6 +129,30 @@ enum class WireChartFamilyId {
 enum class WireRegionId {
     @SerialName("ne")
     Ne,
+
+    @SerialName("nc")
+    Nc,
+
+    @SerialName("nw")
+    Nw,
+
+    @SerialName("se")
+    Se,
+
+    @SerialName("sc")
+    Sc,
+
+    @SerialName("sw")
+    Sw,
+
+    @SerialName("ec")
+    Ec,
+
+    @SerialName("ak")
+    Ak,
+
+    @SerialName("pac")
+    Pac,
 }
 
 @Serializable

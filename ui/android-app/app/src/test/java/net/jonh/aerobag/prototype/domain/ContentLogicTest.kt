@@ -15,9 +15,9 @@ class ContentLogicTest {
 
     @Test
     fun streamAllowedTreatsRemoteOnlyContentAsSatisfied() {
-        var state = appCore.replaceFlightPlan(AppState(), SampleData.catalog, SampleData.samplePlan)
+        var state = appCore.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
         state = appCore.setContentPolicy(state, ContentPolicy.StreamAllowed)
-        state = appCore.refreshContent(state, SampleData.remoteOnlyInventory)
+        state = appCore.refreshContent(state, SampleDataFixture.remoteOnlyInventory)
 
         assertTrue(state.lastContentReport!!.fullySatisfied)
         assertEquals(
@@ -28,9 +28,9 @@ class ContentLogicTest {
 
     @Test
     fun offlineRequiredNeedsInstalledContent() {
-        var state = appCore.replaceFlightPlan(AppState(), SampleData.catalog, SampleData.samplePlan)
+        var state = appCore.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
         state = appCore.setContentPolicy(state, ContentPolicy.OfflineRequired)
-        state = appCore.refreshContent(state, SampleData.remoteOnlyInventory)
+        state = appCore.refreshContent(state, SampleDataFixture.remoteOnlyInventory)
 
         assertEquals(
             ContentAvailability.Unavailable,
@@ -40,9 +40,9 @@ class ContentLogicTest {
 
     @Test
     fun installedContentIsOfflineUsable() {
-        var state = appCore.replaceFlightPlan(AppState(), SampleData.catalog, SampleData.samplePlan)
+        var state = appCore.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
         state = appCore.setContentPolicy(state, ContentPolicy.OfflineRequired)
-        state = appCore.refreshContent(state, SampleData.installedInventory)
+        state = appCore.refreshContent(state, SampleDataFixture.installedInventory)
 
         assertTrue(state.lastContentReport!!.fullySatisfied)
         assertTrue(state.lastContentReport!!.items.first().availability.offlineUsable)
@@ -52,25 +52,26 @@ class ContentLogicTest {
     fun emptyPlansAreRejected() {
         appCore.replaceFlightPlan(
             AppState(),
-            SampleData.catalog,
-            SampleData.samplePlan.copy(legs = emptyList()),
+            SampleDataFixture.catalog,
+            SampleDataFixture.samplePlan.copy(legs = emptyList()),
         )
     }
 
     @Test
     fun nativeAdapterMatchesMockContractForRemoteOnlyStreaming() {
         val nativeAdapter = NativeAppCoreAdapter(
+            catalog = SampleDataFixture.catalog,
             bridge = FakeNativeBridge(json),
             json = json,
         )
 
-        var mockState = appCore.replaceFlightPlan(AppState(), SampleData.catalog, SampleData.samplePlan)
+        var mockState = appCore.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
         mockState = appCore.setContentPolicy(mockState, ContentPolicy.StreamAllowed)
-        mockState = appCore.refreshContent(mockState, SampleData.remoteOnlyInventory)
+        mockState = appCore.refreshContent(mockState, SampleDataFixture.remoteOnlyInventory)
 
-        var nativeState = nativeAdapter.replaceFlightPlan(AppState(), SampleData.catalog, SampleData.samplePlan)
+        var nativeState = nativeAdapter.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
         nativeState = nativeAdapter.setContentPolicy(nativeState, ContentPolicy.StreamAllowed)
-        nativeState = nativeAdapter.refreshContent(nativeState, SampleData.remoteOnlyInventory)
+        nativeState = nativeAdapter.refreshContent(nativeState, SampleDataFixture.remoteOnlyInventory)
 
         assertEquals(mockState, nativeState)
     }
@@ -78,17 +79,18 @@ class ContentLogicTest {
     @Test
     fun nativeAdapterMatchesMockContractForInstalledOffline() {
         val nativeAdapter = NativeAppCoreAdapter(
+            catalog = SampleDataFixture.catalog,
             bridge = FakeNativeBridge(json),
             json = json,
         )
 
-        var mockState = appCore.replaceFlightPlan(AppState(), SampleData.catalog, SampleData.samplePlan)
+        var mockState = appCore.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
         mockState = appCore.setContentPolicy(mockState, ContentPolicy.OfflineRequired)
-        mockState = appCore.refreshContent(mockState, SampleData.installedInventory)
+        mockState = appCore.refreshContent(mockState, SampleDataFixture.installedInventory)
 
-        var nativeState = nativeAdapter.replaceFlightPlan(AppState(), SampleData.catalog, SampleData.samplePlan)
+        var nativeState = nativeAdapter.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
         nativeState = nativeAdapter.setContentPolicy(nativeState, ContentPolicy.OfflineRequired)
-        nativeState = nativeAdapter.refreshContent(nativeState, SampleData.installedInventory)
+        nativeState = nativeAdapter.refreshContent(nativeState, SampleDataFixture.installedInventory)
 
         assertEquals(mockState, nativeState)
     }
@@ -120,6 +122,64 @@ class ContentLogicTest {
 
         assertEquals(""""RemoteOnly"""", encoded)
     }
+}
+
+private object SampleDataFixture {
+    val catalog = Catalog(
+        cycle = "2026-04-16",
+        packages = listOf(
+            CatalogPackage(
+                id = PackageId(
+                    region = "ne",
+                    family = "sectional",
+                    cycle = "2026-04-16",
+                ),
+                packageName = "NE_SEC",
+                regionId = "ne",
+            ),
+        ),
+        plates = listOf(
+            PlateRecord(
+                airportId = "BOS",
+                regionId = "ne",
+            ),
+        ),
+    )
+
+    val samplePlan = FlightPlan(
+        id = "plan-1",
+        name = "BOS local",
+        legs = listOf(
+            FlightPlanLeg(
+                fromAirport = "BOS",
+                toAirport = "BOS",
+            ),
+        ),
+        departure = "BOS",
+        destination = "BOS",
+        alternate = null,
+        cruiseAltitudeFt = 3000,
+        notes = "Generated from preprocessor outputs",
+        updatedAtEpochMs = 0,
+        version = 1,
+    )
+
+    val remoteOnlyInventory = ContentInventory(
+        installedPackages = emptyList(),
+    )
+
+    val installedInventory = ContentInventory(
+        installedPackages = listOf(
+            InstalledPackage(
+                packageId = PackageId(
+                    region = "ne",
+                    family = "sectional",
+                    cycle = "2026-04-16",
+                ),
+                integrityOk = true,
+            ),
+        ),
+    )
 }
 
 private class FakeNativeBridge(
@@ -177,6 +237,14 @@ private fun WireContentInventory.toUiForTesting() = ContentInventory(
 private fun WirePackageId.toUiForTesting() = PackageId(
     region = when (region) {
         WireRegionId.Ne -> "ne"
+        WireRegionId.Nc -> "nc"
+        WireRegionId.Nw -> "nw"
+        WireRegionId.Se -> "se"
+        WireRegionId.Sc -> "sc"
+        WireRegionId.Sw -> "sw"
+        WireRegionId.Ec -> "ec"
+        WireRegionId.Ak -> "ak"
+        WireRegionId.Pac -> "pac"
     },
     family = "sectional",
     cycle = cycle,

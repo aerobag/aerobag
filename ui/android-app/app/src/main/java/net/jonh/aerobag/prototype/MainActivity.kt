@@ -23,6 +23,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -52,11 +53,13 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun ContentPrototypeScreen() {
-    val appCoreResult = remember {
+    val context = LocalContext.current
+    val fixture = remember(context) { SampleData.load(context.applicationContext) }
+    val appCoreResult = remember(fixture) {
         runCatching {
             ContentBackend(
                 label = "NATIVE",
-                adapter = NativeAppCoreAdapter(),
+                adapter = NativeAppCoreAdapter(fixture.catalog),
             )
         }.getOrElse {
             ContentBackend(
@@ -72,12 +75,12 @@ private fun ContentPrototypeScreen() {
                 appCore.setContentPolicy(
                     appCore.replaceFlightPlan(
                         AppState(),
-                        SampleData.catalog,
-                        SampleData.samplePlan,
+                        fixture.catalog,
+                        fixture.samplePlan,
                     ),
                     ContentPolicy.StreamAllowed,
                 ),
-                SampleData.remoteOnlyInventory,
+                fixture.remoteOnlyInventory,
             ),
         )
     }
@@ -124,9 +127,9 @@ private fun ContentPrototypeScreen() {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Prototype inputs", fontWeight = FontWeight.Bold)
-                    Text("Cycle: ${SampleData.catalog.cycle}")
-                    Text("Plan: ${SampleData.samplePlan.name}")
-                    Text("Route: ${SampleData.samplePlan.departure} to ${SampleData.samplePlan.destination}")
+                    Text("Cycle: ${fixture.catalog.cycle}")
+                    Text("Plan: ${fixture.samplePlan.name}")
+                    Text("Route: ${fixture.samplePlan.departure} to ${fixture.samplePlan.destination}")
                 }
             }
         }
@@ -139,21 +142,21 @@ private fun ContentPrototypeScreen() {
                         state = appCore.setContentPolicy(state, it)
                         state = appCore.refreshContent(
                             state,
-                            if (inventoryMode == "installed") SampleData.installedInventory else SampleData.remoteOnlyInventory,
+                            if (inventoryMode == "installed") fixture.installedInventory else fixture.remoteOnlyInventory,
                         )
                     }
                     PolicyOption(state.contentPolicy, ContentPolicy.PreferLocal) {
                         state = appCore.setContentPolicy(state, it)
                         state = appCore.refreshContent(
                             state,
-                            if (inventoryMode == "installed") SampleData.installedInventory else SampleData.remoteOnlyInventory,
+                            if (inventoryMode == "installed") fixture.installedInventory else fixture.remoteOnlyInventory,
                         )
                     }
                     PolicyOption(state.contentPolicy, ContentPolicy.OfflineRequired) {
                         state = appCore.setContentPolicy(state, it)
                         state = appCore.refreshContent(
                             state,
-                            if (inventoryMode == "installed") SampleData.installedInventory else SampleData.remoteOnlyInventory,
+                            if (inventoryMode == "installed") fixture.installedInventory else fixture.remoteOnlyInventory,
                         )
                     }
                 }
@@ -166,11 +169,11 @@ private fun ContentPrototypeScreen() {
                     Text("Inventory mode", fontWeight = FontWeight.Bold)
                     InventoryOption(inventoryMode, "remote", "Remote only cache") {
                         inventoryMode = it
-                        state = appCore.refreshContent(state, SampleData.remoteOnlyInventory)
+                        state = appCore.refreshContent(state, fixture.remoteOnlyInventory)
                     }
                     InventoryOption(inventoryMode, "installed", "Installed package") {
                         inventoryMode = it
-                        state = appCore.refreshContent(state, SampleData.installedInventory)
+                        state = appCore.refreshContent(state, fixture.installedInventory)
                     }
                 }
             }

@@ -4,6 +4,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 class NativeAppCoreAdapter(
+    private val catalog: Catalog,
     private val bridge: NativeBridge = NativeBindings,
     private val json: Json = Json {
         encodeDefaults = true
@@ -20,7 +21,7 @@ class NativeAppCoreAdapter(
 
     override fun setContentPolicy(state: AppState, policy: ContentPolicy): AppState {
         val stateJson = json.encodeToString(state.toWire())
-        val catalogJson = json.encodeToString(SampleData.catalog.toWire())
+        val catalogJson = json.encodeToString(catalog.toWire())
         val policyJson = json.encodeToString(policy.toWire())
         val nextJson = bridge.setContentPolicyStateJson(stateJson, catalogJson, policyJson)
         return json.decodeFromString<WireAppState>(nextJson).toUi()
@@ -28,7 +29,7 @@ class NativeAppCoreAdapter(
 
     override fun refreshContent(state: AppState, inventory: ContentInventory): AppState {
         val stateJson = json.encodeToString(state.toWire())
-        val catalogJson = json.encodeToString(SampleData.catalog.toWire())
+        val catalogJson = json.encodeToString(catalog.toWire())
         val inventoryJson = json.encodeToString(inventory.toWire())
         val nextJson = bridge.refreshContentStateJson(stateJson, catalogJson, inventoryJson)
         return json.decodeFromString<WireAppState>(nextJson).toUi()
@@ -48,13 +49,17 @@ private fun Catalog.toWire() = WireCatalog(
             tile_size = 512,
         ),
     ),
-    regions = listOf(
-        WireCatalogRegion(
-            id = WireRegionId.Ne,
-            display_name = "Northeast",
-            sort_order = 0,
-        ),
-    ),
+    regions = packages
+        .map { it.regionId.lowercase() }
+        .distinct()
+        .sortedBy { regionSortOrder(it) }
+        .map { regionId ->
+            WireCatalogRegion(
+                id = regionId.toWireRegion(),
+                display_name = regionDisplayName(regionId),
+                sort_order = regionSortOrder(regionId),
+            )
+        },
     packages = packages.map { pkg ->
         WireCatalogPackage(
             id = pkg.id.toWire(),
@@ -150,7 +155,7 @@ private fun AppState.toWire() = WireAppState(
 )
 
 private fun WireAppState.toUi() = AppState(
-    activePlan = active_plan?.toUi(),
+    activePlan = active_plan?.toUiFlightPlan(),
     contentPolicy = content_policy.toUi(),
     lastContentRequirements = last_content_requirements.map { requirement ->
         ContentRequirement(
@@ -176,7 +181,7 @@ private fun WireAppState.toUi() = AppState(
     },
 )
 
-private fun WireFlightPlan.toUi() = FlightPlan(
+internal fun WireFlightPlan.toUiFlightPlan() = FlightPlan(
     id = id,
     name = name,
     legs = legs.map { it.toUi() },
@@ -209,11 +214,53 @@ private fun WirePackageId.toUi() = PackageId(
 
 private fun String.toWireRegion() = when (lowercase()) {
     "ne" -> WireRegionId.Ne
+    "nc" -> WireRegionId.Nc
+    "nw" -> WireRegionId.Nw
+    "se" -> WireRegionId.Se
+    "sc" -> WireRegionId.Sc
+    "sw" -> WireRegionId.Sw
+    "ec" -> WireRegionId.Ec
+    "ak" -> WireRegionId.Ak
+    "pac" -> WireRegionId.Pac
     else -> error("Unsupported region: $this")
 }
 
 private fun WireRegionId.toUiRegion() = when (this) {
     WireRegionId.Ne -> "ne"
+    WireRegionId.Nc -> "nc"
+    WireRegionId.Nw -> "nw"
+    WireRegionId.Se -> "se"
+    WireRegionId.Sc -> "sc"
+    WireRegionId.Sw -> "sw"
+    WireRegionId.Ec -> "ec"
+    WireRegionId.Ak -> "ak"
+    WireRegionId.Pac -> "pac"
+}
+
+private fun regionDisplayName(regionId: String) = when (regionId.lowercase()) {
+    "ne" -> "Northeast"
+    "nc" -> "North Central"
+    "nw" -> "Northwest"
+    "se" -> "Southeast"
+    "sc" -> "South Central"
+    "sw" -> "Southwest"
+    "ec" -> "East Coast"
+    "ak" -> "Alaska"
+    "pac" -> "Pacific"
+    else -> error("Unsupported region: $regionId")
+}
+
+private fun regionSortOrder(regionId: String) = when (regionId.lowercase()) {
+    "ne" -> 0
+    "nc" -> 1
+    "nw" -> 2
+    "se" -> 3
+    "sc" -> 4
+    "sw" -> 5
+    "ec" -> 6
+    "ak" -> 7
+    "pac" -> 8
+    else -> error("Unsupported region: $regionId")
 }
 
 private fun ContentAvailability.toWire() = when (this) {
@@ -246,7 +293,7 @@ internal fun AppState.toWireForTesting() = toWire()
 
 internal fun WireAppState.toUiForTesting() = toUi()
 
-internal fun WireCatalog.toUiForTesting() = Catalog(
+internal fun WireCatalog.toUiCatalog() = Catalog(
     cycle = cycle,
     packages = packages.map { pkg ->
         CatalogPackage(
@@ -263,4 +310,15 @@ internal fun WireCatalog.toUiForTesting() = Catalog(
     },
 )
 
-internal fun WireFlightPlan.toUiForTesting() = toUi()
+internal fun WireFlightPlan.toUiForTesting() = toUiFlightPlan()
+
+internal fun WireContentInventory.toUiInventory() = ContentInventory(
+    installedPackages = installed_packages.map {
+        InstalledPackage(
+            packageId = it.package_id.toUi(),
+            integrityOk = it.integrity_ok,
+        )
+    },
+)
+
+internal fun WireCatalog.toUiForTesting() = toUiCatalog()

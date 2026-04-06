@@ -11,7 +11,21 @@ Required:
 - Cargo
 
 Observed on this machine:
-- `rustc 1.75.0`
+- initial distro toolchain was `rustc 1.75.0`
+- that toolchain could not build Android targets because the Android stdlibs were not installed and it had no target-management workflow
+
+Practical conclusion:
+- for Android-targeted Rust work here, use `rustup`, not the distro `rustc`/`cargo`
+
+Install used:
+
+```bash
+apt-get install -y rustup
+rustup default stable
+rustup target add x86_64-linux-android
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli
+```
 
 For native tests:
 - `cargo test`
@@ -22,11 +36,18 @@ For web WASM output:
   - `wasm-bindgen` CLI or
   - `wasm-pack`
 
-Current blocker on this machine:
-- `cargo build -p app-wasm --target wasm32-unknown-unknown` fails because the `wasm32-unknown-unknown` standard library is not installed
-- `rustup` is not present
-- `wasm-pack` is not present
-- `wasm-bindgen` CLI is not present
+Validated web WASM generation path:
+
+```bash
+cd /root/aerobag/ui/core-rust
+cargo build -p app-wasm --target wasm32-unknown-unknown
+/root/.cargo/bin/wasm-bindgen target/wasm32-unknown-unknown/debug/app_wasm.wasm --target web --out-dir /root/aerobag/ui/web-app/public/generated --out-name app_wasm
+```
+
+Practical conclusion:
+- web builds should regenerate the WASM bindings, not assume they already exist
+- [ui/web-app/scripts/build-wasm.sh](/root/aerobag/ui/web-app/scripts/build-wasm.sh) now handles that
+- [ui/web-app/package.json](/root/aerobag/ui/web-app/package.json) runs it from both `npm run dev` and `npm run build`
 
 ## Web Prototype
 
@@ -42,6 +63,10 @@ Verified:
 - `npm test`
 - `npm run build`
 
+Current web build behavior:
+- `npm run build` now regenerates `public/generated/app_wasm.js` and `public/generated/app_wasm_bg.wasm`
+- [ui/web-app/.gitignore](/root/aerobag/ui/web-app/.gitignore) ignores `public/generated`
+
 ## Android Prototype
 
 Required for source/build:
@@ -50,6 +75,7 @@ Required for source/build:
 - Android SDK
 - Android build-tools
 - Android platform packages matching the chosen `compileSdk`
+- Android NDK for Rust native builds
 
 Required for local device/emulator workflow:
 - `adb`
@@ -142,9 +168,30 @@ Current SDK state after tooling install:
 - selected emulator system image target:
   - `system-images;android-34;google_apis;x86_64`
 
+NDK path for Rust bridge work:
+- install via SDK manager instead of relying on distro-packaged historical NDK revisions
+
+Command used:
+
+```bash
+yes | /usr/lib/android-sdk/cmdline-tools/13.0/bin/sdkmanager --install "ndk;26.3.11579264"
+```
+
 Practical consequence:
 - `compileSdk 34` is the coherent choice here because build-tools `34.0.0` and platform `android-34` are installed
 - if a future developer changes `compileSdk`, they must also install the matching platform package
+- the Android Rust bridge currently assumes:
+  - NDK `26.3.11579264`
+  - linker `/usr/lib/android-sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang`
+  - Rust toolchain binaries under `/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin`
+- in this Codex sandbox, use:
+
+```bash
+cd /root/aerobag/ui/android-app
+env GRADLE_USER_HOME=/root/aerobag/.gradle-user-home ./gradlew test installDebug
+```
+
+because `/root/.gradle` is effectively read-only for wrapper lockfiles here
 
 Package install path discovered:
 

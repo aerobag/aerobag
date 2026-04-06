@@ -1,7 +1,13 @@
 package net.jonh.aerobag.prototype.domain
 
-object ContentLogic {
-    fun replaceFlightPlan(state: AppState, catalog: Catalog, plan: FlightPlan): AppState {
+interface AppCoreAdapter {
+    fun replaceFlightPlan(state: AppState, catalog: Catalog, plan: FlightPlan): AppState
+    fun setContentPolicy(state: AppState, policy: ContentPolicy): AppState
+    fun refreshContent(state: AppState, inventory: ContentInventory): AppState
+}
+
+class MockAppCoreAdapter : AppCoreAdapter {
+    override fun replaceFlightPlan(state: AppState, catalog: Catalog, plan: FlightPlan): AppState {
         require(plan.legs.isNotEmpty()) { "Flight plan must contain at least one leg" }
 
         val packageIds = buildList {
@@ -23,11 +29,11 @@ object ContentLogic {
         )
     }
 
-    fun setContentPolicy(state: AppState, policy: ContentPolicy): AppState {
+    override fun setContentPolicy(state: AppState, policy: ContentPolicy): AppState {
         return state.copy(contentPolicy = policy)
     }
 
-    fun refreshContent(state: AppState, inventory: ContentInventory): AppState {
+    override fun refreshContent(state: AppState, inventory: ContentInventory): AppState {
         val items = state.lastContentRequirements.flatMap { requirement ->
             requirement.packageIds.map { pkg ->
                 val installed = inventory.installedPackages.any {

@@ -74,11 +74,13 @@ What it does now:
   - installed-package inventory
 - shows whether the current plan is satisfied under the selected policy
 - shows which backend is active:
-  - `MOCK` fallback now
-  - `WASM` later if generated bindings exist
+  - `WASM` when generated bindings exist
+  - `MOCK` only as fallback if the generated module is missing or broken
 
 Operational note:
 - [ui/web-app/vite.config.ts](/root/aerobag/ui/web-app/vite.config.ts) allows host `aerobag-dev.iac.jonh.net` so the Vite dev server can be opened through the remote browser path already in use
+- [ui/web-app/scripts/build-wasm.sh](/root/aerobag/ui/web-app/scripts/build-wasm.sh) now builds `app-wasm` and generates browser bindings into `public/generated`
+- [ui/web-app/package.json](/root/aerobag/ui/web-app/package.json) runs that generation step from both `npm run dev` and `npm run build`
 
 ### Android prototype
 
@@ -90,16 +92,23 @@ Important files:
 - [ui/android-app/build.gradle.kts](/root/aerobag/ui/android-app/build.gradle.kts)
 - [ui/android-app/app/build.gradle.kts](/root/aerobag/ui/android-app/app/build.gradle.kts)
 - [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/MainActivity.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/MainActivity.kt)
+- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/AppCoreAdapter.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/AppCoreAdapter.kt)
+- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/NativeBindings.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/NativeBindings.kt)
+- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/NativeAppCoreAdapter.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/NativeAppCoreAdapter.kt)
+- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/WireModels.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/WireModels.kt)
 - [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/Models.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/Models.kt)
 - [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SampleData.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SampleData.kt)
-- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/ContentLogic.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/ContentLogic.kt)
 - [ui/android-app/app/src/test/java/net/jonh/aerobag/prototype/domain/ContentLogicTest.kt](/root/aerobag/ui/android-app/app/src/test/java/net/jonh/aerobag/prototype/domain/ContentLogicTest.kt)
 
 What it does now:
 - mirrors the web `Content` slice in a native Compose shell
 - uses the same sample plan, policy choices, and inventory modes as the web prototype
-- keeps domain logic in Kotlin for now as a thin stand-in until Rust bindings are wired
-- includes unit tests for content-policy behavior
+- prefers a real Rust/JNI-backed adapter at runtime and only falls back to mock if native loading fails
+- shows `Backend NATIVE` or `Backend MOCK` in the screen header
+- includes unit tests for:
+  - content-policy behavior
+  - native-adapter parity against the mock contract
+  - JSON/wire-format knowledge like the required `content_policy` field and Rust-style `NavRef` enum shape
 - the whole screen now scrolls correctly past `Inventory mode`
 
 ## Verified Commands
@@ -115,6 +124,7 @@ cargo test
 
 Last known result:
 - passed
+- `npm run build` now also regenerates the WASM bindings before invoking Vite
 - 18 tests green
 
 Coverage currently includes:
@@ -144,6 +154,18 @@ npm test
 
 Last known result:
 - passed
+
+Install / run on emulator in this Codex sandbox:
+
+```bash
+cd /root/aerobag/ui/android-app
+env GRADLE_USER_HOME=/root/aerobag/.gradle-user-home ./gradlew test installDebug
+adb shell am start -W -n net.jonh.aerobag.prototype/.MainActivity
+```
+
+Last known result:
+- passed
+- direct activity launch returned `Status: ok`
 
 ### Android prototype
 
@@ -177,30 +199,9 @@ Last known result:
 
 ## Current Blockers
 
-### Web WASM blocker
+### Android UI visibility note
 
-The browser app is prepared to use real Rust WASM bindings, but this environment cannot produce them yet.
-
-Attempted command:
-
-```bash
-cd /root/aerobag/ui/core-rust
-cargo build -p app-wasm --target wasm32-unknown-unknown
-```
-
-Observed failure:
-- Rust compiler target exists in the target list
-- but the `wasm32-unknown-unknown` standard library is not installed
-- `rustup` is not available in this environment
-- `wasm-pack` is not installed
-- `wasm-bindgen` CLI is not installed
-
-Net result:
-- [ui/web-app/src/domain/appCoreAdapter.ts](/root/aerobag/ui/web-app/src/domain/appCoreAdapter.ts) currently uses a real `WasmAppCoreAdapter` shape plus a `MockAppCoreAdapter`
-- the loader `loadBestAvailableAdapter()` tries to import `/generated/app_wasm.js`
-- because that generated module does not exist yet, the app falls back to mock
-
-This is an environment/toolchain blocker, not a UI architecture blocker.
+The app now launches cleanly through JNI, but `adb shell dumpsys activity activities` has occasionally still claimed the launcher was top-resumed even when a direct `am start -W` launch succeeded. Treat `am start -W` plus what is visible in VNC as the authoritative check here, not the occasional oddity in `dumpsys`.
 
 ### Android emulator note
 
@@ -229,24 +230,10 @@ Observed behavior:
 
 ## What To Do Next
 
-### Best next step if WASM toolchain becomes available
+### Best next step now
 
-1. Install a Rust toolchain with `wasm32-unknown-unknown`.
-2. Add whatever tool is needed to generate JS bindings:
-   - `wasm-bindgen` CLI or
-   - `wasm-pack`
-3. Build [app-wasm](/root/aerobag/ui/core-rust/crates/app-wasm) into generated browser artifacts.
-4. Emit:
-   - `/root/aerobag/ui/web-app/public/generated/app_wasm.js`
-   - matching `.wasm` binary
-5. Confirm the web prototype switches from `MOCK` to `WASM` automatically.
-
-### Best next step if staying in the current environment
-
-Keep moving on prototype features that do not require actual WASM output:
-
-1. Replace the Android mock content logic with the shared Rust core boundary.
-2. Replace inline TS sample data with checked-in fixture JSON files.
+1. Replace inline TS/Kotlin sample data with checked-in shared fixture JSON files.
+2. Make both shells load those fixtures through the same contract instead of duplicated object literals.
 3. Add a small `Map` shell:
    - chart family selector
    - a fake lat/lon selector or click target

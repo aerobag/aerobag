@@ -9,3 +9,5 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 app-core = { path = "../app-core" }
+jni = "0.21"
+serde_json.workspace = true

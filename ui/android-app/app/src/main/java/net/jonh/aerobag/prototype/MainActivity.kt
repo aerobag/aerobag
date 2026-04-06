@@ -27,9 +27,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import net.jonh.aerobag.prototype.domain.AppCoreAdapter
 import net.jonh.aerobag.prototype.domain.AppState
-import net.jonh.aerobag.prototype.domain.ContentLogic
 import net.jonh.aerobag.prototype.domain.ContentPolicy
+import net.jonh.aerobag.prototype.domain.MockAppCoreAdapter
+import net.jonh.aerobag.prototype.domain.NativeAppCoreAdapter
 import net.jonh.aerobag.prototype.domain.SampleData
 
 class MainActivity : ComponentActivity() {
@@ -50,11 +52,25 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun ContentPrototypeScreen() {
+    val appCoreResult = remember {
+        runCatching {
+            ContentBackend(
+                label = "NATIVE",
+                adapter = NativeAppCoreAdapter(),
+            )
+        }.getOrElse {
+            ContentBackend(
+                label = "MOCK",
+                adapter = MockAppCoreAdapter(),
+            )
+        }
+    }
+    val appCore: AppCoreAdapter = appCoreResult.adapter
     var state by remember {
         mutableStateOf(
-            ContentLogic.refreshContent(
-                ContentLogic.setContentPolicy(
-                    ContentLogic.replaceFlightPlan(
+            appCore.refreshContent(
+                appCore.setContentPolicy(
+                    appCore.replaceFlightPlan(
                         AppState(),
                         SampleData.catalog,
                         SampleData.samplePlan,
@@ -80,6 +96,13 @@ private fun ContentPrototypeScreen() {
                 text = "Avare Android Prototype",
                 style = MaterialTheme.typography.labelLarge,
                 color = Color(0xFF0D6F67),
+            )
+        }
+        item {
+            Text(
+                text = "Backend ${appCoreResult.label}",
+                style = MaterialTheme.typography.labelMedium,
+                color = Color(0xFF5F6F76),
             )
         }
         item {
@@ -113,22 +136,22 @@ private fun ContentPrototypeScreen() {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Content policy", fontWeight = FontWeight.Bold)
                     PolicyOption(state.contentPolicy, ContentPolicy.StreamAllowed) {
-                        state = ContentLogic.setContentPolicy(state, it)
-                        state = ContentLogic.refreshContent(
+                        state = appCore.setContentPolicy(state, it)
+                        state = appCore.refreshContent(
                             state,
                             if (inventoryMode == "installed") SampleData.installedInventory else SampleData.remoteOnlyInventory,
                         )
                     }
                     PolicyOption(state.contentPolicy, ContentPolicy.PreferLocal) {
-                        state = ContentLogic.setContentPolicy(state, it)
-                        state = ContentLogic.refreshContent(
+                        state = appCore.setContentPolicy(state, it)
+                        state = appCore.refreshContent(
                             state,
                             if (inventoryMode == "installed") SampleData.installedInventory else SampleData.remoteOnlyInventory,
                         )
                     }
                     PolicyOption(state.contentPolicy, ContentPolicy.OfflineRequired) {
-                        state = ContentLogic.setContentPolicy(state, it)
-                        state = ContentLogic.refreshContent(
+                        state = appCore.setContentPolicy(state, it)
+                        state = appCore.refreshContent(
                             state,
                             if (inventoryMode == "installed") SampleData.installedInventory else SampleData.remoteOnlyInventory,
                         )
@@ -143,11 +166,11 @@ private fun ContentPrototypeScreen() {
                     Text("Inventory mode", fontWeight = FontWeight.Bold)
                     InventoryOption(inventoryMode, "remote", "Remote only cache") {
                         inventoryMode = it
-                        state = ContentLogic.refreshContent(state, SampleData.remoteOnlyInventory)
+                        state = appCore.refreshContent(state, SampleData.remoteOnlyInventory)
                     }
                     InventoryOption(inventoryMode, "installed", "Installed package") {
                         inventoryMode = it
-                        state = ContentLogic.refreshContent(state, SampleData.installedInventory)
+                        state = appCore.refreshContent(state, SampleData.installedInventory)
                     }
                 }
             }
@@ -189,6 +212,11 @@ private fun ContentPrototypeScreen() {
         }
     }
 }
+
+private data class ContentBackend(
+    val label: String,
+    val adapter: AppCoreAdapter,
+)
 
 @Composable
 private fun PolicyOption(

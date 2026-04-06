@@ -1,5 +1,6 @@
 avare-source/
-legacy-capture/
 rust-runs/
 runs/
+cache/
+__pycache__/
 *.swp

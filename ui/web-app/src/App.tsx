@@ -151,22 +151,6 @@ export default function App() {
     );
   }
 
-  function nudgeZoom(delta: number) {
-    if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
-      return;
-    }
-    updateViewport(
-      zoomAroundPoint(
-        viewport,
-        mapView,
-        { x: surfaceSize.width / 2, y: surfaceSize.height / 2 },
-        surfaceSize.width,
-        surfaceSize.height,
-        viewport.zoom + delta,
-      ),
-    );
-  }
-
   return (
     <main className="mapShell">
       <div
@@ -220,11 +204,6 @@ export default function App() {
             </div>
           </dl>
         </section>
-
-        <div className="zoomControls">
-          <button type="button" onClick={() => nudgeZoom(0.35)}>+</button>
-          <button type="button" onClick={() => nudgeZoom(-0.35)}>-</button>
-        </div>
       </div>
     </main>
   );

@@ -63,19 +63,15 @@ Important files:
 - [ui/web-app/src/domain/appCoreAdapter.test.ts](/root/aerobag/ui/web-app/src/domain/appCoreAdapter.test.ts)
 
 What it does now:
-- renders a browser prototype for the `Content` screen
-- loads a sample plan and sample catalog
-- lets the user switch content policy:
-  - `StreamAllowed`
-  - `PreferLocal`
-  - `OfflineRequired`
-- lets the user switch between:
-  - remote-only inventory
-  - installed-package inventory
-- shows whether the current plan is satisfied under the selected policy
-- shows which backend is active:
-  - `WASM` when generated bindings exist
-  - `MOCK` only as fallback if the generated module is missing or broken
+- renders a full-page tiled `Map` explorer surface
+- uses real TAC tile output copied from the preprocessor runs
+- supports:
+  - drag pan
+  - wheel zoom
+  - pinch zoom on web
+- uses continuous `lat/lon/zoom` viewport math instead of the old embedded fixed viewport
+- no longer shows the old floating `+` / `-` zoom buttons
+- still uses the shared Rust/WASM seam for chart lookup and shared data contracts
 
 Operational note:
 - [ui/web-app/vite.config.ts](/root/aerobag/ui/web-app/vite.config.ts) allows host `aerobag-dev.iac.jonh.net` so the Vite dev server can be opened through the remote browser path already in use
@@ -101,15 +97,20 @@ Important files:
 - [ui/android-app/app/src/test/java/net/jonh/aerobag/prototype/domain/ContentLogicTest.kt](/root/aerobag/ui/android-app/app/src/test/java/net/jonh/aerobag/prototype/domain/ContentLogicTest.kt)
 
 What it does now:
-- mirrors the web `Content` slice in a native Compose shell
-- uses the same sample plan, policy choices, and inventory modes as the web prototype
+- renders a full-page tiled `Map` explorer surface in Compose
+- uses the same real TAC tile bundle and viewport model as the web side
+- supports:
+  - drag pan
+  - pinch zoom in app logic
+  - keyboard `+` / `-` zoom as the reliable emulator fallback
+- does not currently keep the temporary `Shift`-drag zoom path or soft zoom buttons
 - prefers a real Rust/JNI-backed adapter at runtime and only falls back to mock if native loading fails
-- shows `Backend NATIVE` or `Backend MOCK` in the screen header
 - includes unit tests for:
   - content-policy behavior
   - native-adapter parity against the mock contract
   - JSON/wire-format knowledge like the required `content_policy` field and Rust-style `NavRef` enum shape
-- the whole screen now scrolls correctly past `Inventory mode`
+  - viewport math invariants like anchored zoom and pinch-anchor preservation
+- Android tile rendering is now done as a single `Canvas` draw pass to avoid seams between tiles at high zoom
 
 ## Verified Commands
 
@@ -135,6 +136,7 @@ Coverage currently includes:
 - reducer behavior tests
 - fixture round-trip tests
 - WASM JSON boundary tests
+- viewport math tests on web and Android
 
 ### Web prototype
 
@@ -201,7 +203,15 @@ Last known result:
 
 ### Android UI visibility note
 
-The app now launches cleanly through JNI, but `adb shell dumpsys activity activities` has occasionally still claimed the launcher was top-resumed even when a direct `am start -W` launch succeeded. Treat `am start -W` plus what is visible in VNC as the authoritative check here, not the occasional oddity in `dumpsys`.
+Use this standard for Android verification:
+
+```bash
+adb logcat -c
+adb shell am start -W -n net.jonh.aerobag.prototype/.MainActivity
+adb logcat -d AndroidRuntime:E '*:S'
+```
+
+Treat `am start -W` plus the filtered crash log as authoritative. `dumpsys` and the launcher state have occasionally been misleading in this environment.
 
 ### Android emulator note
 
@@ -227,17 +237,23 @@ Observed behavior:
 - this VNC-backed software-rendered path was the first one that made the emulator actually usable
 - launcher/system UI could still occasionally misbehave, but `adb` navigation was reliable
 - the Android prototype app itself rendered correctly and was interactive enough to test
+- the AVD now has hardware keyboard enabled in:
+  - [config.ini](/root/.android/avd/aerobag34.avd/config.ini)
+  - `hw.keyboard = yes`
+- that made keyboard `+` / `-` reach the app through VNC; modifier-assisted pointer gestures are still unreliable
 
 ## What To Do Next
 
 ### Best next step now
 
-1. Make the tile-backed `Map` slice more interactive:
-   - zoom selection against real available tiles
-   - movable probe within the viewport, not just canned points
-   - explicit handling for missing neighbor tiles / edges
-2. Expand content requirements beyond airport-linked plates:
-   - route/region logic
+1. Build a legitimate sectional tile source for more than the current TAC demo.
+   - likely start with `NW` and `SW`
+   - produce a consistent tile artifact shape both clients can consume
+2. Define the platform delivery path for those tiles.
+   - web: unpack and serve on demand
+   - Android: install packages into local app storage and index them
+3. Wire the map page to real chart-family / package availability instead of the current single-chart TAC prototype.
+4. After that, reconnect the `Content` and `Map` slices so install state and visible charts are the same product surface.
    - chart-family requirements
 3. Pull more real chart families/geometry into the generated fixture beyond the first Boston TAC example.
 

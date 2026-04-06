@@ -2,11 +2,15 @@ package net.jonh.aerobag.prototype
 
 import android.graphics.BitmapFactory
 import android.os.Bundle
+import android.view.KeyEvent as AndroidKeyEvent
+import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,12 +20,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,8 +37,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -42,7 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import kotlin.math.roundToInt
+import kotlin.math.min
 import net.jonh.aerobag.prototype.domain.MapView
 import net.jonh.aerobag.prototype.domain.MapViewportState
 import net.jonh.aerobag.prototype.domain.ScreenPoint
@@ -73,15 +83,24 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun MapExplorerScreen() {
     val context = LocalContext.current
     val density = LocalDensity.current
     val fixture = remember(context) { SampleData.load(context.applicationContext) }
     var viewport by remember { mutableStateOf(createInitialViewport(fixture.mapView)) }
+    var interactionLabel by remember { mutableStateOf("idle") }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
+    val focusRequester = remember { FocusRequester() }
     val viewportState = rememberUpdatedState(viewport)
     val center = remember(viewport) { viewportCenterLatLon(viewport) }
+    val surfaceWidthUnits = remember(surfaceSize, density) {
+        with(density) { surfaceSize.width.toDp().value }
+    }
+    val surfaceHeightUnits = remember(surfaceSize, density) {
+        with(density) { surfaceSize.height.toDp().value }
+    }
     val tiles = remember(viewport, surfaceSize, fixture.mapView) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             emptyList()
@@ -89,23 +108,106 @@ private fun MapExplorerScreen() {
             renderTiles(
                 mapView = fixture.mapView,
                 viewport = viewport,
-                widthPx = surfaceSize.width.toFloat(),
-                heightPx = surfaceSize.height.toFloat(),
+                widthPx = surfaceWidthUnits,
+                heightPx = surfaceHeightUnits,
             )
         }
+    }
+    val tileRects = remember(tiles, density) {
+        val columns = tiles
+            .groupBy { it.x }
+            .mapValues { (_, entries) -> with(density) { entries.minOf { it.leftPx.dp.roundToPx() } } }
+            .toList()
+            .sortedBy { it.second }
+        val rows = tiles
+            .groupBy { it.yTms }
+            .mapValues { (_, entries) -> with(density) { entries.minOf { it.topPx.dp.roundToPx() } } }
+            .toList()
+            .sortedBy { it.second }
+
+        val columnRects = columns.mapIndexed { index, (x, leftPx) ->
+            val rightPx = if (index + 1 < columns.size) {
+                columns[index + 1].second
+            } else {
+                with(density) {
+                    val sample = tiles.first { it.x == x }
+                    (sample.leftPx + sample.sizePx).dp.roundToPx()
+                }
+            }
+            x to (leftPx to (rightPx - leftPx))
+        }.toMap()
+
+        val rowRects = rows.mapIndexed { index, (yTms, topPx) ->
+            val bottomPx = if (index + 1 < rows.size) {
+                rows[index + 1].second
+            } else {
+                with(density) {
+                    val sample = tiles.first { it.yTms == yTms }
+                    (sample.topPx + sample.sizePx).dp.roundToPx()
+                }
+            }
+            yTms to (topPx to (bottomPx - topPx))
+        }.toMap()
+
+        tiles.associate { tile ->
+            val (leftPx, widthPx) = columnRects.getValue(tile.x)
+            val (topPx, heightPx) = rowRects.getValue(tile.yTms)
+            Triple(tile.zoom, tile.x, tile.yTms) to TileRect(
+                leftPx = leftPx,
+                topPx = topPx,
+                widthPx = widthPx,
+                heightPx = heightPx,
+            )
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .focusRequester(focusRequester)
+            .focusable()
             .background(
                 brush = Brush.verticalGradient(
                     colors = listOf(Color(0xFFF6F1E7), Color(0xFFDCE4E4)),
                 ),
             )
             .onSizeChanged { surfaceSize = it }
+            .onPreviewKeyEvent { keyEvent ->
+                if (keyEvent.nativeKeyEvent.action != AndroidKeyEvent.ACTION_DOWN ||
+                    surfaceWidthUnits == 0f ||
+                    surfaceHeightUnits == 0f
+                ) {
+                    return@onPreviewKeyEvent false
+                }
+
+                val delta = when (keyEvent.nativeKeyEvent.keyCode) {
+                    AndroidKeyEvent.KEYCODE_EQUALS,
+                    AndroidKeyEvent.KEYCODE_PLUS,
+                    AndroidKeyEvent.KEYCODE_NUMPAD_ADD,
+                    -> 0.35
+                    AndroidKeyEvent.KEYCODE_MINUS,
+                    AndroidKeyEvent.KEYCODE_NUMPAD_SUBTRACT,
+                    -> -0.35
+                    else -> return@onPreviewKeyEvent false
+                }
+
+                viewport = zoomAroundPoint(
+                    viewport = viewportState.value,
+                    mapView = fixture.mapView,
+                    anchor = ScreenPoint(surfaceWidthUnits / 2f, surfaceHeightUnits / 2f),
+                    widthPx = surfaceWidthUnits,
+                    heightPx = surfaceHeightUnits,
+                    nextZoom = clampZoom(viewportState.value.zoom + delta, fixture.mapView),
+                )
+                interactionLabel = "key ${if (delta > 0) "+" else "-"}"
+                true
+            }
             .pointerInput(fixture.mapView, surfaceSize) {
-                if (surfaceSize.width == 0 || surfaceSize.height == 0) {
+                if (surfaceWidthUnits == 0f || surfaceHeightUnits == 0f) {
                     return@pointerInput
                 }
                 awaitEachGesture {
@@ -130,9 +232,10 @@ private fun MapExplorerScreen() {
                                 val last = dragLastPosition ?: change.position
                                 viewport = dragViewport(
                                     viewportState.value,
-                                    dx = change.position.x - last.x,
-                                    dy = change.position.y - last.y,
+                                    dx = with(density) { (change.position.x - last.x).toDp().value },
+                                    dy = with(density) { (change.position.y - last.y).toDp().value },
                                 )
+                                interactionLabel = "drag"
                                 dragLastPosition = change.position
                             }
                             change.consume()
@@ -142,20 +245,33 @@ private fun MapExplorerScreen() {
                             if (pinchSnapshot == null) {
                                 pinchSnapshot = createPinchSnapshot(
                                     viewport = viewportState.value,
-                                    first = ScreenPoint(first.position.x, first.position.y),
-                                    second = ScreenPoint(second.position.x, second.position.y),
-                                    widthPx = surfaceSize.width.toFloat(),
-                                    heightPx = surfaceSize.height.toFloat(),
+                                    first = ScreenPoint(
+                                        with(density) { first.position.x.toDp().value },
+                                        with(density) { first.position.y.toDp().value },
+                                    ),
+                                    second = ScreenPoint(
+                                        with(density) { second.position.x.toDp().value },
+                                        with(density) { second.position.y.toDp().value },
+                                    ),
+                                    widthPx = surfaceWidthUnits,
+                                    heightPx = surfaceHeightUnits,
                                 )
                             }
                             viewport = applyPinchGesture(
                                 snapshot = pinchSnapshot,
-                                currentFirst = ScreenPoint(first.position.x, first.position.y),
-                                currentSecond = ScreenPoint(second.position.x, second.position.y),
+                                currentFirst = ScreenPoint(
+                                    with(density) { first.position.x.toDp().value },
+                                    with(density) { first.position.y.toDp().value },
+                                ),
+                                currentSecond = ScreenPoint(
+                                    with(density) { second.position.x.toDp().value },
+                                    with(density) { second.position.y.toDp().value },
+                                ),
                                 mapView = fixture.mapView,
-                                widthPx = surfaceSize.width.toFloat(),
-                                heightPx = surfaceSize.height.toFloat(),
+                                widthPx = surfaceWidthUnits,
+                                heightPx = surfaceHeightUnits,
                             )
+                            interactionLabel = "pinch"
                             dragPointerId = null
                             dragLastPosition = null
                             first.consume()
@@ -163,31 +279,63 @@ private fun MapExplorerScreen() {
                         }
                     }
                 }
+            }
+            .pointerInteropFilter { event ->
+                if (surfaceWidthUnits == 0f || surfaceHeightUnits == 0f) {
+                    return@pointerInteropFilter false
+                }
+
+                if (event.action == MotionEvent.ACTION_SCROLL) {
+                    val wheelDelta = event.getAxisValue(MotionEvent.AXIS_VSCROLL).takeIf { it != 0f }
+                        ?: event.getAxisValue(MotionEvent.AXIS_SCROLL)
+                    viewport = zoomAroundPoint(
+                        viewport = viewportState.value,
+                        mapView = fixture.mapView,
+                        anchor = ScreenPoint(surfaceWidthUnits / 2f, surfaceHeightUnits / 2f),
+                        widthPx = surfaceWidthUnits,
+                        heightPx = surfaceHeightUnits,
+                        nextZoom = clampZoom(
+                            viewportState.value.zoom - wheelDelta * 0.28,
+                            fixture.mapView,
+                        ),
+                    )
+                    interactionLabel = "wheel ${"%.2f".format(wheelDelta)}"
+                    true
+                } else {
+                    false
+                }
             },
     ) {
-        tiles.forEach { tile ->
-            val bitmap = remember(tile.x, tile.yTms, tile.zoom) {
-                runCatching {
+        val tileBitmaps = remember(tiles) {
+            tiles.associate { tile ->
+                Triple(tile.zoom, tile.x, tile.yTms) to runCatching {
                     context.assets.open(tileAssetPath(fixture.mapView, tile)).use { stream ->
                         BitmapFactory.decodeStream(stream)?.asImageBitmap()
                     }
                 }.getOrNull()
             }
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .offset { IntOffset(tile.leftPx.roundToInt(), tile.topPx.roundToInt()) }
-                        .size(with(density) { tile.sizePx.toDp() }),
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .offset { IntOffset(tile.leftPx.roundToInt(), tile.topPx.roundToInt()) }
-                        .size(with(density) { tile.sizePx.toDp() })
-                        .background(Color(0x12000000)),
-                )
+        }
+
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            tiles.forEach { tile ->
+                val tileRect = tileRects.getValue(Triple(tile.zoom, tile.x, tile.yTms))
+                val bitmap = tileBitmaps.getValue(Triple(tile.zoom, tile.x, tile.yTms))
+                if (bitmap != null) {
+                    drawImage(
+                        image = bitmap,
+                        dstOffset = IntOffset(tileRect.leftPx, tileRect.topPx),
+                        dstSize = IntSize(tileRect.widthPx, tileRect.heightPx),
+                    )
+                } else {
+                    drawRect(
+                        color = Color(0x12000000),
+                        topLeft = Offset(tileRect.leftPx.toFloat(), tileRect.topPx.toFloat()),
+                        size = androidx.compose.ui.geometry.Size(
+                            tileRect.widthPx.toFloat(),
+                            tileRect.heightPx.toFloat(),
+                        ),
+                    )
+                }
             }
         }
 
@@ -211,8 +359,13 @@ private fun MapExplorerScreen() {
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "Drag to pan. Pinch or use the zoom buttons to explore the tiled chart with a continuous zoom state.",
+                    text = "Drag to pan. Pinch to zoom. For emulator debugging in this setup, use keyboard +/-.",
                     style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFF52656D),
+                )
+                Text(
+                    text = "Input $interactionLabel",
+                    style = MaterialTheme.typography.labelMedium,
                     color = Color(0xFF52656D),
                 )
             }
@@ -233,45 +386,15 @@ private fun MapExplorerScreen() {
             }
         }
 
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Button(onClick = {
-                if (surfaceSize.width == 0 || surfaceSize.height == 0) {
-                    return@Button
-                }
-                viewport = zoomAroundPoint(
-                    viewport = viewport,
-                    mapView = fixture.mapView,
-                    anchor = ScreenPoint(surfaceSize.width / 2f, surfaceSize.height / 2f),
-                    widthPx = surfaceSize.width.toFloat(),
-                    heightPx = surfaceSize.height.toFloat(),
-                    nextZoom = clampZoom(viewport.zoom + 0.35, fixture.mapView),
-                )
-            }) {
-                Text("+")
-            }
-            Button(onClick = {
-                if (surfaceSize.width == 0 || surfaceSize.height == 0) {
-                    return@Button
-                }
-                viewport = zoomAroundPoint(
-                    viewport = viewport,
-                    mapView = fixture.mapView,
-                    anchor = ScreenPoint(surfaceSize.width / 2f, surfaceSize.height / 2f),
-                    widthPx = surfaceSize.width.toFloat(),
-                    heightPx = surfaceSize.height.toFloat(),
-                    nextZoom = clampZoom(viewport.zoom - 0.35, fixture.mapView),
-                )
-            }) {
-                Text("-")
-            }
-        }
     }
 }
+
+private data class TileRect(
+    val leftPx: Int,
+    val topPx: Int,
+    val widthPx: Int,
+    val heightPx: Int,
+)
 
 @Composable
 private fun MetricRow(label: String, value: String) {

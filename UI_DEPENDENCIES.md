@@ -69,6 +69,7 @@ Current web build behavior:
 - the web prototype fixture is generated and checked in at:
   - [ui/shared-fixtures/content-prototype/content_fixture.json](/root/aerobag/ui/shared-fixtures/content-prototype/content_fixture.json)
   - copied into [ui/web-app/src/domain/generated/contentFixture.json](/root/aerobag/ui/web-app/src/domain/generated/contentFixture.json)
+- keep one Vite dev server alive and rely on HMR; restarting Vite unnecessarily caused confusion with stale ports earlier
 
 ## Android Prototype
 
@@ -196,6 +197,15 @@ env GRADLE_USER_HOME=/root/aerobag/.gradle-user-home ./gradlew test installDebug
 
 because `/root/.gradle` is effectively read-only for wrapper lockfiles here
 
+Keyboard note:
+- the AVD file [config.ini](/root/.android/avd/aerobag34.avd/config.ini) needed:
+
+```ini
+hw.keyboard = yes
+```
+
+- without that, keyboard input would not reach the guest reliably through the emulator/VNC path
+
 Shared fixture loading on Android:
 - the Android app loads its prototype fixture from assets:
   - [ui/android-app/app/src/main/assets/fixtures/contentFixture.json](/root/aerobag/ui/android-app/app/src/main/assets/fixtures/contentFixture.json)
@@ -253,11 +263,31 @@ Generator behavior:
 - reads preprocessor package provenance and plate outputs
 - now also reads chart cutline GeoJSON from the preprocessor workspace
 - transforms chart geometry from `EPSG:3857` into WGS84 lat/lon points for the UI fixture
-- now also copies a small real TAC tile subset for the prototype map viewport
+- now copies real TAC tile windows at zoom levels 9 and 10 for the full-page prototype map
 
 Practical consequence:
 - the generated fixture now carries both catalog metadata and geometry for the map lookup slice
-- the fixture also carries `map_tile_view` metadata for the tile-backed map slice
+- the fixture now carries:
+  - `map_view` metadata for the full-page continuous-zoom explorer
+  - legacy `map_tile_view` metadata only for compatibility with older code paths
+
+## Android Map Rendering Notes
+
+Important rendering lessons from the full-page map work:
+- Android and web must use the same effective viewport unit system
+- using raw physical pixels on Android made the same numeric zoom appear about 2x farther out than web
+- Android tile seams at high zoom were not fully fixed by snapping individual composables
+- the reliable fix was to render tiles in a single `Canvas` draw pass, not as a stack of separate `Image` composables
+
+Current reliable Android debug inputs in this environment:
+- drag pan
+- keyboard `+`
+- keyboard `-`
+
+Inputs that are still unreliable in this remote emulator path:
+- emulator-generated wheel events
+- modifier-assisted pointer gestures like `Shift`-drag
+- emulator multitouch visualization over VNC
 - if GDAL Python bindings are missing, fixture generation for the map slice will fail
 
 Current copied tile destinations:

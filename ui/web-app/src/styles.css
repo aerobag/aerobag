@@ -141,26 +141,6 @@ button {
   font-weight: 700;
 }
 
-.zoomControls {
-  position: absolute;
-  right: 18px;
-  bottom: 18px;
-  z-index: 2;
-  display: grid;
-  gap: 10px;
-}
-
-.zoomControls button {
-  width: 56px;
-  height: 56px;
-  border: 1px solid var(--edge);
-  border-radius: 18px;
-  background: var(--panel);
-  color: var(--ink);
-  font-size: 1.6rem;
-  box-shadow: var(--shadow);
-}
-
 @media (max-width: 720px) {
   .hud {
     max-width: calc(100vw - 24px);
@@ -179,10 +159,5 @@ button {
 
   .facts {
     grid-template-columns: 1fr;
-  }
-
-  .zoomControls {
-    right: 12px;
-    bottom: 12px;
   }
 }

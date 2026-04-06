@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env, fs,
     path::{Path, PathBuf},
     process::Command,
@@ -46,21 +47,22 @@ fn usage() -> &'static str {
   preprocessor-cli inspect-run --run-root <path>
   preprocessor-cli compare-tile-counts --run-root <path>
   preprocessor-cli compare-sec-packages --legacy-work-dir <path> --rust-work-dir <path>
-  preprocessor-cli compare-chart-packages --family <sec|tac|enr-l> --legacy-work-dir <path> --rust-work-dir <path>
-  preprocessor-cli compare-chart-tile-paths --family <sec|tac|enr-l> --legacy-work-dir <path> --rust-work-dir <path>
+  preprocessor-cli compare-chart-packages --family <sec|tac|enr-l|enr-h> --legacy-work-dir <path> --rust-work-dir <path>
+  preprocessor-cli compare-chart-tile-paths --family <sec|tac|enr-l|enr-h> --legacy-work-dir <path> --rust-work-dir <path>
   preprocessor-cli compare-csup-packages --legacy-work-dir <path> --rust-work-dir <path>
   preprocessor-cli compare-tpp-packages --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --legacy-work-dir <path> --rust-work-dir <path>
   preprocessor-cli compare-provenance --left-provenance-dir <path> --right-provenance-dir <path>
+  preprocessor-cli compare-sampled-images --left-root <path> --right-root <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
   preprocessor-cli print-cache-layout --cache-root <path> --url <url> --sha256 <sha256>
   preprocessor-cli print-tool-example --cwd <path>
-  preprocessor-cli explain-chart --family <sec|tac|enr-l> --cpus <count>
-  preprocessor-cli build-vrts --family <sec|tac|enr-l> --work-dir <path> --cpu-jobs <count>
-  preprocessor-cli build-tiles --family <sec|tac|enr-l> --work-dir <path> --cpu-jobs <count>
-  preprocessor-cli package-regions --family <sec|tac|enr-l> --work-dir <path>
-  preprocessor-cli run-native-chart --family <sec|tac|enr-l> --source-repo <path> --run-root <path> --cpu-jobs <count> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
+  preprocessor-cli explain-chart --family <sec|tac|enr-l|enr-h> --cpus <count>
+  preprocessor-cli build-vrts --family <sec|tac|enr-l|enr-h> --work-dir <path> --cpu-jobs <count>
+  preprocessor-cli build-tiles --family <sec|tac|enr-l|enr-h> --work-dir <path> --cpu-jobs <count>
+  preprocessor-cli package-regions --family <sec|tac|enr-l|enr-h> --work-dir <path>
+  preprocessor-cli run-native-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> --cpu-jobs <count> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-native-csup --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-native-tpp --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
-  preprocessor-cli run-chart --family <sec|tac|enr-l> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
+  preprocessor-cli run-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
 }
 
 fn count_lines(path: &PathBuf) -> anyhow::Result<u64> {
@@ -125,6 +127,190 @@ fn read_tile_paths(tiles_root: &Path) -> anyhow::Result<Vec<String>> {
         visit(tiles_root, tiles_root, &mut paths)?;
     }
     Ok(paths)
+}
+
+fn visit_files(
+    root: &Path,
+    current: &Path,
+    acc: &mut Vec<String>,
+    predicate: &dyn Fn(&Path) -> bool,
+) -> anyhow::Result<()> {
+    let mut entries = fs::read_dir(current)
+        .with_context(|| format!("failed to read directory {}", current.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to iterate directory {}", current.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to read file type for {}", path.display()))?;
+        if file_type.is_dir() {
+            visit_files(root, &path, acc, predicate)?;
+        } else if file_type.is_file() && predicate(&path) {
+            let relative = path
+                .strip_prefix(root)
+                .with_context(|| format!("failed to relativize {}", path.display()))?;
+            acc.push(relative.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    Ok(())
+}
+
+fn is_image_path(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "tif" | "tiff" | "webp"
+    )
+}
+
+fn read_image_paths(root: &Path) -> anyhow::Result<Vec<String>> {
+    let mut paths = Vec::new();
+    if root.is_dir() {
+        visit_files(root, root, &mut paths, &is_image_path)?;
+    }
+    Ok(paths)
+}
+
+fn sample_hash_bucket(path: &str) -> u8 {
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_bytes());
+    let digest = hasher.finalize();
+    digest[0]
+}
+
+fn select_sample_paths(
+    shared_paths: &[String],
+    sample_percent: u8,
+    limit: Option<usize>,
+) -> Vec<String> {
+    if shared_paths.is_empty() {
+        return Vec::new();
+    }
+    let threshold = usize::from(sample_percent).min(100);
+    let mut selected = shared_paths
+        .iter()
+        .filter(|path| usize::from(sample_hash_bucket(path)) * 100 / 256 < threshold)
+        .cloned()
+        .collect::<Vec<_>>();
+    if selected.is_empty() && !shared_paths.is_empty() {
+        selected.push(shared_paths[0].clone());
+    }
+    if let Some(limit) = limit {
+        selected.truncate(limit);
+    }
+    selected
+}
+
+fn compare_image_rmse(left: &Path, right: &Path) -> anyhow::Result<f64> {
+    let output = Command::new("compare")
+        .args(["-metric", "RMSE"])
+        .arg(left)
+        .arg(right)
+        .arg("null:")
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run compare for {} and {}",
+                left.display(),
+                right.display()
+            )
+        })?;
+    let stderr = String::from_utf8(output.stderr).context("compare stderr was not utf-8")?;
+    let metric_text = stderr
+        .split('(')
+        .nth(1)
+        .and_then(|tail| tail.split(')').next())
+        .context("compare output did not contain normalized RMSE metric")?;
+    let rmse = metric_text
+        .trim()
+        .parse::<f64>()
+        .with_context(|| format!("failed to parse RMSE from {stderr:?}"))?;
+    if !output.status.success() && rmse == 0.0 {
+        anyhow::bail!(
+            "compare failed for {} and {}: {}",
+            left.display(),
+            right.display(),
+            stderr.trim()
+        );
+    }
+    Ok(rmse)
+}
+
+fn compare_sampled_images(
+    left_root: &Path,
+    right_root: &Path,
+    sample_percent: u8,
+    rmse_threshold: f64,
+    limit: Option<usize>,
+) -> anyhow::Result<()> {
+    let left_paths = read_image_paths(left_root)?;
+    let right_paths = read_image_paths(right_root)?;
+    let left_set = left_paths.into_iter().collect::<BTreeSet<_>>();
+    let right_set = right_paths.into_iter().collect::<BTreeSet<_>>();
+    let shared_paths = left_set
+        .intersection(&right_set)
+        .cloned()
+        .collect::<Vec<_>>();
+    let left_only = left_set.difference(&right_set).cloned().collect::<Vec<_>>();
+    let right_only = right_set.difference(&left_set).cloned().collect::<Vec<_>>();
+    let sampled_paths = select_sample_paths(&shared_paths, sample_percent, limit);
+
+    println!(
+        "images left={} right={} shared={} left_only={} right_only={} sampled={} sample_percent={} rmse_threshold={}",
+        left_set.len(),
+        right_set.len(),
+        shared_paths.len(),
+        left_only.len(),
+        right_only.len(),
+        sampled_paths.len(),
+        sample_percent,
+        rmse_threshold
+    );
+    for path in left_only.iter().take(10) {
+        println!("left_only {}", path);
+    }
+    for path in right_only.iter().take(10) {
+        println!("right_only {}", path);
+    }
+
+    let mut mismatches = Vec::new();
+    for relative in &sampled_paths {
+        let left_path = left_root.join(relative);
+        let right_path = right_root.join(relative);
+        let rmse = compare_image_rmse(&left_path, &right_path)?;
+        if rmse > rmse_threshold {
+            mismatches.push((relative.clone(), rmse));
+        }
+    }
+
+    mismatches.sort_by(|(left_path, left_rmse), (right_path, right_rmse)| {
+        right_rmse
+            .partial_cmp(left_rmse)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left_path.cmp(right_path))
+    });
+
+    for (path, rmse) in mismatches.iter().take(20) {
+        println!("image_mismatch path={} rmse={:.8}", path, rmse);
+    }
+    let status = if left_only.is_empty() && right_only.is_empty() && mismatches.is_empty() {
+        "match"
+    } else {
+        "mismatch"
+    };
+    println!(
+        "visual status={} sampled={} mismatches={} left_only={} right_only={}",
+        status,
+        sampled_paths.len(),
+        mismatches.len(),
+        left_only.len(),
+        right_only.len()
+    );
+    Ok(())
 }
 
 fn compare_sec_packages(legacy_work_dir: &Path, rust_work_dir: &Path) -> anyhow::Result<()> {
@@ -283,6 +469,7 @@ fn compare_chart_tile_paths(
         ChartFamily::Sec => ("SEC", "0"),
         ChartFamily::Tac => ("TAC", "1"),
         ChartFamily::EnrL => ("ENR_L", "3"),
+        ChartFamily::EnrH => ("ENR_H", "4"),
     };
 
     let legacy_tiles_root = legacy_work_dir.join("tiles").join(spec.1);
@@ -414,6 +601,7 @@ fn parse_family(value: &str) -> anyhow::Result<ChartFamily> {
         "sec" => Ok(ChartFamily::Sec),
         "tac" => Ok(ChartFamily::Tac),
         "enr-l" => Ok(ChartFamily::EnrL),
+        "enr-h" => Ok(ChartFamily::EnrH),
         _ => anyhow::bail!("unknown family: {value}"),
     }
 }
@@ -471,6 +659,7 @@ fn main() -> anyhow::Result<()> {
             println!("SEC {}", baseline.sec);
             println!("TAC {}", baseline.tac);
             println!("ENR_L {}", baseline.enr_l);
+            println!("ENR_H unknown");
         }
         Some("compare-tile-counts") => {
             if args.get(2).map(String::as_str) != Some("--run-root") {
@@ -481,13 +670,21 @@ fn main() -> anyhow::Result<()> {
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
             );
-            for family in [ChartFamily::Sec, ChartFamily::Tac, ChartFamily::EnrL] {
+            for family in [
+                ChartFamily::Sec,
+                ChartFamily::Tac,
+                ChartFamily::EnrL,
+                ChartFamily::EnrH,
+            ] {
                 let label = family.capture_label();
                 let path = run_root.join("meta").join(format!("{label}.tile-paths.txt"));
                 let actual = count_lines(&path)?;
-                let expected = family.baseline_tile_count();
-                let status = if actual == expected { "match" } else { "mismatch" };
-                println!("{label} expected={expected} actual={actual} status={status}");
+                if let Some(expected) = family.baseline_tile_count() {
+                    let status = if actual == expected { "match" } else { "mismatch" };
+                    println!("{label} expected={expected} actual={actual} status={status}");
+                } else {
+                    println!("{label} expected=unknown actual={actual} status=unknown");
+                }
             }
         }
         Some("compare-sec-packages") => {
@@ -524,6 +721,7 @@ fn main() -> anyhow::Result<()> {
                 ChartFamily::Sec => "SEC",
                 ChartFamily::Tac => "TAC",
                 ChartFamily::EnrL => "ENR_L",
+                ChartFamily::EnrH => "ENR_H",
             };
             let legacy_work_dir = PathBuf::from(
                 args.get(5)
@@ -646,6 +844,64 @@ fn main() -> anyhow::Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
             );
             compare_provenance(&left_provenance_dir, &right_provenance_dir)?;
+        }
+        Some("compare-sampled-images") => {
+            if args.get(2).map(String::as_str) != Some("--left-root")
+                || args.get(4).map(String::as_str) != Some("--right-root")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let left_root = PathBuf::from(
+                args.get(3)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let right_root = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let mut sample_percent = 1_u8;
+            let mut rmse_threshold = 0.0_f64;
+            let mut limit = None;
+            let mut index = 6;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--sample-percent" => {
+                        sample_percent = args
+                            .get(index + 1)
+                            .ok_or_else(|| anyhow::anyhow!("missing value for --sample-percent"))?
+                            .parse()
+                            .context("invalid sample percent")?;
+                        index += 2;
+                    }
+                    "--rmse-threshold" => {
+                        rmse_threshold = args
+                            .get(index + 1)
+                            .ok_or_else(|| anyhow::anyhow!("missing value for --rmse-threshold"))?
+                            .parse()
+                            .context("invalid rmse threshold")?;
+                        index += 2;
+                    }
+                    "--limit" => {
+                        limit = Some(
+                            args.get(index + 1)
+                                .ok_or_else(|| anyhow::anyhow!("missing value for --limit"))?
+                                .parse()
+                                .context("invalid limit")?,
+                        );
+                        index += 2;
+                    }
+                    _ => anyhow::bail!("{}", usage()),
+                }
+            }
+            compare_sampled_images(
+                &left_root,
+                &right_root,
+                sample_percent,
+                rmse_threshold,
+                limit,
+            )?;
         }
         Some("print-tool-example") => {
             if args.get(2).map(String::as_str) != Some("--cwd") {

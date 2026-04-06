@@ -14,6 +14,8 @@ use preprocessor_fetch::{
 };
 use preprocessor_tools::ToolInvocation;
 
+const TPP_AIRPORT_DIAGRAMS_URL: &str = "https://www.outerworldapps.com/WairToNowWork/avare_aptdiags.php";
+
 #[derive(Debug, Clone)]
 pub struct NativeTppRunRequest {
     pub region: Region,
@@ -57,7 +59,10 @@ pub fn run_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<NativeTpp
     if let Some(source_urls_path) = &request.prefetch_source_urls {
         let start = Instant::now();
         copy_source_urls_provenance(source_urls_path, &provenance_dir)?;
-        let urls = read_source_urls_jsonl(source_urls_path)?;
+        let mut urls = read_source_urls_jsonl(source_urls_path)?;
+        if !urls.iter().any(|url| url == TPP_AIRPORT_DIAGRAMS_URL) {
+            urls.push(TPP_AIRPORT_DIAGRAMS_URL.to_string());
+        }
         prefetch_archives_with_provenance(
             &urls,
             &work_dir,

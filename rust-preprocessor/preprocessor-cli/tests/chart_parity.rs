@@ -167,6 +167,28 @@ fn legacy_sec_provenance_self_compare_matches() {
 }
 
 #[test]
+fn sec_visual_self_compare_sample_matches() {
+    let root = repo_root();
+    let tiles = path_string(root.join("runs/20260405T154700Z/work/charts-sec/tiles/0"));
+
+    let stdout = run_cli(&[
+        "compare-sampled-images",
+        "--left-root",
+        &tiles,
+        "--right-root",
+        &tiles,
+        "--sample-percent",
+        "1",
+        "--rmse-threshold",
+        "0.0",
+        "--limit",
+        "10",
+    ]);
+
+    assert!(stdout.contains("visual status=match"), "expected visual match\n{stdout}");
+}
+
+#[test]
 fn csup_native_dedup_packages_match_legacy_entries() {
     let root = repo_root();
     let legacy = path_string(root.join("runs/20260405T154700Z/work/csup"));

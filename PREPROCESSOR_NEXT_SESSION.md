@@ -2,6 +2,118 @@
 
 ## Session Notes
 
+- 2026-04-06 00:46:00Z:
+  - Investigated adding `WAC` while the validation harness run was in flight.
+  - Important finding: `WAC` is not present in the split backend repo [avare-source/charts](/root/aerobag/avare-source/charts).
+  - The current Rust `ChartFamily` enum and CLI only model the split FAA chart families:
+    - `sec`
+    - `tac`
+    - `enr-l`
+  - WAC lives on the older `avare/extra` side of the legacy system, alongside `ONC` and `TPC`, not in the split `charts` crawler/tiler flow.
+  - Confirmed app-side WAC contract exists in:
+    - [arrays.xml](/root/aerobag/avare-source/avare/app/src/main/res/values/arrays.xml)
+      - `resNameWAC`
+      - `resFilesWAC`
+    - [Boundaries.java](/root/aerobag/avare-source/avare/app/src/main/java/com/ds/avare/place/Boundaries.java)
+      - polygon bounds for sheets such as `CC-8`, `CF-16`, `CJ-27`
+  - Confirmed the old manual charting scripts exist in:
+    - [gtag.py](/root/aerobag/avare-source/avare/extra/charting/gtag.py)
+    - [gtag_tmerc.py](/root/aerobag/avare-source/avare/extra/charting/gtag_tmerc.py)
+    - [zip.pl](/root/aerobag/avare-source/avare/extra/charting/zip.pl)
+  - Those scripts are a different pipeline shape from sectional/TAC/ENR_L:
+    - hand-authored georeference text files
+    - local source imagery
+    - manual chart mosaicing
+    - then `gdal2tiles.py` and zip packaging
+  - Critical blocker: no WAC-specific source imagery or georeference/input files were found in the workspace.
+    - Searches for sheet IDs like `CC-8`, `CF-16`, and `CJ-27` only found the app contract and bounds, not build inputs.
+    - The only WAC-named artifact found was app asset [chart_wac.png](/root/aerobag/avare-source/avare/app/src/main/assets/chart_wac.png).
+  - Practical implication:
+    - WAC is not “easy like sectional” in the current repo layout.
+    - Adding it correctly requires first locating the real legacy WAC source-of-truth inputs or deciding on a new explicit input model for these manual-chart families.
+
+- 2026-04-06 01:03:00Z:
+  - Added a lightweight visual-equivalence command to the Rust CLI:
+    - [`compare-sampled-images`](/root/aerobag/rust-preprocessor/preprocessor-cli/src/main.rs)
+  - The command:
+    - recursively finds shared image paths under two roots,
+    - selects a deterministic hash-based sample,
+    - runs ImageMagick `compare -metric RMSE` on each sampled pair,
+    - reports left-only/right-only paths and sampled mismatches.
+  - Supported image extensions currently include:
+    - `png`
+    - `jpg`
+    - `jpeg`
+    - `tif`
+    - `tiff`
+    - `webp`
+  - Added a regression test in:
+    - [`chart_parity.rs`](/root/aerobag/rust-preprocessor/preprocessor-cli/tests/chart_parity.rs)
+  - `cargo test -p preprocessor-cli` now passes with 10 tests.
+  - Initial calibration run on sectional tile trees:
+    - left: [`runs/20260405T154700Z/work/charts-sec/tiles/0`](/root/aerobag/runs/20260405T154700Z/work/charts-sec/tiles/0)
+    - right: [`rust-runs/sec-clean-check/work/charts-sec/tiles/0`](/root/aerobag/rust-runs/sec-clean-check/work/charts-sec/tiles/0)
+    - sample: `1%`, capped to `20`
+  - Result with `--rmse-threshold 0.0`:
+    - one mismatch at `0/0/0.webp`
+    - `rmse=0.01221550`
+  - Result with `--rmse-threshold 0.02`:
+    - sample passes
+  - Practical implication:
+    - the visual-diff machinery works,
+    - threshold policy still needs an explicit decision before folding this into the whole-banana harness as a required gate.
+
+- 2026-04-06 01:16:00Z:
+  - Investigated the fresh whole-banana native chart summary lines that reported:
+    - sectional `tile_count 35490`
+    - TAC `tile_count 7170`
+  - Actual fresh-run parity checks showed no chart regression:
+    - sectional tile paths match exactly between fresh legacy and native outputs
+    - TAC tile paths match exactly between fresh legacy and native outputs
+    - sectional and TAC package parity both match exactly
+  - Verified actual native on-disk counts are the expected full tile-tree counts:
+    - sectional `35494`
+    - TAC `7174`
+  - Root cause:
+    - [`build_tiles_from_spec`](/root/aerobag/rust-preprocessor/preprocessor-charts/src/lib.rs) was reporting only `.webp` payload count via `count_tile_webps()`
+    - parity tooling counts the full tile tree, including:
+      - `googlemaps.html`
+      - `leaflet.html`
+      - `openlayers.html`
+      - `tilemapresource.xml`
+    - that explains the consistent `-4`
+  - Fix:
+    - native chart summary now uses full tile-tree count via [`count_tile_files()`](/root/aerobag/rust-preprocessor/preprocessor-charts/src/lib.rs)
+  - Verification:
+    - `cargo test -p preprocessor-cli` passes with 10 tests
+  - Practical implication:
+    - the earlier fresh whole-banana chart-count discrepancy was only a reporting bug, not an output mismatch.
+
+- 2026-04-06 01:45:00Z:
+  - Wired `enr-h` through the shared Rust chart-family path.
+  - Updated:
+    - [`preprocessor-core/src/lib.rs`](/root/aerobag/rust-preprocessor/preprocessor-core/src/lib.rs)
+    - [`preprocessor-charts/src/lib.rs`](/root/aerobag/rust-preprocessor/preprocessor-charts/src/lib.rs)
+    - [`preprocessor-cli/src/main.rs`](/root/aerobag/rust-preprocessor/preprocessor-cli/src/main.rs)
+  - `ChartFamily` now includes `EnrH` with:
+    - capture label `charts-enr-h`
+    - script `enr_h.py`
+    - chart dir `ENR_H`
+    - tile index `4`
+    - max zoom `9`
+    - IFR VRT path
+  - The Android contract already contains the expected package names:
+    - `AK_ENR_H`, `PAC_ENR_H`, `NW_ENR_H`, `SW_ENR_H`, `NC_ENR_H`, `EC_ENR_H`, `SC_ENR_H`, `NE_ENR_H`, `SE_ENR_H`
+    - in [`arrays.xml`](/root/aerobag/avare-source/avare/app/src/main/res/values/arrays.xml)
+  - Baseline tile count for `enr-h` is not recorded yet, so:
+    - `print-baseline` prints `ENR_H unknown`
+    - `compare-tile-counts` reports `expected=unknown` for `charts-enr-h`
+  - Verification:
+    - `cargo test -p preprocessor-cli` passes
+    - `cargo run -q -p preprocessor-cli -- explain-chart --family enr-h --cpus 4` works
+  - Next obvious `enr-h` step:
+    - produce a legacy capture slice and run the same parity/provenance/visual workflow used for `enr-l`.
+
 - 2026-04-05:
   - Confirmed legacy `csup` completed successfully in [runs/20260405T154700Z](/root/aerobag/runs/20260405T154700Z).
   - Confirmed legacy `tpp-ne` failed because of network/DNS during the 6th source fetch, not because of an obvious transform bug.
@@ -388,3 +500,74 @@ If the next session starts with no further instruction, do this:
     4. rerun in `offline` mode and require cache misses to fail
   - Workspace note:
     - there is an untracked top-level `resumes` file at the moment; I did not touch it or include it in any commit
+
+- 2026-04-06T00:30:42Z:
+  - Began implementing the actual fresh-checkout validation harness.
+  - Added tracked legacy patch files under [`legacy-capture/patches`](/root/aerobag/legacy-capture/patches) for the currently required shim set:
+    - base provenance/cache patch per repo:
+      - `charts-common.patch`
+      - `csup-common.patch`
+      - `tpp-common.patch`
+    - follow-up crawl-page cache patch per repo:
+      - `charts-crawl-cache.patch`
+      - `csup-crawl-cache.patch`
+      - `tpp-crawl-cache.patch`
+  - Added an idempotent legacy hydrate script:
+    - [`legacy-capture/hydrate_legacy_sources.sh`](/root/aerobag/legacy-capture/hydrate_legacy_sources.sh)
+  - Current hydrate behavior:
+    - clones `charts`, `tpp`, and `csup` into `avare-source/` if missing
+    - applies the tracked shim patches if their marker text is absent
+    - treats already-patched repos as success
+  - Important correction:
+    - initial `git apply --reverse --check` idempotence logic was too strict once a repo had later follow-up edits
+    - hydrate now uses marker-based idempotence instead
+    - verified by rerunning hydrate against the already-patched local repos; it now succeeds cleanly
+  - Added a source-URL prep helper:
+    - [`legacy-capture/emit_source_urls.py`](/root/aerobag/legacy-capture/emit_source_urls.py)
+  - Current source-URL prep behavior:
+    - emits `source_urls.jsonl` files for:
+      - `charts-sec`
+      - `charts-tac`
+      - `charts-enr-l`
+      - `csup`
+      - `tpp-ne`
+    - uses the same cycle logic as the legacy repos
+    - now also honors `FETCH_CACHE_ROOT` / `FETCH_CACHE_MODE` for crawl-page HTML, so offline replay is not blocked on the FAA index pages
+  - Live legacy repos were also updated so `list_crawl(...)` uses the shared fetch cache for the crawl-page HTML, not just archive downloads.
+  - Added the first single-command orchestrator:
+    - [`legacy-capture/run_preprocessor_validation.sh`](/root/aerobag/legacy-capture/run_preprocessor_validation.sh)
+  - Current orchestrator behavior:
+    - hydrates legacy sources
+    - emits source-url files
+    - builds `preprocessor-cli`
+    - launches:
+      - the legacy representative capture runner
+      - native `sec`, `tac`, `enr-l`, `csup`, and `tpp-ne`
+      - all against the same `FETCH_CACHE_ROOT`
+    - waits for completion
+    - runs comparison commands into `compare/*.txt`
+    - writes a combined `compare/summary.txt`
+  - Current limitations:
+    - I have not yet executed a full end-to-end run of `run_preprocessor_validation.sh`
+    - so the orchestrator is syntax-checked and component-checked, but not yet operationally proven
+    - CPU budgeting is intentionally simple right now; it is not yet tuned
+  - Additional detail:
+    - native `tpp` now appends the Outer World Apps airport-diagram URL internally during prefetch, so native `tpp-ne` download provenance can match legacy while leaving `source_urls.jsonl` aligned with the legacy `list_crawl` contract
+  - Verification completed:
+    - `bash -n` passed for:
+      - [`legacy-capture/hydrate_legacy_sources.sh`](/root/aerobag/legacy-capture/hydrate_legacy_sources.sh)
+      - [`legacy-capture/run_legacy_capture_direct.sh`](/root/aerobag/legacy-capture/run_legacy_capture_direct.sh)
+      - [`legacy-capture/run_preprocessor_validation.sh`](/root/aerobag/legacy-capture/run_preprocessor_validation.sh)
+    - `python3 -m py_compile` passed for:
+      - [`legacy-capture/emit_source_urls.py`](/root/aerobag/legacy-capture/emit_source_urls.py)
+      - the three patched legacy `common.py` files
+    - `cargo test -p preprocessor-cli` still passed with 9 tests after the native `tpp` prefetch tweak
+    - rerunning [`legacy-capture/hydrate_legacy_sources.sh`](/root/aerobag/legacy-capture/hydrate_legacy_sources.sh) succeeded on the current machine
+  - Workspace note:
+    - unrelated user changes were present in `notes` and `UI_DEPENDENCIES.md`; do not include them in any commit for this harness work
+    - there is also an untracked top-level `.codex` path; leave it alone
+  - Next exact step:
+    1. run `legacy-capture/run_preprocessor_validation.sh` once in `FETCH_CACHE_MODE=fill`
+    2. inspect failures and fix harness bugs
+    3. rerun in `FETCH_CACHE_MODE=offline`
+    4. only after that decide whether to commit the harness as “working”

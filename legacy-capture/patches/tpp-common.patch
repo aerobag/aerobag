@@ -1,0 +1,167 @@
+diff --git a/common.py b/common.py
+index 99c214b..a0d6b40 100644
+--- a/common.py
++++ b/common.py
+@@ -1,4 +1,6 @@
+ import glob
++import hashlib
++import json
+ import os
+ import urllib.request
+ import re
+@@ -11,6 +13,83 @@ import concurrent.futures
+ import cycle
+ import pypdf
+ 
++CAPTURE_META_DIR = os.environ.get("CAPTURE_META_DIR")
++CAPTURE_LABEL = os.environ.get("CAPTURE_LABEL", "")
++FETCH_CACHE_ROOT = os.environ.get("FETCH_CACHE_ROOT")
++FETCH_CACHE_MODE = os.environ.get("FETCH_CACHE_MODE", "fill").lower()
++
++
++def _capture_path(name):
++    if not CAPTURE_META_DIR:
++        return None
++    os.makedirs(CAPTURE_META_DIR, exist_ok=True)
++    return os.path.join(CAPTURE_META_DIR, name)
++
++
++def _sha256(path):
++    digest = hashlib.sha256()
++    with open(path, "rb") as handle:
++        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
++            digest.update(chunk)
++    return digest.hexdigest()
++
++
++def _record_jsonl(name, payload):
++    path = _capture_path(name)
++    if path is None:
++        return
++    with open(path, "a", encoding="utf-8") as handle:
++        handle.write(json.dumps(payload, sort_keys=True) + "\n")
++
++
++def _cache_dirs():
++    if not FETCH_CACHE_ROOT:
++        return None, None
++    blobs = os.path.join(FETCH_CACHE_ROOT, "blobs")
++    http = os.path.join(FETCH_CACHE_ROOT, "http")
++    os.makedirs(blobs, exist_ok=True)
++    os.makedirs(http, exist_ok=True)
++    return blobs, http
++
++
++def _cache_metadata_path(url):
++    _, http = _cache_dirs()
++    if http is None:
++        return None
++    return os.path.join(http, hashlib.sha256(url.encode("utf-8")).hexdigest() + ".json")
++
++
++def _load_cached_download(url):
++    metadata_path = _cache_metadata_path(url)
++    if metadata_path is None or not os.path.isfile(metadata_path):
++        return None
++    with open(metadata_path, "r", encoding="utf-8") as handle:
++        metadata = json.load(handle)
++    blob_path = os.path.join(FETCH_CACHE_ROOT, "blobs", metadata["sha256"])
++    if not os.path.isfile(blob_path):
++        return None
++    return metadata, blob_path
++
++
++def _store_cached_download(url, name):
++    blobs, _ = _cache_dirs()
++    if blobs is None:
++        return
++    sha256 = _sha256(name)
++    blob_path = os.path.join(blobs, sha256)
++    if not os.path.isfile(blob_path):
++        with open(name, "rb") as src, open(blob_path, "wb") as dst:
++            dst.write(src.read())
++    metadata_path = _cache_metadata_path(url)
++    with open(metadata_path, "w", encoding="utf-8") as handle:
++        json.dump({
++            "file": name,
++            "sha256": sha256,
++            "size": os.path.getsize(name),
++            "url": url,
++        }, handle, sort_keys=True)
++
++
+ states_in_regions = {
+     "AK":  ["AK",],
+     "PAC": ["HI", "XX"],
+@@ -35,17 +114,53 @@ def list_crawl(url, match):
+         if re.search(match, link_x):
+             charts.append(link_x)
+     list_set = set(charts)  # unique
+-    return list(list_set)
++    crawled = sorted(list_set)
++    _record_jsonl("source_urls.jsonl", {
++        "event": "list_crawl",
++        "label": CAPTURE_LABEL,
++        "match": match,
++        "url": url,
++        "results": crawled,
++    })
++    return crawled
+ 
+ 
+ def download(url):
+     name = url.split("/")[-1]
+-    # check if exists
++    source = "local"
+     if not os.path.isfile(name):
+-        urllib.request.urlretrieve(url, name)
++        cached = _load_cached_download(url)
++        if cached is not None:
++            metadata, blob_path = cached
++            with open(blob_path, "rb") as src, open(name, "wb") as dst:
++                dst.write(src.read())
++            source = "cache"
++        else:
++            if FETCH_CACHE_MODE == "offline":
++                raise RuntimeError(f"cache miss in offline mode for {url}")
++            urllib.request.urlretrieve(url, name)
++            _store_cached_download(url, name)
++            source = "network"
++    _record_jsonl("downloads.jsonl", {
++        "event": "download",
++        "label": CAPTURE_LABEL,
++        "url": url,
++        "file": name,
++        "downloaded": source == "network",
++        "source": source,
++        "size": os.path.getsize(name),
++        "sha256": _sha256(name),
++    })
+     if name.endswith(".zip") or name.endswith(".ZIP"):  # if a zipfile, unzip first
+         with zipfile.ZipFile(name, 'r') as zip_ref:
++            members = sorted(zip_ref.namelist())
+             zip_ref.extractall(".")
++        _record_jsonl("downloads.jsonl", {
++            "event": "extract_zip",
++            "label": CAPTURE_LABEL,
++            "archive": name,
++            "members": members,
++        })
+ 
+ 
+ def download_list(charts):
+@@ -234,4 +349,13 @@ def zip_plates(region):
+     manifest_file.close()
+     zip_file.write(region + "_TPP")
+     zip_file.close()
+-
++    _record_jsonl("package_outputs.jsonl", {
++        "event": "package_output",
++        "label": CAPTURE_LABEL,
++        "region": region,
++        "zip": region + "_TPP.zip",
++        "zip_sha256": _sha256(region + "_TPP.zip"),
++        "manifest": region + "_TPP",
++        "manifest_sha256": _sha256(region + "_TPP"),
++        "png_count": len(file_list),
++    })

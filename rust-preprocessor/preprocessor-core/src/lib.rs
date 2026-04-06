@@ -47,6 +47,7 @@ pub enum ChartFamily {
     Sec,
     Tac,
     EnrL,
+    EnrH,
 }
 
 impl ChartFamily {
@@ -55,14 +56,16 @@ impl ChartFamily {
             Self::Sec => "charts-sec",
             Self::Tac => "charts-tac",
             Self::EnrL => "charts-enr-l",
+            Self::EnrH => "charts-enr-h",
         }
     }
 
-    pub fn baseline_tile_count(self) -> u64 {
+    pub fn baseline_tile_count(self) -> Option<u64> {
         match self {
-            Self::Sec => ExpectedTileCounts::CURRENT_BASELINE.sec,
-            Self::Tac => ExpectedTileCounts::CURRENT_BASELINE.tac,
-            Self::EnrL => ExpectedTileCounts::CURRENT_BASELINE.enr_l,
+            Self::Sec => Some(ExpectedTileCounts::CURRENT_BASELINE.sec),
+            Self::Tac => Some(ExpectedTileCounts::CURRENT_BASELINE.tac),
+            Self::EnrL => Some(ExpectedTileCounts::CURRENT_BASELINE.enr_l),
+            Self::EnrH => None,
         }
     }
 
@@ -71,6 +74,7 @@ impl ChartFamily {
             "charts-sec" => Some(Self::Sec),
             "charts-tac" => Some(Self::Tac),
             "charts-enr-l" => Some(Self::EnrL),
+            "charts-enr-h" => Some(Self::EnrH),
             _ => None,
         }
     }

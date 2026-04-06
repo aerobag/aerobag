@@ -131,6 +131,15 @@ impl ChartSpec {
                 max_zoom: 10,
                 vrt_kind: VrtKind::Ifr,
             },
+            ChartFamily::EnrH => Self {
+                family,
+                chart_name: "ENR_H",
+                script_name: "enr_h.py",
+                chart_dir_name: "ENR_H",
+                tile_index: "4",
+                max_zoom: 9,
+                vrt_kind: VrtKind::Ifr,
+            },
         }
     }
 }
@@ -259,6 +268,7 @@ pub fn phase_plan(family: ChartFamily, concurrency: &ConcurrencyConfig) -> Vec<P
         ChartFamily::Sec => "crawl VFR and Caribbean FAA pages for sectional ZIPs",
         ChartFamily::Tac => "crawl FAA VFR pages for TAC ZIPs",
         ChartFamily::EnrL => "crawl FAA IFR pages for low chart ZIPs",
+        ChartFamily::EnrH => "crawl FAA IFR pages for high chart ZIPs",
     };
 
     vec![
@@ -372,8 +382,11 @@ fn build_vrts_from_spec(
 fn build_vfr_vrts(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::Result<VrtBuildResult> {
     let chart_dir_name = spec.chart_dir_name;
     let chart_dir = work_dir.join(chart_dir_name);
-    let mut inputs = chart_input_names(&chart_dir)?;
-    inputs.sort();
+    let inputs = chart_input_names(&chart_dir)?;
+    let vrts = inputs
+        .iter()
+        .map(|base_name| work_dir.join(format!("{base_name}.vrt")))
+        .collect::<Vec<_>>();
 
     let queue = Arc::new(Mutex::new(inputs));
     let job_count = cpu_jobs.max(1);
@@ -405,8 +418,6 @@ fn build_vfr_vrts(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::
             .map_err(|_| anyhow::anyhow!("vrt worker panicked"))??;
     }
 
-    let mut vrts = chart_vrt_paths(work_dir, chart_dir_name)?;
-    vrts.sort();
     build_main_vrt(work_dir, chart_dir_name, &vrts)?;
     let elapsed_ms = start.elapsed().as_millis();
 
@@ -422,8 +433,11 @@ fn build_vfr_vrts(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::
 fn build_ifr_vrts(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::Result<VrtBuildResult> {
     let chart_dir_name = spec.chart_dir_name;
     let chart_dir = work_dir.join(chart_dir_name);
-    let mut inputs = chart_input_names(&chart_dir)?;
-    inputs.sort();
+    let inputs = chart_input_names(&chart_dir)?;
+    let vrts = inputs
+        .iter()
+        .map(|base_name| work_dir.join(format!("{base_name}.vrt")))
+        .collect::<Vec<_>>();
 
     let queue = Arc::new(Mutex::new(inputs));
     let job_count = cpu_jobs.max(1);
@@ -455,8 +469,6 @@ fn build_ifr_vrts(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::
             .map_err(|_| anyhow::anyhow!("vrt worker panicked"))??;
     }
 
-    let mut vrts = chart_vrt_paths(work_dir, chart_dir_name)?;
-    vrts.sort();
     build_main_vrt(work_dir, chart_dir_name, &vrts)?;
     let elapsed_ms = start.elapsed().as_millis();
 
@@ -481,21 +493,6 @@ fn chart_input_names(chart_dir: &Path) -> anyhow::Result<Vec<String>> {
         }
     }
     Ok(names)
-}
-
-fn chart_vrt_paths(work_dir: &Path, main_vrt_stem: &str) -> anyhow::Result<Vec<PathBuf>> {
-    let mut vrts = Vec::new();
-    for entry in fs::read_dir(work_dir).with_context(|| format!("failed to read {}", work_dir.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        let is_vrt = path.extension().and_then(|value| value.to_str()) == Some("vrt");
-        let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
-        let main_vrt_name = format!("{main_vrt_stem}.vrt");
-        if is_vrt && name != main_vrt_name && !name.ends_with("rgb.vrt") {
-            vrts.push(path);
-        }
-    }
-    Ok(vrts)
 }
 
 fn build_one_vfr_vrt(
@@ -698,7 +695,7 @@ fn build_tiles_from_spec(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> a
 
     Ok(TileBuildResult {
         family: spec.family,
-        tile_count: count_tile_webps(&tiles_root)?,
+        tile_count: count_tile_files(&tiles_root)?,
         elapsed_ms: outcome.elapsed_ms,
         tiles_root,
     })
@@ -793,31 +790,6 @@ fn sanitize_label(value: &str) -> String {
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
         .collect()
-}
-
-fn count_tile_webps(tiles_root: &Path) -> anyhow::Result<u64> {
-    if !tiles_root.is_dir() {
-        return Ok(0);
-    }
-    let mut count = 0_u64;
-    count_webps_recursive(tiles_root, &mut count)?;
-    Ok(count)
-}
-
-fn count_webps_recursive(path: &Path, count: &mut u64) -> anyhow::Result<()> {
-    for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let entry_path = entry.path();
-        if file_type.is_dir() {
-            count_webps_recursive(&entry_path, count)?;
-        } else if file_type.is_file()
-            && entry_path.extension().and_then(|value| value.to_str()) == Some("webp")
-        {
-            *count += 1;
-        }
-    }
-    Ok(())
 }
 
 fn collect_tile_paths_glob(work_dir: &Path, tile_index: &str) -> anyhow::Result<Vec<String>> {

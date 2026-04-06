@@ -161,9 +161,15 @@ fn render_airport_pages(work_dir: &Path, airport: &AirportRecord) -> anyhow::Res
         };
         let base_name = format!("CSUP-{}", region_token.to_uppercase());
         let output_base = format!("{base_name}_{page_index}");
-        if png_exists_for_base(&apt_dir, &output_base)? {
-            continue;
-        }
+        // The legacy Python pipeline names CSUP pages by the index of the PDF within a
+        // single <airport> record, not by any FAA-global page identifier. The FAA XML can
+        // contain duplicate <airport> entries with the same aptid but different PDF refs.
+        // Legacy processes those duplicate airports in document order and simply writes the
+        // same afd/<APT>/CSUP-<REGION>_<index>.png path again, so the later duplicate
+        // silently overwrites the earlier one. We preserve that behavior here because the
+        // packaged artifact contract is defined by legacy output paths, even though the FAA
+        // feed shape is surprising.
+        remove_pngs_for_base(&apt_dir, &output_base)?;
 
         let invocation = ToolInvocation {
             program: "mogrify".to_string(),
@@ -207,16 +213,17 @@ fn render_airport_pages(work_dir: &Path, airport: &AirportRecord) -> anyhow::Res
     Ok(())
 }
 
-fn png_exists_for_base(apt_dir: &Path, output_base: &str) -> anyhow::Result<bool> {
+fn remove_pngs_for_base(apt_dir: &Path, output_base: &str) -> anyhow::Result<()> {
     for entry in fs::read_dir(apt_dir).with_context(|| format!("failed to read {}", apt_dir.display()))? {
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name.starts_with(output_base) && name.ends_with(".png") {
-            return Ok(true);
+            fs::remove_file(entry.path())
+                .with_context(|| format!("failed to remove {}", entry.path().display()))?;
         }
     }
-    Ok(false)
+    Ok(())
 }
 
 fn package_csup_regions(

@@ -382,7 +382,11 @@ fn build_vrts_from_spec(
 fn build_vfr_vrts(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::Result<VrtBuildResult> {
     let chart_dir_name = spec.chart_dir_name;
     let chart_dir = work_dir.join(chart_dir_name);
-    let inputs = chart_input_names(&chart_dir)?;
+    // Compatibility note: overlap precedence in the main family VRT depends on input order.
+    // We therefore reproduce the legacy Python script's file discovery and any family-
+    // specific reordering quirks exactly, instead of choosing a tidier/deterministic order
+    // of our own.
+    let inputs = ordered_chart_input_names(spec.family, &chart_dir)?;
     let vrts = inputs
         .iter()
         .map(|base_name| work_dir.join(format!("{base_name}.vrt")))
@@ -433,7 +437,9 @@ fn build_vfr_vrts(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::
 fn build_ifr_vrts(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::Result<VrtBuildResult> {
     let chart_dir_name = spec.chart_dir_name;
     let chart_dir = work_dir.join(chart_dir_name);
-    let inputs = chart_input_names(&chart_dir)?;
+    // Compatibility note: IFR families also depend on legacy VRT stacking order for overlap
+    // precedence. Keep the legacy discovery/order contract instead of normalizing it.
+    let inputs = ordered_chart_input_names(spec.family, &chart_dir)?;
     let vrts = inputs
         .iter()
         .map(|base_name| work_dir.join(format!("{base_name}.vrt")))
@@ -481,17 +487,47 @@ fn build_ifr_vrts(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::
     })
 }
 
-fn chart_input_names(chart_dir: &Path) -> anyhow::Result<Vec<String>> {
-    let mut names = Vec::new();
-    for entry in fs::read_dir(chart_dir).with_context(|| format!("failed to read {}", chart_dir.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) == Some("geojson") {
-            if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
-                names.push(stem.to_string());
-            }
-        }
+fn ordered_chart_input_names(family: ChartFamily, chart_dir: &Path) -> anyhow::Result<Vec<String>> {
+    // Legacy charts/common.py uses Python glob.glob("*.geojson", root_dir=...), so we shell
+    // out to Python here rather than depending on Rust fs iteration order. This is deliberate:
+    // several chart-family visual mismatches were caused by source-order drift that changed
+    // gdalbuildvrt overlap precedence.
+    let script = r#"import glob, sys
+from pathlib import Path
+chart_dir = Path(sys.argv[1])
+for path in glob.glob("*.geojson", root_dir=chart_dir):
+    print(Path(path).stem)
+"#;
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg(script)
+        .arg(chart_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("failed to enumerate chart inputs under {}", chart_dir.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("python glob enumeration failed: {stderr}");
     }
+
+    let mut names: Vec<String> = String::from_utf8(output.stdout)
+        .context("chart input enumeration was not utf-8")?
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+
+    match family {
+        // Legacy enr_l.py explicitly sorts ascending before the main VRT is assembled.
+        ChartFamily::EnrL => names.sort(),
+        // Legacy enr_h.py explicitly sorts descending so "P" charts are overwritten in the
+        // same way as the historical pipeline. Keep that surprising behavior for parity.
+        ChartFamily::EnrH => names.sort_by(|a, b| b.cmp(a)),
+        _ => {}
+    }
+
     Ok(names)
 }
 
@@ -656,6 +692,9 @@ fn build_main_vrt(work_dir: &Path, chart_name: &str, vrts: &[PathBuf]) -> anyhow
 fn build_tiles_from_spec(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::Result<TileBuildResult> {
     let tiles_root = work_dir.join("tiles").join(spec.tile_index);
     if tiles_root.exists() {
+        // gdal2tiles.py overview tiles are generated from already-written child image files.
+        // For parity/debugging we must never inherit stale outputs from an earlier run, so the
+        // Rust path always starts from a clean tile tree instead of relying on --resume.
         fs::remove_dir_all(&tiles_root)
             .with_context(|| format!("failed to remove stale {}", tiles_root.display()))?;
     }
@@ -673,7 +712,9 @@ fn build_tiles_from_spec(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> a
             "-c".to_string(),
             "MUAVLLC".to_string(),
             "--no-kml".to_string(),
-            "--resume".to_string(),
+            // Chart parity depends on matching the legacy gdal2tiles process count. We pass
+            // through the caller's cpu_jobs here, and the validation harness pins charts to 8
+            // processes because the legacy Python chart scripts hard-code --processes 8.
             "--processes".to_string(),
             cpu_jobs.to_string(),
             "-z".to_string(),

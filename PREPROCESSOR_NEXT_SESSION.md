@@ -571,3 +571,109 @@ If the next session starts with no further instruction, do this:
     2. inspect failures and fix harness bugs
     3. rerun in `FETCH_CACHE_MODE=offline`
     4. only after that decide whether to commit the harness as “working”
+## 2026-04-06 gdal2tiles / TAC debug
+
+- Copied the installed `gdal2tiles.py` implementation to `/tmp/gdal2tiles.py` and inspected the multiprocessing path.
+- Important source finding: overview tiles are always generated from already-written child image files, and `--resume` skips any tile or metadata file that already exists. This makes reruns into a non-clean tree unsafe for parity/debugging.
+- Native chart tiling was tightened in [`rust-preprocessor/preprocessor-charts/src/lib.rs`](/root/aerobag/rust-preprocessor/preprocessor-charts/src/lib.rs):
+  - we already removed the per-family tile root before `gdal2tiles.py`
+  - now we also no longer pass `--resume` from Rust
+- Sectional conclusion stands: matching legacy `gdal2tiles.py --processes 8` eliminated the previously observed overlap/seam glitches.
+- TAC initially still looked broken after a clean no-`--resume` retile, but that turned out to be a stale-input mistake:
+  - I had rebuilt tiles only
+  - the native [`TAC.vrt`](/root/aerobag/runs/20260406T003224Z-validation/native/charts-tac/work/charts-tac/TAC.vrt) was still the old pre-fix alphabetized artifact
+- After rebuilding TAC VRTs and then retiling with `--processes 8`:
+  - native [`TAC.vrt`](/root/aerobag/runs/20260406T003224Z-validation/native/charts-tac/work/charts-tac/TAC.vrt) is byte-identical to legacy
+  - previously worst tiles now match exactly:
+    - `11/592/1269.webp` RMSE `0`
+    - `11/592/1270.webp` RMSE `0`
+    - `11/592/1268.webp` RMSE `0`
+  - full `100%` TAC visual compare at `RMSE=0.0` passed:
+    - `visual status=match sampled=7170 mismatches=0 left_only=0 right_only=0`
+
+## 2026-04-06 ENR_L / ENR_H visual parity cleanup
+
+- The remaining chart-family cleanup was to apply the same clean-run discipline to `enr-l` and `enr-h`.
+- Rust chart input enumeration in [`rust-preprocessor/preprocessor-charts/src/lib.rs`](/root/aerobag/rust-preprocessor/preprocessor-charts/src/lib.rs) now shells out to Python `glob.glob("*.geojson", root_dir=...)` so input discovery matches legacy behavior instead of relying on `fs::read_dir()`.
+- Rust now also encodes the family-specific legacy ordering quirks:
+  - `ENR_L`: sort ascending before main VRT assembly, matching [`avare-source/charts/enr_l.py`](/root/aerobag/avare-source/charts/enr_l.py)
+  - `ENR_H`: sort descending before main VRT assembly, matching [`avare-source/charts/enr_h.py`](/root/aerobag/avare-source/charts/enr_h.py)
+- After rebuilding:
+  - native [`ENR_H.vrt`](/root/aerobag/rust-runs/enr-h-native-from-legacy/work/charts-enr-h/ENR_H.vrt) is byte-identical to legacy slice [`ENR_H.vrt`](/root/aerobag/runs/20260406T021449Z-enr-h-slice/work/charts-enr-h/ENR_H.vrt)
+  - native [`ENR_L.vrt`](/root/aerobag/runs/20260406T003224Z-validation/native/charts-enr-l/work/charts-enr-l/ENR_L.vrt) is byte-identical to legacy
+- Full `100%` image compares at `RMSE=0.0` now pass for both:
+  - `ENR_H`: `visual status=match sampled=20619 mismatches=0 left_only=0 right_only=0`
+  - `ENR_L`: `visual status=match sampled=27424 mismatches=0 left_only=0 right_only=0`
+- Current chart-family certification state:
+  - `SEC`: full visual parity clean after matching `--processes 8`
+  - `TAC`: full visual parity clean after rebuilding corrected VRTs and retiling with `--processes 8`
+  - `ENR_L`: full visual parity clean
+  - `ENR_H`: full visual parity clean on slice baseline
+
+## 2026-04-06 CSUP / TPP image comparator
+
+- Added dedicated image-compare commands in [`rust-preprocessor/preprocessor-cli/src/main.rs`](/root/aerobag/rust-preprocessor/preprocessor-cli/src/main.rs):
+  - `compare-csup-images`
+  - `compare-tpp-images`
+- These compare packaged PNG artifacts named by manifests, instead of walking arbitrary work-dir images:
+  - `CSUP`: union of the 9 `*_CSUP` manifest entries
+  - `TPP`: the region `*_TPP` manifest entries
+- This avoids false positives from staging-layout differences and ignores un-packaged intermediates.
+- Validation on the existing banana split [`20260406T003224Z-validation`](/root/aerobag/runs/20260406T003224Z-validation):
+  - `TPP-NE` full `100%` compare at `RMSE=0.0` passed:
+    - `visual status=match sampled=3277 mismatches=0 left_only=0 right_only=0`
+  - `CSUP` full `100%` compare at `RMSE=0.0` found exactly 2 mismatches:
+    - `afd/TVR/CSUP-SC_0.png` `rmse=0.25927900`
+    - `afd/PUW/CSUP-NW_0.png` `rmse=0.25061900`
+    - summary: `visual status=mismatch sampled=6022 mismatches=2 left_only=0 right_only=0`
+
+## 2026-04-06 CSUP duplicate-airport overwrite bug
+
+- The two remaining `CSUP` visual mismatches were traced to duplicate FAA XML `<airport>` records with the same `aptid` but different single-PDF refs:
+  - `TVR`: `sc_137_19MAR2026.pdf` and `sc_186_19MAR2026.pdf`
+  - `PUW`: `nw_80_19MAR2026.pdf` and `nw_260_19MAR2026.pdf`
+- Legacy behavior is not “first one wins.” It renders both in XML order to the same `afd/<APT>/CSUP-<REGION>_0.png` path, so the later duplicate silently overwrites the earlier one.
+- Native `csup` had been skipping preexisting `CSUP-..._<index>.png` outputs, which preserved the earlier duplicate instead of matching legacy.
+- Fixed in [`rust-preprocessor/preprocessor-csup/src/lib.rs`](/root/aerobag/rust-preprocessor/preprocessor-csup/src/lib.rs):
+  - later duplicate airports now overwrite earlier outputs for the same `CSUP-<REGION>_<index>` base
+  - added explicit compatibility comments explaining why this surprising behavior is preserved
+- Also added explicit compatibility comments in [`rust-preprocessor/preprocessor-charts/src/lib.rs`](/root/aerobag/rust-preprocessor/preprocessor-charts/src/lib.rs) for:
+  - Python `glob`-based chart input discovery
+  - `ENR_L` / `ENR_H` family-specific ordering quirks
+  - clean tile-tree rebuilds and legacy-matching chart `--processes 8`
+- Manual confirmation of the `CSUP` overwrite rule:
+  - rendering `SC_137` then `SC_186` into the same output path reproduces legacy `afd/TVR/CSUP-SC_0.png` exactly (`RMSE 0`)
+  - rendering `NW_80` then `NW_260` into the same output path reproduces legacy `afd/PUW/CSUP-NW_0.png` exactly (`RMSE 0`)
+- The long in-place native `csup` rerun against [`20260406T003224Z-validation`](/root/aerobag/runs/20260406T003224Z-validation) was still awkward to verify live, but the compatibility rule itself is now established and encoded.
+
+## 2026-04-06 Unified certification harness
+
+- The top-level harness in [`legacy-capture/run_preprocessor_validation.sh`](/root/aerobag/legacy-capture/run_preprocessor_validation.sh) now bundles the full parity suite, not just structure/provenance:
+  - chart tile-path parity
+  - package / manifest parity
+  - provenance parity
+  - full `100%` image compare at `RMSE=0.0` for:
+    - `sec`
+    - `tac`
+    - `enr-l`
+    - `csup`
+    - `tpp-ne`
+- Harness defaults now pin native chart tiling to legacy-matching `--processes 8`.
+- New CLI commands used by the harness:
+  - [`compare-csup-images`](/root/aerobag/rust-preprocessor/preprocessor-cli/src/main.rs)
+  - [`compare-tpp-images`](/root/aerobag/rust-preprocessor/preprocessor-cli/src/main.rs)
+- These image compares operate on manifest-defined packaged PNGs, not arbitrary work-dir contents.
+
+## 2026-04-06 Fresh whole-banana certification run
+
+- A third fresh whole-banana run was launched after the unified harness update:
+  - [`20260406T051014Z-validation`](/root/aerobag/runs/20260406T051014Z-validation)
+- This is the first run that should certify the full current stack in one pass:
+  - charts with the ordering/process-count fixes
+  - native `csup` from the current source tree
+  - native `tpp-ne`
+  - bundled parity checks in the compare phase
+- Earlier runs remain useful references:
+  - [`20260406T003224Z-validation`](/root/aerobag/runs/20260406T003224Z-validation): original banana split used for diagnosis
+  - [`20260406T032350Z-validation`](/root/aerobag/runs/20260406T032350Z-validation): fresh whole-banana before the `csup` duplicate-airport fix
+- At handoff time, [`20260406T051014Z-validation`](/root/aerobag/runs/20260406T051014Z-validation) is still in flight.

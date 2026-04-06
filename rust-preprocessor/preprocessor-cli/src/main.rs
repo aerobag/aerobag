@@ -51,6 +51,8 @@ fn usage() -> &'static str {
   preprocessor-cli compare-chart-tile-paths --family <sec|tac|enr-l|enr-h> --legacy-work-dir <path> --rust-work-dir <path>
   preprocessor-cli compare-csup-packages --legacy-work-dir <path> --rust-work-dir <path>
   preprocessor-cli compare-tpp-packages --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --legacy-work-dir <path> --rust-work-dir <path>
+  preprocessor-cli compare-csup-images --legacy-work-dir <path> --rust-work-dir <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
+  preprocessor-cli compare-tpp-images --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --legacy-work-dir <path> --rust-work-dir <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
   preprocessor-cli compare-provenance --left-provenance-dir <path> --right-provenance-dir <path>
   preprocessor-cli compare-sampled-images --left-root <path> --right-root <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
   preprocessor-cli print-cache-layout --cache-root <path> --url <url> --sha256 <sha256>
@@ -240,29 +242,27 @@ fn compare_image_rmse(left: &Path, right: &Path) -> anyhow::Result<f64> {
     Ok(rmse)
 }
 
-fn compare_sampled_images(
+fn compare_relative_image_paths(
     left_root: &Path,
     right_root: &Path,
+    left_paths: BTreeSet<String>,
+    right_paths: BTreeSet<String>,
     sample_percent: u8,
     rmse_threshold: f64,
     limit: Option<usize>,
 ) -> anyhow::Result<()> {
-    let left_paths = read_image_paths(left_root)?;
-    let right_paths = read_image_paths(right_root)?;
-    let left_set = left_paths.into_iter().collect::<BTreeSet<_>>();
-    let right_set = right_paths.into_iter().collect::<BTreeSet<_>>();
-    let shared_paths = left_set
-        .intersection(&right_set)
+    let shared_paths = left_paths
+        .intersection(&right_paths)
         .cloned()
         .collect::<Vec<_>>();
-    let left_only = left_set.difference(&right_set).cloned().collect::<Vec<_>>();
-    let right_only = right_set.difference(&left_set).cloned().collect::<Vec<_>>();
+    let left_only = left_paths.difference(&right_paths).cloned().collect::<Vec<_>>();
+    let right_only = right_paths.difference(&left_paths).cloned().collect::<Vec<_>>();
     let sampled_paths = select_sample_paths(&shared_paths, sample_percent, limit);
 
     println!(
         "images left={} right={} shared={} left_only={} right_only={} sampled={} sample_percent={} rmse_threshold={}",
-        left_set.len(),
-        right_set.len(),
+        left_paths.len(),
+        right_paths.len(),
         shared_paths.len(),
         left_only.len(),
         right_only.len(),
@@ -311,6 +311,134 @@ fn compare_sampled_images(
         right_only.len()
     );
     Ok(())
+}
+
+fn compare_sampled_images(
+    left_root: &Path,
+    right_root: &Path,
+    sample_percent: u8,
+    rmse_threshold: f64,
+    limit: Option<usize>,
+) -> anyhow::Result<()> {
+    compare_relative_image_paths(
+        left_root,
+        right_root,
+        read_image_paths(left_root)?.into_iter().collect::<BTreeSet<_>>(),
+        read_image_paths(right_root)?.into_iter().collect::<BTreeSet<_>>(),
+        sample_percent,
+        rmse_threshold,
+        limit,
+    )
+}
+
+fn read_manifest_entries(path: &Path) -> anyhow::Result<Vec<String>> {
+    Ok(fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+fn compare_csup_images(
+    legacy_work_dir: &Path,
+    rust_work_dir: &Path,
+    sample_percent: u8,
+    rmse_threshold: f64,
+    limit: Option<usize>,
+) -> anyhow::Result<()> {
+    let mut legacy_paths = BTreeSet::new();
+    let mut rust_paths = BTreeSet::new();
+    for region in Region::ALL {
+        let manifest_name = format!("{}_CSUP", region.code());
+        for entry in read_manifest_entries(&legacy_work_dir.join(&manifest_name))? {
+            if is_image_path(Path::new(&entry)) {
+                legacy_paths.insert(entry);
+            }
+        }
+        for entry in read_manifest_entries(&rust_work_dir.join(&manifest_name))? {
+            if is_image_path(Path::new(&entry)) {
+                rust_paths.insert(entry);
+            }
+        }
+    }
+    compare_relative_image_paths(
+        legacy_work_dir,
+        rust_work_dir,
+        legacy_paths,
+        rust_paths,
+        sample_percent,
+        rmse_threshold,
+        limit,
+    )
+}
+
+fn compare_tpp_images(
+    region: &str,
+    legacy_work_dir: &Path,
+    rust_work_dir: &Path,
+    sample_percent: u8,
+    rmse_threshold: f64,
+    limit: Option<usize>,
+) -> anyhow::Result<()> {
+    let manifest_name = format!("{region}_TPP");
+    let legacy_paths = read_manifest_entries(&legacy_work_dir.join(&manifest_name))?
+        .into_iter()
+        .filter(|entry| is_image_path(Path::new(entry)))
+        .collect::<BTreeSet<_>>();
+    let rust_paths = read_manifest_entries(&rust_work_dir.join(&manifest_name))?
+        .into_iter()
+        .filter(|entry| is_image_path(Path::new(entry)))
+        .collect::<BTreeSet<_>>();
+    compare_relative_image_paths(
+        legacy_work_dir,
+        rust_work_dir,
+        legacy_paths,
+        rust_paths,
+        sample_percent,
+        rmse_threshold,
+        limit,
+    )
+}
+
+fn parse_image_compare_options(args: &[String], start_index: usize) -> anyhow::Result<(u8, f64, Option<usize>)> {
+    let mut sample_percent = 1_u8;
+    let mut rmse_threshold = 0.0_f64;
+    let mut limit = None;
+    let mut index = start_index;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--sample-percent" => {
+                sample_percent = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("missing value for --sample-percent"))?
+                    .parse()
+                    .context("invalid sample percent")?;
+                index += 2;
+            }
+            "--rmse-threshold" => {
+                rmse_threshold = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("missing value for --rmse-threshold"))?
+                    .parse()
+                    .context("invalid rmse threshold")?;
+                index += 2;
+            }
+            "--limit" => {
+                limit = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| anyhow::anyhow!("missing value for --limit"))?
+                        .parse()
+                        .context("invalid limit")?,
+                );
+                index += 2;
+            }
+            _ => anyhow::bail!("{}", usage()),
+        }
+    }
+    Ok((sample_percent, rmse_threshold, limit))
 }
 
 fn compare_sec_packages(legacy_work_dir: &Path, rust_work_dir: &Path) -> anyhow::Result<()> {
@@ -801,6 +929,63 @@ fn main() -> anyhow::Result<()> {
             );
             compare_tpp_packages(region, &legacy_work_dir, &rust_work_dir)?;
         }
+        Some("compare-csup-images") => {
+            if args.get(2).map(String::as_str) != Some("--legacy-work-dir")
+                || args.get(4).map(String::as_str) != Some("--rust-work-dir")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let legacy_work_dir = PathBuf::from(
+                args.get(3)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let rust_work_dir = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let (sample_percent, rmse_threshold, limit) = parse_image_compare_options(&args, 6)?;
+            compare_csup_images(
+                &legacy_work_dir,
+                &rust_work_dir,
+                sample_percent,
+                rmse_threshold,
+                limit,
+            )?;
+        }
+        Some("compare-tpp-images") => {
+            if args.get(2).map(String::as_str) != Some("--region")
+                || args.get(4).map(String::as_str) != Some("--legacy-work-dir")
+                || args.get(6).map(String::as_str) != Some("--rust-work-dir")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let region = parse_region(
+                args.get(3)
+                    .map(String::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            )?;
+            let legacy_work_dir = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let rust_work_dir = PathBuf::from(
+                args.get(7)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let (sample_percent, rmse_threshold, limit) = parse_image_compare_options(&args, 8)?;
+            compare_tpp_images(
+                region.code(),
+                &legacy_work_dir,
+                &rust_work_dir,
+                sample_percent,
+                rmse_threshold,
+                limit,
+            )?;
+        }
         Some("print-cache-layout") => {
             if args.get(2).map(String::as_str) != Some("--cache-root")
                 || args.get(4).map(String::as_str) != Some("--url")
@@ -861,40 +1046,7 @@ fn main() -> anyhow::Result<()> {
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
             );
-            let mut sample_percent = 1_u8;
-            let mut rmse_threshold = 0.0_f64;
-            let mut limit = None;
-            let mut index = 6;
-            while index < args.len() {
-                match args[index].as_str() {
-                    "--sample-percent" => {
-                        sample_percent = args
-                            .get(index + 1)
-                            .ok_or_else(|| anyhow::anyhow!("missing value for --sample-percent"))?
-                            .parse()
-                            .context("invalid sample percent")?;
-                        index += 2;
-                    }
-                    "--rmse-threshold" => {
-                        rmse_threshold = args
-                            .get(index + 1)
-                            .ok_or_else(|| anyhow::anyhow!("missing value for --rmse-threshold"))?
-                            .parse()
-                            .context("invalid rmse threshold")?;
-                        index += 2;
-                    }
-                    "--limit" => {
-                        limit = Some(
-                            args.get(index + 1)
-                                .ok_or_else(|| anyhow::anyhow!("missing value for --limit"))?
-                                .parse()
-                                .context("invalid limit")?,
-                        );
-                        index += 2;
-                    }
-                    _ => anyhow::bail!("{}", usage()),
-                }
-            }
+            let (sample_percent, rmse_threshold, limit) = parse_image_compare_options(&args, 6)?;
             compare_sampled_images(
                 &left_root,
                 &right_root,

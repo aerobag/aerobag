@@ -100,6 +100,7 @@ What it does now:
 - uses the same sample plan, policy choices, and inventory modes as the web prototype
 - keeps domain logic in Kotlin for now as a thin stand-in until Rust bindings are wired
 - includes unit tests for content-policy behavior
+- the whole screen now scrolls correctly past `Inventory mode`
 
 ## Verified Commands
 
@@ -156,6 +157,14 @@ cd /root/aerobag/ui/android-app
 Last known result:
 - passed
 
+Install / run on emulator:
+
+```bash
+cd /root/aerobag/ui/android-app
+./gradlew installDebug
+adb shell am start -n net.jonh.aerobag.prototype/.MainActivity
+```
+
 Build:
 
 ```bash
@@ -193,36 +202,30 @@ Net result:
 
 This is an environment/toolchain blocker, not a UI architecture blocker.
 
-### Android emulator blocker
+### Android emulator note
 
-The Android app builds and tests, and the emulator binary is installed, but this container cannot boot the AVD.
+The original X11-forwarded emulator path was not usable in practice even after KVM became available:
+- forwarded-X emulator windows stayed gray or badly behaved across multiple GPU modes
+- `scrcpy` was not reliable enough in this environment either
 
-Environment work completed:
-- installed Android platform 34
-- installed Android emulator
-- installed system image:
-  - `system-images;android-34;google_apis;x86_64`
-- created AVD:
-  - `aerobag34`
-- fixed emulator runtime dependency:
-  - `libpulse0`
+The working path ended up being:
+- `Xvfb` on `:1`
+- emulator launched on `DISPLAY=:1`
+- `x11vnc` exporting that display
+- emulator renderer set to `-gpu software`
 
-Observed launch attempt:
+Working commands:
 
 ```bash
-DISPLAY=localhost:10.0 /usr/lib/android-sdk/emulator/emulator -avd aerobag34 -gpu swiftshader_indirect -no-snapshot-save
+Xvfb :1 -screen 0 1440x2960x24 -ac
+DISPLAY=:1 /usr/lib/android-sdk/emulator/emulator -avd aerobag34 -gpu software -no-audio
+x11vnc -display :1 -forever -shared -nopw -rfbport 5900 -noxdamage -nowf -noscr -fixscreen 1 -ncache 0 -clip 1080x2400+0+0
 ```
 
-Observed failure:
-- the emulator sees the AVD and reaches startup checks
-- then exits with:
-  - `x86_64 emulation currently requires hardware acceleration`
-  - `/dev/kvm is not found`
-
-Net result:
-- X11 forwarding is not the blocker
-- the blocker is lack of nested virtualization / KVM access in the current unprivileged container
-- for this environment, the next meaningful infra step is rebuilding the container/host setup with nested virtualization enabled
+Observed behavior:
+- this VNC-backed software-rendered path was the first one that made the emulator actually usable
+- launcher/system UI could still occasionally misbehave, but `adb` navigation was reliable
+- the Android prototype app itself rendered correctly and was interactive enough to test
 
 ## What To Do Next
 
@@ -238,29 +241,19 @@ Net result:
    - matching `.wasm` binary
 5. Confirm the web prototype switches from `MOCK` to `WASM` automatically.
 
-### Best next step if nested virtualization becomes available
-
-1. Recreate the environment with `/dev/kvm` available inside the container.
-2. Re-run:
-   - `DISPLAY=localhost:10.0 /usr/lib/android-sdk/emulator/emulator -avd aerobag34 -gpu swiftshader_indirect -no-snapshot-save`
-3. Once the emulator boots:
-   - `cd /root/aerobag/ui/android-app && ./gradlew installDebug`
-4. Verify the Compose `Content` slice visually.
-5. Then start replacing the Kotlin mock content logic with the shared Rust core boundary.
-
 ### Best next step if staying in the current environment
 
 Keep moving on prototype features that do not require actual WASM output:
 
-1. Replace inline TS sample data with checked-in fixture JSON files.
-2. Add a small `Map` shell:
+1. Replace the Android mock content logic with the shared Rust core boundary.
+2. Replace inline TS sample data with checked-in fixture JSON files.
+3. Add a small `Map` shell:
    - chart family selector
    - a fake lat/lon selector or click target
    - current selected chart display
-3. Expand content requirements beyond airport-linked plates:
+4. Expand content requirements beyond airport-linked plates:
    - route/region logic
    - chart-family requirements
-4. Use a physical Android device over `adb` instead of the local emulator, if one is available.
 
 ## Important Design Decisions Already Made
 
@@ -300,8 +293,8 @@ Resume the UI prototype from `/root/aerobag/ui/web-app`, `/root/aerobag/ui/andro
 The web `Content` slice works and is tested.
 The Android `Content` slice builds and passes `./gradlew test`.
 The web app still falls back to a mock adapter because this environment lacks the WASM target and JS binding tools.
-The Android emulator setup reached the KVM wall: the AVD exists, but x86_64 boot fails because `/dev/kvm` is unavailable in the current unprivileged container.
-Next either:
-- rebuild the container with nested virtualization and boot `aerobag34`, or
-- use a physical device over `adb`, or
-- continue with non-emulator work such as Rust FFI/WASM integration and the next `Map` slice.
+The Android emulator is now usable through a VNC-backed virtual display, not plain forwarded X.
+The Android screen scroll bug was in `MainActivity.kt` and is fixed by using a screen-level `LazyColumn`.
+Next:
+- replace the Android mock content logic with the shared Rust core, or
+- continue with Rust FFI/WASM integration and the next `Map` slice.

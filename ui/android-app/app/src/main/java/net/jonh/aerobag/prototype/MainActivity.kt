@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
@@ -65,105 +66,121 @@ private fun ContentPrototypeScreen() {
         )
     }
     var inventoryMode by remember { mutableStateOf("remote") }
+    val listState = rememberLazyListState()
 
-    Column(
+    LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .padding(20.dp),
+        state = listState,
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        Text(
-            text = "Avare Android Prototype",
-            style = MaterialTheme.typography.labelLarge,
-            color = Color(0xFF0D6F67),
-        )
-        Text(
-            text = "Content parity without offline symmetry",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-        )
-        Text(
-            text = "This mirrors the web content slice while keeping Android native and offline-first.",
-            style = MaterialTheme.typography.bodyLarge,
-            color = Color(0xFF5F6F76),
-        )
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Prototype inputs", fontWeight = FontWeight.Bold)
-                Text("Cycle: ${SampleData.catalog.cycle}")
-                Text("Plan: ${SampleData.samplePlan.name}")
-                Text("Route: ${SampleData.samplePlan.departure} to ${SampleData.samplePlan.destination}")
-            }
+        item {
+            Text(
+                text = "Avare Android Prototype",
+                style = MaterialTheme.typography.labelLarge,
+                color = Color(0xFF0D6F67),
+            )
+        }
+        item {
+            Text(
+                text = "Content parity without offline symmetry",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        item {
+            Text(
+                text = "This mirrors the web content slice while keeping Android native and offline-first.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color(0xFF5F6F76),
+            )
         }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Content policy", fontWeight = FontWeight.Bold)
-                PolicyOption(state.contentPolicy, ContentPolicy.StreamAllowed) {
-                    state = ContentLogic.setContentPolicy(state, it)
-                    state = ContentLogic.refreshContent(
-                        state,
-                        if (inventoryMode == "installed") SampleData.installedInventory else SampleData.remoteOnlyInventory,
-                    )
-                }
-                PolicyOption(state.contentPolicy, ContentPolicy.PreferLocal) {
-                    state = ContentLogic.setContentPolicy(state, it)
-                    state = ContentLogic.refreshContent(
-                        state,
-                        if (inventoryMode == "installed") SampleData.installedInventory else SampleData.remoteOnlyInventory,
-                    )
-                }
-                PolicyOption(state.contentPolicy, ContentPolicy.OfflineRequired) {
-                    state = ContentLogic.setContentPolicy(state, it)
-                    state = ContentLogic.refreshContent(
-                        state,
-                        if (inventoryMode == "installed") SampleData.installedInventory else SampleData.remoteOnlyInventory,
-                    )
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Prototype inputs", fontWeight = FontWeight.Bold)
+                    Text("Cycle: ${SampleData.catalog.cycle}")
+                    Text("Plan: ${SampleData.samplePlan.name}")
+                    Text("Route: ${SampleData.samplePlan.departure} to ${SampleData.samplePlan.destination}")
                 }
             }
         }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Inventory mode", fontWeight = FontWeight.Bold)
-                InventoryOption(inventoryMode, "remote", "Remote only cache") {
-                    inventoryMode = it
-                    state = ContentLogic.refreshContent(state, SampleData.remoteOnlyInventory)
-                }
-                InventoryOption(inventoryMode, "installed", "Installed package") {
-                    inventoryMode = it
-                    state = ContentLogic.refreshContent(state, SampleData.installedInventory)
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Content policy", fontWeight = FontWeight.Bold)
+                    PolicyOption(state.contentPolicy, ContentPolicy.StreamAllowed) {
+                        state = ContentLogic.setContentPolicy(state, it)
+                        state = ContentLogic.refreshContent(
+                            state,
+                            if (inventoryMode == "installed") SampleData.installedInventory else SampleData.remoteOnlyInventory,
+                        )
+                    }
+                    PolicyOption(state.contentPolicy, ContentPolicy.PreferLocal) {
+                        state = ContentLogic.setContentPolicy(state, it)
+                        state = ContentLogic.refreshContent(
+                            state,
+                            if (inventoryMode == "installed") SampleData.installedInventory else SampleData.remoteOnlyInventory,
+                        )
+                    }
+                    PolicyOption(state.contentPolicy, ContentPolicy.OfflineRequired) {
+                        state = ContentLogic.setContentPolicy(state, it)
+                        state = ContentLogic.refreshContent(
+                            state,
+                            if (inventoryMode == "installed") SampleData.installedInventory else SampleData.remoteOnlyInventory,
+                        )
+                    }
                 }
             }
         }
 
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color.White),
-        ) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Shared-state result", fontWeight = FontWeight.Bold)
-                Text(
-                    text = if (state.lastContentReport?.fullySatisfied == true) {
-                        "Ready for this policy"
-                    } else {
-                        "Coverage gap"
-                    },
-                    color = if (state.lastContentReport?.fullySatisfied == true) Color(0xFF0D6F67) else Color(0xFF935224),
-                    fontWeight = FontWeight.SemiBold,
-                )
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    items(state.lastContentReport?.items.orEmpty()) { item ->
-                        Card(modifier = Modifier.fillMaxWidth()) {
-                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(item.label, fontWeight = FontWeight.SemiBold)
-                                Text(item.availability.availability.name, color = Color(0xFF5F6F76))
-                                Text(
-                                    "offline ${if (item.availability.offlineUsable) "yes" else "no"} • cached ${if (item.availability.cached) "yes" else "no"}",
-                                    color = Color(0xFF5F6F76),
-                                )
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Inventory mode", fontWeight = FontWeight.Bold)
+                    InventoryOption(inventoryMode, "remote", "Remote only cache") {
+                        inventoryMode = it
+                        state = ContentLogic.refreshContent(state, SampleData.remoteOnlyInventory)
+                    }
+                    InventoryOption(inventoryMode, "installed", "Installed package") {
+                        inventoryMode = it
+                        state = ContentLogic.refreshContent(state, SampleData.installedInventory)
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.White),
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Shared-state result", fontWeight = FontWeight.Bold)
+                    Text(
+                        text = if (state.lastContentReport?.fullySatisfied == true) {
+                            "Ready for this policy"
+                        } else {
+                            "Coverage gap"
+                        },
+                        color = if (state.lastContentReport?.fullySatisfied == true) Color(0xFF0D6F67) else Color(0xFF935224),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        state.lastContentReport?.items.orEmpty().forEach { item ->
+                            Card(modifier = Modifier.fillMaxWidth()) {
+                                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(item.label, fontWeight = FontWeight.SemiBold)
+                                    Text(item.availability.availability.name, color = Color(0xFF5F6F76))
+                                    Text(
+                                        "offline ${if (item.availability.offlineUsable) "yes" else "no"} • cached ${if (item.availability.cached) "yes" else "no"}",
+                                        color = Color(0xFF5F6F76),
+                                    )
+                                }
                             }
                         }
                     }

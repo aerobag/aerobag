@@ -230,6 +230,78 @@ Practical consequence:
 - if you want an Android emulator here, rebuild the container/host setup with nested virtualization and `/dev/kvm` available
 - otherwise use a physical Android device over `adb`
 
+Observed presentation issue after emulator boot:
+- the Android guest renders correctly and `adb shell screencap` shows the app UI
+- but the emulator's own X11 window can still appear as a gray rectangle over forwarded X
+- this appears to be a host-side emulator/Qt presentation problem rather than an Android rendering problem
+
+Practical workaround:
+- install `scrcpy`
+- keep the emulator running in the background
+- interact with the emulator through `scrcpy` instead of the emulator's own window
+
+Install used:
+
+```bash
+apt-get install -y scrcpy
+```
+
+Android 14 compatibility note:
+- distro `scrcpy 1.25` crashes on startup if clipboard autosync is enabled
+- the failing method is an Android 14 clipboard listener API mismatch
+- launch it with clipboard sync disabled:
+
+```bash
+DISPLAY=localhost:10.0 scrcpy --serial emulator-5554 --no-clipboard-autosync
+```
+
+Alternative remote-display path:
+- if forwarded X still produces a gray or unusably sluggish emulator window, use a virtual X server plus VNC instead
+- packages used:
+
+```bash
+apt-get install -y xvfb x11vnc
+```
+
+Intended shape:
+- run `Xvfb` on a private display such as `:1`
+- launch the emulator with `DISPLAY=:1`
+- export that same display through `x11vnc`
+
+This avoids relying on the emulator's Qt window over forwarded X11.
+
+Observed working emulator recipe in this environment:
+- direct forwarded-X emulator windows remained gray or sluggish across:
+  - default `auto`
+  - `-gpu software`
+  - `-gpu host`
+- `scrcpy` was not a reliable fallback here
+- the first actually usable path was:
+  - `Xvfb`
+  - emulator on `DISPLAY=:1`
+  - `x11vnc` with conservative refresh settings
+  - emulator renderer set to `-gpu software`
+
+Commands used:
+
+```bash
+Xvfb :1 -screen 0 1440x2960x24 -ac
+DISPLAY=:1 /usr/lib/android-sdk/emulator/emulator -avd aerobag34 -gpu software -no-audio
+x11vnc -display :1 -forever -shared -nopw -rfbport 5900 -noxdamage -nowf -noscr -fixscreen 1 -ncache 0 -clip 1080x2400+0+0
+```
+
+Practical note:
+- with this setup, the emulator became usable enough to interact with the Android prototype through a VNC client
+- system UI and app rendering were materially better than the forwarded-X attempts
+- if the launcher or assistant lands on a black screen, use `adb` to navigate rather than trusting the on-screen controls
+
+Useful adb controls:
+
+```bash
+adb shell input keyevent KEYCODE_HOME
+adb shell am start -n net.jonh.aerobag.prototype/.MainActivity
+```
+
 ## Next Dependency Checks To Run
 
 After Java/Gradle install completes:

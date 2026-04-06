@@ -46,13 +46,18 @@ plan and discuss.
 
 ------------------------------------------------------------------------------
 
-The concepts of regions are kind of baked into the code various places. I see
-them at:
-preprocessor-charts/src/lib.rs:780
-preprocessor-cli/src/main.rs:128
-I bet they were even more implicit in the original source. But let's be
-very explicit here. Let's have the set of regions be defined in one
-place and then referenced symbolically.
+x The concepts of regions are kind of baked into the code various places. I see
+x them at:
+x preprocessor-charts/src/lib.rs:780
+x preprocessor-cli/src/main.rs:128
+x I bet they were even more implicit in the original source. But let's be
+x very explicit here. Let's have the set of regions be defined in one
+x place and then referenced symbolically.
+
+------------------------------------------------------------------------------
+x We have absolutely nothing to start with on Android. Like, you get to choose *everything*, the framework, the
+x   language. Want any help deciding?
+x   And for the android side, let's figure out how to spin up an emulator; maybe I can poke at it over X (ssh -Y)?
 
 ------------------------------------------------------------------------------
 
@@ -65,8 +70,18 @@ place and then referenced symbolically.
     artifact-hash expectations
 
 ------------------------------------------------------------------------------
+"The FAA PDF names already encode the output region prefix,"
+Whoah, that sounds brittle! What if the FAA draws the boundaries somewhere
+other than where we drew lat/lon boundaries for tiled charts?
 
+------------------------------------------------------------------------------
 Once we know we're creating equivalent content, we're free to reorganize it.
 Does the avare android app unpack those zip files? I think it would be more
 awesome to just fetch content out of them as we run.
+
+You did a bunch of this and found "compatibility-first" wonkinesses where
+you had to hold your nose to get parity. What features/protocols/conventions
+would you change to make the new system less brittle and easier to maintain?
+
+------------------------------------------------------------------------------
 

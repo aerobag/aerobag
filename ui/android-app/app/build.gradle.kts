@@ -20,6 +20,7 @@ val rustJniLibsDir = layout.buildDirectory.dir("generated/rustJniLibs")
 val rustOutputAbiDir = layout.buildDirectory.dir("generated/rustJniLibs/x86_64")
 val generatedPrototypeAssetsDir = layout.buildDirectory.dir("generated/prototypeAssets")
 val sectionalPackageRunDir = file("../../../runs/20260406T032350Z-validation/native/charts-sec/work/charts-sec")
+val tacPackageRunDir = file("../../../runs/20260406T032350Z-validation/native/charts-tac/work/charts-tac")
 val uiFixtureGenerator = file("../../scripts/generate_content_fixture.py")
 
 val buildRustX86_64Android by tasks.registering(Exec::class) {
@@ -47,6 +48,7 @@ val stagePrototypeSectionalPackages by tasks.registering(Copy::class) {
     dependsOn(generatePrototypeFixture)
     from(File(sectionalPackageRunDir, "NW_SEC.zip"))
     from(File(sectionalPackageRunDir, "SW_SEC.zip"))
+    from(File(tacPackageRunDir, "NW_TAC.zip"))
     into(generatedPrototypeAssetsDir.map { it.dir("sectional-packages") })
 }
 

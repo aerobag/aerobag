@@ -19,11 +19,16 @@ ANDROID_OUT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "fixt
 CANONICAL_TILE_ROOT = UI_DIR / "shared-fixtures" / "content-prototype" / "tiles"
 WEB_TILE_ROOT = UI_DIR / "web-app" / "public" / "prototype-tiles"
 ANDROID_TILE_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "tiles"
-WEB_SECTIONAL_ROOT = UI_DIR / "web-app" / "public" / "sectional-packages"
+WEB_SECTIONAL_ROOT = UI_DIR / "web-app" / "generated-static" / "sectional-packages"
+WEB_CHART_ASSET_ROOT = UI_DIR / "web-app" / "generated-static" / "chart-assets"
+ANDROID_CHART_ASSET_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "chart-assets"
 
 SEC_PACKAGE_OUTPUTS = ROOT / "runs" / "20260406T032350Z-validation" / "native" / "charts-sec" / "meta" / "provenance" / "charts-sec" / "package_outputs.jsonl"
 SEC_PACKAGE_DIR = ROOT / "runs" / "20260406T032350Z-validation" / "native" / "charts-sec" / "work" / "charts-sec"
+TAC_PACKAGE_OUTPUTS = ROOT / "runs" / "20260406T032350Z-validation" / "native" / "charts-tac" / "meta" / "provenance" / "charts-tac" / "package_outputs.jsonl"
+TAC_PACKAGE_DIR = ROOT / "runs" / "20260406T032350Z-validation" / "native" / "charts-tac" / "work" / "charts-tac"
 TPP_PLATES_DIR = ROOT / "runs" / "20260405T154700Z-tpp-retry" / "work" / "tpp-ne" / "plates" / "BOS"
+BOS_CSUP_DIR = ROOT / "runs" / "20260405T154700Z" / "work" / "csup" / "afd" / "BOS"
 BOSTON_TAC_GEOJSON = ROOT / "rust-runs" / "tac-native" / "work" / "charts-tac" / "TAC" / "Boston TAC.geojson"
 BOSTON_TAC_TILE_ROOT = ROOT / "runs" / "20260406T003224Z-validation" / "native" / "charts-tac" / "work" / "charts-tac" / "tiles" / "1"
 
@@ -40,6 +45,7 @@ REGION_DISPLAY_NAMES = {
     "pac": "Pacific",
 }
 SECTIONAL_REGIONS = ["nw", "sw"]
+TAC_REGIONS = ["nw"]
 
 WEB_MERCATOR = osr.SpatialReference()
 WEB_MERCATOR.ImportFromEPSG(3857)
@@ -57,6 +63,14 @@ TAC_TILE_LEVELS = {
 
 @dataclass(frozen=True)
 class SectionalPackage:
+    manifest: str
+    region: str
+    zip_name: str
+    zip_sha256: str
+
+
+@dataclass(frozen=True)
+class TacPackage:
     manifest: str
     region: str
     zip_name: str
@@ -159,6 +173,43 @@ def pick_bos_plate() -> tuple[str, str, str]:
     return procedure_code, procedure_name, asset_base_path
 
 
+def stage_chart_assets() -> tuple[dict, dict]:
+    plate_source = TPP_PLATES_DIR / "IAP-MA-ILS OR LOC RWY 04R.png"
+    csup_source = BOS_CSUP_DIR / "CSUP-NE_0-0.png"
+    if not plate_source.exists():
+        raise RuntimeError(f"missing plate asset {plate_source}")
+    if not csup_source.exists():
+        raise RuntimeError(f"missing csup asset {csup_source}")
+
+    destinations = [
+        WEB_CHART_ASSET_ROOT / "BOS",
+        ANDROID_CHART_ASSET_ROOT / "BOS",
+    ]
+    for directory in destinations:
+        directory.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(plate_source, directory / plate_source.name)
+        shutil.copy2(csup_source, directory / csup_source.name)
+
+    return (
+        {
+            "id": "plate:bos-ils04r",
+            "airport_id": "BOS",
+            "label": "ILS OR LOC RWY 04R",
+            "kind": "plate",
+            "asset_path": f"chart-assets/BOS/{plate_source.name}",
+            "asset_url": f"/chart-assets/BOS/{plate_source.name}",
+        },
+        {
+            "id": "csup:bos",
+            "airport_id": "BOS",
+            "label": "CSup",
+            "kind": "csup",
+            "asset_path": f"chart-assets/BOS/{csup_source.name}",
+            "asset_url": f"/chart-assets/BOS/{csup_source.name}",
+        },
+    )
+
+
 def load_selected_sectional_packages() -> list[SectionalPackage]:
     selected = []
     for entry in load_jsonl(SEC_PACKAGE_OUTPUTS):
@@ -179,6 +230,26 @@ def load_selected_sectional_packages() -> list[SectionalPackage]:
     return selected
 
 
+def load_selected_tac_packages() -> list[TacPackage]:
+    selected = []
+    for entry in load_jsonl(TAC_PACKAGE_OUTPUTS):
+        region = entry["region"].lower()
+        if region not in TAC_REGIONS:
+            continue
+        selected.append(
+            TacPackage(
+                manifest=entry["manifest"],
+                region=region,
+                zip_name=entry["zip"],
+                zip_sha256=entry["zip_sha256"],
+            )
+        )
+    selected.sort(key=lambda package: TAC_REGIONS.index(package.region))
+    if len(selected) != len(TAC_REGIONS):
+        raise RuntimeError(f"expected {TAC_REGIONS}, got {[package.region for package in selected]}")
+    return selected
+
+
 def clear_sectional_web_root() -> None:
     if WEB_SECTIONAL_ROOT.exists():
         shutil.rmtree(WEB_SECTIONAL_ROOT)
@@ -192,8 +263,43 @@ def extract_zip_for_web(package: SectionalPackage) -> None:
         archive.extractall(target_dir)
 
 
+def extract_tac_zip_for_web(package: TacPackage) -> None:
+    zip_path = TAC_PACKAGE_DIR / package.zip_name
+    target_dir = WEB_SECTIONAL_ROOT / package.manifest
+    target_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as archive:
+        archive.extractall(target_dir)
+
+
 def compute_level_bounds_from_zip(package: SectionalPackage, chart_index: int = 0) -> list[dict]:
     zip_path = SEC_PACKAGE_DIR / package.zip_name
+    zoom_levels: dict[int, dict[str, list[int]]] = {}
+    with zipfile.ZipFile(zip_path) as archive:
+        for name in archive.namelist():
+            parts = name.split("/")
+            if len(parts) != 5 or parts[0] != "tiles" or parts[1] != str(chart_index) or not parts[-1].endswith(".webp"):
+                continue
+            zoom = int(parts[2])
+            x = int(parts[3])
+            y_tms = int(parts[4].removesuffix(".webp"))
+            zoom_levels.setdefault(zoom, {"x": [], "y": []})
+            zoom_levels[zoom]["x"].append(x)
+            zoom_levels[zoom]["y"].append(y_tms)
+
+    return [
+        {
+            "zoom": zoom,
+            "x_min": min(values["x"]),
+            "x_max": max(values["x"]),
+            "y_tms_min": min(values["y"]),
+            "y_tms_max": max(values["y"]),
+        }
+        for zoom, values in sorted(zoom_levels.items())
+    ]
+
+
+def compute_level_bounds_from_tac_zip(package: TacPackage, chart_index: int = 1) -> list[dict]:
+    zip_path = TAC_PACKAGE_DIR / package.zip_name
     zoom_levels: dict[int, dict[str, list[int]]] = {}
     with zipfile.ZipFile(zip_path) as archive:
         for name in archive.namelist():
@@ -266,8 +372,38 @@ def build_sectional_map_option(package: SectionalPackage) -> dict:
     }
 
 
+def build_tac_map_option(package: TacPackage) -> dict:
+    levels = compute_level_bounds_from_tac_zip(package)
+    center_lat, center_lon = center_lat_lon_for_levels(levels)
+    label = f"{package.region.upper()} TAC"
+    return {
+        "id": f"tac:{package.region}",
+        "label": label,
+        "region_id": package.region,
+        "map_view": {
+            "chart_family": "tac",
+            "chart_name": label,
+            "chart_index": 1,
+            "tile_root": "tiles",
+            "tile_url_root": f"/sectional-packages/{package.manifest}/tiles",
+            "tile_size": TILE_SIZE,
+            "min_zoom": 4.2,
+            "max_zoom": 11.8,
+            "storage_kind": "sectional_package",
+            "package_name": package.manifest,
+            "initial_viewport": {
+                "lat": center_lat,
+                "lon": center_lon,
+                "zoom": 7.4,
+            },
+            "levels": levels,
+        },
+    }
+
+
 def build_fixture() -> dict:
     sec_outputs = load_jsonl(SEC_PACKAGE_OUTPUTS)
+    tac_outputs = load_jsonl(TAC_PACKAGE_OUTPUTS)
     cycle = "2026-04-16"
     boston_tac_polygon = load_wgs84_polygon(BOSTON_TAC_GEOJSON)
     probe_lat, probe_lon = bounds_center(boston_tac_polygon)
@@ -278,10 +414,15 @@ def build_fixture() -> dict:
     tac_level_bounds = copy_tac_tile_subset(tile_windows)
 
     selected_sectional_packages = load_selected_sectional_packages()
+    selected_tac_packages = load_selected_tac_packages()
+    plate_asset, csup_asset = stage_chart_assets()
     clear_sectional_web_root()
     for package in selected_sectional_packages:
         extract_zip_for_web(package)
+    for package in selected_tac_packages:
+        extract_tac_zip_for_web(package)
     sectional_map_views = [build_sectional_map_option(package) for package in selected_sectional_packages]
+    tac_map_views = [build_tac_map_option(package) for package in selected_tac_packages]
     default_sectional_view = sectional_map_views[0]["map_view"]
     default_sectional_level = max(default_sectional_view["levels"], key=lambda item: item["zoom"])
 
@@ -306,6 +447,30 @@ def build_fixture() -> dict:
                 "relative_url": f"/{cycle}/{entry['zip']}",
                 "manifest_name": package_name,
                 "size_bytes": (SEC_PACKAGE_DIR / entry["zip"]).stat().st_size,
+                "checksum_sha256": entry["zip_sha256"],
+            }
+        )
+
+    for entry in tac_outputs:
+        region = entry["region"].lower()
+        if region not in TAC_REGIONS:
+            continue
+        package_name = entry["manifest"]
+        packages.append(
+            {
+                "id": {
+                    "region": region,
+                    "family": "tac",
+                    "cycle": cycle,
+                },
+                "package_name": package_name,
+                "family_id": "tac",
+                "region_id": region,
+                "cycle": cycle,
+                "artifact_kind": "zip",
+                "relative_url": f"/{cycle}/{entry['zip']}",
+                "manifest_name": package_name,
+                "size_bytes": (TAC_PACKAGE_DIR / entry["zip"]).stat().st_size,
                 "checksum_sha256": entry["zip_sha256"],
             }
         )
@@ -400,7 +565,19 @@ def build_fixture() -> dict:
             ],
         },
         "map_view": default_sectional_view,
-        "map_views": sectional_map_views,
+        "map_views": [*sectional_map_views, *tac_map_views],
+        "chart_page": {
+            "recent_airport_ids": ["BOS"],
+            "initial_airport_id": "BOS",
+            "initial_chart_id": plate_asset["id"],
+            "airports": [
+                {
+                    "id": "BOS",
+                    "label": "KBOS",
+                    "charts": [plate_asset, csup_asset],
+                }
+            ],
+        },
         "initial_probe": {
             "family": "tac",
             "lat": 42.3656,

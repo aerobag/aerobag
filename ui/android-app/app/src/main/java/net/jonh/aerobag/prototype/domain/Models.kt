@@ -118,6 +118,28 @@ data class MapViewOption(
     val mapView: MapView,
 )
 
+data class ChartAsset(
+    val id: String,
+    val airportId: String,
+    val label: String,
+    val kind: String,
+    val assetPath: String,
+    val assetUrl: String,
+)
+
+data class ChartAirport(
+    val id: String,
+    val label: String,
+    val charts: List<ChartAsset>,
+)
+
+data class ChartPageFixture(
+    val recentAirportIds: List<String>,
+    val initialAirportId: String,
+    val initialChartId: String,
+    val airports: List<ChartAirport>,
+)
+
 data class MapTileView(
     val chartFamily: MapChartFamily,
     val chartName: String,

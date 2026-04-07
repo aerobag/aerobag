@@ -1,227 +1,174 @@
 # UI Next Session Handoff
 
-Snapshot date: 2026-04-06
+Snapshot date: 2026-04-07
 
-## What Was Built
+## Current UI State
 
-### Shared Rust core
+The prototype is now a real 3-page shell on both web and Android:
+- `Map`
+- `Flight Plan`
+- `Charts`
 
-Location:
-- [ui/core-rust](/root/aerobag/ui/core-rust)
+The current implementation is still driven by generated fixture/index data, but the shells are no longer a single map demo.
 
-Important files:
-- [ui/core-rust/crates/app-core/src/lib.rs](/root/aerobag/ui/core-rust/crates/app-core/src/lib.rs)
-- [ui/core-rust/crates/app-core/src/state.rs](/root/aerobag/ui/core-rust/crates/app-core/src/state.rs)
-- [ui/core-rust/crates/app-core/src/ids.rs](/root/aerobag/ui/core-rust/crates/app-core/src/ids.rs)
-- [ui/core-rust/crates/app-core/src/catalog.rs](/root/aerobag/ui/core-rust/crates/app-core/src/catalog.rs)
-- [ui/core-rust/crates/app-core/src/content.rs](/root/aerobag/ui/core-rust/crates/app-core/src/content.rs)
-- [ui/core-rust/crates/app-core/src/planning.rs](/root/aerobag/ui/core-rust/crates/app-core/src/planning.rs)
-- [ui/core-rust/crates/app-wasm/src/lib.rs](/root/aerobag/ui/core-rust/crates/app-wasm/src/lib.rs)
-- [ui/core-rust/crates/app-fixtures/src/lib.rs](/root/aerobag/ui/core-rust/crates/app-fixtures/src/lib.rs)
+## What Works Now
 
-What it does now:
-- parses `catalog.json`-shaped metadata
-- parses geometry sidecar data
-- finds charts by point-in-polygon lookup
-- validates non-empty flight plans
-- computes a first-pass content requirement set from airport-linked plate coverage
-- resolves content status under `OfflineRequired`, `PreferLocal`, and `StreamAllowed`
-- exposes an app-domain reducer:
-  - `ReplaceFlightPlan`
-  - `SetContentPolicy`
-  - `RefreshContent`
-  - `ClearFlightPlan`
-- exposes JSON-oriented WASM wrapper functions:
-  - `load_catalog`
-  - `build_flight_plan`
-  - `replace_flight_plan_state`
-  - `set_content_policy_state`
-  - `refresh_content_state`
+### Shared fixture pipeline
 
-### UI architecture docs
+Primary generator:
+- [ui/scripts/generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py)
 
-Files:
-- [UI_ARCHITECTURE.md](/root/aerobag/UI_ARCHITECTURE.md)
-- [UI_CATALOG_SCHEMA.md](/root/aerobag/UI_CATALOG_SCHEMA.md)
+Generated outputs:
+- [ui/shared-fixtures/content-prototype/content_fixture.json](/root/aerobag/ui/shared-fixtures/content-prototype/content_fixture.json)
+- [ui/web-app/src/domain/generated/contentFixture.json](/root/aerobag/ui/web-app/src/domain/generated/contentFixture.json)
+- [ui/android-app/app/src/main/assets/fixtures/contentFixture.json](/root/aerobag/ui/android-app/app/src/main/assets/fixtures/contentFixture.json)
 
-These define:
-- why UI should be platform-native but behavior/domain shared
-- the Rust/shared-core boundary
-- the initial `catalog.json` and `chart_geometry.json` contract
+The fixture now includes:
+- real `NW_SEC` and `SW_SEC` sectional package metadata
+- real `NW_TAC` package metadata
+- chart-page seed data for BOS:
+  - one real plate PNG
+  - one real CSup PNG
+- chart asset metadata outside the individual zip packages
 
-### Web prototype
+Chart asset staging:
+- web static root:
+  - [ui/web-app/generated-static/chart-assets](/root/aerobag/ui/web-app/generated-static/chart-assets)
+- Android assets:
+  - [ui/android-app/app/src/main/assets/chart-assets](/root/aerobag/ui/android-app/app/src/main/assets/chart-assets)
+
+### Web app
 
 Location:
 - [ui/web-app](/root/aerobag/ui/web-app)
 
 Important files:
 - [ui/web-app/src/App.tsx](/root/aerobag/ui/web-app/src/App.tsx)
-- [ui/web-app/src/domain/appCoreAdapter.ts](/root/aerobag/ui/web-app/src/domain/appCoreAdapter.ts)
-- [ui/web-app/src/domain/contentViewModel.ts](/root/aerobag/ui/web-app/src/domain/contentViewModel.ts)
+- [ui/web-app/src/styles.css](/root/aerobag/ui/web-app/src/styles.css)
+- [ui/web-app/src/domain/mapViewport.ts](/root/aerobag/ui/web-app/src/domain/mapViewport.ts)
+- [ui/web-app/src/domain/imageViewport.ts](/root/aerobag/ui/web-app/src/domain/imageViewport.ts)
 - [ui/web-app/src/domain/sampleData.ts](/root/aerobag/ui/web-app/src/domain/sampleData.ts)
-- [ui/web-app/src/domain/contentViewModel.test.ts](/root/aerobag/ui/web-app/src/domain/contentViewModel.test.ts)
-- [ui/web-app/src/domain/appCoreAdapter.test.ts](/root/aerobag/ui/web-app/src/domain/appCoreAdapter.test.ts)
+- [ui/web-app/src/domain/types.ts](/root/aerobag/ui/web-app/src/domain/types.ts)
+- [ui/web-app/vite.config.ts](/root/aerobag/ui/web-app/vite.config.ts)
 
 What it does now:
-- renders a full-page tiled `Map` explorer surface
-- uses real sectional packages for `NW` and `SW`, sourced from the preprocessor outputs
-- supports:
+- full-page tiled `Map` page
+- bottom-centered `Nav Element` opens `Flight Plan`
+- `Flight Plan` page shows a waypoint table and waypoint action modal
+- `Charts` page shows flat PNG chart/CSup images with drag/zoom
+- chart-family tray is modal with scrim
+- chart-family switching preserves lat/lon/continuous zoom
+- leaving `Map` and coming back preserves the map viewport
+- web map supports:
   - drag pan
   - wheel zoom
-  - pinch zoom on web
-- uses continuous `lat/lon/zoom` viewport math instead of the old embedded fixed viewport
-- no longer shows the old floating `+` / `-` zoom buttons
-- still uses the shared Rust/WASM seam for chart lookup and shared data contracts
-- offers real package switching between `NW Sectional` and `SW Sectional`
-- serves extracted sectional tiles from:
-  - [ui/web-app/public/sectional-packages](/root/aerobag/ui/web-app/public/sectional-packages)
-- web sectional stitching is now visually correct after switching tile rendering from CSS `background-image` boxes to real stretched `<img>` elements
-- web tile-address debugging exists behind `?debugTiles=1`
+  - double-click zoom
+  - pinch zoom
+- web chart page supports:
+  - drag pan
+  - wheel zoom
+  - double-click zoom
+  - pinch zoom
+  - one-thumb overscroll margin around the image
+- `?debugTiles=1` overlays tile `z/x/y`
 
-Operational note:
-- [ui/web-app/vite.config.ts](/root/aerobag/ui/web-app/vite.config.ts) allows host `aerobag-dev.iac.jonh.net` so the Vite dev server can be opened through the remote browser path already in use
-- [ui/web-app/scripts/build-wasm.sh](/root/aerobag/ui/web-app/scripts/build-wasm.sh) now builds `app-wasm` and generates browser bindings into `public/generated`
-- [ui/web-app/package.json](/root/aerobag/ui/web-app/package.json) now runs:
-  - fixture/package generation
-  - WASM generation
-  from both `npm run dev` and `npm run build`
-- important Vite caveat:
-  - if the live dev server on `:8080` starts returning `text/html` for `/sectional-packages/.../*.webp`, kill the full `npm run dev -> sh -c ... -> node vite` process chain and restart one fresh server
-  - this has happened when the `public/sectional-packages` tree changed under a long-lived dev server
+Important web serving note:
+- sectional tiles no longer come from mutable `public/sectional-packages`
+- they are served from:
+  - [ui/web-app/generated-static/sectional-packages](/root/aerobag/ui/web-app/generated-static/sectional-packages)
+- chart PNGs are served from:
+  - [ui/web-app/generated-static/chart-assets](/root/aerobag/ui/web-app/generated-static/chart-assets)
+- [ui/web-app/vite.config.ts](/root/aerobag/ui/web-app/vite.config.ts) mounts both via explicit middleware
 
-### Android prototype
+This was necessary because long-lived Vite dev servers were intermittently returning `index.html` for generated tile asset URLs when generated trees changed under them.
+
+### Android app
 
 Location:
 - [ui/android-app](/root/aerobag/ui/android-app)
 
 Important files:
-- [ui/android-app/settings.gradle.kts](/root/aerobag/ui/android-app/settings.gradle.kts)
-- [ui/android-app/build.gradle.kts](/root/aerobag/ui/android-app/build.gradle.kts)
-- [ui/android-app/app/build.gradle.kts](/root/aerobag/ui/android-app/app/build.gradle.kts)
 - [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/MainActivity.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/MainActivity.kt)
-- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/AppCoreAdapter.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/AppCoreAdapter.kt)
-- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/NativeBindings.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/NativeBindings.kt)
-- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/NativeAppCoreAdapter.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/NativeAppCoreAdapter.kt)
-- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/WireModels.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/WireModels.kt)
 - [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/Models.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/Models.kt)
 - [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SampleData.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SampleData.kt)
-- [ui/android-app/app/src/test/java/net/jonh/aerobag/prototype/domain/ContentLogicTest.kt](/root/aerobag/ui/android-app/app/src/test/java/net/jonh/aerobag/prototype/domain/ContentLogicTest.kt)
+- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/WireModels.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/WireModels.kt)
+- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/MapViewport.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/MapViewport.kt)
+- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/ImageViewport.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/ImageViewport.kt)
+- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SectionalPackages.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SectionalPackages.kt)
 
 What it does now:
-- renders a full-page tiled `Map` explorer surface in Compose
-- uses the same shared map-view metadata as the web side
-- stages `NW_SEC.zip` and `SW_SEC.zip` from the real preprocessor run into generated APK assets during build
-- installs the selected sectional zip into app-local storage on demand
-- reads rendered tiles directly from the installed zip in app-local storage
-- supports:
-  - drag pan
-  - pinch zoom in app logic
-  - keyboard `+` / `-` zoom as the reliable emulator fallback
-- does not currently keep the temporary `Shift`-drag zoom path or soft zoom buttons
-- prefers a real Rust/JNI-backed adapter at runtime and only falls back to mock if native loading fails
-- includes unit tests for:
-  - content-policy behavior
-  - native-adapter parity against the mock contract
-  - JSON/wire-format knowledge like the required `content_policy` field and Rust-style `NavRef` enum shape
-  - viewport math invariants like anchored zoom and pinch-anchor preservation
-- Android tile rendering is now done as a single `Canvas` draw pass to avoid seams between tiles at high zoom
-- package-install runtime logic lives in:
-  - [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SectionalPackages.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SectionalPackages.kt)
-
-## Verified Commands
+- full-page tiled `Map` page in Compose
+- bottom-centered `Nav Element` opens `Flight Plan`
+- `Flight Plan` page with simple waypoint table and modal
+- `Charts` page showing flat chart/CSup PNGs from Android assets
+- chart-family tray is modal with scrim
+- chart-family switching preserves lat/lon/continuous zoom
+- leaving `Map` and coming back preserves the map viewport
+- runtime auto-installs selected package zips into app-local storage
+- tiles are read directly from installed zip files
+- zip handles and entry-name indices are cached in memory for faster repeated reads
+- tile rendering is done as a single `Canvas` draw pass to avoid seams
+- square top-level controls (`MAP`, `SEC`, etc.) are custom compact surfaces, not Material buttons, so their labels now fit
 
 ### Shared Rust core
 
-Run:
+Still in use for:
+- catalog/state/content logic
+- Android JNI adapter
+- web WASM adapter
+
+Relevant locations:
+- [ui/core-rust](/root/aerobag/ui/core-rust)
+- [ui/core-rust/crates/app-ffi/src/lib.rs](/root/aerobag/ui/core-rust/crates/app-ffi/src/lib.rs)
+- [ui/core-rust/crates/app-wasm/src/lib.rs](/root/aerobag/ui/core-rust/crates/app-wasm/src/lib.rs)
+
+## Verified Commands
+
+### Shared fixture generation
 
 ```bash
-cd /root/aerobag/ui/core-rust
-cargo test
-```
-
-Last known result:
-- passed
-- `npm run build` now also regenerates the WASM bindings before invoking Vite
-- 18 tests green
-
-Coverage currently includes:
-- package-name contract tests
-- chart lookup tests
-- flight-plan validation tests
-- content-policy behavior tests
-- reducer behavior tests
-- fixture round-trip tests
-- WASM JSON boundary tests
-- viewport math tests on web and Android
-- Android tile-path tests for package-backed zip loading
-
-### Web prototype
-
-Install deps:
-
-```bash
-cd /root/aerobag/ui/web-app
-npm install
-```
-
-Test:
-
-```bash
-cd /root/aerobag/ui/web-app
-npm test
+cd /root/aerobag
+python3 ui/scripts/generate_content_fixture.py
 ```
 
 Last known result:
 - passed
 
-Install / run on emulator in this Codex sandbox:
+### Web
+
+```bash
+cd /root/aerobag/ui/web-app
+PATH=/root/local/node-v24.10.0/bin:$PATH npm test
+PATH=/root/local/node-v24.10.0/bin:$PATH npm run build
+```
+
+Last known result:
+- both passed
+
+Live dev server convention:
+- keep one Vite process alive and rely on HMR
+- expected host URL:
+  - `http://aerobag-dev.iac.jonh.net:8080/`
+
+If the live dev server starts returning HTML for tile URLs again, verify with:
+
+```bash
+curl -I http://localhost:8080/sectional-packages/NW_SEC/tiles/0/9/93/324.webp
+```
+
+Expected:
+- `Content-Type: image/webp`
+
+### Android
+
+Build and install:
 
 ```bash
 cd /root/aerobag/ui/android-app
 env GRADLE_USER_HOME=/root/aerobag/.gradle-user-home ./gradlew test installDebug
-adb shell am start -W -n net.jonh.aerobag.prototype/.MainActivity
 ```
 
-Last known result:
-- passed
-- direct activity launch returned `Status: ok`
-
-### Android prototype
-
-Test:
-
-```bash
-cd /root/aerobag/ui/android-app
-./gradlew test
-```
-
-Last known result:
-- passed
-- the build now auto-runs [generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py) and stages `NW_SEC.zip` / `SW_SEC.zip`
-
-Install / run on emulator:
-
-```bash
-cd /root/aerobag/ui/android-app
-./gradlew installDebug
-adb shell am start -n net.jonh.aerobag.prototype/.MainActivity
-```
-
-Build:
-
-```bash
-cd /root/aerobag/ui/web-app
-npm run build
-```
-
-Last known result:
-- passed
-
-## Current Blockers
-
-### Android UI visibility note
-
-Use this standard for Android verification:
+Runtime verification:
 
 ```bash
 adb logcat -c
@@ -229,124 +176,56 @@ adb shell am start -W -n net.jonh.aerobag.prototype/.MainActivity
 adb logcat -d AndroidRuntime:E '*:S'
 ```
 
-Treat `am start -W` plus the filtered crash log as authoritative. `dumpsys` and the launcher state have occasionally been misleading in this environment.
+Last known result:
+- build passed
+- launch returned `Status: ok`
+- crash log clean
 
-### Android emulator note
+## Current Design State
 
-The original X11-forwarded emulator path was not usable in practice even after KVM became available:
-- forwarded-X emulator windows stayed gray or badly behaved across multiple GPU modes
-- `scrcpy` was not reliable enough in this environment either
+The UI is now using the `thumb` sizing idea as the main layout token.
 
-The working path ended up being:
-- `Xvfb` on `:1`
-- emulator launched on `DISPLAY=:1`
-- `x11vnc` exporting that display
-- emulator renderer set to `-gpu software`
+Current high-level page structure:
+- `Map`
+  - top-left chart-family launcher and modal tray
+  - bottom-centered nav element
+- `Flight Plan`
+  - waypoint table
+  - waypoint action modal
+- `Charts`
+  - top-left airport selector
+  - top-left chart selector
+  - flat image pan/zoom viewer
 
-Working commands:
+Current data reality:
+- still mostly generated fixture/index data
+- not yet driven by a full real unified client catalog
 
-```bash
-Xvfb :1 -screen 0 1440x2960x24 -ac
-DISPLAY=:1 /usr/lib/android-sdk/emulator/emulator -avd aerobag34 -gpu software -no-audio
-x11vnc -display :1 -forever -shared -nopw -rfbport 5900 -noxdamage -nowf -noscr -fixscreen 1 -ncache 0 -clip 1080x2400+0+0
-```
+## Next Recommended Step
 
-Observed behavior:
-- this VNC-backed software-rendered path was the first one that made the emulator actually usable
-- launcher/system UI could still occasionally misbehave, but `adb` navigation was reliable
-- the Android prototype app itself rendered correctly and was interactive enough to test
-- the AVD now has hardware keyboard enabled in:
-  - [config.ini](/root/.android/avd/aerobag34.avd/config.ini)
-  - `hw.keyboard = yes`
-- that made keyboard `+` / `-` reach the app through VNC; modifier-assisted pointer gestures are still unreliable
+Stop expanding placeholder UI data and replace the fixture’s synthetic assembly with a real generated client index.
 
-## What To Do Next
+The next clean phase should be:
+1. read nav data from:
+   - `runs/20260407T053200Z-data-build/work/data/databases.zip`
+   - specifically `main.db`
+2. build one unified UI-facing catalog/index stream for:
+   - all chart families:
+     - sectional
+     - tac
+     - ifr low
+     - ifr high
+   - package metadata
+   - coverage metadata
+   - airport -> plate/csup index
+   - artifact URLs, sizes, hashes
+3. then make the current fixture generator consume that real index instead of constructing special-case records by hand
 
-### Best next step now
+Important note:
+- the user wants the metadata for all available content outside the individual packages, or duplicated at most, not only discoverable by opening installed zips
+- that is the right direction because the UI needs to say things like:
+  - “if you had downloaded `SEC_SE`, you could see this here”
 
-1. Build a legitimate sectional tile source for more than the current TAC demo.
-   - likely start with `NW` and `SW`
-   - produce a consistent tile artifact shape both clients can consume
-2. Define the platform delivery path for those tiles.
-   - web: unpack and serve on demand
-   - Android: install packages into local app storage and index them
-3. Wire the map page to real chart-family / package availability instead of the current single-chart TAC prototype.
-4. After that, reconnect the `Content` and `Map` slices so install state and visible charts are the same product surface.
-   - chart-family requirements
-3. Pull more real chart families/geometry into the generated fixture beyond the first Boston TAC example.
+## Resume Prompt
 
-### Completed since the earlier Android/WASM checkpoint
-
-1. Replaced inline TS/Kotlin sample data with checked-in shared fixture JSON files.
-2. Added a fixture exporter at [ui/scripts/generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py).
-3. Added the canonical generated fixture at [ui/shared-fixtures/content-prototype/content_fixture.json](/root/aerobag/ui/shared-fixtures/content-prototype/content_fixture.json).
-4. Wired both shells to consume the generated fixture:
-   - web imports [contentFixture.json](/root/aerobag/ui/web-app/src/domain/generated/contentFixture.json)
-   - Android loads [contentFixture.json](/root/aerobag/ui/android-app/app/src/main/assets/fixtures/contentFixture.json)
-5. The fixture currently draws from preprocessor outputs for:
-   - sectional package provenance
-   - BOS plate metadata from the recovered `tpp-ne` run
-6. Current app checkpoint is good:
-   - `adb shell am start -W -n net.jonh.aerobag.prototype/.MainActivity` returns `Status: ok`
-7. Added the first real `Map` lookup slice:
-   - fixture now includes `geometry` and `initial_probe`
-   - Rust `chart_for_position` is exposed through both WASM and JNI
-   - web and Android both show family/probe controls and the current matching chart
-   - the generated fixture currently uses a transformed Boston TAC cutline from the preprocessor outputs
-8. The `Map` slice now renders real TAC tiles on both platforms:
-   - the fixture includes `map_tile_view`
-   - the generator copies a small Boston TAC tile subset into:
-     - [ui/shared-fixtures/content-prototype/tiles](/root/aerobag/ui/shared-fixtures/content-prototype/tiles)
-     - [ui/web-app/public/prototype-tiles](/root/aerobag/ui/web-app/public/prototype-tiles)
-     - [ui/android-app/app/src/main/assets/tiles](/root/aerobag/ui/android-app/app/src/main/assets/tiles)
-   - Android and web now both render the same 3x3 tile viewport with a probe marker
-9. Android startup verification rule:
-   - do not trust `am start` by itself
-   - the correct checkpoint sequence is `adb logcat -c`, launch, then `adb logcat -d` and confirm no `FATAL EXCEPTION` / `AndroidRuntime`
-10. Web WASM/Vite integration:
-   - generated wasm-bindgen output now goes to [ui/web-app/src/generated](/root/aerobag/ui/web-app/src/generated), not `/public`
-   - loader explicitly calls the module default init function before using exports
-   - this avoids the earlier Vite `/public` import failure and the bundler-target WASM incompatibility
-
-## Important Design Decisions Already Made
-
-- Do not share UI component code between Android and web.
-- Share domain logic, metadata, state transitions, and tests.
-- Android is offline/package-first.
-- Web is stream/cache-first.
-- The shared abstraction is product semantics, not storage symmetry.
-- The web shell should consume the same model but may fulfill content remotely.
-
-## Git / Repo Notes
-
-There is a git repo initialized at:
-- `/root/aerobag/.git`
-
-Earlier commits from this work:
-- `b8304d9` `Add shared app state and wasm adapter tests`
-- `850ea60` `Add web content prototype and UI handoff`
-- `769c385` `Remove web build artifacts and dependencies`
-
-This handoff file should now be committed with the Android scaffold and emulator checkpoint.
-
-## Unrelated Workspace State
-
-There are many unrelated untracked directories in the workspace:
-- `avare-source/`
-- `runs/`
-- `rust-runs/`
-- `legacy-capture/`
-- and others
-
-Do not blindly add them.
-
-## If You Need A Very Short Resume Prompt
-
-Resume the UI prototype from `/root/aerobag/ui/web-app`, `/root/aerobag/ui/android-app`, and `/root/aerobag/ui/core-rust`.
-The `Content` slice is shared-core-backed on both platforms.
-The `Map` slice now renders real Boston TAC tiles on both platforms.
-The web dev server should be left running and allowed to hot-reload instead of being restarted repeatedly.
-When checking Android, always verify with logcat after launch.
-Next:
-- make the tile-backed `Map` slice interactive, or
-- connect map selection to content requirements / planning state.
+Resume from the 3-page shell checkpoint and replace the hand-assembled fixture data with a real generated UI catalog/index driven by `databases.zip`, chart package outputs, and TPP/CSup outputs. Keep the current map/plan/charts shells intact while swapping in the real data stream.

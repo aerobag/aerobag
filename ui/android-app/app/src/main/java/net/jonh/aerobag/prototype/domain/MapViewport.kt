@@ -58,6 +58,13 @@ fun createInitialViewport(mapView: MapView): MapViewportState {
     )
 }
 
+fun preserveViewportForMap(viewport: MapViewportState, mapView: MapView): MapViewportState =
+    MapViewportState(
+        centerWorldX = viewport.centerWorldX,
+        centerWorldY = viewport.centerWorldY,
+        zoom = viewport.zoom,
+    )
+
 fun clampZoom(zoom: Double, mapView: MapView): Double = min(mapView.maxZoom, max(mapView.minZoom, zoom))
 
 fun latLonToWorld(lat: Double, lon: Double): WorldPoint {

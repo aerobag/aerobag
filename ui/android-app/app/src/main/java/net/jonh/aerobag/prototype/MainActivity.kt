@@ -7,22 +7,31 @@ import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.wrapContentWidth
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
@@ -30,38 +39,40 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.ExperimentalComposeUiApi
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.input.pointer.PointerId
-import androidx.compose.ui.input.pointer.pointerInteropFilter
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import net.jonh.aerobag.prototype.domain.ChartAirport
+import net.jonh.aerobag.prototype.domain.ChartAsset
+import net.jonh.aerobag.prototype.domain.MapChartFamily
 import net.jonh.aerobag.prototype.domain.MapView
 import net.jonh.aerobag.prototype.domain.MapViewportState
 import net.jonh.aerobag.prototype.domain.ScreenPoint
@@ -70,12 +81,43 @@ import net.jonh.aerobag.prototype.domain.SampleData
 import net.jonh.aerobag.prototype.domain.TileStorageKind
 import net.jonh.aerobag.prototype.domain.applyPinchGesture
 import net.jonh.aerobag.prototype.domain.clampZoom
+import net.jonh.aerobag.prototype.domain.createInitialImageViewport
 import net.jonh.aerobag.prototype.domain.createInitialViewport
 import net.jonh.aerobag.prototype.domain.createPinchSnapshot
+import net.jonh.aerobag.prototype.domain.dragImageViewport
 import net.jonh.aerobag.prototype.domain.dragViewport
+import net.jonh.aerobag.prototype.domain.imageDisplaySize
+import net.jonh.aerobag.prototype.domain.preserveViewportForMap
 import net.jonh.aerobag.prototype.domain.renderTiles
 import net.jonh.aerobag.prototype.domain.viewportCenterLatLon
 import net.jonh.aerobag.prototype.domain.zoomAroundPoint
+import net.jonh.aerobag.prototype.domain.zoomImageAroundPoint
+import kotlin.math.roundToInt
+
+private val ThumbSize = 56.dp
+private val ThumbGap = 5.6.dp
+private val ThumbRadius = 10.dp
+
+private enum class AppPage {
+    Map,
+    Plan,
+    Charts,
+}
+
+private data class ChartTrayOption(
+    val id: String,
+    val label: String,
+    val launcherLabel: String,
+    val available: Boolean,
+    val select: (() -> Unit)?,
+)
+
+private data class TileRect(
+    val leftPx: Int,
+    val topPx: Int,
+    val widthPx: Int,
+    val heightPx: Int,
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -86,39 +128,94 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = Color(0xFFF3EFE4),
                 ) {
-                    MapExplorerScreen()
+                    AerobagApp()
                 }
             }
         }
     }
 }
 
-@OptIn(ExperimentalComposeUiApi::class)
 @Composable
-private fun MapExplorerScreen() {
+private fun AerobagApp() {
     val context = LocalContext.current
-    val density = LocalDensity.current
     val fixture = remember(context) { SampleData.load(context.applicationContext) }
-    val coroutineScope = rememberCoroutineScope()
+    var page by remember { mutableStateOf(AppPage.Map) }
     var selectedMapId by remember { mutableStateOf(fixture.mapViews.first().id) }
     val selectedMap = remember(selectedMapId, fixture.mapViews) {
         fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
     }
-    var viewport by remember(selectedMap.id) { mutableStateOf(createInitialViewport(selectedMap.mapView)) }
-    var interactionLabel by remember { mutableStateOf("idle") }
-    var debugTileLabels by remember { mutableStateOf(true) }
+    var mapViewport by remember { mutableStateOf(createInitialViewport(selectedMap.mapView)) }
+    var selectedAirportId by remember { mutableStateOf(fixture.chartPage.initialAirportId.ifEmpty { fixture.chartPage.airports.firstOrNull()?.id.orEmpty() }) }
+    var selectedChartId by remember { mutableStateOf(fixture.chartPage.initialChartId.ifEmpty { fixture.chartPage.airports.firstOrNull()?.charts?.firstOrNull()?.id.orEmpty() }) }
+    val selectedAirport = remember(selectedAirportId, fixture.chartPage.airports) {
+        fixture.chartPage.airports.find { it.id == selectedAirportId } ?: fixture.chartPage.airports.firstOrNull()
+    }
+    val selectedChart = remember(selectedAirport, selectedChartId) {
+        selectedAirport?.charts?.find { it.id == selectedChartId } ?: selectedAirport?.charts?.firstOrNull()
+    }
+    val legSummary = remember(fixture.samplePlan) {
+        fixture.samplePlan.legs.firstOrNull()?.let { "K${it.fromAirport} -> K${it.toAirport} CRS 342" } ?: "NO LEG"
+    }
+
+    LaunchedEffect(selectedMap.id) {
+        mapViewport = preserveViewportForMap(mapViewport, selectedMap.mapView)
+    }
+
+    when (page) {
+        AppPage.Map -> MapExplorerPage(
+            fixture = fixture,
+            selectedMapId = selectedMapId,
+            viewport = mapViewport,
+            onViewportChange = { mapViewport = it },
+            onSelectMapId = { selectedMapId = it },
+            onOpenPlan = { page = AppPage.Plan },
+            legSummary = legSummary,
+        )
+        AppPage.Plan -> FlightPlanPage(
+            legSummary = legSummary,
+            samplePlan = fixture.samplePlan,
+            onBack = { page = AppPage.Map },
+            onOpenCharts = { page = AppPage.Charts },
+        )
+        AppPage.Charts -> ChartsPage(
+            airports = fixture.chartPage.airports,
+            selectedAirport = selectedAirport,
+            selectedChart = selectedChart,
+            onBack = { page = AppPage.Plan },
+            onSelectAirport = { airportId ->
+                selectedAirportId = airportId
+                selectedChartId = fixture.chartPage.airports.find { it.id == airportId }?.charts?.firstOrNull()?.id.orEmpty()
+            },
+            onSelectChart = { selectedChartId = it },
+        )
+    }
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun MapExplorerPage(
+    fixture: net.jonh.aerobag.prototype.domain.ContentFixture,
+    selectedMapId: String,
+    viewport: MapViewportState,
+    onViewportChange: (MapViewportState) -> Unit,
+    onSelectMapId: (String) -> Unit,
+    onOpenPlan: () -> Unit,
+    legSummary: String,
+) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    var chartTrayOpen by remember { mutableStateOf(false) }
+    var debugTileLabels by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     var installingPackage by remember { mutableStateOf<String?>(null) }
     var installRevision by remember { mutableStateOf(0) }
-    val focusRequester = remember { FocusRequester() }
+    val selectedMap = remember(selectedMapId, fixture.mapViews) {
+        fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
+    }
     val viewportState = rememberUpdatedState(viewport)
     val center = remember(viewport) { viewportCenterLatLon(viewport) }
-    val surfaceWidthUnits = remember(surfaceSize, density) {
-        with(density) { surfaceSize.width.toDp().value }
-    }
-    val surfaceHeightUnits = remember(surfaceSize, density) {
-        with(density) { surfaceSize.height.toDp().value }
-    }
+    val surfaceWidthUnits = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
+    val surfaceHeightUnits = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
     val tiles = remember(viewport, surfaceSize, selectedMap.mapView) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             emptyList()
@@ -135,52 +232,56 @@ private fun MapExplorerScreen() {
         val packageName = selectedMap.mapView.packageName
         packageName != null && SectionalPackages.isInstalled(context, packageName)
     }
-
+    val trayOptions = remember(selectedMap.id, fixture.mapViews) {
+        val sectionalTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.Sectional }
+        val tacTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.Tac }
+        listOf(
+            ChartTrayOption("sectional", "SECTIONAL", "SEC", sectionalTarget != null) { sectionalTarget?.let { onSelectMapId(it.id) } },
+            ChartTrayOption("tac", "TAC", "TAC", tacTarget != null) { tacTarget?.let { onSelectMapId(it.id) } },
+            ChartTrayOption("ifr_low", "IFR-LOW", "IFR L", false, null),
+            ChartTrayOption("ifr_high", "IFR-HIGH", "IFR H", false, null),
+        )
+    }
+    val selectedLauncher = trayOptions.firstOrNull { option ->
+        when (option.id) {
+            "sectional" -> selectedMap.mapView.chartFamily == MapChartFamily.Sectional
+            "tac" -> selectedMap.mapView.chartFamily == MapChartFamily.Tac
+            else -> false
+        }
+    } ?: trayOptions.first()
     val tileRects = remember(tiles, density) {
-        val columns = tiles
-            .groupBy { it.x }
-            .mapValues { (_, entries) -> with(density) { entries.minOf { it.leftPx.dp.roundToPx() } } }
-            .toList()
-            .sortedBy { it.second }
-        val rows = tiles
-            .groupBy { it.yTms }
-            .mapValues { (_, entries) -> with(density) { entries.minOf { it.topPx.dp.roundToPx() } } }
-            .toList()
-            .sortedBy { it.second }
-
+        val columns = tiles.groupBy { it.x }.mapValues { (_, entries) ->
+            with(density) { entries.minOf { it.leftPx.dp.roundToPx() } }
+        }.toList().sortedBy { it.second }
+        val rows = tiles.groupBy { it.yTms }.mapValues { (_, entries) ->
+            with(density) { entries.minOf { it.topPx.dp.roundToPx() } }
+        }.toList().sortedBy { it.second }
         val columnRects = columns.mapIndexed { index, (x, leftPx) ->
-            val rightPx = if (index + 1 < columns.size) {
-                columns[index + 1].second
-            } else {
-                with(density) {
-                    val sample = tiles.first { it.x == x }
-                    (sample.leftPx + sample.sizePx).dp.roundToPx()
-                }
+            val rightPx = if (index + 1 < columns.size) columns[index + 1].second else with(density) {
+                val sample = tiles.first { it.x == x }
+                (sample.leftPx + sample.sizePx).dp.roundToPx()
             }
             x to (leftPx to (rightPx - leftPx))
         }.toMap()
-
         val rowRects = rows.mapIndexed { index, (yTms, topPx) ->
-            val bottomPx = if (index + 1 < rows.size) {
-                rows[index + 1].second
-            } else {
-                with(density) {
-                    val sample = tiles.first { it.yTms == yTms }
-                    (sample.topPx + sample.sizePx).dp.roundToPx()
-                }
+            val bottomPx = if (index + 1 < rows.size) rows[index + 1].second else with(density) {
+                val sample = tiles.first { it.yTms == yTms }
+                (sample.topPx + sample.sizePx).dp.roundToPx()
             }
             yTms to (topPx to (bottomPx - topPx))
         }.toMap()
-
         tiles.associate { tile ->
             val (leftPx, widthPx) = columnRects.getValue(tile.x)
             val (topPx, heightPx) = rowRects.getValue(tile.yTms)
-            Triple(tile.zoom, tile.x, tile.yTms) to TileRect(
-                leftPx = leftPx,
-                topPx = topPx,
-                widthPx = widthPx,
-                heightPx = heightPx,
-            )
+            Triple(tile.zoom, tile.x, tile.yTms) to TileRect(leftPx, topPx, widthPx, heightPx)
+        }
+    }
+    val tileBitmaps = remember(tiles, selectedMap.id, installRevision) {
+        tiles.associate { tile ->
+            Triple(tile.zoom, tile.x, tile.yTms) to runCatching {
+                SectionalPackages.loadTileBytes(context, selectedMap.mapView, tile)
+                    ?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
+            }.getOrNull()
         }
     }
     val tileLabelPaint = remember {
@@ -198,20 +299,24 @@ private fun MapExplorerScreen() {
         }
     }
 
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
-    }
+    LaunchedEffect(selectedMap.id) { chartTrayOpen = false }
 
-    LaunchedEffect(selectedMap.id) {
-        viewport = createInitialViewport(selectedMap.mapView)
-        interactionLabel = "idle"
+    LaunchedEffect(selectedMap.id, isInstalled) {
+        val packageName = selectedMap.mapView.packageName ?: return@LaunchedEffect
+        if (selectedMap.mapView.storageKind != TileStorageKind.SectionalPackage || isInstalled || installingPackage == packageName) {
+            return@LaunchedEffect
+        }
+        installingPackage = packageName
+        withContext(Dispatchers.IO) {
+            SectionalPackages.install(context, packageName)
+        }
+        installRevision += 1
+        installingPackage = null
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .focusRequester(focusRequester)
-            .focusable()
             .background(
                 brush = Brush.verticalGradient(
                     colors = listOf(Color(0xFFF6F1E7), Color(0xFFDCE4E4)),
@@ -225,7 +330,6 @@ private fun MapExplorerScreen() {
                 ) {
                     return@onPreviewKeyEvent false
                 }
-
                 val delta = when (keyEvent.nativeKeyEvent.keyCode) {
                     AndroidKeyEvent.KEYCODE_EQUALS,
                     AndroidKeyEvent.KEYCODE_PLUS,
@@ -236,18 +340,19 @@ private fun MapExplorerScreen() {
                     -> -0.35
                     else -> return@onPreviewKeyEvent false
                 }
-
-                    viewport = zoomAroundPoint(
+                onViewportChange(
+                    zoomAroundPoint(
                         viewport = viewportState.value,
                         mapView = selectedMap.mapView,
                         anchor = ScreenPoint(surfaceWidthUnits / 2f, surfaceHeightUnits / 2f),
                         widthPx = surfaceWidthUnits,
                         heightPx = surfaceHeightUnits,
                         nextZoom = clampZoom(viewportState.value.zoom + delta, selectedMap.mapView),
-                    )
-                interactionLabel = "key ${if (delta > 0) "+" else "-"}"
+                    ),
+                )
                 true
             }
+            .focusable()
             .pointerInput(selectedMap.mapView, surfaceSize) {
                 if (surfaceWidthUnits == 0f || surfaceHeightUnits == 0f) {
                     return@pointerInput
@@ -256,14 +361,14 @@ private fun MapExplorerScreen() {
                     var dragPointerId: PointerId? = null
                     var dragLastPosition: Offset? = null
                     var pinchSnapshot: net.jonh.aerobag.prototype.domain.PinchSnapshot? = null
-
                     while (true) {
                         val event = awaitPointerEvent()
                         val pressed = event.changes.filter { it.pressed }
-                        if (pressed.isEmpty()) {
-                            break
+                        if (pressed.isEmpty()) break
+                        if (chartTrayOpen) {
+                            pressed.forEach { it.consume() }
+                            continue
                         }
-
                         if (pressed.size == 1) {
                             val change = pressed.first()
                             if (dragPointerId != change.id || dragLastPosition == null) {
@@ -272,12 +377,13 @@ private fun MapExplorerScreen() {
                                 pinchSnapshot = null
                             } else {
                                 val last = dragLastPosition ?: change.position
-                                    viewport = dragViewport(
+                                onViewportChange(
+                                    dragViewport(
                                         viewportState.value,
                                         dx = with(density) { (change.position.x - last.x).toDp().value },
                                         dy = with(density) { (change.position.y - last.y).toDp().value },
+                                    ),
                                 )
-                                interactionLabel = "drag"
                                 dragLastPosition = change.position
                             }
                             change.consume()
@@ -287,35 +393,22 @@ private fun MapExplorerScreen() {
                             if (pinchSnapshot == null) {
                                 pinchSnapshot = createPinchSnapshot(
                                     viewport = viewportState.value,
-                                    first = ScreenPoint(
-                                        with(density) { first.position.x.toDp().value },
-                                        with(density) { first.position.y.toDp().value },
-                                    ),
-                                    second = ScreenPoint(
-                                        with(density) { second.position.x.toDp().value },
-                                        with(density) { second.position.y.toDp().value },
-                                    ),
+                                    first = ScreenPoint(with(density) { first.position.x.toDp().value }, with(density) { first.position.y.toDp().value }),
+                                    second = ScreenPoint(with(density) { second.position.x.toDp().value }, with(density) { second.position.y.toDp().value }),
                                     widthPx = surfaceWidthUnits,
                                     heightPx = surfaceHeightUnits,
                                 )
                             }
-                            viewport = applyPinchGesture(
+                            onViewportChange(
+                                applyPinchGesture(
                                     snapshot = pinchSnapshot,
-                                    currentFirst = ScreenPoint(
-                                        with(density) { first.position.x.toDp().value },
-                                        with(density) { first.position.y.toDp().value },
-                                    ),
-                                currentSecond = ScreenPoint(
-                                    with(density) { second.position.x.toDp().value },
-                                    with(density) { second.position.y.toDp().value },
-                                ),
+                                    currentFirst = ScreenPoint(with(density) { first.position.x.toDp().value }, with(density) { first.position.y.toDp().value }),
+                                    currentSecond = ScreenPoint(with(density) { second.position.x.toDp().value }, with(density) { second.position.y.toDp().value }),
                                     mapView = selectedMap.mapView,
                                     widthPx = surfaceWidthUnits,
                                     heightPx = surfaceHeightUnits,
-                                )
-                            interactionLabel = "pinch"
-                            dragPointerId = null
-                            dragLastPosition = null
+                                ),
+                            )
                             first.consume()
                             second.consume()
                         }
@@ -326,35 +419,27 @@ private fun MapExplorerScreen() {
                 if (surfaceWidthUnits == 0f || surfaceHeightUnits == 0f) {
                     return@pointerInteropFilter false
                 }
-
                 if (event.action == MotionEvent.ACTION_SCROLL) {
                     val wheelDelta = event.getAxisValue(MotionEvent.AXIS_VSCROLL).takeIf { it != 0f }
                         ?: event.getAxisValue(MotionEvent.AXIS_SCROLL)
-                    viewport = zoomAroundPoint(
-                        viewport = viewportState.value,
-                        mapView = selectedMap.mapView,
-                        anchor = ScreenPoint(surfaceWidthUnits / 2f, surfaceHeightUnits / 2f),
-                        widthPx = surfaceWidthUnits,
-                        heightPx = surfaceHeightUnits,
-                        nextZoom = clampZoom(
-                            viewportState.value.zoom - wheelDelta * 0.28,
-                            selectedMap.mapView,
+                    onViewportChange(
+                        zoomAroundPoint(
+                            viewport = viewportState.value,
+                            mapView = selectedMap.mapView,
+                            anchor = ScreenPoint(surfaceWidthUnits / 2f, surfaceHeightUnits / 2f),
+                            widthPx = surfaceWidthUnits,
+                            heightPx = surfaceHeightUnits,
+                            nextZoom = clampZoom(viewportState.value.zoom - wheelDelta * 0.28, selectedMap.mapView),
                         ),
                     )
-                    interactionLabel = "wheel ${"%.2f".format(wheelDelta)}"
                     true
                 } else {
                     false
                 }
             },
     ) {
-        val tileBitmaps = remember(tiles, selectedMap.id, installRevision) {
-            tiles.associate { tile ->
-                Triple(tile.zoom, tile.x, tile.yTms) to runCatching {
-                    SectionalPackages.loadTileBytes(context, selectedMap.mapView, tile)
-                        ?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
-                }.getOrNull()
-            }
+        if (chartTrayOpen) {
+            Scrim { chartTrayOpen = false }
         }
 
         Canvas(modifier = Modifier.fillMaxSize()) {
@@ -371,164 +456,542 @@ private fun MapExplorerScreen() {
                     drawRect(
                         color = Color(0x12000000),
                         topLeft = Offset(tileRect.leftPx.toFloat(), tileRect.topPx.toFloat()),
-                        size = androidx.compose.ui.geometry.Size(
-                            tileRect.widthPx.toFloat(),
-                            tileRect.heightPx.toFloat(),
-                        ),
+                        size = Size(tileRect.widthPx.toFloat(), tileRect.heightPx.toFloat()),
                     )
                 }
                 if (debugTileLabels) {
                     val label = "z${tile.zoom} x${tile.x} y${tile.yTms}"
-                    val padding = 8f
-                    val baseline = tileRect.topPx + 30f
-                    val textWidth = tileLabelPaint.measureText(label)
                     val rectLeft = tileRect.leftPx + 6f
                     val rectTop = tileRect.topPx + 6f
-                    val rectRight = rectLeft + textWidth + padding * 2f
-                    val rectBottom = rectTop + 30f
+                    val textWidth = tileLabelPaint.measureText(label)
                     drawContext.canvas.nativeCanvas.apply {
                         drawRoundRect(
                             rectLeft,
                             rectTop,
-                            rectRight,
-                            rectBottom,
+                            rectLeft + textWidth + 16f,
+                            rectTop + 30f,
                             8f,
                             8f,
                             tileLabelBackgroundPaint,
                         )
-                        drawText(label, rectLeft + padding, baseline, tileLabelPaint)
+                        drawText(label, rectLeft + 8f, tileRect.topPx + 30f, tileLabelPaint)
                     }
                 }
             }
         }
 
-        Card(
+        MapTray(
+            modifier = Modifier.align(Alignment.TopStart),
+            selectedLabel = selectedLauncher.launcherLabel,
+            trayOptions = trayOptions,
+            trayOpen = chartTrayOpen,
+            onToggle = { chartTrayOpen = !chartTrayOpen },
+        )
+
+        Button(
+            onClick = onOpenPlan,
             modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(8.dp)
-                .widthIn(max = 250.dp),
+                .align(Alignment.BottomCenter)
+                .padding(bottom = ThumbGap)
+                .width(ThumbSize * 3f)
+                .height(ThumbSize * 0.67f),
+            shape = RoundedCornerShape(ThumbRadius),
         ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(5.dp),
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(legSummary, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
+                Text("° ° ^| ° °", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+
+        OutlinedButton(
+            onClick = { debugTileLabels = !debugTileLabels },
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(ThumbGap)
+                .height(ThumbSize * 0.7f),
+        ) {
+            Text(if (debugTileLabels) "DBG ON" else "DBG", style = MaterialTheme.typography.labelSmall)
+        }
+
+        if (installingPackage != null || selectedMap.mapView.storageKind == TileStorageKind.SectionalPackage) {
+            Card(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(ThumbGap),
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    fixture.mapViews.forEach { mapOption ->
-                        val isSelected = mapOption.id == selectedMap.id
-                        if (isSelected) {
-                            Button(onClick = { }) {
-                                Text(
-                                    text = mapOption.regionId.uppercase(),
-                                    style = MaterialTheme.typography.labelMedium,
-                                )
-                            }
-                        } else {
-                            OutlinedButton(onClick = { selectedMapId = mapOption.id }) {
-                                Text(
-                                    text = mapOption.regionId.uppercase(),
-                                    style = MaterialTheme.typography.labelMedium,
-                                )
-                            }
-                        }
-                    }
-                }
-                OutlinedButton(onClick = { debugTileLabels = !debugTileLabels }) {
-                    Text(
-                        text = if (debugTileLabels) "Hide labels" else "Show labels",
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-                if (selectedMap.mapView.storageKind == TileStorageKind.SectionalPackage) {
-                    val packageName = selectedMap.mapView.packageName.orEmpty()
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                coroutineScope.launch {
-                                    installingPackage = packageName
-                                    withContext(Dispatchers.IO) {
-                                        SectionalPackages.install(context, packageName)
-                                    }
-                                    installRevision += 1
-                                    installingPackage = null
-                                }
-                            },
-                            enabled = !isInstalled && installingPackage == null,
-                        ) {
-                            Text(
-                                when {
-                                    isInstalled -> "Installed"
-                                    installingPackage == packageName -> "Installing…"
-                                    else -> "Install ${packageName}"
-                                },
-                            )
-                        }
-                        Text(
-                            text = if (isInstalled) "Local package ready" else "Not installed yet",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color(0xFF52656D),
-                            modifier = Modifier.align(Alignment.CenterVertically),
-                        )
-                    }
-                }
                 Text(
-                    text = "${selectedMap.mapView.chartName} • $interactionLabel",
+                    text = when {
+                        installingPackage != null -> "Installing ${installingPackage}…"
+                        isInstalled -> "Local ${selectedMap.mapView.packageName}"
+                        else -> "Package missing"
+                    },
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                     style = MaterialTheme.typography.labelSmall,
                     color = Color(0xFF52656D),
                 )
             }
         }
-
-        Card(
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(8.dp)
-                .widthIn(max = 150.dp),
-        ) {
-            Column(
-                modifier = Modifier.padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                MetricRow("Latitude", "%.4f".format(center.first))
-                MetricRow("Longitude", "%.4f".format(center.second))
-                MetricRow("Zoom", "%.2f".format(viewport.zoom))
-            }
-        }
-
     }
 }
 
-private data class TileRect(
-    val leftPx: Int,
-    val topPx: Int,
-    val widthPx: Int,
-    val heightPx: Int,
+@Composable
+private fun FlightPlanPage(
+    legSummary: String,
+    samplePlan: net.jonh.aerobag.prototype.domain.FlightPlan,
+    onBack: () -> Unit,
+    onOpenCharts: () -> Unit,
+) {
+    var selectedWaypointIndex by remember { mutableStateOf<Int?>(null) }
+    val rows = remember(samplePlan) {
+        samplePlan.legs.mapIndexed { index, leg ->
+            FlightPlanRow(
+                waypoint = "K${leg.toAirport}",
+                distance = if (index == 0) "18.4" else "11.2",
+                ete = if (index == 0) "0:07" else "0:04",
+                course = if (index == 0) "342" else "161",
+            )
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                brush = Brush.verticalGradient(
+                    colors = listOf(Color(0xFFF7F2E9), Color(0xFFECE7DB)),
+                ),
+            ),
+    ) {
+        ToolbarButton(label = "MAP", modifier = Modifier.align(Alignment.TopStart).padding(ThumbGap), onClick = onBack)
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = ThumbSize + ThumbGap * 2, start = ThumbGap, end = ThumbGap, bottom = ThumbSize),
+            verticalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
+            PlanHeaderRow()
+            rows.forEachIndexed { index, row ->
+                FlightPlanDataRow(row = row, onWaypointClick = { selectedWaypointIndex = index })
+            }
+        }
+
+        Text(
+            text = legSummary,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = ThumbGap),
+            style = MaterialTheme.typography.labelMedium,
+            color = Color(0xFF52656D),
+        )
+
+        if (selectedWaypointIndex != null) {
+            Scrim { selectedWaypointIndex = null }
+            Card(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = ThumbSize + ThumbGap * 2, start = ThumbSize * 2.6f + ThumbGap * 2, end = ThumbGap),
+            ) {
+                Column(
+                    modifier = Modifier.padding(ThumbGap),
+                    verticalArrangement = Arrangement.spacedBy(ThumbGap),
+                ) {
+                    listOf("Remove", "Insert", "Reorder", "Waypoint Info", "Add Airway", "Select Procedure", "Charts").forEach { action ->
+                        OutlinedButton(
+                            onClick = {
+                                if (action == "Charts") {
+                                    onOpenCharts()
+                                }
+                                selectedWaypointIndex = null
+                            },
+                            modifier = Modifier.fillMaxWidth().height(ThumbSize),
+                        ) {
+                            Text(action, style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun ChartsPage(
+    airports: List<ChartAirport>,
+    selectedAirport: ChartAirport?,
+    selectedChart: ChartAsset?,
+    onBack: () -> Unit,
+    onSelectAirport: (String) -> Unit,
+    onSelectChart: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    var airportTrayOpen by remember { mutableStateOf(false) }
+    var chartTrayOpen by remember { mutableStateOf(false) }
+    var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
+    val overscrollPx = with(density) { ThumbSize.toPx() }
+    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, selectedChart?.assetPath) {
+        value = selectedChart?.assetPath?.let { path ->
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    context.assets.open(path).use { stream ->
+                        BitmapFactory.decodeStream(stream)?.asImageBitmap()
+                    }
+                }.getOrNull()
+            }
+        }
+    }
+    var viewport by remember(selectedChart?.id, surfaceSize) { mutableStateOf<net.jonh.aerobag.prototype.domain.ImageViewportState?>(null) }
+    val viewportState = rememberUpdatedState(viewport)
+    val imageWidthPx = bitmap?.width?.toFloat() ?: 0f
+    val imageHeightPx = bitmap?.height?.toFloat() ?: 0f
+    val trayOpen = airportTrayOpen || chartTrayOpen
+
+    LaunchedEffect(bitmap, surfaceSize) {
+        val currentBitmap = bitmap
+        if (currentBitmap != null && surfaceSize.width > 0 && surfaceSize.height > 0) {
+            viewport = createInitialImageViewport(
+                imageWidthPx = currentBitmap.width.toFloat(),
+                imageHeightPx = currentBitmap.height.toFloat(),
+                viewportWidthPx = surfaceSize.width.toFloat(),
+                viewportHeightPx = surfaceSize.height.toFloat(),
+            )
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                brush = Brush.verticalGradient(
+                    colors = listOf(Color(0xFFF6F1E7), Color(0xFFDCE4E4)),
+                ),
+            )
+            .onSizeChanged { surfaceSize = it }
+            .pointerInput(bitmap, surfaceSize, trayOpen) {
+                if (bitmap == null || viewportState.value == null || trayOpen) {
+                    return@pointerInput
+                }
+                detectTransformGestures { centroid, pan, zoom, _ ->
+                    val current = viewportState.value ?: return@detectTransformGestures
+                    var next = zoomImageAroundPoint(
+                        state = current,
+                        anchorX = centroid.x,
+                        anchorY = centroid.y,
+                        nextZoom = current.zoom * zoom,
+                        imageWidthPx = imageWidthPx,
+                        imageHeightPx = imageHeightPx,
+                        viewportWidthPx = surfaceSize.width.toFloat(),
+                        viewportHeightPx = surfaceSize.height.toFloat(),
+                        overscrollPx = overscrollPx,
+                    )
+                    next = dragImageViewport(
+                        state = next,
+                        dxPx = pan.x,
+                        dyPx = pan.y,
+                        imageWidthPx = imageWidthPx,
+                        imageHeightPx = imageHeightPx,
+                        viewportWidthPx = surfaceSize.width.toFloat(),
+                        viewportHeightPx = surfaceSize.height.toFloat(),
+                        overscrollPx = overscrollPx,
+                    )
+                    viewport = next
+                }
+            }
+            .pointerInteropFilter { event ->
+                if (bitmap == null || viewportState.value == null || trayOpen) {
+                    return@pointerInteropFilter false
+                }
+                if (event.action == MotionEvent.ACTION_SCROLL) {
+                    val wheelDelta = event.getAxisValue(MotionEvent.AXIS_VSCROLL).takeIf { it != 0f }
+                        ?: event.getAxisValue(MotionEvent.AXIS_SCROLL)
+                    viewport = zoomImageAroundPoint(
+                        state = viewportState.value ?: return@pointerInteropFilter false,
+                        anchorX = surfaceSize.width / 2f,
+                        anchorY = surfaceSize.height / 2f,
+                        nextZoom = (viewportState.value?.zoom ?: 1f) - wheelDelta * 0.18f,
+                        imageWidthPx = imageWidthPx,
+                        imageHeightPx = imageHeightPx,
+                        viewportWidthPx = surfaceSize.width.toFloat(),
+                        viewportHeightPx = surfaceSize.height.toFloat(),
+                        overscrollPx = overscrollPx,
+                    )
+                    true
+                } else {
+                    false
+                }
+            },
+    ) {
+        if (trayOpen) {
+            Scrim {
+                airportTrayOpen = false
+                chartTrayOpen = false
+            }
+        }
+
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val currentViewport = viewport
+            val currentBitmap = bitmap
+            if (currentViewport != null && currentBitmap != null) {
+                val displaySize = imageDisplaySize(
+                    imageWidthPx = currentBitmap.width.toFloat(),
+                    imageHeightPx = currentBitmap.height.toFloat(),
+                    viewportWidthPx = surfaceSize.width.toFloat(),
+                    viewportHeightPx = surfaceSize.height.toFloat(),
+                    zoom = currentViewport.zoom,
+                )
+                drawImage(
+                    image = currentBitmap,
+                    dstOffset = IntOffset(currentViewport.leftPx.roundToInt(), currentViewport.topPx.roundToInt()),
+                    dstSize = IntSize(displaySize.widthPx.roundToInt(), displaySize.heightPx.roundToInt()),
+                )
+                drawRect(
+                    color = Color(0x14000000),
+                    topLeft = Offset(currentViewport.leftPx, currentViewport.topPx),
+                    size = Size(displaySize.widthPx, displaySize.heightPx),
+                    style = Stroke(width = 1.dp.toPx()),
+                )
+            }
+        }
+
+        ChartViewerSelectors(
+            modifier = Modifier.align(Alignment.TopStart),
+            airports = airports,
+            selectedAirport = selectedAirport,
+            selectedChart = selectedChart,
+            airportTrayOpen = airportTrayOpen,
+            chartTrayOpen = chartTrayOpen,
+            onToggleAirportTray = {
+                airportTrayOpen = !airportTrayOpen
+                chartTrayOpen = false
+            },
+            onToggleChartTray = {
+                chartTrayOpen = !chartTrayOpen
+                airportTrayOpen = false
+            },
+            onSelectAirport = {
+                onSelectAirport(it)
+                airportTrayOpen = false
+            },
+            onSelectChart = {
+                onSelectChart(it)
+                chartTrayOpen = false
+            },
+        )
+
+        ToolbarButton(label = "PLAN", modifier = Modifier.align(Alignment.TopEnd).padding(ThumbGap), onClick = onBack)
+    }
+}
+
+@Composable
+private fun MapTray(
+    modifier: Modifier = Modifier,
+    selectedLabel: String,
+    trayOptions: List<ChartTrayOption>,
+    trayOpen: Boolean,
+    onToggle: () -> Unit,
+) {
+    Card(
+        modifier = modifier
+            .padding(ThumbGap)
+            .widthIn(min = ThumbSize, max = ThumbSize * 2.6f),
+    ) {
+        Column(
+            modifier = Modifier.padding(ThumbGap),
+            verticalArrangement = Arrangement.spacedBy(ThumbGap),
+        ) {
+            CompactSquareButton(label = selectedLabel, modifier = Modifier.size(ThumbSize), onClick = onToggle)
+            AnimatedVisibility(
+                visible = trayOpen,
+                enter = slideInHorizontally(initialOffsetX = { -it / 3 }) + fadeIn(),
+                exit = slideOutHorizontally(targetOffsetX = { -it / 3 }) + fadeOut(),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(ThumbGap)) {
+                    trayOptions.forEach { option ->
+                        OutlinedButton(
+                            onClick = option.select ?: {},
+                            enabled = option.available,
+                            modifier = Modifier.fillMaxWidth().height(ThumbSize),
+                        ) {
+                            Text(option.label, style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChartViewerSelectors(
+    modifier: Modifier = Modifier,
+    airports: List<ChartAirport>,
+    selectedAirport: ChartAirport?,
+    selectedChart: ChartAsset?,
+    airportTrayOpen: Boolean,
+    chartTrayOpen: Boolean,
+    onToggleAirportTray: () -> Unit,
+    onToggleChartTray: () -> Unit,
+    onSelectAirport: (String) -> Unit,
+    onSelectChart: (String) -> Unit,
+) {
+    Row(
+        modifier = modifier.padding(ThumbGap),
+        horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+        verticalAlignment = Alignment.Top,
+    ) {
+        SelectorDock(
+            label = selectedAirport?.label ?: "---",
+            buttonWidth = ThumbSize * 1.2f,
+            open = airportTrayOpen,
+            onToggle = onToggleAirportTray,
+        ) {
+            airports.forEach { airport ->
+                OutlinedButton(
+                    onClick = { onSelectAirport(airport.id) },
+                    modifier = Modifier.fillMaxWidth().height(ThumbSize),
+                ) {
+                    Text(airport.label, style = MaterialTheme.typography.labelLarge)
+                }
+            }
+        }
+
+        SelectorDock(
+            label = selectedChart?.label ?: "---",
+            buttonWidth = ThumbSize * 2.6f,
+            open = chartTrayOpen,
+            onToggle = onToggleChartTray,
+        ) {
+            selectedAirport?.charts?.forEach { chart ->
+                OutlinedButton(
+                    onClick = { onSelectChart(chart.id) },
+                    modifier = Modifier.fillMaxWidth().height(ThumbSize),
+                ) {
+                    Text(chart.label, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SelectorDock(
+    label: String,
+    buttonWidth: androidx.compose.ui.unit.Dp,
+    open: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    Card {
+        Column(
+            modifier = Modifier.padding(ThumbGap),
+            verticalArrangement = Arrangement.spacedBy(ThumbGap),
+        ) {
+            Button(
+                onClick = onToggle,
+                modifier = Modifier.width(buttonWidth).height(ThumbSize),
+                shape = RoundedCornerShape(ThumbRadius),
+            ) {
+                Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+            }
+            AnimatedVisibility(
+                visible = open,
+                enter = slideInHorizontally(initialOffsetX = { -it / 3 }) + fadeIn(),
+                exit = slideOutHorizontally(targetOffsetX = { -it / 3 }) + fadeOut(),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(ThumbGap), content = { content() })
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlanHeaderRow() {
+    Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+        PlanCell("Waypoint", Modifier.width(ThumbSize * 2.5f), isHeader = true)
+        PlanCell("Dist (nm)", Modifier.weight(1f), isHeader = true)
+        PlanCell("ETE (h:m)", Modifier.weight(1f), isHeader = true)
+        PlanCell("Course (°)", Modifier.weight(1f), isHeader = true)
+    }
+}
+
+private data class FlightPlanRow(
+    val waypoint: String,
+    val distance: String,
+    val ete: String,
+    val course: String,
 )
 
 @Composable
-private fun MetricRow(label: String, value: String) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, Color(0x1F182128), MaterialTheme.shapes.medium)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+private fun FlightPlanDataRow(row: FlightPlanRow, onWaypointClick: () -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+        Button(
+            onClick = onWaypointClick,
+            modifier = Modifier.width(ThumbSize * 2.5f).height(ThumbSize),
+            shape = RoundedCornerShape(0.dp),
+        ) {
+            Text(row.waypoint, style = MaterialTheme.typography.labelLarge)
+        }
+        PlanCell(row.distance, Modifier.weight(1f))
+        PlanCell(row.ete, Modifier.weight(1f))
+        PlanCell(row.course, Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun PlanCell(value: String, modifier: Modifier, isHeader: Boolean = false) {
+    Box(
+        modifier = modifier
+            .height(ThumbSize)
+            .background(Color(0xFFFEFCF7))
+            .border(1.dp, Color(0x1A132129))
+            .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.CenterStart,
     ) {
         Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = Color(0xFF52656D),
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Bold,
+            value,
+            style = if (isHeader) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodyMedium,
+            color = if (isHeader) Color(0xFF52656D) else Color(0xFF132129),
+            fontWeight = if (isHeader) FontWeight.Bold else FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
+}
+
+@Composable
+private fun ToolbarButton(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    CompactSquareButton(label = label, modifier = modifier.size(ThumbSize), onClick = onClick)
+}
+
+@Composable
+private fun CompactSquareButton(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Surface(
+        modifier = modifier.clickable(onClick = onClick),
+        shape = RoundedCornerShape(ThumbRadius),
+        color = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+        shadowElevation = 2.dp,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Clip,
+            )
+        }
+    }
+}
+
+@Composable
+private fun Scrim(onDismiss: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0x3D0A1014))
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+            ) { onDismiss() },
+    )
 }

@@ -6,7 +6,13 @@
   --panel: rgba(252, 248, 241, 0.88);
   --edge: rgba(19, 33, 41, 0.12);
   --accent: #0d6f67;
+  --accent-strong: #0a5751;
   --shadow: 0 24px 70px rgba(19, 33, 41, 0.18);
+  --thumb: 3.9rem;
+  --thumb-gap: calc(var(--thumb) * 0.1);
+  --thumb-radius: calc(var(--thumb) * 0.18);
+  --thumb-font: calc(var(--thumb) * 0.28);
+  --thumb-font-small: calc(var(--thumb) * 0.22);
   font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
 }
 
@@ -39,6 +45,18 @@ button {
   height: 100%;
 }
 
+.appShell {
+  width: 100%;
+  height: 100%;
+}
+
+.pageSurface,
+.appPage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
 .mapSurface {
   position: relative;
   width: 100%;
@@ -60,6 +78,15 @@ button {
     radial-gradient(circle at center, rgba(255, 255, 255, 0.38), transparent 40%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(11, 78, 95, 0.08)),
     #dce4e4;
+}
+
+.trayScrim {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border: 0;
+  padding: 0;
+  background: rgba(10, 16, 20, 0.24);
 }
 
 .mapTile {
@@ -96,89 +123,305 @@ button {
   border: 1px solid rgba(255, 255, 255, 0.18);
 }
 
+.chartDock {
+  position: absolute;
+  top: var(--thumb-gap);
+  left: var(--thumb-gap);
+  z-index: 4;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--thumb-gap);
+}
+
+.chartDockDouble {
+  gap: calc(var(--thumb-gap) * 0.8);
+}
+
+.chartDockColumn {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--thumb-gap);
+}
+
+.chartButton {
+  width: var(--thumb);
+  height: var(--thumb);
+  padding: 0;
+  border: 1px solid rgba(19, 33, 41, 0.16);
+  border-radius: var(--thumb-radius);
+  background: rgba(246, 241, 231, 0.92);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(10px);
+  flex: 0 0 auto;
+}
+
+.chartButton.isOpen {
+  background: rgba(233, 241, 239, 0.98);
+}
+
+.chartButtonLabel {
+  max-width: calc(var(--thumb) * 0.8);
+  font-size: calc(var(--thumb) * 0.22);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.05;
+  text-align: center;
+  white-space: pre-line;
+}
+
+.chartButtonWide {
+  width: calc(var(--thumb) * 2.6);
+  padding-inline: calc(var(--thumb) * 0.12);
+}
+
+.chartButtonLabelWide {
+  max-width: calc(var(--thumb) * 2.1);
+}
+
+.chartTray {
+  display: flex;
+  flex-direction: column;
+  gap: var(--thumb-gap);
+  padding: var(--thumb-gap);
+  border: 1px solid rgba(19, 33, 41, 0.14);
+  border-radius: calc(var(--thumb-radius) + 2px);
+  background: rgba(252, 248, 241, 0.95);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+  transform: translateX(calc(var(--thumb) * -0.35));
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 160ms ease, opacity 160ms ease;
+}
+
+.chartTray.isOpen {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.trayButton {
+  min-width: calc(var(--thumb) * 2.15);
+  height: var(--thumb);
+  padding: 0 calc(var(--thumb) * 0.22);
+  border: 1px solid rgba(13, 111, 103, 0.18);
+  border-radius: var(--thumb-radius);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
+  text-align: left;
+  font-size: var(--thumb-font-small);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.trayButton.isActive {
+  background: var(--accent);
+  border-color: transparent;
+  color: white;
+}
+
+.trayButton:disabled {
+  background: rgba(229, 228, 223, 0.7);
+  border-color: rgba(19, 33, 41, 0.08);
+  color: rgba(19, 33, 41, 0.42);
+}
+
 .debugFlag {
-  margin: 12px 0 0;
+  margin: 0;
   color: #9a2d00;
   font-size: 0.86rem;
   font-weight: 700;
 }
 
+.debugCorner {
+  position: absolute;
+  right: var(--thumb-gap);
+  bottom: var(--thumb-gap);
+  z-index: 2;
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.7rem;
+  background: rgba(14, 22, 28, 0.72);
+  color: #f3f8fa;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.navElement {
+  position: absolute;
+  left: 50%;
+  bottom: var(--thumb-gap);
+  z-index: 4;
+  width: calc(var(--thumb) * 3);
+  height: calc(var(--thumb) * 0.67);
+  margin-left: calc(var(--thumb) * -1.5);
+  padding: calc(var(--thumb) * 0.08) calc(var(--thumb) * 0.14);
+  border: 1px solid rgba(19, 33, 41, 0.18);
+  border-radius: calc(var(--thumb-radius) * 0.9);
+  background: rgba(252, 248, 241, 0.94);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
+  text-align: center;
+  backdrop-filter: blur(10px);
+}
+
+.navElementTop {
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.05;
+}
+
+.navElementBottom {
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.pageChrome {
+  position: absolute;
+  top: var(--thumb-gap);
+  left: var(--thumb-gap);
+  z-index: 3;
+}
+
+.toolbarButton {
+  width: var(--thumb);
+  height: var(--thumb);
+  border: 1px solid rgba(19, 33, 41, 0.16);
+  border-radius: var(--thumb-radius);
+  background: rgba(246, 241, 231, 0.94);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font-size: calc(var(--thumb) * 0.2);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.toolbarButtonTopRight {
+  position: absolute;
+  top: var(--thumb-gap);
+  right: var(--thumb-gap);
+  z-index: 4;
+}
+
+.planPage {
+  padding: calc(var(--thumb) * 1.25) var(--thumb-gap) calc(var(--thumb) * 0.9);
+  background:
+    radial-gradient(circle at top left, rgba(13, 111, 103, 0.12), transparent 26%),
+    linear-gradient(180deg, #f7f2e9 0%, #ece7db 100%);
+}
+
+.planTable {
+  display: grid;
+  grid-template-columns: calc(var(--thumb) * 2.5) repeat(3, minmax(calc(var(--thumb) * 1.4), 1fr));
+  gap: 1px;
+  padding-top: calc(var(--thumb) * 0.15);
+  background: rgba(19, 33, 41, 0.1);
+  border-radius: calc(var(--thumb-radius) * 0.9);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+.planHeader,
+.planCell,
+.planWaypointCell {
+  min-height: var(--thumb);
+  padding: calc(var(--thumb) * 0.16);
+  background: rgba(255, 252, 246, 0.92);
+  display: flex;
+  align-items: center;
+}
+
+.planHeader {
+  color: var(--muted);
+  font-size: calc(var(--thumb) * 0.2);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.planCell {
+  font-weight: 700;
+}
+
+.planWaypointButton {
+  justify-content: flex-start;
+  border: 0;
+  color: var(--ink);
+  font-size: calc(var(--thumb) * 0.24);
+  font-weight: 700;
+}
+
+.planFooter {
+  position: absolute;
+  left: 50%;
+  bottom: var(--thumb-gap);
+  transform: translateX(-50%);
+  color: var(--muted);
+  font-size: calc(var(--thumb) * 0.22);
+  font-weight: 700;
+}
+
+.waypointModal {
+  position: absolute;
+  top: calc(var(--thumb) * 1.25);
+  left: calc(var(--thumb-gap) + var(--thumb) * 2.6);
+  right: var(--thumb-gap);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: var(--thumb-gap);
+  padding: var(--thumb-gap);
+  border: 1px solid rgba(19, 33, 41, 0.12);
+  border-radius: calc(var(--thumb-radius) + 2px);
+  background: rgba(252, 248, 241, 0.96);
+  box-shadow: var(--shadow);
+}
+
+.chartImage {
+  position: absolute;
+  transform-origin: top left;
+  user-select: none;
+  pointer-events: none;
+  box-shadow: 0 14px 46px rgba(19, 33, 41, 0.22);
+}
+
 .hud {
   position: absolute;
   z-index: 2;
-  max-width: min(30rem, calc(100vw - 32px));
-  padding: 18px 20px;
+  max-width: min(18rem, calc(100vw - 32px));
+  padding: 12px 14px;
   border: 1px solid var(--edge);
-  border-radius: 22px;
+  border-radius: 18px;
   background: var(--panel);
   backdrop-filter: blur(10px);
   box-shadow: var(--shadow);
 }
 
-.hudTop {
-  top: 18px;
-  left: 18px;
-}
-
 .hudBottom {
-  left: 18px;
-  bottom: 18px;
-}
-
-.eyebrow {
-  margin: 0 0 8px;
-  color: var(--accent);
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-}
-
-.hud h1 {
-  margin: 0;
-  font-size: clamp(2rem, 4vw, 3.8rem);
-  line-height: 0.92;
-  letter-spacing: -0.04em;
-}
-
-.lede {
-  margin: 14px 0 0;
-  color: var(--muted);
-  font-size: 1rem;
-  line-height: 1.55;
-}
-
-.selectorRow {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 16px;
-}
-
-.selectorButton {
-  padding: 10px 14px;
-  border: 1px solid rgba(13, 111, 103, 0.22);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.56);
-  color: var(--ink);
-}
-
-.selectorButton.isActive {
-  border-color: transparent;
-  background: var(--accent);
-  color: white;
+  left: var(--thumb-gap);
+  bottom: var(--thumb-gap);
 }
 
 .facts {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  display: flex;
+  gap: 8px;
   margin: 0;
 }
 
 .facts div {
-  padding: 12px 14px;
-  border-radius: 16px;
+  min-width: calc(var(--thumb) * 1.16);
+  padding: 10px 12px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.56);
 }
 
@@ -198,20 +441,36 @@ button {
 @media (max-width: 720px) {
   .hud {
     max-width: calc(100vw - 24px);
-    padding: 14px 16px;
-  }
-
-  .hudTop {
-    top: 12px;
-    left: 12px;
+    padding: 10px 12px;
   }
 
   .hudBottom {
-    left: 12px;
-    bottom: 12px;
+    left: var(--thumb-gap);
+    right: var(--thumb-gap);
+    bottom: var(--thumb-gap);
   }
 
   .facts {
-    grid-template-columns: 1fr;
+    flex-wrap: wrap;
+  }
+
+  .chartDock {
+    flex-direction: column;
+  }
+
+  .chartDockColumn {
+    width: 100%;
+  }
+
+  .chartTray {
+    transform: translateY(calc(var(--thumb) * -0.2));
+  }
+
+  .chartTray.isOpen {
+    transform: translateY(0);
+  }
+
+  .waypointModal {
+    left: var(--thumb-gap);
   }
 }

@@ -117,6 +117,22 @@
       },
       {
         "id": {
+          "region": "nw",
+          "family": "tac",
+          "cycle": "2026-04-16"
+        },
+        "package_name": "NW_TAC",
+        "family_id": "tac",
+        "region_id": "nw",
+        "cycle": "2026-04-16",
+        "artifact_kind": "zip",
+        "relative_url": "/2026-04-16/NW_TAC.zip",
+        "manifest_name": "NW_TAC",
+        "size_bytes": 18248374,
+        "checksum_sha256": "ea2a49c562003daea46e130b976b1098c2e64495df413ef92e77545536eabf90"
+      },
+      {
+        "id": {
           "region": "se",
           "family": "sectional",
           "cycle": "2026-04-16"
@@ -585,8 +601,147 @@
           }
         ]
       }
+    },
+    {
+      "id": "tac:nw",
+      "label": "NW TAC",
+      "region_id": "nw",
+      "map_view": {
+        "chart_family": "tac",
+        "chart_name": "NW TAC",
+        "chart_index": 1,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/NW_TAC/tiles",
+        "tile_size": 256,
+        "min_zoom": 4.2,
+        "max_zoom": 11.8,
+        "storage_kind": "sectional_package",
+        "package_name": "NW_TAC",
+        "initial_viewport": {
+          "lat": 44.21370990970205,
+          "lon": -113.73046875,
+          "zoom": 7.4
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 1,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 2,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 5,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 10,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 94
+          },
+          {
+            "zoom": 8,
+            "x_min": 40,
+            "x_max": 54,
+            "y_tms_min": 159,
+            "y_tms_max": 167
+          },
+          {
+            "zoom": 9,
+            "x_min": 80,
+            "x_max": 108,
+            "y_tms_min": 318,
+            "y_tms_max": 334
+          },
+          {
+            "zoom": 10,
+            "x_min": 160,
+            "x_max": 216,
+            "y_tms_min": 636,
+            "y_tms_max": 668
+          },
+          {
+            "zoom": 11,
+            "x_min": 320,
+            "x_max": 433,
+            "y_tms_min": 1272,
+            "y_tms_max": 1337
+          }
+        ]
+      }
     }
   ],
+  "chart_page": {
+    "recent_airport_ids": [
+      "BOS"
+    ],
+    "initial_airport_id": "BOS",
+    "initial_chart_id": "plate:bos-ils04r",
+    "airports": [
+      {
+        "id": "BOS",
+        "label": "KBOS",
+        "charts": [
+          {
+            "id": "plate:bos-ils04r",
+            "airport_id": "BOS",
+            "label": "ILS OR LOC RWY 04R",
+            "kind": "plate",
+            "asset_path": "chart-assets/BOS/IAP-MA-ILS OR LOC RWY 04R.png",
+            "asset_url": "/chart-assets/BOS/IAP-MA-ILS OR LOC RWY 04R.png"
+          },
+          {
+            "id": "csup:bos",
+            "airport_id": "BOS",
+            "label": "CSup",
+            "kind": "csup",
+            "asset_path": "chart-assets/BOS/CSUP-NE_0-0.png",
+            "asset_url": "/chart-assets/BOS/CSUP-NE_0-0.png"
+          }
+        ]
+      }
+    ]
+  },
   "initial_probe": {
     "family": "tac",
     "lat": 42.3656,

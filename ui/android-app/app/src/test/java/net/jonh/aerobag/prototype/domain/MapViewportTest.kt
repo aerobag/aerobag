@@ -82,4 +82,23 @@ class MapViewportTest {
         assertEquals(mapView.initialViewport.lat, center.first, 1e-3)
         assertEquals(mapView.initialViewport.lon, center.second, 1e-3)
     }
+
+    @Test
+    fun switchingLayersPreservesCenterWhileClampingZoom() {
+        val viewport = createInitialViewport(mapView).copy(
+            centerWorldX = 140.25,
+            centerWorldY = 92.75,
+            zoom = 10.4,
+        )
+        val otherMapView = mapView.copy(
+            minZoom = 4.2,
+            maxZoom = 9.8,
+        )
+
+        val preserved = preserveViewportForMap(viewport, otherMapView)
+
+        assertEquals(viewport.centerWorldX, preserved.centerWorldX, 1e-8)
+        assertEquals(viewport.centerWorldY, preserved.centerWorldY, 1e-8)
+        assertEquals(viewport.zoom, preserved.zoom, 1e-8)
+    }
 }

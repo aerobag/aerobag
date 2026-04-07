@@ -349,6 +349,31 @@ data class WireMapViewOption(
 )
 
 @Serializable
+data class WireChartAsset(
+    val id: String,
+    val airport_id: String,
+    val label: String,
+    val kind: String,
+    val asset_path: String,
+    val asset_url: String,
+)
+
+@Serializable
+data class WireChartAirport(
+    val id: String,
+    val label: String,
+    val charts: List<WireChartAsset>,
+)
+
+@Serializable
+data class WireChartPageFixture(
+    val recent_airport_ids: List<String>,
+    val initial_airport_id: String,
+    val initial_chart_id: String,
+    val airports: List<WireChartAirport>,
+)
+
+@Serializable
 data class WireMapTileView(
     val chart_family: WireChartFamilyId,
     val chart_name: String,

@@ -17,6 +17,12 @@ export const mapViews =
   ];
 export const mapView = mapViews[0].map_view;
 export const mapTileView = contentFixture.map_tile_view;
+export const chartPage = contentFixture.chart_page ?? {
+  recent_airport_ids: [],
+  initial_airport_id: "",
+  initial_chart_id: "",
+  airports: [],
+};
 export const samplePlan = contentFixture.flight_plan;
 export const remoteOnlyInventory = contentFixture.remote_only_inventory;
 export const installedInventory = contentFixture.installed_inventory;

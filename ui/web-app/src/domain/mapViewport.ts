@@ -35,6 +35,17 @@ export function createInitialViewport(mapView: MapView): MapViewportState {
   };
 }
 
+export function preserveViewportForMap(
+  viewport: MapViewportState,
+  _mapView: MapView,
+): MapViewportState {
+  return {
+    centerWorldX: viewport.centerWorldX,
+    centerWorldY: viewport.centerWorldY,
+    zoom: viewport.zoom,
+  };
+}
+
 export function clampZoom(zoom: number, mapView: MapView): number {
   return Math.min(mapView.max_zoom, Math.max(mapView.min_zoom, zoom));
 }

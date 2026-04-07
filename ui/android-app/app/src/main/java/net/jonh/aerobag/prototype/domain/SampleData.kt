@@ -12,6 +12,7 @@ data class ContentFixture(
     val geometryJson: String,
     val mapView: MapView,
     val mapViews: List<MapViewOption>,
+    val chartPage: ChartPageFixture,
     val initialProbe: MapProbe,
     val mapTileView: MapTileView,
     val samplePlan: FlightPlan,
@@ -25,6 +26,7 @@ private data class WireContentFixture(
     val geometry: WireGeometryBundle,
     val map_view: WireMapView,
     val map_views: List<WireMapViewOption> = emptyList(),
+    val chart_page: WireChartPageFixture? = null,
     val initial_probe: WireInitialProbe,
     val map_tile_view: WireMapTileView,
     val flight_plan: WireFlightPlan,
@@ -59,6 +61,12 @@ object SampleData {
                     ),
                 )
             },
+            chartPage = fixture.chart_page?.toUi() ?: ChartPageFixture(
+                recentAirportIds = emptyList(),
+                initialAirportId = "",
+                initialChartId = "",
+                airports = emptyList(),
+            ),
             initialProbe = fixture.initial_probe.toUi(),
             mapTileView = fixture.map_tile_view.toUi(),
             samplePlan = fixture.flight_plan.toUiFlightPlan(),
@@ -116,6 +124,28 @@ private fun WireMapViewOption.toUi() = MapViewOption(
         WireRegionId.Pac -> "pac"
     },
     mapView = map_view.toUi(),
+)
+
+private fun WireChartPageFixture.toUi() = ChartPageFixture(
+    recentAirportIds = recent_airport_ids,
+    initialAirportId = initial_airport_id,
+    initialChartId = initial_chart_id,
+    airports = airports.map { it.toUi() },
+)
+
+private fun WireChartAirport.toUi() = ChartAirport(
+    id = id,
+    label = label,
+    charts = charts.map { it.toUi() },
+)
+
+private fun WireChartAsset.toUi() = ChartAsset(
+    id = id,
+    airportId = airport_id,
+    label = label,
+    kind = kind,
+    assetPath = asset_path,
+    assetUrl = asset_url,
 )
 
 private fun WireInitialProbe.toUi() = MapProbe(

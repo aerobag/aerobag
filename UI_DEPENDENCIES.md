@@ -68,13 +68,25 @@ Current web build behavior:
 - `npm run dev` and `npm run build` now also rerun:
   - [ui/scripts/generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py)
 - that generator also extracts real `NW_SEC` / `SW_SEC` web tiles into:
-  - [ui/web-app/public/sectional-packages](/root/aerobag/ui/web-app/public/sectional-packages)
+  - [ui/web-app/generated-static/sectional-packages](/root/aerobag/ui/web-app/generated-static/sectional-packages)
+- and stages chart PNG assets into:
+  - [ui/web-app/generated-static/chart-assets](/root/aerobag/ui/web-app/generated-static/chart-assets)
 - [ui/web-app/.gitignore](/root/aerobag/ui/web-app/.gitignore) ignores `public/generated`
-- [ui/web-app/.gitignore](/root/aerobag/ui/web-app/.gitignore) also ignores `public/sectional-packages`
+- [ui/web-app/.gitignore](/root/aerobag/ui/web-app/.gitignore) also ignores `generated-static`
 - the web prototype fixture is generated and checked in at:
   - [ui/shared-fixtures/content-prototype/content_fixture.json](/root/aerobag/ui/shared-fixtures/content-prototype/content_fixture.json)
   - copied into [ui/web-app/src/domain/generated/contentFixture.json](/root/aerobag/ui/web-app/src/domain/generated/contentFixture.json)
 - keep one Vite dev server alive and rely on HMR; restarting Vite unnecessarily caused confusion with stale ports earlier
+
+Important Vite serving note:
+- generated chart/tile assets proved unreliable when served from mutable `public/` subtrees under a long-lived dev server
+- better approach now in:
+  - [ui/web-app/vite.config.ts](/root/aerobag/ui/web-app/vite.config.ts)
+- explicit middleware mounts:
+  - `/sectional-packages` from `generated-static/sectional-packages`
+  - `/chart-assets` from `generated-static/chart-assets`
+- production builds also copy both trees into `dist/`
+- if web tiles disappear, first verify the dev server is returning real asset content types before debugging map math
 
 ## Android Prototype
 

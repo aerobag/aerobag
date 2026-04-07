@@ -5,6 +5,7 @@ import {
   createInitialViewport,
   createPinchSnapshot,
   renderTiles,
+  preserveViewportForMap,
   screenToWorld,
   viewportCenterLatLon,
   zoomAroundPoint,
@@ -54,5 +55,40 @@ describe("mapViewport", () => {
     expect(tiles.every((tile) => tile.src.startsWith(mapView.tile_url_root))).toBe(true);
     expect(center.lat).toBeCloseTo(mapView.initial_viewport.lat, 3);
     expect(center.lon).toBeCloseTo(mapView.initial_viewport.lon, 3);
+  });
+
+  it("double-click style zoom-in still preserves the clicked anchor", () => {
+    const viewport = createInitialViewport(mapView);
+    const width = 1280;
+    const height = 900;
+    const anchor = { x: 640, y: 360 };
+    const anchoredWorld = screenToWorld(viewport, anchor, width, height);
+
+    const zoomed = zoomAroundPoint(viewport, mapView, anchor, width, height, viewport.zoom + 0.75);
+    const anchoredWorldAfter = screenToWorld(zoomed, anchor, width, height);
+
+    expect(zoomed.zoom).toBeCloseTo(viewport.zoom + 0.75, 8);
+    expect(anchoredWorldAfter.x).toBeCloseTo(anchoredWorld.x, 8);
+    expect(anchoredWorldAfter.y).toBeCloseTo(anchoredWorld.y, 8);
+  });
+
+  it("switching layers preserves map center while clamping zoom only if needed", () => {
+    const viewport = createInitialViewport(mapView);
+    const moved = {
+      centerWorldX: viewport.centerWorldX + 12.5,
+      centerWorldY: viewport.centerWorldY - 8.75,
+      zoom: 10.4,
+    };
+    const otherMapView = {
+      ...mapView,
+      min_zoom: 4.2,
+      max_zoom: 9.8,
+    };
+
+    const preserved = preserveViewportForMap(moved, otherMapView);
+
+    expect(preserved.centerWorldX).toBeCloseTo(moved.centerWorldX, 8);
+    expect(preserved.centerWorldY).toBeCloseTo(moved.centerWorldY, 8);
+    expect(preserved.zoom).toBeCloseTo(moved.zoom, 8);
   });
 });

@@ -12,6 +12,7 @@ use preprocessor_charts::{
     run_native_family,
 };
 use preprocessor_csup::{NativeCsupRunRequest, run_native_csup};
+use preprocessor_data::{DataBuildRequest, build_data_package, compare_databases};
 use preprocessor_tpp::{NativeTppRunRequest, run_native_tpp};
 use preprocessor_core::{
     CaptureManifest, ChartFamily, ConcurrencyConfig, ExpectedTileCounts, Parallelism, Region,
@@ -20,6 +21,9 @@ use preprocessor_core::{
 use preprocessor_fetch::{
     CacheLayout, hash_text, manifest_path_for_run, manifest_summary, read_download_records,
     read_extract_records, read_source_url_set,
+};
+use preprocessor_resource_index::{
+    AssetSource, BuildResourceIndexRequest, ChartSource, write_resource_index,
 };
 use preprocessor_tools::{comparison_targets, ToolInvocation};
 use sha2::{Digest, Sha256};
@@ -54,6 +58,7 @@ fn usage() -> &'static str {
   preprocessor-cli compare-csup-images --legacy-work-dir <path> --rust-work-dir <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
   preprocessor-cli compare-tpp-images --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --legacy-work-dir <path> --rust-work-dir <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
   preprocessor-cli compare-provenance --left-provenance-dir <path> --right-provenance-dir <path>
+  preprocessor-cli compare-data-db --left-db <path> --right-db <path>
   preprocessor-cli compare-sampled-images --left-root <path> --right-root <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
   preprocessor-cli print-cache-layout --cache-root <path> --url <url> --sha256 <sha256>
   preprocessor-cli print-tool-example --cwd <path>
@@ -64,6 +69,8 @@ fn usage() -> &'static str {
   preprocessor-cli run-native-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> --cpu-jobs <count> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-native-csup --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-native-tpp --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
+  preprocessor-cli build-data --input-dir <path> --output-dir <path> --manifest-version <cycle>
+  preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
   preprocessor-cli run-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
 }
 
@@ -240,6 +247,43 @@ fn compare_image_rmse(left: &Path, right: &Path) -> anyhow::Result<f64> {
         );
     }
     Ok(rmse)
+}
+
+fn parse_chart_source_spec(value: &str) -> anyhow::Result<ChartSource> {
+    let mut parts = value.splitn(3, ':');
+    let family_id = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("chart source is missing family id"))?;
+    let package_outputs_path = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("chart source is missing package outputs path"))?;
+    let package_root = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("chart source is missing package root"))?;
+    Ok(ChartSource {
+        family_id: family_id.to_string(),
+        package_outputs_path: PathBuf::from(package_outputs_path),
+        package_root: PathBuf::from(package_root),
+    })
+}
+
+fn parse_asset_source_spec(value: &str) -> anyhow::Result<AssetSource> {
+    let mut parts = value.splitn(2, ':');
+    let package_outputs_path = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("asset source is missing package outputs path"))?;
+    let asset_root = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("asset source is missing asset root"))?;
+    Ok(AssetSource {
+        package_outputs_path: PathBuf::from(package_outputs_path),
+        asset_root: PathBuf::from(asset_root),
+    })
 }
 
 fn compare_relative_image_paths(
@@ -1030,6 +1074,24 @@ fn main() -> anyhow::Result<()> {
             );
             compare_provenance(&left_provenance_dir, &right_provenance_dir)?;
         }
+        Some("compare-data-db") => {
+            if args.get(2).map(String::as_str) != Some("--left-db")
+                || args.get(4).map(String::as_str) != Some("--right-db")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let left_db = PathBuf::from(
+                args.get(3)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let right_db = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            compare_databases(&left_db, &right_db)?;
+        }
         Some("compare-sampled-images") => {
             if args.get(2).map(String::as_str) != Some("--left-root")
                 || args.get(4).map(String::as_str) != Some("--right-root")
@@ -1378,6 +1440,105 @@ fn main() -> anyhow::Result<()> {
             println!("package_elapsed_ms {}", result.package_elapsed_ms);
             println!("package_count {}", result.package_count);
             println!("work_dir {}", result.work_dir.display());
+        }
+        Some("build-resource-index") => {
+            let mut nav_db_zip = None;
+            let mut output_path = None;
+            let mut chart_sources = Vec::new();
+            let mut tpp_sources = Vec::new();
+            let mut csup_sources = Vec::new();
+            let mut index = 2;
+            while index < args.len() {
+                match args.get(index).map(String::as_str) {
+                    Some("--nav-db-zip") => {
+                        nav_db_zip = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--output") => {
+                        output_path = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--chart-source") => {
+                        chart_sources.push(parse_chart_source_spec(
+                            args.get(index + 1)
+                                .map(String::as_str)
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        )?);
+                        index += 2;
+                    }
+                    Some("--tpp-source") => {
+                        tpp_sources.push(parse_asset_source_spec(
+                            args.get(index + 1)
+                                .map(String::as_str)
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        )?);
+                        index += 2;
+                    }
+                    Some("--csup-source") => {
+                        csup_sources.push(parse_asset_source_spec(
+                            args.get(index + 1)
+                                .map(String::as_str)
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        )?);
+                        index += 2;
+                    }
+                    _ => anyhow::bail!("{}", usage()),
+                }
+            }
+            let request = BuildResourceIndexRequest {
+                nav_db_zip: nav_db_zip.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                output_path: output_path.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                chart_sources,
+                tpp_sources,
+                csup_sources,
+            };
+            let index = write_resource_index(&request)?;
+            println!("output {}", request.output_path.display());
+            println!("airport_count {}", index.airports.len());
+            println!("package_count {}", index.packages.len());
+            println!("plate_count {}", index.plates.len());
+            println!("csup_count {}", index.csups.len());
+        }
+        Some("build-data") => {
+            if args.get(2).map(String::as_str) != Some("--input-dir")
+                || args.get(4).map(String::as_str) != Some("--output-dir")
+                || args.get(6).map(String::as_str) != Some("--manifest-version")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let input_dir = PathBuf::from(
+                args.get(3)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let output_dir = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let manifest_version = args
+                .get(7)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?;
+            let result = build_data_package(&DataBuildRequest {
+                input_dir,
+                output_dir,
+                manifest_version,
+            })?;
+            println!("main_db {}", result.main_db.display());
+            println!("manifest {}", result.manifest_path.display());
+            println!("zip {}", result.zip_path.display());
+            for (table, count) in result.row_counts {
+                println!("table {} rows {}", table, count);
+            }
         }
         Some("run-chart") => {
             if args.get(2).map(String::as_str) != Some("--family")

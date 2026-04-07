@@ -2,6 +2,50 @@
 
 ## Session Notes
 
+- 2026-04-07 06:40:00Z:
+  - Added a new Rust crate for the legacy aviation database pipeline:
+    - [`rust-preprocessor/preprocessor-data`](/root/aerobag/rust-preprocessor/preprocessor-data)
+  - Wired new CLI commands in [`preprocessor-cli/src/main.rs`](/root/aerobag/rust-preprocessor/preprocessor-cli/src/main.rs):
+    - `build-data --input-dir <path> --output-dir <path> --manifest-version <cycle>`
+    - `compare-data-db --left-db <path> --right-db <path>`
+  - The Rust builder now produces the primary legacy-style database package entirely in Rust:
+    - `main.db`
+    - `databases`
+    - `databases.zip`
+  - Implemented Rust parsers for the legacy source set:
+    - `APT.txt`
+    - `TWR.txt`
+    - `NAV.txt`
+    - `FIX.txt`
+    - `DOF.DAT`
+    - `AWOS.txt`
+    - `AWY.txt`
+    - `FAACIFP18`
+    - `geo.csv`
+    - SAA XML inputs
+  - Important legacy-compatibility quirks now mirrored explicitly in Rust:
+    - CIFP fixed-width fields preserve embedded spaces exactly like [`cifp.py`](/root/aerobag/avare-source/data/cifp.py)
+    - `nav` / `fix` names preserve legacy trailing spaces where the Perl scripts leave them
+    - AWOS missing coordinates stay empty rather than becoming `0.0`
+    - runway coordinate text columns are compared by normalized numeric value, because legacy stored Perl float strings as text
+    - SAA parsing is now SAX-style to match the old Perl handler behavior, including its lossy “last text chunk wins” handling for note fields
+  - Built Rust output against the captured legacy FAA input dir:
+    - input/reference dir:
+      - [`runs/20260407T053200Z-data-build/work/data`](/root/aerobag/runs/20260407T053200Z-data-build/work/data)
+    - Rust output dir:
+      - [`rust-runs/data-native-check`](/root/aerobag/rust-runs/data-native-check)
+  - The normalized database comparison is now fully green:
+    - `cargo run -q -p preprocessor-cli -- compare-data-db --left-db /root/aerobag/runs/20260407T053200Z-data-build/work/data/main.db --right-db /root/aerobag/rust-runs/data-native-check/main.db`
+    - result: `status match`
+  - Added a dedicated integration harness in:
+    - [`preprocessor-cli/tests/data_parity.rs`](/root/aerobag/rust-preprocessor/preprocessor-cli/tests/data_parity.rs)
+  - Verification command:
+    - `cd /root/aerobag/rust-preprocessor && cargo test -p preprocessor-cli --test data_parity`
+    - result: passing
+  - Current status:
+    - Rust now covers the primary `databases.zip` / `main.db` build path
+    - `databasesx` is still untranslated and still depends on optional vector-tile tooling (`tippecanoe`, `tile-join`)
+
 - 2026-04-07 05:45:00Z:
   - Investigated the legacy aviation database build path in [`avare-source/data`](/root/aerobag/avare-source/data).
   - Confirmed the legacy builder exists and is the real producer of Avare's machine-readable database package:

@@ -2,8 +2,10 @@
 members = [ "preprocessor-charts",
   "preprocessor-cli",
   "preprocessor-csup",
+  "preprocessor-data",
   "preprocessor-core",
   "preprocessor-fetch",
+  "preprocessor-resource-index",
   "preprocessor-tpp",
   "preprocessor-tools",
 ]
@@ -17,7 +19,11 @@ version = "0.1.0"
 [workspace.dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+quick-xml = "0.38"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 roxmltree = "0.20"
+rusqlite = { version = "0.36", features = ["bundled"] }
+tempfile = "3.13"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }

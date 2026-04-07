@@ -212,40 +212,49 @@ private fun MapExplorerPage(
     val selectedMap = remember(selectedMapId, fixture.mapViews) {
         fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
     }
+    val selectedFamilyMapViews = remember(selectedMap, fixture.mapViews) {
+        fixture.mapViews.filter { it.mapView.chartFamily == selectedMap.mapView.chartFamily }
+    }
     val viewportState = rememberUpdatedState(viewport)
     val center = remember(viewport) { viewportCenterLatLon(viewport) }
     val surfaceWidthUnits = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
     val surfaceHeightUnits = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
-    val tiles = remember(viewport, surfaceSize, selectedMap.mapView) {
+    val tiles = remember(viewport, surfaceSize, selectedFamilyMapViews) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             emptyList()
         } else {
             renderTiles(
-                mapView = selectedMap.mapView,
+                mapViews = selectedFamilyMapViews.map { it.id to it.mapView },
                 viewport = viewport,
                 widthPx = surfaceWidthUnits,
                 heightPx = surfaceHeightUnits,
             )
         }
     }
-    val isInstalled = remember(selectedMap.id, installRevision) {
-        val packageName = selectedMap.mapView.packageName
-        packageName != null && SectionalPackages.isInstalled(context, packageName)
+    val familyPackageNames = remember(selectedFamilyMapViews) {
+        selectedFamilyMapViews.mapNotNull { it.mapView.packageName }.distinct()
+    }
+    val installedPackageCount = remember(familyPackageNames, installRevision) {
+        familyPackageNames.count { SectionalPackages.isInstalled(context, it) }
     }
     val trayOptions = remember(selectedMap.id, fixture.mapViews) {
         val sectionalTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.Sectional }
         val tacTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.Tac }
+        val ifrLowTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.IfrLow }
+        val ifrHighTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.IfrHigh }
         listOf(
             ChartTrayOption("sectional", "SECTIONAL", "SEC", sectionalTarget != null) { sectionalTarget?.let { onSelectMapId(it.id) } },
             ChartTrayOption("tac", "TAC", "TAC", tacTarget != null) { tacTarget?.let { onSelectMapId(it.id) } },
-            ChartTrayOption("ifr_low", "IFR-LOW", "IFR L", false, null),
-            ChartTrayOption("ifr_high", "IFR-HIGH", "IFR H", false, null),
+            ChartTrayOption("ifr_low", "IFR-LOW", "IFR L", ifrLowTarget != null) { ifrLowTarget?.let { onSelectMapId(it.id) } },
+            ChartTrayOption("ifr_high", "IFR-HIGH", "IFR H", ifrHighTarget != null) { ifrHighTarget?.let { onSelectMapId(it.id) } },
         )
     }
     val selectedLauncher = trayOptions.firstOrNull { option ->
         when (option.id) {
             "sectional" -> selectedMap.mapView.chartFamily == MapChartFamily.Sectional
             "tac" -> selectedMap.mapView.chartFamily == MapChartFamily.Tac
+            "ifr_low" -> selectedMap.mapView.chartFamily == MapChartFamily.IfrLow
+            "ifr_high" -> selectedMap.mapView.chartFamily == MapChartFamily.IfrHigh
             else -> false
         }
     } ?: trayOptions.first()
@@ -279,7 +288,7 @@ private fun MapExplorerPage(
     val tileBitmaps = remember(tiles, selectedMap.id, installRevision) {
         tiles.associate { tile ->
             Triple(tile.zoom, tile.x, tile.yTms) to runCatching {
-                SectionalPackages.loadTileBytes(context, selectedMap.mapView, tile)
+                SectionalPackages.loadTileBytes(context, tile)
                     ?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
             }.getOrNull()
         }
@@ -301,14 +310,19 @@ private fun MapExplorerPage(
 
     LaunchedEffect(selectedMap.id) { chartTrayOpen = false }
 
-    LaunchedEffect(selectedMap.id, isInstalled) {
-        val packageName = selectedMap.mapView.packageName ?: return@LaunchedEffect
-        if (selectedMap.mapView.storageKind != TileStorageKind.SectionalPackage || isInstalled || installingPackage == packageName) {
+    LaunchedEffect(selectedMap.mapView.chartFamily, familyPackageNames, installedPackageCount) {
+        if (selectedMap.mapView.storageKind != TileStorageKind.SectionalPackage) {
             return@LaunchedEffect
         }
-        installingPackage = packageName
+        val missingPackages = familyPackageNames.filterNot { SectionalPackages.isInstalled(context, it) }
+        if (missingPackages.isEmpty()) {
+            return@LaunchedEffect
+        }
+        installingPackage = missingPackages.first()
         withContext(Dispatchers.IO) {
-            SectionalPackages.install(context, packageName)
+            for (packageName in missingPackages) {
+                SectionalPackages.install(context, packageName)
+            }
         }
         installRevision += 1
         installingPackage = null
@@ -522,7 +536,7 @@ private fun MapExplorerPage(
                 Text(
                     text = when {
                         installingPackage != null -> "Installing ${installingPackage}…"
-                        isInstalled -> "Local ${selectedMap.mapView.packageName}"
+                        installedPackageCount == familyPackageNames.size -> "Local ${selectedMap.mapView.chartFamily.name}"
                         else -> "Package missing"
                     },
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),

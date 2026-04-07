@@ -61,6 +61,10 @@ export default function App() {
     () => new Set(mapViews.map((view) => view.map_view.chart_family)),
     [],
   );
+  const selectedFamilyMapViews = useMemo(
+    () => mapViews.filter((view) => view.map_view.chart_family === selectedMap.map_view.chart_family),
+    [selectedMap],
+  );
   const selectedAirport = useMemo(
     () => chartPage.airports.find((airport) => airport.id === selectedAirportId) ?? chartPage.airports[0] ?? null,
     [selectedAirportId],
@@ -97,6 +101,7 @@ export default function App() {
           debugTileLabels={debugTileLabels}
           selectedMapId={selectedMapId}
           selectedMap={selectedMap}
+          selectedFamilyMapViews={selectedFamilyMapViews}
           selectedFamily={selectedFamily}
           availableFamilies={availableFamilies}
           viewport={mapViewport}
@@ -137,6 +142,7 @@ function MapPage(props: {
   debugTileLabels: boolean;
   selectedMapId: string;
   selectedMap: (typeof mapViews)[number];
+  selectedFamilyMapViews: (typeof mapViews);
   selectedFamily: (typeof chartFamilies)[number];
   availableFamilies: Set<string>;
   viewport: MapViewportState;
@@ -149,6 +155,7 @@ function MapPage(props: {
   const {
     debugTileLabels,
     selectedMap,
+    selectedFamilyMapViews,
     selectedFamily,
     availableFamilies,
     viewport,
@@ -193,8 +200,8 @@ function MapPage(props: {
     if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return [];
     }
-    return renderTiles(selectedMap.map_view, viewport, surfaceSize.width, surfaceSize.height);
-  }, [selectedMap, surfaceSize, viewport]);
+    return renderTiles(selectedFamilyMapViews.map((view) => ({ ...view.map_view, id: view.id })), viewport, surfaceSize.width, surfaceSize.height);
+  }, [selectedFamilyMapViews, surfaceSize, viewport]);
 
   function updateViewport(next: MapViewportState) {
     viewportRef.current = next;

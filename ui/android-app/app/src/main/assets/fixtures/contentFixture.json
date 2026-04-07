@@ -1,7 +1,7 @@
 {
   "catalog": {
     "schema_version": 1,
-    "cycle": "2026-04-16",
+    "cycle": "2604",
     "catalog_revision": "2026-04-06T00:00:00Z",
     "families": [
       {
@@ -21,211 +21,80 @@
     ],
     "regions": [
       {
-        "id": "ne",
-        "display_name": "Northeast",
-        "sort_order": 0
-      },
-      {
-        "id": "nc",
-        "display_name": "North Central",
-        "sort_order": 1
-      },
-      {
         "id": "nw",
         "display_name": "Northwest",
         "sort_order": 2
       },
       {
-        "id": "se",
-        "display_name": "Southeast",
-        "sort_order": 3
-      },
-      {
-        "id": "sc",
-        "display_name": "South Central",
-        "sort_order": 4
-      },
-      {
         "id": "sw",
         "display_name": "Southwest",
         "sort_order": 5
-      },
-      {
-        "id": "ec",
-        "display_name": "East Coast",
-        "sort_order": 6
-      },
-      {
-        "id": "ak",
-        "display_name": "Alaska",
-        "sort_order": 7
-      },
-      {
-        "id": "pac",
-        "display_name": "Pacific",
-        "sort_order": 8
       }
     ],
     "packages": [
       {
         "id": {
-          "region": "ne",
-          "family": "sectional",
-          "cycle": "2026-04-16"
-        },
-        "package_name": "NE_SEC",
-        "family_id": "sectional",
-        "region_id": "ne",
-        "cycle": "2026-04-16",
-        "artifact_kind": "zip",
-        "relative_url": "/2026-04-16/NE_SEC.zip",
-        "manifest_name": "NE_SEC",
-        "size_bytes": 108862573,
-        "checksum_sha256": "8e07dea93081c94984c0fb26e2e086622f4714cf2bda2ae6f647480c6d8df76a"
-      },
-      {
-        "id": {
-          "region": "nc",
-          "family": "sectional",
-          "cycle": "2026-04-16"
-        },
-        "package_name": "NC_SEC",
-        "family_id": "sectional",
-        "region_id": "nc",
-        "cycle": "2026-04-16",
-        "artifact_kind": "zip",
-        "relative_url": "/2026-04-16/NC_SEC.zip",
-        "manifest_name": "NC_SEC",
-        "size_bytes": 125516983,
-        "checksum_sha256": "c1f746d62f2ec7f3246e46608c25c9d595ea494753f767285f8833652878039f"
-      },
-      {
-        "id": {
           "region": "nw",
           "family": "sectional",
-          "cycle": "2026-04-16"
+          "cycle": "2604"
         },
         "package_name": "NW_SEC",
         "family_id": "sectional",
         "region_id": "nw",
-        "cycle": "2026-04-16",
+        "cycle": "2604",
         "artifact_kind": "zip",
-        "relative_url": "/2026-04-16/NW_SEC.zip",
+        "relative_url": "/2604/NW_SEC.zip",
         "manifest_name": "NW_SEC",
         "size_bytes": 143269395,
         "checksum_sha256": "72210268b54fef208f2b51918f21aa56cccd6a4d4e6a6eb48823c4a4daf92372"
       },
       {
         "id": {
-          "region": "nw",
-          "family": "tac",
-          "cycle": "2026-04-16"
-        },
-        "package_name": "NW_TAC",
-        "family_id": "tac",
-        "region_id": "nw",
-        "cycle": "2026-04-16",
-        "artifact_kind": "zip",
-        "relative_url": "/2026-04-16/NW_TAC.zip",
-        "manifest_name": "NW_TAC",
-        "size_bytes": 18248374,
-        "checksum_sha256": "ea2a49c562003daea46e130b976b1098c2e64495df413ef92e77545536eabf90"
-      },
-      {
-        "id": {
-          "region": "se",
-          "family": "sectional",
-          "cycle": "2026-04-16"
-        },
-        "package_name": "SE_SEC",
-        "family_id": "sectional",
-        "region_id": "se",
-        "cycle": "2026-04-16",
-        "artifact_kind": "zip",
-        "relative_url": "/2026-04-16/SE_SEC.zip",
-        "manifest_name": "SE_SEC",
-        "size_bytes": 124631157,
-        "checksum_sha256": "cdcb8b16e00ad7a77354b1e3aab9337adab16717c34c5e82903d22c5dbf84950"
-      },
-      {
-        "id": {
-          "region": "sc",
-          "family": "sectional",
-          "cycle": "2026-04-16"
-        },
-        "package_name": "SC_SEC",
-        "family_id": "sectional",
-        "region_id": "sc",
-        "cycle": "2026-04-16",
-        "artifact_kind": "zip",
-        "relative_url": "/2026-04-16/SC_SEC.zip",
-        "manifest_name": "SC_SEC",
-        "size_bytes": 127120240,
-        "checksum_sha256": "fb3bfd5f361790627c9e591cf3a1637c298dd3de356d04db8b1789e83fe48632"
-      },
-      {
-        "id": {
           "region": "sw",
           "family": "sectional",
-          "cycle": "2026-04-16"
+          "cycle": "2604"
         },
         "package_name": "SW_SEC",
         "family_id": "sectional",
         "region_id": "sw",
-        "cycle": "2026-04-16",
+        "cycle": "2604",
         "artifact_kind": "zip",
-        "relative_url": "/2026-04-16/SW_SEC.zip",
+        "relative_url": "/2604/SW_SEC.zip",
         "manifest_name": "SW_SEC",
         "size_bytes": 129003426,
         "checksum_sha256": "a46e23f0fa03837a8926149c4878be70ecc45736db841e80f090495690cc297b"
       },
       {
         "id": {
-          "region": "ec",
-          "family": "sectional",
-          "cycle": "2026-04-16"
+          "region": "nw",
+          "family": "tac",
+          "cycle": "2604"
         },
-        "package_name": "EC_SEC",
-        "family_id": "sectional",
-        "region_id": "ec",
-        "cycle": "2026-04-16",
+        "package_name": "NW_TAC",
+        "family_id": "tac",
+        "region_id": "nw",
+        "cycle": "2604",
         "artifact_kind": "zip",
-        "relative_url": "/2026-04-16/EC_SEC.zip",
-        "manifest_name": "EC_SEC",
-        "size_bytes": 132430271,
-        "checksum_sha256": "1ca8e6472a84f61bfee84959a4dcc654580dddc21562e06ddb2a4e8327fa2e0a"
+        "relative_url": "/2604/NW_TAC.zip",
+        "manifest_name": "NW_TAC",
+        "size_bytes": 18248374,
+        "checksum_sha256": "ea2a49c562003daea46e130b976b1098c2e64495df413ef92e77545536eabf90"
       },
       {
         "id": {
-          "region": "ak",
-          "family": "sectional",
-          "cycle": "2026-04-16"
+          "region": "sw",
+          "family": "tac",
+          "cycle": "2604"
         },
-        "package_name": "AK_SEC",
-        "family_id": "sectional",
-        "region_id": "ak",
-        "cycle": "2026-04-16",
+        "package_name": "SW_TAC",
+        "family_id": "tac",
+        "region_id": "sw",
+        "cycle": "2604",
         "artifact_kind": "zip",
-        "relative_url": "/2026-04-16/AK_SEC.zip",
-        "manifest_name": "AK_SEC",
-        "size_bytes": 266637039,
-        "checksum_sha256": "a0a7bcb50614ea6019af1b67b23ad94d95bf04a92b660b26a078aa471088d8ff"
-      },
-      {
-        "id": {
-          "region": "pac",
-          "family": "sectional",
-          "cycle": "2026-04-16"
-        },
-        "package_name": "PAC_SEC",
-        "family_id": "sectional",
-        "region_id": "pac",
-        "cycle": "2026-04-16",
-        "artifact_kind": "zip",
-        "relative_url": "/2026-04-16/PAC_SEC.zip",
-        "manifest_name": "PAC_SEC",
-        "size_bytes": 38342918,
-        "checksum_sha256": "eabaf382011d706759ec42b5d9c1d08767a8cd0d0fafd2ad4099a9cecbd6a826"
+        "relative_url": "/2604/SW_TAC.zip",
+        "manifest_name": "SW_TAC",
+        "size_bytes": 33820003,
+        "checksum_sha256": "d7acff975597b25fa03b1f12c5e2a714dd7ec51be100f4c38d6017b6957a4234"
       }
     ],
     "charts": [
@@ -233,12 +102,12 @@
         "id": {
           "family": "tac",
           "name": "Boston TAC",
-          "cycle": "2026-04-16"
+          "cycle": "2604"
         },
         "family_id": "tac",
         "name": "Boston TAC",
         "display_name": "Boston TAC",
-        "cycle": "2026-04-16",
+        "cycle": "2604",
         "region_ids": [
           "ne"
         ],
@@ -256,15 +125,15 @@
       {
         "id": {
           "airport_id": "BOS",
-          "procedure_code": "IAP-ILS OR LOC RWY 04R",
+          "procedure_code": "IAP-MA-ILS OR LOC RWY 04R",
           "page": 1,
-          "cycle": "2026-04-16"
+          "cycle": "2604"
         },
         "airport_id": "BOS",
         "region_id": "ne",
-        "cycle": "2026-04-16",
-        "procedure_code": "IAP-ILS OR LOC RWY 04R",
-        "display_name": "ILS OR LOC RWY 04R",
+        "cycle": "2604",
+        "procedure_code": "IAP-MA-ILS OR LOC RWY 04R",
+        "display_name": "IAP-MA-ILS OR LOC RWY 04R",
         "kind": "approach",
         "georeferenced": true,
         "page_count": 1,
@@ -709,6 +578,114 @@
           }
         ]
       }
+    },
+    {
+      "id": "tac:sw",
+      "label": "SW TAC",
+      "region_id": "sw",
+      "map_view": {
+        "chart_family": "tac",
+        "chart_name": "SW TAC",
+        "chart_index": 1,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/SW_TAC/tiles",
+        "tile_size": 256,
+        "min_zoom": 4.2,
+        "max_zoom": 11.8,
+        "storage_kind": "sectional_package",
+        "package_name": "SW_TAC",
+        "initial_viewport": {
+          "lat": 36.31512514748051,
+          "lon": -113.642578125,
+          "zoom": 7.4
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 1,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 2,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 5,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 10,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 94
+          },
+          {
+            "zoom": 8,
+            "x_min": 39,
+            "x_max": 54,
+            "y_tms_min": 152,
+            "y_tms_max": 159
+          },
+          {
+            "zoom": 9,
+            "x_min": 79,
+            "x_max": 108,
+            "y_tms_min": 304,
+            "y_tms_max": 318
+          },
+          {
+            "zoom": 10,
+            "x_min": 159,
+            "x_max": 217,
+            "y_tms_min": 609,
+            "y_tms_max": 636
+          },
+          {
+            "zoom": 11,
+            "x_min": 319,
+            "x_max": 435,
+            "y_tms_min": 1219,
+            "y_tms_max": 1272
+          }
+        ]
+      }
     }
   ],
   "chart_page": {
@@ -725,7 +702,7 @@
           {
             "id": "plate:bos-ils04r",
             "airport_id": "BOS",
-            "label": "ILS OR LOC RWY 04R",
+            "label": "IAP-MA-ILS OR LOC RWY 04R",
             "kind": "plate",
             "asset_path": "chart-assets/BOS/IAP-MA-ILS OR LOC RWY 04R.png",
             "asset_url": "/chart-assets/BOS/IAP-MA-ILS OR LOC RWY 04R.png"
@@ -762,23 +739,41 @@
   },
   "flight_plan": {
     "id": "plan-1",
-    "name": "NW sectional prototype",
+    "name": "KRNT SEA PAE KAWO",
     "legs": [
       {
         "from": {
-          "Airport": "BOS"
+          "Airport": "RNT"
         },
         "to": {
-          "Airport": "BOS"
+          "Airport": "SEA"
+        },
+        "airway": null
+      },
+      {
+        "from": {
+          "Airport": "SEA"
+        },
+        "to": {
+          "Airport": "PAE"
+        },
+        "airway": null
+      },
+      {
+        "from": {
+          "Airport": "PAE"
+        },
+        "to": {
+          "Airport": "AWO"
         },
         "airway": null
       }
     ],
-    "departure": "BOS",
-    "destination": "BOS",
+    "departure": "RNT",
+    "destination": "AWO",
     "alternate": null,
     "cruise_altitude_ft": 3000,
-    "notes": "Generated from sectional package outputs",
+    "notes": "Generated from resource-index data",
     "updated_at_epoch_ms": 0,
     "version": 1
   },
@@ -793,7 +788,7 @@
         "package_id": {
           "region": "nw",
           "family": "sectional",
-          "cycle": "2026-04-16"
+          "cycle": "2604"
         },
         "integrity_ok": true
       }

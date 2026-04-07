@@ -36,6 +36,7 @@ private data class WireContentFixture(
 
 object SampleData {
     private const val ASSET_PATH = "fixtures/contentFixture.json"
+    private const val RESOURCE_INDEX_ASSET_PATH = "fixtures/resource-index.json"
 
     private val json = Json {
         encodeDefaults = true
@@ -44,14 +45,24 @@ object SampleData {
 
     fun load(context: Context): ContentFixture {
         val payload = context.assets.open(ASSET_PATH).bufferedReader().use { it.readText() }
+        val resourceIndexPayload = context.assets.open(RESOURCE_INDEX_ASSET_PATH).bufferedReader().use { it.readText() }
         val fixtureElement = json.parseToJsonElement(payload).jsonObject
         val fixture = json.decodeFromString<WireContentFixture>(payload)
+        val resourceIndex = json.decodeFromString<WireResourceIndex>(resourceIndexPayload)
+        val derivedMapViews = deriveMapViews(resourceIndex, fixture.map_views.map { it.id })
+        val derivedChartPage = deriveChartPage(
+            resourceIndex = resourceIndex,
+            recentAirportIds = fixture.chart_page?.recent_airport_ids ?: emptyList(),
+            initialAirportIdHint = fixture.chart_page?.initial_airport_id,
+            initialChartIdHint = fixture.chart_page?.initial_chart_id,
+            samplePlan = fixture.flight_plan.toUiFlightPlan(),
+        )
         return ContentFixture(
             catalog = fixture.catalog.toUiCatalog(),
             catalogJson = fixtureElement.getValue("catalog").toString(),
             geometryJson = fixtureElement.getValue("geometry").toString(),
             mapView = fixture.map_view.toUi(),
-            mapViews = fixture.map_views.map { it.toUi() }.ifEmpty {
+            mapViews = derivedMapViews.ifEmpty {
                 listOf(
                     MapViewOption(
                         id = "default",
@@ -61,12 +72,7 @@ object SampleData {
                     ),
                 )
             },
-            chartPage = fixture.chart_page?.toUi() ?: ChartPageFixture(
-                recentAirportIds = emptyList(),
-                initialAirportId = "",
-                initialChartId = "",
-                airports = emptyList(),
-            ),
+            chartPage = derivedChartPage,
             initialProbe = fixture.initial_probe.toUi(),
             mapTileView = fixture.map_tile_view.toUi(),
             samplePlan = fixture.flight_plan.toUiFlightPlan(),
@@ -80,6 +86,8 @@ private fun WireMapView.toUi() = MapView(
     chartFamily = when (chart_family) {
         WireChartFamilyId.Sectional -> MapChartFamily.Sectional
         WireChartFamilyId.Tac -> MapChartFamily.Tac
+        WireChartFamilyId.IfrLow -> MapChartFamily.IfrLow
+        WireChartFamilyId.IfrHigh -> MapChartFamily.IfrHigh
     },
     chartName = chart_name,
     chartIndex = chart_index,
@@ -152,6 +160,8 @@ private fun WireInitialProbe.toUi() = MapProbe(
     family = when (family) {
         WireChartFamilyId.Sectional -> MapChartFamily.Sectional
         WireChartFamilyId.Tac -> MapChartFamily.Tac
+        WireChartFamilyId.IfrLow -> MapChartFamily.IfrLow
+        WireChartFamilyId.IfrHigh -> MapChartFamily.IfrHigh
     },
     lat = lat,
     lon = lon,
@@ -161,6 +171,8 @@ private fun WireMapTileView.toUi() = MapTileView(
     chartFamily = when (chart_family) {
         WireChartFamilyId.Sectional -> MapChartFamily.Sectional
         WireChartFamilyId.Tac -> MapChartFamily.Tac
+        WireChartFamilyId.IfrLow -> MapChartFamily.IfrLow
+        WireChartFamilyId.IfrHigh -> MapChartFamily.IfrHigh
     },
     chartName = chart_name,
     chartIndex = chart_index,

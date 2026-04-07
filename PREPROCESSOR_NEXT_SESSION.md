@@ -783,3 +783,61 @@ If the next session starts with no further instruction, do this:
   - [`20260406T003224Z-validation`](/root/aerobag/runs/20260406T003224Z-validation): original banana split used for diagnosis
   - [`20260406T032350Z-validation`](/root/aerobag/runs/20260406T032350Z-validation): fresh whole-banana before the `csup` duplicate-airport fix
 - At handoff time, [`20260406T051014Z-validation`](/root/aerobag/runs/20260406T051014Z-validation) is still in flight.
+
+## 2026-04-07 Resource-Index checkpoint
+
+- A new Rust crate now exists at:
+  - [rust-preprocessor/preprocessor-resource-index](/root/aerobag/rust-preprocessor/preprocessor-resource-index)
+- A new CLI command exists in:
+  - [rust-preprocessor/preprocessor-cli/src/main.rs](/root/aerobag/rust-preprocessor/preprocessor-cli/src/main.rs)
+  - command:
+    - `build-resource-index`
+
+- The command now emits a real top-level resource index from:
+  - `runs/20260407T053200Z-data-build/work/data/databases.zip`
+  - chart package outputs for:
+    - `sectional`
+    - `tac`
+    - `ifr_low`
+    - `ifr_high`
+  - TPP package outputs / assets
+  - CSUP package outputs / assets
+
+- Latest verified real output:
+  - [rust-runs/resource-index/resource-index.json](/root/aerobag/rust-runs/resource-index/resource-index.json)
+  - contains:
+    - `cycle = 2604`
+    - `packages = 46`
+    - `chart_collections = 36`
+    - `airports = 19445`
+    - `plates = 4749`
+    - `csups = 6022`
+
+- The resource index currently includes:
+  - package records
+  - airport records from `main.db`
+  - plate records
+  - CSUP records
+  - chart collection records with:
+    - package name
+    - chart index
+    - tile path template
+    - zoom-level bounds
+    - derived coverage bounds
+    - derived default view
+
+- Tests / verification last known good:
+  - `cd /root/aerobag/rust-preprocessor && cargo test -p preprocessor-resource-index`
+  - `cd /root/aerobag/rust-preprocessor && cargo check -p preprocessor-cli`
+  - both passed
+
+- Architectural decision from the user:
+  - preserve the current Rust preprocessor as the long-lived Avare-equivalent baseline
+  - start a new evolving product preprocessor separately
+  - keep the baseline source tree around, not just a git tag
+
+- Next requested repo step:
+  1. rename `rust-preprocessor` to `baseline/avare_equivalent`
+  2. create `product/preprocessor` by copying from the baseline
+  3. fold `resource-index` into the product pipeline as first-class output
+  4. then make intentional product changes there, beginning with airport-id canonicalization

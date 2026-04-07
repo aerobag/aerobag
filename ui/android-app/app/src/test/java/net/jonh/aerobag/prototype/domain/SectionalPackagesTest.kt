@@ -46,10 +46,12 @@ class SectionalPackagesTest {
             topPx = 0f,
             sizePx = 256f,
             zoom = 10,
+            mapViewId = "sectional:nw",
+            mapView = mapView,
         )
 
-        assertEquals("tiles/0/10/198/650.webp", tileRelativePath(mapView, tile))
-        assertEquals("tiles/tiles/0/10/198/650.webp", tileAssetPath(mapView, tile))
+        assertEquals("tiles/0/10/198/650.webp", tileRelativePath(tile))
+        assertEquals("tiles/tiles/0/10/198/650.webp", tileAssetPath(tile))
     }
 
     @Test

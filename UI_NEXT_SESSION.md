@@ -229,3 +229,38 @@ Important note:
 ## Resume Prompt
 
 Resume from the 3-page shell checkpoint and replace the hand-assembled fixture data with a real generated UI catalog/index driven by `databases.zip`, chart package outputs, and TPP/CSup outputs. Keep the current map/plan/charts shells intact while swapping in the real data stream.
+
+## 2026-04-07 Resource-Index / Family Mosaic Checkpoint
+
+- The UI bridge now consumes a generated `resource-index.json` alongside the legacy-ish fixture bundle.
+- Web derives:
+  - `mapViews` from `resource-index.chart_collections`
+  - `chartPage` from `resource-index.plates` and `resource-index.csups`
+  - via [ui/web-app/src/domain/resourceIndexAdapters.ts](/root/aerobag/ui/web-app/src/domain/resourceIndexAdapters.ts)
+- Android mirrors that logic in:
+  - [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/ResourceIndexAdapters.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/ResourceIndexAdapters.kt)
+
+- Map rendering is no longer single-package-per-family.
+  - Both web and Android render a family mosaic from all visible `MapView`s in the selected family.
+  - That fixed the earlier `SECTIONAL` bug where panning south from `NW` hit gray instead of drawing `SW`.
+  - Tests were added on both platforms to pin the “neighboring packages can appear in one viewport” behavior.
+
+- Current Android packaging note:
+  - Android still installs chart packages from APK assets under `sectional-packages`.
+  - The build now stages `NW_SEC`, `SW_SEC`, `NW_TAC`, and `SW_TAC`.
+  - Family selection auto-installs all packages in the selected family, not just one package.
+
+- Current sample flight plan:
+  - `KRNT SEA PAE KAWO`
+  - stored in the generated fixture, not yet generated from nav-db logic
+
+- Important remaining design issue:
+  - airport ids in the app domain should become canonical airport ids
+    - use ICAO when present
+    - otherwise leave the FAA/local id as-is
+  - do this in preprocessing, not as a UI string-formatting convention
+
+- Transitional technical debt:
+  - [ui/scripts/generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py) still exists and is still Python/GDAL-based
+  - it now mostly stages assets and copies the generated `resource-index`, but it is still too involved
+  - long-term this should be replaced by product-side preprocessing outputs, not live UI-side assembly

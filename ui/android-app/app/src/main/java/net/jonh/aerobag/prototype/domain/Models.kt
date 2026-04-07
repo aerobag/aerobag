@@ -69,6 +69,8 @@ data class Catalog(
 enum class MapChartFamily {
     Sectional,
     Tac,
+    IfrLow,
+    IfrHigh,
 }
 
 enum class TileStorageKind {

@@ -126,6 +126,12 @@ enum class WireChartFamilyId {
 
     @SerialName("tac")
     Tac,
+
+    @SerialName("ifr_low")
+    IfrLow,
+
+    @SerialName("ifr_high")
+    IfrHigh,
 }
 
 @Serializable

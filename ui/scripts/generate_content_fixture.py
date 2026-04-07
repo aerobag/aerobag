@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
 import zipfile
 from dataclasses import dataclass
@@ -13,22 +14,21 @@ from osgeo import osr
 
 ROOT = Path(__file__).resolve().parents[2]
 UI_DIR = ROOT / "ui"
+RESOURCE_INDEX = ROOT / "rust-runs" / "resource-index" / "resource-index.json"
 CANONICAL_OUT = UI_DIR / "shared-fixtures" / "content-prototype" / "content_fixture.json"
+CANONICAL_RESOURCE_INDEX_OUT = UI_DIR / "shared-fixtures" / "content-prototype" / "resource-index.json"
 WEB_OUT = UI_DIR / "web-app" / "src" / "domain" / "generated" / "contentFixture.json"
+WEB_RESOURCE_INDEX_OUT = UI_DIR / "web-app" / "src" / "domain" / "generated" / "resourceIndex.json"
 ANDROID_OUT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "fixtures" / "contentFixture.json"
+ANDROID_RESOURCE_INDEX_OUT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "fixtures" / "resource-index.json"
 CANONICAL_TILE_ROOT = UI_DIR / "shared-fixtures" / "content-prototype" / "tiles"
 WEB_TILE_ROOT = UI_DIR / "web-app" / "public" / "prototype-tiles"
 ANDROID_TILE_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "tiles"
 WEB_SECTIONAL_ROOT = UI_DIR / "web-app" / "generated-static" / "sectional-packages"
 WEB_CHART_ASSET_ROOT = UI_DIR / "web-app" / "generated-static" / "chart-assets"
 ANDROID_CHART_ASSET_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "chart-assets"
-
-SEC_PACKAGE_OUTPUTS = ROOT / "runs" / "20260406T032350Z-validation" / "native" / "charts-sec" / "meta" / "provenance" / "charts-sec" / "package_outputs.jsonl"
-SEC_PACKAGE_DIR = ROOT / "runs" / "20260406T032350Z-validation" / "native" / "charts-sec" / "work" / "charts-sec"
-TAC_PACKAGE_OUTPUTS = ROOT / "runs" / "20260406T032350Z-validation" / "native" / "charts-tac" / "meta" / "provenance" / "charts-tac" / "package_outputs.jsonl"
-TAC_PACKAGE_DIR = ROOT / "runs" / "20260406T032350Z-validation" / "native" / "charts-tac" / "work" / "charts-tac"
-TPP_PLATES_DIR = ROOT / "runs" / "20260405T154700Z-tpp-retry" / "work" / "tpp-ne" / "plates" / "BOS"
-BOS_CSUP_DIR = ROOT / "runs" / "20260405T154700Z" / "work" / "csup" / "afd" / "BOS"
+TPP_ROOT = ROOT / "runs" / "20260406T032350Z-validation" / "native" / "tpp-ne" / "work" / "tpp-ne"
+CSUP_ROOT = ROOT / "runs" / "20260405T154700Z" / "work" / "csup"
 BOSTON_TAC_GEOJSON = ROOT / "rust-runs" / "tac-native" / "work" / "charts-tac" / "TAC" / "Boston TAC.geojson"
 BOSTON_TAC_TILE_ROOT = ROOT / "runs" / "20260406T003224Z-validation" / "native" / "charts-tac" / "work" / "charts-tac" / "tiles" / "1"
 
@@ -45,7 +45,7 @@ REGION_DISPLAY_NAMES = {
     "pac": "Pacific",
 }
 SECTIONAL_REGIONS = ["nw", "sw"]
-TAC_REGIONS = ["nw"]
+TAC_REGIONS = ["nw", "sw"]
 
 WEB_MERCATOR = osr.SpatialReference()
 WEB_MERCATOR.ImportFromEPSG(3857)
@@ -65,7 +65,7 @@ TAC_TILE_LEVELS = {
 class SectionalPackage:
     manifest: str
     region: str
-    zip_name: str
+    artifact_path: Path
     zip_sha256: str
 
 
@@ -73,8 +73,12 @@ class SectionalPackage:
 class TacPackage:
     manifest: str
     region: str
-    zip_name: str
+    artifact_path: Path
     zip_sha256: str
+
+
+def load_resource_index() -> dict:
+    return json.loads(RESOURCE_INDEX.read_text())
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -156,26 +160,24 @@ def copy_tac_tile_subset(tile_windows: dict[int, tuple[int, int, int]]) -> list[
     return sorted(levels, key=lambda item: item["zoom"])
 
 
-def pick_bos_plate() -> tuple[str, str, str]:
-    candidates = sorted(TPP_PLATES_DIR.glob("IAP-*.png"))
-    if not candidates:
-        raise RuntimeError(f"no IAP png plates found in {TPP_PLATES_DIR}")
-
-    path = candidates[0]
-    stem = path.stem
-    parts = stem.split("-", 2)
-    if len(parts) != 3:
-        raise RuntimeError(f"unexpected plate filename format: {path.name}")
-
-    plate_prefix, _state_code, procedure_name = parts
-    procedure_code = f"{plate_prefix}-{procedure_name}"
-    asset_base_path = f"plates/BOS/{stem}"
-    return procedure_code, procedure_name, asset_base_path
+def pick_bos_chart_assets(resource_index: dict) -> tuple[dict, dict]:
+    bos_plates = [record for record in resource_index["plates"] if record["airport_id"] == "BOS"]
+    bos_csups = [record for record in resource_index["csups"] if record["airport_id"] == "BOS"]
+    plate_record = next(
+        (record for record in bos_plates if record["label"] == "IAP-MA-ILS OR LOC RWY 04R"),
+        bos_plates[0] if bos_plates else None,
+    )
+    if plate_record is None:
+        raise RuntimeError("no BOS plate records found in resource index")
+    csup_record = bos_csups[0] if bos_csups else None
+    if csup_record is None:
+        raise RuntimeError("no BOS csup records found in resource index")
+    return plate_record, csup_record
 
 
-def stage_chart_assets() -> tuple[dict, dict]:
-    plate_source = TPP_PLATES_DIR / "IAP-MA-ILS OR LOC RWY 04R.png"
-    csup_source = BOS_CSUP_DIR / "CSUP-NE_0-0.png"
+def stage_chart_assets(plate_record: dict, csup_record: dict) -> tuple[dict, dict]:
+    plate_source = TPP_ROOT / plate_record["asset_path"]
+    csup_source = CSUP_ROOT / csup_record["asset_path"]
     if not plate_source.exists():
         raise RuntimeError(f"missing plate asset {plate_source}")
     if not csup_source.exists():
@@ -194,7 +196,7 @@ def stage_chart_assets() -> tuple[dict, dict]:
         {
             "id": "plate:bos-ils04r",
             "airport_id": "BOS",
-            "label": "ILS OR LOC RWY 04R",
+            "label": plate_record["label"],
             "kind": "plate",
             "asset_path": f"chart-assets/BOS/{plate_source.name}",
             "asset_url": f"/chart-assets/BOS/{plate_source.name}",
@@ -211,17 +213,20 @@ def stage_chart_assets() -> tuple[dict, dict]:
 
 
 def load_selected_sectional_packages() -> list[SectionalPackage]:
+    resource_index = load_resource_index()
     selected = []
-    for entry in load_jsonl(SEC_PACKAGE_OUTPUTS):
-        region = entry["region"].lower()
+    for entry in resource_index["packages"]:
+        if entry["family_id"] != "sectional":
+            continue
+        region = entry["region_id"].lower()
         if region not in SECTIONAL_REGIONS:
             continue
         selected.append(
             SectionalPackage(
-                manifest=entry["manifest"],
+                manifest=entry["manifest_name"],
                 region=region,
-                zip_name=entry["zip"],
-                zip_sha256=entry["zip_sha256"],
+                artifact_path=Path(entry["artifact_path"]),
+                zip_sha256=entry["checksum_sha256"],
             )
         )
     selected.sort(key=lambda package: SECTIONAL_REGIONS.index(package.region))
@@ -231,17 +236,20 @@ def load_selected_sectional_packages() -> list[SectionalPackage]:
 
 
 def load_selected_tac_packages() -> list[TacPackage]:
+    resource_index = load_resource_index()
     selected = []
-    for entry in load_jsonl(TAC_PACKAGE_OUTPUTS):
-        region = entry["region"].lower()
+    for entry in resource_index["packages"]:
+        if entry["family_id"] != "tac":
+            continue
+        region = entry["region_id"].lower()
         if region not in TAC_REGIONS:
             continue
         selected.append(
             TacPackage(
-                manifest=entry["manifest"],
+                manifest=entry["manifest_name"],
                 region=region,
-                zip_name=entry["zip"],
-                zip_sha256=entry["zip_sha256"],
+                artifact_path=Path(entry["artifact_path"]),
+                zip_sha256=entry["checksum_sha256"],
             )
         )
     selected.sort(key=lambda package: TAC_REGIONS.index(package.region))
@@ -251,30 +259,50 @@ def load_selected_tac_packages() -> list[TacPackage]:
 
 
 def clear_sectional_web_root() -> None:
-    if WEB_SECTIONAL_ROOT.exists():
-        shutil.rmtree(WEB_SECTIONAL_ROOT)
+    WEB_SECTIONAL_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def clear_directory(root: Path) -> None:
+    if not root.exists():
+        return
+    for child in sorted(root.iterdir(), reverse=True):
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child, ignore_errors=True)
+            if child.exists():
+                clear_directory(child)
+                os.rmdir(child)
+        else:
+            child.unlink(missing_ok=True)
 
 
 def extract_zip_for_web(package: SectionalPackage) -> None:
-    zip_path = SEC_PACKAGE_DIR / package.zip_name
     target_dir = WEB_SECTIONAL_ROOT / package.manifest
     target_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as archive:
-        archive.extractall(target_dir)
+    with zipfile.ZipFile(package.artifact_path) as archive:
+        extract_zip(archive, target_dir)
 
 
 def extract_tac_zip_for_web(package: TacPackage) -> None:
-    zip_path = TAC_PACKAGE_DIR / package.zip_name
     target_dir = WEB_SECTIONAL_ROOT / package.manifest
     target_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as archive:
-        archive.extractall(target_dir)
+    with zipfile.ZipFile(package.artifact_path) as archive:
+        extract_zip(archive, target_dir)
+
+
+def extract_zip(archive: zipfile.ZipFile, target_dir: Path) -> None:
+    for member in archive.infolist():
+        target_path = target_dir / member.filename
+        if member.is_dir():
+            target_path.mkdir(parents=True, exist_ok=True)
+            continue
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with archive.open(member) as source, target_path.open("wb") as target:
+            shutil.copyfileobj(source, target)
 
 
 def compute_level_bounds_from_zip(package: SectionalPackage, chart_index: int = 0) -> list[dict]:
-    zip_path = SEC_PACKAGE_DIR / package.zip_name
     zoom_levels: dict[int, dict[str, list[int]]] = {}
-    with zipfile.ZipFile(zip_path) as archive:
+    with zipfile.ZipFile(package.artifact_path) as archive:
         for name in archive.namelist():
             parts = name.split("/")
             if len(parts) != 5 or parts[0] != "tiles" or parts[1] != str(chart_index) or not parts[-1].endswith(".webp"):
@@ -299,9 +327,8 @@ def compute_level_bounds_from_zip(package: SectionalPackage, chart_index: int = 
 
 
 def compute_level_bounds_from_tac_zip(package: TacPackage, chart_index: int = 1) -> list[dict]:
-    zip_path = TAC_PACKAGE_DIR / package.zip_name
     zoom_levels: dict[int, dict[str, list[int]]] = {}
-    with zipfile.ZipFile(zip_path) as archive:
+    with zipfile.ZipFile(package.artifact_path) as archive:
         for name in archive.namelist():
             parts = name.split("/")
             if len(parts) != 5 or parts[0] != "tiles" or parts[1] != str(chart_index) or not parts[-1].endswith(".webp"):
@@ -402,9 +429,8 @@ def build_tac_map_option(package: TacPackage) -> dict:
 
 
 def build_fixture() -> dict:
-    sec_outputs = load_jsonl(SEC_PACKAGE_OUTPUTS)
-    tac_outputs = load_jsonl(TAC_PACKAGE_OUTPUTS)
-    cycle = "2026-04-16"
+    resource_index = load_resource_index()
+    cycle = resource_index["cycle"]
     boston_tac_polygon = load_wgs84_polygon(BOSTON_TAC_GEOJSON)
     probe_lat, probe_lon = bounds_center(boston_tac_polygon)
     tile_windows = {}
@@ -415,7 +441,8 @@ def build_fixture() -> dict:
 
     selected_sectional_packages = load_selected_sectional_packages()
     selected_tac_packages = load_selected_tac_packages()
-    plate_asset, csup_asset = stage_chart_assets()
+    plate_record, csup_record = pick_bos_chart_assets(resource_index)
+    plate_asset, csup_asset = stage_chart_assets(plate_record, csup_record)
     clear_sectional_web_root()
     for package in selected_sectional_packages:
         extract_zip_for_web(package)
@@ -428,54 +455,36 @@ def build_fixture() -> dict:
 
     packages = []
     regions_seen = set()
-    for entry in sec_outputs:
-        region = entry["region"].lower()
-        regions_seen.add(region)
-        package_name = entry["manifest"]
-        packages.append(
-            {
-                "id": {
-                    "region": region,
-                    "family": "sectional",
-                    "cycle": cycle,
-                },
-                "package_name": package_name,
-                "family_id": "sectional",
-                "region_id": region,
-                "cycle": cycle,
-                "artifact_kind": "zip",
-                "relative_url": f"/{cycle}/{entry['zip']}",
-                "manifest_name": package_name,
-                "size_bytes": (SEC_PACKAGE_DIR / entry["zip"]).stat().st_size,
-                "checksum_sha256": entry["zip_sha256"],
-            }
-        )
-
-    for entry in tac_outputs:
-        region = entry["region"].lower()
-        if region not in TAC_REGIONS:
+    for entry in resource_index["packages"]:
+        region = entry["region_id"].lower()
+        family_id = entry["family_id"]
+        if family_id not in {"sectional", "tac"}:
             continue
-        package_name = entry["manifest"]
+        if family_id == "sectional" and region not in SECTIONAL_REGIONS:
+            continue
+        if family_id == "tac" and region not in TAC_REGIONS:
+            continue
+        regions_seen.add(region)
         packages.append(
             {
                 "id": {
                     "region": region,
-                    "family": "tac",
+                    "family": family_id,
                     "cycle": cycle,
                 },
-                "package_name": package_name,
-                "family_id": "tac",
+                "package_name": entry["manifest_name"],
+                "family_id": family_id,
                 "region_id": region,
                 "cycle": cycle,
                 "artifact_kind": "zip",
-                "relative_url": f"/{cycle}/{entry['zip']}",
-                "manifest_name": package_name,
-                "size_bytes": (TAC_PACKAGE_DIR / entry["zip"]).stat().st_size,
-                "checksum_sha256": entry["zip_sha256"],
+                "relative_url": f"/{cycle}/{Path(entry['artifact_path']).name}",
+                "manifest_name": entry["manifest_name"],
+                "size_bytes": entry["size_bytes"],
+                "checksum_sha256": entry["checksum_sha256"],
             }
         )
 
-    packages.sort(key=lambda item: REGION_ORDER.index(item["region_id"]))
+    packages.sort(key=lambda item: (item["family_id"], REGION_ORDER.index(item["region_id"])))
 
     regions = [
         {
@@ -487,7 +496,9 @@ def build_fixture() -> dict:
         if region in regions_seen
     ]
 
-    procedure_code, procedure_name, asset_base_path = pick_bos_plate()
+    procedure_code = plate_record["label"]
+    procedure_name = plate_record["label"]
+    asset_base_path = str(Path(plate_record["asset_path"]).with_suffix(""))
 
     return {
         "catalog": {
@@ -598,19 +609,29 @@ def build_fixture() -> dict:
         },
         "flight_plan": {
             "id": "plan-1",
-            "name": "NW sectional prototype",
+            "name": "KRNT SEA PAE KAWO",
             "legs": [
                 {
-                    "from": {"Airport": "BOS"},
-                    "to": {"Airport": "BOS"},
+                    "from": {"Airport": "RNT"},
+                    "to": {"Airport": "SEA"},
+                    "airway": None,
+                },
+                {
+                    "from": {"Airport": "SEA"},
+                    "to": {"Airport": "PAE"},
+                    "airway": None,
+                },
+                {
+                    "from": {"Airport": "PAE"},
+                    "to": {"Airport": "AWO"},
                     "airway": None,
                 }
             ],
-            "departure": "BOS",
-            "destination": "BOS",
+            "departure": "RNT",
+            "destination": "AWO",
             "alternate": None,
             "cruise_altitude_ft": 3000,
-            "notes": "Generated from sectional package outputs",
+            "notes": "Generated from resource-index data",
             "updated_at_epoch_ms": 0,
             "version": 1,
         },
@@ -653,6 +674,10 @@ def main() -> None:
     write_json(CANONICAL_OUT, fixture)
     write_json(WEB_OUT, fixture)
     write_json(ANDROID_OUT, fixture)
+    resource_index = load_resource_index()
+    write_json(CANONICAL_RESOURCE_INDEX_OUT, resource_index)
+    write_json(WEB_RESOURCE_INDEX_OUT, resource_index)
+    write_json(ANDROID_RESOURCE_INDEX_OUT, resource_index)
 
 
 if __name__ == "__main__":

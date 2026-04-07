@@ -49,6 +49,7 @@ val stagePrototypeSectionalPackages by tasks.registering(Copy::class) {
     from(File(sectionalPackageRunDir, "NW_SEC.zip"))
     from(File(sectionalPackageRunDir, "SW_SEC.zip"))
     from(File(tacPackageRunDir, "NW_TAC.zip"))
+    from(File(tacPackageRunDir, "SW_TAC.zip"))
     into(generatedPrototypeAssetsDir.map { it.dir("sectional-packages") })
 }
 

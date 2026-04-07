@@ -39,6 +39,8 @@ data class RenderTile(
     val topPx: Float,
     val sizePx: Float,
     val zoom: Int,
+    val mapViewId: String,
+    val mapView: MapView,
 )
 
 data class PinchSnapshot(
@@ -174,6 +176,19 @@ fun viewportCenterLatLon(viewport: MapViewportState): Pair<Double, Double> =
     worldToLatLon(viewport.centerWorldX, viewport.centerWorldY)
 
 fun renderTiles(
+    mapViews: List<Pair<String, MapView>>,
+    viewport: MapViewportState,
+    widthPx: Float,
+    heightPx: Float,
+): List<RenderTile> {
+    val tiles = mapViews.flatMap { (mapViewId, mapView) ->
+        renderTilesForMapView(mapViewId, mapView, viewport, widthPx, heightPx)
+    }
+    return dedupeTiles(tiles)
+}
+
+private fun renderTilesForMapView(
+    mapViewId: String,
     mapView: MapView,
     viewport: MapViewportState,
     widthPx: Float,
@@ -209,6 +224,8 @@ fun renderTiles(
                 topPx = top,
                 sizePx = tileScreenSize.toFloat(),
                 zoom = level.zoom,
+                mapViewId = mapViewId,
+                mapView = mapView,
             )
         }
     }
@@ -216,11 +233,27 @@ fun renderTiles(
     return tiles
 }
 
-fun tileRelativePath(mapView: MapView, tile: RenderTile): String =
-    "${mapView.tileRoot}/${mapView.chartIndex}/${tile.zoom}/${tile.x}/${tile.yTms}.webp"
+private fun dedupeTiles(tiles: List<RenderTile>): List<RenderTile> {
+    val byScreenKey = linkedMapOf<String, RenderTile>()
+    for (tile in tiles) {
+        val key = "${tile.zoom}:${tile.x}:${tile.yTms}"
+        val existing = byScreenKey[key]
+        if (existing == null) {
+            byScreenKey[key] = tile
+            continue
+        }
+        if (existing.mapView.chartFamily != MapChartFamily.Tac && tile.mapView.chartFamily == MapChartFamily.Tac) {
+            byScreenKey[key] = tile
+        }
+    }
+    return byScreenKey.values.toList()
+}
 
-fun tileAssetPath(mapView: MapView, tile: RenderTile): String =
-    "tiles/${tileRelativePath(mapView, tile)}"
+fun tileRelativePath(tile: RenderTile): String =
+    "${tile.mapView.tileRoot}/${tile.mapView.chartIndex}/${tile.zoom}/${tile.x}/${tile.yTms}.webp"
+
+fun tileAssetPath(tile: RenderTile): String =
+    "tiles/${tileRelativePath(tile)}"
 
 private fun pickLevel(mapView: MapView, zoom: Double): TileLevelAvailability =
     mapView.levels.minBy { kotlin.math.abs(it.zoom - zoom) }

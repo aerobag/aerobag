@@ -74,13 +74,46 @@ class MapViewportTest {
     @Test
     fun initialViewportRendersAvailableTilesAndCenterRoundTrips() {
         val viewport = createInitialViewport(mapView)
-        val tiles = renderTiles(mapView, viewport, 1200f, 900f)
+        val tiles = renderTiles(listOf("test" to mapView), viewport, 1200f, 900f)
         val center = viewportCenterLatLon(viewport)
 
         assertTrue(tiles.isNotEmpty())
         assertTrue(tiles.any { it.zoom == 10 })
         assertEquals(mapView.initialViewport.lat, center.first, 1e-3)
         assertEquals(mapView.initialViewport.lon, center.second, 1e-3)
+    }
+
+    @Test
+    fun familyRenderingCanStitchNeighboringPackagesIntoOneViewport() {
+        val northwest = mapView.copy(
+            chartFamily = MapChartFamily.Sectional,
+            packageName = "NW_SEC",
+            minZoom = 4.2,
+            maxZoom = 10.8,
+            initialViewport = MapViewportSeed(44.7, -113.9, 8.0),
+            levels = listOf(TileLevelAvailability(10, 156, 219, 636, 672)),
+        )
+        val southwest = mapView.copy(
+            chartFamily = MapChartFamily.Sectional,
+            packageName = "SW_SEC",
+            minZoom = 4.2,
+            maxZoom = 10.8,
+            initialViewport = MapViewportSeed(32.4, -113.9, 8.0),
+            levels = listOf(TileLevelAvailability(10, 156, 219, 582, 636)),
+        )
+        val viewport = createInitialViewport(
+            northwest.copy(initialViewport = MapViewportSeed(40.1, -113.9, 7.0)),
+        )
+
+        val tiles = renderTiles(
+            listOf("sectional:nw" to northwest, "sectional:sw" to southwest),
+            viewport,
+            1200f,
+            900f,
+        )
+
+        assertTrue(tiles.any { it.mapView.packageName == "NW_SEC" })
+        assertTrue(tiles.any { it.mapView.packageName == "SW_SEC" })
     }
 
     @Test

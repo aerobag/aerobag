@@ -48,13 +48,45 @@ describe("mapViewport", () => {
 
   it("initial viewport renders real package tiles and round-trips its center lat/lon", () => {
     const viewport = createInitialViewport(mapView);
-    const tiles = renderTiles(mapView, viewport, 1200, 900);
+    const tiles = renderTiles([{ ...mapView, id: "test" }], viewport, 1200, 900);
     const center = viewportCenterLatLon(viewport);
 
     expect(tiles.length).toBeGreaterThan(0);
     expect(tiles.every((tile) => tile.src.startsWith(mapView.tile_url_root))).toBe(true);
     expect(center.lat).toBeCloseTo(mapView.initial_viewport.lat, 3);
     expect(center.lon).toBeCloseTo(mapView.initial_viewport.lon, 3);
+  });
+
+  it("family rendering can stitch neighboring packages into one viewport", () => {
+    const northwest = {
+      ...mapView,
+      id: "sectional:nw",
+      chart_family: "sectional" as const,
+      package_name: "NW_SEC",
+      min_zoom: 4.2,
+      max_zoom: 10.8,
+      initial_viewport: { lat: 44.7, lon: -113.9, zoom: 8 },
+      levels: [{ zoom: 10, x_min: 156, x_max: 219, y_tms_min: 636, y_tms_max: 672 }],
+    };
+    const southwest = {
+      ...mapView,
+      id: "sectional:sw",
+      chart_family: "sectional" as const,
+      package_name: "SW_SEC",
+      min_zoom: 4.2,
+      max_zoom: 10.8,
+      initial_viewport: { lat: 32.4, lon: -113.9, zoom: 8 },
+      levels: [{ zoom: 10, x_min: 156, x_max: 219, y_tms_min: 582, y_tms_max: 636 }],
+    };
+    const viewport = createInitialViewport({
+      ...northwest,
+      initial_viewport: { lat: 40.1, lon: -113.9, zoom: 7.0 },
+    });
+
+    const tiles = renderTiles([northwest, southwest], viewport, 1200, 900);
+
+    expect(tiles.some((tile) => tile.packageName === "NW_SEC")).toBe(true);
+    expect(tiles.some((tile) => tile.packageName === "SW_SEC")).toBe(true);
   });
 
   it("double-click style zoom-in still preserves the clicked anchor", () => {

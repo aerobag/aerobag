@@ -21,6 +21,9 @@ export type RenderTile = {
   size: number;
   zoom: number;
   src: string;
+  mapViewId: string;
+  packageName: string | null;
+  chartFamily: MapView["chart_family"];
 };
 
 const WORLD_SIZE = 256;
@@ -168,7 +171,20 @@ export function viewportCenterLatLon(viewport: MapViewportState): { lat: number;
 }
 
 export function renderTiles(
-  mapView: MapView,
+  mapViews: Array<MapView & { id?: string }>,
+  viewport: MapViewportState,
+  width: number,
+  height: number,
+): RenderTile[] {
+  const tiles: RenderTile[] = [];
+  for (const mapView of mapViews) {
+    tiles.push(...renderTilesForMapView(mapView, viewport, width, height));
+  }
+  return dedupeTiles(tiles);
+}
+
+function renderTilesForMapView(
+  mapView: MapView & { id?: string },
   viewport: MapViewportState,
   width: number,
   height: number,
@@ -204,11 +220,30 @@ export function renderTiles(
         size: tileScreenSize,
         zoom: level.zoom,
         src: `${mapView.tile_url_root}/${mapView.chart_index}/${level.zoom}/${x}/${yTms}.webp`,
+        mapViewId: mapView.id ?? mapView.chart_name,
+        packageName: mapView.package_name,
+        chartFamily: mapView.chart_family,
       });
     }
   }
 
   return tiles;
+}
+
+function dedupeTiles(tiles: RenderTile[]): RenderTile[] {
+  const byScreenKey = new Map<string, RenderTile>();
+  for (const tile of tiles) {
+    const key = `${tile.zoom}:${tile.x}:${tile.yTms}`;
+    const existing = byScreenKey.get(key);
+    if (!existing) {
+      byScreenKey.set(key, tile);
+      continue;
+    }
+    if (existing.chartFamily !== "tac" && tile.chartFamily === "tac") {
+      byScreenKey.set(key, tile);
+    }
+  }
+  return [...byScreenKey.values()];
 }
 
 function pickLevel(mapView: MapView, zoom: number): MapView["levels"][number] {

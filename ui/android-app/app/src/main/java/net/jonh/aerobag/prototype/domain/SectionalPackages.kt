@@ -30,20 +30,20 @@ object SectionalPackages {
         return target
     }
 
-    fun loadTileBytes(context: Context, mapView: MapView, tile: RenderTile): ByteArray? {
-        return when (mapView.storageKind) {
+    fun loadTileBytes(context: Context, tile: RenderTile): ByteArray? {
+        return when (tile.mapView.storageKind) {
             TileStorageKind.AssetTree ->
                 runCatching {
-                    context.assets.open(tileAssetPath(mapView, tile)).use { it.readBytes() }
+                    context.assets.open(tileAssetPath(tile)).use { it.readBytes() }
                 }.getOrNull()
 
             TileStorageKind.SectionalPackage -> {
-                val packageName = mapView.packageName ?: return null
+                val packageName = tile.mapView.packageName ?: return null
                 val installed = installedFile(context, packageName)
                 if (!installed.isFile) {
                     return null
                 }
-                packageStore.loadTileBytes(installed, tileRelativePath(mapView, tile))
+                packageStore.loadTileBytes(installed, tileRelativePath(tile))
             }
         }
     }

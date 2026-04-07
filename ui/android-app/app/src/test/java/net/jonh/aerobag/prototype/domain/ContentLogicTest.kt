@@ -388,6 +388,8 @@ private class FakeNativeBridge(
         val family = when (json.decodeFromString<WireChartFamilyId>(familyJson)) {
             WireChartFamilyId.Sectional -> MapChartFamily.Sectional
             WireChartFamilyId.Tac -> MapChartFamily.Tac
+            WireChartFamilyId.IfrLow -> MapChartFamily.IfrLow
+            WireChartFamilyId.IfrHigh -> MapChartFamily.IfrHigh
         }
         val chart = MockMapLookupAdapter(json).chartForPosition(
             catalogJson = catalogJson,
@@ -451,4 +453,6 @@ private fun WirePackageId.toUiForTesting() = PackageId(
 private fun MapChartFamily.toWireFamilyForTesting() = when (this) {
     MapChartFamily.Sectional -> WireChartFamilyId.Sectional
     MapChartFamily.Tac -> WireChartFamilyId.Tac
+    MapChartFamily.IfrLow -> WireChartFamilyId.IfrLow
+    MapChartFamily.IfrHigh -> WireChartFamilyId.IfrHigh
 }

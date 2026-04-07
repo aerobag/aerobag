@@ -218,3 +218,76 @@ export type ContentFixtureBundle = {
   remote_only_inventory: ContentInventory;
   installed_inventory: ContentInventory;
 };
+
+export type ResourceIndexJson = {
+  schema_version: number;
+  cycle: string | null;
+  generated_at_utc: string;
+  families: Array<{
+    id: ChartFamilyId | "tpp" | "csup";
+    display_name: string;
+    kind: string;
+  }>;
+  regions: Array<{
+    id: RegionId;
+    display_name: string;
+    sort_order: number;
+  }>;
+  packages: Array<{
+    family_id: ChartFamilyId | "tpp" | "csup";
+    region_id: RegionId;
+    manifest_name: string;
+    artifact_path: string;
+    size_bytes: number;
+    checksum_sha256: string;
+  }>;
+  chart_collections: Array<{
+    id: string;
+    family_id: ChartFamilyId;
+    region_id: RegionId;
+    package_name: string;
+    chart_index: number;
+    tile_path_template: string;
+    levels: Array<{
+      zoom: number;
+      x_min: number;
+      x_max: number;
+      y_tms_min: number;
+      y_tms_max: number;
+    }>;
+    coverage_bounds: {
+      lat_min: number;
+      lat_max: number;
+      lon_min: number;
+      lon_max: number;
+    };
+    default_view: {
+      lat: number;
+      lon: number;
+      zoom: number;
+    };
+  }>;
+  airports: Array<{
+    id: string;
+    facility_name: string;
+    lat: number;
+    lon: number;
+    airport_type: string;
+  }>;
+  plates: Array<{
+    airport_id: string;
+    region_id: RegionId;
+    package_name: string;
+    asset_path: string;
+    label: string;
+    asset_kind: string;
+  }>;
+  csups: Array<{
+    airport_id: string;
+    region_id: RegionId;
+    package_name: string;
+    asset_path: string;
+    label: string;
+    asset_kind: string;
+  }>;
+};

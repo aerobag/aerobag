@@ -258,6 +258,16 @@ Resume from the 3-page shell checkpoint and replace the hand-assembled fixture d
   - airport ids in the app domain should become canonical airport ids
     - use ICAO when present
     - otherwise leave the FAA/local id as-is
+
+## 2026-04-07 Repo Layout Note
+
+- The preprocessing source tree has been split:
+  - baseline reference implementation:
+    - [baseline/avare_equivalent](/root/aerobag/baseline/avare_equivalent)
+  - evolving product pipeline:
+    - [product/preprocessor](/root/aerobag/product/preprocessor)
+- The UI should continue to treat generated preprocessing outputs as external artifacts.
+- Product-facing metadata changes such as canonical airport ids should now come from [product/preprocessor](/root/aerobag/product/preprocessor), not from UI-side cleanup logic.
   - do this in preprocessing, not as a UI string-formatting convention
 
 - Transitional technical debt:

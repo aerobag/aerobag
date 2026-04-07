@@ -1,0 +1,13 @@
+[package]
+name = "preprocessor-tpp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+roxmltree.workspace = true
+preprocessor-core = { path = "../preprocessor-core" }
+preprocessor-fetch = { path = "../preprocessor-fetch" }
+preprocessor-tools = { path = "../preprocessor-tools" }

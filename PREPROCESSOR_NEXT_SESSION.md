@@ -841,3 +841,21 @@ If the next session starts with no further instruction, do this:
   2. create `product/preprocessor` by copying from the baseline
   3. fold `resource-index` into the product pipeline as first-class output
   4. then make intentional product changes there, beginning with airport-id canonicalization
+
+## 2026-04-07 Repo Refactor Completed
+
+- The requested split has now been performed on disk:
+  - baseline reference pipeline:
+    - [baseline/avare_equivalent](/root/aerobag/baseline/avare_equivalent)
+  - evolving product pipeline:
+    - [product/preprocessor](/root/aerobag/product/preprocessor)
+- Historical notes above still reference `rust-preprocessor` because that was the path at the time. Read those as pre-refactor history.
+- Current policy:
+  - keep [baseline/avare_equivalent](/root/aerobag/baseline/avare_equivalent) Avare-equivalent
+  - land intentional product changes only in [product/preprocessor](/root/aerobag/product/preprocessor)
+- `preprocessor-resource-index` has been copied into the product pipeline and should now be treated as a first-class preprocessing output there.
+- The next product-only change requested by the user is airport-id canonicalization in:
+  - [product/preprocessor/preprocessor-data/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-data/src/lib.rs)
+  - use ICAO when present
+  - otherwise keep the FAA/local id as-is
+  - leave the baseline pipeline unchanged

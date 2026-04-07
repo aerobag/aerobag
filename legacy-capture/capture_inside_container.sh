@@ -107,6 +107,7 @@ run_capture() {
 run_capture "charts-sec" "avare-source/charts" python3 sec.py
 run_capture "charts-tac" "avare-source/charts" python3 tac.py
 run_capture "charts-enr-l" "avare-source/charts" python3 enr_l.py
+run_capture "charts-enr-h" "avare-source/charts" python3 enr_h.py
 run_capture "tpp-ne" "avare-source/tpp" python3 tpp.py NE
 run_capture "csup" "avare-source/csup" python3 csup.py
 
@@ -154,6 +155,18 @@ cat > "${META_DIR}/manifest.json" <<EOF
       "source_urls": "meta/provenance/charts-enr-l/source_urls.jsonl",
       "downloads": "meta/provenance/charts-enr-l/downloads.jsonl",
       "package_outputs": "meta/provenance/charts-enr-l/package_outputs.jsonl"
+    },
+    {
+      "label": "charts-enr-h",
+      "repo": "avare-source/charts",
+      "command": ["python3", "enr_h.py"],
+      "stdout_log": "logs/charts-enr-h.stdout.log",
+      "stderr_log": "logs/charts-enr-h.stderr.log",
+      "tile_paths": "meta/charts-enr-h.tile-paths.txt",
+      "outputs_hashes": "meta/charts-enr-h.outputs.sha256",
+      "source_urls": "meta/provenance/charts-enr-h/source_urls.jsonl",
+      "downloads": "meta/provenance/charts-enr-h/downloads.jsonl",
+      "package_outputs": "meta/provenance/charts-enr-h/package_outputs.jsonl"
     },
     {
       "label": "tpp-ne",

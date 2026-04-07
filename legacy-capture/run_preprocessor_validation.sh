@@ -122,6 +122,18 @@ run_bg native-charts-enr-l \
     --prefetch-source-urls "${PREP_ROOT}/source-urls/charts-enr-l/source_urls.jsonl" \
     --fetch-jobs "${FETCH_JOBS}"
 
+run_bg native-charts-enr-h \
+    env \
+    FETCH_CACHE_ROOT="${FETCH_CACHE_ROOT}" \
+    FETCH_CACHE_MODE="${FETCH_CACHE_MODE}" \
+    "${CLI}" run-native-chart \
+    --family enr-h \
+    --source-repo "${AVARE_SOURCE_ROOT}/charts" \
+    --run-root "${NATIVE_ROOT}/charts-enr-h" \
+    --cpu-jobs "${NATIVE_CHART_CPU_JOBS}" \
+    --prefetch-source-urls "${PREP_ROOT}/source-urls/charts-enr-h/source_urls.jsonl" \
+    --fetch-jobs "${FETCH_JOBS}"
+
 run_bg native-csup \
     env \
     FETCH_CACHE_ROOT="${FETCH_CACHE_ROOT}" \
@@ -178,6 +190,13 @@ if [[ "${JOB_STATUS[legacy]}" == "0" && "${JOB_STATUS[native-charts-enr-l]}" == 
     run_compare charts-enr-l-packages compare-chart-packages --family enr-l --legacy-work-dir "${LEGACY_RUN_ROOT}/work/charts-enr-l" --rust-work-dir "${NATIVE_ROOT}/charts-enr-l/work/charts-enr-l"
     run_compare charts-enr-l-provenance compare-provenance --left-provenance-dir "${LEGACY_RUN_ROOT}/meta/provenance/charts-enr-l" --right-provenance-dir "${NATIVE_ROOT}/charts-enr-l/meta/provenance/charts-enr-l"
     run_compare charts-enr-l-images compare-sampled-images --left-root "${LEGACY_RUN_ROOT}/work/charts-enr-l/tiles/3" --right-root "${NATIVE_ROOT}/charts-enr-l/work/charts-enr-l/tiles/3" --sample-percent "${IMAGE_SAMPLE_PERCENT}" --rmse-threshold "${IMAGE_RMSE_THRESHOLD}"
+fi
+
+if [[ "${JOB_STATUS[legacy]}" == "0" && "${JOB_STATUS[native-charts-enr-h]}" == "0" ]]; then
+    run_compare charts-enr-h-tile-paths compare-chart-tile-paths --family enr-h --legacy-work-dir "${LEGACY_RUN_ROOT}/work/charts-enr-h" --rust-work-dir "${NATIVE_ROOT}/charts-enr-h/work/charts-enr-h"
+    run_compare charts-enr-h-packages compare-chart-packages --family enr-h --legacy-work-dir "${LEGACY_RUN_ROOT}/work/charts-enr-h" --rust-work-dir "${NATIVE_ROOT}/charts-enr-h/work/charts-enr-h"
+    run_compare charts-enr-h-provenance compare-provenance --left-provenance-dir "${LEGACY_RUN_ROOT}/meta/provenance/charts-enr-h" --right-provenance-dir "${NATIVE_ROOT}/charts-enr-h/meta/provenance/charts-enr-h"
+    run_compare charts-enr-h-images compare-sampled-images --left-root "${LEGACY_RUN_ROOT}/work/charts-enr-h/tiles/4" --right-root "${NATIVE_ROOT}/charts-enr-h/work/charts-enr-h/tiles/4" --sample-percent "${IMAGE_SAMPLE_PERCENT}" --rmse-threshold "${IMAGE_RMSE_THRESHOLD}"
 fi
 
 if [[ "${JOB_STATUS[legacy]}" == "0" && "${JOB_STATUS[native-csup]}" == "0" ]]; then

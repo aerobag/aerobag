@@ -165,6 +165,38 @@ def build_records(avare_source_root: str) -> dict[str, list[dict]]:
                 ),
             },
         ],
+        "charts-enr-h": [
+            {
+                "event": "list_crawl",
+                "label": "charts-enr-h",
+                "match": "^http.*" + charts_start + "/enr_h.*.zip$",
+                "url": "https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/ifr/",
+                "results": list_crawl(
+                    "https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/ifr/",
+                    "^http.*" + charts_start + "/enr_h.*.zip$",
+                ),
+            },
+            {
+                "event": "list_crawl",
+                "label": "charts-enr-h",
+                "match": "^http.*" + charts_start + "/enr_akh.*.zip$",
+                "url": "https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/ifr/",
+                "results": list_crawl(
+                    "https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/ifr/",
+                    "^http.*" + charts_start + "/enr_akh.*.zip$",
+                ),
+            },
+            {
+                "event": "list_crawl",
+                "label": "charts-enr-h",
+                "match": "^http.*" + charts_start + "/enr_p.*.zip$",
+                "url": "https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/ifr/",
+                "results": list_crawl(
+                    "https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/ifr/",
+                    "^http.*" + charts_start + "/enr_p.*.zip$",
+                ),
+            },
+        ],
         "csup": [
             {
                 "event": "list_crawl",

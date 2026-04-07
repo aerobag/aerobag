@@ -10,6 +10,7 @@ CAPTURE_ORDER = [
     "charts-sec",
     "charts-tac",
     "charts-enr-l",
+    "charts-enr-h",
     "tpp-ne",
     "csup",
 ]

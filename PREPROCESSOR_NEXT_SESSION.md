@@ -2,6 +2,68 @@
 
 ## Session Notes
 
+- 2026-04-07 05:45:00Z:
+  - Investigated the legacy aviation database build path in [`avare-source/data`](/root/aerobag/avare-source/data).
+  - Confirmed the legacy builder exists and is the real producer of Avare's machine-readable database package:
+    - entrypoint [`data.py`](/root/aerobag/avare-source/data/data.py)
+    - orchestration/helpers [`common.py`](/root/aerobag/avare-source/data/common.py)
+    - CIFP parser [`cifp.py`](/root/aerobag/avare-source/data/cifp.py)
+    - schema import scripts:
+      - [`legacy/importother.sql`](/root/aerobag/avare-source/data/legacy/importother.sql)
+      - [`x/importother.sql`](/root/aerobag/avare-source/data/x/importother.sql)
+  - Built a clean homegrown legacy database package in scratch run dir:
+    - [`runs/20260407T053200Z-data-build/work/data/main.db`](/root/aerobag/runs/20260407T053200Z-data-build/work/data/main.db)
+    - [`runs/20260407T053200Z-data-build/work/data/databases.zip`](/root/aerobag/runs/20260407T053200Z-data-build/work/data/databases.zip)
+    - manifest [`runs/20260407T053200Z-data-build/work/data/databases`](/root/aerobag/runs/20260407T053200Z-data-build/work/data/databases)
+  - The resulting `main.db` contains the expected tables:
+    - `airports`
+    - `airportfreq`
+    - `airportrunways`
+    - `nav`
+    - `fix`
+    - `obs`
+    - `awos`
+    - `saa`
+    - `airways`
+    - `cifp_sid_star_app`
+    - `geo`
+  - This confirmed that the Android app's current DB contract is still the plain `databases` package with `main.db`:
+    - [`arrays.xml`](/root/aerobag/avare-source/avare/app/src/main/res/values/arrays.xml) only advertises `databases`
+    - [`LocationDatabaseHelper.java`](/root/aerobag/avare-source/avare/app/src/main/java/com/ds/avare/content/LocationDatabaseHelper.java) opens `main.db`
+  - Investigated `databasesx`:
+    - it is built from the alternate `x/` parser set plus optional vector airspace MBTiles
+    - the schema adds richer IDs such as `DLID` / `FaaID`
+    - if present, the package can include `maps/nasr.mbtiles`
+  - Important finding:
+    - current Avare app code does not appear to reference:
+      - `databasesx`
+      - `maps/nasr.mbtiles`
+      - `DLID`
+      - `FaaID`
+    - so `databasesx` looks like experimental / future-facing work rather than an active app contract
+  - The optional `databasesx.zip` did not build in this environment because [`generate_airspace_tiles.sh`](/root/aerobag/avare-source/data/generate_airspace_tiles.sh) requires `tippecanoe` and `tile-join`, which are not installed here.
+  - Current Rust status for `data/`:
+    - no Rust replacement crate exists yet
+    - current Rust workspace still covers charts / `csup` / `tpp`, not the aviation database pipeline
+
+- 2026-04-07 05:50:00Z:
+  - There were still uncommitted harness changes to integrate `charts-enr-h` into whole-banana:
+    - [`legacy-capture/capture_inside_container.sh`](/root/aerobag/legacy-capture/capture_inside_container.sh)
+    - [`legacy-capture/emit_source_urls.py`](/root/aerobag/legacy-capture/emit_source_urls.py)
+    - [`legacy-capture/finalize_run.py`](/root/aerobag/legacy-capture/finalize_run.py)
+    - [`legacy-capture/run_preprocessor_validation.sh`](/root/aerobag/legacy-capture/run_preprocessor_validation.sh)
+    - [`legacy-capture/run_status.py`](/root/aerobag/legacy-capture/run_status.py)
+  - Those changes add:
+    - legacy `enr_h.py` execution
+    - source URL emission for `charts-enr-h`
+    - finalize/status metadata for `charts-enr-h`
+    - native `enr-h` run plus tile-path/package/provenance/full-image compare in the harness
+  - Verification had already passed for those edits:
+    - shell syntax checks
+    - Python compile checks
+    - `cargo test -p preprocessor-cli`
+  - The previously green whole-banana run [`20260406T051014Z-validation`](/root/aerobag/runs/20260406T051014Z-validation) still does not include `enr-h`; the next fresh banana after these harness edits will.
+
 - 2026-04-06 00:46:00Z:
   - Investigated adding `WAC` while the validation harness run was in flight.
   - Important finding: `WAC` is not present in the split backend repo [avare-source/charts](/root/aerobag/avare-source/charts).

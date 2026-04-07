@@ -47,6 +47,18 @@ CAPTURES = [
         "package_outputs": "meta/provenance/charts-enr-l/package_outputs.jsonl",
     },
     {
+        "label": "charts-enr-h",
+        "repo": "avare-source/charts",
+        "command": ["python3", "enr_h.py"],
+        "stdout_log": "logs/charts-enr-h.stdout.log",
+        "stderr_log": "logs/charts-enr-h.stderr.log",
+        "tile_paths": "meta/charts-enr-h.tile-paths.txt",
+        "outputs_hashes": "meta/charts-enr-h.outputs.sha256",
+        "source_urls": "meta/provenance/charts-enr-h/source_urls.jsonl",
+        "downloads": "meta/provenance/charts-enr-h/downloads.jsonl",
+        "package_outputs": "meta/provenance/charts-enr-h/package_outputs.jsonl",
+    },
+    {
         "label": "tpp-ne",
         "repo": "avare-source/tpp",
         "command": ["python3", "tpp.py", "NE"],

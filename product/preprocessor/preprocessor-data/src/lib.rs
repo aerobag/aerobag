@@ -5,10 +5,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, bail};
-use quick_xml::{Reader, events::Event};
-use rusqlite::{Connection, params};
-use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
+use anyhow::{bail, Context};
+use quick_xml::{events::Event, Reader};
+use rusqlite::{params, Connection};
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 const TABLES: &[&str] = &[
     "airports",
@@ -50,6 +50,49 @@ fn field(line: &str, start: usize, len: usize) -> &str {
 
 fn trim(s: &str) -> &str {
     s.trim()
+}
+
+fn airport_faa_id(line: &str) -> String {
+    trim(field(line, 27, 4)).to_string()
+}
+
+fn airport_icao_id(line: &str) -> String {
+    trim(field(line, 1210, 7)).to_string()
+}
+
+fn canonical_airport_id_from_apt_line(line: &str) -> String {
+    let faa = airport_faa_id(line);
+    let icao = airport_icao_id(line);
+    if icao.is_empty() {
+        faa
+    } else {
+        icao
+    }
+}
+
+fn load_airport_id_map(input_dir: &Path) -> anyhow::Result<BTreeMap<String, String>> {
+    let path = input_dir.join("APT.txt");
+    let text = read_text_lossy(&path)?;
+    let mut ids = BTreeMap::new();
+    for raw in text.lines() {
+        if !raw.starts_with("APT") {
+            continue;
+        }
+        let faa = airport_faa_id(raw);
+        let canonical = canonical_airport_id_from_apt_line(raw);
+        if !faa.is_empty() && !canonical.is_empty() {
+            ids.insert(faa, canonical);
+        }
+    }
+    Ok(ids)
+}
+
+fn canonicalize_airport_id(raw_id: &str, airport_ids: &BTreeMap<String, String>) -> String {
+    let raw_id = raw_id.trim();
+    airport_ids
+        .get(raw_id)
+        .cloned()
+        .unwrap_or_else(|| raw_id.to_string())
 }
 
 fn read_text_lossy(path: &Path) -> anyhow::Result<String> {
@@ -96,7 +139,11 @@ fn apt_coord_lat(value: &str) -> f64 {
     let sec = perl_num(trim(field(value, 6, 7))) / 3600.0;
     let hemi = field(value, 13, 1);
     let coord = deg + min + sec;
-    if hemi == "N" { coord } else { -coord }
+    if hemi == "N" {
+        coord
+    } else {
+        -coord
+    }
 }
 
 fn apt_coord_lon(value: &str) -> f64 {
@@ -105,7 +152,11 @@ fn apt_coord_lon(value: &str) -> f64 {
     let sec = perl_num(trim(field(value, 7, 7))) / 3600.0;
     let hemi = field(value, 14, 1);
     let coord = deg + min + sec;
-    if hemi == "W" { -coord } else { coord }
+    if hemi == "W" {
+        -coord
+    } else {
+        coord
+    }
 }
 
 fn nav_fix_lat(value: &str) -> f64 {
@@ -114,7 +165,11 @@ fn nav_fix_lat(value: &str) -> f64 {
     let sec = perl_num(trim(field(value, 6, 7))) / 3600.0;
     let hemi = field(value, 12, 1);
     let coord = deg + min + sec;
-    if hemi == "N" { coord } else { -coord }
+    if hemi == "N" {
+        coord
+    } else {
+        -coord
+    }
 }
 
 fn nav_fix_lon(value: &str) -> f64 {
@@ -123,7 +178,11 @@ fn nav_fix_lon(value: &str) -> f64 {
     let sec = perl_num(trim(field(value, 7, 6))) / 3600.0;
     let hemi = field(value, 13, 1);
     let coord = deg + min + sec;
-    if hemi == "W" { -coord } else { coord }
+    if hemi == "W" {
+        -coord
+    } else {
+        coord
+    }
 }
 
 fn awy_coord(value: &str) -> f64 {
@@ -195,7 +254,7 @@ fn insert_airports(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize>
             continue;
         }
         let line = sanitize_commas_quotes(raw.to_string());
-        let id = trim(field(&line, 27, 4)).to_string();
+        let id = canonical_airport_id_from_apt_line(&line);
         let kind = trim(field(&line, 14, 12)).to_string();
         let name = trim(field(&line, 133, 50)).to_string();
         let state = trim(field(&line, 91, 2)).to_string();
@@ -234,7 +293,11 @@ fn insert_airports(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize>
         let fee = trim(field(&line, 1002, 1)).to_string();
         let lightsched = trim(field(&line, 966, 7)).to_string();
         let segcircle = trim(field(&line, 995, 4)).to_string();
-        let customs = format!("{}{}", trim(field(&line, 877, 1)), trim(field(&line, 878, 1)));
+        let customs = format!(
+            "{}{}",
+            trim(field(&line, 877, 1)),
+            trim(field(&line, 878, 1))
+        );
         let beacon = trim(field(&line, 999, 3)).to_string();
         let tel = trim(field(&line, 762, 16)).to_string();
         stmt.execute(params![
@@ -267,7 +330,11 @@ fn insert_airports(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize>
     Ok(count)
 }
 
-fn insert_airport_freq(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
+fn insert_airport_freq_with_ids(
+    conn: &Connection,
+    input_dir: &Path,
+    airport_ids: &BTreeMap<String, String>,
+) -> anyhow::Result<usize> {
     let path = input_dir.join("TWR.txt");
     let text = read_text_lossy(&path)?;
     let mut stmt = conn.prepare("INSERT INTO airportfreq VALUES (?1, ?2, ?3)")?;
@@ -275,7 +342,7 @@ fn insert_airport_freq(conn: &Connection, input_dir: &Path) -> anyhow::Result<us
     let mut count = 0;
     for raw in text.lines() {
         if raw.starts_with("TWR1") {
-            id = trim(field(raw, 4, 4)).to_string();
+            id = canonicalize_airport_id(field(raw, 4, 4), airport_ids);
         } else if raw.starts_with("TWR3") {
             let mut rest = field(raw, 8, raw.len().saturating_sub(8)).to_string();
             while rest.len() > 93 {
@@ -307,7 +374,7 @@ fn insert_runways(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> 
     let mut count = 0;
     for raw in text.lines() {
         if raw.starts_with("APT") {
-            id = trim(field(raw, 27, 4)).to_string();
+            id = canonical_airport_id_from_apt_line(raw);
             continue;
         }
         if !raw.starts_with("RWY") {
@@ -398,12 +465,8 @@ fn insert_nav(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
         }
         let id = trim(field(raw, 4, 4)).to_string();
         let kind = trim(field(raw, 8, 10)).to_string();
-        let name = format!(
-            "{} {}",
-            trim(field(raw, 42, 30)),
-            trim(field(raw, 533, 7))
-        )
-        .replace(',', ";");
+        let name =
+            format!("{} {}", trim(field(raw, 42, 30)), trim(field(raw, 533, 7))).replace(',', ";");
         let lat = nav_fix_lat(trim(field(raw, 371, 13)));
         let lon = nav_fix_lon(trim(field(raw, 396, 14)));
         let var = trim(field(raw, 479, 5));
@@ -412,7 +475,9 @@ fn insert_nav(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
         let class = trim(field(raw, 281, 1)).to_string();
         let hiwas = trim(field(raw, 800, 1)).to_string();
         let elevation = trim(field(raw, 472, 7)).to_string();
-        stmt.execute(params![id, lat, lon, kind, name, variation, class, hiwas, elevation])?;
+        stmt.execute(params![
+            id, lat, lon, kind, name, variation, class, hiwas, elevation
+        ])?;
         count += 1;
     }
     Ok(count)
@@ -429,8 +494,8 @@ fn insert_fix(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
         }
         let id = trim(field(raw, 4, 6)).to_string();
         let kind = trim(field(raw, 212, 15)).to_string();
-        let name = format!("{} {}", trim(field(raw, 4, 7)), trim(field(raw, 141, 10)))
-            .replace(',', ";");
+        let name =
+            format!("{} {}", trim(field(raw, 4, 7)), trim(field(raw, 141, 10))).replace(',', ";");
         let lat = nav_fix_lat(trim(field(raw, 66, 13)));
         let lon = nav_fix_lon(trim(field(raw, 80, 14)));
         stmt.execute(params![id, lat, lon, kind, name])?;
@@ -479,10 +544,15 @@ fn insert_obs(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
     Ok(count)
 }
 
-fn insert_awos(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
+fn insert_awos_with_ids(
+    conn: &Connection,
+    input_dir: &Path,
+    airport_ids: &BTreeMap<String, String>,
+) -> anyhow::Result<usize> {
     let path = input_dir.join("AWOS.txt");
     let text = read_text_lossy(&path)?;
-    let mut stmt = conn.prepare("INSERT INTO awos VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?;
+    let mut stmt =
+        conn.prepare("INSERT INTO awos VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?;
     let mut ready_to_print = 0;
     let mut ident = String::new();
     let mut kind = String::new();
@@ -502,23 +572,13 @@ fn insert_awos(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
             ready_to_print += 1;
             if ready_to_print == 2 && status.to_uppercase() == "Y" {
                 stmt.execute(params![
-                    ident,
-                    kind,
-                    status,
-                    lat,
-                    lon,
-                    elevation,
-                    freq1,
-                    freq2,
-                    tel1,
-                    tel2,
-                    remark
+                    ident, kind, status, lat, lon, elevation, freq1, freq2, tel1, tel2, remark
                 ])?;
                 count += 1;
             }
             ready_to_print = 1;
             remark.clear();
-            ident = trim(field(&line, 5, 4)).to_string();
+            ident = canonicalize_airport_id(field(&line, 5, 4), airport_ids);
             kind = trim(field(&line, 9, 10)).to_string();
             status = trim(field(&line, 19, 1)).to_string();
             let lat_s = trim(field(&line, 31, 14));
@@ -541,17 +601,7 @@ fn insert_awos(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
     }
     if status.to_uppercase() == "Y" {
         stmt.execute(params![
-            ident,
-            kind,
-            status,
-            lat,
-            lon,
-            elevation,
-            freq1,
-            freq2,
-            tel1,
-            tel2,
-            remark
+            ident, kind, status, lat, lon, elevation, freq1, freq2, tel1, tel2, remark
         ])?;
         count += 1;
     }
@@ -658,11 +708,7 @@ fn handle_saa_text(state: &mut SaaParseResult, raw: &str) {
         state.enddate = text.clone();
     }
     if state.p_note {
-        if let Some(last_line) = text
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .last()
-        {
+        if let Some(last_line) = text.lines().filter(|line| !line.trim().is_empty()).last() {
             state.note = last_line.trim_start().to_string();
         }
     }
@@ -850,7 +896,9 @@ fn insert_saa(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
         .collect::<Result<Vec<_>, _>>()
         .context("failed to iterate input dir")?;
     files.sort_by_key(|entry| entry.path());
-    let mut stmt = conn.prepare("INSERT INTO saa VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)")?;
+    let mut stmt = conn.prepare(
+        "INSERT INTO saa VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+    )?;
     let mut count = 0;
     for entry in files {
         let path = entry.path();
@@ -891,7 +939,11 @@ fn insert_saa(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
     Ok(count)
 }
 
-fn insert_cifp(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
+fn insert_cifp_with_ids(
+    conn: &Connection,
+    input_dir: &Path,
+    airport_ids: &BTreeMap<String, String>,
+) -> anyhow::Result<usize> {
     let path = input_dir.join("FAACIFP18");
     let text = read_text_lossy(&path)?;
     let mut stmt = conn.prepare("INSERT INTO cifp_sid_star_app VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48)")?;
@@ -906,9 +958,7 @@ fn insert_cifp(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
         if section != "P" || !matches!(subsection, "D" | "E" | "F") {
             continue;
         }
-        // Legacy cifp.py writes the fixed-width slices directly into CSV without trimming.
-        // Keep the embedded spaces so the SQLite content matches the historical database.
-        let fields = vec![
+        let mut fields = vec![
             field(line, 0, 1),
             field(line, 1, 3),
             field(line, 4, 1),
@@ -961,6 +1011,7 @@ fn insert_cifp(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
         .into_iter()
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
+        fields[3] = canonicalize_airport_id(&fields[3], airport_ids);
         stmt.execute(rusqlite::params_from_iter(fields))?;
         count += 1;
     }
@@ -969,7 +1020,8 @@ fn insert_cifp(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
 
 fn insert_geo(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
     let path = input_dir.join("geo.csv");
-    let text = fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let text =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut stmt = conn.prepare("INSERT INTO geo VALUES (?1, ?2, ?3, ?4)")?;
     let mut count = 0;
     for line in text.lines() {
@@ -988,23 +1040,43 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
     let main_db = request.output_dir.join("main.db");
     if main_db.exists() {
-        fs::remove_file(&main_db).with_context(|| format!("failed to remove {}", main_db.display()))?;
+        fs::remove_file(&main_db)
+            .with_context(|| format!("failed to remove {}", main_db.display()))?;
     }
     let conn = Connection::open(&main_db)
         .with_context(|| format!("failed to create {}", main_db.display()))?;
     setup_schema(&conn)?;
+    let airport_ids = load_airport_id_map(&request.input_dir)?;
     let tx = conn.unchecked_transaction()?;
     let mut row_counts = BTreeMap::new();
-    row_counts.insert("airports".to_string(), insert_airports(&tx, &request.input_dir)?);
-    row_counts.insert("airportfreq".to_string(), insert_airport_freq(&tx, &request.input_dir)?);
-    row_counts.insert("airportrunways".to_string(), insert_runways(&tx, &request.input_dir)?);
+    row_counts.insert(
+        "airports".to_string(),
+        insert_airports(&tx, &request.input_dir)?,
+    );
+    row_counts.insert(
+        "airportfreq".to_string(),
+        insert_airport_freq_with_ids(&tx, &request.input_dir, &airport_ids)?,
+    );
+    row_counts.insert(
+        "airportrunways".to_string(),
+        insert_runways(&tx, &request.input_dir)?,
+    );
     row_counts.insert("nav".to_string(), insert_nav(&tx, &request.input_dir)?);
     row_counts.insert("fix".to_string(), insert_fix(&tx, &request.input_dir)?);
     row_counts.insert("obs".to_string(), insert_obs(&tx, &request.input_dir)?);
-    row_counts.insert("awos".to_string(), insert_awos(&tx, &request.input_dir)?);
+    row_counts.insert(
+        "awos".to_string(),
+        insert_awos_with_ids(&tx, &request.input_dir, &airport_ids)?,
+    );
     row_counts.insert("saa".to_string(), insert_saa(&tx, &request.input_dir)?);
-    row_counts.insert("airways".to_string(), insert_airways(&tx, &request.input_dir)?);
-    row_counts.insert("cifp_sid_star_app".to_string(), insert_cifp(&tx, &request.input_dir)?);
+    row_counts.insert(
+        "airways".to_string(),
+        insert_airways(&tx, &request.input_dir)?,
+    );
+    row_counts.insert(
+        "cifp_sid_star_app".to_string(),
+        insert_cifp_with_ids(&tx, &request.input_dir, &airport_ids)?,
+    );
     row_counts.insert("geo".to_string(), insert_geo(&tx, &request.input_dir)?);
     tx.commit()?;
 
@@ -1016,15 +1088,17 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
     .with_context(|| format!("failed to write {}", manifest_path.display()))?;
     let zip_path = request.output_dir.join("databases.zip");
     if zip_path.exists() {
-        fs::remove_file(&zip_path).with_context(|| format!("failed to remove {}", zip_path.display()))?;
+        fs::remove_file(&zip_path)
+            .with_context(|| format!("failed to remove {}", zip_path.display()))?;
     }
-    let zip_file =
-        fs::File::create(&zip_path).with_context(|| format!("failed to create {}", zip_path.display()))?;
+    let zip_file = fs::File::create(&zip_path)
+        .with_context(|| format!("failed to create {}", zip_path.display()))?;
     let mut zip = ZipWriter::new(zip_file);
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     for (name, path) in [("databases", &manifest_path), ("main.db", &main_db)] {
         zip.start_file(name, options)?;
-        let mut file = fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+        let mut file =
+            fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         zip.write_all(&bytes)?;
@@ -1037,6 +1111,241 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
         zip_path,
         row_counts,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn put_field(line: &mut [u8], start: usize, len: usize, value: &str) {
+        let end = start + len;
+        line[start..end].fill(b' ');
+        let bytes = value.as_bytes();
+        let copy_len = bytes.len().min(len);
+        line[start..start + copy_len].copy_from_slice(&bytes[..copy_len]);
+    }
+
+    fn build_apt_airport(faa: &str, icao: &str, dlid: &str) -> String {
+        let mut line = vec![b' '; 1220];
+        put_field(&mut line, 0, 3, "APT");
+        put_field(&mut line, 3, 11, dlid);
+        put_field(&mut line, 14, 12, "AIRPORT");
+        put_field(&mut line, 27, 4, faa);
+        put_field(&mut line, 91, 2, "WA");
+        put_field(&mut line, 93, 40, "TEST CITY");
+        put_field(&mut line, 133, 50, "TEST AIRPORT");
+        put_field(&mut line, 185, 2, "PU");
+        put_field(&mut line, 523, 14, "47 29 51.00N");
+        put_field(&mut line, 550, 15, "122 12 34.00W");
+        put_field(&mut line, 578, 7, "0032");
+        put_field(&mut line, 586, 3, "015");
+        put_field(&mut line, 593, 4, "1000");
+        put_field(&mut line, 762, 16, "2065550000");
+        put_field(&mut line, 877, 1, "N");
+        put_field(&mut line, 878, 1, "N");
+        put_field(&mut line, 900, 40, "100LL");
+        put_field(&mut line, 966, 7, "SS-SR");
+        put_field(&mut line, 980, 1, "Y");
+        put_field(&mut line, 981, 7, "122.95");
+        put_field(&mut line, 988, 7, "123.00");
+        put_field(&mut line, 995, 4, "LEFT");
+        put_field(&mut line, 999, 3, "BCN");
+        put_field(&mut line, 1002, 1, "N");
+        put_field(&mut line, 1210, 7, icao);
+        String::from_utf8(line).unwrap()
+    }
+
+    fn build_rwy_line() -> String {
+        let mut line = vec![b' '; 500];
+        put_field(&mut line, 0, 3, "RWY");
+        put_field(&mut line, 23, 5, "5000");
+        put_field(&mut line, 28, 4, "100");
+        put_field(&mut line, 32, 12, "ASPH");
+        put_field(&mut line, 65, 3, "16L");
+        put_field(&mut line, 68, 3, "160");
+        put_field(&mut line, 71, 10, "ILS");
+        put_field(&mut line, 81, 1, "L");
+        put_field(&mut line, 88, 14, "47 29 51.00N");
+        put_field(&mut line, 115, 15, "122 12 34.00W");
+        put_field(&mut line, 142, 7, "0032");
+        put_field(&mut line, 217, 4, "1000");
+        put_field(&mut line, 228, 5, "PAPI");
+        put_field(&mut line, 237, 8, "MIRL");
+        put_field(&mut line, 287, 3, "34R");
+        put_field(&mut line, 290, 3, "340");
+        put_field(&mut line, 293, 10, "ILS");
+        put_field(&mut line, 303, 1, "R");
+        put_field(&mut line, 310, 14, "47 30 01.00N");
+        put_field(&mut line, 337, 15, "122 12 44.00W");
+        put_field(&mut line, 364, 7, "0032");
+        put_field(&mut line, 439, 4, "1000");
+        put_field(&mut line, 450, 5, "PAPI");
+        put_field(&mut line, 459, 8, "MIRL");
+        String::from_utf8(line).unwrap()
+    }
+
+    fn build_twr1_line(faa: &str, dlid: &str) -> String {
+        let mut line = vec![b' '; 40];
+        put_field(&mut line, 0, 4, "TWR1");
+        put_field(&mut line, 4, 4, faa);
+        put_field(&mut line, 18, 11, dlid);
+        String::from_utf8(line).unwrap()
+    }
+
+    fn build_twr3_line(freq: &str, kind: &str) -> String {
+        let mut line = vec![b' '; 120];
+        put_field(&mut line, 0, 4, "TWR3");
+        put_field(&mut line, 8, 44, freq);
+        put_field(&mut line, 52, 50, kind);
+        String::from_utf8(line).unwrap()
+    }
+
+    fn build_twr6_line(remark: &str) -> String {
+        let mut line = vec![b' '; 64];
+        put_field(&mut line, 0, 4, "TWR6");
+        put_field(&mut line, 13, remark.len(), remark);
+        String::from_utf8(line).unwrap()
+    }
+
+    fn build_awos1_line(faa: &str) -> String {
+        let mut line = vec![b' '; 120];
+        put_field(&mut line, 0, 5, "AWOS1");
+        put_field(&mut line, 5, 4, faa);
+        put_field(&mut line, 9, 10, "AWOS-3");
+        put_field(&mut line, 19, 1, "Y");
+        put_field(&mut line, 31, 14, "047 29 51.00N");
+        put_field(&mut line, 45, 14, "122 12 34.00W");
+        put_field(&mut line, 60, 7, "0032");
+        put_field(&mut line, 68, 7, "118.00");
+        put_field(&mut line, 75, 7, "121.50");
+        put_field(&mut line, 82, 14, "2065551111");
+        put_field(&mut line, 96, 14, "2065552222");
+        String::from_utf8(line).unwrap()
+    }
+
+    fn build_awos2_line(remark: &str) -> String {
+        let mut line = vec![b' '; 260];
+        put_field(&mut line, 0, 5, "AWOS2");
+        put_field(&mut line, 19, remark.len(), remark);
+        String::from_utf8(line).unwrap()
+    }
+
+    fn build_cifp_line(faa: &str) -> String {
+        let mut line = vec![b' '; 132];
+        put_field(&mut line, 0, 1, "S");
+        put_field(&mut line, 1, 3, "USA");
+        put_field(&mut line, 4, 1, "P");
+        put_field(&mut line, 6, 4, faa);
+        put_field(&mut line, 10, 2, "US");
+        put_field(&mut line, 12, 1, "D");
+        put_field(&mut line, 13, 6, "TESTID");
+        put_field(&mut line, 19, 1, "1");
+        put_field(&mut line, 20, 5, "TRANS");
+        put_field(&mut line, 26, 3, "001");
+        put_field(&mut line, 29, 5, "FIX01");
+        put_field(&mut line, 128, 4, "2604");
+        String::from_utf8(line).unwrap()
+    }
+
+    fn write_empty(path: &Path) {
+        fs::write(path, "").unwrap();
+    }
+
+    #[test]
+    fn canonical_airport_id_prefers_icao_and_falls_back_to_faa() {
+        let apt_with_icao = build_apt_airport("SEA", "KSEA", "26395.*A");
+        let apt_without_icao = build_apt_airport("0S9", "", "12345.*A");
+        assert_eq!(canonical_airport_id_from_apt_line(&apt_with_icao), "KSEA");
+        assert_eq!(canonical_airport_id_from_apt_line(&apt_without_icao), "0S9");
+    }
+
+    #[test]
+    fn build_data_package_canonicalizes_airport_linked_tables() {
+        let dir = tempdir().unwrap();
+        let input_dir = dir.path().join("input");
+        let output_dir = dir.path().join("output");
+        fs::create_dir_all(&input_dir).unwrap();
+
+        fs::write(
+            input_dir.join("APT.txt"),
+            format!(
+                "{}\n{}\n",
+                build_apt_airport("SEA", "KSEA", "26395.*A"),
+                build_rwy_line()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            input_dir.join("TWR.txt"),
+            format!(
+                "{}\n{}\n{}\n",
+                build_twr1_line("SEA", "26395.*A"),
+                build_twr3_line("118.00", "LCL/P"),
+                build_twr6_line("tower remark")
+            ),
+        )
+        .unwrap();
+        fs::write(
+            input_dir.join("AWOS.txt"),
+            format!(
+                "{}\n{}\n",
+                build_awos1_line("SEA"),
+                build_awos2_line("awos remark")
+            ),
+        )
+        .unwrap();
+        fs::write(
+            input_dir.join("FAACIFP18"),
+            format!("{}\n", build_cifp_line("SEA")),
+        )
+        .unwrap();
+        for name in ["NAV.txt", "FIX.txt", "DOF.DAT", "AWY.txt", "geo.csv"] {
+            write_empty(&input_dir.join(name));
+        }
+        let request = DataBuildRequest {
+            input_dir: input_dir.clone(),
+            output_dir,
+            manifest_version: "2604".to_string(),
+        };
+        let result = build_data_package(&request).unwrap();
+        let conn = Connection::open(result.main_db).unwrap();
+
+        let airport_id: String = conn
+            .query_row("SELECT LocationID FROM airports", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(airport_id, "KSEA");
+
+        let freq_id: String = conn
+            .query_row(
+                "SELECT LocationID FROM airportfreq WHERE Type != 'Remark' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(freq_id, "KSEA");
+
+        let runway_id: String = conn
+            .query_row("SELECT LocationID FROM airportrunways LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(runway_id, "KSEA");
+
+        let awos_id: String = conn
+            .query_row("SELECT LocationID FROM awos LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(awos_id, "KSEA");
+
+        let cifp_id: String = conn
+            .query_row(
+                "SELECT airport_identifier FROM cifp_sid_star_app LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cifp_id, "KSEA");
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1131,8 +1440,8 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 pub fn normalized_database_dump(path: &Path) -> anyhow::Result<String> {
-    let conn =
-        Connection::open(path).with_context(|| format!("failed to open database {}", path.display()))?;
+    let conn = Connection::open(path)
+        .with_context(|| format!("failed to open database {}", path.display()))?;
     let mut lines = Vec::new();
     for table in TABLES {
         let columns = column_specs(&conn, table)?;
@@ -1165,7 +1474,10 @@ pub fn compare_databases(left: &Path, right: &Path) -> anyhow::Result<()> {
         for table in TABLES {
             let left_count = table_count(left, table)?;
             let right_count = table_count(right, table)?;
-            println!("table {} left={} right={} status=match", table, left_count, right_count);
+            println!(
+                "table {} left={} right={} status=match",
+                table, left_count, right_count
+            );
         }
         return Ok(());
     }
@@ -1173,19 +1485,23 @@ pub fn compare_databases(left: &Path, right: &Path) -> anyhow::Result<()> {
     for table in TABLES {
         let left_count = table_count(left, table)?;
         let right_count = table_count(right, table)?;
-        let status = if normalized_table_dump(left, table)? == normalized_table_dump(right, table)? {
+        let status = if normalized_table_dump(left, table)? == normalized_table_dump(right, table)?
+        {
             "match"
         } else {
             "mismatch"
         };
-        println!("table {} left={} right={} status={}", table, left_count, right_count, status);
+        println!(
+            "table {} left={} right={} status={}",
+            table, left_count, right_count, status
+        );
     }
     bail!("database dumps differ");
 }
 
 fn normalized_table_dump(path: &Path, table: &str) -> anyhow::Result<String> {
-    let conn =
-        Connection::open(path).with_context(|| format!("failed to open database {}", path.display()))?;
+    let conn = Connection::open(path)
+        .with_context(|| format!("failed to open database {}", path.display()))?;
     let columns = column_specs(&conn, table)?;
     let query = format!("SELECT * FROM {table}");
     let mut stmt = conn.prepare(&query)?;
@@ -1205,8 +1521,8 @@ fn normalized_table_dump(path: &Path, table: &str) -> anyhow::Result<String> {
 }
 
 fn table_count(path: &Path, table: &str) -> anyhow::Result<i64> {
-    let conn =
-        Connection::open(path).with_context(|| format!("failed to open database {}", path.display()))?;
+    let conn = Connection::open(path)
+        .with_context(|| format!("failed to open database {}", path.display()))?;
     let query = format!("SELECT COUNT(*) FROM {table}");
     let count = conn.query_row(&query, [], |row| row.get(0))?;
     Ok(count)

@@ -2,6 +2,49 @@
 
 ## Session Notes
 
+- 2026-04-07 07:05:00Z:
+  - Replaced the old Bash full-validation harness logic with a Rust subprocess orchestrator under:
+    - [`baseline/avare_equivalent/preprocessor-cli/src/full_validation.rs`](/root/aerobag/baseline/avare_equivalent/preprocessor-cli/src/full_validation.rs)
+  - New CLI entrypoint:
+    - `cd /root/aerobag/baseline/avare_equivalent && cargo run -q -p preprocessor-cli -- run-full-validation`
+  - The old launcher:
+    - [`legacy-capture/run_preprocessor_validation.sh`](/root/aerobag/legacy-capture/run_preprocessor_validation.sh)
+    - is now just a compatibility shim that executes the Rust entrypoint in `baseline/avare_equivalent`
+  - The Rust entrypoint now re-execs itself under a transient systemd cgroup unless already inside one:
+    - default memory cap: `35G`
+    - swap cap: `0`
+    - env override:
+      - `FULL_VALIDATION_MEMORY_MAX=<value>`
+    - guard env used internally:
+      - `FULL_VALIDATION_CGROUP_ACTIVE=1`
+  - Practical effect:
+    - if Banana runs away, it should die with a memory-related failure inside its own cgroup instead of pushing the whole VM into swap death
+  - The Rust orchestrator still shells out to the legacy helpers and native CLI subcommands, but the orchestration/reporting logic is now in Rust.
+  - It currently covers:
+    - legacy capture
+    - native `sec`, `tac`, `enr-l`, `enr-h`
+    - native `csup`
+    - native `tpp-ne`
+    - native database rebuild from legacy extracted FAA inputs
+  - Compare phase now includes:
+    - chart tile-path/package/provenance/full-image parity
+    - `csup` package/provenance/full-image parity
+    - `tpp-ne` package/provenance/full-image parity
+    - database parity via:
+      - [`compare-data-db`](/root/aerobag/baseline/avare_equivalent/preprocessor-cli/src/main.rs)
+  - Important correction:
+    - the old Bash harness had gone stale after the source-tree refactor because it still targeted `rust-preprocessor/`
+    - the new shim routes to `baseline/avare_equivalent/`, which is now the right baseline-equivalence workspace
+  - Verification completed:
+    - `cargo check -p preprocessor-cli --manifest-path /root/aerobag/baseline/avare_equivalent/Cargo.toml`
+    - parser smoke test:
+      - `cargo run -q -p preprocessor-cli --manifest-path /root/aerobag/baseline/avare_equivalent/Cargo.toml -- run-full-validation --bogus`
+      - expected failure confirms the new Rust entrypoint is wired
+    - cgroup tooling availability on host:
+      - `systemd-run` present
+      - cgroup v2 memory controller present in `/sys/fs/cgroup/cgroup.controllers`
+  - Full end-to-end Banana rerun with the Rust orchestrator has not been launched yet in this session.
+
 - 2026-04-07 06:40:00Z:
   - Added a new Rust crate for the legacy aviation database pipeline:
     - [`rust-preprocessor/preprocessor-data`](/root/aerobag/rust-preprocessor/preprocessor-data)

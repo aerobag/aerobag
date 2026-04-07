@@ -9,3 +9,6 @@ anyhow.workspace = true
 quick-xml.workspace = true
 rusqlite.workspace = true
 zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

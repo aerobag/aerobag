@@ -56,7 +56,7 @@ fn build_records() -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>
     )?;
     let current_compact = current_start.replace('-', "");
 
-    Ok(vec![
+    let mut records = vec![
         (
             "charts-sec".to_string(),
             vec![
@@ -171,34 +171,6 @@ fn build_records() -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>
             )?],
         ),
         (
-            "tpp-ne".to_string(),
-            vec![list_crawl_record(
-                "tpp-ne",
-                DTPP_URL,
-                format!("^http.*DDTPP[A-E]+_{}.zip$", &current_compact[2..]),
-                &|href| {
-                    href.starts_with("http")
-                        && href.ends_with(".zip")
-                        && href.contains("DDTPP")
-                        && href.contains(&format!("_{}", &current_compact[2..]))
-                },
-            )?],
-        ),
-        (
-            "tpp-nw".to_string(),
-            vec![list_crawl_record(
-                "tpp-nw",
-                DTPP_URL,
-                format!("^http.*DDTPP[A-E]+_{}.zip$", &current_compact[2..]),
-                &|href| {
-                    href.starts_with("http")
-                        && href.ends_with(".zip")
-                        && href.contains("DDTPP")
-                        && href.contains(&format!("_{}", &current_compact[2..]))
-                },
-            )?],
-        ),
-        (
             "data".to_string(),
             vec![
                 source_url_record(
@@ -218,7 +190,29 @@ fn build_records() -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>
                 ),
             ],
         ),
-    ])
+    ];
+
+    for label in [
+        "tpp-ak", "tpp-pac", "tpp-nw", "tpp-sw", "tpp-nc", "tpp-ec", "tpp-sc", "tpp-ne",
+        "tpp-se",
+    ] {
+        records.push((
+            label.to_string(),
+            vec![list_crawl_record(
+                label,
+                DTPP_URL,
+                format!("^http.*DDTPP[A-E]+_{}.zip$", &current_compact[2..]),
+                &|href| {
+                    href.starts_with("http")
+                        && href.ends_with(".zip")
+                        && href.contains("DDTPP")
+                        && href.contains(&format!("_{}", &current_compact[2..]))
+                },
+            )?],
+        ));
+    }
+
+    Ok(records)
 }
 
 fn list_crawl_record(

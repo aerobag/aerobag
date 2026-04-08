@@ -12,16 +12,17 @@ use std::{
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
-use preprocessor_charts::{run_native_family, NativeChartRunRequest};
+use preprocessor_charts::{
+    build_family_tiles, build_family_vrts, package_family_region, stage_work_dir,
+};
 use preprocessor_core::{ChartFamily, Region};
-use preprocessor_csup::{run_native_csup, NativeCsupRunRequest};
+use preprocessor_csup::{package_csup_region, render_csup_pages, stage_work_dir_for_product};
 use preprocessor_data::{build_data_package, DataBuildRequest};
 use preprocessor_fetch::{
-    copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance, read_source_urls_jsonl,
+    copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
+    read_source_urls_jsonl, write_package_outputs_jsonl, PackageOutputRecord,
 };
-use preprocessor_resource_index::{
-    write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource,
-};
+use preprocessor_resource_index::{write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource};
 use preprocessor_tpp::{run_native_tpp, NativeTppRunRequest};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -103,7 +104,7 @@ struct PreparedNode {
 
 #[derive(Debug, Clone)]
 enum HeavyJobSpec {
-    Chart {
+    ChartRender {
         family: ChartFamily,
         source_repo: PathBuf,
         run_root: PathBuf,
@@ -111,7 +112,7 @@ enum HeavyJobSpec {
         fetch_jobs: usize,
         cpu_jobs: usize,
     },
-    Csup {
+    CsupRender {
         source_repo: PathBuf,
         run_root: PathBuf,
         prefetch_source_urls: PathBuf,
@@ -134,8 +135,8 @@ enum HeavyJobSpec {
 impl HeavyJobSpec {
     fn name(&self) -> String {
         match self {
-            Self::Chart { family, .. } => format!("charts-{}", family_slug(*family)),
-            Self::Csup { .. } => "csup".to_string(),
+            Self::ChartRender { family, .. } => format!("charts-{}-render", family_slug(*family)),
+            Self::CsupRender { .. } => "csup-render".to_string(),
             Self::Tpp { region, .. } => format!("tpp-{}", region.code().to_ascii_lowercase()),
             Self::Data { .. } => "data".to_string(),
         }
@@ -143,40 +144,36 @@ impl HeavyJobSpec {
 
     fn run(self, config: &ProductBuildConfig) -> anyhow::Result<Vec<NodeRecord>> {
         match self {
-            Self::Chart {
+            Self::ChartRender {
                 family,
                 source_repo,
                 run_root,
                 prefetch_source_urls,
                 fetch_jobs,
                 cpu_jobs,
-            } => {
-                let request = NativeChartRunRequest {
-                    family,
-                    source_repo,
-                    run_root,
-                    cpu_jobs,
-                    prefetch_source_urls: Some(prefetch_source_urls),
-                    fetch_jobs,
-                };
-                Ok(vec![build_chart_node(config, &request)?])
-            }
-            Self::Csup {
+            } => Ok(vec![build_chart_render_node(
+                config,
+                family,
+                &source_repo,
+                &run_root,
+                &prefetch_source_urls,
+                fetch_jobs,
+                cpu_jobs,
+            )?]),
+            Self::CsupRender {
                 source_repo,
                 run_root,
                 prefetch_source_urls,
                 fetch_jobs,
                 render_jobs,
-            } => {
-                let request = NativeCsupRunRequest {
-                    source_repo,
-                    run_root,
-                    prefetch_source_urls: Some(prefetch_source_urls),
-                    fetch_jobs,
-                    render_jobs,
-                };
-                Ok(vec![build_csup_node(config, &request)?])
-            }
+            } => Ok(vec![build_csup_render_node(
+                config,
+                &source_repo,
+                &run_root,
+                &prefetch_source_urls,
+                fetch_jobs,
+                render_jobs,
+            )?]),
             Self::Tpp {
                 region,
                 source_repo,
@@ -253,7 +250,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         node_records.push(source_urls_record);
 
         let mut pending_jobs = VecDeque::new();
-        let mut chart_sources = Vec::new();
         for family in [
             ChartFamily::Sec,
             ChartFamily::Tac,
@@ -261,8 +257,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             ChartFamily::EnrH,
         ] {
             let family_id = family_slug(family).to_string();
-            let run_root = build_node_root(config, &format!("charts-{family_id}"))?;
-            pending_jobs.push_back(HeavyJobSpec::Chart {
+            let run_root = build_shared_work_root(config, &format!("charts-{family_id}"))?;
+            pending_jobs.push_back(HeavyJobSpec::ChartRender {
                 family,
                 source_repo: config.source_root.join("charts"),
                 run_root: run_root.clone(),
@@ -270,42 +266,21 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 fetch_jobs: config.fetch_jobs,
                 cpu_jobs: config.cpu_jobs.min(8).max(1),
             });
-            chart_sources.push(ChartSource {
-                family_id,
-                package_outputs_path: run_root
-                    .join("meta")
-                    .join("provenance")
-                    .join(format!("charts-{}", family_slug(family)))
-                    .join("package_outputs.jsonl"),
-                package_root: run_root.join("work").join(format!("charts-{}", family_slug(family))),
-                source_urls_path: Some(
-                    run_root
-                        .join("meta")
-                        .join("provenance")
-                        .join(format!("charts-{}", family_slug(family)))
-                        .join("source_urls.jsonl"),
-                ),
-            });
         }
 
-        let csup_run_root = build_node_root(config, "csup")?;
-        pending_jobs.push_back(HeavyJobSpec::Csup {
+        let csup_run_root = build_shared_work_root(config, "csup")?;
+        pending_jobs.push_back(HeavyJobSpec::CsupRender {
             source_repo: config.source_root.join("csup"),
             run_root: csup_run_root.clone(),
             prefetch_source_urls: source_urls_dir.join("csup/source_urls.jsonl"),
             fetch_jobs: config.fetch_jobs,
             render_jobs: config.cpu_jobs.max(1),
         });
-        let csup_sources = vec![AssetSource {
-            package_outputs_path: csup_run_root.join("meta/provenance/csup/package_outputs.jsonl"),
-            asset_root: csup_run_root.join("work/csup"),
-            source_urls_path: Some(csup_run_root.join("meta/provenance/csup/source_urls.jsonl")),
-        }];
 
         let mut tpp_sources = Vec::new();
         for region in config.profile.tpp_regions() {
             let region_id = region.code().to_ascii_lowercase();
-            let run_root = build_node_root(config, &format!("tpp-{region_id}"))?;
+            let run_root = build_shared_work_root(config, &format!("tpp-{region_id}"))?;
             pending_jobs.push_back(HeavyJobSpec::Tpp {
                 region: *region,
                 source_repo: config.source_root.join("tpp"),
@@ -385,6 +360,36 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         if let Some(err) = first_error {
             return Err(err);
         }
+
+        let mut chart_sources = Vec::new();
+        for family in [
+            ChartFamily::Sec,
+            ChartFamily::Tac,
+            ChartFamily::EnrL,
+            ChartFamily::EnrH,
+        ] {
+            master_log.log(format!(
+                "launch charts-{}-package",
+                family_slug(family)
+            ))?;
+            let (records, source) = build_chart_package_nodes(config, family, &source_urls_dir)?;
+            for record in records {
+                node_records.push(record);
+            }
+            master_log.log(format!(
+                "complete charts-{}-package",
+                family_slug(family)
+            ))?;
+            chart_sources.push(source);
+        }
+
+        master_log.log("launch csup-package")?;
+        let (csup_records, csup_source) = build_csup_package_nodes(config, &source_urls_dir)?;
+        for record in csup_records {
+            node_records.push(record);
+        }
+        master_log.log("complete csup-package")?;
+        let csup_sources = vec![csup_source];
 
         let data_zip = node_records
             .iter()
@@ -527,7 +532,8 @@ fn build_source_urls_node(
         ("tpp_cycle".to_string(), hash_file(&config.source_root.join("tpp/cycle.py"))?),
         ("data_cycle".to_string(), hash_file(&config.source_root.join("data/cycle.py"))?),
     ]);
-    let prepared = prepare_node(config, "source-urls", &inputs)?;
+    let shared_root = build_shared_node_dir(config, "source-urls")?;
+    let prepared = prepare_node_at(&shared_root, "source-urls", &inputs)?;
     let output_dir = prepared.dir.join("out");
     let expected = vec![
         output_dir.join("charts-sec/source_urls.jsonl"),
@@ -535,8 +541,15 @@ fn build_source_urls_node(
         output_dir.join("charts-enr-l/source_urls.jsonl"),
         output_dir.join("charts-enr-h/source_urls.jsonl"),
         output_dir.join("csup/source_urls.jsonl"),
+        output_dir.join("tpp-ak/source_urls.jsonl"),
+        output_dir.join("tpp-pac/source_urls.jsonl"),
+        output_dir.join("tpp-sw/source_urls.jsonl"),
+        output_dir.join("tpp-nc/source_urls.jsonl"),
+        output_dir.join("tpp-ec/source_urls.jsonl"),
+        output_dir.join("tpp-sc/source_urls.jsonl"),
         output_dir.join("tpp-ne/source_urls.jsonl"),
         output_dir.join("tpp-nw/source_urls.jsonl"),
+        output_dir.join("tpp-se/source_urls.jsonl"),
         output_dir.join("data/source_urls.jsonl"),
     ];
     if let Some(record) = try_load_node_record(&prepared, &expected)? {
@@ -561,42 +574,44 @@ fn build_source_urls_node(
     Ok((output_dir, record))
 }
 
-fn build_chart_node(
+fn build_chart_render_node(
     _config: &ProductBuildConfig,
-    request: &NativeChartRunRequest,
+    family: ChartFamily,
+    source_repo: &Path,
+    run_root: &Path,
+    source_urls: &Path,
+    fetch_jobs: usize,
+    cpu_jobs: usize,
 ) -> anyhow::Result<NodeRecord> {
-    let family_id = family_slug(request.family).to_string();
-    let source_urls = request
-        .prefetch_source_urls
-        .as_ref()
-        .context("chart build requires source urls")?;
+    let family_id = family_slug(family).to_string();
     let inputs = BTreeMap::from([
         ("family".to_string(), family_id.clone()),
-        ("source_repo".to_string(), hash_tree(&request.source_repo)?),
+        ("source_repo".to_string(), hash_tree(source_repo)?),
         ("source_urls".to_string(), hash_file(source_urls)?),
-        ("cpu_jobs".to_string(), request.cpu_jobs.to_string()),
-        ("fetch_jobs".to_string(), request.fetch_jobs.to_string()),
+        ("cpu_jobs".to_string(), cpu_jobs.to_string()),
+        ("fetch_jobs".to_string(), fetch_jobs.to_string()),
     ]);
-    let prepared = prepare_existing_node_root(
-        &format!("charts-{family_id}"),
-        &request.run_root,
-        &inputs,
-    )?;
-    let package_outputs = request
-        .run_root
-        .join("meta")
-        .join("provenance")
+    let prepared = prepare_existing_node_root(&format!("charts-{family_id}-render"), run_root, &inputs)?;
+    let tiles_root = run_root
+        .join("work")
         .join(format!("charts-{family_id}"))
-        .join("package_outputs.jsonl");
-    if let Some(record) = try_load_node_record(&prepared, &[package_outputs.clone()])? {
+        .join("tiles");
+    if let Some(record) = try_load_node_record(&prepared, &[tiles_root.clone()])? {
         return Ok(record);
     }
     let started_at_utc = utc_now_string();
     let started = Instant::now();
-    let result = run_native_family(request)?;
+    let work_dir = stage_work_dir(family, source_repo, run_root)?;
+    let provenance_dir = run_root.join("meta").join("provenance").join(format!("charts-{family_id}"));
+    fs::create_dir_all(&provenance_dir)?;
+    copy_source_urls_provenance(source_urls, &provenance_dir)?;
+    let urls = read_source_urls_jsonl(source_urls)?;
+    prefetch_archives_with_provenance(&urls, &work_dir, fetch_jobs, &provenance_dir, family.capture_label())?;
+    build_family_vrts(family, &work_dir, cpu_jobs)?;
+    build_family_tiles(family, &work_dir, cpu_jobs)?;
     let outputs = BTreeMap::from([
-        ("work_dir".to_string(), result.work_dir.display().to_string()),
-        ("package_outputs".to_string(), package_outputs.display().to_string()),
+        ("work_dir".to_string(), work_dir.display().to_string()),
+        ("tiles_root".to_string(), tiles_root.display().to_string()),
     ]);
     write_node_record(
         prepared,
@@ -609,32 +624,124 @@ fn build_chart_node(
     )
 }
 
-fn build_csup_node(
+fn build_chart_package_nodes(
+    config: &ProductBuildConfig,
+    family: ChartFamily,
+    _source_urls_dir: &Path,
+) -> anyhow::Result<(Vec<NodeRecord>, ChartSource)> {
+    let family_id = family_slug(family).to_string();
+    let run_root = build_shared_work_root(config, &format!("charts-{family_id}"))?;
+    let work_dir = run_root.join("work").join(format!("charts-{family_id}"));
+    let aggregate_path = run_root
+        .join("meta")
+        .join("provenance")
+        .join(format!("charts-{family_id}"))
+        .join("package_outputs.jsonl");
+    let source_urls_path = run_root
+        .join("meta")
+        .join("provenance")
+        .join(format!("charts-{family_id}"))
+        .join("source_urls.jsonl");
+    let render_record = load_existing_node_record(
+        &run_root.join("build-record.json"),
+        &format!("charts-{family_id}-render"),
+    )?;
+    let mut node_records = Vec::new();
+    let mut package_records = Vec::new();
+    for region in Region::ALL {
+        let node_name = format!("charts-{family_id}-package-{}", region.code().to_ascii_lowercase());
+        let package_root = build_shared_work_root(config, &node_name)?;
+        let inputs = BTreeMap::from([
+            ("render_fingerprint".to_string(), render_record.fingerprint.clone()),
+            ("region".to_string(), region.code().to_string()),
+        ]);
+        let prepared = prepare_existing_node_root(&node_name, &package_root, &inputs)?;
+        let zip_path = work_dir.join(format!("{}_{}.zip", region.code(), manifest_chart_name(family)));
+        let manifest_path = work_dir.join(format!("{}_{}", region.code(), manifest_chart_name(family)));
+        if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
+            node_records.push(record);
+        } else {
+            let started_at_utc = utc_now_string();
+            let started = Instant::now();
+            let package_record = package_family_region(family, &work_dir, region)?;
+            let outputs = BTreeMap::from([
+                ("zip".to_string(), zip_path.display().to_string()),
+                ("manifest".to_string(), manifest_path.display().to_string()),
+            ]);
+            let record = write_node_record(
+                prepared,
+                inputs,
+                outputs,
+                false,
+                started_at_utc,
+                utc_now_string(),
+                started.elapsed().as_millis() as u64,
+            )?;
+            node_records.push(record);
+            package_records.push(package_record);
+            continue;
+        }
+        package_records.push(PackageOutputRecord {
+            label: family.capture_label().to_string(),
+            chart: Some(manifest_chart_name(family).to_string()),
+            region: region.code().to_string(),
+            manifest: format!("{}_{}", region.code(), manifest_chart_name(family)),
+            manifest_sha256: hash_file(&manifest_path)?,
+            zip: format!("{}_{}.zip", region.code(), manifest_chart_name(family)),
+            zip_sha256: hash_file(&zip_path)?,
+        });
+    }
+    if let Some(parent) = aggregate_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    write_package_outputs_jsonl(
+        aggregate_path
+            .parent()
+            .context("chart aggregate path missing parent")?,
+        &package_records,
+    )?;
+    Ok((
+        node_records,
+        ChartSource {
+            family_id,
+            package_outputs_path: aggregate_path,
+            package_root: work_dir,
+            source_urls_path: Some(source_urls_path),
+        },
+    ))
+}
+
+fn build_csup_render_node(
     _config: &ProductBuildConfig,
-    request: &NativeCsupRunRequest,
+    source_repo: &Path,
+    run_root: &Path,
+    source_urls: &Path,
+    fetch_jobs: usize,
+    render_jobs: usize,
 ) -> anyhow::Result<NodeRecord> {
-    let source_urls = request
-        .prefetch_source_urls
-        .as_ref()
-        .context("csup build requires source urls")?;
     let inputs = BTreeMap::from([
-        ("source_repo".to_string(), hash_tree(&request.source_repo)?),
+        ("source_repo".to_string(), hash_tree(source_repo)?),
         ("source_urls".to_string(), hash_file(source_urls)?),
-        ("fetch_jobs".to_string(), request.fetch_jobs.to_string()),
+        ("fetch_jobs".to_string(), fetch_jobs.to_string()),
+        ("render_jobs".to_string(), render_jobs.to_string()),
     ]);
-    let prepared = prepare_existing_node_root("csup", &request.run_root, &inputs)?;
-    let package_outputs = request
-        .run_root
-        .join("meta/provenance/csup/package_outputs.jsonl");
-    if let Some(record) = try_load_node_record(&prepared, &[package_outputs.clone()])? {
+    let prepared = prepare_existing_node_root("csup-render", run_root, &inputs)?;
+    let afd_root = run_root.join("work").join("csup").join("afd");
+    if let Some(record) = try_load_node_record(&prepared, &[afd_root.clone()])? {
         return Ok(record);
     }
     let started_at_utc = utc_now_string();
     let started = Instant::now();
-    let result = run_native_csup(request)?;
+    let work_dir = stage_work_dir_for_product(source_repo, run_root)?;
+    let provenance_dir = run_root.join("meta").join("provenance").join("csup");
+    fs::create_dir_all(&provenance_dir)?;
+    copy_source_urls_provenance(source_urls, &provenance_dir)?;
+    let urls = read_source_urls_jsonl(source_urls)?;
+    prefetch_archives_with_provenance(&urls, &work_dir, fetch_jobs, &provenance_dir, "csup")?;
+    render_csup_pages(&work_dir, render_jobs)?;
     let outputs = BTreeMap::from([
-        ("work_dir".to_string(), result.work_dir.display().to_string()),
-        ("package_outputs".to_string(), package_outputs.display().to_string()),
+        ("work_dir".to_string(), work_dir.display().to_string()),
+        ("afd_root".to_string(), afd_root.display().to_string()),
     ]);
     write_node_record(
         prepared,
@@ -645,6 +752,79 @@ fn build_csup_node(
         utc_now_string(),
         started.elapsed().as_millis() as u64,
     )
+}
+
+fn build_csup_package_nodes(
+    config: &ProductBuildConfig,
+    _source_urls_dir: &Path,
+) -> anyhow::Result<(Vec<NodeRecord>, AssetSource)> {
+    let run_root = build_shared_work_root(config, "csup")?;
+    let work_dir = run_root.join("work").join("csup");
+    let aggregate_path = run_root.join("meta/provenance/csup/package_outputs.jsonl");
+    let source_urls_path = run_root.join("meta/provenance/csup/source_urls.jsonl");
+    let render_record = load_existing_node_record(&run_root.join("build-record.json"), "csup-render")?;
+    let mut node_records = Vec::new();
+    let mut package_records = Vec::new();
+    for region in Region::ALL {
+        let node_name = format!("csup-package-{}", region.code().to_ascii_lowercase());
+        let package_root = build_shared_work_root(config, &node_name)?;
+        let inputs = BTreeMap::from([
+            ("render_fingerprint".to_string(), render_record.fingerprint.clone()),
+            ("region".to_string(), region.code().to_string()),
+        ]);
+        let prepared = prepare_existing_node_root(&node_name, &package_root, &inputs)?;
+        let zip_path = work_dir.join(format!("{}_CSUP.zip", region.code()));
+        let manifest_path = work_dir.join(format!("{}_CSUP", region.code()));
+        if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
+            node_records.push(record);
+        } else {
+            let started_at_utc = utc_now_string();
+            let started = Instant::now();
+            let package_record = package_csup_region(&work_dir, region)?;
+            let outputs = BTreeMap::from([
+                ("zip".to_string(), zip_path.display().to_string()),
+                ("manifest".to_string(), manifest_path.display().to_string()),
+            ]);
+            let record = write_node_record(
+                prepared,
+                inputs,
+                outputs,
+                false,
+                started_at_utc,
+                utc_now_string(),
+                started.elapsed().as_millis() as u64,
+            )?;
+            node_records.push(record);
+            package_records.push(package_record);
+            continue;
+        }
+        package_records.push(PackageOutputRecord {
+            label: "csup".to_string(),
+            chart: None,
+            region: region.code().to_string(),
+            manifest: format!("{}_CSUP", region.code()),
+            manifest_sha256: hash_file(&manifest_path)?,
+            zip: format!("{}_CSUP.zip", region.code()),
+            zip_sha256: hash_file(&zip_path)?,
+        });
+    }
+    if let Some(parent) = aggregate_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    write_package_outputs_jsonl(
+        aggregate_path
+            .parent()
+            .context("csup aggregate path missing parent")?,
+        &package_records,
+    )?;
+    Ok((
+        node_records,
+        AssetSource {
+            package_outputs_path: aggregate_path,
+            asset_root: work_dir,
+            source_urls_path: Some(source_urls_path),
+        },
+    ))
 }
 
 fn build_tpp_node(
@@ -694,7 +874,7 @@ fn build_data_nodes(
     let source_urls = source_urls_dir.join("data/source_urls.jsonl");
     let (staged_input_dir, staging_record) = build_data_input_node(config, &source_urls)?;
 
-    let node_root = build_node_root(config, "data")?;
+    let node_root = build_shared_work_root(config, "data")?;
     let provenance_dir = node_root.join("meta/provenance/data");
     fs::create_dir_all(&provenance_dir)?;
     copy_source_urls_provenance(&source_urls, &provenance_dir)?;
@@ -756,7 +936,7 @@ fn build_data_input_node(
             )?,
         ),
     ]);
-    let prepared = prepare_node(config, "data-input-staging", &inputs)?;
+    let prepared = prepare_node_at(&build_shared_node_dir(config, "data-input-staging")?, "data-input-staging", &inputs)?;
     let staged_root = prepared.dir.join("out");
     let marker = staged_root.join(".staged-complete");
     if let Some(record) = try_load_node_record(&prepared, std::slice::from_ref(&marker))? {
@@ -903,13 +1083,13 @@ fn build_resource_index_node(
     )
 }
 
-fn prepare_node(
-    config: &ProductBuildConfig,
+fn prepare_node_at(
+    root: &Path,
     name: &str,
     inputs: &BTreeMap<String, String>,
 ) -> anyhow::Result<PreparedNode> {
     let fingerprint = fingerprint_for_node(name, inputs)?;
-    let dir = config.build_root.join("nodes").join(name).join(&fingerprint);
+    let dir = root.join(&fingerprint);
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     Ok(PreparedNode {
         name: name.to_string(),
@@ -985,6 +1165,49 @@ fn build_node_root(config: &ProductBuildConfig, name: &str) -> anyhow::Result<Pa
     let root = config.build_root.join("work").join(name);
     fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
     Ok(root)
+}
+
+fn build_shared_work_root(config: &ProductBuildConfig, name: &str) -> anyhow::Result<PathBuf> {
+    let root = shared_build_root(config).join("work").join(name);
+    fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
+    Ok(root)
+}
+
+fn build_shared_node_dir(config: &ProductBuildConfig, name: &str) -> anyhow::Result<PathBuf> {
+    let root = shared_build_root(config).join("nodes").join(name);
+    fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
+    Ok(root)
+}
+
+fn shared_build_root(config: &ProductBuildConfig) -> PathBuf {
+    config
+        .build_root
+        .parent()
+        .unwrap_or(&config.build_root)
+        .join("shared")
+}
+
+fn load_existing_node_record(record_path: &Path, expected_name: &str) -> anyhow::Result<NodeRecord> {
+    let bytes = fs::read(record_path)
+        .with_context(|| format!("failed to read {}", record_path.display()))?;
+    let record: NodeRecord = serde_json::from_slice(&bytes).context("failed to parse node record")?;
+    if record.name != expected_name {
+        bail!(
+            "node record {} had unexpected name {}",
+            record_path.display(),
+            record.name
+        );
+    }
+    Ok(record)
+}
+
+fn manifest_chart_name(family: ChartFamily) -> &'static str {
+    match family {
+        ChartFamily::Sec => "SEC",
+        ChartFamily::Tac => "TAC",
+        ChartFamily::EnrL => "ENR_L",
+        ChartFamily::EnrH => "ENR_H",
+    }
 }
 
 fn hash_tree(root: &Path) -> anyhow::Result<String> {

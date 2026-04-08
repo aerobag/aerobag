@@ -1184,3 +1184,61 @@ If the next session starts with no further instruction, do this:
   - important cache fix:
     - `resource-index` node now fingerprints the resource-index Rust library source as an input
     - without that, schema/code changes could be hidden behind a stale cached `resource-index.json`
+
+- Product graph now has profile-independent shared work and smaller chart / `csup` cache boundaries:
+  - files:
+    - [product_build.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs)
+    - [preprocessor-charts/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-charts/src/lib.rs)
+    - [preprocessor-csup/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-csup/src/lib.rs)
+  - shared cache root:
+    - [/root/aerobag/product-builds/shared](/root/aerobag/product-builds/shared)
+  - charts:
+    - heavy render work is now one shared node per family:
+      - `charts-sec-render`
+      - `charts-tac-render`
+      - `charts-enr-l-render`
+      - `charts-enr-h-render`
+    - package work is now one shared node per family+region, for example:
+      - `charts-sec-package-nw`
+      - `charts-tac-package-ne`
+    - [preprocessor-charts/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-charts/src/lib.rs) now exposes `package_family_region(...)` so the orchestrator can package regions independently after shared tiling is complete
+  - `csup`:
+    - heavy render work is now one shared node:
+      - `csup-render`
+    - package work is now one shared node per region:
+      - `csup-package-ne`
+      - `csup-package-sw`
+    - [preprocessor-csup/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-csup/src/lib.rs) now exposes `render_csup_pages(...)`, `stage_work_dir_for_product(...)`, and `package_csup_region(...)`
+  - `tpp` was already naturally per-region and continues to benefit from the shared work root
+
+- Shared-node validation proof:
+  - reran `build-product --profile validation` after the refactor
+  - [master.log](/root/aerobag/product-builds/validation/orchestrator-logs/master.log) now shows:
+    - `charts-*-render` heavy phase
+    - `charts-*-package` follow-on phase
+    - `csup-render` heavy phase
+    - `csup-package` follow-on phase
+    - final `complete PASS` at `+15:38`
+  - shared build-records now exist under:
+    - [/root/aerobag/product-builds/shared/work](/root/aerobag/product-builds/shared/work)
+  - representative examples:
+    - [charts-sec render record](/root/aerobag/product-builds/shared/work/charts-sec/build-record.json)
+    - [charts-sec NW package record](/root/aerobag/product-builds/shared/work/charts-sec-package-nw/build-record.json)
+    - [csup render record](/root/aerobag/product-builds/shared/work/csup/build-record.json)
+    - [csup NE package record](/root/aerobag/product-builds/shared/work/csup-package-ne/build-record.json)
+
+- Product source-url emission now covers all 9 `tpp-*` labels:
+  - file:
+    - [emit_source_urls.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/emit_source_urls.rs)
+  - this fixed the first production-profile failure, where `tpp-ak`, `tpp-pac`, `tpp-sw`, etc. had no emitted `source_urls.jsonl`
+  - [product_build.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs) also now expects those output files as part of the `source-urls` node contract
+
+- Current live state:
+  - production product build is in flight:
+    - [/root/aerobag/product-builds/production](/root/aerobag/product-builds/production)
+    - [master.log](/root/aerobag/product-builds/production/orchestrator-logs/master.log)
+  - current observed behavior from the production log:
+    - charts and `csup` shared render nodes return as cache hits at `+0:00`
+    - `tpp-nw` also returns as a cache hit at `+0:00`
+    - production-only `tpp` regions (`ak`, `pac`, `sw`, `nc`, `ec`, `sc`, `se`) are the remaining heavy work
+  - if resumed later, inspect the production master log first before relaunching anything

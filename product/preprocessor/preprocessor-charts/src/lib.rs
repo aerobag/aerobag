@@ -371,6 +371,18 @@ pub fn package_family_regions(
     package_regions_from_spec(work_dir.as_ref(), spec, None)
 }
 
+pub fn package_family_region(
+    family: ChartFamily,
+    work_dir: impl AsRef<Path>,
+    region: Region,
+) -> anyhow::Result<PackageOutputRecord> {
+    let spec = ChartSpec::for_family(family);
+    package_region_records_from_spec(work_dir.as_ref(), spec, &[region], true)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no package record generated for {}", region.code()))
+}
+
 pub fn build_family_vrts(
     family: ChartFamily,
     work_dir: impl AsRef<Path>,
@@ -803,11 +815,31 @@ fn package_regions_from_spec(
 ) -> anyhow::Result<PackageBuildResult> {
     let start = Instant::now();
     let regions = Region::ALL;
+    let package_records =
+        package_region_records_from_spec(work_dir, spec, &regions, provenance_dir.is_some())?;
+
+    if let Some(provenance_dir) = provenance_dir {
+        write_package_outputs_jsonl(provenance_dir, &package_records)?;
+    }
+
+    Ok(PackageBuildResult {
+        family: spec.family,
+        package_count: regions.len(),
+        elapsed_ms: start.elapsed().as_millis(),
+    })
+}
+
+fn package_region_records_from_spec(
+    work_dir: &Path,
+    spec: ChartSpec,
+    regions: &[Region],
+    produce_records: bool,
+) -> anyhow::Result<Vec<PackageOutputRecord>> {
     let manifest_cycle = calculate_manifest_cycle();
     let tile_paths = collect_tile_paths_glob(work_dir, spec.tile_index)?;
     let mut package_records = Vec::with_capacity(regions.len());
 
-    for region in &regions {
+    for region in regions {
         let manifest_name = format!("{}_{}", region.code(), spec.chart_name);
         let zip_name = format!("{}_{}.zip", region.code(), spec.chart_name);
         let manifest_path = work_dir.join(&manifest_name);
@@ -856,7 +888,7 @@ fn package_regions_from_spec(
             bail!("zip failed for region {}", region.code());
         }
 
-        if provenance_dir.is_some() {
+        if produce_records {
             package_records.push(PackageOutputRecord {
                 label: spec.family.capture_label().to_string(),
                 chart: Some(spec.chart_name.to_string()),
@@ -869,15 +901,7 @@ fn package_regions_from_spec(
         }
     }
 
-    if let Some(provenance_dir) = provenance_dir {
-        write_package_outputs_jsonl(provenance_dir, &package_records)?;
-    }
-
-    Ok(PackageBuildResult {
-        family: spec.family,
-        package_count: regions.len(),
-        elapsed_ms: start.elapsed().as_millis(),
-    })
+    Ok(package_records)
 }
 
 fn sanitize_label(value: &str) -> String {

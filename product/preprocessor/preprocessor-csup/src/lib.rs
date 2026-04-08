@@ -91,7 +91,11 @@ fn stage_work_dir(source_repo: &Path, run_root: &Path) -> anyhow::Result<PathBuf
     Ok(work_dir)
 }
 
-fn render_csup_pages(work_dir: &Path, render_jobs: usize) -> anyhow::Result<()> {
+pub fn stage_work_dir_for_product(source_repo: &Path, run_root: &Path) -> anyhow::Result<PathBuf> {
+    stage_work_dir(source_repo, run_root)
+}
+
+pub fn render_csup_pages(work_dir: &Path, render_jobs: usize) -> anyhow::Result<()> {
     fs::create_dir_all(work_dir.join("afd")).context("failed to create afd dir")?;
     uppercase_pdf_names(work_dir)?;
     let airports = parse_airports(&find_xml_path(work_dir)?)?;
@@ -316,11 +320,28 @@ fn remove_pngs_for_base(apt_dir: &Path, output_base: &str) -> anyhow::Result<()>
     Ok(())
 }
 
-fn package_csup_regions(work_dir: &Path, provenance_dir: &Path) -> anyhow::Result<usize> {
-    let manifest_cycle = current_cycle_manifest();
-    let mut package_records = Vec::with_capacity(Region::ALL.len());
+pub fn package_csup_region(work_dir: &Path, region: Region) -> anyhow::Result<PackageOutputRecord> {
+    let mut records = package_csup_region_records(work_dir, &[region], true)?;
+    records
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("no csup package record generated for {}", region.code()))
+}
 
-    for region in Region::ALL {
+fn package_csup_regions(work_dir: &Path, provenance_dir: &Path) -> anyhow::Result<usize> {
+    let records = package_csup_region_records(work_dir, &Region::ALL, true)?;
+    write_package_outputs_jsonl(provenance_dir, &records)?;
+    Ok(Region::ALL.len())
+}
+
+fn package_csup_region_records(
+    work_dir: &Path,
+    regions: &[Region],
+    produce_records: bool,
+) -> anyhow::Result<Vec<PackageOutputRecord>> {
+    let manifest_cycle = current_cycle_manifest();
+    let mut package_records = Vec::with_capacity(regions.len());
+
+    for region in regions {
         let manifest_name = format!("{}_CSUP", region.code());
         let zip_name = format!("{}_CSUP.zip", region.code());
         let manifest_path = work_dir.join(&manifest_name);
@@ -361,19 +382,20 @@ fn package_csup_regions(work_dir: &Path, provenance_dir: &Path) -> anyhow::Resul
             bail!("zip failed for region {}", region.code());
         }
 
-        package_records.push(PackageOutputRecord {
-            label: "csup".to_string(),
-            chart: None,
-            region: region.code().to_string(),
-            manifest: manifest_name,
-            manifest_sha256: hash_file(&manifest_path)?,
-            zip: zip_name,
-            zip_sha256: hash_file(&zip_path)?,
-        });
+        if produce_records {
+            package_records.push(PackageOutputRecord {
+                label: "csup".to_string(),
+                chart: None,
+                region: region.code().to_string(),
+                manifest: manifest_name,
+                manifest_sha256: hash_file(&manifest_path)?,
+                zip: zip_name,
+                zip_sha256: hash_file(&zip_path)?,
+            });
+        }
     }
 
-    write_package_outputs_jsonl(provenance_dir, &package_records)?;
-    Ok(Region::ALL.len())
+    Ok(package_records)
 }
 
 fn collect_region_pngs(work_dir: &Path, region_code: &str) -> anyhow::Result<Vec<String>> {

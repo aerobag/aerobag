@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::Context;
+mod product_build;
 use preprocessor_charts::{
     build_family_tiles, build_family_vrts, likely_current_bottleneck, package_family_regions,
     phase_plan, run_family, run_native_family, ChartRunRequest, NativeChartRunRequest,
@@ -25,6 +26,7 @@ use preprocessor_resource_index::{
 };
 use preprocessor_tools::{comparison_targets, ToolInvocation};
 use preprocessor_tpp::{run_native_tpp, NativeTppRunRequest};
+use product_build::{build_product, explain_product_build, ProductBuildConfig};
 use sha2::{Digest, Sha256};
 
 fn load_manifest(run_root: &PathBuf) -> anyhow::Result<CaptureManifest> {
@@ -70,6 +72,8 @@ fn usage() -> &'static str {
   preprocessor-cli run-native-tpp --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli build-data --input-dir <path> --output-dir <path> --manifest-version <cycle> [--resource-index-output <path>] [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
+  preprocessor-cli build-product [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>]
+  preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>]
   preprocessor-cli run-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
 }
 
@@ -1658,6 +1662,15 @@ fn main() -> anyhow::Result<()> {
                 println!("plate_count {}", index.plates.len());
                 println!("csup_count {}", index.csups.len());
             }
+        }
+        Some("build-product") => {
+            let config = ProductBuildConfig::from_env_and_args(&args[2..])?;
+            let manifest_path = build_product(&config)?;
+            println!("{}", manifest_path.display());
+        }
+        Some("explain-product-build") => {
+            let config = ProductBuildConfig::from_env_and_args(&args[2..])?;
+            print!("{}", explain_product_build(&config)?);
         }
         Some("run-chart") => {
             if args.get(2).map(String::as_str) != Some("--family")

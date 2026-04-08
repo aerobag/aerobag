@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 preprocessor-charts = { path = "../preprocessor-charts" }
 preprocessor-csup = { path = "../preprocessor-csup" }
 preprocessor-data = { path = "../preprocessor-data" }
@@ -16,6 +17,7 @@ preprocessor-fetch = { path = "../preprocessor-fetch" }
 preprocessor-resource-index = { path = "../preprocessor-resource-index" }
 preprocessor-tpp = { path = "../preprocessor-tpp" }
 preprocessor-tools = { path = "../preprocessor-tools" }
+serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 

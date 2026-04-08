@@ -233,6 +233,28 @@ def build_records(avare_source_root: str) -> dict[str, list[dict]]:
                 ),
             }
         ],
+        "data": [
+            {
+                "event": "source_url",
+                "label": "data",
+                "url": "https://nfdc.faa.gov/webContent/28DaySub/28DaySubscription_Effective_" + tpp_start + ".zip",
+            },
+            {
+                "event": "source_url",
+                "label": "data",
+                "url": "https://nfdc.faa.gov/webContent/28DaySub/" + tpp_start + "/aixm5.0.zip",
+            },
+            {
+                "event": "source_url",
+                "label": "data",
+                "url": "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP",
+            },
+            {
+                "event": "source_url",
+                "label": "data",
+                "url": "https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_" + tpp_start[2:].replace("-", "") + ".zip",
+            },
+        ],
     }
 
 

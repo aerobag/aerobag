@@ -413,6 +413,7 @@ name = "preprocessor-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "preprocessor-charts",
  "preprocessor-core",
  "preprocessor-csup",
@@ -422,6 +423,7 @@ dependencies = [
  "preprocessor-tools",
  "preprocessor-tpp",
  "rusqlite",
+ "serde",
  "serde_json",
  "sha2",
 ]

@@ -139,6 +139,7 @@ button {
 }
 
 .chartDockColumn {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: var(--thumb-gap);
@@ -186,6 +187,9 @@ button {
 }
 
 .chartTray {
+  position: absolute;
+  top: calc(var(--thumb) + var(--thumb-gap));
+  left: 0;
   display: flex;
   flex-direction: column;
   gap: var(--thumb-gap);
@@ -503,15 +507,9 @@ button {
     flex-wrap: wrap;
   }
 
-  .chartDock {
-    flex-direction: column;
-  }
-
-  .chartDockColumn {
-    width: 100%;
-  }
-
   .chartTray {
+    top: calc(var(--thumb) + var(--thumb-gap));
+    left: 0;
     transform: translateY(calc(var(--thumb) * -0.2));
   }
 

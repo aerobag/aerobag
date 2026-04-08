@@ -27,13 +27,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -69,6 +73,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.jonh.aerobag.prototype.domain.ChartAirport
@@ -104,6 +109,18 @@ private enum class AppPage {
     Plan,
     Charts,
 }
+
+private data class PageTrayOption(
+    val page: AppPage,
+    val label: String,
+    val launcherLabel: String,
+)
+
+private val PageOptions = listOf(
+    PageTrayOption(AppPage.Map, "CHART", "CHT"),
+    PageTrayOption(AppPage.Charts, "PLATE", "PLT"),
+    PageTrayOption(AppPage.Plan, "PLAN", "PLN"),
+)
 
 private data class ChartTrayOption(
     val id: String,
@@ -172,25 +189,29 @@ private fun AerobagApp() {
 
     when (page) {
         AppPage.Map -> MapExplorerPage(
+            page = page,
             fixture = fixture,
             selectedMapId = selectedMapId,
             viewport = mapViewport,
             onViewportChange = { mapViewport = it },
             onSelectMapId = { selectedMapId = it },
+            onSelectPage = { page = it },
             onOpenPlan = { page = AppPage.Plan },
             legSummary = legSummary,
         )
         AppPage.Plan -> FlightPlanPage(
+            page = page,
             legSummary = legSummary,
             samplePlan = fixture.samplePlan,
-            onBack = { page = AppPage.Map },
+            onSelectPage = { page = it },
             onOpenCharts = { page = AppPage.Charts },
         )
         AppPage.Charts -> ChartsPage(
+            page = page,
             airports = fixture.chartPage.airports,
             selectedAirport = selectedAirport,
             selectedChart = selectedChart,
-            onBack = { page = AppPage.Plan },
+            onSelectPage = { page = it },
             onSelectAirport = { airportId ->
                 selectedAirportId = airportId
                 selectedChartId = fixture.chartPage.airports.find { it.id == airportId }?.charts?.firstOrNull()?.id.orEmpty()
@@ -203,16 +224,19 @@ private fun AerobagApp() {
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun MapExplorerPage(
+    page: AppPage,
     fixture: net.jonh.aerobag.prototype.domain.ContentFixture,
     selectedMapId: String,
     viewport: MapViewportState,
     onViewportChange: (MapViewportState) -> Unit,
     onSelectMapId: (String) -> Unit,
+    onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
     legSummary: String,
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
+    var pageTrayOpen by remember { mutableStateOf(false) }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var debugPanelOpen by remember { mutableStateOf(false) }
     var debugTileLabels by remember { mutableStateOf(false) }
@@ -245,6 +269,7 @@ private fun MapExplorerPage(
         }
     }
     val selectedPackageName = selectedMap.mapView.packageName
+    val topLeftTrayOpen = pageTrayOpen || chartTrayOpen
     val selectedPackageInstalled = remember(selectedPackageName, installRevision) {
         selectedPackageName?.let { SectionalPackages.isInstalled(context, it) } ?: true
     }
@@ -401,7 +426,7 @@ private fun MapExplorerPage(
                         val event = awaitPointerEvent()
                         val pressed = event.changes.filter { it.pressed && !it.isConsumed }
                         if (pressed.isEmpty()) break
-                        if (chartTrayOpen) {
+                        if (topLeftTrayOpen) {
                             pressed.forEach { it.consume() }
                             continue
                         }
@@ -474,10 +499,6 @@ private fun MapExplorerPage(
                 }
             },
     ) {
-        if (chartTrayOpen) {
-            Scrim { chartTrayOpen = false }
-        }
-
         Canvas(modifier = Modifier.fillMaxSize()) {
             tiles.forEach { tile ->
                 val tileRect = tileRects.getValue(Triple(tile.zoom, tile.x, tile.yTms))
@@ -516,12 +537,33 @@ private fun MapExplorerPage(
             }
         }
 
-        MapTray(
+        if (topLeftTrayOpen) {
+            Scrim {
+                pageTrayOpen = false
+                chartTrayOpen = false
+            }
+        }
+
+        MapTopLeftControls(
             modifier = Modifier.align(Alignment.TopStart),
+            currentPage = page,
+            pageTrayOpen = pageTrayOpen,
+            onTogglePageTray = {
+                pageTrayOpen = !pageTrayOpen
+                chartTrayOpen = false
+            },
+            onSelectPage = {
+                onSelectPage(it)
+                pageTrayOpen = false
+                chartTrayOpen = false
+            },
             selectedLabel = selectedLauncher.launcherLabel,
             trayOptions = trayOptions,
             trayOpen = chartTrayOpen,
-            onToggle = { chartTrayOpen = !chartTrayOpen },
+            onToggle = {
+                chartTrayOpen = !chartTrayOpen
+                pageTrayOpen = false
+            },
         )
 
         Button(
@@ -585,12 +627,14 @@ private fun MapExplorerPage(
 
 @Composable
 private fun FlightPlanPage(
+    page: AppPage,
     legSummary: String,
     samplePlan: net.jonh.aerobag.prototype.domain.FlightPlan,
-    onBack: () -> Unit,
+    onSelectPage: (AppPage) -> Unit,
     onOpenCharts: () -> Unit,
 ) {
     var selectedWaypointIndex by remember { mutableStateOf<Int?>(null) }
+    var pageTrayOpen by remember { mutableStateOf(false) }
     val rows = remember(samplePlan) {
         samplePlan.legs.mapIndexed { index, leg ->
             FlightPlanRow(
@@ -611,7 +655,23 @@ private fun FlightPlanPage(
                 ),
             ),
     ) {
-        ToolbarButton(label = "MAP", modifier = Modifier.align(Alignment.TopStart).padding(ThumbGap), onClick = onBack)
+        if (pageTrayOpen) {
+            Scrim { pageTrayOpen = false }
+        }
+
+        PageSelectorDock(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(ThumbGap)
+                .zIndex(4f),
+            currentPage = page,
+            open = pageTrayOpen,
+            onToggle = { pageTrayOpen = !pageTrayOpen },
+            onSelectPage = {
+                onSelectPage(it)
+                pageTrayOpen = false
+            },
+        )
 
         Column(
             modifier = Modifier
@@ -665,15 +725,17 @@ private fun FlightPlanPage(
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun ChartsPage(
+    page: AppPage,
     airports: List<ChartAirport>,
     selectedAirport: ChartAirport?,
     selectedChart: ChartAsset?,
-    onBack: () -> Unit,
+    onSelectPage: (AppPage) -> Unit,
     onSelectAirport: (String) -> Unit,
     onSelectChart: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
+    var pageTrayOpen by remember { mutableStateOf(false) }
     var airportTrayOpen by remember { mutableStateOf(false) }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
@@ -804,17 +866,32 @@ private fun ChartsPage(
 
         ChartViewerSelectors(
             modifier = Modifier.align(Alignment.TopStart),
+            currentPage = page,
             airports = airports,
             selectedAirport = selectedAirport,
             selectedChart = selectedChart,
+            pageTrayOpen = pageTrayOpen,
             airportTrayOpen = airportTrayOpen,
             chartTrayOpen = chartTrayOpen,
+            onTogglePageTray = {
+                pageTrayOpen = !pageTrayOpen
+                airportTrayOpen = false
+                chartTrayOpen = false
+            },
+            onSelectPage = {
+                onSelectPage(it)
+                pageTrayOpen = false
+                airportTrayOpen = false
+                chartTrayOpen = false
+            },
             onToggleAirportTray = {
                 airportTrayOpen = !airportTrayOpen
+                pageTrayOpen = false
                 chartTrayOpen = false
             },
             onToggleChartTray = {
                 chartTrayOpen = !chartTrayOpen
+                pageTrayOpen = false
                 airportTrayOpen = false
             },
             onSelectAirport = {
@@ -827,45 +904,44 @@ private fun ChartsPage(
             },
         )
 
-        ToolbarButton(label = "PLAN", modifier = Modifier.align(Alignment.TopEnd).padding(ThumbGap), onClick = onBack)
     }
 }
 
 @Composable
-private fun MapTray(
+private fun MapTopLeftControls(
     modifier: Modifier = Modifier,
+    currentPage: AppPage,
+    pageTrayOpen: Boolean,
+    onTogglePageTray: () -> Unit,
+    onSelectPage: (AppPage) -> Unit,
     selectedLabel: String,
     trayOptions: List<ChartTrayOption>,
     trayOpen: Boolean,
     onToggle: () -> Unit,
 ) {
-    Column(
-        modifier = modifier
-            .padding(ThumbGap)
-            .widthIn(min = ThumbSize, max = ThumbSize * 2.6f),
-        verticalArrangement = Arrangement.spacedBy(ThumbGap),
+    Row(
+        modifier = modifier.padding(ThumbGap),
+        horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+        verticalAlignment = Alignment.Top,
     ) {
-        CompactSquareButton(label = selectedLabel, modifier = Modifier.size(ThumbSize), onClick = onToggle)
-        AnimatedVisibility(
-            visible = trayOpen,
-            enter = slideInHorizontally(initialOffsetX = { -it / 3 }) + fadeIn(),
-            exit = slideOutHorizontally(targetOffsetX = { -it / 3 }) + fadeOut(),
+        PageSelectorDock(
+            currentPage = currentPage,
+            open = pageTrayOpen,
+            onToggle = onTogglePageTray,
+            onSelectPage = onSelectPage,
+        )
+        SelectorDock(
+            label = selectedLabel,
+            buttonWidth = ThumbSize,
+            open = trayOpen,
+            onToggle = onToggle,
         ) {
-            Card {
-                Column(
-                    modifier = Modifier.padding(ThumbGap),
-                    verticalArrangement = Arrangement.spacedBy(ThumbGap),
-                ) {
-                    trayOptions.forEach { option ->
-                        OutlinedButton(
-                            onClick = option.select ?: {},
-                            enabled = option.available,
-                            modifier = Modifier.fillMaxWidth().height(ThumbSize),
-                        ) {
-                            Text(option.label, style = MaterialTheme.typography.labelLarge)
-                        }
-                    }
-                }
+            trayOptions.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option.label, style = MaterialTheme.typography.labelLarge) },
+                    enabled = option.available,
+                    onClick = { option.select?.invoke() },
+                )
             }
         }
     }
@@ -874,11 +950,15 @@ private fun MapTray(
 @Composable
 private fun ChartViewerSelectors(
     modifier: Modifier = Modifier,
+    currentPage: AppPage,
     airports: List<ChartAirport>,
     selectedAirport: ChartAirport?,
     selectedChart: ChartAsset?,
+    pageTrayOpen: Boolean,
     airportTrayOpen: Boolean,
     chartTrayOpen: Boolean,
+    onTogglePageTray: () -> Unit,
+    onSelectPage: (AppPage) -> Unit,
     onToggleAirportTray: () -> Unit,
     onToggleChartTray: () -> Unit,
     onSelectAirport: (String) -> Unit,
@@ -889,6 +969,13 @@ private fun ChartViewerSelectors(
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
         verticalAlignment = Alignment.Top,
     ) {
+        PageSelectorDock(
+            currentPage = currentPage,
+            open = pageTrayOpen,
+            onToggle = onTogglePageTray,
+            onSelectPage = onSelectPage,
+        )
+
         SelectorDock(
             label = selectedAirport?.label ?: "---",
             buttonWidth = ThumbSize * 1.2f,
@@ -924,32 +1011,89 @@ private fun ChartViewerSelectors(
 }
 
 @Composable
+private fun PageSelectorDock(
+    modifier: Modifier = Modifier,
+    currentPage: AppPage,
+    open: Boolean,
+    onToggle: () -> Unit,
+    onSelectPage: (AppPage) -> Unit,
+) {
+    Box(modifier = modifier.size(ThumbSize)) {
+        CompactSquareButton(
+            label = PageOptions.firstOrNull { it.page == currentPage }?.launcherLabel ?: "CHT",
+            modifier = Modifier.size(ThumbSize).align(Alignment.TopStart),
+            onClick = onToggle,
+        )
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = onToggle,
+            modifier = Modifier.width(ThumbSize * 2.4f),
+        ) {
+            PageOptions.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option.label, style = MaterialTheme.typography.labelLarge) },
+                    onClick = { onSelectPage(option.page) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun SelectorDock(
+    modifier: Modifier = Modifier,
     label: String,
     buttonWidth: androidx.compose.ui.unit.Dp,
     open: Boolean,
     onToggle: () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    Card {
-        Column(
-            modifier = Modifier.padding(ThumbGap),
-            verticalArrangement = Arrangement.spacedBy(ThumbGap),
+    Box(modifier = modifier.width(buttonWidth).height(ThumbSize)) {
+        Surface(
+            modifier = Modifier.align(Alignment.TopStart).width(buttonWidth).height(ThumbSize),
+            shape = RoundedCornerShape(ThumbRadius),
+            color = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+            shadowElevation = 2.dp,
         ) {
-            Button(
-                onClick = onToggle,
-                modifier = Modifier.width(buttonWidth).height(ThumbSize),
-                shape = RoundedCornerShape(ThumbRadius),
+            Box(
+                modifier = Modifier.pointerInput(onToggle) {
+                    awaitEachGesture {
+                        var activePointer: PointerId? = null
+                        var moved = false
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (activePointer == null) {
+                                val downChange = event.changes.firstOrNull { it.pressed } ?: continue
+                                activePointer = downChange.id
+                                downChange.consume()
+                                continue
+                            }
+                            val change = event.changes.firstOrNull { it.id == activePointer } ?: break
+                            if (change.positionChanged()) {
+                                moved = true
+                            }
+                            change.consume()
+                            if (!change.pressed) {
+                                if (!moved) {
+                                    onToggle()
+                                }
+                                break
+                            }
+                        }
+                    }
+                },
+                contentAlignment = Alignment.Center,
             ) {
                 Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
             }
-            AnimatedVisibility(
-                visible = open,
-                enter = slideInHorizontally(initialOffsetX = { -it / 3 }) + fadeIn(),
-                exit = slideOutHorizontally(targetOffsetX = { -it / 3 }) + fadeOut(),
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(ThumbGap), content = { content() })
-            }
+        }
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = onToggle,
+            modifier = Modifier.widthIn(min = buttonWidth),
+        ) {
+            content()
         }
     }
 }

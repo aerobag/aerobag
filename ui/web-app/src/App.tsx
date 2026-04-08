@@ -38,6 +38,12 @@ const chartFamilies: Array<{ id: ChartFamilyId; label: string; launcherLabel: st
   { id: "ifr_high", label: "IFR-HIGH", launcherLabel: "IFR H" },
 ];
 
+const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> = [
+  { id: "map", label: "CHART", launcherLabel: "CHT" },
+  { id: "charts", label: "PLATE", launcherLabel: "PLT" },
+  { id: "plan", label: "PLAN", launcherLabel: "PLN" },
+];
+
 const waypointActions = ["Remove", "Insert", "Reorder", "Waypoint Info", "Add Airway", "Select Procedure", "Charts"];
 
 export default function App() {
@@ -98,6 +104,7 @@ export default function App() {
     <main className="appShell">
       {page === "map" ? (
         <MapPage
+          page={page}
           debugTileLabels={debugTileLabels}
           selectedMapId={selectedMapId}
           selectedMap={selectedMap}
@@ -107,6 +114,7 @@ export default function App() {
           viewport={mapViewport}
           onViewportChange={setMapViewport}
           onSelectMapId={setSelectedMapId}
+          onSelectPage={setPage}
           onOpenPlan={() => setPage("plan")}
           legSummary={legSummary}
           locationSearch={locationSearch}
@@ -115,17 +123,19 @@ export default function App() {
 
       {page === "plan" ? (
         <FlightPlanPage
+          page={page}
           legSummary={legSummary}
-          onBack={() => setPage("map")}
+          onSelectPage={setPage}
           onOpenCharts={() => setPage("charts")}
         />
       ) : null}
 
       {page === "charts" ? (
         <ChartsPage
+          page={page}
           selectedAirport={selectedAirport}
           selectedChart={selectedChart}
-          onBack={() => setPage("plan")}
+          onSelectPage={setPage}
           onSelectAirport={(airportId) => {
             setSelectedAirportId(airportId);
             const airport = chartPage.airports.find((entry) => entry.id === airportId);
@@ -139,6 +149,7 @@ export default function App() {
 }
 
 function MapPage(props: {
+  page: AppPage;
   debugTileLabels: boolean;
   selectedMapId: string;
   selectedMap: (typeof mapViews)[number];
@@ -148,12 +159,14 @@ function MapPage(props: {
   viewport: MapViewportState;
   onViewportChange: (next: MapViewportState) => void;
   onSelectMapId: (mapId: string) => void;
+  onSelectPage: (page: AppPage) => void;
   onOpenPlan: () => void;
   legSummary: string;
   locationSearch: string;
 }) {
   const {
     debugTileLabels,
+    page,
     selectedMap,
     selectedFamilyMapViews,
     selectedFamily,
@@ -161,12 +174,14 @@ function MapPage(props: {
     viewport,
     onViewportChange,
     onSelectMapId,
+    onSelectPage,
     onOpenPlan,
     legSummary,
     locationSearch,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [familyTrayOpen, setFamilyTrayOpen] = useState(false);
+  const [pageTrayOpen, setPageTrayOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
   const viewportRef = useRef<MapViewportState>(viewport);
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
@@ -372,45 +387,93 @@ function MapPage(props: {
         ))}
 
         <div className="chartDock">
-          <button
-            type="button"
-            className={`chartButton${familyTrayOpen ? " isOpen" : ""}`}
-            onPointerDown={(event) => event.stopPropagation()}
-            onPointerUp={(event) => event.stopPropagation()}
-            onClick={() => setFamilyTrayOpen((open) => !open)}
-          >
-            <span className="chartButtonLabel">{selectedFamily.launcherLabel}</span>
-          </button>
-          <section className={`chartTray${familyTrayOpen ? " isOpen" : ""}`} aria-label="Chart family">
-            {chartFamilies.map((family) => {
-              const available = availableFamilies.has(family.id);
-              const active = selectedMap.map_view.chart_family === family.id;
-              return (
+          <div className="chartDockColumn">
+            <button
+              type="button"
+              className={`chartButton${pageTrayOpen ? " isOpen" : ""}`}
+              onPointerDown={stopPointer}
+              onPointerUp={stopPointer}
+              onDoubleClick={stopDoubleClick}
+              onClick={() =>
+                toggleModalTray(
+                  "page",
+                  { page: pageTrayOpen, family: familyTrayOpen },
+                  { setPage: setPageTrayOpen, setFamily: setFamilyTrayOpen },
+                )
+              }
+            >
+              <span className="chartButtonLabel">{pageOptions.find((option) => option.id === page)?.launcherLabel ?? "CHT"}</span>
+            </button>
+            <section className={`chartTray${pageTrayOpen ? " isOpen" : ""}`} aria-label="Page">
+              {pageOptions.map((option) => (
                 <button
-                  key={family.id}
+                  key={option.id}
                   type="button"
-                  className={`trayButton${active ? " isActive" : ""}`}
-                  disabled={!available}
+                  className={`trayButton${option.id === page ? " isActive" : ""}`}
+                  onPointerDown={stopPointer}
+                  onPointerUp={stopPointer}
+                  onDoubleClick={stopDoubleClick}
                   onClick={() => {
-                    const nextMap = mapViews.find((view) => view.map_view.chart_family === family.id);
-                    if (nextMap) {
-                      onSelectMapId(nextMap.id);
-                    }
-                    setFamilyTrayOpen(false);
+                    onSelectPage(option.id);
+                    setPageTrayOpen(false);
                   }}
                 >
-                  {family.label}
+                  {option.label}
                 </button>
-              );
-            })}
-          </section>
+              ))}
+            </section>
+          </div>
+          <div className="chartDockColumn">
+            <button
+              type="button"
+              className={`chartButton${familyTrayOpen ? " isOpen" : ""}`}
+              onPointerDown={stopPointer}
+              onPointerUp={stopPointer}
+              onDoubleClick={stopDoubleClick}
+              onClick={() =>
+                toggleModalTray(
+                  "family",
+                  { page: pageTrayOpen, family: familyTrayOpen },
+                  { setPage: setPageTrayOpen, setFamily: setFamilyTrayOpen },
+                )
+              }
+            >
+              <span className="chartButtonLabel">{selectedFamily.launcherLabel}</span>
+            </button>
+            <section className={`chartTray${familyTrayOpen ? " isOpen" : ""}`} aria-label="Chart family">
+              {chartFamilies.map((family) => {
+                const available = availableFamilies.has(family.id);
+                const active = selectedMap.map_view.chart_family === family.id;
+                return (
+                  <button
+                    key={family.id}
+                    type="button"
+                    className={`trayButton${active ? " isActive" : ""}`}
+                    disabled={!available}
+                    onPointerDown={stopPointer}
+                    onPointerUp={stopPointer}
+                    onClick={() => {
+                      const nextMap = mapViews.find((view) => view.map_view.chart_family === family.id);
+                      if (nextMap) {
+                        onSelectMapId(nextMap.id);
+                      }
+                      setFamilyTrayOpen(false);
+                    }}
+                  >
+                    {family.label}
+                  </button>
+                );
+              })}
+            </section>
+          </div>
         </div>
 
         <button
           type="button"
           className="navElement"
-          onPointerDown={(event) => event.stopPropagation()}
-          onPointerUp={(event) => event.stopPropagation()}
+          onPointerDown={stopPointer}
+          onPointerUp={stopPointer}
+          onDoubleClick={stopDoubleClick}
           onClick={onOpenPlan}
         >
           <span className="navElementTop">{legSummary}</span>
@@ -421,8 +484,8 @@ function MapPage(props: {
           <button
             type="button"
             className="debugLauncher"
-            onPointerDown={(event) => event.stopPropagation()}
-            onPointerUp={(event) => event.stopPropagation()}
+            onPointerDown={stopPointer}
+            onPointerUp={stopPointer}
             onClick={() => setDebugOpen((open) => !open)}
             aria-expanded={debugOpen}
             aria-label="Toggle debug details"
@@ -432,8 +495,8 @@ function MapPage(props: {
           <section
             className={`debugPanel${debugOpen ? " isOpen" : ""}`}
             aria-label="Debug metadata"
-            onPointerDown={(event) => event.stopPropagation()}
-            onPointerUp={(event) => event.stopPropagation()}
+            onPointerDown={stopPointer}
+            onPointerUp={stopPointer}
           >
             <div className="debugLine">family {selectedFamily.launcherLabel}</div>
             <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
@@ -450,8 +513,9 @@ function MapPage(props: {
   );
 }
 
-function FlightPlanPage(props: { legSummary: string; onBack: () => void; onOpenCharts: () => void }) {
+function FlightPlanPage(props: { page: AppPage; legSummary: string; onSelectPage: (page: AppPage) => void; onOpenCharts: () => void }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
+  const [pageTrayOpen, setPageTrayOpen] = useState(false);
   const rows = useMemo(
     () =>
       samplePlan.legs.map((leg, index) => ({
@@ -467,9 +531,38 @@ function FlightPlanPage(props: { legSummary: string; onBack: () => void; onOpenC
   return (
     <section className="appPage planPage">
       <div className="pageChrome">
-        <button type="button" className="toolbarButton" onClick={props.onBack}>
-          MAP
-        </button>
+        <div className="chartDock">
+          <div className="chartDockColumn">
+            <button
+              type="button"
+              className={`chartButton${pageTrayOpen ? " isOpen" : ""}`}
+              onPointerDown={stopPointer}
+              onPointerUp={stopPointer}
+              onDoubleClick={stopDoubleClick}
+              onClick={() => setPageTrayOpen((open) => !open)}
+            >
+              <span className="chartButtonLabel">{pageOptions.find((option) => option.id === props.page)?.launcherLabel ?? "PLN"}</span>
+            </button>
+            <section className={`chartTray${pageTrayOpen ? " isOpen" : ""}`} aria-label="Page">
+              {pageOptions.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={`trayButton${option.id === props.page ? " isActive" : ""}`}
+                  onPointerDown={stopPointer}
+                  onPointerUp={stopPointer}
+                  onDoubleClick={stopDoubleClick}
+                  onClick={() => {
+                    props.onSelectPage(option.id);
+                    setPageTrayOpen(false);
+                  }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </section>
+          </div>
+        </div>
       </div>
 
       <div className="planTable">
@@ -506,6 +599,8 @@ function FlightPlanPage(props: { legSummary: string; onBack: () => void; onOpenC
                 key={action}
                 type="button"
                 className="trayButton"
+                onPointerDown={stopPointer}
+                onPointerUp={stopPointer}
                 onClick={() => {
                   if (action === "Charts") {
                     props.onOpenCharts();
@@ -524,13 +619,14 @@ function FlightPlanPage(props: { legSummary: string; onBack: () => void; onOpenC
 }
 
 function ChartsPage(props: {
+  page: AppPage;
   selectedAirport: (typeof chartPage)["airports"][number] | null;
   selectedChart: ChartAsset | null;
-  onBack: () => void;
+  onSelectPage: (page: AppPage) => void;
   onSelectAirport: (airportId: string) => void;
   onSelectChart: (chartId: string) => void;
 }) {
-  const { selectedAirport, selectedChart, onBack, onSelectAirport, onSelectChart } = props;
+  const { page, selectedAirport, selectedChart, onSelectPage, onSelectAirport, onSelectChart } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
@@ -541,6 +637,7 @@ function ChartsPage(props: {
   const pinchRef = useRef<{ zoom: number; distance: number; midpoint: ScreenPoint } | null>(null);
   const [airportTrayOpen, setAirportTrayOpen] = useState(false);
   const [chartTrayOpen, setChartTrayOpen] = useState(false);
+  const [pageTrayOpen, setPageTrayOpen] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -569,7 +666,7 @@ function ChartsPage(props: {
     setViewport(next);
   }, [imageSize, selectedChart?.id, surfaceSize.width, surfaceSize.height]);
 
-  const trayOpen = airportTrayOpen || chartTrayOpen;
+  const trayOpen = pageTrayOpen || airportTrayOpen || chartTrayOpen;
   const overscrollPx = 64;
 
   function updateViewport(next: ImageViewportState) {
@@ -727,6 +824,7 @@ function ChartsPage(props: {
             className="trayScrim"
             aria-label="Close chart tray"
             onClick={() => {
+              setPageTrayOpen(false);
               setAirportTrayOpen(false);
               setChartTrayOpen(false);
             }}
@@ -757,10 +855,56 @@ function ChartsPage(props: {
           <div className="chartDockColumn">
             <button
               type="button"
-              className={`chartButton${airportTrayOpen ? " isOpen" : ""}`}
+              className={`chartButton${pageTrayOpen ? " isOpen" : ""}`}
+              onPointerDown={stopPointer}
+              onPointerUp={stopPointer}
+              onDoubleClick={stopDoubleClick}
               onClick={() => {
-                setAirportTrayOpen((open) => !open);
-                setChartTrayOpen(false);
+                toggleExclusiveTray(
+                  "page",
+                  { page: pageTrayOpen, airport: airportTrayOpen, chart: chartTrayOpen },
+                  { setPage: setPageTrayOpen, setAirport: setAirportTrayOpen, setChart: setChartTrayOpen },
+                );
+              }}
+            >
+              <span className="chartButtonLabel">{pageOptions.find((option) => option.id === page)?.launcherLabel ?? "PLT"}</span>
+            </button>
+            <section
+              className={`chartTray${pageTrayOpen ? " isOpen" : ""}`}
+              onPointerDown={stopPointer}
+              onPointerUp={stopPointer}
+            >
+              {pageOptions.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={`trayButton${option.id === page ? " isActive" : ""}`}
+                  onPointerDown={stopPointer}
+                  onPointerUp={stopPointer}
+                  onDoubleClick={stopDoubleClick}
+                  onClick={() => {
+                    onSelectPage(option.id);
+                    setPageTrayOpen(false);
+                  }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </section>
+          </div>
+          <div className="chartDockColumn">
+            <button
+              type="button"
+              className={`chartButton${airportTrayOpen ? " isOpen" : ""}`}
+              onPointerDown={stopPointer}
+              onPointerUp={stopPointer}
+              onDoubleClick={stopDoubleClick}
+              onClick={() => {
+                toggleExclusiveTray(
+                  "airport",
+                  { page: pageTrayOpen, airport: airportTrayOpen, chart: chartTrayOpen },
+                  { setPage: setPageTrayOpen, setAirport: setAirportTrayOpen, setChart: setChartTrayOpen },
+                );
               }}
             >
               <span className="chartButtonLabel">{selectedAirport?.label ?? "---"}</span>
@@ -771,6 +915,9 @@ function ChartsPage(props: {
                   key={airport.id}
                   type="button"
                   className={`trayButton${airport.id === selectedAirport?.id ? " isActive" : ""}`}
+                  onPointerDown={stopPointer}
+                  onPointerUp={stopPointer}
+                  onDoubleClick={stopDoubleClick}
                   onClick={() => {
                     onSelectAirport(airport.id);
                     setAirportTrayOpen(false);
@@ -786,9 +933,15 @@ function ChartsPage(props: {
             <button
               type="button"
               className={`chartButton chartButtonWide${chartTrayOpen ? " isOpen" : ""}`}
+              onPointerDown={stopPointer}
+              onPointerUp={stopPointer}
+              onDoubleClick={stopDoubleClick}
               onClick={() => {
-                setChartTrayOpen((open) => !open);
-                setAirportTrayOpen(false);
+                toggleExclusiveTray(
+                  "chart",
+                  { page: pageTrayOpen, airport: airportTrayOpen, chart: chartTrayOpen },
+                  { setPage: setPageTrayOpen, setAirport: setAirportTrayOpen, setChart: setChartTrayOpen },
+                );
               }}
             >
               <span className="chartButtonLabel chartButtonLabelWide">{selectedChart?.label ?? "---"}</span>
@@ -799,6 +952,9 @@ function ChartsPage(props: {
                   key={chart.id}
                   type="button"
                   className={`trayButton${chart.id === selectedChart?.id ? " isActive" : ""}`}
+                  onPointerDown={stopPointer}
+                  onPointerUp={stopPointer}
+                  onDoubleClick={stopDoubleClick}
                   onClick={() => {
                     onSelectChart(chart.id);
                     setChartTrayOpen(false);
@@ -811,9 +967,6 @@ function ChartsPage(props: {
           </div>
         </div>
 
-        <button type="button" className="toolbarButton toolbarButtonTopRight" onClick={onBack}>
-          PLAN
-        </button>
       </div>
     </section>
   );
@@ -827,6 +980,73 @@ function navRefLabel(value: { Airport: string } | { Navaid: string } | { Fix: st
 
 function distanceBetween(first: ScreenPoint, second: ScreenPoint) {
   return Math.hypot(second.x - first.x, second.y - first.y);
+}
+
+function stopPointer(event: React.PointerEvent<HTMLElement>) {
+  event.stopPropagation();
+}
+
+function stopDoubleClick(event: React.MouseEvent<HTMLElement>) {
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+function toggleModalTray(
+  target: "page" | "family",
+  state: { page: boolean; family: boolean },
+  actions: {
+    setPage: React.Dispatch<React.SetStateAction<boolean>>;
+    setFamily: React.Dispatch<React.SetStateAction<boolean>>;
+  },
+) {
+  if (target === "page") {
+    if (state.family) {
+      actions.setFamily(false);
+      return;
+    }
+    actions.setPage((open) => !open);
+    return;
+  }
+  if (state.page) {
+    actions.setPage(false);
+    return;
+  }
+  actions.setFamily((open) => !open);
+}
+
+function toggleExclusiveTray(
+  target: "page" | "airport" | "chart",
+  state: { page: boolean; airport: boolean; chart: boolean },
+  actions: {
+    setPage: React.Dispatch<React.SetStateAction<boolean>>;
+    setAirport: React.Dispatch<React.SetStateAction<boolean>>;
+    setChart: React.Dispatch<React.SetStateAction<boolean>>;
+  },
+) {
+  if (target === "page") {
+    if (state.airport || state.chart) {
+      actions.setAirport(false);
+      actions.setChart(false);
+      return;
+    }
+    actions.setPage((open) => !open);
+    return;
+  }
+  if (target === "airport") {
+    if (state.page || state.chart) {
+      actions.setPage(false);
+      actions.setChart(false);
+      return;
+    }
+    actions.setAirport((open) => !open);
+    return;
+  }
+  if (state.page || state.airport) {
+    actions.setPage(false);
+    actions.setAirport(false);
+    return;
+  }
+  actions.setChart((open) => !open);
 }
 
 function midpoint(first: ScreenPoint, second: ScreenPoint): ScreenPoint {

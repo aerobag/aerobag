@@ -2,6 +2,7 @@ avare-source/
 rust-runs/
 runs/
 cache/
+product-builds/
 __pycache__/
 *.swp
 .gradle-user-home/

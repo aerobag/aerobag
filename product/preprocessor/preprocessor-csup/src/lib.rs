@@ -1,6 +1,9 @@
 use std::{
+    collections::{BTreeMap, VecDeque},
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    thread,
     time::Instant,
 };
 
@@ -19,6 +22,7 @@ pub struct NativeCsupRunRequest {
     pub run_root: PathBuf,
     pub prefetch_source_urls: Option<PathBuf>,
     pub fetch_jobs: usize,
+    pub render_jobs: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -61,7 +65,7 @@ pub fn run_native_csup(request: &NativeCsupRunRequest) -> anyhow::Result<NativeC
     }
 
     let render_start = Instant::now();
-    render_csup_pages(&work_dir)?;
+    render_csup_pages(&work_dir, request.render_jobs)?;
     let render_elapsed_ms = render_start.elapsed().as_millis();
 
     let package_start = Instant::now();
@@ -87,13 +91,65 @@ fn stage_work_dir(source_repo: &Path, run_root: &Path) -> anyhow::Result<PathBuf
     Ok(work_dir)
 }
 
-fn render_csup_pages(work_dir: &Path) -> anyhow::Result<()> {
+fn render_csup_pages(work_dir: &Path, render_jobs: usize) -> anyhow::Result<()> {
     fs::create_dir_all(work_dir.join("afd")).context("failed to create afd dir")?;
     uppercase_pdf_names(work_dir)?;
     let airports = parse_airports(&find_xml_path(work_dir)?)?;
-    for airport in &airports {
-        render_airport_pages(work_dir, airport)?;
+    render_airport_groups_parallel(work_dir, airports, render_jobs)
+}
+
+fn render_airport_groups_parallel(
+    work_dir: &Path,
+    airports: Vec<AirportRecord>,
+    render_jobs: usize,
+) -> anyhow::Result<()> {
+    let mut grouped = BTreeMap::<String, Vec<AirportRecord>>::new();
+    let mut apt_order = Vec::new();
+    for airport in airports {
+        let apt_id = airport.apt_id.clone();
+        let entry = grouped.entry(apt_id.clone()).or_insert_with(|| {
+            apt_order.push(apt_id.clone());
+            Vec::new()
+        });
+        entry.push(airport);
     }
+
+    let groups = apt_order
+        .into_iter()
+        .filter_map(|apt_id| grouped.remove(&apt_id))
+        .collect::<Vec<_>>();
+    let queue = Arc::new(Mutex::new(VecDeque::from(groups)));
+    let job_count = render_jobs.max(1);
+    let mut handles = Vec::with_capacity(job_count);
+
+    for _ in 0..job_count {
+        let queue = Arc::clone(&queue);
+        let work_dir = work_dir.to_path_buf();
+        handles.push(thread::spawn(move || -> anyhow::Result<()> {
+            loop {
+                let group = {
+                    let mut guard = queue
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("csup airport queue poisoned"))?;
+                    guard.pop_front()
+                };
+                let Some(group) = group else {
+                    break;
+                };
+                for airport in group {
+                    render_airport_pages(&work_dir, &airport)?;
+                }
+            }
+            Ok(())
+        }));
+    }
+
+    for handle in handles {
+        handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("csup render worker panicked"))??;
+    }
+
     Ok(())
 }
 

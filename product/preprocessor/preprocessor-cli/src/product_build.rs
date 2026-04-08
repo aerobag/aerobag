@@ -1,8 +1,13 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     env, fs,
+    fs::File,
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
+    sync::mpsc,
+    thread,
+    time::Instant,
 };
 
 use anyhow::{bail, Context};
@@ -20,6 +25,8 @@ use preprocessor_resource_index::{
 use preprocessor_tpp::{run_native_tpp, NativeTppRunRequest};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::emit_source_urls::emit_source_urls;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProductBuildProfile {
@@ -53,12 +60,12 @@ impl ProductBuildProfile {
 
 #[derive(Debug, Clone)]
 pub struct ProductBuildConfig {
-    pub repo_root: PathBuf,
     pub source_root: PathBuf,
     pub build_root: PathBuf,
     pub profile: ProductBuildProfile,
     pub fetch_jobs: usize,
     pub cpu_jobs: usize,
+    pub max_heavy_jobs: usize,
     pub fetch_cache_root: PathBuf,
     pub fetch_cache_mode: String,
 }
@@ -69,6 +76,7 @@ struct NodeRecord {
     fingerprint: String,
     started_at_utc: String,
     finished_at_utc: String,
+    elapsed_ms: u64,
     cache_hit: bool,
     inputs: BTreeMap<String, String>,
     outputs: BTreeMap<String, String>,
@@ -93,6 +101,108 @@ struct PreparedNode {
     record_path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+enum HeavyJobSpec {
+    Chart {
+        family: ChartFamily,
+        source_repo: PathBuf,
+        run_root: PathBuf,
+        prefetch_source_urls: PathBuf,
+        fetch_jobs: usize,
+        cpu_jobs: usize,
+    },
+    Csup {
+        source_repo: PathBuf,
+        run_root: PathBuf,
+        prefetch_source_urls: PathBuf,
+        fetch_jobs: usize,
+        render_jobs: usize,
+    },
+    Tpp {
+        region: Region,
+        source_repo: PathBuf,
+        run_root: PathBuf,
+        prefetch_source_urls: PathBuf,
+        fetch_jobs: usize,
+        render_jobs: usize,
+    },
+    Data {
+        source_urls_dir: PathBuf,
+    },
+}
+
+impl HeavyJobSpec {
+    fn name(&self) -> String {
+        match self {
+            Self::Chart { family, .. } => format!("charts-{}", family_slug(*family)),
+            Self::Csup { .. } => "csup".to_string(),
+            Self::Tpp { region, .. } => format!("tpp-{}", region.code().to_ascii_lowercase()),
+            Self::Data { .. } => "data".to_string(),
+        }
+    }
+
+    fn run(self, config: &ProductBuildConfig) -> anyhow::Result<Vec<NodeRecord>> {
+        match self {
+            Self::Chart {
+                family,
+                source_repo,
+                run_root,
+                prefetch_source_urls,
+                fetch_jobs,
+                cpu_jobs,
+            } => {
+                let request = NativeChartRunRequest {
+                    family,
+                    source_repo,
+                    run_root,
+                    cpu_jobs,
+                    prefetch_source_urls: Some(prefetch_source_urls),
+                    fetch_jobs,
+                };
+                Ok(vec![build_chart_node(config, &request)?])
+            }
+            Self::Csup {
+                source_repo,
+                run_root,
+                prefetch_source_urls,
+                fetch_jobs,
+                render_jobs,
+            } => {
+                let request = NativeCsupRunRequest {
+                    source_repo,
+                    run_root,
+                    prefetch_source_urls: Some(prefetch_source_urls),
+                    fetch_jobs,
+                    render_jobs,
+                };
+                Ok(vec![build_csup_node(config, &request)?])
+            }
+            Self::Tpp {
+                region,
+                source_repo,
+                run_root,
+                prefetch_source_urls,
+                fetch_jobs,
+                render_jobs,
+            } => {
+                let request = NativeTppRunRequest {
+                    region,
+                    source_repo,
+                    run_root,
+                    prefetch_source_urls: Some(prefetch_source_urls),
+                    fetch_jobs,
+                    render_jobs,
+                };
+                Ok(vec![build_tpp_node(config, &request)?])
+            }
+            Self::Data { source_urls_dir } => build_data_nodes(config, &source_urls_dir),
+        }
+    }
+}
+
+const PRODUCT_BUILD_CGROUP_ACTIVE_ENV: &str = "PRODUCT_BUILD_CGROUP_ACTIVE";
+const DEFAULT_PRODUCT_BUILD_MEMORY_MAX: &str = "80G";
+
 pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<String> {
     let mut lines = Vec::new();
     lines.push(format!("profile {}", config.profile.as_str()));
@@ -100,6 +210,7 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
     lines.push(format!("source_root {}", config.source_root.display()));
     lines.push(format!("fetch_cache_root {}", config.fetch_cache_root.display()));
     lines.push(format!("fetch_cache_mode {}", config.fetch_cache_mode));
+    lines.push(format!("max_heavy_jobs {}", config.max_heavy_jobs));
     lines.push("nodes".to_string());
     lines.push("  source-urls".to_string());
     for family in ["sec", "tac", "enr-l", "enr-h"] {
@@ -109,6 +220,7 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
     for region in config.profile.tpp_regions() {
         lines.push(format!("  tpp-{}", region.code().to_ascii_lowercase()));
     }
+    lines.push("  data-input-staging".to_string());
     lines.push("  data".to_string());
     lines.push("  resource-index".to_string());
     Ok(lines.join("\n") + "\n")
@@ -117,103 +229,197 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
 pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(&config.build_root)
         .with_context(|| format!("failed to create {}", config.build_root.display()))?;
+    let log_root = config.build_root.join("orchestrator-logs");
+    fs::create_dir_all(&log_root)
+        .with_context(|| format!("failed to create {}", log_root.display()))?;
+    let mut master_log = MasterLog::create(&log_root.join("master.log"))?;
+    master_log.log(format!(
+        "begin profile={} build_root={} max_heavy_jobs={} cpu_jobs={} fetch_jobs={} fetch_cache_mode={}",
+        config.profile.as_str(),
+        config.build_root.display(),
+        config.max_heavy_jobs,
+        config.cpu_jobs,
+        config.fetch_jobs,
+        config.fetch_cache_mode
+    ))?;
 
-    let mut node_records = Vec::new();
-    let source_urls_dir = build_source_urls_node(config, &mut node_records)?;
+    let result = (|| -> anyhow::Result<PathBuf> {
+        let mut node_records = Vec::new();
+        let (source_urls_dir, source_urls_record) = build_source_urls_node(config)?;
+        master_log.log(format!(
+            "complete source-urls cache_hit={}",
+            source_urls_record.cache_hit
+        ))?;
+        node_records.push(source_urls_record);
 
-    let mut chart_sources = Vec::new();
-    for family in [
-        ChartFamily::Sec,
-        ChartFamily::Tac,
-        ChartFamily::EnrL,
-        ChartFamily::EnrH,
-    ] {
-        let family_id = family_slug(family).to_string();
-        let run_root = build_node_root(config, &format!("charts-{family_id}"))?;
-        let request = NativeChartRunRequest {
-            family,
-            source_repo: config.source_root.join("charts"),
-            run_root: run_root.clone(),
-            cpu_jobs: config.cpu_jobs.min(8).max(1),
-            prefetch_source_urls: Some(source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl"))),
+        let mut pending_jobs = VecDeque::new();
+        let mut chart_sources = Vec::new();
+        for family in [
+            ChartFamily::Sec,
+            ChartFamily::Tac,
+            ChartFamily::EnrL,
+            ChartFamily::EnrH,
+        ] {
+            let family_id = family_slug(family).to_string();
+            let run_root = build_node_root(config, &format!("charts-{family_id}"))?;
+            pending_jobs.push_back(HeavyJobSpec::Chart {
+                family,
+                source_repo: config.source_root.join("charts"),
+                run_root: run_root.clone(),
+                prefetch_source_urls: source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl")),
+                fetch_jobs: config.fetch_jobs,
+                cpu_jobs: config.cpu_jobs.min(8).max(1),
+            });
+            chart_sources.push(ChartSource {
+                family_id,
+                package_outputs_path: run_root
+                    .join("meta")
+                    .join("provenance")
+                    .join(format!("charts-{}", family_slug(family)))
+                    .join("package_outputs.jsonl"),
+                package_root: run_root.join("work").join(format!("charts-{}", family_slug(family))),
+            });
+        }
+
+        let csup_run_root = build_node_root(config, "csup")?;
+        pending_jobs.push_back(HeavyJobSpec::Csup {
+            source_repo: config.source_root.join("csup"),
+            run_root: csup_run_root.clone(),
+            prefetch_source_urls: source_urls_dir.join("csup/source_urls.jsonl"),
             fetch_jobs: config.fetch_jobs,
-        };
-        let record = build_chart_node(config, &request)?;
-        node_records.push(record);
-        chart_sources.push(ChartSource {
-            family_id,
-            package_outputs_path: run_root
-                .join("meta")
-                .join("provenance")
-                .join(format!("charts-{}", family_slug(family)))
-                .join("package_outputs.jsonl"),
-            package_root: run_root.join("work").join(format!("charts-{}", family_slug(family))),
+            render_jobs: config.cpu_jobs.max(1),
         });
-    }
+        let csup_sources = vec![AssetSource {
+            package_outputs_path: csup_run_root.join("meta/provenance/csup/package_outputs.jsonl"),
+            asset_root: csup_run_root.join("work/csup"),
+        }];
 
-    let csup_run_root = build_node_root(config, "csup")?;
-    let csup_request = NativeCsupRunRequest {
-        source_repo: config.source_root.join("csup"),
-        run_root: csup_run_root.clone(),
-        prefetch_source_urls: Some(source_urls_dir.join("csup/source_urls.jsonl")),
-        fetch_jobs: config.fetch_jobs,
-    };
-    let csup_record = build_csup_node(config, &csup_request)?;
-    node_records.push(csup_record);
-    let csup_sources = vec![AssetSource {
-        package_outputs_path: csup_run_root.join("meta/provenance/csup/package_outputs.jsonl"),
-        asset_root: csup_run_root.join("work/csup"),
-    }];
+        let mut tpp_sources = Vec::new();
+        for region in config.profile.tpp_regions() {
+            let region_id = region.code().to_ascii_lowercase();
+            let run_root = build_node_root(config, &format!("tpp-{region_id}"))?;
+            pending_jobs.push_back(HeavyJobSpec::Tpp {
+                region: *region,
+                source_repo: config.source_root.join("tpp"),
+                run_root: run_root.clone(),
+                prefetch_source_urls: source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
+                fetch_jobs: config.fetch_jobs,
+                render_jobs: config.cpu_jobs.max(1),
+            });
+            tpp_sources.push(AssetSource {
+                package_outputs_path: run_root
+                    .join(format!("meta/provenance/tpp-{region_id}/package_outputs.jsonl")),
+                asset_root: run_root.join(format!("work/tpp-{region_id}")),
+            });
+        }
 
-    let mut tpp_sources = Vec::new();
-    for region in config.profile.tpp_regions() {
-        let region_id = region.code().to_ascii_lowercase();
-        let run_root = build_node_root(config, &format!("tpp-{region_id}"))?;
-        let request = NativeTppRunRequest {
-            region: *region,
-            source_repo: config.source_root.join("tpp"),
-            run_root: run_root.clone(),
-            prefetch_source_urls: Some(source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl"))),
-            fetch_jobs: config.fetch_jobs,
-        };
-        let record = build_tpp_node(config, &request)?;
-        node_records.push(record);
-        tpp_sources.push(AssetSource {
-            package_outputs_path: run_root.join(format!("meta/provenance/tpp-{region_id}/package_outputs.jsonl")),
-            asset_root: run_root.join(format!("work/tpp-{region_id}")),
+        pending_jobs.push_back(HeavyJobSpec::Data {
+            source_urls_dir: source_urls_dir.clone(),
         });
+
+        let total_heavy_jobs = pending_jobs.len();
+        let (tx, rx) = mpsc::channel();
+        let mut running_jobs = 0_usize;
+        let mut launched_jobs = 0_usize;
+        let mut first_error: Option<anyhow::Error> = None;
+
+        while running_jobs > 0 || !pending_jobs.is_empty() {
+            while first_error.is_none()
+                && running_jobs < config.max_heavy_jobs
+                && !pending_jobs.is_empty()
+            {
+                let spec = pending_jobs.pop_front().expect("queue should be non-empty");
+                let name = spec.name();
+                launched_jobs += 1;
+                master_log.log(format!(
+                    "launch {name} progress={}/{}",
+                    launched_jobs, total_heavy_jobs
+                ))?;
+                let tx = tx.clone();
+                let config = config.clone();
+                thread::spawn(move || {
+                    let result = spec.run(&config);
+                    let _ = tx.send((name, result));
+                });
+                running_jobs += 1;
+            }
+
+            if running_jobs == 0 {
+                break;
+            }
+
+            let (name, result) = rx
+                .recv()
+                .context("heavy-job scheduler channel closed unexpectedly")?;
+            running_jobs -= 1;
+            match result {
+                Ok(records) => {
+                    for record in records {
+                        node_records.push(record);
+                    }
+                    master_log.log(format!(
+                        "complete {name} progress={}/{}",
+                        launched_jobs, total_heavy_jobs
+                    ))?;
+                }
+                Err(err) => {
+                    master_log.log(format!("complete {name} FAIL error={}", err))?;
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                }
+            }
+        }
+
+        if let Some(err) = first_error {
+            return Err(err);
+        }
+
+        let data_zip = node_records
+            .iter()
+            .find(|record| record.name == "data")
+            .and_then(|record| record.outputs.get("zip").cloned())
+            .map(PathBuf::from)
+            .context("data node did not record zip output")?;
+
+        master_log.log("launch resource-index")?;
+        let resource_index_record =
+            build_resource_index_node(config, &data_zip, chart_sources, tpp_sources, csup_sources)?;
+        master_log.log(format!(
+            "complete resource-index cache_hit={}",
+            resource_index_record.cache_hit
+        ))?;
+        node_records.push(resource_index_record);
+
+        let manifest = ProductBuildManifest {
+            schema_version: 1,
+            profile: config.profile.as_str().to_string(),
+            build_root: config.build_root.display().to_string(),
+            generated_at_utc: utc_now_string(),
+            fetch_cache_root: config.fetch_cache_root.display().to_string(),
+            fetch_cache_mode: config.fetch_cache_mode.clone(),
+            nodes: node_records,
+        };
+        let manifest_path = config.build_root.join("product-build.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest)
+                .context("failed to encode product build manifest")?,
+        )
+        .with_context(|| format!("failed to write {}", manifest_path.display()))?;
+        Ok(manifest_path)
+    })();
+
+    match result {
+        Ok(manifest_path) => {
+            master_log.log(format!("complete PASS manifest={}", manifest_path.display()))?;
+            Ok(manifest_path)
+        }
+        Err(err) => {
+            master_log.log(format!("complete FAIL error={err}"))?;
+            Err(err)
+        }
     }
-
-    let data_record = build_data_node(config, &source_urls_dir)?;
-    let data_zip = PathBuf::from(
-        data_record
-            .outputs
-            .get("zip")
-            .cloned()
-            .context("data node did not record zip output")?,
-    );
-    node_records.push(data_record);
-
-    let resource_index_record =
-        build_resource_index_node(config, &data_zip, chart_sources, tpp_sources, csup_sources)?;
-    node_records.push(resource_index_record);
-
-    let manifest = ProductBuildManifest {
-        schema_version: 1,
-        profile: config.profile.as_str().to_string(),
-        build_root: config.build_root.display().to_string(),
-        generated_at_utc: utc_now_string(),
-        fetch_cache_root: config.fetch_cache_root.display().to_string(),
-        fetch_cache_mode: config.fetch_cache_mode.clone(),
-        nodes: node_records,
-    };
-    let manifest_path = config.build_root.join("product-build.json");
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).context("failed to encode product build manifest")?,
-    )
-    .with_context(|| format!("failed to write {}", manifest_path.display()))?;
-    Ok(manifest_path)
 }
 
 impl ProductBuildConfig {
@@ -234,6 +440,7 @@ impl ProductBuildConfig {
         let mut build_root = repo_root.join("product-builds").join(profile.as_str());
         let mut fetch_jobs = env_usize("FETCH_JOBS").unwrap_or(4);
         let mut cpu_jobs = env_usize("CPU_JOBS").unwrap_or_else(default_cpu_jobs);
+        let mut max_heavy_jobs = env_usize("MAX_HEAVY_JOBS").unwrap_or(4).max(1);
         let fetch_cache_root =
             env_path("FETCH_CACHE_ROOT").unwrap_or_else(|| repo_root.join("cache").join("fetch"));
         let fetch_cache_mode = env::var("FETCH_CACHE_MODE").unwrap_or_else(|_| "fill".to_string());
@@ -272,17 +479,26 @@ impl ProductBuildConfig {
                         .context("failed to parse --cpu-jobs")?;
                     index += 2;
                 }
+                "--max-heavy-jobs" => {
+                    max_heavy_jobs = args
+                        .get(index + 1)
+                        .context("missing value for --max-heavy-jobs")?
+                        .parse()
+                        .context("failed to parse --max-heavy-jobs")?;
+                    max_heavy_jobs = max_heavy_jobs.max(1);
+                    index += 2;
+                }
                 other => bail!("unknown build-product argument: {other}"),
             }
         }
 
         Ok(Self {
-            repo_root,
             source_root,
             build_root,
             profile,
             fetch_jobs,
             cpu_jobs,
+            max_heavy_jobs,
             fetch_cache_root,
             fetch_cache_mode,
         })
@@ -291,11 +507,10 @@ impl ProductBuildConfig {
 
 fn build_source_urls_node(
     config: &ProductBuildConfig,
-    node_records: &mut Vec<NodeRecord>,
-) -> anyhow::Result<PathBuf> {
-    let emit_script = config.repo_root.join("legacy-capture/emit_source_urls.py");
+) -> anyhow::Result<(PathBuf, NodeRecord)> {
+    let emit_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/emit_source_urls.rs");
     let inputs = BTreeMap::from([
-        ("emit_script".to_string(), hash_file(&emit_script)?),
+        ("emit_source".to_string(), hash_file(&emit_source)?),
         ("charts_cycle".to_string(), hash_file(&config.source_root.join("charts/cycle.py"))?),
         ("csup_cycle".to_string(), hash_file(&config.source_root.join("csup/cycle.py"))?),
         ("tpp_cycle".to_string(), hash_file(&config.source_root.join("tpp/cycle.py"))?),
@@ -314,28 +529,25 @@ fn build_source_urls_node(
         output_dir.join("data/source_urls.jsonl"),
     ];
     if let Some(record) = try_load_node_record(&prepared, &expected)? {
-        node_records.push(record);
-        return Ok(output_dir);
+        return Ok((output_dir, record));
     }
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
     fs::create_dir_all(&output_dir)?;
-    let output = Command::new("python3")
-        .env("FETCH_CACHE_ROOT", &config.fetch_cache_root)
-        .env("FETCH_CACHE_MODE", &config.fetch_cache_mode)
-        .arg(&emit_script)
-        .args(["--avare-source-root", &config.source_root.display().to_string()])
-        .args(["--output-dir", &output_dir.display().to_string()])
-        .output()
-        .with_context(|| format!("failed to run {}", emit_script.display()))?;
-    if !output.status.success() {
-        bail!(
-            "emit_source_urls.py failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
+    env::set_var("FETCH_CACHE_ROOT", &config.fetch_cache_root);
+    env::set_var("FETCH_CACHE_MODE", &config.fetch_cache_mode);
+    emit_source_urls(&output_dir)?;
     let outputs = BTreeMap::from([("output_dir".to_string(), output_dir.display().to_string())]);
-    let record = write_node_record(prepared, inputs, outputs, false)?;
-    node_records.push(record);
-    Ok(output_dir)
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((output_dir, record))
 }
 
 fn build_chart_node(
@@ -368,12 +580,22 @@ fn build_chart_node(
     if let Some(record) = try_load_node_record(&prepared, &[package_outputs.clone()])? {
         return Ok(record);
     }
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
     let result = run_native_family(request)?;
     let outputs = BTreeMap::from([
         ("work_dir".to_string(), result.work_dir.display().to_string()),
         ("package_outputs".to_string(), package_outputs.display().to_string()),
     ]);
-    write_node_record(prepared, inputs, outputs, false)
+    write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )
 }
 
 fn build_csup_node(
@@ -396,12 +618,22 @@ fn build_csup_node(
     if let Some(record) = try_load_node_record(&prepared, &[package_outputs.clone()])? {
         return Ok(record);
     }
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
     let result = run_native_csup(request)?;
     let outputs = BTreeMap::from([
         ("work_dir".to_string(), result.work_dir.display().to_string()),
         ("package_outputs".to_string(), package_outputs.display().to_string()),
     ]);
-    write_node_record(prepared, inputs, outputs, false)
+    write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )
 }
 
 fn build_tpp_node(
@@ -426,59 +658,134 @@ fn build_tpp_node(
     if let Some(record) = try_load_node_record(&prepared, &[package_outputs.clone()])? {
         return Ok(record);
     }
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
     let result = run_native_tpp(request)?;
     let outputs = BTreeMap::from([
         ("work_dir".to_string(), result.work_dir.display().to_string()),
         ("package_outputs".to_string(), package_outputs.display().to_string()),
     ]);
-    write_node_record(prepared, inputs, outputs, false)
+    write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )
 }
 
-fn build_data_node(
+fn build_data_nodes(
     config: &ProductBuildConfig,
     source_urls_dir: &Path,
-) -> anyhow::Result<NodeRecord> {
+) -> anyhow::Result<Vec<NodeRecord>> {
+    let source_urls = source_urls_dir.join("data/source_urls.jsonl");
+    let (staged_input_dir, staging_record) = build_data_input_node(config, &source_urls)?;
+
     let node_root = build_node_root(config, "data")?;
-    let input_dir = node_root.join("input");
-    if !input_dir.exists() {
-        copy_dir_recursive(&config.source_root.join("data"), &input_dir)?;
-    }
     let provenance_dir = node_root.join("meta/provenance/data");
     fs::create_dir_all(&provenance_dir)?;
-    let source_urls = source_urls_dir.join("data/source_urls.jsonl");
     copy_source_urls_provenance(&source_urls, &provenance_dir)?;
-    let urls = read_source_urls_jsonl(&source_urls)?;
-    prefetch_archives_with_provenance(
-        &urls,
-        &input_dir,
-        config.fetch_jobs,
-        &provenance_dir,
-        "data",
-    )?;
 
     let request = DataBuildRequest {
-        input_dir: input_dir.clone(),
+        input_dir: staged_input_dir.clone(),
         output_dir: node_root.join("output"),
         manifest_version: current_data_manifest_cycle(),
     };
     let inputs = BTreeMap::from([
-        ("source_repo".to_string(), hash_tree(&config.source_root.join("data"))?),
+        ("staged_input_dir".to_string(), staged_input_dir.display().to_string()),
+        (
+            "staged_input_fingerprint".to_string(),
+            staging_record.fingerprint.clone(),
+        ),
         ("source_urls".to_string(), hash_file(&source_urls)?),
-        ("input_dir".to_string(), hash_tree(&input_dir)?),
         ("manifest_version".to_string(), request.manifest_version.clone()),
     ]);
     let prepared = prepare_existing_node_root("data", &node_root, &inputs)?;
     let zip_path = request.output_dir.join("databases.zip");
     if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone()])? {
-        return Ok(record);
+        return Ok(vec![staging_record, record]);
     }
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
     let result = build_data_package(&request)?;
     let outputs = BTreeMap::from([
         ("main_db".to_string(), result.main_db.display().to_string()),
         ("manifest".to_string(), result.manifest_path.display().to_string()),
         ("zip".to_string(), result.zip_path.display().to_string()),
     ]);
-    write_node_record(prepared, inputs, outputs, false)
+    let build_record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok(vec![staging_record, build_record])
+}
+
+fn build_data_input_node(
+    config: &ProductBuildConfig,
+    source_urls: &Path,
+) -> anyhow::Result<(PathBuf, NodeRecord)> {
+    let inputs = BTreeMap::from([
+        ("source_repo".to_string(), hash_tree(&config.source_root.join("data"))?),
+        ("source_urls".to_string(), hash_file(source_urls)?),
+        ("fetch_jobs".to_string(), config.fetch_jobs.to_string()),
+        (
+            "fetch_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-fetch/src/lib.rs"),
+            )?,
+        ),
+    ]);
+    let prepared = prepare_node(config, "data-input-staging", &inputs)?;
+    let staged_root = prepared.dir.join("out");
+    let marker = staged_root.join(".staged-complete");
+    if let Some(record) = try_load_node_record(&prepared, std::slice::from_ref(&marker))? {
+        return Ok((staged_root, record));
+    }
+
+    if staged_root.exists() {
+        fs::remove_dir_all(&staged_root)
+            .with_context(|| format!("failed to remove {}", staged_root.display()))?;
+    }
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    copy_dir_recursive(&config.source_root.join("data"), &staged_root)?;
+    let provenance_dir = prepared.dir.join("meta/provenance/data-input-staging");
+    fs::create_dir_all(&provenance_dir)?;
+    copy_source_urls_provenance(source_urls, &provenance_dir)?;
+    let urls = read_source_urls_jsonl(source_urls)?;
+    prefetch_archives_with_provenance(
+        &urls,
+        &staged_root,
+        config.fetch_jobs,
+        &provenance_dir,
+        "data",
+    )?;
+    fs::write(&marker, b"ok")
+        .with_context(|| format!("failed to write {}", marker.display()))?;
+    let outputs = BTreeMap::from([
+        ("staged_input_dir".to_string(), staged_root.display().to_string()),
+        ("provenance_dir".to_string(), provenance_dir.display().to_string()),
+    ]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((staged_root, record))
 }
 
 fn build_resource_index_node(
@@ -534,6 +841,8 @@ fn build_resource_index_node(
     if let Some(record) = try_load_node_record(&prepared, &[output_path.clone()])? {
         return Ok(record);
     }
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
     let request = BuildResourceIndexRequest {
         nav_db_zip: nav_db_zip.to_path_buf(),
         output_path: output_path.clone(),
@@ -543,7 +852,15 @@ fn build_resource_index_node(
     };
     write_resource_index(&request)?;
     let outputs = BTreeMap::from([("resource_index".to_string(), output_path.display().to_string())]);
-    write_node_record(prepared, inputs, outputs, false)
+    write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )
 }
 
 fn prepare_node(
@@ -602,12 +919,16 @@ fn write_node_record(
     inputs: BTreeMap<String, String>,
     outputs: BTreeMap<String, String>,
     cache_hit: bool,
+    started_at_utc: String,
+    finished_at_utc: String,
+    elapsed_ms: u64,
 ) -> anyhow::Result<NodeRecord> {
     let record = NodeRecord {
         name: prepared.name,
         fingerprint: prepared.fingerprint,
-        started_at_utc: utc_now_string(),
-        finished_at_utc: utc_now_string(),
+        started_at_utc,
+        finished_at_utc,
+        elapsed_ms,
         cache_hit,
         inputs,
         outputs,
@@ -697,6 +1018,83 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
 
 fn utc_now_string() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+pub fn maybe_reexec_build_product_under_cgroup(args: &[String]) -> anyhow::Result<bool> {
+    if env::var_os(PRODUCT_BUILD_CGROUP_ACTIVE_ENV).is_some() {
+        return Ok(false);
+    }
+    if !command_exists("systemd-run") {
+        return Ok(false);
+    }
+    let memory_max = env::var("PRODUCT_BUILD_MEMORY_MAX")
+        .unwrap_or_else(|_| DEFAULT_PRODUCT_BUILD_MEMORY_MAX.to_string());
+    let current_exe = env::current_exe().context("failed to resolve current executable")?;
+    let status = Command::new("systemd-run")
+        .args(["--quiet", "--wait", "--collect"])
+        .args(["-p", &format!("MemoryMax={memory_max}")])
+        .args(["-p", "MemorySwapMax=0"])
+        .args(["-p", "OOMPolicy=kill"])
+        .arg("env")
+        .arg(format!("{PRODUCT_BUILD_CGROUP_ACTIVE_ENV}=1"))
+        .arg(current_exe)
+        .arg("build-product")
+        .args(args)
+        .status()
+        .context("failed to re-exec product build under systemd-run")?;
+    let exit_code = status.code().unwrap_or(1);
+    if exit_code == 0 {
+        return Ok(true);
+    }
+    bail!("product build cgroup wrapper exited with code {exit_code}");
+}
+
+fn command_exists(name: &str) -> bool {
+    Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {name} >/dev/null 2>&1"))
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+struct MasterLog {
+    start: Instant,
+    file: File,
+}
+
+impl MasterLog {
+    fn create(path: &Path) -> anyhow::Result<Self> {
+        let file =
+            File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
+        Ok(Self {
+            start: Instant::now(),
+            file,
+        })
+    }
+
+    fn log(&mut self, message: impl AsRef<str>) -> anyhow::Result<()> {
+        writeln!(
+            self.file,
+            "{} {}",
+            format_elapsed(self.start.elapsed().as_secs()),
+            message.as_ref()
+        )
+        .context("failed to write master log")?;
+        self.file.flush().context("failed to flush master log")?;
+        Ok(())
+    }
+}
+
+fn format_elapsed(elapsed_secs: u64) -> String {
+    let hours = elapsed_secs / 3600;
+    let minutes = (elapsed_secs % 3600) / 60;
+    let seconds = elapsed_secs % 60;
+    if hours > 0 {
+        format!("+{}:{minutes:02}:{seconds:02}", hours)
+    } else {
+        format!("+{minutes}:{seconds:02}")
+    }
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {

@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::Context;
+mod emit_source_urls;
 mod product_build;
 use preprocessor_charts::{
     build_family_tiles, build_family_vrts, likely_current_bottleneck, package_family_regions,
@@ -26,7 +27,10 @@ use preprocessor_resource_index::{
 };
 use preprocessor_tools::{comparison_targets, ToolInvocation};
 use preprocessor_tpp::{run_native_tpp, NativeTppRunRequest};
-use product_build::{build_product, explain_product_build, ProductBuildConfig};
+use product_build::{
+    build_product, explain_product_build, maybe_reexec_build_product_under_cgroup,
+    ProductBuildConfig,
+};
 use sha2::{Digest, Sha256};
 
 fn load_manifest(run_root: &PathBuf) -> anyhow::Result<CaptureManifest> {
@@ -72,8 +76,8 @@ fn usage() -> &'static str {
   preprocessor-cli run-native-tpp --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli build-data --input-dir <path> --output-dir <path> --manifest-version <cycle> [--resource-index-output <path>] [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
-  preprocessor-cli build-product [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>]
-  preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>]
+  preprocessor-cli build-product [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli run-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
 }
 
@@ -1502,6 +1506,9 @@ fn main() -> anyhow::Result<()> {
                 run_root,
                 prefetch_source_urls,
                 fetch_jobs,
+                render_jobs: std::thread::available_parallelism()
+                    .map(usize::from)
+                    .unwrap_or(8),
             })?;
             println!("prefetch_elapsed_ms {}", result.prefetch_elapsed_ms);
             println!("render_elapsed_ms {}", result.render_elapsed_ms);
@@ -1561,6 +1568,9 @@ fn main() -> anyhow::Result<()> {
                 run_root,
                 prefetch_source_urls,
                 fetch_jobs,
+                render_jobs: std::thread::available_parallelism()
+                    .map(usize::from)
+                    .unwrap_or(8),
             })?;
             println!("prefetch_elapsed_ms {}", result.prefetch_elapsed_ms);
             println!("render_elapsed_ms {}", result.render_elapsed_ms);
@@ -1664,6 +1674,9 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Some("build-product") => {
+            if maybe_reexec_build_product_under_cgroup(&args[2..])? {
+                return Ok(());
+            }
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;
             let manifest_path = build_product(&config)?;
             println!("{}", manifest_path.display());

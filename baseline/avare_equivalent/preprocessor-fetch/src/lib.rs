@@ -95,6 +95,11 @@ pub fn read_source_urls_jsonl(path: impl AsRef<Path>) -> anyhow::Result<Vec<Stri
         }
         let value: serde_json::Value =
             serde_json::from_str(line).context("failed to parse source url jsonl line")?;
+        if value.get("event").and_then(|value| value.as_str()) == Some("source_url") {
+            if let Some(url) = value.get("url").and_then(|value| value.as_str()) {
+                urls.push(url.to_string());
+            }
+        }
         if let Some(results) = value.get("results").and_then(|value| value.as_array()) {
             for result in results {
                 if let Some(url) = result.as_str() {

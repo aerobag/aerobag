@@ -1,7 +1,10 @@
 use std::{
+    collections::VecDeque,
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::{Arc, Mutex},
+    thread,
     time::Instant,
 };
 
@@ -24,6 +27,7 @@ pub struct NativeTppRunRequest {
     pub run_root: PathBuf,
     pub prefetch_source_urls: Option<PathBuf>,
     pub fetch_jobs: usize,
+    pub render_jobs: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -75,7 +79,7 @@ pub fn run_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<NativeTpp
     }
 
     let render_start = Instant::now();
-    render_tpp_region(&work_dir, request.region)?;
+    render_tpp_region(&work_dir, request.region, request.render_jobs)?;
     let render_elapsed_ms = render_start.elapsed().as_millis();
 
     let package_start = Instant::now();
@@ -103,15 +107,50 @@ fn stage_work_dir(source_repo: &Path, run_root: &Path, region: Region) -> anyhow
     Ok(work_dir)
 }
 
-fn render_tpp_region(work_dir: &Path, region: Region) -> anyhow::Result<()> {
+fn render_tpp_region(work_dir: &Path, region: Region, render_jobs: usize) -> anyhow::Result<()> {
     uppercase_pdf_names(work_dir)?;
     fs::create_dir_all(work_dir.join("plates")).context("failed to create plates dir")?;
     let ad_tags = read_airport_diagram_tags(&work_dir.join("avare_aptdiags.php"))?;
     let xml_path = work_dir.join("d-TPP_Metafile.xml");
     let plates = parse_region_plates(&xml_path, region)?;
-    for plate in &plates {
-        make_plate(work_dir, &ad_tags, plate)?;
+    render_plates_parallel(work_dir, &ad_tags, plates, render_jobs)
+}
+
+fn render_plates_parallel(
+    work_dir: &Path,
+    ad_tags: &std::collections::HashMap<String, String>,
+    plates: Vec<PlateRecord>,
+    render_jobs: usize,
+) -> anyhow::Result<()> {
+    let queue = Arc::new(Mutex::new(VecDeque::from(plates)));
+    let job_count = render_jobs.max(1);
+    let mut handles = Vec::with_capacity(job_count);
+
+    for _ in 0..job_count {
+        let queue = Arc::clone(&queue);
+        let work_dir = work_dir.to_path_buf();
+        let ad_tags = ad_tags.clone();
+        handles.push(thread::spawn(move || -> anyhow::Result<()> {
+            loop {
+                let plate = {
+                    let mut guard = queue.lock().map_err(|_| anyhow::anyhow!("plate queue poisoned"))?;
+                    guard.pop_front()
+                };
+                let Some(plate) = plate else {
+                    break;
+                };
+                make_plate(&work_dir, &ad_tags, &plate)?;
+            }
+            Ok(())
+        }));
     }
+
+    for handle in handles {
+        handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("tpp render worker panicked"))??;
+    }
+
     Ok(())
 }
 

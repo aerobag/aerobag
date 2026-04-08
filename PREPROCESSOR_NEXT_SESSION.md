@@ -1037,3 +1037,123 @@ If the next session starts with no further instruction, do this:
   - verified:
     - `cargo check -p preprocessor-cli --manifest-path /root/aerobag/product/preprocessor/Cargo.toml`
     - `cargo run -q -p preprocessor-cli --manifest-path /root/aerobag/product/preprocessor/Cargo.toml -- explain-product-build --profile production`
+
+- Product build orchestration now has Banana-style resource control:
+  - file:
+    - [product_build.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs)
+  - new behavior:
+    - self-reexec under `systemd-run` cgroup before `build-product`
+    - defaults:
+      - `PRODUCT_BUILD_MEMORY_MAX=80G`
+      - `MAX_HEAVY_JOBS=4`
+      - `MemorySwapMax=0`
+      - `OOMPolicy=kill`
+    - tail-friendly master log at:
+      - `<build-root>/orchestrator-logs/master.log`
+    - heavy jobs are now scheduled with a bounded queue instead of running serially
+      - heavy phase includes charts, `csup`, `tpp`, and `data`
+      - `resource-index` still runs after all heavy producers complete
+  - CLI:
+    - `build-product ... --max-heavy-jobs <count>`
+    - `explain-product-build ... --max-heavy-jobs <count>`
+  - verified:
+    - `cargo check -p preprocessor-cli --manifest-path /root/aerobag/product/preprocessor/Cargo.toml`
+    - `cargo run -q -p preprocessor-cli --manifest-path /root/aerobag/product/preprocessor/Cargo.toml -- explain-product-build --profile validation --max-heavy-jobs 4`
+  - next real step on product side is still:
+    - run an actual `build-product --profile validation`
+    - inspect cache hits on a second rerun
+
+- Product node records were tightened:
+  - [product_build.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs)
+  - `build-record.json` now records:
+    - true `started_at_utc`
+    - true `finished_at_utc`
+    - `elapsed_ms`
+  - cache hits still reuse the prior node record and just surface as `cache_hit=true`
+  - this closes the earlier loose end where start/finish were both stamped at write time and were not diagnostically useful
+
+- Product `data` input staging is now content-addressed:
+  - [product_build.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs)
+  - graph split:
+    - `data-input-staging`
+    - `data`
+  - `data-input-staging` now fingerprints:
+    - `avare-source/data`
+    - `data/source_urls.jsonl`
+    - `fetch_jobs`
+  - its output is a deterministic staged/extracted FAA input tree under the node fingerprint path plus a `.staged-complete` marker
+  - `data` now fingerprints the staged input tree hash instead of forcing prefetch/unzip before it can know whether it is reusable
+  - result:
+    - reruns can skip the expensive FAA prefetch/extract phase for `data` if the staged input node is already present
+
+- Product source discovery is now fully Rust-native:
+  - new file:
+    - [emit_source_urls.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/emit_source_urls.rs)
+  - [product_build.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs) no longer shells out to [legacy-capture/emit_source_urls.py](/root/aerobag/legacy-capture/emit_source_urls.py) for the `source-urls` node
+  - the `source-urls` node fingerprint now keys off:
+    - product Rust emitter source
+    - legacy cycle files under `avare-source`
+  - result:
+    - product build graph no longer depends on Python for source-url discovery
+    - remaining external tools on the product path are the real render/fetch tools, not control-plane glue
+
+- Product `tpp` / `csup` rendering is no longer effectively single-threaded:
+  - [preprocessor-tpp/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-tpp/src/lib.rs)
+    - added `render_jobs` to `NativeTppRunRequest`
+    - `render_tpp_region()` now uses a bounded worker pool over plate records
+  - [preprocessor-csup/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-csup/src/lib.rs)
+    - added `render_jobs` to `NativeCsupRunRequest`
+    - `render_csup_pages()` now uses a bounded worker pool over airport groups
+    - duplicate-airport overwrite semantics are preserved by processing all records for the same `aptid` sequentially inside one worker task
+  - [product_build.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs)
+    - product heavy jobs now pass `render_jobs = cpu_jobs`
+  - [main.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/main.rs)
+    - direct `run-native-csup` / `run-native-tpp` commands also default `render_jobs` to available parallelism
+
+- Product validation run status:
+  - canonical command:
+    - `cargo run -q -p preprocessor-cli --manifest-path /root/aerobag/product/preprocessor/Cargo.toml -- build-product --profile validation`
+  - current successful build root:
+    - [/root/aerobag/product-builds/validation](/root/aerobag/product-builds/validation)
+  - current master log:
+    - [master.log](/root/aerobag/product-builds/validation/orchestrator-logs/master.log)
+  - current manifest:
+    - [product-build.json](/root/aerobag/product-builds/validation/product-build.json)
+  - current resource index:
+    - [resource-index.json](/root/aerobag/product-builds/validation/work/resource-index/resource-index.json)
+  - current state:
+    - validation profile completes successfully end to end
+    - warm reruns are effectively instant
+    - latest warm rerun ended with:
+      - `+0:08 complete PASS manifest=/root/aerobag/product-builds/validation/product-build.json`
+
+- Product source-url parser bugs that were shaken out by the first real validation runs:
+  - first failure mode:
+    - `data-input-staging` treated `data/source_urls.jsonl` as empty because [read_source_urls_jsonl](/root/aerobag/product/preprocessor/preprocessor-fetch/src/lib.rs) only understood crawl-style `results[]` records
+    - fix:
+      - accept top-level `url` when `event == "source_url"`
+  - second failure mode:
+    - after the first fix, `csup` tried to download the FAA listing page itself because crawl records also have a top-level `url`
+    - fix:
+      - only treat top-level `url` as downloadable for `event == "source_url"`
+      - continue using `results[]` for crawl records
+  - files:
+    - [product fetch lib](/root/aerobag/product/preprocessor/preprocessor-fetch/src/lib.rs)
+    - [baseline fetch lib](/root/aerobag/baseline/avare_equivalent/preprocessor-fetch/src/lib.rs)
+
+- Product `data` warm-cache behavior was tightened further:
+  - earlier split into `data-input-staging` / `data` was not enough, because `data` still recomputed a full `hash_tree(staged_input_dir)` on every rerun
+  - current behavior in [product_build.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs):
+    - `data` now fingerprints `staging_record.fingerprint` instead of rehashing the full staged FAA tree
+  - result:
+    - warm `data` no longer pays the large tree-walk cost
+    - this is what enabled the current `+0:08` end-to-end warm validation rerun
+
+- Product build metadata still has one obvious self-description gap:
+  - build-level metadata is good:
+    - `product-build.json` records profile, timestamps, node fingerprints, cache-hit state
+    - `resource-index.json` records top-level `cycle` and `nav_db.cycle_code`
+  - missing today:
+    - explicit `cycle_code` on every package entry in the resource index
+  - likely next small metadata improvement:
+    - add per-package `cycle_code` in [preprocessor-resource-index/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-resource-index/src/lib.rs), probably sourced from package manifest first lines where applicable

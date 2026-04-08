@@ -11,6 +11,10 @@ The prototype is now a real 3-page shell on both web and Android:
 
 The current implementation is still driven by generated fixture/index data, but the shells are no longer a single map demo.
 
+Important current split:
+- web plate/CSUP viewing uses the richer validation `resource-index` and serves chart PNGs directly from real build-output paths via a manifest-backed Vite middleware
+- Android plate/CSUP viewing is intentionally limited to `NW_TPP` and `NW_CSUP`, seeded as zip packages into app-local storage after install
+
 ## What Works Now
 
 ### Shared fixture pipeline
@@ -24,18 +28,17 @@ Generated outputs:
 - [ui/android-app/app/src/main/assets/fixtures/contentFixture.json](/root/aerobag/ui/android-app/app/src/main/assets/fixtures/contentFixture.json)
 
 The fixture now includes:
-- real `NW_SEC` and `SW_SEC` sectional package metadata
-- real `NW_TAC` package metadata
-- chart-page seed data for BOS:
-  - one real plate PNG
-  - one real CSup PNG
-- chart asset metadata outside the individual zip packages
+- real tiled chart metadata across the indexed families
+- no `chart_page` bootstrap block anymore
+- chart-page resources are derived from `resource-index.airport_resources + plates + csups`
+- sample flight plan is still generated, but current plate page airport/chart selection is app-owned local state now
 
 Chart asset staging:
-- web static root:
-  - [ui/web-app/generated-static/chart-assets](/root/aerobag/ui/web-app/generated-static/chart-assets)
-- Android assets:
-  - [ui/android-app/app/src/main/assets/chart-assets](/root/aerobag/ui/android-app/app/src/main/assets/chart-assets)
+- web manifest:
+  - [ui/web-app/generated-static/chart-assets-manifest.json](/root/aerobag/ui/web-app/generated-static/chart-assets-manifest.json)
+- Android seeded chart packages:
+  - `NW_TPP.zip`
+  - `NW_CSUP.zip`
 
 ### Web app
 
@@ -75,6 +78,8 @@ What it does now:
   - double-click zoom
   - pinch zoom
   - one-thumb overscroll margin around the image
+- the selected chart `<img>` must stay mounted before viewport initialization
+  - otherwise the page can deadlock into showing no plate at all
 - `?debugTiles=1` overlays tile `z/x/y`
 
 Important recent web rendering fixes:
@@ -90,8 +95,13 @@ Important web serving note:
 - they are served from:
   - [ui/web-app/generated-static/sectional-packages](/root/aerobag/ui/web-app/generated-static/sectional-packages)
 - chart PNGs are served from:
-  - [ui/web-app/generated-static/chart-assets](/root/aerobag/ui/web-app/generated-static/chart-assets)
+  - real build-output files resolved through:
+    - [ui/web-app/generated-static/chart-assets-manifest.json](/root/aerobag/ui/web-app/generated-static/chart-assets-manifest.json)
 - [ui/web-app/vite.config.ts](/root/aerobag/ui/web-app/vite.config.ts) mounts both via explicit middleware
+- important detail:
+  - the `/chart-assets` middleware receives stripped paths like `/KSEA/APD-...png`
+  - the manifest keys are `/chart-assets/KSEA/APD-...png`
+  - the middleware must handle both forms or Vite falls back to `index.html`
 
 This was necessary because long-lived Vite dev servers were intermittently returning `index.html` for generated tile asset URLs when generated trees changed under them.
 
@@ -108,12 +118,13 @@ Important files:
 - [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/MapViewport.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/MapViewport.kt)
 - [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/ImageViewport.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/ImageViewport.kt)
 - [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SectionalPackages.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SectionalPackages.kt)
+- [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/ChartPackages.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/ChartPackages.kt)
 
 What it does now:
 - full-page tiled `Map` page in Compose
 - bottom-centered `Nav Element` opens `Flight Plan`
 - `Flight Plan` page with simple waypoint table and modal
-- `Charts` page showing flat chart/CSup PNGs from Android assets
+- `Charts` page showing flat chart/CSup PNGs from seeded zip packages, with asset fallback only if needed
 - chart-family tray is modal with scrim
 - chart-family switching preserves lat/lon/continuous zoom
 - leaving `Map` and coming back preserves the map viewport
@@ -142,9 +153,13 @@ What it does now:
 
 Important current Android dev note:
 - do not bundle the full chart zip universe into the APK
+- do not bundle loose chart PNG trees into the APK either
 - the APK must stay small enough to install on the emulator
-- for dev, chart zips need to be seeded separately
-- `SectionalPackages` now prefers already-seeded local package files and no longer crashes if a bundled asset is missing
+- for dev, payloads are seeded separately after install:
+  - tiled zips via `seedPrototypeSectionalPackages`
+  - `NW_TPP.zip` and `NW_CSUP.zip` via `seedPrototypeChartPackages`
+- `SectionalPackages` and `ChartPackages` both prefer already-seeded local package files
+- current Android plate/CSUP universe is intentionally NW-only because only `NW_TPP` and `NW_CSUP` are seeded
 
 ### Shared Rust core
 
@@ -201,6 +216,15 @@ curl -I http://localhost:8080/sectional-packages/NW_SEC/tiles/0/9/93/324.webp
 Expected:
 - `Content-Type: image/webp`
 
+If the live dev server is not showing plates, verify one real chart PNG directly:
+
+```bash
+curl -I 'http://localhost:8080/chart-assets/06N/IAP-NY-RNAV%20(GPS)%20RWY%2008.png'
+```
+
+Expected:
+- `Content-Type: image/png`
+
 ### Android
 
 Build and install:
@@ -231,11 +255,12 @@ Preferred Android verification command now:
 
 What it does:
 1. `installDebug`
-2. clears `logcat`
-3. force-stops the app
-4. launches the app
-5. waits briefly
-6. prints:
+2. seeds sectional zips and chart packages
+3. clears `logcat`
+4. force-stops the app
+5. launches the app
+6. waits briefly
+7. prints:
    - resumed activity
    - crash lines
    - pass/fail result
@@ -243,6 +268,9 @@ What it does:
 Important discipline:
 - if the user reports a crash, read `logcat` before reinstalling or relaunching
 - reinstalling the APK will kill the running app with `installPackageLI`, which is not evidence of a runtime crash
+- do not run `npm run build` and `./gradlew test` in parallel
+  - both invoke [ui/scripts/generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py)
+  - that generator mutates shared generated trees and can race
 
 Current reboot bring-up sequence that worked:
 

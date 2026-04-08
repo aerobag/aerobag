@@ -213,13 +213,21 @@ private fun airportIdsFromPlan(plan: FlightPlan): List<String> {
     return result.toList()
 }
 
-private fun chartAsset(airportId: String, kind: String, label: String, assetPath: String): ChartAsset {
+private fun chartAsset(
+    airportId: String,
+    packageId: String,
+    kind: String,
+    label: String,
+    assetPath: String,
+): ChartAsset {
     val filename = assetPath.substringAfterLast('/')
     return ChartAsset(
         id = "$kind:$airportId:$filename",
         airportId = airportId,
+        packageId = packageId,
         label = if (kind == "csup") "CSup" else label,
         kind = kind,
+        sourceAssetPath = assetPath,
         assetPath = "chart-assets/$airportId/$filename",
         assetUrl = "/chart-assets/$airportId/$filename",
     )
@@ -227,25 +235,27 @@ private fun chartAsset(airportId: String, kind: String, label: String, assetPath
 
 fun deriveChartPage(
     resourceIndex: WireResourceIndex,
-    recentAirportIds: List<String>,
-    initialAirportIdHint: String?,
-    initialChartIdHint: String?,
     samplePlan: FlightPlan,
+    allowedPackageIds: Set<String>? = null,
 ): ChartPageFixture {
     val plateById = resourceIndex.plates.associateBy { it.id }
     val csupById = resourceIndex.csups.associateBy { it.id }
     val airportResourcesByAirportId = resourceIndex.airport_resources.associateBy { it.airport_id }
     val airportIds = linkedSetOf<String>()
-    recentAirportIds.forEach(airportIds::add)
     airportIdsFromPlan(samplePlan).forEach(airportIds::add)
+    resourceIndex.airport_resources.forEach { airportIds.add(it.airport_id) }
     val airports = airportIds.mapNotNull { airportId ->
         val airportResources = airportResourcesByAirportId[airportId] ?: return@mapNotNull null
         val charts = buildList {
-            airportResources.plate_ids.mapNotNull(plateById::get).forEach { record ->
-                add(chartAsset(airportId, "plate", record.label, record.asset_path))
+            airportResources.plate_ids.mapNotNull(plateById::get).filter { record ->
+                allowedPackageIds == null || allowedPackageIds.contains(record.package_id)
+            }.forEach { record ->
+                add(chartAsset(airportId, record.package_id, "plate", record.label, record.asset_path))
             }
-            airportResources.csup_ids.mapNotNull(csupById::get).forEach { record ->
-                add(chartAsset(airportId, "csup", record.label, record.asset_path))
+            airportResources.csup_ids.mapNotNull(csupById::get).filter { record ->
+                allowedPackageIds == null || allowedPackageIds.contains(record.package_id)
+            }.forEach { record ->
+                add(chartAsset(airportId, record.package_id, "csup", record.label, record.asset_path))
             }
         }
         if (charts.isEmpty()) {
@@ -258,18 +268,7 @@ fun deriveChartPage(
             )
         }
     }
-    val initialAirportId =
-        initialAirportIdHint?.takeIf { airportId -> airports.any { it.id == airportId } }
-            ?: airports.firstOrNull()?.id
-            ?: ""
-    val initialChartId =
-        initialChartIdHint?.takeIf { chartId -> airports.any { airport -> airport.charts.any { it.id == chartId } } }
-            ?: airports.firstOrNull { it.id == initialAirportId }?.charts?.firstOrNull()?.id
-            ?: ""
     return ChartPageFixture(
-        recentAirportIds = airports.map { it.id },
-        initialAirportId = initialAirportId,
-        initialChartId = initialChartId,
         airports = airports,
     )
 }

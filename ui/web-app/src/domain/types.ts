@@ -184,23 +184,6 @@ export type ContentFixtureBundle = {
     region_id: RegionId;
     map_view: ContentFixtureBundle["map_view"];
   }>;
-  chart_page?: {
-    recent_airport_ids: string[];
-    initial_airport_id: string;
-    initial_chart_id: string;
-    airports: Array<{
-      id: string;
-      label: string;
-      charts: Array<{
-        id: string;
-        airport_id: string;
-        label: string;
-        kind: string;
-        asset_path: string;
-        asset_url: string;
-      }>;
-    }>;
-  };
   map_tile_view: {
     chart_family: ChartFamilyId;
     chart_name: string;
@@ -217,6 +200,21 @@ export type ContentFixtureBundle = {
   flight_plan: FlightPlan;
   remote_only_inventory: ContentInventory;
   installed_inventory: ContentInventory;
+};
+
+export type ChartPageData = {
+  airports: Array<{
+    id: string;
+    label: string;
+    charts: Array<{
+      id: string;
+      airport_id: string;
+      label: string;
+      kind: string;
+      asset_path: string;
+      asset_url: string;
+    }>;
+  }>;
 };
 
 export type ResourceIndexJson = {

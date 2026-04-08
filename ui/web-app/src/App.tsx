@@ -52,14 +52,37 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> 
 ];
 
 const waypointActions = ["Remove", "Insert", "Reorder", "Waypoint Info", "Add Airway", "Select Procedure", "Charts"];
+const webUiStateStorageKey = "aerobag.web.uiState.v1";
+
+type PersistedWebUiState = {
+  page?: AppPage;
+  selectedAirportId?: string;
+  selectedChartId?: string;
+  recentAirportIds?: string[];
+};
 
 export default function App() {
   const locationSearch = typeof window !== "undefined" ? window.location.search : "";
   const debugTileLabels = new URLSearchParams(locationSearch).has("debugTiles");
-  const [page, setPage] = useState<AppPage>("map");
+  const persistedUiState = useMemo(readPersistedWebUiState, []);
+  const [page, setPage] = useState<AppPage>(persistedUiState.page ?? "map");
   const [selectedMapId, setSelectedMapId] = useState<string>(mapViews[0].id);
-  const [selectedAirportId, setSelectedAirportId] = useState(chartPage.initial_airport_id || chartPage.airports[0]?.id || "");
-  const [selectedChartId, setSelectedChartId] = useState(chartPage.initial_chart_id || chartPage.airports[0]?.charts[0]?.id || "");
+  const initialRecentAirportIds = useMemo(
+    () => mergeRecentAirportIds(chartPage.airports, persistedUiState.recentAirportIds ?? []),
+    [persistedUiState],
+  );
+  const [recentAirportIds, setRecentAirportIds] = useState<string[]>(initialRecentAirportIds);
+  const [selectedAirportId, setSelectedAirportId] = useState(
+    () => resolveAirportId(chartPage.airports, persistedUiState.selectedAirportId, initialRecentAirportIds),
+  );
+  const [selectedChartId, setSelectedChartId] = useState(
+    () =>
+      resolveChartId(
+        chartPage.airports,
+        resolveAirportId(chartPage.airports, persistedUiState.selectedAirportId, initialRecentAirportIds),
+        persistedUiState.selectedChartId,
+      ),
+  );
 
   const selectedMap = useMemo(
     () => mapViews.find((view) => view.id === selectedMapId) ?? mapViews[0],
@@ -82,6 +105,10 @@ export default function App() {
     () => chartPage.airports.find((airport) => airport.id === selectedAirportId) ?? chartPage.airports[0] ?? null,
     [selectedAirportId],
   );
+  const orderedChartAirports = useMemo(
+    () => orderAirportsByRecency(chartPage.airports, recentAirportIds),
+    [recentAirportIds],
+  );
   const selectedChart = useMemo(
     () => selectedAirport?.charts.find((chart) => chart.id === selectedChartId) ?? selectedAirport?.charts[0] ?? null,
     [selectedAirport, selectedChartId],
@@ -97,15 +124,34 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!selectedAirport && chartPage.airports[0]) {
-      setSelectedAirportId(chartPage.airports[0].id);
-      setSelectedChartId(chartPage.airports[0].charts[0]?.id ?? "");
+    const normalizedRecentAirportIds = mergeRecentAirportIds(chartPage.airports, recentAirportIds);
+    if (!sameIds(normalizedRecentAirportIds, recentAirportIds)) {
+      setRecentAirportIds(normalizedRecentAirportIds);
+      return;
     }
-  }, [selectedAirport]);
+    const normalizedAirportId = resolveAirportId(chartPage.airports, selectedAirportId, normalizedRecentAirportIds);
+    if (normalizedAirportId !== selectedAirportId) {
+      setSelectedAirportId(normalizedAirportId);
+      return;
+    }
+    const normalizedChartId = resolveChartId(chartPage.airports, normalizedAirportId, selectedChartId);
+    if (normalizedChartId !== selectedChartId) {
+      setSelectedChartId(normalizedChartId);
+    }
+  }, [recentAirportIds, selectedAirportId, selectedChartId]);
 
   useEffect(() => {
     setMapViewport((current) => preserveViewportForMap(current, selectedMap.map_view));
   }, [selectedMap]);
+
+  useEffect(() => {
+    writePersistedWebUiState({
+      page,
+      selectedAirportId,
+      selectedChartId,
+      recentAirportIds,
+    });
+  }, [page, recentAirportIds, selectedAirportId, selectedChartId]);
 
   return (
     <main className="appShell">
@@ -140,11 +186,13 @@ export default function App() {
       {page === "charts" ? (
         <ChartsPage
           page={page}
+          airports={orderedChartAirports}
           selectedAirport={selectedAirport}
           selectedChart={selectedChart}
           onSelectPage={setPage}
           onSelectAirport={(airportId) => {
             setSelectedAirportId(airportId);
+            setRecentAirportIds((current) => moveAirportToFront(current, airportId, chartPage.airports));
             const airport = chartPage.airports.find((entry) => entry.id === airportId);
             setSelectedChartId(airport?.charts[0]?.id ?? "");
           }}
@@ -624,13 +672,14 @@ function TrayDock(props: {
 
 function ChartsPage(props: {
   page: AppPage;
+  airports: (typeof chartPage)["airports"];
   selectedAirport: (typeof chartPage)["airports"][number] | null;
   selectedChart: ChartAsset | null;
   onSelectPage: (page: AppPage) => void;
   onSelectAirport: (airportId: string) => void;
   onSelectChart: (chartId: string) => void;
 }) {
-  const { page, selectedAirport, selectedChart, onSelectPage, onSelectAirport, onSelectChart } = props;
+  const { page, airports, selectedAirport, selectedChart, onSelectPage, onSelectAirport, onSelectChart } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
@@ -835,7 +884,7 @@ function ChartsPage(props: {
           />
         ) : null}
 
-        {selectedChart && viewport ? (
+        {selectedChart ? (
           <img
             className="chartImage"
             src={selectedChart.asset_url}
@@ -848,9 +897,10 @@ function ChartsPage(props: {
               })
             }
             style={{
-              left: `${viewport.left}px`,
-              top: `${viewport.top}px`,
-              transform: `scale(${viewport.zoom})`,
+              left: `${viewport?.left ?? 0}px`,
+              top: `${viewport?.top ?? 0}px`,
+              transform: `scale(${viewport?.zoom ?? 1})`,
+              visibility: viewport ? "visible" : "hidden",
             }}
           />
         ) : null}
@@ -888,7 +938,7 @@ function ChartsPage(props: {
               )
             }
             ariaLabel="Airport"
-            options={chartPage.airports.map((airport) => ({
+            options={airports.map((airport) => ({
               id: airport.id,
               label: airport.label,
               active: airport.id === selectedAirport?.id,
@@ -925,6 +975,93 @@ function ChartsPage(props: {
       </div>
     </section>
   );
+}
+
+function readPersistedWebUiState(): PersistedWebUiState {
+  if (typeof window === "undefined") {
+    return {};
+  }
+  try {
+    const raw = window.localStorage.getItem(webUiStateStorageKey);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as PersistedWebUiState;
+    return {
+      page: parsed.page,
+      selectedAirportId: parsed.selectedAirportId,
+      selectedChartId: parsed.selectedChartId,
+      recentAirportIds: Array.isArray(parsed.recentAirportIds) ? parsed.recentAirportIds.filter((value): value is string => typeof value === "string") : [],
+    };
+  } catch {
+    return {};
+  }
+}
+
+function writePersistedWebUiState(state: PersistedWebUiState) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(webUiStateStorageKey, JSON.stringify(state));
+}
+
+function mergeRecentAirportIds(
+  airports: (typeof chartPage)["airports"],
+  storedIds: string[],
+) {
+  const validIds = new Set(airports.map((airport) => airport.id));
+  const orderedIds = storedIds.filter((id, index) => validIds.has(id) && storedIds.indexOf(id) === index);
+  for (const airport of airports) {
+    if (!orderedIds.includes(airport.id)) {
+      orderedIds.push(airport.id);
+    }
+  }
+  return orderedIds;
+}
+
+function orderAirportsByRecency(
+  airports: (typeof chartPage)["airports"],
+  recentAirportIds: string[],
+) {
+  const airportById = new Map(airports.map((airport) => [airport.id, airport]));
+  return recentAirportIds
+    .map((airportId) => airportById.get(airportId))
+    .filter((airport): airport is (typeof chartPage)["airports"][number] => airport !== undefined);
+}
+
+function moveAirportToFront(
+  currentIds: string[],
+  airportId: string,
+  airports: (typeof chartPage)["airports"],
+) {
+  return mergeRecentAirportIds(airports, [airportId, ...currentIds.filter((id) => id !== airportId)]);
+}
+
+function resolveAirportId(
+  airports: (typeof chartPage)["airports"],
+  candidateAirportId: string | undefined,
+  recentAirportIds: string[],
+) {
+  if (candidateAirportId && airports.some((airport) => airport.id === candidateAirportId)) {
+    return candidateAirportId;
+  }
+  return recentAirportIds[0] ?? airports[0]?.id ?? "";
+}
+
+function resolveChartId(
+  airports: (typeof chartPage)["airports"],
+  airportId: string,
+  candidateChartId: string | undefined,
+) {
+  const airport = airports.find((entry) => entry.id === airportId);
+  if (candidateChartId && airport?.charts.some((chart) => chart.id === candidateChartId)) {
+    return candidateChartId;
+  }
+  return airport?.charts[0]?.id ?? "";
+}
+
+function sameIds(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function navRefLabel(value: { Airport: string } | { Navaid: string } | { Fix: string }) {

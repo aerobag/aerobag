@@ -16,7 +16,7 @@ export const mapViews = deriveMapViews(
 export const mapView = mapViews[0].map_view;
 export const mapTileView = contentFixture.map_tile_view;
 export const samplePlan = contentFixture.flight_plan;
-export const chartPage = deriveChartPage(resourceIndex, contentFixture.chart_page, samplePlan);
+export const chartPage = deriveChartPage(resourceIndex, samplePlan);
 export const remoteOnlyInventory = contentFixture.remote_only_inventory;
 export const installedInventory = contentFixture.installed_inventory;
 

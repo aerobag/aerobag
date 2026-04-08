@@ -372,14 +372,6 @@ data class WireChartAirport(
 )
 
 @Serializable
-data class WireChartPageFixture(
-    val recent_airport_ids: List<String>,
-    val initial_airport_id: String,
-    val initial_chart_id: String,
-    val airports: List<WireChartAirport>,
-)
-
-@Serializable
 data class WireMapTileView(
     val chart_family: WireChartFamilyId,
     val chart_name: String,

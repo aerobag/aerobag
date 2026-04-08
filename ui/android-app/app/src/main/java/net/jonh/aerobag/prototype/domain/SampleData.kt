@@ -26,7 +26,6 @@ private data class WireContentFixture(
     val geometry: WireGeometryBundle,
     val map_view: WireMapView,
     val map_views: List<WireMapViewOption> = emptyList(),
-    val chart_page: WireChartPageFixture? = null,
     val initial_probe: WireInitialProbe,
     val map_tile_view: WireMapTileView,
     val flight_plan: WireFlightPlan,
@@ -52,10 +51,8 @@ object SampleData {
         val derivedMapViews = deriveMapViews(resourceIndex, fixture.map_views.map { it.id })
         val derivedChartPage = deriveChartPage(
             resourceIndex = resourceIndex,
-            recentAirportIds = fixture.chart_page?.recent_airport_ids ?: emptyList(),
-            initialAirportIdHint = fixture.chart_page?.initial_airport_id,
-            initialChartIdHint = fixture.chart_page?.initial_chart_id,
             samplePlan = fixture.flight_plan.toUiFlightPlan(),
+            allowedPackageIds = setOf("NW_TPP", "NW_CSUP"),
         )
         return ContentFixture(
             catalog = fixture.catalog.toUiCatalog(),
@@ -134,13 +131,6 @@ private fun WireMapViewOption.toUi() = MapViewOption(
     mapView = map_view.toUi(),
 )
 
-private fun WireChartPageFixture.toUi() = ChartPageFixture(
-    recentAirportIds = recent_airport_ids,
-    initialAirportId = initial_airport_id,
-    initialChartId = initial_chart_id,
-    airports = airports.map { it.toUi() },
-)
-
 private fun WireChartAirport.toUi() = ChartAirport(
     id = id,
     label = label,
@@ -150,8 +140,10 @@ private fun WireChartAirport.toUi() = ChartAirport(
 private fun WireChartAsset.toUi() = ChartAsset(
     id = id,
     airportId = airport_id,
+    packageId = "",
     label = label,
     kind = kind,
+    sourceAssetPath = asset_path,
     assetPath = asset_path,
     assetUrl = asset_url,
 )

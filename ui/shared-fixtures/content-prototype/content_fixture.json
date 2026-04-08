@@ -94,8 +94,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NE_ENR_H.zip",
         "manifest_name": "NE_ENR_H",
-        "size_bytes": 32309113,
-        "checksum_sha256": "a8db81d784ca462a7cde00b656f58c69a2e6665e875ce5201cae664cec0294f8"
+        "size_bytes": 32300965,
+        "checksum_sha256": "238e1c211399389f76552f2ad14032993c79764e7a0f0605e23d7e399311cd4a"
       },
       {
         "id": {
@@ -110,8 +110,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NC_ENR_H.zip",
         "manifest_name": "NC_ENR_H",
-        "size_bytes": 32050055,
-        "checksum_sha256": "b2629b5f72b56330d559733cb69ffcc4d6a9340149b53a0c5fe91d11dc3331ff"
+        "size_bytes": 32036956,
+        "checksum_sha256": "d9481b3b7b7d6fa21f286a703dc8fe14ac73dbf26ee44a42f2df943e622aaab6"
       },
       {
         "id": {
@@ -126,8 +126,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NW_ENR_H.zip",
         "manifest_name": "NW_ENR_H",
-        "size_bytes": 33309213,
-        "checksum_sha256": "48aaeef9bf51f55f55702e2b7e52f765ab35d2e05b5052d102a8a45cd5a4612f"
+        "size_bytes": 32676915,
+        "checksum_sha256": "02d942bf39eedbfc1a95638daf530d2596f630463dd76e03ebe5903309640027"
       },
       {
         "id": {
@@ -142,8 +142,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SE_ENR_H.zip",
         "manifest_name": "SE_ENR_H",
-        "size_bytes": 37394768,
-        "checksum_sha256": "884d53272a7a3a4ca011e48daf0b6154ea2a7e62c4ff0464482c918462ff950f"
+        "size_bytes": 37433110,
+        "checksum_sha256": "c64437f52136099bc673154ecd4a4f680dea0d5c3fddc509ecaba8f4880a9fb3"
       },
       {
         "id": {
@@ -158,8 +158,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SC_ENR_H.zip",
         "manifest_name": "SC_ENR_H",
-        "size_bytes": 33849085,
-        "checksum_sha256": "70ae1201959903b644945173b875612e5a53874a1f7f263aa1f75b8a7b8cb2f1"
+        "size_bytes": 33853688,
+        "checksum_sha256": "5115374869b55887cb3f3f37db9100142439895d32314ce7d8f7b749124e907c"
       },
       {
         "id": {
@@ -174,8 +174,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SW_ENR_H.zip",
         "manifest_name": "SW_ENR_H",
-        "size_bytes": 37285209,
-        "checksum_sha256": "df7d4aa0b97174645428fbc74d109ead522c3a834b39c18730dbb5a83ea21612"
+        "size_bytes": 37287330,
+        "checksum_sha256": "1d3779952fa7467057dc27b1de789478c33bfac86f081fe971109ef3eeb876d8"
       },
       {
         "id": {
@@ -190,8 +190,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/EC_ENR_H.zip",
         "manifest_name": "EC_ENR_H",
-        "size_bytes": 33514866,
-        "checksum_sha256": "ccff6d41608fc0aaa4f54a6d64e5c2edbff550c70d3ae30430b77b119d74ba3d"
+        "size_bytes": 33536293,
+        "checksum_sha256": "97502f5f7eb49a057fe39d0fd87cc8d2f2a4a7000e62db8ba2ec066829587c9d"
       },
       {
         "id": {
@@ -206,8 +206,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/AK_ENR_H.zip",
         "manifest_name": "AK_ENR_H",
-        "size_bytes": 44568444,
-        "checksum_sha256": "676a79ed74550e813377c9c8327310aeba0dbab423d9f84cb8762e87bbb8e3d3"
+        "size_bytes": 44560296,
+        "checksum_sha256": "5459dd69353632929efe19d4f19833541f1ec1e4eecbb0b40346a9df235b3956"
       },
       {
         "id": {
@@ -222,8 +222,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/PAC_ENR_H.zip",
         "manifest_name": "PAC_ENR_H",
-        "size_bytes": 23801032,
-        "checksum_sha256": "efe2607357668312219243103502437bcb78d505cf48c71f059705dc4d8e3de2"
+        "size_bytes": 23792884,
+        "checksum_sha256": "38ec9cf7df9d817240f68c11ba6e29fc66c189602650a47a7875a50a6af73e7e"
       },
       {
         "id": {
@@ -238,8 +238,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NE_ENR_L.zip",
         "manifest_name": "NE_ENR_L",
-        "size_bytes": 38897175,
-        "checksum_sha256": "5ff9ba83d84374d5b20bd4b9d054eee76abffcd6376a421ef9a0340b17df5b5e"
+        "size_bytes": 38798738,
+        "checksum_sha256": "5ee4e133d409adff5453aff6433d757aaef1c990f278f82b0c1bc6b28f779d35"
       },
       {
         "id": {
@@ -254,8 +254,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NC_ENR_L.zip",
         "manifest_name": "NC_ENR_L",
-        "size_bytes": 50493500,
-        "checksum_sha256": "2c8191d4192c6a0b4f1b961c0a782784ea4e252155567ec3fb26370a57aaa48f"
+        "size_bytes": 50450626,
+        "checksum_sha256": "a2cebed3883a9cccc34c2ae085eb34910e1e99d5c0a7c7f9fa3757ca675817b0"
       },
       {
         "id": {
@@ -270,8 +270,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NW_ENR_L.zip",
         "manifest_name": "NW_ENR_L",
-        "size_bytes": 51429783,
-        "checksum_sha256": "21697bc2ad4f304799707a43b5b43269fa0def11db8ddcb70ca4273ccee7a7f1"
+        "size_bytes": 51348765,
+        "checksum_sha256": "f6f8c25a5d34a6b8b45eff89e2d3782222b2bd1c1816425bf73e8613ac51779f"
       },
       {
         "id": {
@@ -286,8 +286,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SE_ENR_L.zip",
         "manifest_name": "SE_ENR_L",
-        "size_bytes": 46236374,
-        "checksum_sha256": "273bdcfe123e5d4b7ace84aaa6d137658091dde9448295e4e2e09121313bc009"
+        "size_bytes": 46205039,
+        "checksum_sha256": "cb14e1ddfb6f62070cb662a9b7144e261125b4d03a56445c9c8fa16e6fed98c9"
       },
       {
         "id": {
@@ -302,8 +302,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SC_ENR_L.zip",
         "manifest_name": "SC_ENR_L",
-        "size_bytes": 46850559,
-        "checksum_sha256": "403d1f3c155f717a9fe4c1ef4bcd75079dafc4397340ca92bca52b205af14fca"
+        "size_bytes": 46793016,
+        "checksum_sha256": "289b57e899158945a93d620f0b60e0bbdadf1f94d4275ca1b0efa75742c2148b"
       },
       {
         "id": {
@@ -318,8 +318,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SW_ENR_L.zip",
         "manifest_name": "SW_ENR_L",
-        "size_bytes": 46653287,
-        "checksum_sha256": "410515d64b6af3574937ee18f6d8c6cae7fbcf7112ca4d08cd4347b88251bc05"
+        "size_bytes": 46597544,
+        "checksum_sha256": "81d611246428e2683ac09853dbb7e9e41d02857eb13ed702dac6d9fbed5f4710"
       },
       {
         "id": {
@@ -334,8 +334,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/EC_ENR_L.zip",
         "manifest_name": "EC_ENR_L",
-        "size_bytes": 48667119,
-        "checksum_sha256": "2c34920972f2a4f0acc48778d7dd09460a70756e19051fdb62d4b02933a36cea"
+        "size_bytes": 48624583,
+        "checksum_sha256": "7894406f21c8358e107bd834e540c106b2e6db755c866606117cfdc787386f43"
       },
       {
         "id": {
@@ -350,8 +350,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/AK_ENR_L.zip",
         "manifest_name": "AK_ENR_L",
-        "size_bytes": 75974199,
-        "checksum_sha256": "bd320b45e51d9c6eb43fb29862c39a7aef3591c5a302070fc4a08ad6358c0a82"
+        "size_bytes": 75148166,
+        "checksum_sha256": "1a5fdb1b2d9dbe1445764a4a728b474cb13d9848d474ff0b011b0197a48a3eeb"
       },
       {
         "id": {
@@ -366,8 +366,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/PAC_ENR_L.zip",
         "manifest_name": "PAC_ENR_L",
-        "size_bytes": 21511578,
-        "checksum_sha256": "1fc6fb820550115c1ec8f61fbb05dc04f337f01446fad286922fd8f772026e89"
+        "size_bytes": 21421263,
+        "checksum_sha256": "02bb3044cbc69d72dbd982491dc377f04074defcf01a66bcf913b9d8b29a4096"
       },
       {
         "id": {
@@ -382,8 +382,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NE_SEC.zip",
         "manifest_name": "NE_SEC",
-        "size_bytes": 108855964,
-        "checksum_sha256": "4256e32a0e6a71956cdbf37be6553a858064210b64b21d192f7b4d5654e7cebc"
+        "size_bytes": 108862573,
+        "checksum_sha256": "8e73e9e613b51e8fcf224bc9b34b58a5e50aecfa1e88cf143ab764fc067ccfcf"
       },
       {
         "id": {
@@ -398,8 +398,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NC_SEC.zip",
         "manifest_name": "NC_SEC",
-        "size_bytes": 125506375,
-        "checksum_sha256": "fca9553454beec00e5f35f6c07d0a7bd199e791f01a54b910738dcdfbbe05359"
+        "size_bytes": 125516983,
+        "checksum_sha256": "e7456a5dbe430163c47cd131b497f0dbe259076e78cc7c925c7bde92675871d1"
       },
       {
         "id": {
@@ -414,8 +414,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NW_SEC.zip",
         "manifest_name": "NW_SEC",
-        "size_bytes": 143263124,
-        "checksum_sha256": "ebd3ccb46f6386173400b5f4a9ba4d84dc56381697c1a347bc1cb8fd57d21c3d"
+        "size_bytes": 143269395,
+        "checksum_sha256": "e22117d00c3a7c264bd7cb921b0f5ca57280e230f51306bdf158783c5542b546"
       },
       {
         "id": {
@@ -430,8 +430,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SE_SEC.zip",
         "manifest_name": "SE_SEC",
-        "size_bytes": 124598565,
-        "checksum_sha256": "292c9ee2b0d07d838aa1f907013cde05e7e4449f7570484fb08c29ffaf6052a3"
+        "size_bytes": 124631157,
+        "checksum_sha256": "9013f482c76531fbc395ed2fab647d2da4c03dee4cf94fa475889f90ef79069b"
       },
       {
         "id": {
@@ -446,8 +446,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SC_SEC.zip",
         "manifest_name": "SC_SEC",
-        "size_bytes": 127107498,
-        "checksum_sha256": "21380ee1ded970b9d735a5addb8f9fc095731a846e515852629722fd0dcc8666"
+        "size_bytes": 127120240,
+        "checksum_sha256": "af4708bc5e1bdaf0930facf613cd3d75871fbe631552b057dfe94bdbabab4114"
       },
       {
         "id": {
@@ -462,8 +462,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SW_SEC.zip",
         "manifest_name": "SW_SEC",
-        "size_bytes": 128996991,
-        "checksum_sha256": "ae178e3aabd0ecb30cd70bb9eb7f502284e58915bdf94c56f74c0d99de8284ff"
+        "size_bytes": 129003426,
+        "checksum_sha256": "9fa975568235b001a156c8cb5c0256a6a3b42015db509861d8dcd0e625c86f13"
       },
       {
         "id": {
@@ -478,8 +478,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/EC_SEC.zip",
         "manifest_name": "EC_SEC",
-        "size_bytes": 132418532,
-        "checksum_sha256": "8b656e253b400d44d34b4b9f8533b9092178b9fc6c0b1be4ce771813583296d2"
+        "size_bytes": 132430271,
+        "checksum_sha256": "27cd56536a168d2d45a74e1b8e7cdaf6254ec9ebad255994b4b522bd9607caee"
       },
       {
         "id": {
@@ -494,8 +494,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/AK_SEC.zip",
         "manifest_name": "AK_SEC",
-        "size_bytes": 266376681,
-        "checksum_sha256": "8f4c6c09dc5e14e4cf4268cc9c47185114c95ee3875fee504960888ebfa0b08c"
+        "size_bytes": 266637039,
+        "checksum_sha256": "c14c8be4b3ee9c3ff11cdb8ca9c8c7468bf5350f389f11890a5a4e4a1775cf3f"
       },
       {
         "id": {
@@ -510,8 +510,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/PAC_SEC.zip",
         "manifest_name": "PAC_SEC",
-        "size_bytes": 38330234,
-        "checksum_sha256": "a824050b1f2536cf83e07bf3329ad2ae398e7c5f0abfdbbd19ac714ef3388e85"
+        "size_bytes": 38342918,
+        "checksum_sha256": "87226771731c22e03d1b91a5d067b715bdd858ef621758b7ab83ec527cb207be"
       },
       {
         "id": {
@@ -526,8 +526,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NE_TAC.zip",
         "manifest_name": "NE_TAC",
-        "size_bytes": 27469082,
-        "checksum_sha256": "159aeeb1ac8d5e204ff19d116c1100dce6c7d473d37ba5d00f5d9c3374c72d80"
+        "size_bytes": 27474846,
+        "checksum_sha256": "e50160a1e7cee00ca7e20cdfcd9a7e81aad9e2bc807489cbb0ca2dd897bfb289"
       },
       {
         "id": {
@@ -542,8 +542,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NC_TAC.zip",
         "manifest_name": "NC_TAC",
-        "size_bytes": 20036400,
-        "checksum_sha256": "dbe91bed6764dad8dc663d53faf4a764d396c2fc93526af8902519c8c5184aca"
+        "size_bytes": 20037833,
+        "checksum_sha256": "19b307c333de61d8724ddbdf01e3685a8221e6ae0bdd68a500b93fbd918184a1"
       },
       {
         "id": {
@@ -558,8 +558,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NW_TAC.zip",
         "manifest_name": "NW_TAC",
-        "size_bytes": 18248087,
-        "checksum_sha256": "88ce2869a982c7741ddba189504f3f4f03141345d71e5c2ba9191e1db739981e"
+        "size_bytes": 18248374,
+        "checksum_sha256": "5f6040600dd0f8d3136cfa52a1410c163c85689f1371e04f5c9ed4a94db921ab"
       },
       {
         "id": {
@@ -574,8 +574,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SE_TAC.zip",
         "manifest_name": "SE_TAC",
-        "size_bytes": 29596407,
-        "checksum_sha256": "6f93615207f8ac406cc99cacd4a4f56c4d1eadf4df3078b33399de9388e267d4"
+        "size_bytes": 29596694,
+        "checksum_sha256": "a6f14433294d7fa5c1b7616d3dd4ed43cf77cc69f2e02cf015eea578266ec606"
       },
       {
         "id": {
@@ -590,8 +590,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SC_TAC.zip",
         "manifest_name": "SC_TAC",
-        "size_bytes": 18552319,
-        "checksum_sha256": "45b6761c63303a5e168d716ec21f95bc0c63db71b7d04c80090cdeb9661dc99b"
+        "size_bytes": 18552606,
+        "checksum_sha256": "e9ed29ad961b408dfeb10852024923f885e131e09b58eb6b7cfcd6310e143f88"
       },
       {
         "id": {
@@ -606,8 +606,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SW_TAC.zip",
         "manifest_name": "SW_TAC",
-        "size_bytes": 33818508,
-        "checksum_sha256": "1f2591557a8535571448366fe5888e9b36656e80bab3a0cdb16d5942b7051d81"
+        "size_bytes": 33820003,
+        "checksum_sha256": "073ce85748254cde22532bed8d28cff731d1ad484cb3861de68a7b3497dec7f7"
       },
       {
         "id": {
@@ -622,8 +622,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/EC_TAC.zip",
         "manifest_name": "EC_TAC",
-        "size_bytes": 31996988,
-        "checksum_sha256": "33aa21d468af65eaf1089063f465dff8b60b1e8df714d3b9d9934368fa7c8338"
+        "size_bytes": 31997275,
+        "checksum_sha256": "af83d24e5e97f9178b62e3da591caf54ae9e2864b3543cf72eab73677e8d9b52"
       },
       {
         "id": {
@@ -638,8 +638,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/AK_TAC.zip",
         "manifest_name": "AK_TAC",
-        "size_bytes": 18427356,
-        "checksum_sha256": "b90649160644f885b00924ae375a58c2c5de017546e365acf69ecfc37fb8105b"
+        "size_bytes": 18427643,
+        "checksum_sha256": "686a8d4a252eb0d0b3187f53c874ef2a164d743a1a741095af1f5fb53ddeaffa"
       },
       {
         "id": {
@@ -654,8 +654,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/PAC_TAC.zip",
         "manifest_name": "PAC_TAC",
-        "size_bytes": 1875067,
-        "checksum_sha256": "2fd5f8756142c550c45ed51e2c3d4424e20dc137aa62a528bf8f269e1d067062"
+        "size_bytes": 1875354,
+        "checksum_sha256": "c8331c12b422e198b8a68d8f216d66860d1efc6c01fe382c75245cadab97f9f7"
       }
     ],
     "charts": [
@@ -685,20 +685,20 @@
     "plates": [
       {
         "id": {
-          "airport_id": "KBOS",
-          "procedure_code": "IAP-MA-ILS OR LOC RWY 04R",
+          "airport_id": "KRNT",
+          "procedure_code": "APD-WA-AIRPORT DIAGRAM",
           "page": 1,
           "cycle": "2604"
         },
-        "airport_id": "KBOS",
+        "airport_id": "KRNT",
         "region_id": "ne",
         "cycle": "2604",
-        "procedure_code": "IAP-MA-ILS OR LOC RWY 04R",
-        "display_name": "IAP-MA-ILS OR LOC RWY 04R",
+        "procedure_code": "APD-WA-AIRPORT DIAGRAM",
+        "display_name": "APD-WA-AIRPORT DIAGRAM",
         "kind": "approach",
         "georeferenced": true,
         "page_count": 1,
-        "asset_base_path": "plates/BOS/IAP-MA-ILS OR LOC RWY 04R"
+        "asset_base_path": "plates/RNT/APD-WA-AIRPORT DIAGRAM"
       }
     ],
     "supplements": []
@@ -735,7 +735,7 @@
   },
   "map_view": {
     "chart_family": "sectional",
-    "chart_name": "Northeast Sectional",
+    "chart_name": "Northeast Unknown",
     "chart_index": 0,
     "tile_root": "tiles",
     "tile_url_root": "/sectional-packages/NE_SEC/tiles",
@@ -831,12 +831,12 @@
   },
   "map_views": [
     {
-      "id": "sectional:ne",
-      "label": "Northeast Sectional",
+      "id": "sec:ne",
+      "label": "Northeast Unknown",
       "region_id": "ne",
       "map_view": {
         "chart_family": "sectional",
-        "chart_name": "Northeast Sectional",
+        "chart_name": "Northeast Unknown",
         "chart_index": 0,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/NE_SEC/tiles",
@@ -932,12 +932,12 @@
       }
     },
     {
-      "id": "sectional:nc",
-      "label": "North Central Sectional",
+      "id": "sec:nc",
+      "label": "North Central Unknown",
       "region_id": "nc",
       "map_view": {
         "chart_family": "sectional",
-        "chart_name": "North Central Sectional",
+        "chart_name": "North Central Unknown",
         "chart_index": 0,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/NC_SEC/tiles",
@@ -1033,12 +1033,12 @@
       }
     },
     {
-      "id": "sectional:nw",
-      "label": "Northwest Sectional",
+      "id": "sec:nw",
+      "label": "Northwest Unknown",
       "region_id": "nw",
       "map_view": {
         "chart_family": "sectional",
-        "chart_name": "Northwest Sectional",
+        "chart_name": "Northwest Unknown",
         "chart_index": 0,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/NW_SEC/tiles",
@@ -1134,12 +1134,12 @@
       }
     },
     {
-      "id": "sectional:se",
-      "label": "Southeast Sectional",
+      "id": "sec:se",
+      "label": "Southeast Unknown",
       "region_id": "se",
       "map_view": {
         "chart_family": "sectional",
-        "chart_name": "Southeast Sectional",
+        "chart_name": "Southeast Unknown",
         "chart_index": 0,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/SE_SEC/tiles",
@@ -1235,12 +1235,12 @@
       }
     },
     {
-      "id": "sectional:sc",
-      "label": "South Central Sectional",
+      "id": "sec:sc",
+      "label": "South Central Unknown",
       "region_id": "sc",
       "map_view": {
         "chart_family": "sectional",
-        "chart_name": "South Central Sectional",
+        "chart_name": "South Central Unknown",
         "chart_index": 0,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/SC_SEC/tiles",
@@ -1336,12 +1336,12 @@
       }
     },
     {
-      "id": "sectional:sw",
-      "label": "Southwest Sectional",
+      "id": "sec:sw",
+      "label": "Southwest Unknown",
       "region_id": "sw",
       "map_view": {
         "chart_family": "sectional",
-        "chart_name": "Southwest Sectional",
+        "chart_name": "Southwest Unknown",
         "chart_index": 0,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/SW_SEC/tiles",
@@ -1437,12 +1437,12 @@
       }
     },
     {
-      "id": "sectional:ec",
-      "label": "East Coast Sectional",
+      "id": "sec:ec",
+      "label": "East Coast Unknown",
       "region_id": "ec",
       "map_view": {
         "chart_family": "sectional",
-        "chart_name": "East Coast Sectional",
+        "chart_name": "East Coast Unknown",
         "chart_index": 0,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/EC_SEC/tiles",
@@ -1538,12 +1538,12 @@
       }
     },
     {
-      "id": "sectional:ak",
-      "label": "Alaska Sectional",
+      "id": "sec:ak",
+      "label": "Alaska Unknown",
       "region_id": "ak",
       "map_view": {
         "chart_family": "sectional",
-        "chart_name": "Alaska Sectional",
+        "chart_name": "Alaska Unknown",
         "chart_index": 0,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/AK_SEC/tiles",
@@ -1639,12 +1639,12 @@
       }
     },
     {
-      "id": "sectional:pac",
-      "label": "Pacific Sectional",
+      "id": "sec:pac",
+      "label": "Pacific Unknown",
       "region_id": "pac",
       "map_view": {
         "chart_family": "sectional",
-        "chart_name": "Pacific Sectional",
+        "chart_name": "Pacific Unknown",
         "chart_index": 0,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/PAC_SEC/tiles",
@@ -2684,12 +2684,12 @@
       }
     },
     {
-      "id": "ifr_low:ne",
-      "label": "Northeast IFR Low",
+      "id": "enr-l:ne",
+      "label": "Northeast Unknown",
       "region_id": "ne",
       "map_view": {
         "chart_family": "ifr_low",
-        "chart_name": "Northeast IFR Low",
+        "chart_name": "Northeast Unknown",
         "chart_index": 3,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/NE_ENR_L/tiles",
@@ -2785,12 +2785,12 @@
       }
     },
     {
-      "id": "ifr_low:nc",
-      "label": "North Central IFR Low",
+      "id": "enr-l:nc",
+      "label": "North Central Unknown",
       "region_id": "nc",
       "map_view": {
         "chart_family": "ifr_low",
-        "chart_name": "North Central IFR Low",
+        "chart_name": "North Central Unknown",
         "chart_index": 3,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/NC_ENR_L/tiles",
@@ -2886,12 +2886,12 @@
       }
     },
     {
-      "id": "ifr_low:nw",
-      "label": "Northwest IFR Low",
+      "id": "enr-l:nw",
+      "label": "Northwest Unknown",
       "region_id": "nw",
       "map_view": {
         "chart_family": "ifr_low",
-        "chart_name": "Northwest IFR Low",
+        "chart_name": "Northwest Unknown",
         "chart_index": 3,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/NW_ENR_L/tiles",
@@ -2987,12 +2987,12 @@
       }
     },
     {
-      "id": "ifr_low:se",
-      "label": "Southeast IFR Low",
+      "id": "enr-l:se",
+      "label": "Southeast Unknown",
       "region_id": "se",
       "map_view": {
         "chart_family": "ifr_low",
-        "chart_name": "Southeast IFR Low",
+        "chart_name": "Southeast Unknown",
         "chart_index": 3,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/SE_ENR_L/tiles",
@@ -3088,12 +3088,12 @@
       }
     },
     {
-      "id": "ifr_low:sc",
-      "label": "South Central IFR Low",
+      "id": "enr-l:sc",
+      "label": "South Central Unknown",
       "region_id": "sc",
       "map_view": {
         "chart_family": "ifr_low",
-        "chart_name": "South Central IFR Low",
+        "chart_name": "South Central Unknown",
         "chart_index": 3,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/SC_ENR_L/tiles",
@@ -3189,12 +3189,12 @@
       }
     },
     {
-      "id": "ifr_low:sw",
-      "label": "Southwest IFR Low",
+      "id": "enr-l:sw",
+      "label": "Southwest Unknown",
       "region_id": "sw",
       "map_view": {
         "chart_family": "ifr_low",
-        "chart_name": "Southwest IFR Low",
+        "chart_name": "Southwest Unknown",
         "chart_index": 3,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/SW_ENR_L/tiles",
@@ -3290,12 +3290,12 @@
       }
     },
     {
-      "id": "ifr_low:ec",
-      "label": "East Coast IFR Low",
+      "id": "enr-l:ec",
+      "label": "East Coast Unknown",
       "region_id": "ec",
       "map_view": {
         "chart_family": "ifr_low",
-        "chart_name": "East Coast IFR Low",
+        "chart_name": "East Coast Unknown",
         "chart_index": 3,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/EC_ENR_L/tiles",
@@ -3391,12 +3391,12 @@
       }
     },
     {
-      "id": "ifr_low:ak",
-      "label": "Alaska IFR Low",
+      "id": "enr-l:ak",
+      "label": "Alaska Unknown",
       "region_id": "ak",
       "map_view": {
         "chart_family": "ifr_low",
-        "chart_name": "Alaska IFR Low",
+        "chart_name": "Alaska Unknown",
         "chart_index": 3,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/AK_ENR_L/tiles",
@@ -3492,12 +3492,12 @@
       }
     },
     {
-      "id": "ifr_low:pac",
-      "label": "Pacific IFR Low",
+      "id": "enr-l:pac",
+      "label": "Pacific Unknown",
       "region_id": "pac",
       "map_view": {
         "chart_family": "ifr_low",
-        "chart_name": "Pacific IFR Low",
+        "chart_name": "Pacific Unknown",
         "chart_index": 3,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/PAC_ENR_L/tiles",
@@ -3593,12 +3593,12 @@
       }
     },
     {
-      "id": "ifr_high:ne",
-      "label": "Northeast IFR High",
+      "id": "enr-h:ne",
+      "label": "Northeast Unknown",
       "region_id": "ne",
       "map_view": {
         "chart_family": "ifr_high",
-        "chart_name": "Northeast IFR High",
+        "chart_name": "Northeast Unknown",
         "chart_index": 4,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/NE_ENR_H/tiles",
@@ -3687,12 +3687,12 @@
       }
     },
     {
-      "id": "ifr_high:nc",
-      "label": "North Central IFR High",
+      "id": "enr-h:nc",
+      "label": "North Central Unknown",
       "region_id": "nc",
       "map_view": {
         "chart_family": "ifr_high",
-        "chart_name": "North Central IFR High",
+        "chart_name": "North Central Unknown",
         "chart_index": 4,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/NC_ENR_H/tiles",
@@ -3781,12 +3781,12 @@
       }
     },
     {
-      "id": "ifr_high:nw",
-      "label": "Northwest IFR High",
+      "id": "enr-h:nw",
+      "label": "Northwest Unknown",
       "region_id": "nw",
       "map_view": {
         "chart_family": "ifr_high",
-        "chart_name": "Northwest IFR High",
+        "chart_name": "Northwest Unknown",
         "chart_index": 4,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/NW_ENR_H/tiles",
@@ -3875,12 +3875,12 @@
       }
     },
     {
-      "id": "ifr_high:se",
-      "label": "Southeast IFR High",
+      "id": "enr-h:se",
+      "label": "Southeast Unknown",
       "region_id": "se",
       "map_view": {
         "chart_family": "ifr_high",
-        "chart_name": "Southeast IFR High",
+        "chart_name": "Southeast Unknown",
         "chart_index": 4,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/SE_ENR_H/tiles",
@@ -3969,12 +3969,12 @@
       }
     },
     {
-      "id": "ifr_high:sc",
-      "label": "South Central IFR High",
+      "id": "enr-h:sc",
+      "label": "South Central Unknown",
       "region_id": "sc",
       "map_view": {
         "chart_family": "ifr_high",
-        "chart_name": "South Central IFR High",
+        "chart_name": "South Central Unknown",
         "chart_index": 4,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/SC_ENR_H/tiles",
@@ -4063,12 +4063,12 @@
       }
     },
     {
-      "id": "ifr_high:sw",
-      "label": "Southwest IFR High",
+      "id": "enr-h:sw",
+      "label": "Southwest Unknown",
       "region_id": "sw",
       "map_view": {
         "chart_family": "ifr_high",
-        "chart_name": "Southwest IFR High",
+        "chart_name": "Southwest Unknown",
         "chart_index": 4,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/SW_ENR_H/tiles",
@@ -4157,12 +4157,12 @@
       }
     },
     {
-      "id": "ifr_high:ec",
-      "label": "East Coast IFR High",
+      "id": "enr-h:ec",
+      "label": "East Coast Unknown",
       "region_id": "ec",
       "map_view": {
         "chart_family": "ifr_high",
-        "chart_name": "East Coast IFR High",
+        "chart_name": "East Coast Unknown",
         "chart_index": 4,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/EC_ENR_H/tiles",
@@ -4251,12 +4251,12 @@
       }
     },
     {
-      "id": "ifr_high:ak",
-      "label": "Alaska IFR High",
+      "id": "enr-h:ak",
+      "label": "Alaska Unknown",
       "region_id": "ak",
       "map_view": {
         "chart_family": "ifr_high",
-        "chart_name": "Alaska IFR High",
+        "chart_name": "Alaska Unknown",
         "chart_index": 4,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/AK_ENR_H/tiles",
@@ -4345,12 +4345,12 @@
       }
     },
     {
-      "id": "ifr_high:pac",
-      "label": "Pacific IFR High",
+      "id": "enr-h:pac",
+      "label": "Pacific Unknown",
       "region_id": "pac",
       "map_view": {
         "chart_family": "ifr_high",
-        "chart_name": "Pacific IFR High",
+        "chart_name": "Pacific Unknown",
         "chart_index": 4,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/PAC_ENR_H/tiles",
@@ -4439,37 +4439,6 @@
       }
     }
   ],
-  "chart_page": {
-    "recent_airport_ids": [
-      "KBOS"
-    ],
-    "initial_airport_id": "KBOS",
-    "initial_chart_id": "plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png",
-    "airports": [
-      {
-        "id": "KBOS",
-        "label": "KBOS",
-        "charts": [
-          {
-            "id": "plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png",
-            "airport_id": "KBOS",
-            "label": "IAP-MA-ILS OR LOC RWY 04R",
-            "kind": "plate",
-            "asset_path": "chart-assets/KBOS/IAP-MA-ILS OR LOC RWY 04R.png",
-            "asset_url": "/chart-assets/KBOS/IAP-MA-ILS OR LOC RWY 04R.png"
-          },
-          {
-            "id": "csup:KBOS:CSUP-NE_0-0.png",
-            "airport_id": "KBOS",
-            "label": "CSup",
-            "kind": "csup",
-            "asset_path": "chart-assets/KBOS/CSUP-NE_0-0.png",
-            "asset_url": "/chart-assets/KBOS/CSUP-NE_0-0.png"
-          }
-        ]
-      }
-    ]
-  },
   "initial_probe": {
     "family": "sectional",
     "lat": 42.940339233631825,
@@ -4477,7 +4446,7 @@
   },
   "map_tile_view": {
     "chart_family": "sectional",
-    "chart_name": "Northeast Sectional",
+    "chart_name": "Northeast Unknown",
     "chart_index": 0,
     "tile_root": "tiles",
     "zoom": 10,

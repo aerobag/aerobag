@@ -1,5 +1,6 @@
 package net.jonh.aerobag.prototype
 
+import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.os.Bundle
@@ -78,6 +79,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.jonh.aerobag.prototype.domain.ChartAirport
 import net.jonh.aerobag.prototype.domain.ChartAsset
+import net.jonh.aerobag.prototype.domain.ChartPackages
 import net.jonh.aerobag.prototype.domain.MapChartFamily
 import net.jonh.aerobag.prototype.domain.MapView
 import net.jonh.aerobag.prototype.domain.MapViewportState
@@ -103,6 +105,11 @@ import kotlin.math.roundToInt
 private val ThumbSize = 56.dp
 private val ThumbGap = 5.6.dp
 private val ThumbRadius = 10.dp
+private const val UiPrefsName = "aerobag_ui"
+private const val UiPrefsPageKey = "page"
+private const val UiPrefsSelectedAirportKey = "selected_airport_id"
+private const val UiPrefsSelectedChartKey = "selected_chart_id"
+private const val UiPrefsRecentAirportsKey = "recent_airport_ids"
 
 private enum class AppPage {
     Map,
@@ -152,6 +159,83 @@ private fun initialMapId(fixture: net.jonh.aerobag.prototype.domain.ContentFixtu
     }?.id ?: fixture.mapViews.first().id
 }
 
+private fun mergeRecentAirportIds(
+    airports: List<ChartAirport>,
+    storedIds: List<String>,
+): List<String> {
+    val validIds = airports.map { it.id }.toSet()
+    val orderedIds = storedIds.filterIndexed { index, id ->
+        validIds.contains(id) && storedIds.indexOf(id) == index
+    }.toMutableList()
+    airports.forEach { airport ->
+        if (!orderedIds.contains(airport.id)) {
+            orderedIds += airport.id
+        }
+    }
+    return orderedIds
+}
+
+private fun orderAirportsByRecency(
+    airports: List<ChartAirport>,
+    recentAirportIds: List<String>,
+): List<ChartAirport> {
+    val airportById = airports.associateBy { it.id }
+    return recentAirportIds.mapNotNull(airportById::get)
+}
+
+private fun moveAirportToFront(
+    currentIds: List<String>,
+    airportId: String,
+    airports: List<ChartAirport>,
+): List<String> = mergeRecentAirportIds(airports, listOf(airportId) + currentIds.filterNot { it == airportId })
+
+private fun resolveAirportId(
+    airports: List<ChartAirport>,
+    candidateAirportId: String?,
+    recentAirportIds: List<String>,
+): String {
+    if (candidateAirportId != null && airports.any { it.id == candidateAirportId }) {
+        return candidateAirportId
+    }
+    return recentAirportIds.firstOrNull() ?: airports.firstOrNull()?.id.orEmpty()
+}
+
+private fun resolveChartId(
+    airports: List<ChartAirport>,
+    airportId: String,
+    candidateChartId: String?,
+): String {
+    val airport = airports.firstOrNull { it.id == airportId }
+    if (candidateChartId != null && airport?.charts?.any { it.id == candidateChartId } == true) {
+        return candidateChartId
+    }
+    return airport?.charts?.firstOrNull()?.id.orEmpty()
+}
+
+private fun readRecentAirportIds(context: Context): List<String> =
+    context.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
+        .getString(UiPrefsRecentAirportsKey, "")
+        .orEmpty()
+        .split('\n')
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+
+private fun writeUiPrefs(
+    context: Context,
+    page: AppPage,
+    selectedAirportId: String,
+    selectedChartId: String,
+    recentAirportIds: List<String>,
+) {
+    context.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
+        .edit()
+        .putString(UiPrefsPageKey, page.name)
+        .putString(UiPrefsSelectedAirportKey, selectedAirportId)
+        .putString(UiPrefsSelectedChartKey, selectedChartId)
+        .putString(UiPrefsRecentAirportsKey, recentAirportIds.joinToString("\n"))
+        .apply()
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -172,19 +256,73 @@ class MainActivity : ComponentActivity() {
 private fun AerobagApp() {
     val context = LocalContext.current
     val fixture = remember(context) { SampleData.load(context.applicationContext) }
-    var page by remember { mutableStateOf(AppPage.Map) }
+    val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
+    val initialRecentAirportIds = remember(fixture.chartPage.airports) {
+        mergeRecentAirportIds(fixture.chartPage.airports, readRecentAirportIds(context.applicationContext))
+    }
+    var page by remember {
+        mutableStateOf(
+            runCatching { AppPage.valueOf(prefs.getString(UiPrefsPageKey, AppPage.Map.name) ?: AppPage.Map.name) }
+                .getOrDefault(AppPage.Map),
+        )
+    }
     var selectedMapId by remember { mutableStateOf(initialMapId(fixture)) }
+    var recentAirportIds by remember { mutableStateOf(initialRecentAirportIds) }
     val selectedMap = remember(selectedMapId, fixture.mapViews) {
         fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
     }
     var mapViewport by remember { mutableStateOf(createInitialViewport(selectedMap.mapView)) }
-    var selectedAirportId by remember { mutableStateOf(fixture.chartPage.initialAirportId.ifEmpty { fixture.chartPage.airports.firstOrNull()?.id.orEmpty() }) }
-    var selectedChartId by remember { mutableStateOf(fixture.chartPage.initialChartId.ifEmpty { fixture.chartPage.airports.firstOrNull()?.charts?.firstOrNull()?.id.orEmpty() }) }
-    val selectedAirport = remember(selectedAirportId, fixture.chartPage.airports) {
-        fixture.chartPage.airports.find { it.id == selectedAirportId } ?: fixture.chartPage.airports.firstOrNull()
+    var selectedAirportId by remember {
+        mutableStateOf(
+            resolveAirportId(
+                fixture.chartPage.airports,
+                prefs.getString(UiPrefsSelectedAirportKey, null),
+                initialRecentAirportIds,
+            ),
+        )
+    }
+    var selectedChartId by remember {
+        mutableStateOf(
+            resolveChartId(
+                fixture.chartPage.airports,
+                resolveAirportId(
+                    fixture.chartPage.airports,
+                    prefs.getString(UiPrefsSelectedAirportKey, null),
+                    initialRecentAirportIds,
+                ),
+                prefs.getString(UiPrefsSelectedChartKey, null),
+            ),
+        )
+    }
+    val orderedChartAirports = remember(recentAirportIds, fixture.chartPage.airports) {
+        orderAirportsByRecency(fixture.chartPage.airports, recentAirportIds)
+    }
+    val selectedAirport = remember(selectedAirportId, orderedChartAirports) {
+        orderedChartAirports.find { it.id == selectedAirportId } ?: orderedChartAirports.firstOrNull()
     }
     val selectedChart = remember(selectedAirport, selectedChartId) {
         selectedAirport?.charts?.find { it.id == selectedChartId } ?: selectedAirport?.charts?.firstOrNull()
+    }
+
+    LaunchedEffect(fixture.chartPage.airports, recentAirportIds, selectedAirportId, selectedChartId) {
+        val normalizedRecentAirportIds = mergeRecentAirportIds(fixture.chartPage.airports, recentAirportIds)
+        if (normalizedRecentAirportIds != recentAirportIds) {
+            recentAirportIds = normalizedRecentAirportIds
+            return@LaunchedEffect
+        }
+        val normalizedAirportId = resolveAirportId(fixture.chartPage.airports, selectedAirportId, normalizedRecentAirportIds)
+        if (normalizedAirportId != selectedAirportId) {
+            selectedAirportId = normalizedAirportId
+            return@LaunchedEffect
+        }
+        val normalizedChartId = resolveChartId(fixture.chartPage.airports, normalizedAirportId, selectedChartId)
+        if (normalizedChartId != selectedChartId) {
+            selectedChartId = normalizedChartId
+        }
+    }
+
+    LaunchedEffect(page, selectedAirportId, selectedChartId, recentAirportIds) {
+        writeUiPrefs(context.applicationContext, page, selectedAirportId, selectedChartId, recentAirportIds)
     }
     val legSummary = remember(fixture.samplePlan) {
         fixture.samplePlan.legs.firstOrNull()?.let { "${it.fromAirport} -> ${it.toAirport} CRS 342" } ?: "NO LEG"
@@ -215,12 +353,13 @@ private fun AerobagApp() {
         )
         AppPage.Charts -> ChartsPage(
             page = page,
-            airports = fixture.chartPage.airports,
+            airports = orderedChartAirports,
             selectedAirport = selectedAirport,
             selectedChart = selectedChart,
             onSelectPage = { page = it },
             onSelectAirport = { airportId ->
                 selectedAirportId = airportId
+                recentAirportIds = moveAirportToFront(recentAirportIds, airportId, fixture.chartPage.airports)
                 selectedChartId = fixture.chartPage.airports.find { it.id == airportId }?.charts?.firstOrNull()?.id.orEmpty()
             },
             onSelectChart = { selectedChartId = it },
@@ -754,7 +893,16 @@ private fun ChartsPage(
         value = selectedChart?.assetPath?.let { path ->
             withContext(Dispatchers.IO) {
                 runCatching {
-                    context.assets.open(path).use { stream ->
+                    val localFile = java.io.File(context.filesDir, path)
+                    val inputStream = when {
+                        localFile.isFile -> localFile.inputStream()
+                        selectedChart != null -> {
+                            val chartBytes = ChartPackages.loadChartBytes(context, selectedChart) ?: context.assets.open(path).use { it.readBytes() }
+                            chartBytes.inputStream()
+                        }
+                        else -> context.assets.open(path)
+                    }
+                    inputStream.use { stream ->
                         BitmapFactory.decodeStream(stream)?.asImageBitmap()
                     }
                 }.getOrNull()

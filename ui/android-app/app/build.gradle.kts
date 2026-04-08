@@ -22,6 +22,7 @@ val rustJniLibsDir = layout.buildDirectory.dir("generated/rustJniLibs")
 val rustOutputAbiDir = layout.buildDirectory.dir("generated/rustJniLibs/x86_64")
 val generatedPrototypeAssetsDir = layout.buildDirectory.dir("generated/prototypeAssets")
 val generatedPrototypeSeedPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedPackages")
+val generatedPrototypeSeedChartPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedChartPackages")
 val uiFixtureGenerator = file("../../scripts/generate_content_fixture.py")
 val resourceIndexFile = file("../../shared-fixtures/content-prototype/resource-index.json")
 
@@ -101,6 +102,72 @@ val seedPrototypeSectionalPackages by tasks.registering {
                 }
                 exec {
                     commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "cp", "$tempDir/${packageFile.name}", "files/sectional-packages/${packageFile.name}")
+                }
+                exec {
+                    commandLine("adb", "shell", "rm", "-f", "$tempDir/${packageFile.name}")
+                }
+            }
+        exec {
+            commandLine("adb", "shell", "rm", "-rf", tempDir)
+        }
+    }
+}
+
+val stagePrototypeChartPackages by tasks.registering {
+    dependsOn(generatePrototypeFixture)
+    outputs.dir(generatedPrototypeSeedChartPackagesDir.map { it.dir("chart-packages") })
+    doLast {
+        val payload = JsonSlurper().parse(resourceIndexFile) as Map<*, *>
+        val packages = (payload["packages"] as List<*>)
+            .filterIsInstance<Map<*, *>>()
+            .filter { (it["id"] as? String) in setOf("NW_TPP", "NW_CSUP") }
+            .map { file(it["artifact_path"] as String) }
+        val outputDir = generatedPrototypeSeedChartPackagesDir.get().dir("chart-packages").asFile
+        delete(outputDir)
+        outputDir.mkdirs()
+        packages.forEach { source ->
+            if (!source.isFile) {
+                throw GradleException("missing staged chart package ${source.absolutePath}")
+            }
+            Files.copy(
+                source.toPath(),
+                outputDir.resolve(source.name).toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        }
+    }
+}
+
+val seedPrototypeChartPackages by tasks.registering {
+    dependsOn("installDebug")
+    dependsOn(stagePrototypeChartPackages)
+    doLast {
+        val packageDir = generatedPrototypeSeedChartPackagesDir.get().dir("chart-packages").asFile
+        if (!packageDir.isDirectory) {
+            throw GradleException("missing staged chart package directory ${packageDir.absolutePath}")
+        }
+        val tempDir = "/data/local/tmp/aerobag-chart-packages"
+        exec {
+            commandLine("adb", "shell", "rm", "-rf", tempDir)
+        }
+        exec {
+            commandLine("adb", "shell", "mkdir", "-p", tempDir)
+        }
+        exec {
+            commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "rm", "-rf", "files/chart-packages")
+        }
+        exec {
+            commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "mkdir", "-p", "files/chart-packages")
+        }
+        packageDir.listFiles()
+            ?.filter { it.isFile && it.extension == "zip" }
+            ?.sortedBy { it.name }
+            ?.forEach { packageFile ->
+                exec {
+                    commandLine("adb", "push", packageFile.absolutePath, "$tempDir/${packageFile.name}")
+                }
+                exec {
+                    commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "cp", "$tempDir/${packageFile.name}", "files/chart-packages/${packageFile.name}")
                 }
                 exec {
                     commandLine("adb", "shell", "rm", "-f", "$tempDir/${packageFile.name}")

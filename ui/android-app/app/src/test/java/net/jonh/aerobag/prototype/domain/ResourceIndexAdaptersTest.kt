@@ -1,7 +1,6 @@
 package net.jonh.aerobag.prototype.domain
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ResourceIndexAdaptersTest {
@@ -104,15 +103,10 @@ class ResourceIndexAdaptersTest {
     fun deriveChartPageBuildsAssetsFromPlatesAndCsups() {
         val chartPage = deriveChartPage(
             resourceIndex = resourceIndex,
-            recentAirportIds = listOf("BOS"),
-            initialAirportIdHint = "BOS",
-            initialChartIdHint = null,
             samplePlan = samplePlan,
         )
         assertEquals(1, chartPage.airports.size)
         assertEquals("BOS", chartPage.airports[0].id)
         assertEquals(listOf("plate", "csup"), chartPage.airports[0].charts.map { it.kind })
-        assertEquals("BOS", chartPage.initialAirportId)
-        assertTrue(chartPage.initialChartId.startsWith("plate:BOS:"))
     }
 }

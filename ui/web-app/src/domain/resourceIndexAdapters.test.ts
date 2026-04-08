@@ -74,13 +74,6 @@ const resourceIndex: ResourceIndexJson = {
   ],
 };
 
-const fixtureChartPage: ContentFixtureBundle["chart_page"] = {
-  recent_airport_ids: ["BOS"],
-  initial_airport_id: "BOS",
-  initial_chart_id: "",
-  airports: [],
-};
-
 const samplePlan: ContentFixtureBundle["flight_plan"] = {
   id: "plan-1",
   name: "test",
@@ -105,11 +98,9 @@ describe("resourceIndexAdapters", () => {
   });
 
   it("derives chart page assets from plates and csups", () => {
-    const chartPage = deriveChartPage(resourceIndex, fixtureChartPage, samplePlan);
+    const chartPage = deriveChartPage(resourceIndex, samplePlan);
     expect(chartPage.airports).toHaveLength(1);
     expect(chartPage.airports[0].id).toBe("BOS");
     expect(chartPage.airports[0].charts.map((chart) => chart.kind)).toEqual(["plate", "csup"]);
-    expect(chartPage.initial_airport_id).toBe("BOS");
-    expect(chartPage.initial_chart_id).toContain("plate:BOS:");
   });
 });

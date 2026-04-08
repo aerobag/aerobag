@@ -14,7 +14,7 @@ from osgeo import osr
 
 ROOT = Path(__file__).resolve().parents[2]
 UI_DIR = ROOT / "ui"
-RESOURCE_INDEX = ROOT / "rust-runs" / "resource-index" / "resource-index.json"
+RESOURCE_INDEX = ROOT / "product-builds" / "validation" / "work" / "resource-index" / "resource-index.json"
 CANONICAL_OUT = UI_DIR / "shared-fixtures" / "content-prototype" / "content_fixture.json"
 CANONICAL_RESOURCE_INDEX_OUT = UI_DIR / "shared-fixtures" / "content-prototype" / "resource-index.json"
 WEB_OUT = UI_DIR / "web-app" / "src" / "domain" / "generated" / "contentFixture.json"
@@ -26,12 +26,12 @@ WEB_TILE_ROOT = UI_DIR / "web-app" / "public" / "prototype-tiles"
 ANDROID_TILE_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "tiles"
 WEB_SECTIONAL_ROOT = UI_DIR / "web-app" / "generated-static" / "sectional-packages"
 WEB_CHART_ASSET_ROOT = UI_DIR / "web-app" / "generated-static" / "chart-assets"
-ANDROID_CHART_ASSET_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "chart-assets"
+WEB_CHART_ASSET_MANIFEST = UI_DIR / "web-app" / "generated-static" / "chart-assets-manifest.json"
+ANDROID_CHART_ASSET_ROOT = UI_DIR / "android-app" / "generated-seed" / "chart-assets"
+ANDROID_LEGACY_CHART_ASSET_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "chart-assets"
 WEB_NAV_DB_ROOT = UI_DIR / "web-app" / "generated-static" / "nav-db"
 ANDROID_NAV_DB_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "nav-db"
-PRODUCT_MAIN_DB = ROOT / "rust-runs" / "product-data" / "main.db"
-TPP_ROOT = ROOT / "runs" / "20260406T003224Z-validation" / "native" / "tpp-ne" / "work" / "tpp-ne"
-CSUP_ROOT = ROOT / "runs" / "20260406T003224Z-validation" / "native" / "csup" / "work" / "csup"
+PRODUCT_MAIN_DB = ROOT / "product-builds" / "validation" / "work" / "data" / "output" / "main.db"
 BOSTON_TAC_GEOJSON = ROOT / "rust-runs" / "tac-native" / "work" / "charts-tac" / "TAC" / "Boston TAC.geojson"
 BOSTON_TAC_TILE_ROOT = ROOT / "runs" / "20260406T003224Z-validation" / "native" / "charts-tac" / "work" / "charts-tac" / "tiles" / "1"
 
@@ -73,7 +73,19 @@ class TiledPackage:
 
 
 def load_resource_index() -> dict:
-    return json.loads(RESOURCE_INDEX.read_text())
+    payload = json.loads(RESOURCE_INDEX.read_text())
+    family_map = {
+        "sec": "sectional",
+        "enr-l": "ifr_low",
+        "enr-h": "ifr_high",
+    }
+    for family in payload.get("families", []):
+        family["id"] = family_map.get(family["id"], family["id"])
+    for package in payload.get("packages", []):
+        package["family_id"] = family_map.get(package["family_id"], package["family_id"])
+    for collection in payload.get("chart_collections", []):
+        collection["family_id"] = family_map.get(collection["family_id"], collection["family_id"])
+    return payload
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -155,57 +167,82 @@ def copy_tac_tile_subset(tile_windows: dict[int, tuple[int, int, int]]) -> list[
     return sorted(levels, key=lambda item: item["zoom"])
 
 
-def pick_bos_chart_assets(resource_index: dict) -> tuple[dict, dict]:
-    bos_plates = [record for record in resource_index["plates"] if record["airport_id"] == "KBOS"]
-    bos_csups = [record for record in resource_index["csups"] if record["airport_id"] == "KBOS"]
-    plate_record = next(
-        (record for record in bos_plates if record["label"] == "IAP-MA-ILS OR LOC RWY 04R"),
-        bos_plates[0] if bos_plates else None,
-    )
-    if plate_record is None:
-        raise RuntimeError("no BOS plate records found in resource index")
-    csup_record = bos_csups[0] if bos_csups else None
-    if csup_record is None:
-        raise RuntimeError("no BOS csup records found in resource index")
-    return plate_record, csup_record
+def chart_asset(record: dict, kind: str) -> dict:
+    airport_id = record["airport_id"]
+    source_path = Path(record["asset_path"])
+    label = "CSup" if kind == "csup" else record["label"]
+    return {
+        "id": f"{kind}:{airport_id}:{source_path.name}",
+        "airport_id": airport_id,
+        "label": label,
+        "kind": kind,
+        "asset_path": f"chart-assets/{airport_id}/{source_path.name}",
+        "asset_url": f"/chart-assets/{airport_id}/{source_path.name}",
+    }
 
 
-def stage_chart_assets(plate_record: dict, csup_record: dict) -> tuple[dict, dict]:
-    plate_source = TPP_ROOT / plate_record["asset_path"]
-    csup_source = CSUP_ROOT / csup_record["asset_path"]
-    if not plate_source.exists():
-        raise RuntimeError(f"missing plate asset {plate_source}")
-    if not csup_source.exists():
-        raise RuntimeError(f"missing csup asset {csup_source}")
+def package_region(package_id: str) -> str:
+    return package_id.split("_", 1)[0].lower()
 
-    airport_id = plate_record["airport_id"]
-    destinations = [
-        WEB_CHART_ASSET_ROOT / airport_id,
-        ANDROID_CHART_ASSET_ROOT / airport_id,
+
+def package_family(package_id: str) -> str:
+    return package_id.split("_", 1)[1].lower()
+
+
+def plate_root_candidates(package_id: str) -> list[Path]:
+    region = package_region(package_id)
+    return [
+        ROOT / "product-builds" / "production" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
+        ROOT / "product-builds" / "validation" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
+        ROOT / "runs" / "20260406T003224Z-validation" / "native" / f"tpp-{region}" / "work" / f"tpp-{region}",
     ]
-    for directory in destinations:
-        directory.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(plate_source, directory / plate_source.name)
-        shutil.copy2(csup_source, directory / csup_source.name)
 
-    return (
-        {
-            "id": f"plate:{airport_id}:{plate_source.name}",
-            "airport_id": airport_id,
-            "label": plate_record["label"],
-            "kind": "plate",
-            "asset_path": f"chart-assets/{airport_id}/{plate_source.name}",
-            "asset_url": f"/chart-assets/{airport_id}/{plate_source.name}",
-        },
-        {
-            "id": f"csup:{airport_id}:{csup_source.name}",
-            "airport_id": airport_id,
-            "label": "CSup",
-            "kind": "csup",
-            "asset_path": f"chart-assets/{airport_id}/{csup_source.name}",
-            "asset_url": f"/chart-assets/{airport_id}/{csup_source.name}",
-        },
+
+def csup_root_candidates() -> list[Path]:
+    return [
+        ROOT / "product-builds" / "production" / "work" / "csup" / "work" / "csup",
+        ROOT / "product-builds" / "validation" / "work" / "csup" / "work" / "csup",
+        ROOT / "runs" / "20260406T003224Z-validation" / "native" / "csup" / "work" / "csup",
+    ]
+
+
+def resolve_chart_record_source(record: dict, kind: str) -> Path:
+    candidates = plate_root_candidates(record["package_id"]) if kind == "plate" else csup_root_candidates()
+    for root in candidates:
+        source = root / record["asset_path"]
+        if source.exists():
+            return source
+    raise RuntimeError(f"missing {kind} asset {record['asset_path']} for {record['package_id']}")
+
+
+def build_web_chart_asset_manifest(resource_index: dict) -> None:
+    manifest = {}
+    for kind, records in (("plate", resource_index["plates"]), ("csup", resource_index["csups"])):
+        for record in records:
+            source = resolve_chart_record_source(record, kind)
+            airport_id = record["airport_id"]
+            filename = Path(record["asset_path"]).name
+            manifest[f"/chart-assets/{airport_id}/{filename}"] = str(source)
+    WEB_CHART_ASSET_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    WEB_CHART_ASSET_MANIFEST.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+
+
+def select_chart_airports(resource_index: dict, plan_airport_ids: list[str]) -> list[str]:
+    airport_resources = {entry["airport_id"]: entry for entry in resource_index["airport_resources"]}
+    recent_airport_ids = []
+    for airport_id in plan_airport_ids:
+        if airport_id in airport_resources:
+            recent_airport_ids.append(airport_id)
+
+    first_plate_airport = next(
+        (entry["airport_id"] for entry in resource_index["airport_resources"] if entry["plate_ids"]),
+        None,
     )
+    if first_plate_airport and first_plate_airport not in recent_airport_ids:
+        recent_airport_ids.append(first_plate_airport)
+    if not recent_airport_ids:
+        raise RuntimeError("no chart-page airports found in resource index")
+    return recent_airport_ids
 
 
 def stage_nav_db() -> None:
@@ -378,8 +415,14 @@ def build_fixture() -> dict:
     supported_tiled_packages = load_supported_tiled_packages(resource_index)
     supported_chart_collections = load_supported_chart_collections(resource_index)
     packages_by_id = package_by_id(supported_tiled_packages)
-    plate_record, csup_record = pick_bos_chart_assets(resource_index)
-    plate_asset, csup_asset = stage_chart_assets(plate_record, csup_record)
+    sample_plan_airports = ["KRNT", "KSEA", "KPAE", "KAWO"]
+    chart_airport_ids = select_chart_airports(resource_index, sample_plan_airports)
+    clear_directory(WEB_CHART_ASSET_ROOT)
+    WEB_CHART_ASSET_ROOT.mkdir(parents=True, exist_ok=True)
+    clear_directory(ANDROID_LEGACY_CHART_ASSET_ROOT)
+    clear_directory(ANDROID_CHART_ASSET_ROOT)
+    ANDROID_CHART_ASSET_ROOT.mkdir(parents=True, exist_ok=True)
+    build_web_chart_asset_manifest(resource_index)
     stage_nav_db()
     clear_sectional_web_root()
     for package in supported_tiled_packages:
@@ -438,9 +481,17 @@ def build_fixture() -> dict:
         if region in regions_seen
     ]
 
-    procedure_code = plate_record["label"]
-    procedure_name = plate_record["label"]
-    asset_base_path = str(Path(plate_record["asset_path"]).with_suffix(""))
+    initial_airport_id = next(
+        (airport_id for airport_id in chart_airport_ids if any(record["airport_id"] == airport_id for record in resource_index["plates"])),
+        chart_airport_ids[0],
+    )
+    seed_plate_record = next(
+        (record for record in resource_index["plates"] if record["airport_id"] == initial_airport_id),
+        None,
+    )
+    procedure_code = seed_plate_record["label"] if seed_plate_record else "UNKNOWN"
+    procedure_name = seed_plate_record["label"] if seed_plate_record else "UNKNOWN"
+    asset_base_path = str(Path(seed_plate_record["asset_path"]).with_suffix("")) if seed_plate_record else ""
 
     return {
         "catalog": {
@@ -501,25 +552,29 @@ def build_fixture() -> dict:
                     },
                 }
             ],
-            "plates": [
-                {
-                    "id": {
-                        "airport_id": "KBOS",
-                        "procedure_code": procedure_code,
-                        "page": 1,
+            "plates": (
+                [
+                    {
+                        "id": {
+                            "airport_id": initial_airport_id,
+                            "procedure_code": procedure_code,
+                            "page": 1,
+                            "cycle": cycle,
+                        },
+                        "airport_id": initial_airport_id,
+                        "region_id": "ne",
                         "cycle": cycle,
-                    },
-                    "airport_id": "KBOS",
-                    "region_id": "ne",
-                    "cycle": cycle,
-                    "procedure_code": procedure_code,
-                    "display_name": procedure_name,
-                    "kind": "approach",
-                    "georeferenced": True,
-                    "page_count": 1,
-                    "asset_base_path": asset_base_path,
-                }
-            ],
+                        "procedure_code": procedure_code,
+                        "display_name": procedure_name,
+                        "kind": "approach",
+                        "georeferenced": True,
+                        "page_count": 1,
+                        "asset_base_path": asset_base_path,
+                    }
+                ]
+                if seed_plate_record
+                else []
+            ),
             "supplements": [],
         },
         "geometry": {
@@ -533,18 +588,6 @@ def build_fixture() -> dict:
         },
         "map_view": default_map_view,
         "map_views": map_views,
-        "chart_page": {
-            "recent_airport_ids": ["KBOS"],
-            "initial_airport_id": "KBOS",
-            "initial_chart_id": plate_asset["id"],
-            "airports": [
-                {
-                    "id": "KBOS",
-                    "label": "KBOS",
-                    "charts": [plate_asset, csup_asset],
-                }
-            ],
-        },
         "initial_probe": {
             "family": default_map_view["chart_family"],
             "lat": default_map_view["initial_viewport"]["lat"],

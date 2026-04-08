@@ -70,7 +70,8 @@ Current web build behavior:
 - that generator also extracts real `NW_SEC` / `SW_SEC` web tiles into:
   - [ui/web-app/generated-static/sectional-packages](/root/aerobag/ui/web-app/generated-static/sectional-packages)
 - and stages chart PNG assets into:
-  - [ui/web-app/generated-static/chart-assets](/root/aerobag/ui/web-app/generated-static/chart-assets)
+  - real build-output files referenced by:
+    - [ui/web-app/generated-static/chart-assets-manifest.json](/root/aerobag/ui/web-app/generated-static/chart-assets-manifest.json)
 - [ui/web-app/.gitignore](/root/aerobag/ui/web-app/.gitignore) ignores `public/generated`
 - [ui/web-app/.gitignore](/root/aerobag/ui/web-app/.gitignore) also ignores `generated-static`
 - the web prototype fixture is generated and checked in at:
@@ -84,9 +85,14 @@ Important Vite serving note:
   - [ui/web-app/vite.config.ts](/root/aerobag/ui/web-app/vite.config.ts)
 - explicit middleware mounts:
   - `/sectional-packages` from `generated-static/sectional-packages`
-  - `/chart-assets` from `generated-static/chart-assets`
+  - `/chart-assets` from a manifest-backed resolver
 - production builds also copy both trees into `dist/`
+- important detail:
+  - Vite mounts `/chart-assets` under a stripped path like `/KSEA/APD-...png`
+  - the manifest is keyed as `/chart-assets/KSEA/APD-...png`
+  - the middleware must handle both forms or it falls back to `index.html`
 - if web tiles disappear, first verify the dev server is returning real asset content types before debugging map math
+- if web plates disappear, verify a real PNG URL returns `image/png`
 - after a machine reboot, Vite will not be running; restart with:
 
 ```bash
@@ -238,6 +244,19 @@ Shared fixture loading on Android:
 - the Android app loads its prototype fixture from assets:
   - [ui/android-app/app/src/main/assets/fixtures/contentFixture.json](/root/aerobag/ui/android-app/app/src/main/assets/fixtures/contentFixture.json)
 - the Android Gradle build now reruns the generator automatically before `preBuild`
+- current Android plate/CSUP delivery is zip-backed, not loose assets:
+  - seed `NW_TPP.zip` and `NW_CSUP.zip` into app-local storage after install
+  - do not try to bundle the full loose chart PNG tree into the APK; it explodes install size
+- the helper now handles the correct dev workflow:
+  - [ui/android-app/scripts/install_launch_check.sh](/root/aerobag/ui/android-app/scripts/install_launch_check.sh)
+  - installs APK
+  - seeds sectional zips
+  - seeds chart packages
+  - launches and checks logs
+
+Generator concurrency note:
+- do not run web and Android build commands in parallel if both invoke [ui/scripts/generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py)
+- it mutates shared generated trees and can race, especially around copied TAC tiles
 
 Sectional package staging on Android:
 - old approach of bundling full chart zips into APK assets does not scale:

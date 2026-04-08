@@ -5,10 +5,29 @@ import react from "@vitejs/plugin-react";
 
 const sectionalRoot = path.resolve(__dirname, "generated-static", "sectional-packages");
 const chartAssetRoot = path.resolve(__dirname, "generated-static", "chart-assets");
+const chartAssetManifestPath = path.resolve(__dirname, "generated-static", "chart-assets-manifest.json");
+
+function lookupChartAsset(requestPath: string) {
+  if (!fs.existsSync(chartAssetManifestPath)) {
+    return null;
+  }
+  const manifest = JSON.parse(fs.readFileSync(chartAssetManifestPath, "utf8")) as Record<string, string>;
+  const filePath = manifest[requestPath] ?? manifest[`/chart-assets${requestPath}`];
+  if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    return null;
+  }
+  return filePath;
+}
 
 function mountStaticTree(sourceRoot: string) {
   return (req: { url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
     const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
+    const manifestFilePath = sourceRoot === chartAssetRoot ? lookupChartAsset(requestPath) : null;
+    if (manifestFilePath) {
+      res.setHeader("Content-Type", "image/png");
+      fs.createReadStream(manifestFilePath).pipe(res);
+      return;
+    }
     const relativePath = requestPath.replace(/^\/+/, "");
     const filePath = path.resolve(sourceRoot, relativePath);
     if (!filePath.startsWith(sourceRoot)) {

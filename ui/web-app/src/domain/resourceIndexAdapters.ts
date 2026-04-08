@@ -1,8 +1,8 @@
-import type { ChartFamilyId, ContentFixtureBundle, FlightPlan, RegionId, ResourceIndexJson, TileStorageKind } from "./types";
+import type { ChartFamilyId, ChartPageData, ContentFixtureBundle, FlightPlan, RegionId, ResourceIndexJson, TileStorageKind } from "./types";
 
 type MapView = ContentFixtureBundle["map_view"];
 type MapViewOption = NonNullable<ContentFixtureBundle["map_views"]>[number];
-type ChartPage = NonNullable<ContentFixtureBundle["chart_page"]>;
+type ChartPage = ChartPageData;
 type SupportedChartFamily = Extract<ChartFamilyId, "sectional" | "tac" | "ifr_low" | "ifr_high">;
 type ChartAsset = ChartPage["airports"][number]["charts"][number];
 
@@ -139,7 +139,6 @@ function chartAssetForRecord(
 
 export function deriveChartPage(
   resourceIndex: ResourceIndexJson,
-  fixtureChartPage: ContentFixtureBundle["chart_page"] | undefined,
   samplePlan: FlightPlan,
 ): ChartPage {
   const plateById = new Map(resourceIndex.plates.map((record) => [record.id, record]));
@@ -147,11 +146,14 @@ export function deriveChartPage(
   const airportResourcesByAirportId = new Map(
     resourceIndex.airport_resources.map((entry) => [entry.airport_id, entry]),
   );
-  const hintedAirportIds = new Set<string>(fixtureChartPage?.recent_airport_ids ?? []);
+  const orderedAirportIds = new Set<string>();
   for (const airportId of airportIdsFromPlan(samplePlan)) {
-    hintedAirportIds.add(airportId);
+    orderedAirportIds.add(airportId);
   }
-  const airports = [...hintedAirportIds]
+  for (const entry of resourceIndex.airport_resources) {
+    orderedAirportIds.add(entry.airport_id);
+  }
+  const airports = [...orderedAirportIds]
     .map((airportId) => {
       const airportResources = airportResourcesByAirportId.get(airportId);
       if (!airportResources) {
@@ -177,20 +179,7 @@ export function deriveChartPage(
     })
     .filter((airport): airport is ChartPage["airports"][number] => airport !== null);
 
-  const initialAirportId =
-    fixtureChartPage?.initial_airport_id && airports.some((airport) => airport.id === fixtureChartPage.initial_airport_id)
-      ? fixtureChartPage.initial_airport_id
-      : airports[0]?.id ?? "";
-  const initialChartId =
-    fixtureChartPage?.initial_chart_id &&
-    airports.some((airport) => airport.charts.some((chart) => chart.id === fixtureChartPage.initial_chart_id))
-      ? fixtureChartPage.initial_chart_id
-      : airports.find((airport) => airport.id === initialAirportId)?.charts[0]?.id ?? "";
-
   return {
-    recent_airport_ids: airports.map((airport) => airport.id),
-    initial_airport_id: initialAirportId,
-    initial_chart_id: initialChartId,
     airports,
   };
 }

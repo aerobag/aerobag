@@ -8,22 +8,28 @@ ACTIVITY="$APP_ID/.MainActivity"
 GRADLE_USER_HOME="${GRADLE_USER_HOME:-$ROOT/.gradle-user-home}"
 WAIT_SECONDS="${WAIT_SECONDS:-2}"
 
-echo "[1/5] installDebug"
+echo "[1/6] installDebug"
 (
   cd "$APP_DIR"
   env GRADLE_USER_HOME="$GRADLE_USER_HOME" ./gradlew installDebug
 )
 
-echo "[2/5] clear logcat"
+echo "[2/6] seed chart payloads"
+(
+  cd "$APP_DIR"
+  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ./gradlew seedPrototypeSectionalPackages seedPrototypeChartPackages
+)
+
+echo "[3/6] clear logcat"
 adb logcat -c
 
-echo "[3/5] force-stop"
+echo "[4/6] force-stop"
 adb shell am force-stop "$APP_ID"
 
-echo "[4/5] launch"
+echo "[5/6] launch"
 adb shell am start -W -n "$ACTIVITY"
 
-echo "[5/5] wait ${WAIT_SECONDS}s and inspect"
+echo "[6/6] wait ${WAIT_SECONDS}s and inspect"
 sleep "$WAIT_SECONDS"
 
 RESUMED="$(adb shell dumpsys activity activities | grep -E 'topResumedActivity|ResumedActivity' || true)"

@@ -167,6 +167,7 @@ function MapPage(props: {
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [familyTrayOpen, setFamilyTrayOpen] = useState(false);
+  const [debugOpen, setDebugOpen] = useState(false);
   const viewportRef = useRef<MapViewportState>(viewport);
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
@@ -202,6 +203,17 @@ function MapPage(props: {
     }
     return renderTiles(selectedFamilyMapViews.map((view) => ({ ...view.map_view, id: view.id })), viewport, surfaceSize.width, surfaceSize.height);
   }, [selectedFamilyMapViews, surfaceSize, viewport]);
+  const debugSummary = useMemo(() => {
+    const tileZooms = [...new Set(tiles.map((tile) => tile.zoom))].sort((a, b) => a - b);
+    const packages = [...new Set(tiles.map((tile) => tile.packageName).filter((value): value is string => Boolean(value)))].sort();
+    const mapIds = selectedFamilyMapViews.map((view) => view.id);
+    return {
+      tileZooms,
+      packages,
+      mapIds,
+      tileCount: tiles.length,
+    };
+  }, [selectedFamilyMapViews, tiles]);
 
   function updateViewport(next: MapViewportState) {
     viewportRef.current = next;
@@ -403,9 +415,31 @@ function MapPage(props: {
           <span className="navElementBottom">° ° ^| ° °</span>
         </button>
 
-        {debugTileLabels ? (
-          <div className="debugCorner">search={locationSearch || "(empty)"} debugTiles=on {center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
-        ) : null}
+        <div
+          className="debugDock"
+          onPointerDown={(event) => event.stopPropagation()}
+          onPointerUp={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="debugLauncher"
+            onClick={() => setDebugOpen((open) => !open)}
+            aria-expanded={debugOpen}
+            aria-label="Toggle debug details"
+          >
+            DBG
+          </button>
+          <section className={`debugPanel${debugOpen ? " isOpen" : ""}`} aria-label="Debug metadata">
+            <div className="debugLine">family {selectedFamily.launcherLabel}</div>
+            <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
+            <div className="debugLine">tiles {debugSummary.tileCount}</div>
+            <div className="debugLine">src z {debugSummary.tileZooms.length > 0 ? debugSummary.tileZooms.join(", ") : "(none)"}</div>
+            <div className="debugLine">pkg {debugSummary.packages.length > 0 ? debugSummary.packages.join(", ") : "(none)"}</div>
+            <div className="debugLine">maps {debugSummary.mapIds.join(", ")}</div>
+            <div className="debugLine">search {locationSearch || "(empty)"}</div>
+            <div className="debugLine">{debugTileLabels ? "debugTiles=on" : "debugTiles=off"}</div>
+          </section>
+        </div>
       </div>
     </section>
   );

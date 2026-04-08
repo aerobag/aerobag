@@ -180,7 +180,7 @@ export function renderTiles(
   for (const mapView of mapViews) {
     tiles.push(...renderTilesForMapView(mapView, viewport, width, height));
   }
-  return dedupeTiles(tiles);
+  return dedupeTiles(tiles).sort((left, right) => left.zoom - right.zoom);
 }
 
 function renderTilesForMapView(

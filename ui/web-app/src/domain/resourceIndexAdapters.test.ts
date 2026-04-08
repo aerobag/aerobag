@@ -100,6 +100,8 @@ describe("resourceIndexAdapters", () => {
     expect(mapViews.map((entry) => entry.id)).toEqual(["sectional:nw", "tac:nw"]);
     expect(mapViews[0].map_view.package_name).toBe("NW_SEC");
     expect(mapViews[1].map_view.chart_family).toBe("tac");
+    expect(mapViews[0].map_view.tile_size).toBe(512);
+    expect(mapViews[1].map_view.tile_size).toBe(512);
   });
 
   it("derives chart page assets from plates and csups", () => {

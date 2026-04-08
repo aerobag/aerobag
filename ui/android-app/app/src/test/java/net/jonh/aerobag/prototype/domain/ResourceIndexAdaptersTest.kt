@@ -96,6 +96,8 @@ class ResourceIndexAdaptersTest {
         assertEquals(listOf("sectional:nw", "tac:nw"), mapViews.map { it.id })
         assertEquals("NW_SEC", mapViews[0].mapView.packageName)
         assertEquals(MapChartFamily.Tac, mapViews[1].mapView.chartFamily)
+        assertEquals(512, mapViews[0].mapView.tileSize)
+        assertEquals(512, mapViews[1].mapView.tileSize)
     }
 
     @Test

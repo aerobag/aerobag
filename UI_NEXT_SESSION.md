@@ -64,6 +64,11 @@ What it does now:
   - wheel zoom
   - double-click zoom
   - pinch zoom
+- lower-left debug launcher:
+  - closed: `1 thumb`
+  - open: `4 thumbs`
+  - shows family, lat/lon/zoom, rendered tile count, source zooms, package ids, active map ids
+  - text is selectable for copy/paste
 - web chart page supports:
   - drag pan
   - wheel zoom
@@ -71,6 +76,11 @@ What it does now:
   - pinch zoom
   - one-thumb overscroll margin around the image
 - `?debugTiles=1` overlays tile `z/x/y`
+
+Important recent web rendering fixes:
+- tiled-family adapters now use `tile_size = 512` instead of `256`
+- family mosaic rendering sorts tiles so lower-zoom tiles paint first and higher-zoom tiles paint last
+- this fixed the case where coarse `PAC_TAC` tiles could visually obscure sharper `SW_TAC` tiles in overlapping TAC coverage
 
 Important web serving note:
 - sectional tiles no longer come from mutable `public/sectional-packages`
@@ -161,6 +171,12 @@ Live dev server convention:
 - keep one Vite process alive and rely on HMR
 - expected host URL:
   - `http://aerobag-dev.iac.jonh.net:8080/`
+- after a machine reboot, Vite will of course be gone; restart it with:
+
+```bash
+cd /root/aerobag/ui/web-app
+npm run dev -- --host 0.0.0.0 --port 8080
+```
 
 If the live dev server starts returning HTML for tile URLs again, verify with:
 
@@ -213,6 +229,15 @@ What it does:
 Important discipline:
 - if the user reports a crash, read `logcat` before reinstalling or relaunching
 - reinstalling the APK will kill the running app with `installPackageLI`, which is not evidence of a runtime crash
+
+Current reboot bring-up sequence that worked:
+
+```bash
+Xvfb :1 -screen 0 1440x3040x24
+x11vnc -display :1 -forever -shared -rfbport 5900 -noxdamage -nowf -noscr -fixscreen 1 -clip 1080x2400+0+0
+DISPLAY=:1 /usr/lib/android-sdk/emulator/emulator -avd aerobag34 -gpu software -no-audio -no-snapshot-save
+env GRADLE_USER_HOME=/root/aerobag/.gradle-user-home /root/aerobag/ui/android-app/scripts/install_launch_check.sh
+```
 
 ## Current Design State
 

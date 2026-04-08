@@ -237,17 +237,61 @@ button {
   font-weight: 700;
 }
 
-.debugCorner {
+.debugDock {
   position: absolute;
-  right: var(--thumb-gap);
+  left: var(--thumb-gap);
   bottom: var(--thumb-gap);
-  z-index: 2;
-  padding: 0.35rem 0.55rem;
-  border-radius: 0.7rem;
-  background: rgba(14, 22, 28, 0.72);
-  color: #f3f8fa;
-  font-size: 0.72rem;
+  z-index: 4;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--thumb-gap);
+}
+
+.debugLauncher {
+  width: var(--thumb);
+  height: var(--thumb);
+  padding: 0;
+  border: 1px solid rgba(19, 33, 41, 0.16);
+  border-radius: var(--thumb-radius);
+  background: rgba(246, 241, 231, 0.92);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font-size: calc(var(--thumb) * 0.22);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  backdrop-filter: blur(10px);
+}
+
+.debugPanel {
+  width: 0;
+  min-height: var(--thumb);
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  border: 1px solid rgba(19, 33, 41, 0.14);
+  border-radius: var(--thumb-radius);
+  background: rgba(252, 248, 241, 0.95);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+  transition: width 160ms ease, opacity 160ms ease, padding 160ms ease;
+  user-select: text;
+  cursor: text;
+}
+
+.debugPanel.isOpen {
+  width: calc(var(--thumb) * 4);
+  opacity: 1;
+  pointer-events: auto;
+  padding: calc(var(--thumb) * 0.12) calc(var(--thumb) * 0.16);
+}
+
+.debugLine {
+  font-size: calc(var(--thumb) * 0.16);
+  line-height: 1.15;
   font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  user-select: text;
 }
 
 .navElement {

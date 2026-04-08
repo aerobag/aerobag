@@ -87,6 +87,17 @@ Important Vite serving note:
   - `/chart-assets` from `generated-static/chart-assets`
 - production builds also copy both trees into `dist/`
 - if web tiles disappear, first verify the dev server is returning real asset content types before debugging map math
+- after a machine reboot, Vite will not be running; restart with:
+
+```bash
+cd /root/aerobag/ui/web-app
+npm run dev -- --host 0.0.0.0 --port 8080
+```
+
+Current important web rendering assumptions:
+- packaged tiled chart assets are `512x512` WebP tiles
+- the UI adapters must preserve that `512` tile size; forcing `256` makes TACs look blocky/overzoomed
+- overlapping family mosaics can contain coarse and fine packages at once, so rendering should paint lower source zooms first and higher source zooms last
 
 ## Android Prototype
 

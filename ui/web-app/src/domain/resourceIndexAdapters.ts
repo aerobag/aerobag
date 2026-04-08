@@ -36,7 +36,7 @@ function tileUrlRoot(packageName: string): string {
 }
 
 function tileSizeForFamily(_resourceIndex: ResourceIndexJson, _familyId: SupportedChartFamily): number {
-  return 256;
+  return 512;
 }
 
 function minZoomForLevels(levels: MapView["levels"]): number {

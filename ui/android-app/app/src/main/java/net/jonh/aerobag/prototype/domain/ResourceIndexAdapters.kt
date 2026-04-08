@@ -148,6 +148,8 @@ private fun minZoomForLevels(levels: List<TileLevelAvailability>): Double =
 private fun maxZoomForLevels(levels: List<TileLevelAvailability>): Double =
     (levels.maxOfOrNull { it.zoom } ?: 10) + 0.8
 
+private fun tileSizeForFamily(): Int = 512
+
 fun deriveMapViews(
     resourceIndex: WireResourceIndex,
     preferredIds: List<String>,
@@ -183,7 +185,7 @@ fun deriveMapViews(
                 chartIndex = collection.chart_index,
                 tileRoot = "tiles",
                 tileUrlRoot = "/sectional-packages/${collection.package_id}/tiles",
-                tileSize = 256,
+                tileSize = tileSizeForFamily(),
                 minZoom = minZoomForLevels(levels),
                 maxZoom = maxZoomForLevels(levels),
                 storageKind = TileStorageKind.SectionalPackage,

@@ -1331,3 +1331,51 @@ If the next session starts with no further instruction, do this:
     - `plates/ONT/STAR-CA-SCBBY TWO (RNAV), CONT.1.png`
     - `plates/PHX/DP-AZ-MRBIL ONE (RNAV), CONT.1.png`
     - both exist on disk and are retained because they are real multi-page georeferenced procedures
+
+- Product resource-index now carries folder-view metadata and generated thumbnails:
+  - files:
+    - [preprocessor-resource-index/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-resource-index/src/lib.rs)
+    - [preprocessor-resource-index/Cargo.toml](/root/aerobag/product/preprocessor/preprocessor-resource-index/Cargo.toml)
+    - [Cargo.toml](/root/aerobag/product/preprocessor/Cargo.toml)
+  - schema bump:
+    - `schema_version = 3`
+  - new per-record metadata:
+    - `plates[*].document_type`
+    - `plates[*].thumbnail_path`
+    - `csups[*].document_type`
+    - `csups[*].thumbnail_path`
+  - document type values currently emitted:
+    - `csup`
+    - `airport_diagram`
+    - `takeoff_minimums`
+    - `alternate_minimums`
+    - `minimums`
+    - `approach`
+    - `departure`
+    - `star`
+    - fallback `other`
+  - thumbnail generation:
+    - rendered during the `resource-index` step
+    - output location is under the resource-index work tree:
+      - `thumbnails/plates/...`
+      - `thumbnails/afd/...`
+    - each thumbnail is exactly `100x150`
+    - image is fit proportionally into the box
+    - padding is transparent, not white
+  - implementation detail:
+    - thumbnail generation is now native Rust via the `image` crate, not a shell-out
+    - generation was parallelized with `rayon` because the full production set is large
+  - production proof:
+    - [master.log](/root/aerobag/product-builds/production/orchestrator-logs/master.log)
+    - final result: `complete PASS` at `+2:36`
+    - `resource-index` rebuilt cold with thumbnails in `2:36`
+  - sample live production records:
+    - `KRNT` `IAP-WA-RNAV (GPS) Z RWY 16`:
+      - `document_type = approach`
+      - `thumbnail_path = thumbnails/plates/RNT/IAP-WA-RNAV (GPS) Z RWY 16.png`
+    - `KBOS` `APD-MA-AIRPORT DIAGRAM`:
+      - `document_type = airport_diagram`
+      - `thumbnail_path = thumbnails/plates/BOS/APD-MA-AIRPORT DIAGRAM.png`
+    - `KBOS` `CSUP-NE_0`:
+      - `document_type = csup`
+      - `thumbnail_path = thumbnails/afd/BOS/CSUP-NE_0.png`

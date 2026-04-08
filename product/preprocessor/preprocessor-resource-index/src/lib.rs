@@ -1,7 +1,9 @@
 use anyhow::{bail, Context};
 use chrono::{Datelike, Duration, NaiveDate, Utc};
+use image::{Rgba, RgbaImage};
 use preprocessor_core::Region;
 use preprocessor_fetch::PackageOutputRecord;
+use rayon::prelude::*;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -166,8 +168,10 @@ pub struct PlateRecord {
     pub region_id: String,
     pub package_id: String,
     pub asset_path: String,
+    pub thumbnail_path: String,
     pub label: String,
     pub asset_kind: String,
+    pub document_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -177,8 +181,10 @@ pub struct CsupRecord {
     pub region_id: String,
     pub package_id: String,
     pub asset_path: String,
+    pub thumbnail_path: String,
     pub label: String,
     pub asset_kind: String,
+    pub document_type: String,
 }
 
 pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Result<ResourceIndex> {
@@ -206,8 +212,13 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     let chart_collections = collect_chart_collections(&request.chart_sources)?;
     let airports = load_airports_from_nav_db(&request.nav_db_zip)?;
     let airport_aliases = load_airport_aliases_from_nav_db(&request.nav_db_zip)?;
-    let plates = collect_plate_records(&request.tpp_sources, &airport_aliases)?;
-    let csups = collect_csup_records(&request.csup_sources, &airport_aliases)?;
+    let thumbnail_root = request
+        .output_path
+        .parent()
+        .context("resource-index output path must have a parent directory")?
+        .join("thumbnails");
+    let plates = collect_plate_records(&request.tpp_sources, &airport_aliases, &thumbnail_root)?;
+    let csups = collect_csup_records(&request.csup_sources, &airport_aliases, &thumbnail_root)?;
     let airport_resources = collect_airport_resources(&plates, &csups);
     let families = collect_families(&packages, !plates.is_empty(), !csups.is_empty());
     let regions = Region::ALL
@@ -221,7 +232,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         .collect();
 
     let index = ResourceIndex {
-        schema_version: 2,
+        schema_version: 3,
         cycle,
         generated_at_utc: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         temporal_summary,
@@ -242,6 +253,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         csups,
     };
     validate_index_asset_paths(&index, &request.tpp_sources, &request.csup_sources)?;
+    validate_thumbnail_paths(&index, &thumbnail_root)?;
     Ok(index)
 }
 
@@ -280,6 +292,24 @@ fn validate_index_asset_paths(
     Ok(())
 }
 
+fn validate_thumbnail_paths(index: &ResourceIndex, thumbnail_root: &Path) -> anyhow::Result<()> {
+    let indexed_plate = index
+        .plates
+        .iter()
+        .map(|record| record.thumbnail_path.clone())
+        .collect::<BTreeSet<_>>();
+    let indexed_csup = index
+        .csups
+        .iter()
+        .map(|record| record.thumbnail_path.clone())
+        .collect::<BTreeSet<_>>();
+    let actual_plate = collect_actual_thumbnail_paths(thumbnail_root, "plates")?;
+    let actual_csup = collect_actual_thumbnail_paths(thumbnail_root, "afd")?;
+    compare_indexed_vs_actual("plate thumbnails", &indexed_plate, &actual_plate)?;
+    compare_indexed_vs_actual("csup thumbnails", &indexed_csup, &actual_csup)?;
+    Ok(())
+}
+
 fn collect_actual_asset_paths(
     sources: &[AssetSource],
     root_dir_name: &str,
@@ -304,6 +334,32 @@ fn collect_actual_asset_paths(
                 .with_context(|| format!("failed to relativize {}", asset.display()))?;
             paths.insert(relative.display().to_string());
         }
+    }
+    Ok(paths)
+}
+
+fn collect_actual_thumbnail_paths(
+    thumbnail_root: &Path,
+    root_dir_name: &str,
+) -> anyhow::Result<BTreeSet<String>> {
+    let root = thumbnail_root.join(root_dir_name);
+    let mut paths = BTreeSet::new();
+    if !root.is_dir() {
+        return Ok(paths);
+    }
+    for asset in read_files_recursive(&root)? {
+        let extension = asset
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if extension != "png" {
+            continue;
+        }
+        let relative = asset
+            .strip_prefix(thumbnail_root.parent().unwrap_or(thumbnail_root))
+            .with_context(|| format!("failed to relativize {}", asset.display()))?;
+        paths.insert(relative.display().to_string());
     }
     Ok(paths)
 }
@@ -532,6 +588,7 @@ fn canonicalize_airport_id(raw_id: &str, airport_aliases: &BTreeMap<String, Stri
 fn collect_plate_records(
     sources: &[AssetSource],
     airport_aliases: &BTreeMap<String, String>,
+    thumbnail_root: &Path,
 ) -> anyhow::Result<Vec<PlateRecord>> {
     let mut records = Vec::new();
     for source in sources {
@@ -540,6 +597,7 @@ fn collect_plate_records(
         if !plates_root.is_dir() {
             continue;
         }
+        let mut jobs = Vec::new();
         for airport_dir in read_child_dirs(&plates_root)? {
             let raw_airport_id = airport_dir
                 .file_name()
@@ -563,22 +621,45 @@ fn collect_plate_records(
                 if asset_kind != "png" {
                     continue;
                 }
-                let asset_path = asset.strip_prefix(&source.asset_root).unwrap_or(&asset);
-                let filename = asset.file_name().and_then(|value| value.to_str()).unwrap_or_default();
-                records.push(PlateRecord {
-                    id: format!("plate:{airport_id}:{filename}"),
-                    airport_id: airport_id.clone(),
-                    region_id: region_id.clone(),
-                    package_id: package_name.clone(),
-                    label: asset
-                        .file_stem()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                    asset_kind,
-                    asset_path: asset_path.display().to_string(),
-                });
+                jobs.push((
+                    airport_id.clone(),
+                    region_id.clone(),
+                    package_name.clone(),
+                    asset,
+                    source.asset_root.clone(),
+                ));
             }
+        }
+        let built = jobs
+            .into_par_iter()
+            .map(|(airport_id, region_id, package_id, asset, asset_root)| -> anyhow::Result<PlateRecord> {
+                let asset_path = asset.strip_prefix(&asset_root).unwrap_or(&asset);
+                let filename = asset
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let label = asset
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let thumbnail_path = write_thumbnail(&asset, thumbnail_root, asset_path)?;
+                Ok(PlateRecord {
+                    id: format!("plate:{airport_id}:{filename}"),
+                    airport_id,
+                    region_id,
+                    package_id,
+                    label: label.clone(),
+                    asset_kind: "png".to_string(),
+                    document_type: infer_plate_document_type(&label).to_string(),
+                    asset_path: asset_path.display().to_string(),
+                    thumbnail_path,
+                })
+            })
+            .collect::<Vec<_>>();
+        for record in built {
+            records.push(record?);
         }
     }
     records.sort();
@@ -588,6 +669,7 @@ fn collect_plate_records(
 fn collect_csup_records(
     sources: &[AssetSource],
     airport_aliases: &BTreeMap<String, String>,
+    thumbnail_root: &Path,
 ) -> anyhow::Result<Vec<CsupRecord>> {
     let mut records = Vec::new();
     for source in sources {
@@ -596,6 +678,7 @@ fn collect_csup_records(
         if !afd_root.is_dir() {
             continue;
         }
+        let mut jobs = Vec::new();
         for airport_dir in read_child_dirs(&afd_root)? {
             let raw_airport_id = airport_dir
                 .file_name()
@@ -610,30 +693,91 @@ fn collect_csup_records(
                     .get(&region_id.to_ascii_uppercase())
                     .cloned()
                     .context("missing CSUP package for region")?;
-                let asset_path = asset.strip_prefix(&source.asset_root).unwrap_or(&asset);
-                let filename = asset.file_name().and_then(|value| value.to_str()).unwrap_or_default();
-                records.push(CsupRecord {
-                    id: format!("csup:{airport_id}:{filename}"),
-                    airport_id: airport_id.clone(),
+                jobs.push((
+                    airport_id.clone(),
                     region_id,
-                    package_id: package_name.clone(),
+                    package_name.clone(),
+                    asset,
+                    source.asset_root.clone(),
+                ));
+            }
+        }
+        let built = jobs
+            .into_par_iter()
+            .map(|(airport_id, region_id, package_id, asset, asset_root)| -> anyhow::Result<CsupRecord> {
+                let asset_path = asset.strip_prefix(&asset_root).unwrap_or(&asset);
+                let filename = asset
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let thumbnail_path = write_thumbnail(&asset, thumbnail_root, asset_path)?;
+                Ok(CsupRecord {
+                    id: format!("csup:{airport_id}:{filename}"),
+                    airport_id,
+                    region_id,
+                    package_id,
                     label: asset
                         .file_stem()
                         .and_then(|value| value.to_str())
                         .unwrap_or_default()
                         .to_string(),
-                    asset_kind: asset
-                        .extension()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or_default()
-                        .to_ascii_lowercase(),
+                    thumbnail_path,
+                    asset_kind: "png".to_string(),
+                    document_type: "csup".to_string(),
                     asset_path: asset_path.display().to_string(),
-                });
-            }
+                })
+            })
+            .collect::<Vec<_>>();
+        for record in built {
+            records.push(record?);
         }
     }
     records.sort();
     Ok(records)
+}
+
+fn infer_plate_document_type(label: &str) -> &'static str {
+    if label.starts_with("APD-") {
+        "airport_diagram"
+    } else if label.starts_with("MIN-") && label.contains("TAKEOFF MINIMUMS") {
+        "takeoff_minimums"
+    } else if label.starts_with("MIN-") && label.contains("ALTERNATE MINIMUMS") {
+        "alternate_minimums"
+    } else if label.starts_with("MIN-") {
+        "minimums"
+    } else if label.starts_with("IAP-") {
+        "approach"
+    } else if label.starts_with("DP-") {
+        "departure"
+    } else if label.starts_with("STAR-") {
+        "star"
+    } else {
+        "other"
+    }
+}
+
+fn write_thumbnail(source: &Path, thumbnail_root: &Path, asset_path: &Path) -> anyhow::Result<String> {
+    let thumbnail_path = thumbnail_root.join(asset_path);
+    if let Some(parent) = thumbnail_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let image = image::open(source)
+        .with_context(|| format!("failed to open thumbnail source {}", source.display()))?;
+    let resized = image.thumbnail(100, 150).to_rgba8();
+    let (width, height) = resized.dimensions();
+    let x = i64::from((100 - width) / 2);
+    let y = i64::from((150 - height) / 2);
+    let mut canvas = RgbaImage::from_pixel(100, 150, Rgba([0, 0, 0, 0]));
+    image::imageops::overlay(&mut canvas, &resized, x, y);
+    canvas
+        .save(&thumbnail_path)
+        .with_context(|| format!("failed to write thumbnail {}", thumbnail_path.display()))?;
+    Ok(Path::new("thumbnails")
+        .join(asset_path)
+        .display()
+        .to_string())
 }
 
 fn collect_airport_resources(
@@ -1221,12 +1365,18 @@ fn region_display_name(region: Region) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{GenericImageView, Rgba, RgbaImage};
     use rusqlite::Connection;
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
     use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+
+    fn write_test_png(path: impl AsRef<Path>, width: u32, height: u32) {
+        let image = RgbaImage::from_pixel(width, height, Rgba([255, 255, 255, 255]));
+        image.save(path).expect("write test png");
+    }
 
     #[test]
     fn builds_index_from_realistic_inputs() {
@@ -1304,11 +1454,11 @@ mod tests {
         let tpp_root = temp.path().join("tpp-ne");
         fs::create_dir_all(tpp_root.join("plates/BOS")).expect("tpp root");
         fs::write(tpp_root.join("NE_TPP.zip"), b"zip-bytes").expect("tpp zip");
-        fs::write(
+        write_test_png(
             tpp_root.join("plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png"),
-            b"png",
-        )
-        .expect("plate file");
+            200,
+            300,
+        );
         fs::write(
             tpp_root.join("plates/BOS/IAP-MA-ILS OR LOC RWY 04R.tif"),
             b"tif",
@@ -1330,7 +1480,7 @@ mod tests {
         let csup_root = temp.path().join("csup");
         fs::create_dir_all(csup_root.join("afd/BOS")).expect("csup root");
         fs::write(csup_root.join("NE_CSUP.zip"), b"zip-bytes").expect("csup zip");
-        fs::write(csup_root.join("afd/BOS/CSUP-NE_0-0.png"), b"png").expect("csup file");
+        write_test_png(csup_root.join("afd/BOS/CSUP-NE_0-0.png"), 300, 200);
         let csup_outputs = temp.path().join("csup-package-outputs.jsonl");
         fs::write(
             &csup_outputs,
@@ -1446,16 +1596,32 @@ mod tests {
         assert_eq!(index.plates[0].id, "plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png");
         assert_eq!(index.plates[0].airport_id, "KBOS");
         assert_eq!(index.plates[0].package_id, "NE_TPP");
+        assert_eq!(index.plates[0].document_type, "approach");
+        assert_eq!(
+            index.plates[0].thumbnail_path,
+            "thumbnails/plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png"
+        );
         assert_eq!(index.plates.len(), 1);
         assert_eq!(index.csups[0].id, "csup:KBOS:CSUP-NE_0-0.png");
         assert_eq!(index.csups[0].airport_id, "KBOS");
         assert_eq!(index.csups[0].region_id, "ne");
         assert_eq!(index.csups[0].package_id, "NE_CSUP");
+        assert_eq!(index.csups[0].document_type, "csup");
+        assert_eq!(
+            index.csups[0].thumbnail_path,
+            "thumbnails/afd/BOS/CSUP-NE_0-0.png"
+        );
         assert_eq!(index.airport_resources.len(), 1);
         assert_eq!(index.airport_resources[0].airport_id, "KBOS");
         assert_eq!(index.airport_resources[0].plate_ids, vec!["plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png"]);
         assert_eq!(index.airport_resources[0].csup_ids, vec!["csup:KBOS:CSUP-NE_0-0.png"]);
         assert_eq!(index.airport_resources[0].package_ids, vec!["NE_CSUP", "NE_TPP"]);
         assert!(request.output_path.exists());
+        let plate_thumb = image::open(temp.path().join("thumbnails/plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png"))
+            .expect("open plate thumbnail");
+        assert_eq!(plate_thumb.dimensions(), (100, 150));
+        let csup_thumb = image::open(temp.path().join("thumbnails/afd/BOS/CSUP-NE_0-0.png"))
+            .expect("open csup thumbnail");
+        assert_eq!(csup_thumb.dimensions(), (100, 150));
     }
 }

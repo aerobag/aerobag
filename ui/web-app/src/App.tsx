@@ -16,6 +16,7 @@ import {
   clampImageZoom,
   createInitialImageViewport,
   dragImageViewport,
+  imageDisplaySize,
   zoomImageAroundPoint,
   type ImageViewportState,
 } from "./domain/imageViewport";
@@ -691,6 +692,18 @@ function ChartsPage(props: {
   const [airportTrayOpen, setAirportTrayOpen] = useState(false);
   const [chartTrayOpen, setChartTrayOpen] = useState(false);
   const [pageTrayOpen, setPageTrayOpen] = useState(false);
+  const displaySize = useMemo(() => {
+    if (!imageSize || !viewport || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      return null;
+    }
+    return imageDisplaySize(
+      imageSize.width,
+      imageSize.height,
+      surfaceSize.width,
+      surfaceSize.height,
+      viewport.zoom,
+    );
+  }, [imageSize, surfaceSize.height, surfaceSize.width, viewport]);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -899,7 +912,8 @@ function ChartsPage(props: {
             style={{
               left: `${viewport?.left ?? 0}px`,
               top: `${viewport?.top ?? 0}px`,
-              transform: `scale(${viewport?.zoom ?? 1})`,
+              width: displaySize ? `${displaySize.width}px` : undefined,
+              height: displaySize ? `${displaySize.height}px` : undefined,
               visibility: viewport ? "visible" : "hidden",
             }}
           />

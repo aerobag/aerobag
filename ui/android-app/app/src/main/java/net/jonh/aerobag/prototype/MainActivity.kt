@@ -19,6 +19,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -936,6 +937,52 @@ private fun ChartsPage(
                 ),
             )
             .onSizeChanged { surfaceSize = it }
+            .focusable()
+            .onPreviewKeyEvent { event ->
+                if (bitmap == null || viewportState.value == null || trayOpen || event.nativeKeyEvent.action != AndroidKeyEvent.ACTION_DOWN) {
+                    return@onPreviewKeyEvent false
+                }
+                val nextZoom = when (event.nativeKeyEvent.keyCode) {
+                    AndroidKeyEvent.KEYCODE_PLUS,
+                    AndroidKeyEvent.KEYCODE_EQUALS,
+                    AndroidKeyEvent.KEYCODE_NUMPAD_ADD -> (viewportState.value?.zoom ?: 1f) + 0.3f
+                    AndroidKeyEvent.KEYCODE_MINUS,
+                    AndroidKeyEvent.KEYCODE_NUMPAD_SUBTRACT -> (viewportState.value?.zoom ?: 1f) - 0.3f
+                    else -> return@onPreviewKeyEvent false
+                }
+                viewport = zoomImageAroundPoint(
+                    state = viewportState.value ?: return@onPreviewKeyEvent false,
+                    anchorX = surfaceSize.width / 2f,
+                    anchorY = surfaceSize.height / 2f,
+                    nextZoom = nextZoom,
+                    imageWidthPx = imageWidthPx,
+                    imageHeightPx = imageHeightPx,
+                    viewportWidthPx = surfaceSize.width.toFloat(),
+                    viewportHeightPx = surfaceSize.height.toFloat(),
+                    overscrollPx = overscrollPx,
+                )
+                true
+            }
+            .pointerInput(bitmap, surfaceSize, trayOpen) {
+                if (bitmap == null || viewportState.value == null || trayOpen) {
+                    return@pointerInput
+                }
+                detectTapGestures(
+                    onDoubleTap = { tap ->
+                        viewport = zoomImageAroundPoint(
+                            state = viewportState.value ?: return@detectTapGestures,
+                            anchorX = tap.x,
+                            anchorY = tap.y,
+                            nextZoom = (viewportState.value?.zoom ?: 1f) + 0.75f,
+                            imageWidthPx = imageWidthPx,
+                            imageHeightPx = imageHeightPx,
+                            viewportWidthPx = surfaceSize.width.toFloat(),
+                            viewportHeightPx = surfaceSize.height.toFloat(),
+                            overscrollPx = overscrollPx,
+                        )
+                    },
+                )
+            }
             .pointerInput(bitmap, surfaceSize, trayOpen) {
                 if (bitmap == null || viewportState.value == null || trayOpen) {
                     return@pointerInput

@@ -217,11 +217,33 @@ def resolve_chart_record_source(record: dict, kind: str) -> Path:
     raise RuntimeError(f"missing {kind} asset {record['asset_path']} for {record['package_id']}")
 
 
+def extract_chart_record_from_package(record: dict, package_artifacts: dict[str, Path]) -> Path:
+    artifact_path = package_artifacts.get(record["package_id"])
+    if artifact_path is None or not artifact_path.exists():
+        raise RuntimeError(f"missing package artifact for {record['package_id']}")
+    cached_target = WEB_CHART_ASSET_ROOT / "__zipcache__" / record["package_id"] / record["asset_path"]
+    cached_target.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(artifact_path) as archive:
+        try:
+            with archive.open(record["asset_path"]) as source, cached_target.open("wb") as target:
+                shutil.copyfileobj(source, target)
+        except KeyError as exc:
+            raise RuntimeError(f"missing packaged chart asset {record['asset_path']} for {record['package_id']}") from exc
+    return cached_target
+
+
 def build_web_chart_asset_manifest(resource_index: dict) -> None:
+    package_artifacts = {
+        package["id"]: Path(package["artifact_path"])
+        for package in resource_index["packages"]
+    }
     manifest = {}
     for kind, records in (("plate", resource_index["plates"]), ("csup", resource_index["csups"])):
         for record in records:
-            source = resolve_chart_record_source(record, kind)
+            try:
+                source = resolve_chart_record_source(record, kind)
+            except RuntimeError:
+                source = extract_chart_record_from_package(record, package_artifacts)
             airport_id = record["airport_id"]
             filename = Path(record["asset_path"]).name
             manifest[f"/chart-assets/{airport_id}/{filename}"] = str(source)

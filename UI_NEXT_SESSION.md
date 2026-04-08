@@ -121,10 +121,17 @@ What it does now:
 - square top-level controls (`MAP`, `SEC`, etc.) are custom compact surfaces, not Material buttons, so their labels now fit
 - map rendering is family-scoped, not single-package scoped
 - Android startup now prefers the fixture's intended initial map family/package instead of the first arbitrary chart collection from `resource-index`
-- Android map status badge is now family-level:
-  - `Local SECTIONAL`
-  - `Partial SECTIONAL`
-  - `Package missing`
+- Android map now uses a lower-left `DBG` launcher in the same compact square visual language as `SEC`
+- tapping `DBG` opens a debug panel with:
+  - family
+  - lat/lon/zoom
+  - rendered tile count
+  - source zooms
+  - rendered packages
+  - active map ids
+  - family status (`Local`, `Partial`, `Package missing`)
+  - tile-label debug toggle
+- the old lower-right family-status badge has been removed
 
 Important current Android dev note:
 - do not bundle the full chart zip universe into the APK

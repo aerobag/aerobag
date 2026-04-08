@@ -213,6 +213,7 @@ private fun MapExplorerPage(
     val context = LocalContext.current
     val density = LocalDensity.current
     var chartTrayOpen by remember { mutableStateOf(false) }
+    var debugPanelOpen by remember { mutableStateOf(false) }
     var debugTileLabels by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     var installingPackage by remember { mutableStateOf<String?>(null) }
@@ -248,6 +249,16 @@ private fun MapExplorerPage(
     }
     val installedFamilyPackageCount = remember(familyPackageNames, installRevision) {
         familyPackageNames.count { SectionalPackages.isInstalled(context, it) }
+    }
+    val sourceZooms = tiles.map { it.zoom }.distinct().sorted()
+    val renderedPackages = tiles.mapNotNull { it.mapView.packageName }.distinct().sorted()
+    val familyStatus = remember(installingPackage, installedFamilyPackageCount, familyPackageNames, selectedMap.mapView.chartFamily) {
+        when {
+            installingPackage != null -> "Installing ${installingPackage}..."
+            installedFamilyPackageCount == familyPackageNames.size -> "Local ${selectedMap.mapView.chartFamily.name}"
+            installedFamilyPackageCount > 0 -> "Partial ${selectedMap.mapView.chartFamily.name}"
+            else -> "Package missing"
+        }
     }
     val trayOptions = remember(selectedMap.id, fixture.mapViews) {
         val sectionalTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.Sectional }
@@ -527,33 +538,45 @@ private fun MapExplorerPage(
             }
         }
 
-        OutlinedButton(
-            onClick = { debugTileLabels = !debugTileLabels },
+        CompactSquareButton(
+            label = "DBG",
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(ThumbGap)
-                .height(ThumbSize * 0.7f),
-        ) {
-            Text(if (debugTileLabels) "DBG ON" else "DBG", style = MaterialTheme.typography.labelSmall)
-        }
+                .size(ThumbSize),
+            onClick = { debugPanelOpen = !debugPanelOpen },
+        )
 
-        if (installingPackage != null || selectedMap.mapView.storageKind == TileStorageKind.SectionalPackage) {
+        AnimatedVisibility(
+            visible = debugPanelOpen,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = ThumbSize + ThumbGap * 2, bottom = ThumbGap),
+            enter = slideInHorizontally(initialOffsetX = { -it / 3 }) + fadeIn(),
+            exit = slideOutHorizontally(targetOffsetX = { -it / 3 }) + fadeOut(),
+        ) {
             Card(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(ThumbGap),
+                modifier = Modifier.width(ThumbSize * 4f),
             ) {
-                Text(
-                    text = when {
-                        installingPackage != null -> "Installing ${installingPackage}…"
-                        installedFamilyPackageCount == familyPackageNames.size -> "Local ${selectedMap.mapView.chartFamily.name}"
-                        installedFamilyPackageCount > 0 -> "Partial ${selectedMap.mapView.chartFamily.name}"
-                        else -> "Package missing"
-                    },
+                Column(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF52656D),
-                )
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text("family ${selectedLauncher.launcherLabel}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+                    Text("${String.format("%.3f", center.first)}/${String.format("%.3f", center.second)} z${String.format("%.2f", viewport.zoom)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+                    Text("tiles ${tiles.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+                    Text("src z ${if (sourceZooms.isNotEmpty()) sourceZooms.joinToString(", ") else "(none)"}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+                    Text("pkg ${if (renderedPackages.isNotEmpty()) renderedPackages.joinToString(", ") else "(none)"}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+                    Text("maps ${selectedFamilyMapViews.joinToString(", ") { it.id }}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+                    Text(familyStatus, style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+                    Text(if (debugTileLabels) "debugTiles=on" else "debugTiles=off", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+                    OutlinedButton(
+                        onClick = { debugTileLabels = !debugTileLabels },
+                        modifier = Modifier.fillMaxWidth().height(ThumbSize * 0.7f),
+                    ) {
+                        Text(if (debugTileLabels) "DBG TILES ON" else "DBG TILES", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
             }
         }
     }

@@ -1,0 +1,33 @@
+Chart selection tools
+	Dynamic tile & plate loading on both platforms
+	UI indicator when offline selection doesn't support current display
+	Deliberate fetch of single plates in data-poor environments
+
+AHARS-in
+traffic-in
+
+test runs using ADSB snapshots
+
+airplane view.
+	flight plan sequencing (that's not dumb)
+
+terrain yellow/red warnings
+glide rings
+
+cloud-mediated user state save & sync
+	flight plans
+	offline chart selections
+	airplane configs (including plan-view based icon!)
+	track logs
+
+Performance estimator
+	airplane config
+	winds aloft
+
+Weather depiction
+	METARs
+	TAFs
+	precip radar
+	raster weather products
+
+NavCanada

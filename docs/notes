@@ -1,0 +1,169 @@
+First thing we're going to do is reproduce and clean up the preprocessing
+pipeline. The current one is janky and has no tests or anything to keep it out
+of trouble.
+
+Here's what I think happens:
+
+- Certain image data layers are rendered as tiles for dynamic fetching. This includes the WAC, Sectionals, TACs, IFR High & Low, a few specialty charts (like the
+Portland inset and the Grand Canyon). I assume these all use the standard
+mercator quadtree. (whenever I make assumptions, correct me if they're wrong!)
+
+- Other image data are small enough that they're standalone, like approach plates,
+af/d ("chart supplement" as the kids call them these days). Some of these
+have georeferencing data, but rather than squish the chart to a standard geo
+layout, the client goes the opposite direction from the tiling approach: it
+renders the chart roughly in its original pixels, and draws a little airplane
+by mapping geo coordinates to plate coordinates.
+    - Some of the georeference data is collected by the Avare folks. Can we
+    fetch it from a database they provide?
+
+
+We're going to write our preprocessor in Rust.
+It will have an intelligent fetching-and-caching layer so we're not hitting the
+upstream image sources over-and-over during testing.
+It will organize its work in a way that reveals a lot of parallelism, since the
+tile rendering task is pretty parallelizable. We want to get a lot of benefit
+from the 20 cores on my server.
+
+One thing we should do is run a copy of the original preprocessor and collect
+logs of all the tiles it made, and figure out how to use that info to write
+tests to ensure that our version doesn't introduce new gaps.
+
+We can do some quick prototypes here, but once we really start chewing through
+data, we'll move that work onto a container on my server to exploit its many
+cores. If you think we can exploit a GPU, I can give you one of those too.
+
+I think our first cut should reproduce the layout & data format of the original
+tool directly, so we can compare their output straight across and confirm
+that the tiles match: all the same tiles selected, and sample a bunch to confirm
+they basically match visually.
+
+I understand the original code is a hodge-podge of scripts. I'd like our thing
+to be as clean and orderly as possible for maintenance going forward.
+
+Considering what you've read already and the goals I've stated here, make a
+plan and discuss.
+
+------------------------------------------------------------------------------
+
+x The concepts of regions are kind of baked into the code various places. I see
+x them at:
+x preprocessor-charts/src/lib.rs:780
+x preprocessor-cli/src/main.rs:128
+x I bet they were even more implicit in the original source. But let's be
+x very explicit here. Let's have the set of regions be defined in one
+x place and then referenced symbolically.
+
+------------------------------------------------------------------------------
+x We have absolutely nothing to start with on Android. Like, you get to choose *everything*, the framework, the
+x   language. Want any help deciding?
+x   And for the android side, let's figure out how to spin up an emulator; maybe I can poke at it over X (ssh -Y)?
+
+------------------------------------------------------------------------------
+
+   - tpp implementation and parity in Rust
+  - csup implementation and parity in Rust
+  - turning today_s chart validation from _targeted runs plus regression commands_ into a more complete repeatable harness
+  - accounting for legacy artifact families outside the current chart slice: things like WAC/ONC/TPC/terrain/topo/VFR area/CAN_ADS
+    and other avare/extra/ outputs
+  - deciding how much output parity we require beyond structure and provenance, for example sampled visual diffs or stronger
+    artifact-hash expectations
+
+------------------------------------------------------------------------------
+"The FAA PDF names already encode the output region prefix,"
+Whoah, that sounds brittle! What if the FAA draws the boundaries somewhere
+other than where we drew lat/lon boundaries for tiled charts?
+
+------------------------------------------------------------------------------
+Once we know we're creating equivalent content, we're free to reorganize it.
+Does the avare android app unpack those zip files? I think it would be more
+awesome to just fetch content out of them as we run.
+
+You did a bunch of this and found "compatibility-first" wonkinesses where
+you had to hold your nose to get parity. What features/protocols/conventions
+would you change to make the new system less brittle and easier to maintain?
+
+------------------------------------------------------------------------------
+
+x Let's talk about UI.
+x 
+x The first idea I want to share is that the UI will be designed for big clumsy
+x fingers in turbulence. We're going to define a unit, the "thumb", that sizes buttons
+x and widgets. Let's define it in one place so I can later say "make thumb 20% bigger"
+x and all the widgets get bigger or "make thumb 20% smaller" and now there's more
+x screen real estate under the widgets.
+x 
+x Let's begin with three main "pages" of the app.
+x Chart page is tiled charts. Put a one-thumb button in the upper-left corner (with a 0.1 thumb margin
+x so we can see the chart poking beyond) that shows the current chart. Clicking it will slide out a
+x tray of one-thumb buttons to select among SECTIONAL, TAC, IFR-LOW, IFR-HIGH.
+------------------------------------------------------------------------------
+
+Trays are modal. They gray everything beyond the tray; clicking outside the tray closes it
+(without effecting a change).
+
+------------------------------------------------------------------------------
+
+At the bottom of the chart, centered, is a Nav Element. It's 2/3thumb high and 3 thumb wide.
+It's split into two rows. The top row summarizes the current leg ("UBG -> OLM crs 342"),
+the bottom row is a CDI depiction ("°  ° ^|  °  °") -- the triangle depicts current position,
+in this case a little left of course. A "dot" deviation has a standard definition depending
+on the flight plan leg (enroute vs approach).
+
+The next page is the Flight Plan page. We navigate there by tapping the Nav Element.
+This page is a table. On the left are waypoints (1 thumb high by 2.5 thumb wide). To the
+right are columns ("distance (nm)", "ETE (h:m)", "course (°)", ... eventually configurable?).
+Waypoints may be grouped into procedures, in which case the top waypoint in the list is the
+procedure name ("RNTN3 departure"), and the waypoints that belong to the procedure are indented
+0.1 thumb. (Keep this in mind, but we can start with simple flight plans that don't have
+grouped procedures.)
+
+Clicking on a waypoint brings up a modal (that covers the remaining columns in the table) with
+actions associated with the waypoint: "remove", "insert", "reorder", "waypoint info", "Add airway",
+"Select procedure", "Charts". Clicking "charts" navigates to the Chart top-level page.
+(don't worry implementing the other actions yet.)
+
+The third page is the Chart page. It displays plates and CSups. These are just flat PNGs,
+not tiled layers. From a UI perspective, they act like the chart page: I can pinch/zoom and
+drag-pan to be able to read small text. Dragging is allowed to pull the image one thumb
+farther onto the screen than the edge of the display, so that we can read features at the
+edge of the image out from under any UI elements we stuck over the display.
+The Chart page has two one-thumb button in the upper-left corner. The left button shows
+which airport we're looking at charts for ("KRNT"); clicking it pulls up a tray of
+several airports that have been recently accessed on the chart page (or also appear
+on the flight plan). The second button displays which chart we're viewing ("RNAV 16 Z", "CSup", "RNTN3").
+Clicking it slides out a tray to select among the available charts for the currently selected airport.
+
+
+------------------------------------------------------------------------------
+
+Okay, we have placeholders for a lot of stuff, but I think it makes sense to
+get real nav data & real plates & complete charts in place to do further
+adventuring.  We have the fixture doing a lot of work that should be getting
+done by a real data stream. Some of the things:
+- We should probably be pulling the aviation database from runs/20260407T053200Z-data-build/work/data/databases.zip
+- We should activate all four chart tile sources for all areas: Sectional, TAC, IFR Low, IFR High
+	- the old avare app "uses hardcoded chart-type lists and hardcoded coverage polygons";
+	we should replace that with a metadata index file
+- We should index and make accessible all the TPP/CSUP data. Again, the avare app just used
+the filesystem contents for that index. We might want to construct a metadata index file
+that travels with the top-level database.zip, so that the UI can tell you what you're
+missing (for example).
+
+------------------------------------------------------------------------------
+
+x On android, changing charts resets the lat-lon-zoom. Same bug we had on web. When we fix a bug,
+x always look for it on the other platform, too, I don't want to do all of this stuff twice.
+
+Android buttons aren't 1-thumb yet. And there's some debugging fluff: "Local NW_TAC" and
+(Show labels)". Get rid of that stuff. We'll add a separate debugging HUD later as we need it.
+
+------------------------------------------------------------------------------
+
+If you leave Android app and return, it starts over at the beginning, rather than picking
+up where it left off (say, on a flight plan page). That seems weird. Did it crash?
+
+
+Let's have the "back" button do something meaningful in both UIs. And the same meaningful thing.
+Like, have a stack of views, so if I tap from charts to flight plan to plates, and hit back, I'll
+walk back through those views (including their scroll state).

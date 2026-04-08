@@ -251,7 +251,7 @@ fun deriveChartPage(
         } else {
             ChartAirport(
                 id = airportId,
-                label = "K$airportId",
+                label = airportId,
                 charts = charts,
             )
         }

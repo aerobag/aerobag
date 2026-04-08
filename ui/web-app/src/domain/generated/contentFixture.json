@@ -17,21 +17,390 @@
         "kind": "tiled_raster",
         "max_zoom": 11,
         "tile_size": 512
+      },
+      {
+        "id": "ifr_low",
+        "display_name": "IFR Low Enroute Charts",
+        "kind": "tiled_raster",
+        "max_zoom": 10,
+        "tile_size": 512
+      },
+      {
+        "id": "ifr_high",
+        "display_name": "IFR High Enroute Charts",
+        "kind": "tiled_raster",
+        "max_zoom": 10,
+        "tile_size": 512
       }
     ],
     "regions": [
+      {
+        "id": "ne",
+        "display_name": "Northeast",
+        "sort_order": 0
+      },
+      {
+        "id": "nc",
+        "display_name": "North Central",
+        "sort_order": 1
+      },
       {
         "id": "nw",
         "display_name": "Northwest",
         "sort_order": 2
       },
       {
+        "id": "se",
+        "display_name": "Southeast",
+        "sort_order": 3
+      },
+      {
+        "id": "sc",
+        "display_name": "South Central",
+        "sort_order": 4
+      },
+      {
         "id": "sw",
         "display_name": "Southwest",
         "sort_order": 5
+      },
+      {
+        "id": "ec",
+        "display_name": "East Coast",
+        "sort_order": 6
+      },
+      {
+        "id": "ak",
+        "display_name": "Alaska",
+        "sort_order": 7
+      },
+      {
+        "id": "pac",
+        "display_name": "Pacific",
+        "sort_order": 8
       }
     ],
     "packages": [
+      {
+        "id": {
+          "region": "ne",
+          "family": "ifr_high",
+          "cycle": "2604"
+        },
+        "package_name": "NE_ENR_H",
+        "family_id": "ifr_high",
+        "region_id": "ne",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/NE_ENR_H.zip",
+        "manifest_name": "NE_ENR_H",
+        "size_bytes": 32309113,
+        "checksum_sha256": "a8db81d784ca462a7cde00b656f58c69a2e6665e875ce5201cae664cec0294f8"
+      },
+      {
+        "id": {
+          "region": "nc",
+          "family": "ifr_high",
+          "cycle": "2604"
+        },
+        "package_name": "NC_ENR_H",
+        "family_id": "ifr_high",
+        "region_id": "nc",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/NC_ENR_H.zip",
+        "manifest_name": "NC_ENR_H",
+        "size_bytes": 32050055,
+        "checksum_sha256": "b2629b5f72b56330d559733cb69ffcc4d6a9340149b53a0c5fe91d11dc3331ff"
+      },
+      {
+        "id": {
+          "region": "nw",
+          "family": "ifr_high",
+          "cycle": "2604"
+        },
+        "package_name": "NW_ENR_H",
+        "family_id": "ifr_high",
+        "region_id": "nw",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/NW_ENR_H.zip",
+        "manifest_name": "NW_ENR_H",
+        "size_bytes": 33309213,
+        "checksum_sha256": "48aaeef9bf51f55f55702e2b7e52f765ab35d2e05b5052d102a8a45cd5a4612f"
+      },
+      {
+        "id": {
+          "region": "se",
+          "family": "ifr_high",
+          "cycle": "2604"
+        },
+        "package_name": "SE_ENR_H",
+        "family_id": "ifr_high",
+        "region_id": "se",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/SE_ENR_H.zip",
+        "manifest_name": "SE_ENR_H",
+        "size_bytes": 37394768,
+        "checksum_sha256": "884d53272a7a3a4ca011e48daf0b6154ea2a7e62c4ff0464482c918462ff950f"
+      },
+      {
+        "id": {
+          "region": "sc",
+          "family": "ifr_high",
+          "cycle": "2604"
+        },
+        "package_name": "SC_ENR_H",
+        "family_id": "ifr_high",
+        "region_id": "sc",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/SC_ENR_H.zip",
+        "manifest_name": "SC_ENR_H",
+        "size_bytes": 33849085,
+        "checksum_sha256": "70ae1201959903b644945173b875612e5a53874a1f7f263aa1f75b8a7b8cb2f1"
+      },
+      {
+        "id": {
+          "region": "sw",
+          "family": "ifr_high",
+          "cycle": "2604"
+        },
+        "package_name": "SW_ENR_H",
+        "family_id": "ifr_high",
+        "region_id": "sw",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/SW_ENR_H.zip",
+        "manifest_name": "SW_ENR_H",
+        "size_bytes": 37285209,
+        "checksum_sha256": "df7d4aa0b97174645428fbc74d109ead522c3a834b39c18730dbb5a83ea21612"
+      },
+      {
+        "id": {
+          "region": "ec",
+          "family": "ifr_high",
+          "cycle": "2604"
+        },
+        "package_name": "EC_ENR_H",
+        "family_id": "ifr_high",
+        "region_id": "ec",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/EC_ENR_H.zip",
+        "manifest_name": "EC_ENR_H",
+        "size_bytes": 33514866,
+        "checksum_sha256": "ccff6d41608fc0aaa4f54a6d64e5c2edbff550c70d3ae30430b77b119d74ba3d"
+      },
+      {
+        "id": {
+          "region": "ak",
+          "family": "ifr_high",
+          "cycle": "2604"
+        },
+        "package_name": "AK_ENR_H",
+        "family_id": "ifr_high",
+        "region_id": "ak",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/AK_ENR_H.zip",
+        "manifest_name": "AK_ENR_H",
+        "size_bytes": 44568444,
+        "checksum_sha256": "676a79ed74550e813377c9c8327310aeba0dbab423d9f84cb8762e87bbb8e3d3"
+      },
+      {
+        "id": {
+          "region": "pac",
+          "family": "ifr_high",
+          "cycle": "2604"
+        },
+        "package_name": "PAC_ENR_H",
+        "family_id": "ifr_high",
+        "region_id": "pac",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/PAC_ENR_H.zip",
+        "manifest_name": "PAC_ENR_H",
+        "size_bytes": 23801032,
+        "checksum_sha256": "efe2607357668312219243103502437bcb78d505cf48c71f059705dc4d8e3de2"
+      },
+      {
+        "id": {
+          "region": "ne",
+          "family": "ifr_low",
+          "cycle": "2604"
+        },
+        "package_name": "NE_ENR_L",
+        "family_id": "ifr_low",
+        "region_id": "ne",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/NE_ENR_L.zip",
+        "manifest_name": "NE_ENR_L",
+        "size_bytes": 38897175,
+        "checksum_sha256": "5ff9ba83d84374d5b20bd4b9d054eee76abffcd6376a421ef9a0340b17df5b5e"
+      },
+      {
+        "id": {
+          "region": "nc",
+          "family": "ifr_low",
+          "cycle": "2604"
+        },
+        "package_name": "NC_ENR_L",
+        "family_id": "ifr_low",
+        "region_id": "nc",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/NC_ENR_L.zip",
+        "manifest_name": "NC_ENR_L",
+        "size_bytes": 50493500,
+        "checksum_sha256": "2c8191d4192c6a0b4f1b961c0a782784ea4e252155567ec3fb26370a57aaa48f"
+      },
+      {
+        "id": {
+          "region": "nw",
+          "family": "ifr_low",
+          "cycle": "2604"
+        },
+        "package_name": "NW_ENR_L",
+        "family_id": "ifr_low",
+        "region_id": "nw",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/NW_ENR_L.zip",
+        "manifest_name": "NW_ENR_L",
+        "size_bytes": 51429783,
+        "checksum_sha256": "21697bc2ad4f304799707a43b5b43269fa0def11db8ddcb70ca4273ccee7a7f1"
+      },
+      {
+        "id": {
+          "region": "se",
+          "family": "ifr_low",
+          "cycle": "2604"
+        },
+        "package_name": "SE_ENR_L",
+        "family_id": "ifr_low",
+        "region_id": "se",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/SE_ENR_L.zip",
+        "manifest_name": "SE_ENR_L",
+        "size_bytes": 46236374,
+        "checksum_sha256": "273bdcfe123e5d4b7ace84aaa6d137658091dde9448295e4e2e09121313bc009"
+      },
+      {
+        "id": {
+          "region": "sc",
+          "family": "ifr_low",
+          "cycle": "2604"
+        },
+        "package_name": "SC_ENR_L",
+        "family_id": "ifr_low",
+        "region_id": "sc",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/SC_ENR_L.zip",
+        "manifest_name": "SC_ENR_L",
+        "size_bytes": 46850559,
+        "checksum_sha256": "403d1f3c155f717a9fe4c1ef4bcd75079dafc4397340ca92bca52b205af14fca"
+      },
+      {
+        "id": {
+          "region": "sw",
+          "family": "ifr_low",
+          "cycle": "2604"
+        },
+        "package_name": "SW_ENR_L",
+        "family_id": "ifr_low",
+        "region_id": "sw",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/SW_ENR_L.zip",
+        "manifest_name": "SW_ENR_L",
+        "size_bytes": 46653287,
+        "checksum_sha256": "410515d64b6af3574937ee18f6d8c6cae7fbcf7112ca4d08cd4347b88251bc05"
+      },
+      {
+        "id": {
+          "region": "ec",
+          "family": "ifr_low",
+          "cycle": "2604"
+        },
+        "package_name": "EC_ENR_L",
+        "family_id": "ifr_low",
+        "region_id": "ec",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/EC_ENR_L.zip",
+        "manifest_name": "EC_ENR_L",
+        "size_bytes": 48667119,
+        "checksum_sha256": "2c34920972f2a4f0acc48778d7dd09460a70756e19051fdb62d4b02933a36cea"
+      },
+      {
+        "id": {
+          "region": "ak",
+          "family": "ifr_low",
+          "cycle": "2604"
+        },
+        "package_name": "AK_ENR_L",
+        "family_id": "ifr_low",
+        "region_id": "ak",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/AK_ENR_L.zip",
+        "manifest_name": "AK_ENR_L",
+        "size_bytes": 75974199,
+        "checksum_sha256": "bd320b45e51d9c6eb43fb29862c39a7aef3591c5a302070fc4a08ad6358c0a82"
+      },
+      {
+        "id": {
+          "region": "pac",
+          "family": "ifr_low",
+          "cycle": "2604"
+        },
+        "package_name": "PAC_ENR_L",
+        "family_id": "ifr_low",
+        "region_id": "pac",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/PAC_ENR_L.zip",
+        "manifest_name": "PAC_ENR_L",
+        "size_bytes": 21511578,
+        "checksum_sha256": "1fc6fb820550115c1ec8f61fbb05dc04f337f01446fad286922fd8f772026e89"
+      },
+      {
+        "id": {
+          "region": "ne",
+          "family": "sectional",
+          "cycle": "2604"
+        },
+        "package_name": "NE_SEC",
+        "family_id": "sectional",
+        "region_id": "ne",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/NE_SEC.zip",
+        "manifest_name": "NE_SEC",
+        "size_bytes": 108855964,
+        "checksum_sha256": "4256e32a0e6a71956cdbf37be6553a858064210b64b21d192f7b4d5654e7cebc"
+      },
+      {
+        "id": {
+          "region": "nc",
+          "family": "sectional",
+          "cycle": "2604"
+        },
+        "package_name": "NC_SEC",
+        "family_id": "sectional",
+        "region_id": "nc",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/NC_SEC.zip",
+        "manifest_name": "NC_SEC",
+        "size_bytes": 125506375,
+        "checksum_sha256": "fca9553454beec00e5f35f6c07d0a7bd199e791f01a54b910738dcdfbbe05359"
+      },
       {
         "id": {
           "region": "nw",
@@ -45,8 +414,40 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NW_SEC.zip",
         "manifest_name": "NW_SEC",
-        "size_bytes": 143219225,
-        "checksum_sha256": "82a912d3ba231d4d68c1bf5266c4ef0d2f3c4436b4d061b51d12210914557004"
+        "size_bytes": 143263124,
+        "checksum_sha256": "ebd3ccb46f6386173400b5f4a9ba4d84dc56381697c1a347bc1cb8fd57d21c3d"
+      },
+      {
+        "id": {
+          "region": "se",
+          "family": "sectional",
+          "cycle": "2604"
+        },
+        "package_name": "SE_SEC",
+        "family_id": "sectional",
+        "region_id": "se",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/SE_SEC.zip",
+        "manifest_name": "SE_SEC",
+        "size_bytes": 124598565,
+        "checksum_sha256": "292c9ee2b0d07d838aa1f907013cde05e7e4449f7570484fb08c29ffaf6052a3"
+      },
+      {
+        "id": {
+          "region": "sc",
+          "family": "sectional",
+          "cycle": "2604"
+        },
+        "package_name": "SC_SEC",
+        "family_id": "sectional",
+        "region_id": "sc",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/SC_SEC.zip",
+        "manifest_name": "SC_SEC",
+        "size_bytes": 127107498,
+        "checksum_sha256": "21380ee1ded970b9d735a5addb8f9fc095731a846e515852629722fd0dcc8666"
       },
       {
         "id": {
@@ -61,8 +462,88 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SW_SEC.zip",
         "manifest_name": "SW_SEC",
-        "size_bytes": 128967599,
-        "checksum_sha256": "78137b934fa0013aa2e1b76fc009f776a6a45aa631ab26fe0bd0af20e7d79db9"
+        "size_bytes": 128996991,
+        "checksum_sha256": "ae178e3aabd0ecb30cd70bb9eb7f502284e58915bdf94c56f74c0d99de8284ff"
+      },
+      {
+        "id": {
+          "region": "ec",
+          "family": "sectional",
+          "cycle": "2604"
+        },
+        "package_name": "EC_SEC",
+        "family_id": "sectional",
+        "region_id": "ec",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/EC_SEC.zip",
+        "manifest_name": "EC_SEC",
+        "size_bytes": 132418532,
+        "checksum_sha256": "8b656e253b400d44d34b4b9f8533b9092178b9fc6c0b1be4ce771813583296d2"
+      },
+      {
+        "id": {
+          "region": "ak",
+          "family": "sectional",
+          "cycle": "2604"
+        },
+        "package_name": "AK_SEC",
+        "family_id": "sectional",
+        "region_id": "ak",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/AK_SEC.zip",
+        "manifest_name": "AK_SEC",
+        "size_bytes": 266376681,
+        "checksum_sha256": "8f4c6c09dc5e14e4cf4268cc9c47185114c95ee3875fee504960888ebfa0b08c"
+      },
+      {
+        "id": {
+          "region": "pac",
+          "family": "sectional",
+          "cycle": "2604"
+        },
+        "package_name": "PAC_SEC",
+        "family_id": "sectional",
+        "region_id": "pac",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/PAC_SEC.zip",
+        "manifest_name": "PAC_SEC",
+        "size_bytes": 38330234,
+        "checksum_sha256": "a824050b1f2536cf83e07bf3329ad2ae398e7c5f0abfdbbd19ac714ef3388e85"
+      },
+      {
+        "id": {
+          "region": "ne",
+          "family": "tac",
+          "cycle": "2604"
+        },
+        "package_name": "NE_TAC",
+        "family_id": "tac",
+        "region_id": "ne",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/NE_TAC.zip",
+        "manifest_name": "NE_TAC",
+        "size_bytes": 27469082,
+        "checksum_sha256": "159aeeb1ac8d5e204ff19d116c1100dce6c7d473d37ba5d00f5d9c3374c72d80"
+      },
+      {
+        "id": {
+          "region": "nc",
+          "family": "tac",
+          "cycle": "2604"
+        },
+        "package_name": "NC_TAC",
+        "family_id": "tac",
+        "region_id": "nc",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/NC_TAC.zip",
+        "manifest_name": "NC_TAC",
+        "size_bytes": 20036400,
+        "checksum_sha256": "dbe91bed6764dad8dc663d53faf4a764d396c2fc93526af8902519c8c5184aca"
       },
       {
         "id": {
@@ -77,8 +558,40 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NW_TAC.zip",
         "manifest_name": "NW_TAC",
-        "size_bytes": 18308573,
-        "checksum_sha256": "8616e83bc3a482c6c050d0545a372e2f77cf5895aa2f60960f03bd332028bda1"
+        "size_bytes": 18248087,
+        "checksum_sha256": "88ce2869a982c7741ddba189504f3f4f03141345d71e5c2ba9191e1db739981e"
+      },
+      {
+        "id": {
+          "region": "se",
+          "family": "tac",
+          "cycle": "2604"
+        },
+        "package_name": "SE_TAC",
+        "family_id": "tac",
+        "region_id": "se",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/SE_TAC.zip",
+        "manifest_name": "SE_TAC",
+        "size_bytes": 29596407,
+        "checksum_sha256": "6f93615207f8ac406cc99cacd4a4f56c4d1eadf4df3078b33399de9388e267d4"
+      },
+      {
+        "id": {
+          "region": "sc",
+          "family": "tac",
+          "cycle": "2604"
+        },
+        "package_name": "SC_TAC",
+        "family_id": "tac",
+        "region_id": "sc",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/SC_TAC.zip",
+        "manifest_name": "SC_TAC",
+        "size_bytes": 18552319,
+        "checksum_sha256": "45b6761c63303a5e168d716ec21f95bc0c63db71b7d04c80090cdeb9661dc99b"
       },
       {
         "id": {
@@ -93,8 +606,56 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SW_TAC.zip",
         "manifest_name": "SW_TAC",
-        "size_bytes": 33889563,
-        "checksum_sha256": "d8d2998ea4435aaf0d89cdf67a511701b83ed21e4ad5e319dc59ee9c272f9fbf"
+        "size_bytes": 33818508,
+        "checksum_sha256": "1f2591557a8535571448366fe5888e9b36656e80bab3a0cdb16d5942b7051d81"
+      },
+      {
+        "id": {
+          "region": "ec",
+          "family": "tac",
+          "cycle": "2604"
+        },
+        "package_name": "EC_TAC",
+        "family_id": "tac",
+        "region_id": "ec",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/EC_TAC.zip",
+        "manifest_name": "EC_TAC",
+        "size_bytes": 31996988,
+        "checksum_sha256": "33aa21d468af65eaf1089063f465dff8b60b1e8df714d3b9d9934368fa7c8338"
+      },
+      {
+        "id": {
+          "region": "ak",
+          "family": "tac",
+          "cycle": "2604"
+        },
+        "package_name": "AK_TAC",
+        "family_id": "tac",
+        "region_id": "ak",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/AK_TAC.zip",
+        "manifest_name": "AK_TAC",
+        "size_bytes": 18427356,
+        "checksum_sha256": "b90649160644f885b00924ae375a58c2c5de017546e365acf69ecfc37fb8105b"
+      },
+      {
+        "id": {
+          "region": "pac",
+          "family": "tac",
+          "cycle": "2604"
+        },
+        "package_name": "PAC_TAC",
+        "family_id": "tac",
+        "region_id": "pac",
+        "cycle": "2604",
+        "artifact_kind": "zip",
+        "relative_url": "/2604/PAC_TAC.zip",
+        "manifest_name": "PAC_TAC",
+        "size_bytes": 1875067,
+        "checksum_sha256": "2fd5f8756142c550c45ed51e2c3d4424e20dc137aa62a528bf8f269e1d067062"
       }
     ],
     "charts": [
@@ -124,12 +685,12 @@
     "plates": [
       {
         "id": {
-          "airport_id": "BOS",
+          "airport_id": "KBOS",
           "procedure_code": "IAP-MA-ILS OR LOC RWY 04R",
           "page": 1,
           "cycle": "2604"
         },
-        "airport_id": "BOS",
+        "airport_id": "KBOS",
         "region_id": "ne",
         "cycle": "2604",
         "procedure_code": "IAP-MA-ILS OR LOC RWY 04R",
@@ -174,19 +735,19 @@
   },
   "map_view": {
     "chart_family": "sectional",
-    "chart_name": "NW Sectional",
+    "chart_name": "Northeast Sectional",
     "chart_index": 0,
     "tile_root": "tiles",
-    "tile_url_root": "/sectional-packages/NW_SEC/tiles",
+    "tile_url_root": "/sectional-packages/NE_SEC/tiles",
     "tile_size": 256,
-    "min_zoom": 4.2,
+    "min_zoom": 1.5,
     "max_zoom": 10.8,
     "storage_kind": "sectional_package",
-    "package_name": "NW_SEC",
+    "package_name": "NE_SEC",
     "initial_viewport": {
-      "lat": 44.71551373202134,
-      "lon": -113.90625,
-      "zoom": 7.2
+      "lat": 42.940339233631825,
+      "lon": -70.3125,
+      "zoom": 8.0
     },
     "levels": [
       {
@@ -247,47 +808,249 @@
       },
       {
         "zoom": 8,
-        "x_min": 39,
-        "x_max": 54,
-        "y_tms_min": 159,
-        "y_tms_max": 168
+        "x_min": 71,
+        "x_max": 84,
+        "y_tms_min": 156,
+        "y_tms_max": 167
       },
       {
         "zoom": 9,
-        "x_min": 78,
-        "x_max": 109,
-        "y_tms_min": 318,
-        "y_tms_max": 336
+        "x_min": 142,
+        "x_max": 169,
+        "y_tms_min": 312,
+        "y_tms_max": 334
       },
       {
         "zoom": 10,
-        "x_min": 156,
-        "x_max": 219,
-        "y_tms_min": 636,
-        "y_tms_max": 672
+        "x_min": 284,
+        "x_max": 339,
+        "y_tms_min": 625,
+        "y_tms_max": 669
       }
     ]
   },
   "map_views": [
     {
+      "id": "sectional:ne",
+      "label": "Northeast Sectional",
+      "region_id": "ne",
+      "map_view": {
+        "chart_family": "sectional",
+        "chart_name": "Northeast Sectional",
+        "chart_index": 0,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/NE_SEC/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "NE_SEC",
+        "initial_viewport": {
+          "lat": 42.940339233631825,
+          "lon": -70.3125,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 3,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 7,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 15,
+            "y_tms_min": 7,
+            "y_tms_max": 12
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 31,
+            "y_tms_min": 14,
+            "y_tms_max": 25
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 63,
+            "y_tms_min": 29,
+            "y_tms_max": 50
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 127,
+            "y_tms_min": 58,
+            "y_tms_max": 101
+          },
+          {
+            "zoom": 8,
+            "x_min": 71,
+            "x_max": 84,
+            "y_tms_min": 156,
+            "y_tms_max": 167
+          },
+          {
+            "zoom": 9,
+            "x_min": 142,
+            "x_max": 169,
+            "y_tms_min": 312,
+            "y_tms_max": 334
+          },
+          {
+            "zoom": 10,
+            "x_min": 284,
+            "x_max": 339,
+            "y_tms_min": 625,
+            "y_tms_max": 669
+          }
+        ]
+      }
+    },
+    {
+      "id": "sectional:nc",
+      "label": "North Central Sectional",
+      "region_id": "nc",
+      "map_view": {
+        "chart_family": "sectional",
+        "chart_name": "North Central Sectional",
+        "chart_index": 0,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/NC_SEC/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "NC_SEC",
+        "initial_viewport": {
+          "lat": 43.32517767999294,
+          "lon": -97.3828125,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 3,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 7,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 15,
+            "y_tms_min": 7,
+            "y_tms_max": 12
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 31,
+            "y_tms_min": 14,
+            "y_tms_max": 25
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 63,
+            "y_tms_min": 29,
+            "y_tms_max": 50
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 127,
+            "y_tms_min": 58,
+            "y_tms_max": 101
+          },
+          {
+            "zoom": 8,
+            "x_min": 53,
+            "x_max": 64,
+            "y_tms_min": 156,
+            "y_tms_max": 168
+          },
+          {
+            "zoom": 9,
+            "x_min": 106,
+            "x_max": 128,
+            "y_tms_min": 312,
+            "y_tms_max": 336
+          },
+          {
+            "zoom": 10,
+            "x_min": 213,
+            "x_max": 256,
+            "y_tms_min": 625,
+            "y_tms_max": 672
+          }
+        ]
+      }
+    },
+    {
       "id": "sectional:nw",
-      "label": "NW Sectional",
+      "label": "Northwest Sectional",
       "region_id": "nw",
       "map_view": {
         "chart_family": "sectional",
-        "chart_name": "NW Sectional",
+        "chart_name": "Northwest Sectional",
         "chart_index": 0,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/NW_SEC/tiles",
         "tile_size": 256,
-        "min_zoom": 4.2,
+        "min_zoom": 1.5,
         "max_zoom": 10.8,
         "storage_kind": "sectional_package",
         "package_name": "NW_SEC",
         "initial_viewport": {
           "lat": 44.71551373202134,
           "lon": -113.90625,
-          "zoom": 7.2
+          "zoom": 8.0
         },
         "levels": [
           {
@@ -371,24 +1134,226 @@
       }
     },
     {
+      "id": "sectional:se",
+      "label": "Southeast Sectional",
+      "region_id": "se",
+      "map_view": {
+        "chart_family": "sectional",
+        "chart_name": "Southeast Sectional",
+        "chart_index": 0,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/SE_SEC/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "SE_SEC",
+        "initial_viewport": {
+          "lat": 26.588527147308625,
+          "lon": -75.41015625,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 3,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 7,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 15,
+            "y_tms_min": 7,
+            "y_tms_max": 12
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 31,
+            "y_tms_min": 14,
+            "y_tms_max": 25
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 63,
+            "y_tms_min": 29,
+            "y_tms_max": 50
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 127,
+            "y_tms_min": 58,
+            "y_tms_max": 101
+          },
+          {
+            "zoom": 8,
+            "x_min": 63,
+            "x_max": 84,
+            "y_tms_min": 138,
+            "y_tms_max": 156
+          },
+          {
+            "zoom": 9,
+            "x_min": 127,
+            "x_max": 169,
+            "y_tms_min": 277,
+            "y_tms_max": 312
+          },
+          {
+            "zoom": 10,
+            "x_min": 255,
+            "x_max": 339,
+            "y_tms_min": 555,
+            "y_tms_max": 625
+          }
+        ]
+      }
+    },
+    {
+      "id": "sectional:sc",
+      "label": "South Central Sectional",
+      "region_id": "sc",
+      "map_view": {
+        "chart_family": "sectional",
+        "chart_name": "South Central Sectional",
+        "chart_index": 0,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/SC_SEC/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "SC_SEC",
+        "initial_viewport": {
+          "lat": 30.751277776257805,
+          "lon": -99.84375,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 3,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 7,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 15,
+            "y_tms_min": 7,
+            "y_tms_max": 12
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 31,
+            "y_tms_min": 14,
+            "y_tms_max": 25
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 63,
+            "y_tms_min": 29,
+            "y_tms_max": 50
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 127,
+            "y_tms_min": 58,
+            "y_tms_max": 101
+          },
+          {
+            "zoom": 8,
+            "x_min": 49,
+            "x_max": 64,
+            "y_tms_min": 145,
+            "y_tms_max": 156
+          },
+          {
+            "zoom": 9,
+            "x_min": 99,
+            "x_max": 128,
+            "y_tms_min": 291,
+            "y_tms_max": 312
+          },
+          {
+            "zoom": 10,
+            "x_min": 199,
+            "x_max": 256,
+            "y_tms_min": 582,
+            "y_tms_max": 625
+          }
+        ]
+      }
+    },
+    {
       "id": "sectional:sw",
-      "label": "SW Sectional",
+      "label": "Southwest Sectional",
       "region_id": "sw",
       "map_view": {
         "chart_family": "sectional",
-        "chart_name": "SW Sectional",
+        "chart_name": "Southwest Sectional",
         "chart_index": 0,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/SW_SEC/tiles",
         "tile_size": 256,
-        "min_zoom": 4.2,
+        "min_zoom": 1.5,
         "max_zoom": 10.8,
         "storage_kind": "sectional_package",
         "package_name": "SW_SEC",
         "initial_viewport": {
           "lat": 32.39851580247401,
           "lon": -113.90625,
-          "zoom": 7.2
+          "zoom": 8.0
         },
         "levels": [
           {
@@ -472,24 +1437,543 @@
       }
     },
     {
+      "id": "sectional:ec",
+      "label": "East Coast Sectional",
+      "region_id": "ec",
+      "map_view": {
+        "chart_family": "sectional",
+        "chart_name": "East Coast Sectional",
+        "chart_index": 0,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/EC_SEC/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "EC_SEC",
+        "initial_viewport": {
+          "lat": 43.32517767999294,
+          "lon": -87.5390625,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 3,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 7,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 15,
+            "y_tms_min": 7,
+            "y_tms_max": 12
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 31,
+            "y_tms_min": 14,
+            "y_tms_max": 25
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 63,
+            "y_tms_min": 29,
+            "y_tms_max": 50
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 127,
+            "y_tms_min": 58,
+            "y_tms_max": 101
+          },
+          {
+            "zoom": 8,
+            "x_min": 60,
+            "x_max": 71,
+            "y_tms_min": 156,
+            "y_tms_max": 168
+          },
+          {
+            "zoom": 9,
+            "x_min": 120,
+            "x_max": 142,
+            "y_tms_min": 312,
+            "y_tms_max": 336
+          },
+          {
+            "zoom": 10,
+            "x_min": 241,
+            "x_max": 284,
+            "y_tms_min": 625,
+            "y_tms_max": 672
+          }
+        ]
+      }
+    },
+    {
+      "id": "sectional:ak",
+      "label": "Alaska Sectional",
+      "region_id": "ak",
+      "map_view": {
+        "chart_family": "sectional",
+        "chart_name": "Alaska Sectional",
+        "chart_index": 0,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/AK_SEC/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "AK_SEC",
+        "initial_viewport": {
+          "lat": 62.67414334669093,
+          "lon": -154.51171875,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 3,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 7,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 15,
+            "y_tms_min": 7,
+            "y_tms_max": 12
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 31,
+            "y_tms_min": 14,
+            "y_tms_max": 25
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 63,
+            "y_tms_min": 29,
+            "y_tms_max": 50
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 127,
+            "y_tms_min": 58,
+            "y_tms_max": 101
+          },
+          {
+            "zoom": 8,
+            "x_min": 0,
+            "x_max": 36,
+            "y_tms_min": 170,
+            "y_tms_max": 200
+          },
+          {
+            "zoom": 9,
+            "x_min": 0,
+            "x_max": 72,
+            "y_tms_min": 340,
+            "y_tms_max": 401
+          },
+          {
+            "zoom": 10,
+            "x_min": 0,
+            "x_max": 144,
+            "y_tms_min": 681,
+            "y_tms_max": 803
+          }
+        ]
+      }
+    },
+    {
+      "id": "sectional:pac",
+      "label": "Pacific Sectional",
+      "region_id": "pac",
+      "map_view": {
+        "chart_family": "sectional",
+        "chart_name": "Pacific Sectional",
+        "chart_index": 0,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/PAC_SEC/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "PAC_SEC",
+        "initial_viewport": {
+          "lat": 21.125497636606283,
+          "lon": -157.5,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 3,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 7,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 15,
+            "y_tms_min": 7,
+            "y_tms_max": 12
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 31,
+            "y_tms_min": 14,
+            "y_tms_max": 25
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 63,
+            "y_tms_min": 29,
+            "y_tms_max": 50
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 127,
+            "y_tms_min": 58,
+            "y_tms_max": 101
+          },
+          {
+            "zoom": 8,
+            "x_min": 13,
+            "x_max": 18,
+            "y_tms_min": 141,
+            "y_tms_max": 145
+          },
+          {
+            "zoom": 9,
+            "x_min": 27,
+            "x_max": 36,
+            "y_tms_min": 282,
+            "y_tms_max": 290
+          },
+          {
+            "zoom": 10,
+            "x_min": 54,
+            "x_max": 73,
+            "y_tms_min": 565,
+            "y_tms_max": 581
+          }
+        ]
+      }
+    },
+    {
+      "id": "tac:ne",
+      "label": "Northeast TAC",
+      "region_id": "ne",
+      "map_view": {
+        "chart_family": "tac",
+        "chart_name": "Northeast TAC",
+        "chart_index": 1,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/NE_TAC/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 11.8,
+        "storage_kind": "sectional_package",
+        "package_name": "NE_TAC",
+        "initial_viewport": {
+          "lat": 40.58058466412762,
+          "lon": -74.794921875,
+          "zoom": 9.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 1,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 2,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 5,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 10,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 94
+          },
+          {
+            "zoom": 8,
+            "x_min": 71,
+            "x_max": 78,
+            "y_tms_min": 157,
+            "y_tms_max": 161
+          },
+          {
+            "zoom": 9,
+            "x_min": 142,
+            "x_max": 157,
+            "y_tms_min": 314,
+            "y_tms_max": 323
+          },
+          {
+            "zoom": 10,
+            "x_min": 284,
+            "x_max": 314,
+            "y_tms_min": 629,
+            "y_tms_max": 647
+          },
+          {
+            "zoom": 11,
+            "x_min": 568,
+            "x_max": 628,
+            "y_tms_min": 1259,
+            "y_tms_max": 1294
+          }
+        ]
+      }
+    },
+    {
+      "id": "tac:nc",
+      "label": "North Central TAC",
+      "region_id": "nc",
+      "map_view": {
+        "chart_family": "tac",
+        "chart_name": "North Central TAC",
+        "chart_index": 1,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/NC_TAC/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 11.8,
+        "storage_kind": "sectional_package",
+        "package_name": "NC_TAC",
+        "initial_viewport": {
+          "lat": 41.70572851523752,
+          "lon": -97.470703125,
+          "zoom": 9.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 1,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 2,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 5,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 10,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 94
+          },
+          {
+            "zoom": 8,
+            "x_min": 53,
+            "x_max": 64,
+            "y_tms_min": 156,
+            "y_tms_max": 164
+          },
+          {
+            "zoom": 9,
+            "x_min": 106,
+            "x_max": 128,
+            "y_tms_min": 313,
+            "y_tms_max": 328
+          },
+          {
+            "zoom": 10,
+            "x_min": 213,
+            "x_max": 256,
+            "y_tms_min": 627,
+            "y_tms_max": 657
+          },
+          {
+            "zoom": 11,
+            "x_min": 426,
+            "x_max": 512,
+            "y_tms_min": 1255,
+            "y_tms_max": 1315
+          }
+        ]
+      }
+    },
+    {
       "id": "tac:nw",
-      "label": "NW TAC",
+      "label": "Northwest TAC",
       "region_id": "nw",
       "map_view": {
         "chart_family": "tac",
-        "chart_name": "NW TAC",
+        "chart_name": "Northwest TAC",
         "chart_index": 1,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/NW_TAC/tiles",
         "tile_size": 256,
-        "min_zoom": 4.2,
+        "min_zoom": 1.5,
         "max_zoom": 11.8,
         "storage_kind": "sectional_package",
         "package_name": "NW_TAC",
         "initial_viewport": {
           "lat": 44.21370990970205,
           "lon": -113.73046875,
-          "zoom": 7.4
+          "zoom": 9.0
         },
         "levels": [
           {
@@ -580,24 +2064,240 @@
       }
     },
     {
+      "id": "tac:se",
+      "label": "Southeast TAC",
+      "region_id": "se",
+      "map_view": {
+        "chart_family": "tac",
+        "chart_name": "Southeast TAC",
+        "chart_index": 1,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/SE_TAC/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 11.8,
+        "storage_kind": "sectional_package",
+        "package_name": "SE_TAC",
+        "initial_viewport": {
+          "lat": 27.137368359795584,
+          "lon": -77.16796875,
+          "zoom": 9.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 1,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 2,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 5,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 10,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 94
+          },
+          {
+            "zoom": 8,
+            "x_min": 63,
+            "x_max": 82,
+            "y_tms_min": 140,
+            "y_tms_max": 155
+          },
+          {
+            "zoom": 9,
+            "x_min": 127,
+            "x_max": 164,
+            "y_tms_min": 281,
+            "y_tms_max": 310
+          },
+          {
+            "zoom": 10,
+            "x_min": 255,
+            "x_max": 329,
+            "y_tms_min": 562,
+            "y_tms_max": 621
+          },
+          {
+            "zoom": 11,
+            "x_min": 511,
+            "x_max": 658,
+            "y_tms_min": 1125,
+            "y_tms_max": 1243
+          }
+        ]
+      }
+    },
+    {
+      "id": "tac:sc",
+      "label": "South Central TAC",
+      "region_id": "sc",
+      "map_view": {
+        "chart_family": "tac",
+        "chart_name": "South Central TAC",
+        "chart_index": 1,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/SC_TAC/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 11.8,
+        "storage_kind": "sectional_package",
+        "package_name": "SC_TAC",
+        "initial_viewport": {
+          "lat": 32.54681317351516,
+          "lon": -94.21875,
+          "zoom": 9.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 1,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 2,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 5,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 10,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 94
+          },
+          {
+            "zoom": 8,
+            "x_min": 52,
+            "x_max": 64,
+            "y_tms_min": 149,
+            "y_tms_max": 156
+          },
+          {
+            "zoom": 9,
+            "x_min": 115,
+            "x_max": 128,
+            "y_tms_min": 299,
+            "y_tms_max": 310
+          },
+          {
+            "zoom": 10,
+            "x_min": 231,
+            "x_max": 256,
+            "y_tms_min": 598,
+            "y_tms_max": 621
+          },
+          {
+            "zoom": 11,
+            "x_min": 463,
+            "x_max": 512,
+            "y_tms_min": 1197,
+            "y_tms_max": 1242
+          }
+        ]
+      }
+    },
+    {
       "id": "tac:sw",
-      "label": "SW TAC",
+      "label": "Southwest TAC",
       "region_id": "sw",
       "map_view": {
         "chart_family": "tac",
-        "chart_name": "SW TAC",
+        "chart_name": "Southwest TAC",
         "chart_index": 1,
         "tile_root": "tiles",
         "tile_url_root": "/sectional-packages/SW_TAC/tiles",
         "tile_size": 256,
-        "min_zoom": 4.2,
+        "min_zoom": 1.5,
         "max_zoom": 11.8,
         "storage_kind": "sectional_package",
         "package_name": "SW_TAC",
         "initial_viewport": {
           "lat": 36.31512514748051,
           "lon": -113.642578125,
-          "zoom": 7.4
+          "zoom": 9.0
         },
         "levels": [
           {
@@ -686,91 +2386,2142 @@
           }
         ]
       }
+    },
+    {
+      "id": "tac:ec",
+      "label": "East Coast TAC",
+      "region_id": "ec",
+      "map_view": {
+        "chart_family": "tac",
+        "chart_name": "East Coast TAC",
+        "chart_index": 1,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/EC_TAC/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 11.8,
+        "storage_kind": "sectional_package",
+        "package_name": "EC_TAC",
+        "initial_viewport": {
+          "lat": 41.96765920367817,
+          "lon": -87.5390625,
+          "zoom": 9.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 1,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 2,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 5,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 10,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 94
+          },
+          {
+            "zoom": 8,
+            "x_min": 60,
+            "x_max": 71,
+            "y_tms_min": 157,
+            "y_tms_max": 164
+          },
+          {
+            "zoom": 9,
+            "x_min": 120,
+            "x_max": 142,
+            "y_tms_min": 314,
+            "y_tms_max": 328
+          },
+          {
+            "zoom": 10,
+            "x_min": 241,
+            "x_max": 284,
+            "y_tms_min": 629,
+            "y_tms_max": 657
+          },
+          {
+            "zoom": 11,
+            "x_min": 483,
+            "x_max": 568,
+            "y_tms_min": 1259,
+            "y_tms_max": 1315
+          }
+        ]
+      }
+    },
+    {
+      "id": "tac:ak",
+      "label": "Alaska TAC",
+      "region_id": "ak",
+      "map_view": {
+        "chart_family": "tac",
+        "chart_name": "Alaska TAC",
+        "chart_index": 1,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/AK_TAC/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 11.8,
+        "storage_kind": "sectional_package",
+        "package_name": "AK_TAC",
+        "initial_viewport": {
+          "lat": 62.99515845212052,
+          "lon": -148.7109375,
+          "zoom": 9.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 1,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 2,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 5,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 10,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 94
+          },
+          {
+            "zoom": 8,
+            "x_min": 20,
+            "x_max": 24,
+            "y_tms_min": 182,
+            "y_tms_max": 189
+          },
+          {
+            "zoom": 9,
+            "x_min": 40,
+            "x_max": 48,
+            "y_tms_min": 364,
+            "y_tms_max": 379
+          },
+          {
+            "zoom": 10,
+            "x_min": 80,
+            "x_max": 97,
+            "y_tms_min": 729,
+            "y_tms_max": 759
+          },
+          {
+            "zoom": 11,
+            "x_min": 160,
+            "x_max": 195,
+            "y_tms_min": 1459,
+            "y_tms_max": 1518
+          }
+        ]
+      }
+    },
+    {
+      "id": "tac:pac",
+      "label": "Pacific TAC",
+      "region_id": "pac",
+      "map_view": {
+        "chart_family": "tac",
+        "chart_name": "Pacific TAC",
+        "chart_index": 1,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/PAC_TAC/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 7.8,
+        "storage_kind": "sectional_package",
+        "package_name": "PAC_TAC",
+        "initial_viewport": {
+          "lat": 46.07323062540836,
+          "lon": -106.875,
+          "zoom": 5.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 1,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 2,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 5,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 10,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 94
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_low:ne",
+      "label": "Northeast IFR Low",
+      "region_id": "ne",
+      "map_view": {
+        "chart_family": "ifr_low",
+        "chart_name": "Northeast IFR Low",
+        "chart_index": 3,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/NE_ENR_L/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "NE_ENR_L",
+        "initial_viewport": {
+          "lat": 42.682435398386225,
+          "lon": -71.3671875,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 95
+          },
+          {
+            "zoom": 8,
+            "x_min": 71,
+            "x_max": 83,
+            "y_tms_min": 156,
+            "y_tms_max": 166
+          },
+          {
+            "zoom": 9,
+            "x_min": 142,
+            "x_max": 166,
+            "y_tms_min": 312,
+            "y_tms_max": 333
+          },
+          {
+            "zoom": 10,
+            "x_min": 284,
+            "x_max": 333,
+            "y_tms_min": 625,
+            "y_tms_max": 667
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_low:nc",
+      "label": "North Central IFR Low",
+      "region_id": "nc",
+      "map_view": {
+        "chart_family": "ifr_low",
+        "chart_name": "North Central IFR Low",
+        "chart_index": 3,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/NC_ENR_L/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "NC_ENR_L",
+        "initial_viewport": {
+          "lat": 43.32517767999294,
+          "lon": -97.3828125,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 95
+          },
+          {
+            "zoom": 8,
+            "x_min": 53,
+            "x_max": 64,
+            "y_tms_min": 156,
+            "y_tms_max": 168
+          },
+          {
+            "zoom": 9,
+            "x_min": 106,
+            "x_max": 128,
+            "y_tms_min": 312,
+            "y_tms_max": 336
+          },
+          {
+            "zoom": 10,
+            "x_min": 213,
+            "x_max": 256,
+            "y_tms_min": 625,
+            "y_tms_max": 672
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_low:nw",
+      "label": "Northwest IFR Low",
+      "region_id": "nw",
+      "map_view": {
+        "chart_family": "ifr_low",
+        "chart_name": "Northwest IFR Low",
+        "chart_index": 3,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/NW_ENR_L/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "NW_ENR_L",
+        "initial_viewport": {
+          "lat": 45.213003555993964,
+          "lon": -113.90625,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 95
+          },
+          {
+            "zoom": 8,
+            "x_min": 39,
+            "x_max": 54,
+            "y_tms_min": 159,
+            "y_tms_max": 169
+          },
+          {
+            "zoom": 9,
+            "x_min": 78,
+            "x_max": 109,
+            "y_tms_min": 318,
+            "y_tms_max": 338
+          },
+          {
+            "zoom": 10,
+            "x_min": 156,
+            "x_max": 219,
+            "y_tms_min": 636,
+            "y_tms_max": 676
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_low:se",
+      "label": "Southeast IFR Low",
+      "region_id": "se",
+      "map_view": {
+        "chart_family": "ifr_low",
+        "chart_name": "Southeast IFR Low",
+        "chart_index": 3,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/SE_ENR_L/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "SE_ENR_L",
+        "initial_viewport": {
+          "lat": 30.600093873550065,
+          "lon": -82.265625,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 95
+          },
+          {
+            "zoom": 8,
+            "x_min": 63,
+            "x_max": 75,
+            "y_tms_min": 145,
+            "y_tms_max": 156
+          },
+          {
+            "zoom": 9,
+            "x_min": 127,
+            "x_max": 150,
+            "y_tms_min": 290,
+            "y_tms_max": 312
+          },
+          {
+            "zoom": 10,
+            "x_min": 255,
+            "x_max": 300,
+            "y_tms_min": 581,
+            "y_tms_max": 625
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_low:sc",
+      "label": "South Central IFR Low",
+      "region_id": "sc",
+      "map_view": {
+        "chart_family": "ifr_low",
+        "chart_name": "South Central IFR Low",
+        "chart_index": 3,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/SC_ENR_L/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "SC_ENR_L",
+        "initial_viewport": {
+          "lat": 31.50362930577302,
+          "lon": -99.84375,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 95
+          },
+          {
+            "zoom": 8,
+            "x_min": 49,
+            "x_max": 64,
+            "y_tms_min": 146,
+            "y_tms_max": 156
+          },
+          {
+            "zoom": 9,
+            "x_min": 99,
+            "x_max": 128,
+            "y_tms_min": 293,
+            "y_tms_max": 312
+          },
+          {
+            "zoom": 10,
+            "x_min": 199,
+            "x_max": 256,
+            "y_tms_min": 587,
+            "y_tms_max": 625
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_low:sw",
+      "label": "Southwest IFR Low",
+      "region_id": "sw",
+      "map_view": {
+        "chart_family": "ifr_low",
+        "chart_name": "Southwest IFR Low",
+        "chart_index": 3,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/SW_ENR_L/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "SW_ENR_L",
+        "initial_viewport": {
+          "lat": 34.452218472826544,
+          "lon": -113.5546875,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 95
+          },
+          {
+            "zoom": 8,
+            "x_min": 39,
+            "x_max": 54,
+            "y_tms_min": 149,
+            "y_tms_max": 159
+          },
+          {
+            "zoom": 9,
+            "x_min": 79,
+            "x_max": 109,
+            "y_tms_min": 298,
+            "y_tms_max": 318
+          },
+          {
+            "zoom": 10,
+            "x_min": 158,
+            "x_max": 219,
+            "y_tms_min": 596,
+            "y_tms_max": 636
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_low:ec",
+      "label": "East Coast IFR Low",
+      "region_id": "ec",
+      "map_view": {
+        "chart_family": "ifr_low",
+        "chart_name": "East Coast IFR Low",
+        "chart_index": 3,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/EC_ENR_L/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "EC_ENR_L",
+        "initial_viewport": {
+          "lat": 43.32517767999294,
+          "lon": -87.5390625,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 95
+          },
+          {
+            "zoom": 8,
+            "x_min": 60,
+            "x_max": 71,
+            "y_tms_min": 156,
+            "y_tms_max": 168
+          },
+          {
+            "zoom": 9,
+            "x_min": 120,
+            "x_max": 142,
+            "y_tms_min": 312,
+            "y_tms_max": 336
+          },
+          {
+            "zoom": 10,
+            "x_min": 241,
+            "x_max": 284,
+            "y_tms_min": 625,
+            "y_tms_max": 672
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_low:ak",
+      "label": "Alaska IFR Low",
+      "region_id": "ak",
+      "map_view": {
+        "chart_family": "ifr_low",
+        "chart_name": "Alaska IFR Low",
+        "chart_index": 3,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/AK_ENR_L/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "AK_ENR_L",
+        "initial_viewport": {
+          "lat": 59.5343180010956,
+          "lon": -152.9296875,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 95
+          },
+          {
+            "zoom": 8,
+            "x_min": 0,
+            "x_max": 38,
+            "y_tms_min": 170,
+            "y_tms_max": 191
+          },
+          {
+            "zoom": 9,
+            "x_min": 0,
+            "x_max": 76,
+            "y_tms_min": 340,
+            "y_tms_max": 383
+          },
+          {
+            "zoom": 10,
+            "x_min": 0,
+            "x_max": 153,
+            "y_tms_min": 681,
+            "y_tms_max": 766
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_low:pac",
+      "label": "Pacific IFR Low",
+      "region_id": "pac",
+      "map_view": {
+        "chart_family": "ifr_low",
+        "chart_name": "Pacific IFR Low",
+        "chart_index": 3,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/PAC_ENR_L/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 10.8,
+        "storage_kind": "sectional_package",
+        "package_name": "PAC_ENR_L",
+        "initial_viewport": {
+          "lat": 20.632784250388024,
+          "lon": -156.97265625,
+          "zoom": 8.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 1,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 2,
+            "y_tms_max": 2
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 4,
+            "y_tms_max": 5
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 8,
+            "y_tms_max": 11
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 17,
+            "y_tms_max": 23
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 35,
+            "y_tms_max": 47
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 70,
+            "y_tms_max": 95
+          },
+          {
+            "zoom": 8,
+            "x_min": 12,
+            "x_max": 19,
+            "y_tms_min": 141,
+            "y_tms_max": 144
+          },
+          {
+            "zoom": 9,
+            "x_min": 25,
+            "x_max": 39,
+            "y_tms_min": 282,
+            "y_tms_max": 289
+          },
+          {
+            "zoom": 10,
+            "x_min": 51,
+            "x_max": 79,
+            "y_tms_min": 564,
+            "y_tms_max": 579
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_high:ne",
+      "label": "Northeast IFR High",
+      "region_id": "ne",
+      "map_view": {
+        "chart_family": "ifr_high",
+        "chart_name": "Northeast IFR High",
+        "chart_index": 4,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/NE_ENR_H/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 9.8,
+        "storage_kind": "sectional_package",
+        "package_name": "NE_ENR_H",
+        "initial_viewport": {
+          "lat": 43.32517767999294,
+          "lon": -71.3671875,
+          "zoom": 7.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 7,
+            "y_tms_max": 13
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 15,
+            "y_tms_max": 26
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 30,
+            "y_tms_max": 52
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 60,
+            "y_tms_max": 104
+          },
+          {
+            "zoom": 8,
+            "x_min": 71,
+            "x_max": 83,
+            "y_tms_min": 156,
+            "y_tms_max": 168
+          },
+          {
+            "zoom": 9,
+            "x_min": 142,
+            "x_max": 166,
+            "y_tms_min": 312,
+            "y_tms_max": 336
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_high:nc",
+      "label": "North Central IFR High",
+      "region_id": "nc",
+      "map_view": {
+        "chart_family": "ifr_high",
+        "chart_name": "North Central IFR High",
+        "chart_index": 4,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/NC_ENR_H/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 9.8,
+        "storage_kind": "sectional_package",
+        "package_name": "NC_ENR_H",
+        "initial_viewport": {
+          "lat": 43.83452678223683,
+          "lon": -97.3828125,
+          "zoom": 7.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 7,
+            "y_tms_max": 13
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 15,
+            "y_tms_max": 26
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 30,
+            "y_tms_max": 52
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 60,
+            "y_tms_max": 104
+          },
+          {
+            "zoom": 8,
+            "x_min": 53,
+            "x_max": 64,
+            "y_tms_min": 156,
+            "y_tms_max": 169
+          },
+          {
+            "zoom": 9,
+            "x_min": 106,
+            "x_max": 128,
+            "y_tms_min": 312,
+            "y_tms_max": 338
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_high:nw",
+      "label": "Northwest IFR High",
+      "region_id": "nw",
+      "map_view": {
+        "chart_family": "ifr_high",
+        "chart_name": "Northwest IFR High",
+        "chart_index": 4,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/NW_ENR_H/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 9.8,
+        "storage_kind": "sectional_package",
+        "package_name": "NW_ENR_H",
+        "initial_viewport": {
+          "lat": 45.336701909968106,
+          "lon": -113.90625,
+          "zoom": 7.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 7,
+            "y_tms_max": 13
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 15,
+            "y_tms_max": 26
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 30,
+            "y_tms_max": 52
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 60,
+            "y_tms_max": 104
+          },
+          {
+            "zoom": 8,
+            "x_min": 39,
+            "x_max": 54,
+            "y_tms_min": 159,
+            "y_tms_max": 169
+          },
+          {
+            "zoom": 9,
+            "x_min": 78,
+            "x_max": 109,
+            "y_tms_min": 318,
+            "y_tms_max": 338
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_high:se",
+      "label": "Southeast IFR High",
+      "region_id": "se",
+      "map_view": {
+        "chart_family": "ifr_high",
+        "chart_name": "Southeast IFR High",
+        "chart_index": 4,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/SE_ENR_H/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 9.8,
+        "storage_kind": "sectional_package",
+        "package_name": "SE_ENR_H",
+        "initial_viewport": {
+          "lat": 30.145127183376108,
+          "lon": -78.3984375,
+          "zoom": 7.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 7,
+            "y_tms_max": 13
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 15,
+            "y_tms_max": 26
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 30,
+            "y_tms_max": 52
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 60,
+            "y_tms_max": 104
+          },
+          {
+            "zoom": 8,
+            "x_min": 63,
+            "x_max": 81,
+            "y_tms_min": 144,
+            "y_tms_max": 156
+          },
+          {
+            "zoom": 9,
+            "x_min": 127,
+            "x_max": 161,
+            "y_tms_min": 289,
+            "y_tms_max": 312
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_high:sc",
+      "label": "South Central IFR High",
+      "region_id": "sc",
+      "map_view": {
+        "chart_family": "ifr_high",
+        "chart_name": "South Central IFR High",
+        "chart_index": 4,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/SC_ENR_H/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 9.8,
+        "storage_kind": "sectional_package",
+        "package_name": "SC_ENR_H",
+        "initial_viewport": {
+          "lat": 30.751277776257805,
+          "lon": -99.84375,
+          "zoom": 7.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 7,
+            "y_tms_max": 13
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 15,
+            "y_tms_max": 26
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 30,
+            "y_tms_max": 52
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 60,
+            "y_tms_max": 104
+          },
+          {
+            "zoom": 8,
+            "x_min": 49,
+            "x_max": 64,
+            "y_tms_min": 145,
+            "y_tms_max": 156
+          },
+          {
+            "zoom": 9,
+            "x_min": 99,
+            "x_max": 128,
+            "y_tms_min": 291,
+            "y_tms_max": 312
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_high:sw",
+      "label": "Southwest IFR High",
+      "region_id": "sw",
+      "map_view": {
+        "chart_family": "ifr_high",
+        "chart_name": "Southwest IFR High",
+        "chart_index": 4,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/SW_ENR_H/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 9.8,
+        "storage_kind": "sectional_package",
+        "package_name": "SW_ENR_H",
+        "initial_viewport": {
+          "lat": 28.304380682962773,
+          "lon": -113.90625,
+          "zoom": 7.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 7,
+            "y_tms_max": 13
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 15,
+            "y_tms_max": 26
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 30,
+            "y_tms_max": 52
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 60,
+            "y_tms_max": 104
+          },
+          {
+            "zoom": 8,
+            "x_min": 39,
+            "x_max": 54,
+            "y_tms_min": 138,
+            "y_tms_max": 159
+          },
+          {
+            "zoom": 9,
+            "x_min": 78,
+            "x_max": 109,
+            "y_tms_min": 277,
+            "y_tms_max": 318
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_high:ec",
+      "label": "East Coast IFR High",
+      "region_id": "ec",
+      "map_view": {
+        "chart_family": "ifr_high",
+        "chart_name": "East Coast IFR High",
+        "chart_index": 4,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/EC_ENR_H/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 9.8,
+        "storage_kind": "sectional_package",
+        "package_name": "EC_ENR_H",
+        "initial_viewport": {
+          "lat": 43.83452678223683,
+          "lon": -87.5390625,
+          "zoom": 7.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 7,
+            "y_tms_max": 13
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 15,
+            "y_tms_max": 26
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 30,
+            "y_tms_max": 52
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 60,
+            "y_tms_max": 104
+          },
+          {
+            "zoom": 8,
+            "x_min": 60,
+            "x_max": 71,
+            "y_tms_min": 156,
+            "y_tms_max": 169
+          },
+          {
+            "zoom": 9,
+            "x_min": 120,
+            "x_max": 142,
+            "y_tms_min": 312,
+            "y_tms_max": 338
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_high:ak",
+      "label": "Alaska IFR High",
+      "region_id": "ak",
+      "map_view": {
+        "chart_family": "ifr_high",
+        "chart_name": "Alaska IFR High",
+        "chart_index": 4,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/AK_ENR_H/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 9.8,
+        "storage_kind": "sectional_package",
+        "package_name": "AK_ENR_H",
+        "initial_viewport": {
+          "lat": 62.59334083012024,
+          "lon": -152.9296875,
+          "zoom": 7.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 7,
+            "y_tms_max": 13
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 15,
+            "y_tms_max": 26
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 30,
+            "y_tms_max": 52
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 60,
+            "y_tms_max": 104
+          },
+          {
+            "zoom": 8,
+            "x_min": 0,
+            "x_max": 38,
+            "y_tms_min": 170,
+            "y_tms_max": 200
+          },
+          {
+            "zoom": 9,
+            "x_min": 0,
+            "x_max": 76,
+            "y_tms_min": 340,
+            "y_tms_max": 401
+          }
+        ]
+      }
+    },
+    {
+      "id": "ifr_high:pac",
+      "label": "Pacific IFR High",
+      "region_id": "pac",
+      "map_view": {
+        "chart_family": "ifr_high",
+        "chart_name": "Pacific IFR High",
+        "chart_index": 4,
+        "tile_root": "tiles",
+        "tile_url_root": "/sectional-packages/PAC_ENR_H/tiles",
+        "tile_size": 256,
+        "min_zoom": 1.5,
+        "max_zoom": 9.8,
+        "storage_kind": "sectional_package",
+        "package_name": "PAC_ENR_H",
+        "initial_viewport": {
+          "lat": 21.28937435586042,
+          "lon": -157.1484375,
+          "zoom": 7.0
+        },
+        "levels": [
+          {
+            "zoom": 0,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 0
+          },
+          {
+            "zoom": 1,
+            "x_min": 0,
+            "x_max": 0,
+            "y_tms_min": 0,
+            "y_tms_max": 1
+          },
+          {
+            "zoom": 2,
+            "x_min": 0,
+            "x_max": 1,
+            "y_tms_min": 1,
+            "y_tms_max": 3
+          },
+          {
+            "zoom": 3,
+            "x_min": 0,
+            "x_max": 2,
+            "y_tms_min": 3,
+            "y_tms_max": 6
+          },
+          {
+            "zoom": 4,
+            "x_min": 0,
+            "x_max": 5,
+            "y_tms_min": 7,
+            "y_tms_max": 13
+          },
+          {
+            "zoom": 5,
+            "x_min": 0,
+            "x_max": 10,
+            "y_tms_min": 15,
+            "y_tms_max": 26
+          },
+          {
+            "zoom": 6,
+            "x_min": 0,
+            "x_max": 20,
+            "y_tms_min": 30,
+            "y_tms_max": 52
+          },
+          {
+            "zoom": 7,
+            "x_min": 0,
+            "x_max": 41,
+            "y_tms_min": 60,
+            "y_tms_max": 104
+          },
+          {
+            "zoom": 8,
+            "x_min": 12,
+            "x_max": 19,
+            "y_tms_min": 141,
+            "y_tms_max": 145
+          },
+          {
+            "zoom": 9,
+            "x_min": 25,
+            "x_max": 39,
+            "y_tms_min": 282,
+            "y_tms_max": 291
+          }
+        ]
+      }
     }
   ],
   "chart_page": {
     "recent_airport_ids": [
-      "BOS"
+      "KBOS"
     ],
-    "initial_airport_id": "BOS",
-    "initial_chart_id": "plate:bos-ils04r",
+    "initial_airport_id": "KBOS",
+    "initial_chart_id": "plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png",
     "airports": [
       {
-        "id": "BOS",
+        "id": "KBOS",
         "label": "KBOS",
         "charts": [
           {
-            "id": "plate:bos-ils04r",
-            "airport_id": "BOS",
+            "id": "plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png",
+            "airport_id": "KBOS",
             "label": "IAP-MA-ILS OR LOC RWY 04R",
             "kind": "plate",
-            "asset_path": "chart-assets/BOS/IAP-MA-ILS OR LOC RWY 04R.png",
-            "asset_url": "/chart-assets/BOS/IAP-MA-ILS OR LOC RWY 04R.png"
+            "asset_path": "chart-assets/KBOS/IAP-MA-ILS OR LOC RWY 04R.png",
+            "asset_url": "/chart-assets/KBOS/IAP-MA-ILS OR LOC RWY 04R.png"
           },
           {
-            "id": "csup:bos",
-            "airport_id": "BOS",
+            "id": "csup:KBOS:CSUP-NE_0-0.png",
+            "airport_id": "KBOS",
             "label": "CSup",
             "kind": "csup",
-            "asset_path": "chart-assets/BOS/CSUP-NE_0-0.png",
-            "asset_url": "/chart-assets/BOS/CSUP-NE_0-0.png"
+            "asset_path": "chart-assets/KBOS/CSUP-NE_0-0.png",
+            "asset_url": "/chart-assets/KBOS/CSUP-NE_0-0.png"
           }
         ]
       }
     ]
   },
   "initial_probe": {
-    "family": "tac",
-    "lat": 42.3656,
-    "lon": -71.0096
+    "family": "sectional",
+    "lat": 42.940339233631825,
+    "lon": -70.3125
   },
   "map_tile_view": {
     "chart_family": "sectional",
-    "chart_name": "NW Sectional",
+    "chart_name": "Northeast Sectional",
     "chart_index": 0,
     "tile_root": "tiles",
     "zoom": 10,
     "tile_size": 256,
     "radius": 0,
-    "center_x": 187,
-    "center_y_tms": 654,
+    "center_x": 311,
+    "center_y_tms": 647,
     "probe_offset_x": 0.0,
     "probe_offset_y": 0.0
   },
   "flight_plan": {
     "id": "plan-1",
-    "name": "KRNT SEA PAE KAWO",
+    "name": "KRNT KSEA KPAE KAWO",
     "legs": [
       {
         "from": {
-          "Airport": "RNT"
+          "Airport": "KRNT"
         },
         "to": {
-          "Airport": "SEA"
+          "Airport": "KSEA"
         },
         "airway": null
       },
       {
         "from": {
-          "Airport": "SEA"
+          "Airport": "KSEA"
         },
         "to": {
-          "Airport": "PAE"
+          "Airport": "KPAE"
         },
         "airway": null
       },
       {
         "from": {
-          "Airport": "PAE"
+          "Airport": "KPAE"
         },
         "to": {
-          "Airport": "AWO"
+          "Airport": "KAWO"
         },
         "airway": null
       }
     ],
-    "departure": "RNT",
-    "destination": "AWO",
+    "departure": "KRNT",
+    "destination": "KAWO",
     "alternate": null,
     "cruise_altitude_ft": 3000,
     "notes": "Generated from resource-index data",
@@ -786,7 +4537,7 @@
     "installed_packages": [
       {
         "package_id": {
-          "region": "nw",
+          "region": "ne",
           "family": "sectional",
           "cycle": "2604"
         },

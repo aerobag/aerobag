@@ -229,16 +229,42 @@ Shared fixture loading on Android:
 - the Android Gradle build now reruns the generator automatically before `preBuild`
 
 Sectional package staging on Android:
-- the real package artifacts are copied into generated APK assets during the build from:
-  - `/root/aerobag/runs/20260406T032350Z-validation/native/charts-sec/work/charts-sec/NW_SEC.zip`
-  - `/root/aerobag/runs/20260406T032350Z-validation/native/charts-sec/work/charts-sec/SW_SEC.zip`
-- the staging task is:
+- old approach of bundling full chart zips into APK assets does not scale:
+  - APK install started failing with `Requested internal only, but not enough space`
+  - and later plain sync failures like `write failed: No space left on device`
+- current dev direction is:
+  - keep APK small
+  - seed chart zips separately for dev
+- chart zips are staged for dev seeding by:
   - `stagePrototypeSectionalPackages`
-- the generated asset location is:
-  - `ui/android-app/app/build/generated/prototypeAssets/sectional-packages`
-- at runtime, the app installs the selected zip into:
-  - `context.filesDir/sectional-packages/<PACKAGE>.zip`
-- tile rendering then reads directly from the installed zip, not from an unpacked tree
+- generated staging location:
+  - `ui/android-app/app/build/generated/prototypeSeedPackages/sectional-packages`
+- runtime lookup in:
+  - [SectionalPackages.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SectionalPackages.kt)
+  now prefers existing locally seeded package files before falling back to APK assets
+- tile rendering still reads directly from zip files, not unpacked trees
+
+Android install / launch verification helper:
+
+```bash
+/root/aerobag/ui/android-app/scripts/install_launch_check.sh
+```
+
+This is now the preferred loop instead of ad hoc:
+- install
+- clear logcat
+- force-stop
+- launch
+- wait
+- verify resumed activity and crash lines
+
+Important debugging note:
+- if the user reports a crash, read `logcat` before reinstalling
+- reinstalling via Gradle kills the running app with log lines like:
+  - `installPackageLI`
+  - `pkg removed`
+  - `Force stopping ... due to installPackageLI`
+- that is expected package replacement, not necessarily a runtime app bug
 
 Package install path discovered:
 

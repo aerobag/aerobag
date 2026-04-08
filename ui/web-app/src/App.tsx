@@ -781,7 +781,7 @@ function ChartsPage(props: {
 }
 
 function navRefLabel(value: { Airport: string } | { Navaid: string } | { Fix: string }) {
-  if ("Airport" in value) return `K${value.Airport}`;
+  if ("Airport" in value) return value.Airport;
   if ("Navaid" in value) return value.Navaid;
   return value.Fix;
 }

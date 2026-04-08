@@ -11,19 +11,44 @@ object SectionalPackages {
     private const val INSTALL_DIR = "sectional-packages"
     private val packageStore = ZipPackageStore()
 
-    fun installedFile(context: Context, packageName: String): File =
+    private fun internalInstalledFile(context: Context, packageName: String): File =
         File(File(context.filesDir, INSTALL_DIR), "$packageName.zip")
 
-    fun isInstalled(context: Context, packageName: String): Boolean =
-        installedFile(context, packageName).isFile
+    private fun externalInstalledFile(context: Context, packageName: String): File? =
+        context.getExternalFilesDir(null)?.let { File(File(it, INSTALL_DIR), "$packageName.zip") }
 
-    fun install(context: Context, packageName: String): File {
-        val target = installedFile(context, packageName)
+    fun installedFile(context: Context, packageName: String): File =
+        existingInstalledFile(context, packageName) ?: internalInstalledFile(context, packageName)
+
+    fun existingInstalledFile(context: Context, packageName: String): File? {
+        val external = externalInstalledFile(context, packageName)
+        if (external?.isFile == true) {
+            return external
+        }
+        val internal = internalInstalledFile(context, packageName)
+        if (internal.isFile) {
+            return internal
+        }
+        return null
+    }
+
+    fun isInstalled(context: Context, packageName: String): Boolean =
+        existingInstalledFile(context, packageName)?.isFile == true
+
+    fun install(context: Context, packageName: String): File? {
+        existingInstalledFile(context, packageName)?.let { existing ->
+            return existing
+        }
+        val assetPath = "$ASSET_DIR/$packageName.zip"
+        if (!assetExists(context, assetPath)) {
+            return null
+        }
+        val target = internalInstalledFile(context, packageName)
         if (target.isFile) {
             return target
         }
         target.parentFile?.mkdirs()
-        context.assets.open("$ASSET_DIR/$packageName.zip").use { input ->
+        context.assets.open(assetPath).use { input ->
             target.outputStream().use { output -> input.copyTo(output) }
         }
         packageStore.invalidate(target)
@@ -39,13 +64,20 @@ object SectionalPackages {
 
             TileStorageKind.SectionalPackage -> {
                 val packageName = tile.mapView.packageName ?: return null
-                val installed = installedFile(context, packageName)
+                val installed = existingInstalledFile(context, packageName) ?: return null
                 if (!installed.isFile) {
                     return null
                 }
                 packageStore.loadTileBytes(installed, tileRelativePath(tile))
             }
         }
+    }
+
+    private fun assetExists(context: Context, assetPath: String): Boolean {
+        return runCatching {
+            context.assets.open(assetPath).close()
+            true
+        }.getOrDefault(false)
     }
 }
 

@@ -55,7 +55,7 @@ function aerobagStaticPlugin(): Plugin {
         }
         const targetRoot = path.join(outputDir, targetName);
         fs.rmSync(targetRoot, { recursive: true, force: true });
-        fs.mkdirSync(path.dirname(targetRoot), { recursive: true });
+        fs.mkdirSync(targetRoot, { recursive: true });
         fs.cpSync(sourceRoot, targetRoot, { recursive: true });
       }
     },

@@ -1,5 +1,7 @@
-import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.Exec
+import groovy.json.JsonSlurper
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 plugins {
     id("com.android.application")
@@ -19,9 +21,9 @@ val rustProjectDir = file("../../core-rust")
 val rustJniLibsDir = layout.buildDirectory.dir("generated/rustJniLibs")
 val rustOutputAbiDir = layout.buildDirectory.dir("generated/rustJniLibs/x86_64")
 val generatedPrototypeAssetsDir = layout.buildDirectory.dir("generated/prototypeAssets")
-val sectionalPackageRunDir = file("../../../runs/20260406T032350Z-validation/native/charts-sec/work/charts-sec")
-val tacPackageRunDir = file("../../../runs/20260406T032350Z-validation/native/charts-tac/work/charts-tac")
+val generatedPrototypeSeedPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedPackages")
 val uiFixtureGenerator = file("../../scripts/generate_content_fixture.py")
+val resourceIndexFile = file("../../shared-fixtures/content-prototype/resource-index.json")
 
 val buildRustX86_64Android by tasks.registering(Exec::class) {
     workingDir = rustProjectDir
@@ -41,16 +43,73 @@ val copyRustX86_64Library by tasks.registering(Copy::class) {
 
 val generatePrototypeFixture by tasks.registering(Exec::class) {
     workingDir = rootDir.parentFile.parentFile
+    doFirst {
+        delete(generatedPrototypeAssetsDir.get().dir("sectional-packages").asFile)
+    }
     commandLine("python3", uiFixtureGenerator.absolutePath)
 }
 
-val stagePrototypeSectionalPackages by tasks.registering(Copy::class) {
+val stagePrototypeSectionalPackages by tasks.registering {
     dependsOn(generatePrototypeFixture)
-    from(File(sectionalPackageRunDir, "NW_SEC.zip"))
-    from(File(sectionalPackageRunDir, "SW_SEC.zip"))
-    from(File(tacPackageRunDir, "NW_TAC.zip"))
-    from(File(tacPackageRunDir, "SW_TAC.zip"))
-    into(generatedPrototypeAssetsDir.map { it.dir("sectional-packages") })
+    outputs.dir(generatedPrototypeSeedPackagesDir.map { it.dir("sectional-packages") })
+    doLast {
+        val payload = JsonSlurper().parse(resourceIndexFile) as Map<*, *>
+        val packages = (payload["packages"] as List<*>)
+            .filterIsInstance<Map<*, *>>()
+            .filter {
+                val familyId = it["family_id"] as? String
+                familyId in setOf("sectional", "tac", "ifr_low", "ifr_high")
+            }
+            .map { file(it["artifact_path"] as String) }
+        val outputDir = generatedPrototypeSeedPackagesDir.get().dir("sectional-packages").asFile
+        delete(outputDir)
+        outputDir.mkdirs()
+        packages.forEach { source ->
+            if (!source.isFile) {
+                throw GradleException("missing staged package ${source.absolutePath}")
+            }
+            Files.copy(
+                source.toPath(),
+                outputDir.resolve(source.name).toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        }
+    }
+}
+
+val seedPrototypeSectionalPackages by tasks.registering {
+    dependsOn("installDebug")
+    dependsOn(stagePrototypeSectionalPackages)
+    doLast {
+        val packageDir = generatedPrototypeSeedPackagesDir.get().dir("sectional-packages").asFile
+        if (!packageDir.isDirectory) {
+            throw GradleException("missing staged package directory ${packageDir.absolutePath}")
+        }
+        val tempDir = "/data/local/tmp/aerobag-packages"
+        exec {
+            commandLine("adb", "shell", "mkdir", "-p", tempDir)
+        }
+        exec {
+            commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "mkdir", "-p", "files/sectional-packages")
+        }
+        packageDir.listFiles()
+            ?.filter { it.isFile && it.extension == "zip" }
+            ?.sortedBy { it.name }
+            ?.forEach { packageFile ->
+                exec {
+                    commandLine("adb", "push", packageFile.absolutePath, "$tempDir/${packageFile.name}")
+                }
+                exec {
+                    commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "cp", "$tempDir/${packageFile.name}", "files/sectional-packages/${packageFile.name}")
+                }
+                exec {
+                    commandLine("adb", "shell", "rm", "-f", "$tempDir/${packageFile.name}")
+                }
+            }
+        exec {
+            commandLine("adb", "shell", "rm", "-rf", tempDir)
+        }
+    }
 }
 
 android {
@@ -90,6 +149,9 @@ android {
     buildFeatures {
         compose = true
     }
+    androidResources {
+        noCompress += listOf("webp", "png", "db")
+    }
     sourceSets.getByName("main").jniLibs.srcDir(rustJniLibsDir)
     sourceSets.getByName("main").assets.srcDir(generatedPrototypeAssetsDir)
     packaging {
@@ -102,7 +164,6 @@ android {
 tasks.named("preBuild") {
     dependsOn(copyRustX86_64Library)
     dependsOn(generatePrototypeFixture)
-    dependsOn(stagePrototypeSectionalPackages)
 }
 
 dependencies {

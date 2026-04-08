@@ -171,7 +171,7 @@ export function deriveChartPage(
       }
       return {
         id: airportId,
-        label: `K${airportId}`,
+        label: airportId,
         charts,
       };
     })

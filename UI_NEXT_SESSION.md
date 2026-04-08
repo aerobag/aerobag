@@ -1,6 +1,6 @@
 # UI Next Session Handoff
 
-Snapshot date: 2026-04-07
+Snapshot date: 2026-04-08
 
 ## Current UI State
 
@@ -109,6 +109,18 @@ What it does now:
 - zip handles and entry-name indices are cached in memory for faster repeated reads
 - tile rendering is done as a single `Canvas` draw pass to avoid seams
 - square top-level controls (`MAP`, `SEC`, etc.) are custom compact surfaces, not Material buttons, so their labels now fit
+- map rendering is family-scoped, not single-package scoped
+- Android startup now prefers the fixture's intended initial map family/package instead of the first arbitrary chart collection from `resource-index`
+- Android map status badge is now family-level:
+  - `Local SECTIONAL`
+  - `Partial SECTIONAL`
+  - `Package missing`
+
+Important current Android dev note:
+- do not bundle the full chart zip universe into the APK
+- the APK must stay small enough to install on the emulator
+- for dev, chart zips need to be seeded separately
+- `SectionalPackages` now prefers already-seeded local package files and no longer crashes if a bundled asset is missing
 
 ### Shared Rust core
 
@@ -181,6 +193,27 @@ Last known result:
 - launch returned `Status: ok`
 - crash log clean
 
+Preferred Android verification command now:
+
+```bash
+/root/aerobag/ui/android-app/scripts/install_launch_check.sh
+```
+
+What it does:
+1. `installDebug`
+2. clears `logcat`
+3. force-stops the app
+4. launches the app
+5. waits briefly
+6. prints:
+   - resumed activity
+   - crash lines
+   - pass/fail result
+
+Important discipline:
+- if the user reports a crash, read `logcat` before reinstalling or relaunching
+- reinstalling the APK will kill the running app with `installPackageLI`, which is not evidence of a runtime crash
+
 ## Current Design State
 
 The UI is now using the `thumb` sizing idea as the main layout token.
@@ -198,37 +231,29 @@ Current high-level page structure:
   - flat image pan/zoom viewer
 
 Current data reality:
-- still mostly generated fixture/index data
-- not yet driven by a full real unified client catalog
+- still uses the fixture bridge for staging/bootstrap
+- but chart/package discovery now comes from the real `resource-index.json`
+- nav DB is the real product `main.db`
+- there is still too much UI-side fixture glue, but much less than before
 
 ## Next Recommended Step
 
-Stop expanding placeholder UI data and replace the fixture’s synthetic assembly with a real generated client index.
-
-The next clean phase should be:
-1. read nav data from:
-   - `runs/20260407T053200Z-data-build/work/data/databases.zip`
-   - specifically `main.db`
-2. build one unified UI-facing catalog/index stream for:
-   - all chart families:
-     - sectional
-     - tac
-     - ifr low
-     - ifr high
-   - package metadata
-   - coverage metadata
-   - airport -> plate/csup index
-   - artifact URLs, sizes, hashes
-3. then make the current fixture generator consume that real index instead of constructing special-case records by hand
+The next clean phase is to keep shrinking the fixture bridge:
+1. stop using `content_fixture.json` as the thing that decides app availability
+2. bootstrap UI more directly from:
+   - `resource-index.json`
+   - `main.db`
+3. move demo/session state out of fixture generation and into explicit local app state
+4. make Android dev package seeding a first-class helper instead of ad hoc shell work
 
 Important note:
-- the user wants the metadata for all available content outside the individual packages, or duplicated at most, not only discoverable by opening installed zips
-- that is the right direction because the UI needs to say things like:
+- the user wants metadata for all available content outside the individual packages, or duplicated at most, not only discoverable by opening installed zips
+- that remains the correct direction because the UI needs to say things like:
   - “if you had downloaded `SEC_SE`, you could see this here”
 
 ## Resume Prompt
 
-Resume from the 3-page shell checkpoint and replace the hand-assembled fixture data with a real generated UI catalog/index driven by `databases.zip`, chart package outputs, and TPP/CSup outputs. Keep the current map/plan/charts shells intact while swapping in the real data stream.
+Resume from the current 3-page shell and continue removing fixture glue. Keep the current map/plan/charts shells intact while moving bootstrap/state onto `resource-index.json` + `main.db`, and stabilize the Android dev package-seeding workflow.
 
 ## 2026-04-07 Resource-Index / Family Mosaic Checkpoint
 
@@ -258,6 +283,34 @@ Resume from the 3-page shell checkpoint and replace the hand-assembled fixture d
   - airport ids in the app domain should become canonical airport ids
     - use ICAO when present
     - otherwise leave the FAA/local id as-is
+
+## 2026-04-08 Android Dev-Content Checkpoint
+
+- The recurring `FileNotFoundException: sectional-packages/NE_SEC.zip` crash was traced to a bad dev packaging path:
+  - bundling all chart zips into the APK made the APK too large to install cleanly
+  - the emulator kept running an older APK without the expected assets
+
+- Current fix direction:
+  - keep the APK small
+  - seed chart zips separately for dev
+  - `SectionalPackages` now checks existing local package files before trying APK assets
+
+- Current local package lookup:
+  - [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SectionalPackages.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/SectionalPackages.kt)
+
+- Current Android install/launch verification helper:
+  - [ui/android-app/scripts/install_launch_check.sh](/root/aerobag/ui/android-app/scripts/install_launch_check.sh)
+
+- Current known rough edge:
+  - full-family package seeding on Android is still not a polished single-command path
+  - for this session, sectional family zips were seeded directly into app-internal storage with `adb shell run-as ... dd of=...`
+  - that needs to be formalized if Android family browsing is going to stay easy to reproduce
+
+- Another important log interpretation note:
+  - `Force stopping ... installPackageLI`
+  - `Killing ... due to installPackageLI`
+  means the app was killed because a reinstall replaced it
+  - do not mistake that for a runtime crash
 
 ## 2026-04-07 Repo Layout Note
 

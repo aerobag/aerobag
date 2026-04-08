@@ -27,8 +27,11 @@ ANDROID_TILE_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" /
 WEB_SECTIONAL_ROOT = UI_DIR / "web-app" / "generated-static" / "sectional-packages"
 WEB_CHART_ASSET_ROOT = UI_DIR / "web-app" / "generated-static" / "chart-assets"
 ANDROID_CHART_ASSET_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "chart-assets"
-TPP_ROOT = ROOT / "runs" / "20260406T032350Z-validation" / "native" / "tpp-ne" / "work" / "tpp-ne"
-CSUP_ROOT = ROOT / "runs" / "20260405T154700Z" / "work" / "csup"
+WEB_NAV_DB_ROOT = UI_DIR / "web-app" / "generated-static" / "nav-db"
+ANDROID_NAV_DB_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "nav-db"
+PRODUCT_MAIN_DB = ROOT / "rust-runs" / "product-data" / "main.db"
+TPP_ROOT = ROOT / "runs" / "20260406T003224Z-validation" / "native" / "tpp-ne" / "work" / "tpp-ne"
+CSUP_ROOT = ROOT / "runs" / "20260406T003224Z-validation" / "native" / "csup" / "work" / "csup"
 BOSTON_TAC_GEOJSON = ROOT / "rust-runs" / "tac-native" / "work" / "charts-tac" / "TAC" / "Boston TAC.geojson"
 BOSTON_TAC_TILE_ROOT = ROOT / "runs" / "20260406T003224Z-validation" / "native" / "charts-tac" / "work" / "charts-tac" / "tiles" / "1"
 
@@ -44,8 +47,7 @@ REGION_DISPLAY_NAMES = {
     "ak": "Alaska",
     "pac": "Pacific",
 }
-SECTIONAL_REGIONS = ["nw", "sw"]
-TAC_REGIONS = ["nw", "sw"]
+SUPPORTED_TILED_FAMILIES = ("sectional", "tac", "ifr_low", "ifr_high")
 
 WEB_MERCATOR = osr.SpatialReference()
 WEB_MERCATOR.ImportFromEPSG(3857)
@@ -62,15 +64,8 @@ TAC_TILE_LEVELS = {
 
 
 @dataclass(frozen=True)
-class SectionalPackage:
-    manifest: str
-    region: str
-    artifact_path: Path
-    zip_sha256: str
-
-
-@dataclass(frozen=True)
-class TacPackage:
+class TiledPackage:
+    family_id: str
     manifest: str
     region: str
     artifact_path: Path
@@ -161,8 +156,8 @@ def copy_tac_tile_subset(tile_windows: dict[int, tuple[int, int, int]]) -> list[
 
 
 def pick_bos_chart_assets(resource_index: dict) -> tuple[dict, dict]:
-    bos_plates = [record for record in resource_index["plates"] if record["airport_id"] == "BOS"]
-    bos_csups = [record for record in resource_index["csups"] if record["airport_id"] == "BOS"]
+    bos_plates = [record for record in resource_index["plates"] if record["airport_id"] == "KBOS"]
+    bos_csups = [record for record in resource_index["csups"] if record["airport_id"] == "KBOS"]
     plate_record = next(
         (record for record in bos_plates if record["label"] == "IAP-MA-ILS OR LOC RWY 04R"),
         bos_plates[0] if bos_plates else None,
@@ -183,9 +178,10 @@ def stage_chart_assets(plate_record: dict, csup_record: dict) -> tuple[dict, dic
     if not csup_source.exists():
         raise RuntimeError(f"missing csup asset {csup_source}")
 
+    airport_id = plate_record["airport_id"]
     destinations = [
-        WEB_CHART_ASSET_ROOT / "BOS",
-        ANDROID_CHART_ASSET_ROOT / "BOS",
+        WEB_CHART_ASSET_ROOT / airport_id,
+        ANDROID_CHART_ASSET_ROOT / airport_id,
     ]
     for directory in destinations:
         directory.mkdir(parents=True, exist_ok=True)
@@ -194,71 +190,70 @@ def stage_chart_assets(plate_record: dict, csup_record: dict) -> tuple[dict, dic
 
     return (
         {
-            "id": "plate:bos-ils04r",
-            "airport_id": "BOS",
+            "id": f"plate:{airport_id}:{plate_source.name}",
+            "airport_id": airport_id,
             "label": plate_record["label"],
             "kind": "plate",
-            "asset_path": f"chart-assets/BOS/{plate_source.name}",
-            "asset_url": f"/chart-assets/BOS/{plate_source.name}",
+            "asset_path": f"chart-assets/{airport_id}/{plate_source.name}",
+            "asset_url": f"/chart-assets/{airport_id}/{plate_source.name}",
         },
         {
-            "id": "csup:bos",
-            "airport_id": "BOS",
+            "id": f"csup:{airport_id}:{csup_source.name}",
+            "airport_id": airport_id,
             "label": "CSup",
             "kind": "csup",
-            "asset_path": f"chart-assets/BOS/{csup_source.name}",
-            "asset_url": f"/chart-assets/BOS/{csup_source.name}",
+            "asset_path": f"chart-assets/{airport_id}/{csup_source.name}",
+            "asset_url": f"/chart-assets/{airport_id}/{csup_source.name}",
         },
     )
 
 
-def load_selected_sectional_packages() -> list[SectionalPackage]:
-    resource_index = load_resource_index()
-    selected = []
+def stage_nav_db() -> None:
+    if not PRODUCT_MAIN_DB.exists():
+        raise RuntimeError(f"missing nav db {PRODUCT_MAIN_DB}")
+    for directory in [WEB_NAV_DB_ROOT, ANDROID_NAV_DB_ROOT]:
+        directory.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(PRODUCT_MAIN_DB, directory / "main.db")
+
+
+def family_display_name(resource_index: dict, family_id: str) -> str:
+    return next(
+        (entry["display_name"] for entry in resource_index["families"] if entry["id"] == family_id),
+        family_id.upper(),
+    )
+
+
+def load_supported_tiled_packages(resource_index: dict) -> list[TiledPackage]:
+    packages = []
     for entry in resource_index["packages"]:
-        if entry["family_id"] != "sectional":
+        family_id = entry["family_id"]
+        if family_id not in SUPPORTED_TILED_FAMILIES:
             continue
-        region = entry["region_id"].lower()
-        if region not in SECTIONAL_REGIONS:
-            continue
-        selected.append(
-            SectionalPackage(
+        packages.append(
+            TiledPackage(
+                family_id=family_id,
                 manifest=entry["id"],
-                region=region,
+                region=entry["region_id"].lower(),
                 artifact_path=Path(entry["artifact_path"]),
                 zip_sha256=entry["checksum_sha256"],
             )
         )
-    selected.sort(key=lambda package: SECTIONAL_REGIONS.index(package.region))
-    if len(selected) != len(SECTIONAL_REGIONS):
-        raise RuntimeError(f"expected {SECTIONAL_REGIONS}, got {[package.region for package in selected]}")
-    return selected
+    packages.sort(key=lambda package: (SUPPORTED_TILED_FAMILIES.index(package.family_id), REGION_ORDER.index(package.region)))
+    return packages
 
 
-def load_selected_tac_packages() -> list[TacPackage]:
-    resource_index = load_resource_index()
-    selected = []
-    for entry in resource_index["packages"]:
-        if entry["family_id"] != "tac":
-            continue
-        region = entry["region_id"].lower()
-        if region not in TAC_REGIONS:
-            continue
-        selected.append(
-            TacPackage(
-                manifest=entry["id"],
-                region=region,
-                artifact_path=Path(entry["artifact_path"]),
-                zip_sha256=entry["checksum_sha256"],
-            )
-        )
-    selected.sort(key=lambda package: TAC_REGIONS.index(package.region))
-    if len(selected) != len(TAC_REGIONS):
-        raise RuntimeError(f"expected {TAC_REGIONS}, got {[package.region for package in selected]}")
-    return selected
+def load_supported_chart_collections(resource_index: dict) -> list[dict]:
+    collections = [entry for entry in resource_index["chart_collections"] if entry["family_id"] in SUPPORTED_TILED_FAMILIES]
+    collections.sort(key=lambda entry: (SUPPORTED_TILED_FAMILIES.index(entry["family_id"]), REGION_ORDER.index(entry["region_id"])))
+    return collections
+
+
+def package_by_id(packages: list[TiledPackage]) -> dict[str, TiledPackage]:
+    return {package.manifest: package for package in packages}
 
 
 def clear_sectional_web_root() -> None:
+    clear_directory(WEB_SECTIONAL_ROOT)
     WEB_SECTIONAL_ROOT.mkdir(parents=True, exist_ok=True)
 
 
@@ -275,14 +270,7 @@ def clear_directory(root: Path) -> None:
             child.unlink(missing_ok=True)
 
 
-def extract_zip_for_web(package: SectionalPackage) -> None:
-    target_dir = WEB_SECTIONAL_ROOT / package.manifest
-    target_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(package.artifact_path) as archive:
-        extract_zip(archive, target_dir)
-
-
-def extract_tac_zip_for_web(package: TacPackage) -> None:
+def extract_zip_for_web(package: TiledPackage) -> None:
     target_dir = WEB_SECTIONAL_ROOT / package.manifest
     target_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(package.artifact_path) as archive:
@@ -300,7 +288,7 @@ def extract_zip(archive: zipfile.ZipFile, target_dir: Path) -> None:
             shutil.copyfileobj(source, target)
 
 
-def compute_level_bounds_from_zip(package: SectionalPackage, chart_index: int = 0) -> list[dict]:
+def compute_level_bounds_from_zip(package: TiledPackage, chart_index: int = 0) -> list[dict]:
     zoom_levels: dict[int, dict[str, list[int]]] = {}
     with zipfile.ZipFile(package.artifact_path) as archive:
         for name in archive.namelist():
@@ -324,33 +312,6 @@ def compute_level_bounds_from_zip(package: SectionalPackage, chart_index: int = 
         }
         for zoom, values in sorted(zoom_levels.items())
     ]
-
-
-def compute_level_bounds_from_tac_zip(package: TacPackage, chart_index: int = 1) -> list[dict]:
-    zoom_levels: dict[int, dict[str, list[int]]] = {}
-    with zipfile.ZipFile(package.artifact_path) as archive:
-        for name in archive.namelist():
-            parts = name.split("/")
-            if len(parts) != 5 or parts[0] != "tiles" or parts[1] != str(chart_index) or not parts[-1].endswith(".webp"):
-                continue
-            zoom = int(parts[2])
-            x = int(parts[3])
-            y_tms = int(parts[4].removesuffix(".webp"))
-            zoom_levels.setdefault(zoom, {"x": [], "y": []})
-            zoom_levels[zoom]["x"].append(x)
-            zoom_levels[zoom]["y"].append(y_tms)
-
-    return [
-        {
-            "zoom": zoom,
-            "x_min": min(values["x"]),
-            "x_max": max(values["x"]),
-            "y_tms_min": min(values["y"]),
-            "y_tms_max": max(values["y"]),
-        }
-        for zoom, values in sorted(zoom_levels.items())
-    ]
-
 
 def inverse_web_mercator(world_x: float, world_y: float) -> tuple[float, float]:
     lon = (world_x / TILE_SIZE) * 360.0 - 180.0
@@ -370,58 +331,33 @@ def center_lat_lon_for_levels(levels: list[dict]) -> tuple[float, float]:
     return inverse_web_mercator(world_x, world_y)
 
 
-def build_sectional_map_option(package: SectionalPackage) -> dict:
-    levels = compute_level_bounds_from_zip(package)
-    center_lat, center_lon = center_lat_lon_for_levels(levels)
-    label = f"{package.region.upper()} Sectional"
+def build_map_option(resource_index: dict, collection: dict, package: TiledPackage) -> dict:
+    levels = collection["levels"]
+    center_lat = collection["default_view"]["lat"]
+    center_lon = collection["default_view"]["lon"]
+    family_id = collection["family_id"]
+    label = f"{REGION_DISPLAY_NAMES.get(package.region, package.region.upper())} {family_display_name(resource_index, family_id)}"
+    max_zoom = max(level["zoom"] for level in levels) + 0.8
+    min_zoom = max(1.5, min(level["zoom"] for level in levels) - 2.8)
     return {
-        "id": f"sectional:{package.region}",
+        "id": collection["id"],
         "label": label,
         "region_id": package.region,
         "map_view": {
-            "chart_family": "sectional",
+            "chart_family": family_id,
             "chart_name": label,
-            "chart_index": 0,
+            "chart_index": collection["chart_index"],
             "tile_root": "tiles",
             "tile_url_root": f"/sectional-packages/{package.manifest}/tiles",
             "tile_size": TILE_SIZE,
-            "min_zoom": 4.2,
-            "max_zoom": 10.8,
+            "min_zoom": min_zoom,
+            "max_zoom": max_zoom,
             "storage_kind": "sectional_package",
             "package_name": package.manifest,
             "initial_viewport": {
                 "lat": center_lat,
                 "lon": center_lon,
-                "zoom": 7.2,
-            },
-            "levels": levels,
-        },
-    }
-
-
-def build_tac_map_option(package: TacPackage) -> dict:
-    levels = compute_level_bounds_from_tac_zip(package)
-    center_lat, center_lon = center_lat_lon_for_levels(levels)
-    label = f"{package.region.upper()} TAC"
-    return {
-        "id": f"tac:{package.region}",
-        "label": label,
-        "region_id": package.region,
-        "map_view": {
-            "chart_family": "tac",
-            "chart_name": label,
-            "chart_index": 1,
-            "tile_root": "tiles",
-            "tile_url_root": f"/sectional-packages/{package.manifest}/tiles",
-            "tile_size": TILE_SIZE,
-            "min_zoom": 4.2,
-            "max_zoom": 11.8,
-            "storage_kind": "sectional_package",
-            "package_name": package.manifest,
-            "initial_viewport": {
-                "lat": center_lat,
-                "lon": center_lon,
-                "zoom": 7.4,
+                "zoom": collection["default_view"]["zoom"],
             },
             "levels": levels,
         },
@@ -439,30 +375,36 @@ def build_fixture() -> dict:
         tile_windows[zoom] = (center_x, center_y_tms, radius)
     tac_level_bounds = copy_tac_tile_subset(tile_windows)
 
-    selected_sectional_packages = load_selected_sectional_packages()
-    selected_tac_packages = load_selected_tac_packages()
+    supported_tiled_packages = load_supported_tiled_packages(resource_index)
+    supported_chart_collections = load_supported_chart_collections(resource_index)
+    packages_by_id = package_by_id(supported_tiled_packages)
     plate_record, csup_record = pick_bos_chart_assets(resource_index)
     plate_asset, csup_asset = stage_chart_assets(plate_record, csup_record)
+    stage_nav_db()
     clear_sectional_web_root()
-    for package in selected_sectional_packages:
+    for package in supported_tiled_packages:
         extract_zip_for_web(package)
-    for package in selected_tac_packages:
-        extract_tac_zip_for_web(package)
-    sectional_map_views = [build_sectional_map_option(package) for package in selected_sectional_packages]
-    tac_map_views = [build_tac_map_option(package) for package in selected_tac_packages]
-    default_sectional_view = sectional_map_views[0]["map_view"]
-    default_sectional_level = max(default_sectional_view["levels"], key=lambda item: item["zoom"])
+    map_views = [
+        build_map_option(resource_index, collection, packages_by_id[collection["package_id"]])
+        for collection in supported_chart_collections
+        if collection["package_id"] in packages_by_id
+    ]
+    default_map_view = next(
+        (entry["map_view"] for entry in map_views if entry["map_view"]["chart_family"] == "sectional"),
+        map_views[0]["map_view"],
+    )
+    default_map_level = max(default_map_view["levels"], key=lambda item: item["zoom"])
+    default_sectional_package = next(
+        (package for package in supported_tiled_packages if package.family_id == "sectional"),
+        None,
+    )
 
     packages = []
     regions_seen = set()
     for entry in resource_index["packages"]:
         region = entry["region_id"].lower()
         family_id = entry["family_id"]
-        if family_id not in {"sectional", "tac"}:
-            continue
-        if family_id == "sectional" and region not in SECTIONAL_REGIONS:
-            continue
-        if family_id == "tac" and region not in TAC_REGIONS:
+        if family_id not in SUPPORTED_TILED_FAMILIES:
             continue
         regions_seen.add(region)
         packages.append(
@@ -520,6 +462,20 @@ def build_fixture() -> dict:
                     "max_zoom": 11,
                     "tile_size": 512,
                 },
+                {
+                    "id": "ifr_low",
+                    "display_name": "IFR Low Enroute Charts",
+                    "kind": "tiled_raster",
+                    "max_zoom": 10,
+                    "tile_size": 512,
+                },
+                {
+                    "id": "ifr_high",
+                    "display_name": "IFR High Enroute Charts",
+                    "kind": "tiled_raster",
+                    "max_zoom": 10,
+                    "tile_size": 512,
+                },
             ],
             "regions": regions,
             "packages": packages,
@@ -548,12 +504,12 @@ def build_fixture() -> dict:
             "plates": [
                 {
                     "id": {
-                        "airport_id": "BOS",
+                        "airport_id": "KBOS",
                         "procedure_code": procedure_code,
                         "page": 1,
                         "cycle": cycle,
                     },
-                    "airport_id": "BOS",
+                    "airport_id": "KBOS",
                     "region_id": "ne",
                     "cycle": cycle,
                     "procedure_code": procedure_code,
@@ -575,60 +531,60 @@ def build_fixture() -> dict:
                 }
             ],
         },
-        "map_view": default_sectional_view,
-        "map_views": [*sectional_map_views, *tac_map_views],
+        "map_view": default_map_view,
+        "map_views": map_views,
         "chart_page": {
-            "recent_airport_ids": ["BOS"],
-            "initial_airport_id": "BOS",
+            "recent_airport_ids": ["KBOS"],
+            "initial_airport_id": "KBOS",
             "initial_chart_id": plate_asset["id"],
             "airports": [
                 {
-                    "id": "BOS",
+                    "id": "KBOS",
                     "label": "KBOS",
                     "charts": [plate_asset, csup_asset],
                 }
             ],
         },
         "initial_probe": {
-            "family": "tac",
-            "lat": 42.3656,
-            "lon": -71.0096,
+            "family": default_map_view["chart_family"],
+            "lat": default_map_view["initial_viewport"]["lat"],
+            "lon": default_map_view["initial_viewport"]["lon"],
         },
         "map_tile_view": {
-            "chart_family": "sectional",
-            "chart_name": default_sectional_view["chart_name"],
-            "chart_index": default_sectional_view["chart_index"],
-            "tile_root": default_sectional_view["tile_root"],
-            "zoom": default_sectional_level["zoom"],
+            "chart_family": default_map_view["chart_family"],
+            "chart_name": default_map_view["chart_name"],
+            "chart_index": default_map_view["chart_index"],
+            "tile_root": default_map_view["tile_root"],
+            "zoom": default_map_level["zoom"],
             "tile_size": TILE_SIZE,
             "radius": 0,
-            "center_x": (default_sectional_level["x_min"] + default_sectional_level["x_max"]) // 2,
-            "center_y_tms": (default_sectional_level["y_tms_min"] + default_sectional_level["y_tms_max"]) // 2,
+            "center_x": (default_map_level["x_min"] + default_map_level["x_max"]) // 2,
+            "center_y_tms": (default_map_level["y_tms_min"] + default_map_level["y_tms_max"]) // 2,
             "probe_offset_x": 0.0,
             "probe_offset_y": 0.0,
         },
         "flight_plan": {
             "id": "plan-1",
-            "name": "KRNT SEA PAE KAWO",
+            "name": "KRNT KSEA KPAE KAWO",
             "legs": [
                 {
-                    "from": {"Airport": "RNT"},
-                    "to": {"Airport": "SEA"},
+                    "from": {"Airport": "KRNT"},
+                    "to": {"Airport": "KSEA"},
                     "airway": None,
                 },
                 {
-                    "from": {"Airport": "SEA"},
-                    "to": {"Airport": "PAE"},
+                    "from": {"Airport": "KSEA"},
+                    "to": {"Airport": "KPAE"},
                     "airway": None,
                 },
                 {
-                    "from": {"Airport": "PAE"},
-                    "to": {"Airport": "AWO"},
+                    "from": {"Airport": "KPAE"},
+                    "to": {"Airport": "KAWO"},
                     "airway": None,
                 }
             ],
-            "departure": "RNT",
-            "destination": "AWO",
+            "departure": "KRNT",
+            "destination": "KAWO",
             "alternate": None,
             "cruise_altitude_ft": 3000,
             "notes": "Generated from resource-index data",
@@ -644,7 +600,7 @@ def build_fixture() -> dict:
             "installed_packages": [
                 {
                     "package_id": {
-                        "region": selected_sectional_packages[0].region,
+                        "region": default_sectional_package.region if default_sectional_package else "nw",
                         "family": "sectional",
                         "cycle": cycle,
                     },

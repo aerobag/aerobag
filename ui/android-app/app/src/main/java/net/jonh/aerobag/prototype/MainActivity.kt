@@ -119,6 +119,14 @@ private data class TileRect(
     val heightPx: Int,
 )
 
+private fun initialMapId(fixture: net.jonh.aerobag.prototype.domain.ContentFixture): String {
+    val targetFamily = fixture.mapView.chartFamily
+    val targetPackage = fixture.mapView.packageName
+    return fixture.mapViews.firstOrNull {
+        it.mapView.chartFamily == targetFamily && it.mapView.packageName == targetPackage
+    }?.id ?: fixture.mapViews.first().id
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -140,7 +148,7 @@ private fun AerobagApp() {
     val context = LocalContext.current
     val fixture = remember(context) { SampleData.load(context.applicationContext) }
     var page by remember { mutableStateOf(AppPage.Map) }
-    var selectedMapId by remember { mutableStateOf(fixture.mapViews.first().id) }
+    var selectedMapId by remember { mutableStateOf(initialMapId(fixture)) }
     val selectedMap = remember(selectedMapId, fixture.mapViews) {
         fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
     }
@@ -154,7 +162,7 @@ private fun AerobagApp() {
         selectedAirport?.charts?.find { it.id == selectedChartId } ?: selectedAirport?.charts?.firstOrNull()
     }
     val legSummary = remember(fixture.samplePlan) {
-        fixture.samplePlan.legs.firstOrNull()?.let { "K${it.fromAirport} -> K${it.toAirport} CRS 342" } ?: "NO LEG"
+        fixture.samplePlan.legs.firstOrNull()?.let { "${it.fromAirport} -> ${it.toAirport} CRS 342" } ?: "NO LEG"
     }
 
     LaunchedEffect(selectedMap.id) {
@@ -215,6 +223,9 @@ private fun MapExplorerPage(
     val selectedFamilyMapViews = remember(selectedMap, fixture.mapViews) {
         fixture.mapViews.filter { it.mapView.chartFamily == selectedMap.mapView.chartFamily }
     }
+    val familyPackageNames = remember(selectedFamilyMapViews) {
+        selectedFamilyMapViews.mapNotNull { it.mapView.packageName }.distinct()
+    }
     val viewportState = rememberUpdatedState(viewport)
     val center = remember(viewport) { viewportCenterLatLon(viewport) }
     val surfaceWidthUnits = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
@@ -231,10 +242,11 @@ private fun MapExplorerPage(
             )
         }
     }
-    val familyPackageNames = remember(selectedFamilyMapViews) {
-        selectedFamilyMapViews.mapNotNull { it.mapView.packageName }.distinct()
+    val selectedPackageName = selectedMap.mapView.packageName
+    val selectedPackageInstalled = remember(selectedPackageName, installRevision) {
+        selectedPackageName?.let { SectionalPackages.isInstalled(context, it) } ?: true
     }
-    val installedPackageCount = remember(familyPackageNames, installRevision) {
+    val installedFamilyPackageCount = remember(familyPackageNames, installRevision) {
         familyPackageNames.count { SectionalPackages.isInstalled(context, it) }
     }
     val trayOptions = remember(selectedMap.id, fixture.mapViews) {
@@ -310,19 +322,17 @@ private fun MapExplorerPage(
 
     LaunchedEffect(selectedMap.id) { chartTrayOpen = false }
 
-    LaunchedEffect(selectedMap.mapView.chartFamily, familyPackageNames, installedPackageCount) {
+    LaunchedEffect(selectedMap.id, selectedPackageName, selectedPackageInstalled) {
         if (selectedMap.mapView.storageKind != TileStorageKind.SectionalPackage) {
             return@LaunchedEffect
         }
-        val missingPackages = familyPackageNames.filterNot { SectionalPackages.isInstalled(context, it) }
-        if (missingPackages.isEmpty()) {
+        val packageName = selectedPackageName
+        if (packageName == null || selectedPackageInstalled) {
             return@LaunchedEffect
         }
-        installingPackage = missingPackages.first()
+        installingPackage = packageName
         withContext(Dispatchers.IO) {
-            for (packageName in missingPackages) {
-                SectionalPackages.install(context, packageName)
-            }
+            SectionalPackages.install(context, packageName)
         }
         installRevision += 1
         installingPackage = null
@@ -536,7 +546,8 @@ private fun MapExplorerPage(
                 Text(
                     text = when {
                         installingPackage != null -> "Installing ${installingPackage}…"
-                        installedPackageCount == familyPackageNames.size -> "Local ${selectedMap.mapView.chartFamily.name}"
+                        installedFamilyPackageCount == familyPackageNames.size -> "Local ${selectedMap.mapView.chartFamily.name}"
+                        installedFamilyPackageCount > 0 -> "Partial ${selectedMap.mapView.chartFamily.name}"
                         else -> "Package missing"
                     },
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
@@ -559,7 +570,7 @@ private fun FlightPlanPage(
     val rows = remember(samplePlan) {
         samplePlan.legs.mapIndexed { index, leg ->
             FlightPlanRow(
-                waypoint = "K${leg.toAirport}",
+                waypoint = leg.toAirport,
                 distance = if (index == 0) "18.4" else "11.2",
                 ete = if (index == 0) "0:07" else "0:04",
                 course = if (index == 0) "342" else "161",

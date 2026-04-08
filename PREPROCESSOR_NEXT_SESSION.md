@@ -1311,3 +1311,23 @@ If the next session starts with no further instruction, do this:
       - safe continued procedures are collapsed
       - rare multi-page georeferenced procedures fall back to separate entries
       - the build no longer dies on `SCBBY`
+
+- Product resource-index/filesystem assertion is now in place:
+  - file:
+    - [preprocessor-resource-index/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-resource-index/src/lib.rs)
+  - behavior:
+    - compare indexed TPP `plates[*].asset_path` and CSUP `csups[*].asset_path` against the actual generated `.png` files on disk
+    - fail the `resource-index` step if the sets diverge
+    - this catches stale or missing asset references during preprocessing instead of later in the UI
+  - production rerun with the assertion enabled:
+    - [master.log](/root/aerobag/product-builds/production/orchestrator-logs/master.log)
+    - final `complete PASS` at `+0:35`
+  - investigated stale UI complaint:
+    - old complaint was `plates/05C/STAR-IN-LUCIT THREE (RNAV), CONT.1.png`
+    - current production index no longer contains that entry
+    - current output is the merged file:
+      - `/root/aerobag/product-builds/shared/work/tpp-ec/work/tpp-ec/plates/05C/STAR-IN-LUCIT THREE (RNAV).png`
+  - current intentional `CONT.1` exceptions still present in production:
+    - `plates/ONT/STAR-CA-SCBBY TWO (RNAV), CONT.1.png`
+    - `plates/PHX/DP-AZ-MRBIL ONE (RNAV), CONT.1.png`
+    - both exist on disk and are retained because they are real multi-page georeferenced procedures

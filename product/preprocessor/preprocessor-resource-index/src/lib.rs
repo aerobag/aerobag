@@ -220,7 +220,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         })
         .collect();
 
-    Ok(ResourceIndex {
+    let index = ResourceIndex {
         schema_version: 2,
         cycle,
         generated_at_utc: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
@@ -240,7 +240,9 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         airport_resources,
         plates,
         csups,
-    })
+    };
+    validate_index_asset_paths(&index, &request.tpp_sources, &request.csup_sources)?;
+    Ok(index)
 }
 
 pub fn write_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Result<ResourceIndex> {
@@ -254,6 +256,81 @@ pub fn write_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     fs::write(&request.output_path, json)
         .with_context(|| format!("failed to write {}", request.output_path.display()))?;
     Ok(index)
+}
+
+fn validate_index_asset_paths(
+    index: &ResourceIndex,
+    tpp_sources: &[AssetSource],
+    csup_sources: &[AssetSource],
+) -> anyhow::Result<()> {
+    let indexed_tpp = index
+        .plates
+        .iter()
+        .map(|record| record.asset_path.clone())
+        .collect::<BTreeSet<_>>();
+    let indexed_csup = index
+        .csups
+        .iter()
+        .map(|record| record.asset_path.clone())
+        .collect::<BTreeSet<_>>();
+    let actual_tpp = collect_actual_asset_paths(tpp_sources, "plates")?;
+    let actual_csup = collect_actual_asset_paths(csup_sources, "afd")?;
+    compare_indexed_vs_actual("tpp", &indexed_tpp, &actual_tpp)?;
+    compare_indexed_vs_actual("csup", &indexed_csup, &actual_csup)?;
+    Ok(())
+}
+
+fn collect_actual_asset_paths(
+    sources: &[AssetSource],
+    root_dir_name: &str,
+) -> anyhow::Result<BTreeSet<String>> {
+    let mut paths = BTreeSet::new();
+    for source in sources {
+        let root = source.asset_root.join(root_dir_name);
+        if !root.is_dir() {
+            continue;
+        }
+        for asset in read_files_recursive(&root)? {
+            let extension = asset
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if extension != "png" {
+                continue;
+            }
+            let relative = asset
+                .strip_prefix(&source.asset_root)
+                .with_context(|| format!("failed to relativize {}", asset.display()))?;
+            paths.insert(relative.display().to_string());
+        }
+    }
+    Ok(paths)
+}
+
+fn compare_indexed_vs_actual(
+    label: &str,
+    indexed: &BTreeSet<String>,
+    actual: &BTreeSet<String>,
+) -> anyhow::Result<()> {
+    if indexed == actual {
+        return Ok(());
+    }
+    let missing_from_index = actual
+        .difference(indexed)
+        .take(10)
+        .cloned()
+        .collect::<Vec<_>>();
+    let missing_from_filesystem = indexed
+        .difference(actual)
+        .take(10)
+        .cloned()
+        .collect::<Vec<_>>();
+    bail!(
+        "{label} index/filesystem mismatch: indexed={} actual={} missing_from_index={missing_from_index:?} missing_from_filesystem={missing_from_filesystem:?}",
+        indexed.len(),
+        actual.len()
+    );
 }
 
 fn infer_cycle(

@@ -14,7 +14,7 @@ from osgeo import osr
 
 ROOT = Path(__file__).resolve().parents[2]
 UI_DIR = ROOT / "ui"
-RESOURCE_INDEX = ROOT / "product-builds" / "validation" / "work" / "resource-index" / "resource-index.json"
+RESOURCE_INDEX = ROOT / "product-builds" / "production" / "work" / "resource-index" / "resource-index.json"
 CANONICAL_OUT = UI_DIR / "shared-fixtures" / "content-prototype" / "content_fixture.json"
 CANONICAL_RESOURCE_INDEX_OUT = UI_DIR / "shared-fixtures" / "content-prototype" / "resource-index.json"
 WEB_OUT = UI_DIR / "web-app" / "src" / "domain" / "generated" / "contentFixture.json"
@@ -31,7 +31,7 @@ ANDROID_CHART_ASSET_ROOT = UI_DIR / "android-app" / "generated-seed" / "chart-as
 ANDROID_LEGACY_CHART_ASSET_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "chart-assets"
 WEB_NAV_DB_ROOT = UI_DIR / "web-app" / "generated-static" / "nav-db"
 ANDROID_NAV_DB_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "nav-db"
-PRODUCT_MAIN_DB = ROOT / "product-builds" / "validation" / "work" / "data" / "output" / "main.db"
+PRODUCT_MAIN_DB = ROOT / "product-builds" / "shared" / "work" / "data" / "output" / "main.db"
 BOSTON_TAC_GEOJSON = ROOT / "rust-runs" / "tac-native" / "work" / "charts-tac" / "TAC" / "Boston TAC.geojson"
 BOSTON_TAC_TILE_ROOT = ROOT / "runs" / "20260406T003224Z-validation" / "native" / "charts-tac" / "work" / "charts-tac" / "tiles" / "1"
 
@@ -192,6 +192,7 @@ def package_family(package_id: str) -> str:
 def plate_root_candidates(package_id: str) -> list[Path]:
     region = package_region(package_id)
     return [
+        ROOT / "product-builds" / "shared" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
         ROOT / "product-builds" / "production" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
         ROOT / "product-builds" / "validation" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
         ROOT / "runs" / "20260406T003224Z-validation" / "native" / f"tpp-{region}" / "work" / f"tpp-{region}",
@@ -200,6 +201,7 @@ def plate_root_candidates(package_id: str) -> list[Path]:
 
 def csup_root_candidates() -> list[Path]:
     return [
+        ROOT / "product-builds" / "shared" / "work" / "csup" / "work" / "csup",
         ROOT / "product-builds" / "production" / "work" / "csup" / "work" / "csup",
         ROOT / "product-builds" / "validation" / "work" / "csup" / "work" / "csup",
         ROOT / "runs" / "20260406T003224Z-validation" / "native" / "csup" / "work" / "csup",

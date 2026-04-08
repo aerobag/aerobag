@@ -155,3 +155,43 @@ impl ToolInvocation {
         })
     }
 }
+
+pub fn append_pngs_vertical(
+    work_dir: &Path,
+    logs_dir: &Path,
+    inputs: &[PathBuf],
+    output: &Path,
+    label: &str,
+) -> anyhow::Result<()> {
+    if inputs.is_empty() {
+        return Ok(());
+    }
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).context("failed to create output directory")?;
+    }
+    let mut args = inputs
+        .iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    args.extend([
+        "-background".to_string(),
+        "white".to_string(),
+        "-gravity".to_string(),
+        "north".to_string(),
+        "-append".to_string(),
+        output.to_string_lossy().to_string(),
+    ]);
+    let invocation = ToolInvocation {
+        program: "convert".to_string(),
+        args,
+        cwd: work_dir.to_path_buf(),
+        label: label.to_string(),
+        env: Vec::new(),
+        stdin_text: None,
+    };
+    let outcome = invocation.run_logged(logs_dir)?;
+    if !outcome.success {
+        anyhow::bail!("convert failed while concatenating PNGs into {}", output.display());
+    }
+    Ok(())
+}

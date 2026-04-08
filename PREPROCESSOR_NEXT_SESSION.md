@@ -1234,11 +1234,80 @@ If the next session starts with no further instruction, do this:
   - [product_build.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs) also now expects those output files as part of the `source-urls` node contract
 
 - Current live state:
-  - production product build is in flight:
+  - production product build completed successfully:
     - [/root/aerobag/product-builds/production](/root/aerobag/product-builds/production)
     - [master.log](/root/aerobag/product-builds/production/orchestrator-logs/master.log)
-  - current observed behavior from the production log:
-    - charts and `csup` shared render nodes return as cache hits at `+0:00`
-    - `tpp-nw` also returns as a cache hit at `+0:00`
-    - production-only `tpp` regions (`ak`, `pac`, `sw`, `nc`, `ec`, `sc`, `se`) are the remaining heavy work
-  - if resumed later, inspect the production master log first before relaunching anything
+    - [product-build.json](/root/aerobag/product-builds/production/product-build.json)
+  - final production result:
+    - `complete PASS` at `+3:28`
+    - all supported product families built:
+      - `data`
+      - `sec`
+      - `tac`
+      - `enr-l`
+      - `enr-h`
+      - `tpp` all 9 regions
+      - `csup` all 9 regions
+
+- Continued-page UX work is now in the product pipeline:
+  - files:
+    - [preprocessor-tools/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-tools/src/lib.rs)
+    - [preprocessor-csup/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-csup/src/lib.rs)
+    - [preprocessor-tpp/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-tpp/src/lib.rs)
+    - [product_build.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs)
+  - `csup`:
+    - multi-page rendered supplement pages are now collapsed into one tall PNG per logical `CSUP-<REGION>_<index>.png`
+    - implemented by rendering the page fragments, then `convert -append`ing them vertically
+    - `csup-render` rebuilds when the `preprocessor-csup` source changes because its node fingerprint now includes the crate source hash
+  - `tpp`:
+    - continued procedures are grouped by airport + logical procedure name
+    - ordinary continued procedures are now collapsed into one tall PNG
+    - the legacy separate `..., CONT.1.png`, `..., CONT.2.png`, etc. outputs are removed when collapse succeeds
+    - product UX intent is therefore:
+      - one scrollable image for ordinary continued procedures
+      - not multiple list entries for page 1 / CONT.1 / CONT.2
+
+- Important TPP georeference finding:
+  - live FAA data disproved the naive invariant “only the first page of a continued plate is georeferenced”
+  - concrete counterexample found during production:
+    - `ONT`
+    - `STAR-CA-SCBBY TWO (RNAV)`
+    - continuation page is georeferenced too
+  - earlier validation also found continued procedures where page 1 is georeferenced:
+    - `SEA` `IAP-WA-RNAV (RNP) Z RWY 16C`
+    - `52B` `IAP-ME-RNAV (GPS)-B`
+
+- Current TPP continued-page policy:
+  - top-level metadata fact:
+    - Avare’s 4-value plate geotag (`dx|dy|lonTopLeft|latTopLeft`) is top-left anchored, not “image-corner bounded”
+    - app evidence:
+      - [PngCommentReader.java](/root/aerobag/avare-source/avare/app/src/main/java/com/ds/avare/utils/PngCommentReader.java)
+      - [PlatesView.java](/root/aerobag/avare-source/avare/app/src/main/java/com/ds/avare/views/PlatesView.java)
+    - that means a concatenated image can safely keep page 1’s geotag comment if page 1 is the only georeferenced page; the additional continuation pages simply extend downward
+  - implemented behavior:
+    - if only page 1 is georeferenced and later pages are basic:
+      - render page 1 with the geotagged path
+      - render later pages as basic PNGs
+      - append vertically
+      - write page 1’s `UserComment` onto the final concatenated PNG
+    - if any continuation page is non-basic/georeferenced:
+      - do **not** fail the whole build anymore
+      - fall back to legacy-style separate entries for that procedure (`page 1`, `CONT.1`, etc.)
+      - this preserves rare truly multi-page georeferenced procedures like `SCBBY`
+  - fail-fast scheduler behavior still remains for other heavy-job failures:
+    - [product_build.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs) now stops on the first heavy-job failure and writes top-level `complete FAIL ...` immediately
+
+- Validation / production proof for the continued-page rules:
+  - validation rerun:
+    - [master.log](/root/aerobag/product-builds/validation/orchestrator-logs/master.log)
+    - final `complete PASS` at `+4:12`
+    - `tpp-ne` completed at `+1:11`
+    - `tpp-nw` completed at `+0:49`
+    - that confirmed the revised “page 1 geotagged is okay” rule works on the validation slice
+  - production rerun:
+    - [master.log](/root/aerobag/product-builds/production/orchestrator-logs/master.log)
+    - final `complete PASS` at `+3:28`
+    - confirms:
+      - safe continued procedures are collapsed
+      - rare multi-page georeferenced procedures fall back to separate entries
+      - the build no longer dies on `SCBBY`

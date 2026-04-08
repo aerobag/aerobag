@@ -14,7 +14,7 @@ use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
     read_source_urls_jsonl, write_package_outputs_jsonl, PackageOutputRecord,
 };
-use preprocessor_tools::ToolInvocation;
+use preprocessor_tools::{append_pngs_vertical, ToolInvocation};
 
 #[derive(Debug, Clone)]
 pub struct NativeCsupRunRequest {
@@ -300,8 +300,46 @@ fn render_airport_pages(work_dir: &Path, airport: &AirportRecord) -> anyhow::Res
                 page_index
             );
         }
+        collapse_rendered_pdf_pages(work_dir, &apt_dir, &output_base)?;
     }
 
+    Ok(())
+}
+
+fn collapse_rendered_pdf_pages(work_dir: &Path, apt_dir: &Path, output_base: &str) -> anyhow::Result<()> {
+    let final_png = apt_dir.join(format!("{output_base}.png"));
+    let mut rendered_pages = collect_rendered_pdf_pages(apt_dir, output_base)?;
+    if rendered_pages.is_empty() {
+        return Ok(());
+    }
+    if rendered_pages.len() == 1 {
+        let only_page = rendered_pages.pop().unwrap();
+        if only_page != final_png {
+            remove_if_exists(&final_png)?;
+            fs::rename(&only_page, &final_png).with_context(|| {
+                format!(
+                    "failed to rename {} to {}",
+                    only_page.display(),
+                    final_png.display()
+                )
+            })?;
+        }
+        return Ok(());
+    }
+
+    // Product UX intentionally collapses multi-page CSUP PDFs into one tall PNG so the airport
+    // browser exposes a single scrollable supplement page instead of separate page-0/page-1
+    // entries.
+    append_pngs_vertical(
+        work_dir,
+        &work_dir.join(".rust-logs"),
+        &rendered_pages,
+        &final_png,
+        &format!("csup-append-{}", sanitize_label(output_base)),
+    )?;
+    for rendered_page in rendered_pages {
+        remove_if_exists(&rendered_page)?;
+    }
     Ok(())
 }
 
@@ -318,6 +356,40 @@ fn remove_pngs_for_base(apt_dir: &Path, output_base: &str) -> anyhow::Result<()>
         }
     }
     Ok(())
+}
+
+fn collect_rendered_pdf_pages(apt_dir: &Path, output_base: &str) -> anyhow::Result<Vec<PathBuf>> {
+    let mut pages = Vec::new();
+    for entry in
+        fs::read_dir(apt_dir).with_context(|| format!("failed to read {}", apt_dir.display()))?
+    {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == format!("{output_base}.png")
+            || (name.starts_with(&format!("{output_base}-")) && name.ends_with(".png"))
+        {
+            pages.push(path);
+        }
+    }
+    pages.sort_by_key(|path| csup_page_sort_key(path, output_base));
+    Ok(pages)
+}
+
+fn csup_page_sort_key(path: &Path, output_base: &str) -> (u32, String) {
+    let filename = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+    if filename == format!("{output_base}.png") {
+        return (0, filename.to_string());
+    }
+    let suffix = filename
+        .strip_prefix(&format!("{output_base}-"))
+        .and_then(|value| value.strip_suffix(".png"))
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(u32::MAX);
+    (suffix + 1, filename.to_string())
 }
 
 pub fn package_csup_region(work_dir: &Path, region: Region) -> anyhow::Result<PackageOutputRecord> {
@@ -534,6 +606,13 @@ fn should_skip_copy(path: &Path, is_dir: bool, preserve_generated: bool) -> bool
         path.extension().and_then(|value| value.to_str()),
         Some("zip" | "pdf" | "PDF" | "png" | "xml")
     )
+}
+
+fn sanitize_label(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect()
 }
 
 fn remove_if_exists(path: &Path) -> anyhow::Result<()> {

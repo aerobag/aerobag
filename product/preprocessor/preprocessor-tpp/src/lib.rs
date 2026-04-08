@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     fs,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
@@ -16,12 +16,13 @@ use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
     read_source_urls_jsonl, write_package_outputs_jsonl, PackageOutputRecord,
 };
-use preprocessor_tools::ToolInvocation;
+use preprocessor_tools::{append_pngs_vertical, ToolInvocation};
 
 const TPP_AIRPORT_DIAGRAMS_URL: &str =
     "https://www.outerworldapps.com/WairToNowWork/avare_aptdiags.php";
 const TPP_BASIC_PIPELINE_VERSION: &str = "basic-v1";
 const TPP_AIRPORT_DIAGRAM_PIPELINE_VERSION: &str = "airport-diagram-v1";
+const TPP_CONTINUED_PIPELINE_VERSION: &str = "continued-v3-fallback-on-multipage-geotag";
 const TPP_GEOTAGGED_PIPELINE_VERSION: &str = "geotagged-v2-dstalpha";
 const TPP_MINIMUM_PIPELINE_VERSION: &str = "minimum-v1";
 
@@ -51,6 +52,27 @@ struct PlateRecord {
     chart_name: String,
     chart_code: String,
     pdf_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct ContinuedPlateGroup {
+    apt_id: String,
+    output_name: String,
+    members: Vec<PlateRecord>,
+}
+
+#[derive(Debug, Clone)]
+enum PlateTask {
+    Single(PlateRecord),
+    Continued(ContinuedPlateGroup),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlateRenderKind {
+    Minimum,
+    AirportDiagram,
+    Geotagged,
+    Basic,
 }
 
 pub fn run_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<NativeTppRunResult> {
@@ -118,16 +140,17 @@ fn render_tpp_region(work_dir: &Path, region: Region, render_jobs: usize) -> any
     let ad_tags = read_airport_diagram_tags(&work_dir.join("avare_aptdiags.php"))?;
     let xml_path = work_dir.join("d-TPP_Metafile.xml");
     let plates = parse_region_plates(&xml_path, region)?;
-    render_plates_parallel(work_dir, &ad_tags, plates, render_jobs)
+    let tasks = build_plate_tasks(plates);
+    render_plate_tasks_parallel(work_dir, &ad_tags, tasks, render_jobs)
 }
 
-fn render_plates_parallel(
+fn render_plate_tasks_parallel(
     work_dir: &Path,
     ad_tags: &std::collections::HashMap<String, String>,
-    plates: Vec<PlateRecord>,
+    tasks: Vec<PlateTask>,
     render_jobs: usize,
 ) -> anyhow::Result<()> {
-    let queue = Arc::new(Mutex::new(VecDeque::from(plates)));
+    let queue = Arc::new(Mutex::new(VecDeque::from(tasks)));
     let job_count = render_jobs.max(1);
     let mut handles = Vec::with_capacity(job_count);
 
@@ -137,14 +160,19 @@ fn render_plates_parallel(
         let ad_tags = ad_tags.clone();
         handles.push(thread::spawn(move || -> anyhow::Result<()> {
             loop {
-                let plate = {
+                let task = {
                     let mut guard = queue.lock().map_err(|_| anyhow::anyhow!("plate queue poisoned"))?;
                     guard.pop_front()
                 };
-                let Some(plate) = plate else {
+                let Some(task) = task else {
                     break;
                 };
-                make_plate(&work_dir, &ad_tags, &plate)?;
+                match task {
+                    PlateTask::Single(plate) => make_plate(&work_dir, &ad_tags, &plate)?,
+                    PlateTask::Continued(group) => {
+                        make_continued_plate_group(&work_dir, &ad_tags, &group)?
+                    }
+                }
             }
             Ok(())
         }));
@@ -157,6 +185,56 @@ fn render_plates_parallel(
     }
 
     Ok(())
+}
+
+fn build_plate_tasks(plates: Vec<PlateRecord>) -> Vec<PlateTask> {
+    let mut grouped = BTreeMap::<String, Vec<(usize, Option<u32>, PlateRecord)>>::new();
+    let mut group_order = Vec::new();
+    for (original_index, plate) in plates.into_iter().enumerate() {
+        let base_chart_name =
+            strip_continued_suffix(&plate.chart_name).unwrap_or_else(|| plate.chart_name.clone());
+        let key = format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            plate.apt_id, plate.state_id, plate.chart_code, base_chart_name
+        );
+        if !grouped.contains_key(&key) {
+            group_order.push(key.clone());
+        }
+        grouped.entry(key).or_default().push((
+            original_index,
+            continuation_index(&plate.chart_name),
+            plate,
+        ));
+    }
+
+    let mut tasks = Vec::new();
+    for key in group_order {
+        let mut members = grouped.remove(&key).unwrap_or_default();
+        let has_continued = members.iter().any(|(_, continuation, _)| continuation.is_some());
+        members.sort_by_key(|(original_index, continuation, _)| {
+            (continuation.unwrap_or(0), *original_index)
+        });
+        if has_continued && members.len() > 1 {
+            let first = &members[0].2;
+            let output_name = plate_output_name(
+                &first.chart_code,
+                &first.state_id,
+                &strip_continued_suffix(&first.chart_name).unwrap_or_else(|| first.chart_name.clone()),
+            );
+            tasks.push(PlateTask::Continued(ContinuedPlateGroup {
+                apt_id: first.apt_id.clone(),
+                output_name,
+                members: members.into_iter().map(|(_, _, plate)| plate).collect(),
+            }));
+        } else {
+            tasks.extend(
+                members
+                    .into_iter()
+                    .map(|(_, _, plate)| PlateTask::Single(plate)),
+            );
+        }
+    }
+    tasks
 }
 
 fn uppercase_pdf_names(work_dir: &Path) -> anyhow::Result<()> {
@@ -333,7 +411,7 @@ fn make_plate(
         if png_path.is_file() && tif_path.is_file() {
             return Ok(());
         }
-        render_geotagged_plate(work_dir, &pdf_path, &png_path)?;
+        let _ = render_geotagged_plate(work_dir, &pdf_path, &png_path)?;
         write_plate_marker(&marker_path, &fingerprint)?;
     } else {
         let fingerprint = basic_plate_fingerprint(&pdf_hash, &output_name)?;
@@ -344,6 +422,118 @@ fn make_plate(
         render_basic_png(work_dir, &pdf_path, &png_path)?;
         write_plate_marker(&marker_path, &fingerprint)?;
     }
+    Ok(())
+}
+
+fn make_continued_plate_group(
+    work_dir: &Path,
+    ad_tags: &std::collections::HashMap<String, String>,
+    group: &ContinuedPlateGroup,
+) -> anyhow::Result<()> {
+    let folder = work_dir.join("plates").join(&group.apt_id);
+    fs::create_dir_all(&folder)
+        .with_context(|| format!("failed to create {}", folder.display()))?;
+    let final_png_path = folder.join(format!("{}.png", group.output_name));
+    let marker_path = plate_marker_path(&folder, &group.output_name);
+
+    let mut pdf_hashes = Vec::with_capacity(group.members.len());
+    let mut part_paths = Vec::with_capacity(group.members.len());
+    let mut legacy_continued_outputs = Vec::new();
+    let mut geotag_comment: Option<String> = None;
+    let mut should_fallback_to_separate = false;
+    let temp_dir = folder.join(format!(
+        ".continued-parts-{}",
+        sanitize_label(&group.output_name)
+    ));
+    fs::create_dir_all(&temp_dir)
+        .with_context(|| format!("failed to create {}", temp_dir.display()))?;
+
+    for (part_index, member) in group.members.iter().enumerate() {
+        let pdf_path = work_dir.join(&member.pdf_name);
+        if !pdf_path.is_file() {
+            eprintln!("warning: file not found {}", pdf_path.display());
+            return Ok(());
+        }
+        let output_name = plate_output_name(&member.chart_code, &member.state_id, &member.chart_name);
+        if output_name != group.output_name {
+            legacy_continued_outputs.push(output_name.clone());
+        }
+        let render_kind = classify_plate_render_kind(&pdf_path, &output_name)?;
+        if part_index == 0 {
+            if !matches!(render_kind, PlateRenderKind::Basic | PlateRenderKind::Geotagged) {
+                should_fallback_to_separate = true;
+            }
+        } else if render_kind != PlateRenderKind::Basic {
+            should_fallback_to_separate = true;
+        }
+        pdf_hashes.push(hash_file(&pdf_path)?);
+        let temp_png = temp_dir.join(format!(
+            "{}-part-{:02}.png",
+            sanitize_label(&group.output_name),
+            part_index
+        ));
+        part_paths.push((pdf_path, temp_png, render_kind));
+    }
+
+    if should_fallback_to_separate {
+        // Some FAA procedures really are multi-page georeferenced products. Collapsing those into
+        // one tall PNG would either drop page-level georefs or invent a new metadata contract the
+        // current app does not understand. In that rare case, keep the legacy separate entries so
+        // the user can explicitly choose page 1 vs CONT.1/CONT.2.
+        remove_if_exists(&final_png_path)?;
+        remove_if_exists(&marker_path)?;
+        remove_dir_if_exists(&temp_dir)?;
+        for member in &group.members {
+            make_plate(work_dir, ad_tags, member)?;
+        }
+        return Ok(());
+    }
+
+    let fingerprint =
+        continued_plate_fingerprint(&pdf_hashes, &group.output_name, &legacy_continued_outputs)?;
+    invalidate_continued_group_if_stale(
+        &final_png_path,
+        &marker_path,
+        &legacy_continued_outputs,
+        &folder,
+        &fingerprint,
+    )?;
+    if final_png_path.is_file() {
+        return Ok(());
+    }
+
+    let mut rendered_parts = Vec::with_capacity(part_paths.len());
+    for (pdf_path, temp_png, render_kind) in &part_paths {
+        remove_if_exists(temp_png)?;
+        if *render_kind == PlateRenderKind::Geotagged {
+            geotag_comment = Some(render_geotagged_plate(work_dir, pdf_path, temp_png)?);
+        } else {
+            render_basic_png(work_dir, pdf_path, temp_png)?;
+        }
+        rendered_parts.push(temp_png.clone());
+    }
+
+    // Product UX intentionally diverges from legacy here: CONT. pages are separate FAA/Avare
+    // artifacts, but in the delivered product we want one tall scrollable procedure image.
+    append_pngs_vertical(
+        work_dir,
+        &work_dir.join(".rust-logs"),
+        &rendered_parts,
+        &final_png_path,
+        &format!("tpp-continued-{}", sanitize_label(&group.output_name)),
+    )?;
+    if let Some(comment) = geotag_comment.as_deref() {
+        // Avare's 4-value plate geotag is anchored at the image top-left and uses pixel-per-degree
+        // scale, so when only page 1 is georeferenced we can safely keep that same transform on
+        // the taller concatenated image. The appended continuation pages just extend downward.
+        write_user_comment(work_dir, &final_png_path, comment)?;
+    }
+    for rendered_part in rendered_parts {
+        remove_if_exists(&rendered_part)?;
+    }
+    remove_dir_if_exists(&temp_dir)?;
+    remove_plate_outputs(&folder, &legacy_continued_outputs)?;
+    write_plate_marker(&marker_path, &fingerprint)?;
     Ok(())
 }
 
@@ -416,7 +606,11 @@ fn render_airport_diagram(
     Ok(())
 }
 
-fn render_geotagged_plate(work_dir: &Path, pdf_path: &Path, png_path: &Path) -> anyhow::Result<()> {
+fn render_geotagged_plate(
+    work_dir: &Path,
+    pdf_path: &Path,
+    png_path: &Path,
+) -> anyhow::Result<String> {
     let tif_path = png_path.with_extension("tif");
     if !tif_path.is_file() {
         let invocation = ToolInvocation {
@@ -452,7 +646,7 @@ fn render_geotagged_plate(work_dir: &Path, pdf_path: &Path, png_path: &Path) -> 
     let info = read_gdalinfo(&tif_path)?;
     let comment = geotag_comment_from_gdalinfo(&info)?;
     write_user_comment(work_dir, png_path, &comment)?;
-    Ok(())
+    Ok(comment)
 }
 
 fn render_basic_png(work_dir: &Path, input_path: &Path, png_path: &Path) -> anyhow::Result<()> {
@@ -494,6 +688,20 @@ fn render_basic_png(work_dir: &Path, input_path: &Path, png_path: &Path) -> anyh
         bail!("mogrify failed for {}", input_path.display());
     }
     Ok(())
+}
+
+fn classify_plate_render_kind(pdf_path: &Path, output_name: &str) -> anyhow::Result<PlateRenderKind> {
+    if output_name.starts_with("MIN-") {
+        return Ok(PlateRenderKind::Minimum);
+    }
+    if output_name.starts_with("APD-") {
+        return Ok(PlateRenderKind::AirportDiagram);
+    }
+    let gdalinfo = read_gdalinfo(pdf_path)?;
+    if gdalinfo.contains("PROJCRS") {
+        return Ok(PlateRenderKind::Geotagged);
+    }
+    Ok(PlateRenderKind::Basic)
 }
 
 fn render_png_preserve_alpha(
@@ -743,6 +951,27 @@ fn plate_marker_path(folder: &Path, output_name: &str) -> PathBuf {
     folder.join(format!(".{}.fingerprint", sanitize_label(output_name)))
 }
 
+fn continuation_index(chart_name: &str) -> Option<u32> {
+    chart_name
+        .rsplit_once(", CONT.")
+        .and_then(|(_, suffix)| suffix.trim().parse::<u32>().ok())
+}
+
+fn strip_continued_suffix(chart_name: &str) -> Option<String> {
+    chart_name
+        .rsplit_once(", CONT.")
+        .map(|(base, _)| base.trim().to_string())
+}
+
+fn plate_output_name(chart_code: &str, state_id: &str, chart_name: &str) -> String {
+    format!(
+        "{}-{}-{}",
+        chart_code,
+        state_id,
+        chart_name.replace('/', " AND ")
+    )
+}
+
 fn basic_plate_fingerprint(pdf_hash: &str, output_name: &str) -> anyhow::Result<String> {
     Ok(hash_fingerprint_components(&[
         TPP_BASIC_PIPELINE_VERSION,
@@ -770,6 +999,19 @@ fn geotagged_plate_fingerprint(pdf_hash: &str, output_name: &str) -> anyhow::Res
         pdf_hash,
         output_name,
     ]))
+}
+
+fn continued_plate_fingerprint(
+    pdf_hashes: &[String],
+    output_name: &str,
+    legacy_continued_outputs: &[String],
+) -> anyhow::Result<String> {
+    let mut parts = vec![TPP_CONTINUED_PIPELINE_VERSION.to_string(), output_name.to_string()];
+    parts.extend(pdf_hashes.iter().cloned());
+    parts.extend(legacy_continued_outputs.iter().cloned());
+    Ok(hash_fingerprint_components(
+        &parts.iter().map(String::as_str).collect::<Vec<_>>(),
+    ))
 }
 
 fn minimum_plate_fingerprint(
@@ -828,6 +1070,22 @@ fn invalidate_plate_prefix_if_stale(
     Ok(())
 }
 
+fn invalidate_continued_group_if_stale(
+    png_path: &Path,
+    marker_path: &Path,
+    legacy_continued_outputs: &[String],
+    folder: &Path,
+    expected: &str,
+) -> anyhow::Result<()> {
+    if marker_matches(marker_path, expected)? {
+        return Ok(());
+    }
+    remove_if_exists(png_path)?;
+    remove_plate_outputs(folder, legacy_continued_outputs)?;
+    remove_if_exists(marker_path)?;
+    Ok(())
+}
+
 fn marker_matches(marker_path: &Path, expected: &str) -> anyhow::Result<bool> {
     if !marker_path.is_file() {
         return Ok(false);
@@ -840,6 +1098,15 @@ fn marker_matches(marker_path: &Path, expected: &str) -> anyhow::Result<bool> {
 fn write_plate_marker(marker_path: &Path, fingerprint: &str) -> anyhow::Result<()> {
     fs::write(marker_path, format!("{fingerprint}\n"))
         .with_context(|| format!("failed to write {}", marker_path.display()))
+}
+
+fn remove_plate_outputs(folder: &Path, output_names: &[String]) -> anyhow::Result<()> {
+    for output_name in output_names {
+        remove_if_exists(&folder.join(format!("{output_name}.png")))?;
+        remove_if_exists(&folder.join(format!("{output_name}.tif")))?;
+        remove_if_exists(&plate_marker_path(folder, output_name))?;
+    }
+    Ok(())
 }
 
 fn package_region(work_dir: &Path, provenance_dir: &Path, region: Region) -> anyhow::Result<usize> {
@@ -1048,9 +1315,20 @@ fn remove_if_exists(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn remove_dir_if_exists(path: &Path) -> anyhow::Result<()> {
+    if path.exists() {
+        fs::remove_dir_all(path)
+            .with_context(|| format!("failed to remove directory {}", path.display()))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{geotag_comment_from_gdalinfo, parse_dms_coordinate};
+    use super::{
+        build_plate_tasks, geotag_comment_from_gdalinfo, parse_dms_coordinate, PlateRecord,
+        PlateTask,
+    };
 
     #[test]
     fn parse_west_coordinate() {
@@ -1069,5 +1347,46 @@ Lower Right (-8246604.366, 4994848.615) ( 74d 4'49.83\"W, 40d52'52.67\"N)
             geotag_comment_from_gdalinfo(info).unwrap(),
             "985.4524589057144|-1312.8446437761886|-74.90348055555556|41.825811111111115"
         );
+    }
+
+    #[test]
+    fn continued_records_are_grouped_into_one_task() {
+        let tasks = build_plate_tasks(vec![
+            PlateRecord {
+                apt_id: "SEA".to_string(),
+                state_id: "WA".to_string(),
+                chart_name: "ILS OR LOC RWY 16C".to_string(),
+                chart_code: "IAP".to_string(),
+                pdf_name: "BASE.PDF".to_string(),
+            },
+            PlateRecord {
+                apt_id: "SEA".to_string(),
+                state_id: "WA".to_string(),
+                chart_name: "ILS OR LOC RWY 16C, CONT.1".to_string(),
+                chart_code: "IAP".to_string(),
+                pdf_name: "CONT1.PDF".to_string(),
+            },
+        ]);
+        assert_eq!(tasks.len(), 1);
+        match &tasks[0] {
+            PlateTask::Continued(group) => {
+                assert_eq!(group.output_name, "IAP-WA-ILS OR LOC RWY 16C");
+                assert_eq!(group.members.len(), 2);
+            }
+            other => panic!("expected continued task, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn standalone_records_remain_single_tasks() {
+        let tasks = build_plate_tasks(vec![PlateRecord {
+            apt_id: "RNT".to_string(),
+            state_id: "WA".to_string(),
+            chart_name: "RNAV (GPS) Z RWY 16".to_string(),
+            chart_code: "IAP".to_string(),
+            pdf_name: "BASE.PDF".to_string(),
+        }]);
+        assert_eq!(tasks.len(), 1);
+        assert!(matches!(tasks[0], PlateTask::Single(_)));
     }
 }

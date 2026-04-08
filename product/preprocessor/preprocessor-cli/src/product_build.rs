@@ -307,13 +307,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         let (tx, rx) = mpsc::channel();
         let mut running_jobs = 0_usize;
         let mut launched_jobs = 0_usize;
-        let mut first_error: Option<anyhow::Error> = None;
-
         while running_jobs > 0 || !pending_jobs.is_empty() {
-            while first_error.is_none()
-                && running_jobs < config.max_heavy_jobs
-                && !pending_jobs.is_empty()
-            {
+            while running_jobs < config.max_heavy_jobs && !pending_jobs.is_empty() {
                 let spec = pending_jobs.pop_front().expect("queue should be non-empty");
                 let name = spec.name();
                 launched_jobs += 1;
@@ -350,15 +345,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 }
                 Err(err) => {
                     master_log.log(format!("complete {name} FAIL error={}", err))?;
-                    if first_error.is_none() {
-                        first_error = Some(err);
-                    }
+                    return Err(err);
                 }
             }
-        }
-
-        if let Some(err) = first_error {
-            return Err(err);
         }
 
         let mut chart_sources = Vec::new();
@@ -724,6 +713,15 @@ fn build_csup_render_node(
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("fetch_jobs".to_string(), fetch_jobs.to_string()),
         ("render_jobs".to_string(), render_jobs.to_string()),
+        (
+            "csup_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-csup/src/lib.rs"),
+            )?,
+        ),
     ]);
     let prepared = prepare_existing_node_root("csup-render", run_root, &inputs)?;
     let afd_root = run_root.join("work").join("csup").join("afd");

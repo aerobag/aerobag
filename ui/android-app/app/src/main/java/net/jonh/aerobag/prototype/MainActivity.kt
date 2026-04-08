@@ -116,6 +116,13 @@ private data class PageTrayOption(
     val launcherLabel: String,
 )
 
+private data class MenuDockOption(
+    val key: String,
+    val label: String,
+    val enabled: Boolean = true,
+    val onSelect: () -> Unit,
+)
+
 private val PageOptions = listOf(
     PageTrayOption(AppPage.Map, "CHART", "CHT"),
     PageTrayOption(AppPage.Charts, "PLATE", "PLT"),
@@ -659,17 +666,20 @@ private fun FlightPlanPage(
             Scrim { pageTrayOpen = false }
         }
 
-        PageSelectorDock(
+        MenuDock(
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(ThumbGap)
                 .zIndex(4f),
-            currentPage = page,
+            launcherLabel = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: "PLN",
             open = pageTrayOpen,
             onToggle = { pageTrayOpen = !pageTrayOpen },
-            onSelectPage = {
-                onSelectPage(it)
-                pageTrayOpen = false
+            width = ThumbSize * 2.4f,
+            options = PageOptions.map { option ->
+                MenuDockOption(option.page.name, option.label) {
+                    onSelectPage(option.page)
+                    pageTrayOpen = false
+                }
             },
         )
 
@@ -924,26 +934,25 @@ private fun MapTopLeftControls(
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
         verticalAlignment = Alignment.Top,
     ) {
-        PageSelectorDock(
-            currentPage = currentPage,
+        MenuDock(
+            launcherLabel = PageOptions.firstOrNull { it.page == currentPage }?.launcherLabel ?: "CHT",
             open = pageTrayOpen,
             onToggle = onTogglePageTray,
-            onSelectPage = onSelectPage,
+            width = ThumbSize * 2.4f,
+            options = PageOptions.map { option ->
+                MenuDockOption(option.page.name, option.label) { onSelectPage(option.page) }
+            },
         )
-        SelectorDock(
-            label = selectedLabel,
+        MenuDock(
+            launcherLabel = selectedLabel,
             buttonWidth = ThumbSize,
             open = trayOpen,
             onToggle = onToggle,
-        ) {
-            trayOptions.forEach { option ->
-                DropdownMenuItem(
-                    text = { Text(option.label, style = MaterialTheme.typography.labelLarge) },
-                    enabled = option.available,
-                    onClick = { option.select?.invoke() },
-                )
-            }
-        }
+            width = ThumbSize * 2.4f,
+            options = trayOptions.map { option ->
+                MenuDockOption(option.id, option.label, option.available) { option.select?.invoke() }
+            },
+        )
     }
 }
 
@@ -969,131 +978,75 @@ private fun ChartViewerSelectors(
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
         verticalAlignment = Alignment.Top,
     ) {
-        PageSelectorDock(
-            currentPage = currentPage,
+        MenuDock(
+            launcherLabel = PageOptions.firstOrNull { it.page == currentPage }?.launcherLabel ?: "PLT",
             open = pageTrayOpen,
             onToggle = onTogglePageTray,
-            onSelectPage = onSelectPage,
+            width = ThumbSize * 2.4f,
+            options = PageOptions.map { option ->
+                MenuDockOption(option.page.name, option.label) { onSelectPage(option.page) }
+            },
         )
 
-        SelectorDock(
-            label = selectedAirport?.label ?: "---",
+        MenuDock(
+            launcherLabel = selectedAirport?.label ?: "---",
             buttonWidth = ThumbSize * 1.2f,
             open = airportTrayOpen,
             onToggle = onToggleAirportTray,
-        ) {
-            airports.forEach { airport ->
-                OutlinedButton(
-                    onClick = { onSelectAirport(airport.id) },
-                    modifier = Modifier.fillMaxWidth().height(ThumbSize),
-                ) {
-                    Text(airport.label, style = MaterialTheme.typography.labelLarge)
-                }
-            }
-        }
+            width = ThumbSize * 2.4f,
+            options = airports.map { airport ->
+                MenuDockOption(airport.id, airport.label) { onSelectAirport(airport.id) }
+            },
+        )
 
-        SelectorDock(
-            label = selectedChart?.label ?: "---",
+        MenuDock(
+            launcherLabel = selectedChart?.label ?: "---",
             buttonWidth = ThumbSize * 2.6f,
             open = chartTrayOpen,
             onToggle = onToggleChartTray,
-        ) {
-            selectedAirport?.charts?.forEach { chart ->
-                OutlinedButton(
-                    onClick = { onSelectChart(chart.id) },
-                    modifier = Modifier.fillMaxWidth().height(ThumbSize),
-                ) {
-                    Text(chart.label, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-        }
+            width = ThumbSize * 3.2f,
+            options = (selectedAirport?.charts ?: emptyList()).map { chart ->
+                MenuDockOption(chart.id, chart.label) { onSelectChart(chart.id) }
+            },
+        )
     }
 }
 
 @Composable
-private fun PageSelectorDock(
+private fun MenuDock(
     modifier: Modifier = Modifier,
-    currentPage: AppPage,
+    launcherLabel: String,
     open: Boolean,
     onToggle: () -> Unit,
-    onSelectPage: (AppPage) -> Unit,
+    width: androidx.compose.ui.unit.Dp,
+    buttonWidth: androidx.compose.ui.unit.Dp = ThumbSize,
+    options: List<MenuDockOption>,
 ) {
-    Box(modifier = modifier.size(ThumbSize)) {
+    Box(modifier = modifier.width(buttonWidth).height(ThumbSize)) {
         CompactSquareButton(
-            label = PageOptions.firstOrNull { it.page == currentPage }?.launcherLabel ?: "CHT",
-            modifier = Modifier.size(ThumbSize).align(Alignment.TopStart),
+            label = launcherLabel,
+            modifier = Modifier.width(buttonWidth).height(ThumbSize).align(Alignment.TopStart),
             onClick = onToggle,
         )
         DropdownMenu(
             expanded = open,
             onDismissRequest = onToggle,
-            modifier = Modifier.width(ThumbSize * 2.4f),
+            modifier = Modifier.width(width),
         ) {
-            PageOptions.forEach { option ->
+            options.forEach { option ->
                 DropdownMenuItem(
-                    text = { Text(option.label, style = MaterialTheme.typography.labelLarge) },
-                    onClick = { onSelectPage(option.page) },
+                    text = {
+                        Text(
+                            option.label,
+                            style = MaterialTheme.typography.labelLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    enabled = option.enabled,
+                    onClick = option.onSelect,
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun SelectorDock(
-    modifier: Modifier = Modifier,
-    label: String,
-    buttonWidth: androidx.compose.ui.unit.Dp,
-    open: Boolean,
-    onToggle: () -> Unit,
-    content: @Composable () -> Unit,
-) {
-    Box(modifier = modifier.width(buttonWidth).height(ThumbSize)) {
-        Surface(
-            modifier = Modifier.align(Alignment.TopStart).width(buttonWidth).height(ThumbSize),
-            shape = RoundedCornerShape(ThumbRadius),
-            color = MaterialTheme.colorScheme.primary,
-            contentColor = MaterialTheme.colorScheme.onPrimary,
-            shadowElevation = 2.dp,
-        ) {
-            Box(
-                modifier = Modifier.pointerInput(onToggle) {
-                    awaitEachGesture {
-                        var activePointer: PointerId? = null
-                        var moved = false
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            if (activePointer == null) {
-                                val downChange = event.changes.firstOrNull { it.pressed } ?: continue
-                                activePointer = downChange.id
-                                downChange.consume()
-                                continue
-                            }
-                            val change = event.changes.firstOrNull { it.id == activePointer } ?: break
-                            if (change.positionChanged()) {
-                                moved = true
-                            }
-                            change.consume()
-                            if (!change.pressed) {
-                                if (!moved) {
-                                    onToggle()
-                                }
-                                break
-                            }
-                        }
-                    }
-                },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
-            }
-        }
-        DropdownMenu(
-            expanded = open,
-            onDismissRequest = onToggle,
-            modifier = Modifier.widthIn(min = buttonWidth),
-        ) {
-            content()
         }
     }
 }

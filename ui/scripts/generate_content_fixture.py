@@ -131,7 +131,8 @@ def clear_tac_tile_roots() -> None:
     for destination_root in [CANONICAL_TILE_ROOT, WEB_TILE_ROOT, ANDROID_TILE_ROOT]:
         target_root = destination_root / "charts-tac" / "1"
         if target_root.exists():
-            shutil.rmtree(target_root)
+            clear_directory(target_root)
+            target_root.rmdir()
 
 
 def copy_tac_tile_subset(tile_windows: dict[int, tuple[int, int, int]]) -> list[dict]:

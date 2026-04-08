@@ -1185,7 +1185,7 @@ private fun ChartViewerSelectors(
 
         MenuDock(
             launcherLabel = selectedAirport?.label ?: "---",
-            buttonWidth = ThumbSize * 1.2f,
+            buttonWidth = ThumbSize,
             open = airportTrayOpen,
             onToggle = onToggleAirportTray,
             width = ThumbSize * 2.4f,
@@ -1196,10 +1196,11 @@ private fun ChartViewerSelectors(
 
         MenuDock(
             launcherLabel = selectedChart?.label ?: "---",
-            buttonWidth = ThumbSize * 2.6f,
+            buttonWidth = ThumbSize * 3f,
             open = chartTrayOpen,
             onToggle = onToggleChartTray,
-            width = ThumbSize * 3.2f,
+            width = ThumbSize * 4f,
+            launcherMaxLines = 2,
             options = (selectedAirport?.charts ?: emptyList()).map { chart ->
                 MenuDockOption(chart.id, chart.label) { onSelectChart(chart.id) }
             },
@@ -1215,11 +1216,13 @@ private fun MenuDock(
     onToggle: () -> Unit,
     width: androidx.compose.ui.unit.Dp,
     buttonWidth: androidx.compose.ui.unit.Dp = ThumbSize,
+    launcherMaxLines: Int = 1,
     options: List<MenuDockOption>,
 ) {
     Box(modifier = modifier.width(buttonWidth).height(ThumbSize)) {
         CompactSquareButton(
             label = launcherLabel,
+            maxLines = launcherMaxLines,
             modifier = Modifier.width(buttonWidth).height(ThumbSize).align(Alignment.TopStart),
             onClick = onToggle,
         )
@@ -1234,7 +1237,7 @@ private fun MenuDock(
                         Text(
                             option.label,
                             style = MaterialTheme.typography.labelLarge,
-                            maxLines = 1,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                     },
@@ -1306,7 +1309,7 @@ private fun ToolbarButton(label: String, modifier: Modifier = Modifier, onClick:
 }
 
 @Composable
-private fun CompactSquareButton(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun CompactSquareButton(label: String, modifier: Modifier = Modifier, maxLines: Int = 1, onClick: () -> Unit) {
     Surface(
         modifier = modifier.pointerInput(onClick) {
             awaitEachGesture {
@@ -1343,7 +1346,7 @@ private fun CompactSquareButton(label: String, modifier: Modifier = Modifier, on
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
+                maxLines = maxLines,
                 overflow = TextOverflow.Clip,
             )
         }

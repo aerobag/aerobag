@@ -651,7 +651,7 @@ function TrayDock(props: {
       >
         <span className={`chartButtonLabel${wide ? " chartButtonLabelWide" : ""}`}>{launcherLabel}</span>
       </button>
-      <section className={`chartTray${open ? " isOpen" : ""}`} aria-label={ariaLabel} onPointerDown={stopPointer} onPointerUp={stopPointer}>
+      <section className={`chartTray${wide ? " chartTrayWide" : ""}${open ? " isOpen" : ""}`} aria-label={ariaLabel} onPointerDown={stopPointer} onPointerUp={stopPointer}>
         {options.map((option) => (
           <button
             key={option.id}

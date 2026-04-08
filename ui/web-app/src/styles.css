@@ -178,12 +178,12 @@ button {
 }
 
 .chartButtonWide {
-  width: calc(var(--thumb) * 2.6);
+  width: calc(var(--thumb) * 3);
   padding-inline: calc(var(--thumb) * 0.12);
 }
 
 .chartButtonLabelWide {
-  max-width: calc(var(--thumb) * 2.1);
+  max-width: calc(var(--thumb) * 2.5);
 }
 
 .chartTray {
@@ -223,6 +223,10 @@ button {
   font-size: var(--thumb-font-small);
   font-weight: 700;
   letter-spacing: 0.04em;
+}
+
+.chartTray.chartTrayWide .trayButton {
+  min-width: calc(var(--thumb) * 4);
 }
 
 .trayButton.isActive {

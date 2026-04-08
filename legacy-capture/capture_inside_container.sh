@@ -109,7 +109,9 @@ run_capture "charts-tac" "avare-source/charts" python3 tac.py
 run_capture "charts-enr-l" "avare-source/charts" python3 enr_l.py
 run_capture "charts-enr-h" "avare-source/charts" python3 enr_h.py
 run_capture "tpp-ne" "avare-source/tpp" python3 tpp.py NE
+run_capture "tpp-nw" "avare-source/tpp" python3 tpp.py NW
 run_capture "csup" "avare-source/csup" python3 csup.py
+run_capture "data" "avare-source/data" python3 "${ROOT_DIR}/legacy-capture/run_legacy_data_primary.py"
 
 cat > "${META_DIR}/manifest.json" <<EOF
 {
@@ -180,6 +182,17 @@ cat > "${META_DIR}/manifest.json" <<EOF
       "package_outputs": "meta/provenance/tpp-ne/package_outputs.jsonl"
     },
     {
+      "label": "tpp-nw",
+      "repo": "avare-source/tpp",
+      "command": ["python3", "tpp.py", "NW"],
+      "stdout_log": "logs/tpp-nw.stdout.log",
+      "stderr_log": "logs/tpp-nw.stderr.log",
+      "outputs_hashes": "meta/tpp-nw.outputs.sha256",
+      "source_urls": "meta/provenance/tpp-nw/source_urls.jsonl",
+      "downloads": "meta/provenance/tpp-nw/downloads.jsonl",
+      "package_outputs": "meta/provenance/tpp-nw/package_outputs.jsonl"
+    },
+    {
       "label": "csup",
       "repo": "avare-source/csup",
       "command": ["python3", "csup.py"],
@@ -189,6 +202,14 @@ cat > "${META_DIR}/manifest.json" <<EOF
       "source_urls": "meta/provenance/csup/source_urls.jsonl",
       "downloads": "meta/provenance/csup/downloads.jsonl",
       "package_outputs": "meta/provenance/csup/package_outputs.jsonl"
+    },
+    {
+      "label": "data",
+      "repo": "avare-source/data",
+      "command": ["python3", "legacy-capture/run_legacy_data_primary.py"],
+      "stdout_log": "logs/data.stdout.log",
+      "stderr_log": "logs/data.stderr.log",
+      "outputs_hashes": "meta/data.outputs.sha256"
     }
   ]
 }

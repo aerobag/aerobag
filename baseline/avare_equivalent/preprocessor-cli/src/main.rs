@@ -1,3 +1,5 @@
+mod full_validation;
+
 use std::{
     collections::BTreeSet,
     env, fs,
@@ -6,6 +8,7 @@ use std::{
 };
 
 use anyhow::Context;
+use full_validation::{FullValidationConfig, maybe_reexec_under_cgroup, run_full_validation};
 use preprocessor_charts::{
     ChartRunRequest, NativeChartRunRequest, build_family_tiles, build_family_vrts,
     likely_current_bottleneck, package_family_regions, phase_plan, run_family,
@@ -59,6 +62,7 @@ fn usage() -> &'static str {
   preprocessor-cli compare-tpp-images --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --legacy-work-dir <path> --rust-work-dir <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
   preprocessor-cli compare-provenance --left-provenance-dir <path> --right-provenance-dir <path>
   preprocessor-cli compare-data-db --left-db <path> --right-db <path>
+  preprocessor-cli run-full-validation [--run-id <id>] [--validation-root <path>] [--fetch-cache-mode <fill|offline>] [--image-sample-percent <0-100>] [--image-rmse-threshold <0-1>]
   preprocessor-cli compare-sampled-images --left-root <path> --right-root <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
   preprocessor-cli print-cache-layout --cache-root <path> --url <url> --sha256 <sha256>
   preprocessor-cli print-tool-example --cwd <path>
@@ -1091,6 +1095,13 @@ fn main() -> anyhow::Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
             );
             compare_databases(&left_db, &right_db)?;
+        }
+        Some("run-full-validation") => {
+            if maybe_reexec_under_cgroup(&args[2..])? {
+                return Ok(());
+            }
+            let config = FullValidationConfig::from_env_and_args(&args[2..])?;
+            run_full_validation(&config)?;
         }
         Some("compare-sampled-images") => {
             if args.get(2).map(String::as_str) != Some("--left-root")

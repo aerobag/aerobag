@@ -902,3 +902,86 @@ If the next session starts with no further instruction, do this:
   - use ICAO when present
   - otherwise keep the FAA/local id as-is
   - leave the baseline pipeline unchanged
+
+## 2026-04-08 Full Banana Orchestrator + Data Integration
+
+- Full Banana is now launched from the baseline Rust workspace, not Bash:
+  - `cd /root/aerobag/baseline/avare_equivalent && cargo run -q -p preprocessor-cli -- run-full-validation`
+- The old shell entrypoint is now just a thin compatibility wrapper:
+  - [legacy-capture/run_preprocessor_validation.sh](/root/aerobag/legacy-capture/run_preprocessor_validation.sh)
+
+- The Rust orchestrator lives in:
+  - [baseline/avare_equivalent/preprocessor-cli/src/full_validation.rs](/root/aerobag/baseline/avare_equivalent/preprocessor-cli/src/full_validation.rs)
+- Important current orchestrator behavior:
+  - self-reexec under `systemd-run`
+  - default memory cap `MemoryMax=35G`
+  - `MemorySwapMax=0`
+  - heavy-job throttle via `--max-heavy-jobs <n>`
+  - master progress log:
+    - `runs/<run-id>-validation/orchestrator-logs/master.log`
+  - master log now ends with an explicit terminal line:
+    - `complete PASS`
+    - or `complete FAIL error=...`
+
+- The baseline `tpp` helper path bug from the repo refactor is fixed in:
+  - [baseline/avare_equivalent/preprocessor-tpp/src/lib.rs](/root/aerobag/baseline/avare_equivalent/preprocessor-tpp/src/lib.rs)
+- Root cause:
+  - `find_plate_pages.py` was still being looked up through the old `rust-preprocessor/...` path during Banana runs
+- Fix:
+  - helper lookup now prefers the crate-local script and falls back across known workspace layouts
+  - this keeps parity reruns from becoming impure due to repo layout drift
+
+- `tpp-nw` is now included in Banana end to end:
+  - legacy capture
+  - source URL emission
+  - native run
+  - package/provenance/image comparisons
+- Touched files:
+  - [legacy-capture/emit_source_urls.py](/root/aerobag/legacy-capture/emit_source_urls.py)
+  - [legacy-capture/capture_inside_container.sh](/root/aerobag/legacy-capture/capture_inside_container.sh)
+  - [legacy-capture/finalize_run.py](/root/aerobag/legacy-capture/finalize_run.py)
+  - [legacy-capture/run_status.py](/root/aerobag/legacy-capture/run_status.py)
+  - [baseline/avare_equivalent/preprocessor-cli/src/full_validation.rs](/root/aerobag/baseline/avare_equivalent/preprocessor-cli/src/full_validation.rs)
+
+- Legacy `data` is now included in Banana as the app-relevant primary build only:
+  - build `databases.zip` / `main.db`
+  - do not attempt `databasesx`
+  - do not require `tippecanoe`
+- New helper:
+  - [legacy-capture/run_legacy_data_primary.py](/root/aerobag/legacy-capture/run_legacy_data_primary.py)
+- Legacy capture now runs:
+  - `python3 legacy-capture/run_legacy_data_primary.py`
+  - from the staged legacy `work/data` directory
+
+- First Banana with legacy `data` failed, but for a harness bug, not a parity bug:
+  - run:
+    - [20260408T062148Z-validation](/root/aerobag/runs/20260408T062148Z-validation)
+  - failure line in master log:
+    - `complete FAIL error=validation job legacy failed with exit code 1`
+  - exact failing log:
+    - [data.stderr.log](/root/aerobag/runs/20260408T062148Z-validation/legacy/logs/data.stderr.log)
+  - root cause:
+    - `ModuleNotFoundError: No module named 'common'`
+  - fix:
+    - prepend `os.getcwd()` to `sys.path` in [run_legacy_data_primary.py](/root/aerobag/legacy-capture/run_legacy_data_primary.py)
+    - this makes the helper behave like `python3 data.py` from inside staged `work/data`
+
+- The legacy `data` import-path fix was incrementally verified before spending another 2-hour Banana:
+  - cold scratch test:
+    - got past the old import failure and only died on DNS/network
+  - seeded offline-style test:
+    - copied from [20260407T053200Z-data-build/work/data](/root/aerobag/runs/20260407T053200Z-data-build/work/data)
+    - reran with `FETCH_CACHE_MODE=offline`
+    - completed successfully through:
+      - `Downloading/unzipping: 100%`
+      - `Running PERL database files: 100%`
+      - `Cycle to be put in manifest is 2604`
+
+- Current open resume point:
+  1. launch a fresh Banana after the legacy `data` import fix
+  2. wait for `master.log` terminal `complete PASS` / `complete FAIL ...`
+  3. if green, repoint the lightweight fixture tests away from old historical run dirs and start deleting superseded `runs/` directories
+
+- Important nuance:
+  - baseline `cargo test -p preprocessor-cli` is currently not a trustworthy certification signal because several fixture-style tests still point at stale refactor-broken paths like `/root/aerobag/baseline/runs/...`
+  - Banana is the real certification path; fixture tests still need a cleanup pass later

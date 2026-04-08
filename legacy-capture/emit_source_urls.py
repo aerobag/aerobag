@@ -221,6 +221,18 @@ def build_records(avare_source_root: str) -> dict[str, list[dict]]:
                 ),
             }
         ],
+        "tpp-nw": [
+            {
+                "event": "list_crawl",
+                "label": "tpp-nw",
+                "match": "^http.*DDTPP[A-E]+_" + tpp_start.replace("-", "")[2:] + ".zip$",
+                "url": "https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/dtpp/",
+                "results": list_crawl(
+                    "https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/dtpp/",
+                    "^http.*DDTPP[A-E]+_" + tpp_start.replace("-", "")[2:] + ".zip$",
+                ),
+            }
+        ],
     }
 
 

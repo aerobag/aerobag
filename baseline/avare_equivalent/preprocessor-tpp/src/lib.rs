@@ -392,9 +392,7 @@ fn write_user_comment(work_dir: &Path, png_path: &Path, comment: &str) -> anyhow
 }
 
 fn find_plate_pages(pdf_path: &Path, apt_id: &str) -> anyhow::Result<Vec<u32>> {
-    let script_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("scripts")
-        .join("find_plate_pages.py");
+    let script_path = find_plate_pages_script()?;
     let output = Command::new("python3")
         .arg(&script_path)
         .arg(pdf_path)
@@ -415,6 +413,40 @@ fn find_plate_pages(pdf_path: &Path, apt_id: &str) -> anyhow::Result<Vec<u32>> {
         pages.push(trimmed.parse().with_context(|| format!("invalid page number: {trimmed}"))?);
     }
     Ok(pages)
+}
+
+fn find_plate_pages_script() -> anyhow::Result<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut candidates = vec![manifest_dir.join("scripts").join("find_plate_pages.py")];
+
+    // Keep the TPP helper resilient to repo refactors. This compatibility
+    // layer must sometimes run from binaries compiled before or during a tree
+    // reorganization, and we do not want a stale baked-in crate path to break
+    // parity runs when the helper script is still present elsewhere in the
+    // repo. Prefer the current crate layout, then fall back across known
+    // workspace homes for the same compatibility code.
+    if let Ok(current_exe) = std::env::current_exe() {
+        for ancestor in current_exe.ancestors() {
+            candidates.push(
+                ancestor
+                    .join("baseline/avare_equivalent/preprocessor-tpp/scripts/find_plate_pages.py"),
+            );
+            candidates.push(
+                ancestor.join("product/preprocessor/preprocessor-tpp/scripts/find_plate_pages.py"),
+            );
+            candidates.push(
+                ancestor.join("rust-preprocessor/preprocessor-tpp/scripts/find_plate_pages.py"),
+            );
+        }
+    }
+
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    bail!("could not locate find_plate_pages.py in any known workspace layout")
 }
 
 fn read_gdalinfo(path: &Path) -> anyhow::Result<String> {

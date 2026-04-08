@@ -12,7 +12,9 @@ CAPTURE_ORDER = [
     "charts-enr-l",
     "charts-enr-h",
     "tpp-ne",
+    "tpp-nw",
     "csup",
+    "data",
 ]
 
 

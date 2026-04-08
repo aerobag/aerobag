@@ -70,6 +70,17 @@ CAPTURES = [
         "package_outputs": "meta/provenance/tpp-ne/package_outputs.jsonl",
     },
     {
+        "label": "tpp-nw",
+        "repo": "avare-source/tpp",
+        "command": ["python3", "tpp.py", "NW"],
+        "stdout_log": "logs/tpp-nw.stdout.log",
+        "stderr_log": "logs/tpp-nw.stderr.log",
+        "outputs_hashes": "meta/tpp-nw.outputs.sha256",
+        "source_urls": "meta/provenance/tpp-nw/source_urls.jsonl",
+        "downloads": "meta/provenance/tpp-nw/downloads.jsonl",
+        "package_outputs": "meta/provenance/tpp-nw/package_outputs.jsonl",
+    },
+    {
         "label": "csup",
         "repo": "avare-source/csup",
         "command": ["python3", "csup.py"],
@@ -79,6 +90,14 @@ CAPTURES = [
         "source_urls": "meta/provenance/csup/source_urls.jsonl",
         "downloads": "meta/provenance/csup/downloads.jsonl",
         "package_outputs": "meta/provenance/csup/package_outputs.jsonl",
+    },
+    {
+        "label": "data",
+        "repo": "avare-source/data",
+        "command": ["python3", "legacy-capture/run_legacy_data_primary.py"],
+        "stdout_log": "logs/data.stdout.log",
+        "stderr_log": "logs/data.stderr.log",
+        "outputs_hashes": "meta/data.outputs.sha256",
     },
 ]
 

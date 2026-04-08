@@ -16,7 +16,7 @@ for cmd in python3 unzip zip sha256sum; do
     fi
 done
 
-for cmd in gdalinfo gs exiftool convert sqlite3; do
+for cmd in gdalinfo gs exiftool convert sqlite3 perl; do
     if ! command -v "${cmd}" >/dev/null 2>&1; then
         echo "missing native dependency: ${cmd}" >&2
         echo "install the legacy tooling packages or use legacy-capture/run_legacy_capture.sh" >&2

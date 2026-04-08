@@ -45,8 +45,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NW_SEC.zip",
         "manifest_name": "NW_SEC",
-        "size_bytes": 143269395,
-        "checksum_sha256": "72210268b54fef208f2b51918f21aa56cccd6a4d4e6a6eb48823c4a4daf92372"
+        "size_bytes": 143219225,
+        "checksum_sha256": "82a912d3ba231d4d68c1bf5266c4ef0d2f3c4436b4d061b51d12210914557004"
       },
       {
         "id": {
@@ -61,8 +61,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SW_SEC.zip",
         "manifest_name": "SW_SEC",
-        "size_bytes": 129003426,
-        "checksum_sha256": "a46e23f0fa03837a8926149c4878be70ecc45736db841e80f090495690cc297b"
+        "size_bytes": 128967599,
+        "checksum_sha256": "78137b934fa0013aa2e1b76fc009f776a6a45aa631ab26fe0bd0af20e7d79db9"
       },
       {
         "id": {
@@ -77,8 +77,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/NW_TAC.zip",
         "manifest_name": "NW_TAC",
-        "size_bytes": 18248374,
-        "checksum_sha256": "ea2a49c562003daea46e130b976b1098c2e64495df413ef92e77545536eabf90"
+        "size_bytes": 18308573,
+        "checksum_sha256": "8616e83bc3a482c6c050d0545a372e2f77cf5895aa2f60960f03bd332028bda1"
       },
       {
         "id": {
@@ -93,8 +93,8 @@
         "artifact_kind": "zip",
         "relative_url": "/2604/SW_TAC.zip",
         "manifest_name": "SW_TAC",
-        "size_bytes": 33820003,
-        "checksum_sha256": "d7acff975597b25fa03b1f12c5e2a714dd7ec51be100f4c38d6017b6957a4234"
+        "size_bytes": 33889563,
+        "checksum_sha256": "d8d2998ea4435aaf0d89cdf67a511701b83ed21e4ad5e319dc59ee9c272f9fbf"
       }
     ],
     "charts": [

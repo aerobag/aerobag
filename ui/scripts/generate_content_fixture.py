@@ -223,7 +223,7 @@ def load_selected_sectional_packages() -> list[SectionalPackage]:
             continue
         selected.append(
             SectionalPackage(
-                manifest=entry["manifest_name"],
+                manifest=entry["id"],
                 region=region,
                 artifact_path=Path(entry["artifact_path"]),
                 zip_sha256=entry["checksum_sha256"],
@@ -246,7 +246,7 @@ def load_selected_tac_packages() -> list[TacPackage]:
             continue
         selected.append(
             TacPackage(
-                manifest=entry["manifest_name"],
+                manifest=entry["id"],
                 region=region,
                 artifact_path=Path(entry["artifact_path"]),
                 zip_sha256=entry["checksum_sha256"],
@@ -472,13 +472,13 @@ def build_fixture() -> dict:
                     "family": family_id,
                     "cycle": cycle,
                 },
-                "package_name": entry["manifest_name"],
+                "package_name": entry["id"],
                 "family_id": family_id,
                 "region_id": region,
                 "cycle": cycle,
                 "artifact_kind": "zip",
                 "relative_url": f"/{cycle}/{Path(entry['artifact_path']).name}",
-                "manifest_name": entry["manifest_name"],
+                "manifest_name": entry["id"],
                 "size_bytes": entry["size_bytes"],
                 "checksum_sha256": entry["checksum_sha256"],
             }

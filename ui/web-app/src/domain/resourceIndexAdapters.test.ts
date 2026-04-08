@@ -17,12 +17,20 @@ const resourceIndex: ResourceIndexJson = {
     { id: "ne", display_name: "Northeast", sort_order: 1 },
   ],
   packages: [],
+  airport_resources: [
+    {
+      airport_id: "BOS",
+      plate_ids: ["plate:BOS:IAP-MA-ILS OR LOC RWY 04R.png"],
+      csup_ids: ["csup:BOS:CSUP-NE_0-0.png"],
+      package_ids: ["NE_CSUP", "NE_TPP"],
+    },
+  ],
   chart_collections: [
     {
       id: "sectional:nw",
       family_id: "sectional",
       region_id: "nw",
-      package_name: "NW_SEC",
+      package_id: "NW_SEC",
       chart_index: 0,
       tile_path_template: "tiles/0/{z}/{x}/{y}.webp",
       levels: [{ zoom: 10, x_min: 1, x_max: 2, y_tms_min: 3, y_tms_max: 4 }],
@@ -33,7 +41,7 @@ const resourceIndex: ResourceIndexJson = {
       id: "tac:nw",
       family_id: "tac",
       region_id: "nw",
-      package_name: "NW_TAC",
+      package_id: "NW_TAC",
       chart_index: 1,
       tile_path_template: "tiles/1/{z}/{x}/{y}.webp",
       levels: [{ zoom: 11, x_min: 5, x_max: 6, y_tms_min: 7, y_tms_max: 8 }],
@@ -44,9 +52,10 @@ const resourceIndex: ResourceIndexJson = {
   airports: [],
   plates: [
     {
+      id: "plate:BOS:IAP-MA-ILS OR LOC RWY 04R.png",
       airport_id: "BOS",
       region_id: "ne",
-      package_name: "NE_TPP",
+      package_id: "NE_TPP",
       asset_path: "plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png",
       label: "IAP-MA-ILS OR LOC RWY 04R",
       asset_kind: "png",
@@ -54,9 +63,10 @@ const resourceIndex: ResourceIndexJson = {
   ],
   csups: [
     {
+      id: "csup:BOS:CSUP-NE_0-0.png",
       airport_id: "BOS",
       region_id: "ne",
-      package_name: "NE_CSUP",
+      package_id: "NE_CSUP",
       asset_path: "afd/BOS/CSUP-NE_0-0.png",
       label: "CSUP-NE_0-0",
       asset_kind: "png",

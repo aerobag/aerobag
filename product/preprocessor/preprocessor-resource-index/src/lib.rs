@@ -1,4 +1,4 @@
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use chrono::Utc;
 use preprocessor_core::Region;
 use preprocessor_fetch::PackageOutputRecord;
@@ -43,6 +43,7 @@ pub struct ResourceIndex {
     pub packages: Vec<ResourcePackage>,
     pub chart_collections: Vec<ChartCollectionRecord>,
     pub airports: Vec<AirportRecord>,
+    pub airport_resources: Vec<AirportResourcesRecord>,
     pub plates: Vec<PlateRecord>,
     pub csups: Vec<CsupRecord>,
 }
@@ -70,9 +71,9 @@ pub struct ResourceRegion {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ResourcePackage {
+    pub id: String,
     pub family_id: String,
     pub region_id: String,
-    pub manifest_name: String,
     pub artifact_path: String,
     pub size_bytes: u64,
     pub checksum_sha256: String,
@@ -83,7 +84,7 @@ pub struct ChartCollectionRecord {
     pub id: String,
     pub family_id: String,
     pub region_id: String,
-    pub package_name: String,
+    pub package_id: String,
     pub chart_index: u32,
     pub tile_path_template: String,
     pub levels: Vec<TileLevelRecord>,
@@ -125,10 +126,19 @@ pub struct AirportRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AirportResourcesRecord {
+    pub airport_id: String,
+    pub plate_ids: Vec<String>,
+    pub csup_ids: Vec<String>,
+    pub package_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PlateRecord {
+    pub id: String,
     pub airport_id: String,
     pub region_id: String,
-    pub package_name: String,
+    pub package_id: String,
     pub asset_path: String,
     pub label: String,
     pub asset_kind: String,
@@ -136,9 +146,10 @@ pub struct PlateRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CsupRecord {
+    pub id: String,
     pub airport_id: String,
     pub region_id: String,
-    pub package_name: String,
+    pub package_id: String,
     pub asset_path: String,
     pub label: String,
     pub asset_kind: String,
@@ -146,13 +157,22 @@ pub struct CsupRecord {
 
 pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Result<ResourceIndex> {
     let nav_cycle_code = read_nav_cycle_code(&request.nav_db_zip)?;
-    let cycle = infer_cycle(&request.chart_sources, &request.tpp_sources, &request.csup_sources)?
-        .or_else(|| nav_cycle_code.clone());
-    let packages = collect_packages(&request.chart_sources, &request.tpp_sources, &request.csup_sources)?;
+    let cycle = infer_cycle(
+        &request.chart_sources,
+        &request.tpp_sources,
+        &request.csup_sources,
+    )?
+    .or_else(|| nav_cycle_code.clone());
+    let packages = collect_packages(
+        &request.chart_sources,
+        &request.tpp_sources,
+        &request.csup_sources,
+    )?;
     let chart_collections = collect_chart_collections(&request.chart_sources)?;
     let airports = load_airports_from_nav_db(&request.nav_db_zip)?;
     let plates = collect_plate_records(&request.tpp_sources)?;
     let csups = collect_csup_records(&request.csup_sources)?;
+    let airport_resources = collect_airport_resources(&plates, &csups);
     let families = collect_families(&packages, !plates.is_empty(), !csups.is_empty());
     let regions = Region::ALL
         .iter()
@@ -178,6 +198,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         packages,
         chart_collections,
         airports,
+        airport_resources,
         plates,
         csups,
     })
@@ -189,8 +210,7 @@ pub fn write_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         .output_path
         .parent()
         .context("output path must have a parent directory")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create {}", parent.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
     let json = serde_json::to_vec_pretty(&index).context("failed to serialize resource index")?;
     fs::write(&request.output_path, json)
         .with_context(|| format!("failed to write {}", request.output_path.display()))?;
@@ -250,19 +270,28 @@ fn collect_packages(
     Ok(packages)
 }
 
-fn collect_chart_collections(chart_sources: &[ChartSource]) -> anyhow::Result<Vec<ChartCollectionRecord>> {
+fn collect_chart_collections(
+    chart_sources: &[ChartSource],
+) -> anyhow::Result<Vec<ChartCollectionRecord>> {
     let mut collections = Vec::new();
     for source in chart_sources {
         for record in read_package_outputs(&source.package_outputs_path)? {
             let artifact_path = source.package_root.join(&record.zip);
             let metadata = read_chart_zip_metadata(&artifact_path)?;
             collections.push(ChartCollectionRecord {
-                id: format!("{}:{}", source.family_id, record.region.to_ascii_lowercase()),
+                id: format!(
+                    "{}:{}",
+                    source.family_id,
+                    record.region.to_ascii_lowercase()
+                ),
                 family_id: source.family_id.clone(),
                 region_id: record.region.to_ascii_lowercase(),
-                package_name: record.manifest.clone(),
+                package_id: record.manifest.clone(),
                 chart_index: metadata.chart_index,
-                tile_path_template: format!("tiles/{}/{}/{{x}}/{{y}}.webp", metadata.chart_index, "{z}"),
+                tile_path_template: format!(
+                    "tiles/{}/{}/{{x}}/{{y}}.webp",
+                    metadata.chart_index, "{z}"
+                ),
                 levels: metadata.levels,
                 coverage_bounds: metadata.coverage_bounds,
                 default_view: metadata.default_view,
@@ -307,9 +336,9 @@ fn package_from_record(
         .with_context(|| format!("failed to stat {}", artifact_path.display()))?
         .len();
     Ok(ResourcePackage {
+        id: record.manifest.clone(),
         family_id: family_id.to_string(),
         region_id: record.region.to_ascii_lowercase(),
-        manifest_name: record.manifest.clone(),
         artifact_path: artifact_path.display().to_string(),
         size_bytes,
         checksum_sha256: record.zip_sha256.clone(),
@@ -365,10 +394,12 @@ fn collect_plate_records(sources: &[AssetSource]) -> anyhow::Result<Vec<PlateRec
                 .context("missing TPP package for region")?;
             for asset in read_files_recursive(&airport_dir)? {
                 let asset_path = asset.strip_prefix(&source.asset_root).unwrap_or(&asset);
+                let filename = asset.file_name().and_then(|value| value.to_str()).unwrap_or_default();
                 records.push(PlateRecord {
+                    id: format!("plate:{airport_id}:{filename}"),
                     airport_id: airport_id.clone(),
                     region_id: region_id.clone(),
-                    package_name: package_name.clone(),
+                    package_id: package_name.clone(),
                     label: asset
                         .file_stem()
                         .and_then(|value| value.to_str())
@@ -410,10 +441,12 @@ fn collect_csup_records(sources: &[AssetSource]) -> anyhow::Result<Vec<CsupRecor
                     .cloned()
                     .context("missing CSUP package for region")?;
                 let asset_path = asset.strip_prefix(&source.asset_root).unwrap_or(&asset);
+                let filename = asset.file_name().and_then(|value| value.to_str()).unwrap_or_default();
                 records.push(CsupRecord {
+                    id: format!("csup:{airport_id}:{filename}"),
                     airport_id: airport_id.clone(),
                     region_id,
-                    package_name,
+                    package_id: package_name.clone(),
                     label: asset
                         .file_stem()
                         .and_then(|value| value.to_str())
@@ -433,6 +466,51 @@ fn collect_csup_records(sources: &[AssetSource]) -> anyhow::Result<Vec<CsupRecor
     Ok(records)
 }
 
+fn collect_airport_resources(
+    plates: &[PlateRecord],
+    csups: &[CsupRecord],
+) -> Vec<AirportResourcesRecord> {
+    let mut by_airport: BTreeMap<String, AirportResourcesRecord> = BTreeMap::new();
+    for plate in plates {
+        let entry = by_airport
+            .entry(plate.airport_id.clone())
+            .or_insert_with(|| AirportResourcesRecord {
+                airport_id: plate.airport_id.clone(),
+                plate_ids: Vec::new(),
+                csup_ids: Vec::new(),
+                package_ids: Vec::new(),
+            });
+        entry.plate_ids.push(plate.id.clone());
+        entry.package_ids.push(plate.package_id.clone());
+    }
+    for csup in csups {
+        let entry = by_airport
+            .entry(csup.airport_id.clone())
+            .or_insert_with(|| AirportResourcesRecord {
+                airport_id: csup.airport_id.clone(),
+                plate_ids: Vec::new(),
+                csup_ids: Vec::new(),
+                package_ids: Vec::new(),
+            });
+        entry.csup_ids.push(csup.id.clone());
+        entry.package_ids.push(csup.package_id.clone());
+    }
+    let mut values = by_airport
+        .into_values()
+        .map(|mut entry| {
+            entry.plate_ids.sort();
+            entry.plate_ids.dedup();
+            entry.csup_ids.sort();
+            entry.csup_ids.dedup();
+            entry.package_ids.sort();
+            entry.package_ids.dedup();
+            entry
+        })
+        .collect::<Vec<_>>();
+    values.sort();
+    values
+}
+
 fn package_map_by_region(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
     let mut map = BTreeMap::new();
     for record in read_package_outputs(path)? {
@@ -442,27 +520,49 @@ fn package_map_by_region(path: &Path) -> anyhow::Result<BTreeMap<String, String>
 }
 
 fn read_package_outputs(path: &Path) -> anyhow::Result<Vec<PackageOutputRecord>> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let text =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     text.lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).context("failed to parse package output json"))
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .context("failed to parse package output json")
+        })
         .map(|value| {
             let value = value?;
             if value.get("event").and_then(|v| v.as_str()) != Some("package_output") {
                 bail!("unexpected package output event: {value}");
             }
             Ok(PackageOutputRecord {
-                label: value.get("label").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-                chart: value.get("chart").and_then(|v| v.as_str()).map(ToOwned::to_owned),
-                region: value.get("region").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-                manifest: value.get("manifest").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                label: value
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                chart: value
+                    .get("chart")
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned),
+                region: value
+                    .get("region")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                manifest: value
+                    .get("manifest")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
                 manifest_sha256: value
                     .get("manifest_sha256")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string(),
-                zip: value.get("zip").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                zip: value
+                    .get("zip")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
                 zip_sha256: value
                     .get("zip_sha256")
                     .and_then(|v| v.as_str())
@@ -493,7 +593,8 @@ fn read_nav_cycle_code(nav_db_zip: &Path) -> anyhow::Result<Option<String>> {
         .by_name("databases")
         .with_context(|| format!("missing databases entry in {}", nav_db_zip.display()))?;
     let mut text = String::new();
-    std::io::Read::read_to_string(&mut entry, &mut text).context("failed to read databases entry")?;
+    std::io::Read::read_to_string(&mut entry, &mut text)
+        .context("failed to read databases entry")?;
     Ok(text
         .lines()
         .map(str::trim)
@@ -550,7 +651,8 @@ struct ChartZipMetadata {
 }
 
 fn read_chart_zip_metadata(path: &Path) -> anyhow::Result<ChartZipMetadata> {
-    let file = fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let archive = ZipArchive::new(file).context("failed to open chart zip")?;
     let mut levels: BTreeMap<u32, (u32, u32, u32, u32)> = BTreeMap::new();
     let mut chart_index = None;
@@ -580,13 +682,15 @@ fn read_chart_zip_metadata(path: &Path) -> anyhow::Result<ChartZipMetadata> {
     let chart_index = chart_index.context("no tile entries found in chart zip")?;
     let level_records = levels
         .into_iter()
-        .map(|(zoom, (x_min, x_max, y_tms_min, y_tms_max))| TileLevelRecord {
-            zoom,
-            x_min,
-            x_max,
-            y_tms_min,
-            y_tms_max,
-        })
+        .map(
+            |(zoom, (x_min, x_max, y_tms_min, y_tms_max))| TileLevelRecord {
+                zoom,
+                x_min,
+                x_max,
+                y_tms_min,
+                y_tms_max,
+            },
+        )
         .collect::<Vec<_>>();
     let coverage_bounds = coverage_bounds_from_levels(&level_records)
         .context("failed to derive coverage bounds from levels")?;
@@ -648,7 +752,10 @@ fn infer_region_from_airport_dir(root: &Path) -> Option<String> {
 
 fn infer_region_from_package_map(package_map: &BTreeMap<String, String>) -> Option<String> {
     if package_map.len() == 1 {
-        package_map.keys().next().map(|value| value.to_ascii_lowercase())
+        package_map
+            .keys()
+            .next()
+            .map(|value| value.to_ascii_lowercase())
     } else {
         None
     }
@@ -813,14 +920,28 @@ mod tests {
         assert_eq!(index.nav_db.sqlite_entry, "main.db");
         assert_eq!(index.nav_db.cycle_code.as_deref(), Some("2604"));
         assert_eq!(index.airports.len(), 2);
-        assert!(index.packages.iter().any(|package| package.family_id == "sectional"));
-        assert!(index.packages.iter().any(|package| package.family_id == "tpp"));
-        assert!(index.packages.iter().any(|package| package.family_id == "csup"));
+        assert_eq!(index.packages[0].id, "NE_CSUP");
+        assert!(index
+            .packages
+            .iter()
+            .any(|package| package.family_id == "sectional"));
+        assert!(index
+            .packages
+            .iter()
+            .any(|package| package.family_id == "tpp"));
+        assert!(index
+            .packages
+            .iter()
+            .any(|package| package.family_id == "csup"));
         assert_eq!(index.chart_collections.len(), 1);
         assert_eq!(index.chart_collections[0].family_id, "sectional");
         assert_eq!(index.chart_collections[0].region_id, "nw");
+        assert_eq!(index.chart_collections[0].package_id, "NW_SEC");
         assert_eq!(index.chart_collections[0].chart_index, 0);
-        assert_eq!(index.chart_collections[0].tile_path_template, "tiles/0/{z}/{x}/{y}.webp");
+        assert_eq!(
+            index.chart_collections[0].tile_path_template,
+            "tiles/0/{z}/{x}/{y}.webp"
+        );
         assert_eq!(
             index.chart_collections[0].levels,
             vec![TileLevelRecord {
@@ -831,12 +952,24 @@ mod tests {
                 y_tms_max: 50,
             }]
         );
-        assert!(index.chart_collections[0].coverage_bounds.lon_min < index.chart_collections[0].coverage_bounds.lon_max);
-        assert!(index.chart_collections[0].coverage_bounds.lat_min < index.chart_collections[0].coverage_bounds.lat_max);
+        assert!(
+            index.chart_collections[0].coverage_bounds.lon_min
+                < index.chart_collections[0].coverage_bounds.lon_max
+        );
+        assert!(
+            index.chart_collections[0].coverage_bounds.lat_min
+                < index.chart_collections[0].coverage_bounds.lat_max
+        );
+        assert_eq!(index.plates[0].id, "plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png");
         assert_eq!(index.plates[0].airport_id, "KBOS");
-        assert_eq!(index.plates[0].package_name, "NE_TPP");
+        assert_eq!(index.plates[0].package_id, "NE_TPP");
         assert_eq!(index.csups[0].region_id, "ne");
-        assert_eq!(index.csups[0].package_name, "NE_CSUP");
+        assert_eq!(index.csups[0].package_id, "NE_CSUP");
+        assert_eq!(index.airport_resources.len(), 1);
+        assert_eq!(index.airport_resources[0].airport_id, "KBOS");
+        assert_eq!(index.airport_resources[0].plate_ids, vec!["plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png"]);
+        assert_eq!(index.airport_resources[0].csup_ids, vec!["csup:KBOS:CSUP-NE_0-0.png"]);
+        assert_eq!(index.airport_resources[0].package_ids, vec!["NE_CSUP", "NE_TPP"]);
         assert!(request.output_path.exists());
     }
 }

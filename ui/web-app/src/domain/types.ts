@@ -234,9 +234,9 @@ export type ResourceIndexJson = {
     sort_order: number;
   }>;
   packages: Array<{
+    id: string;
     family_id: ChartFamilyId | "tpp" | "csup";
     region_id: RegionId;
-    manifest_name: string;
     artifact_path: string;
     size_bytes: number;
     checksum_sha256: string;
@@ -245,7 +245,7 @@ export type ResourceIndexJson = {
     id: string;
     family_id: ChartFamilyId;
     region_id: RegionId;
-    package_name: string;
+    package_id: string;
     chart_index: number;
     tile_path_template: string;
     levels: Array<{
@@ -274,18 +274,26 @@ export type ResourceIndexJson = {
     lon: number;
     airport_type: string;
   }>;
+  airport_resources: Array<{
+    airport_id: string;
+    plate_ids: string[];
+    csup_ids: string[];
+    package_ids: string[];
+  }>;
   plates: Array<{
+    id: string;
     airport_id: string;
     region_id: RegionId;
-    package_name: string;
+    package_id: string;
     asset_path: string;
     label: string;
     asset_kind: string;
   }>;
   csups: Array<{
+    id: string;
     airport_id: string;
     region_id: RegionId;
-    package_name: string;
+    package_id: string;
     asset_path: string;
     label: string;
     asset_kind: string;

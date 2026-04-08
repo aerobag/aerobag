@@ -73,12 +73,12 @@ function deriveMapView(
     chart_name: `${regionDisplayName(resourceIndex, collection.region_id)} ${familyDisplayName(resourceIndex, collection.family_id)}`,
     chart_index: collection.chart_index,
     tile_root: "tiles",
-    tile_url_root: tileUrlRoot(collection.package_name),
+    tile_url_root: tileUrlRoot(collection.package_id),
     tile_size: tileSizeForFamily(resourceIndex, collection.family_id),
     min_zoom: minZoomForLevels(levels),
     max_zoom: maxZoomForLevels(levels),
     storage_kind: tileStorageKindForCollection(collection.id),
-    package_name: collection.package_name,
+    package_name: collection.package_id,
     initial_viewport: {
       lat: collection.default_view.lat,
       lon: collection.default_view.lon,
@@ -142,17 +142,28 @@ export function deriveChartPage(
   fixtureChartPage: ContentFixtureBundle["chart_page"] | undefined,
   samplePlan: FlightPlan,
 ): ChartPage {
+  const plateById = new Map(resourceIndex.plates.map((record) => [record.id, record]));
+  const csupById = new Map(resourceIndex.csups.map((record) => [record.id, record]));
+  const airportResourcesByAirportId = new Map(
+    resourceIndex.airport_resources.map((entry) => [entry.airport_id, entry]),
+  );
   const hintedAirportIds = new Set<string>(fixtureChartPage?.recent_airport_ids ?? []);
   for (const airportId of airportIdsFromPlan(samplePlan)) {
     hintedAirportIds.add(airportId);
   }
   const airports = [...hintedAirportIds]
     .map((airportId) => {
-      const plates = resourceIndex.plates
-        .filter((record) => record.airport_id === airportId)
+      const airportResources = airportResourcesByAirportId.get(airportId);
+      if (!airportResources) {
+        return null;
+      }
+      const plates = airportResources.plate_ids
+        .map((id) => plateById.get(id))
+        .filter((record): record is ResourceIndexJson["plates"][number] => record !== undefined)
         .map((record) => chartAssetForRecord(airportId, "plate", record));
-      const csups = resourceIndex.csups
-        .filter((record) => record.airport_id === airportId)
+      const csups = airportResources.csup_ids
+        .map((id) => csupById.get(id))
+        .filter((record): record is ResourceIndexJson["csups"][number] => record !== undefined)
         .map((record) => chartAssetForRecord(airportId, "csup", record));
       const charts = [...plates, ...csups];
       if (charts.length === 0) {

@@ -421,6 +421,7 @@ dependencies = [
  "preprocessor-resource-index",
  "preprocessor-tools",
  "preprocessor-tpp",
+ "rusqlite",
  "serde_json",
  "sha2",
 ]
@@ -451,6 +452,7 @@ dependencies = [
  "anyhow",
  "quick-xml",
  "rusqlite",
+ "tempfile",
  "zip",
 ]
 

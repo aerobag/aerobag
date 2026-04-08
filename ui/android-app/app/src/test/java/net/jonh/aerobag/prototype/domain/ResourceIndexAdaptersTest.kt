@@ -25,7 +25,7 @@ class ResourceIndexAdaptersTest {
                 id = "sectional:nw",
                 family_id = WireChartFamilyId.Sectional,
                 region_id = WireRegionId.Nw,
-                package_name = "NW_SEC",
+                package_id = "NW_SEC",
                 chart_index = 0,
                 tile_path_template = "tiles/0/{z}/{x}/{y}.webp",
                 levels = listOf(WireChartCollectionLevel(10, 1, 2, 3, 4)),
@@ -36,7 +36,7 @@ class ResourceIndexAdaptersTest {
                 id = "tac:nw",
                 family_id = WireChartFamilyId.Tac,
                 region_id = WireRegionId.Nw,
-                package_name = "NW_TAC",
+                package_id = "NW_TAC",
                 chart_index = 1,
                 tile_path_template = "tiles/1/{z}/{x}/{y}.webp",
                 levels = listOf(WireChartCollectionLevel(11, 5, 6, 7, 8)),
@@ -44,11 +44,21 @@ class ResourceIndexAdaptersTest {
                 default_view = WireDefaultView(46.0, -123.0, 9.0),
             ),
         ),
+        airports = emptyList(),
+        airport_resources = listOf(
+            WireAirportResources(
+                airport_id = "BOS",
+                plate_ids = listOf("plate:BOS:IAP-MA-ILS OR LOC RWY 04R.png"),
+                csup_ids = listOf("csup:BOS:CSUP-NE_0-0.png"),
+                package_ids = listOf("NE_CSUP", "NE_TPP"),
+            ),
+        ),
         plates = listOf(
             WireResourcePlate(
+                id = "plate:BOS:IAP-MA-ILS OR LOC RWY 04R.png",
                 airport_id = "BOS",
                 region_id = WireRegionId.Ne,
-                package_name = "NE_TPP",
+                package_id = "NE_TPP",
                 asset_path = "plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png",
                 label = "IAP-MA-ILS OR LOC RWY 04R",
                 asset_kind = "png",
@@ -56,9 +66,10 @@ class ResourceIndexAdaptersTest {
         ),
         csups = listOf(
             WireResourceCsup(
+                id = "csup:BOS:CSUP-NE_0-0.png",
                 airport_id = "BOS",
                 region_id = WireRegionId.Ne,
-                package_name = "NE_CSUP",
+                package_id = "NE_CSUP",
                 asset_path = "afd/BOS/CSUP-NE_0-0.png",
                 label = "CSUP-NE_0-0",
                 asset_kind = "png",

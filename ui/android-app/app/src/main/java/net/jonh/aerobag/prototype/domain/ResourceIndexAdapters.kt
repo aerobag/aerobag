@@ -11,9 +11,10 @@ data class WireResourceIndex(
     val regions: List<WireCatalogRegion>,
     val packages: List<WireResourcePackage>,
     val chart_collections: List<WireChartCollection>,
-    val airports: List<WireResourceAirport> = emptyList(),
-    val plates: List<WireResourcePlate> = emptyList(),
-    val csups: List<WireResourceCsup> = emptyList(),
+    val airports: List<WireResourceAirport>,
+    val airport_resources: List<WireAirportResources>,
+    val plates: List<WireResourcePlate>,
+    val csups: List<WireResourceCsup>,
 )
 
 @Serializable
@@ -25,9 +26,9 @@ data class WireResourceFamily(
 
 @Serializable
 data class WireResourcePackage(
+    val id: String,
     val family_id: String,
     val region_id: WireRegionId,
-    val manifest_name: String,
     val artifact_path: String,
     val size_bytes: Long,
     val checksum_sha256: String,
@@ -38,7 +39,7 @@ data class WireChartCollection(
     val id: String,
     val family_id: WireChartFamilyId,
     val region_id: WireRegionId,
-    val package_name: String,
+    val package_id: String,
     val chart_index: Int,
     val tile_path_template: String,
     val levels: List<WireChartCollectionLevel>,
@@ -80,10 +81,19 @@ data class WireResourceAirport(
 )
 
 @Serializable
+data class WireAirportResources(
+    val airport_id: String,
+    val plate_ids: List<String> = emptyList(),
+    val csup_ids: List<String> = emptyList(),
+    val package_ids: List<String> = emptyList(),
+)
+
+@Serializable
 data class WireResourcePlate(
+    val id: String,
     val airport_id: String,
     val region_id: WireRegionId,
-    val package_name: String,
+    val package_id: String,
     val asset_path: String,
     val label: String,
     val asset_kind: String,
@@ -91,9 +101,10 @@ data class WireResourcePlate(
 
 @Serializable
 data class WireResourceCsup(
+    val id: String,
     val airport_id: String,
     val region_id: WireRegionId,
-    val package_name: String,
+    val package_id: String,
     val asset_path: String,
     val label: String,
     val asset_kind: String,
@@ -171,12 +182,12 @@ fun deriveMapViews(
                 chartName = "${regionDisplayName(resourceIndex.regions, collection.region_id)} ${familyDisplayName(resourceIndex.families, collection.family_id.toResourceId())}",
                 chartIndex = collection.chart_index,
                 tileRoot = "tiles",
-                tileUrlRoot = "/sectional-packages/${collection.package_name}/tiles",
+                tileUrlRoot = "/sectional-packages/${collection.package_id}/tiles",
                 tileSize = 256,
                 minZoom = minZoomForLevels(levels),
                 maxZoom = maxZoomForLevels(levels),
                 storageKind = TileStorageKind.SectionalPackage,
-                packageName = collection.package_name,
+                packageName = collection.package_id,
                 initialViewport = MapViewportSeed(
                     lat = collection.default_view.lat,
                     lon = collection.default_view.lon,
@@ -219,15 +230,19 @@ fun deriveChartPage(
     initialChartIdHint: String?,
     samplePlan: FlightPlan,
 ): ChartPageFixture {
+    val plateById = resourceIndex.plates.associateBy { it.id }
+    val csupById = resourceIndex.csups.associateBy { it.id }
+    val airportResourcesByAirportId = resourceIndex.airport_resources.associateBy { it.airport_id }
     val airportIds = linkedSetOf<String>()
     recentAirportIds.forEach(airportIds::add)
     airportIdsFromPlan(samplePlan).forEach(airportIds::add)
     val airports = airportIds.mapNotNull { airportId ->
+        val airportResources = airportResourcesByAirportId[airportId] ?: return@mapNotNull null
         val charts = buildList {
-            resourceIndex.plates.filter { it.airport_id == airportId }.forEach { record ->
+            airportResources.plate_ids.mapNotNull(plateById::get).forEach { record ->
                 add(chartAsset(airportId, "plate", record.label, record.asset_path))
             }
-            resourceIndex.csups.filter { it.airport_id == airportId }.forEach { record ->
+            airportResources.csup_ids.mapNotNull(csupById::get).forEach { record ->
                 add(chartAsset(airportId, "csup", record.label, record.asset_path))
             }
         }

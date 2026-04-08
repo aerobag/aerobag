@@ -30,7 +30,7 @@ pub struct FullValidationConfig {
 }
 
 const CGROUP_ACTIVE_ENV: &str = "FULL_VALIDATION_CGROUP_ACTIVE";
-const DEFAULT_MEMORY_MAX: &str = "35G";
+const DEFAULT_MEMORY_MAX: &str = "80G";
 
 #[derive(Debug)]
 struct SpawnedJob {
@@ -79,7 +79,7 @@ impl FullValidationConfig {
         let cpu_jobs = env_usize("CPU_JOBS").unwrap_or_else(default_cpu_jobs);
         let native_chart_cpu_jobs = env_usize("NATIVE_CHART_CPU_JOBS")
             .unwrap_or_else(|| if cpu_jobs > 8 { 8 } else { cpu_jobs.max(1) });
-        let max_heavy_jobs = env_usize("MAX_HEAVY_JOBS").unwrap_or(1).max(1);
+        let max_heavy_jobs = env_usize("MAX_HEAVY_JOBS").unwrap_or(4).max(1);
         let image_sample_percent = env_u8("IMAGE_SAMPLE_PERCENT").unwrap_or(100);
         let image_rmse_threshold =
             env::var("IMAGE_RMSE_THRESHOLD").unwrap_or_else(|_| "0.0".to_string());

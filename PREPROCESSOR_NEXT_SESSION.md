@@ -914,9 +914,10 @@ If the next session starts with no further instruction, do this:
   - [baseline/avare_equivalent/preprocessor-cli/src/full_validation.rs](/root/aerobag/baseline/avare_equivalent/preprocessor-cli/src/full_validation.rs)
 - Important current orchestrator behavior:
   - self-reexec under `systemd-run`
-  - default memory cap `MemoryMax=35G`
+  - default memory cap `MemoryMax=80G`
   - `MemorySwapMax=0`
-  - heavy-job throttle via `--max-heavy-jobs <n>`
+  - default heavy-job throttle `4`
+  - override via `--max-heavy-jobs <n>`
   - master progress log:
     - `runs/<run-id>-validation/orchestrator-logs/master.log`
   - master log now ends with an explicit terminal line:

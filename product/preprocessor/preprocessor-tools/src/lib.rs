@@ -87,7 +87,10 @@ impl ToolInvocation {
             .spawn()
             .with_context(|| format!("failed to run {}", self.render_command_line()))?;
         if let Some(stdin_text) = &self.stdin_text {
-            let mut stdin = child.stdin.take().context("failed to capture child stdin")?;
+            let mut stdin = child
+                .stdin
+                .take()
+                .context("failed to capture child stdin")?;
             stdin
                 .write_all(stdin_text.as_bytes())
                 .context("failed to write child stdin")?;

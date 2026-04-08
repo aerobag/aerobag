@@ -152,7 +152,9 @@ impl Region {
             Self::Nc => &["ND", "MN", "IA", "MO", "KS", "NE", "SD"],
             Self::Ec => &["WI", "MI", "OH", "IN", "IL"],
             Self::Sc => &["OK", "AR", "MS", "LA", "TX"],
-            Self::Ne => &["NY", "ME", "VT", "NH", "MA", "RI", "CT", "NJ", "DE", "MD", "DC", "VA", "WV", "PA"],
+            Self::Ne => &[
+                "NY", "ME", "VT", "NH", "MA", "RI", "CT", "NJ", "DE", "MD", "DC", "VA", "WV", "PA",
+            ],
             Self::Se => &["KY", "NC", "SC", "GA", "FL", "AL", "TN", "PR", "VI"],
         }
     }

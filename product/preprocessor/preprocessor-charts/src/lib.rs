@@ -7,15 +7,15 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use chrono::Datelike;
 use preprocessor_core::{
     ChartFamily, ConcurrencyConfig, Parallelism, PhasePlan, Region, RegionBounds, RunPaths,
     WorkKind,
 };
 use preprocessor_fetch::{
-    PackageOutputRecord, copy_source_urls_provenance, hash_file, prefetch_archives,
-    prefetch_archives_with_provenance, read_source_urls_jsonl, write_package_outputs_jsonl,
+    copy_source_urls_provenance, hash_file, prefetch_archives, prefetch_archives_with_provenance,
+    read_source_urls_jsonl, write_package_outputs_jsonl, PackageOutputRecord,
 };
 use preprocessor_tools::{ToolInvocation, ToolOutcome};
 
@@ -163,12 +163,17 @@ pub fn run_family(request: &ChartRunRequest) -> anyhow::Result<ChartRunResult> {
         prefetch_elapsed_ms = start.elapsed().as_millis();
     }
 
-    let provenance_dir = paths.meta.join("provenance").join(request.family.capture_label());
+    let provenance_dir = paths
+        .meta
+        .join("provenance")
+        .join(request.family.capture_label());
     fs::create_dir_all(&provenance_dir).context("failed to create provenance dir")?;
 
     let invocation = ToolInvocation {
         program: "python3".to_string(),
-        args: vec![ChartSpec::for_family(request.family).script_name.to_string()],
+        args: vec![ChartSpec::for_family(request.family)
+            .script_name
+            .to_string()],
         cwd: work_dir.clone(),
         label: request.family.capture_label().to_string(),
         env: vec![
@@ -215,7 +220,11 @@ pub fn stage_work_dir(
         .as_ref()
         .join("work")
         .join(spec.family.capture_label());
-    copy_dir_recursive(source_repo, &work_dir, looks_like_populated_work_dir(source_repo))?;
+    copy_dir_recursive(
+        source_repo,
+        &work_dir,
+        looks_like_populated_work_dir(source_repo),
+    )?;
     Ok(work_dir)
 }
 
@@ -224,7 +233,10 @@ pub fn run_native_family(request: &NativeChartRunRequest) -> anyhow::Result<Nati
     fs::create_dir_all(&paths.logs).context("failed to create logs dir")?;
     fs::create_dir_all(&paths.meta).context("failed to create meta dir")?;
     let work_dir = stage_work_dir(request.family, &request.source_repo, &request.run_root)?;
-    let provenance_dir = paths.meta.join("provenance").join(request.family.capture_label());
+    let provenance_dir = paths
+        .meta
+        .join("provenance")
+        .join(request.family.capture_label());
     fs::create_dir_all(&provenance_dir).context("failed to create provenance dir")?;
 
     let mut prefetch_elapsed_ms = 0_u128;
@@ -379,7 +391,11 @@ fn build_vrts_from_spec(
     }
 }
 
-fn build_vfr_vrts(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::Result<VrtBuildResult> {
+fn build_vfr_vrts(
+    work_dir: &Path,
+    spec: ChartSpec,
+    cpu_jobs: usize,
+) -> anyhow::Result<VrtBuildResult> {
     let chart_dir_name = spec.chart_dir_name;
     let chart_dir = work_dir.join(chart_dir_name);
     // Compatibility note: overlap precedence in the main family VRT depends on input order.
@@ -404,13 +420,21 @@ fn build_vfr_vrts(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::
         handles.push(thread::spawn(move || -> anyhow::Result<()> {
             loop {
                 let next = {
-                    let mut guard = queue.lock().map_err(|_| anyhow::anyhow!("queue poisoned"))?;
+                    let mut guard = queue
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("queue poisoned"))?;
                     guard.pop()
                 };
                 let Some(base_name) = next else {
                     break;
                 };
-                build_one_vfr_vrt(&work_dir, &base_name, &chart_dir_name, spec.family, worker_index)?;
+                build_one_vfr_vrt(
+                    &work_dir,
+                    &base_name,
+                    &chart_dir_name,
+                    spec.family,
+                    worker_index,
+                )?;
             }
             Ok(())
         }));
@@ -434,7 +458,11 @@ fn build_vfr_vrts(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::
     })
 }
 
-fn build_ifr_vrts(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::Result<VrtBuildResult> {
+fn build_ifr_vrts(
+    work_dir: &Path,
+    spec: ChartSpec,
+    cpu_jobs: usize,
+) -> anyhow::Result<VrtBuildResult> {
     let chart_dir_name = spec.chart_dir_name;
     let chart_dir = work_dir.join(chart_dir_name);
     // Compatibility note: IFR families also depend on legacy VRT stacking order for overlap
@@ -457,13 +485,21 @@ fn build_ifr_vrts(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::
         handles.push(thread::spawn(move || -> anyhow::Result<()> {
             loop {
                 let next = {
-                    let mut guard = queue.lock().map_err(|_| anyhow::anyhow!("queue poisoned"))?;
+                    let mut guard = queue
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("queue poisoned"))?;
                     guard.pop()
                 };
                 let Some(base_name) = next else {
                     break;
                 };
-                build_one_ifr_vrt(&work_dir, &base_name, &chart_dir_name, spec.family, worker_index)?;
+                build_one_ifr_vrt(
+                    &work_dir,
+                    &base_name,
+                    &chart_dir_name,
+                    spec.family,
+                    worker_index,
+                )?;
             }
             Ok(())
         }));
@@ -505,7 +541,12 @@ for path in glob.glob("*.geojson", root_dir=chart_dir):
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .with_context(|| format!("failed to enumerate chart inputs under {}", chart_dir.display()))?;
+        .with_context(|| {
+            format!(
+                "failed to enumerate chart inputs under {}",
+                chart_dir.display()
+            )
+        })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("python glob enumeration failed: {stderr}");
@@ -561,7 +602,10 @@ fn build_one_vfr_vrt(
             rgb_vrt_name.clone(),
         ],
         cwd: work_dir.to_path_buf(),
-        label: format!("{family_label}-translate-{worker_index}-{}", sanitize_label(base_name)),
+        label: format!(
+            "{family_label}-translate-{worker_index}-{}",
+            sanitize_label(base_name)
+        ),
         env: Vec::new(),
         stdin_text: None,
     };
@@ -588,7 +632,10 @@ fn build_one_vfr_vrt(
             vrt_name,
         ],
         cwd: work_dir.to_path_buf(),
-        label: format!("{family_label}-warp-{worker_index}-{}", sanitize_label(base_name)),
+        label: format!(
+            "{family_label}-warp-{worker_index}-{}",
+            sanitize_label(base_name)
+        ),
         env: Vec::new(),
         stdin_text: None,
     };
@@ -633,7 +680,10 @@ fn build_one_ifr_vrt(
             vrt_name,
         ],
         cwd: work_dir.to_path_buf(),
-        label: format!("{family_label}-warp-{worker_index}-{}", sanitize_label(base_name)),
+        label: format!(
+            "{family_label}-warp-{worker_index}-{}",
+            sanitize_label(base_name)
+        ),
         env: Vec::new(),
         stdin_text: None,
     };
@@ -689,7 +739,11 @@ fn build_main_vrt(work_dir: &Path, chart_name: &str, vrts: &[PathBuf]) -> anyhow
     Ok(())
 }
 
-fn build_tiles_from_spec(work_dir: &Path, spec: ChartSpec, cpu_jobs: usize) -> anyhow::Result<TileBuildResult> {
+fn build_tiles_from_spec(
+    work_dir: &Path,
+    spec: ChartSpec,
+    cpu_jobs: usize,
+) -> anyhow::Result<TileBuildResult> {
     let tiles_root = work_dir.join("tiles").join(spec.tile_index);
     if tiles_root.exists() {
         // gdal2tiles.py overview tiles are generated from already-written child image files.
@@ -943,10 +997,22 @@ fn find_bounds(x: u32, y: u32, zoom: u32) -> (f64, f64, f64, f64) {
     let initial_resolution = (2.0 * std::f64::consts::PI * 6378137.0) / size;
     let resolution = initial_resolution / 2_f64.powi(zoom as i32);
 
-    let lon_u = meters_to_lon(x_pixels_to_meters(zoom, x as f64 * size, resolution, origin_shift), origin_shift);
-    let lon_l = meters_to_lon(x_pixels_to_meters(zoom, (x as f64 + 1.0) * size, resolution, origin_shift), origin_shift);
-    let lat_l = meters_to_lat(y_pixels_to_meters(zoom, y as f64 * size, resolution, origin_shift), origin_shift);
-    let lat_u = meters_to_lat(y_pixels_to_meters(zoom, (y as f64 + 1.0) * size, resolution, origin_shift), origin_shift);
+    let lon_u = meters_to_lon(
+        x_pixels_to_meters(zoom, x as f64 * size, resolution, origin_shift),
+        origin_shift,
+    );
+    let lon_l = meters_to_lon(
+        x_pixels_to_meters(zoom, (x as f64 + 1.0) * size, resolution, origin_shift),
+        origin_shift,
+    );
+    let lat_l = meters_to_lat(
+        y_pixels_to_meters(zoom, y as f64 * size, resolution, origin_shift),
+        origin_shift,
+    );
+    let lat_u = meters_to_lat(
+        y_pixels_to_meters(zoom, (y as f64 + 1.0) * size, resolution, origin_shift),
+        origin_shift,
+    );
     (lon_u, lat_l, lon_l, lat_u)
 }
 
@@ -1006,9 +1072,15 @@ fn looks_like_populated_work_dir(path: &Path) -> bool {
             .flat_map(|entries| entries.filter_map(Result::ok))
             .any(|entry| {
                 let entry_path = entry.path();
-                entry_path.extension().and_then(|value| value.to_str()).is_some_and(|ext| {
-                    matches!(ext, "zip" | "tif" | "tfw" | "vrt" | "webp" | "png" | "htm" | "html")
-                })
+                entry_path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|ext| {
+                        matches!(
+                            ext,
+                            "zip" | "tif" | "tfw" | "vrt" | "webp" | "png" | "htm" | "html"
+                        )
+                    })
             })
 }
 
@@ -1112,12 +1184,14 @@ mod tests {
         fs::create_dir_all(src.join("meta/provenance/charts-sec"))
             .expect("failed to create meta path");
         fs::create_dir_all(src.join("logs")).expect("failed to create logs path");
-        fs::create_dir_all(src.join("work/charts-sec"))
-            .expect("failed to create work path");
+        fs::create_dir_all(src.join("work/charts-sec")).expect("failed to create work path");
         fs::write(src.join("Anchorage SEC.tif"), b"chart").expect("failed to write chart artifact");
         fs::write(src.join("Anchorage SEC.zip"), b"zip").expect("failed to write zip artifact");
-        fs::write(src.join("meta/provenance/charts-sec/source_urls.jsonl"), b"[]")
-            .expect("failed to write provenance artifact");
+        fs::write(
+            src.join("meta/provenance/charts-sec/source_urls.jsonl"),
+            b"[]",
+        )
+        .expect("failed to write provenance artifact");
         fs::write(src.join("logs/charts-sec.stderr.log"), b"log").expect("failed to write log");
         fs::write(src.join("work/charts-sec/copied.txt"), b"work").expect("failed to write work");
         fs::write(

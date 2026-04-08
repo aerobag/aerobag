@@ -1,11 +1,15 @@
-use std::{fs, path::{Path, PathBuf}, time::Instant};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use preprocessor_core::{Region, RunPaths};
 use preprocessor_fetch::{
-    PackageOutputRecord, copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
-    read_source_urls_jsonl, write_package_outputs_jsonl,
+    copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
+    read_source_urls_jsonl, write_package_outputs_jsonl, PackageOutputRecord,
 };
 use preprocessor_tools::ToolInvocation;
 
@@ -46,7 +50,13 @@ pub fn run_native_csup(request: &NativeCsupRunRequest) -> anyhow::Result<NativeC
         let start = Instant::now();
         copy_source_urls_provenance(source_urls_path, &provenance_dir)?;
         let urls = read_source_urls_jsonl(source_urls_path)?;
-        prefetch_archives_with_provenance(&urls, &work_dir, request.fetch_jobs, &provenance_dir, "csup")?;
+        prefetch_archives_with_provenance(
+            &urls,
+            &work_dir,
+            request.fetch_jobs,
+            &provenance_dir,
+            "csup",
+        )?;
         prefetch_elapsed_ms = start.elapsed().as_millis();
     }
 
@@ -69,7 +79,11 @@ pub fn run_native_csup(request: &NativeCsupRunRequest) -> anyhow::Result<NativeC
 
 fn stage_work_dir(source_repo: &Path, run_root: &Path) -> anyhow::Result<PathBuf> {
     let work_dir = run_root.join("work").join("csup");
-    copy_dir_recursive(source_repo, &work_dir, looks_like_populated_work_dir(source_repo))?;
+    copy_dir_recursive(
+        source_repo,
+        &work_dir,
+        looks_like_populated_work_dir(source_repo),
+    )?;
     Ok(work_dir)
 }
 
@@ -84,15 +98,25 @@ fn render_csup_pages(work_dir: &Path) -> anyhow::Result<()> {
 }
 
 fn uppercase_pdf_names(work_dir: &Path) -> anyhow::Result<()> {
-    for entry in fs::read_dir(work_dir).with_context(|| format!("failed to read {}", work_dir.display()))? {
+    for entry in
+        fs::read_dir(work_dir).with_context(|| format!("failed to read {}", work_dir.display()))?
+    {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("pdf")) {
+        if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+        {
             let upper_name = entry.file_name().to_string_lossy().to_uppercase();
             let upper_path = work_dir.join(&upper_name);
             if path != upper_path && !upper_path.exists() {
                 fs::rename(&path, &upper_path).with_context(|| {
-                    format!("failed to rename {} to {}", path.display(), upper_path.display())
+                    format!(
+                        "failed to rename {} to {}",
+                        path.display(),
+                        upper_path.display()
+                    )
                 })?;
             }
         }
@@ -123,7 +147,10 @@ fn parse_airports(xml_path: &Path) -> anyhow::Result<Vec<AirportRecord>> {
     let document = roxmltree::Document::parse(&text)
         .with_context(|| format!("failed to parse {}", xml_path.display()))?;
     let mut airports = Vec::new();
-    for airport in document.descendants().filter(|node| node.has_tag_name("airport")) {
+    for airport in document
+        .descendants()
+        .filter(|node| node.has_tag_name("airport"))
+    {
         let apt_id = airport
             .children()
             .find(|node| node.has_tag_name("aptid"))
@@ -152,7 +179,8 @@ fn parse_airports(xml_path: &Path) -> anyhow::Result<Vec<AirportRecord>> {
 
 fn render_airport_pages(work_dir: &Path, airport: &AirportRecord) -> anyhow::Result<()> {
     let apt_dir = work_dir.join("afd").join(&airport.apt_id);
-    fs::create_dir_all(&apt_dir).with_context(|| format!("failed to create {}", apt_dir.display()))?;
+    fs::create_dir_all(&apt_dir)
+        .with_context(|| format!("failed to create {}", apt_dir.display()))?;
 
     for (page_index, pdf_name) in airport.pdfs.iter().enumerate() {
         let tokens = pdf_name.split('_').collect::<Vec<_>>();
@@ -206,7 +234,11 @@ fn render_airport_pages(work_dir: &Path, airport: &AirportRecord) -> anyhow::Res
         };
         let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
         if !outcome.success {
-            bail!("mogrify failed for airport {} page {}", airport.apt_id, page_index);
+            bail!(
+                "mogrify failed for airport {} page {}",
+                airport.apt_id,
+                page_index
+            );
         }
     }
 
@@ -214,7 +246,9 @@ fn render_airport_pages(work_dir: &Path, airport: &AirportRecord) -> anyhow::Res
 }
 
 fn remove_pngs_for_base(apt_dir: &Path, output_base: &str) -> anyhow::Result<()> {
-    for entry in fs::read_dir(apt_dir).with_context(|| format!("failed to read {}", apt_dir.display()))? {
+    for entry in
+        fs::read_dir(apt_dir).with_context(|| format!("failed to read {}", apt_dir.display()))?
+    {
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
@@ -226,10 +260,7 @@ fn remove_pngs_for_base(apt_dir: &Path, output_base: &str) -> anyhow::Result<()>
     Ok(())
 }
 
-fn package_csup_regions(
-    work_dir: &Path,
-    provenance_dir: &Path,
-) -> anyhow::Result<usize> {
+fn package_csup_regions(work_dir: &Path, provenance_dir: &Path) -> anyhow::Result<usize> {
     let manifest_cycle = current_cycle_manifest();
     let mut package_records = Vec::with_capacity(Region::ALL.len());
 
@@ -290,8 +321,15 @@ fn package_csup_regions(
 }
 
 fn collect_region_pngs(work_dir: &Path, region_code: &str) -> anyhow::Result<Vec<String>> {
-    fn visit(dir: &Path, root: &Path, region_code: &str, out: &mut Vec<String>) -> anyhow::Result<()> {
-        for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+    fn visit(
+        dir: &Path,
+        root: &Path,
+        region_code: &str,
+        out: &mut Vec<String>,
+    ) -> anyhow::Result<()> {
+        for entry in
+            fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))?
+        {
             let entry = entry?;
             let path = entry.path();
             let file_type = entry
@@ -370,7 +408,11 @@ fn copy_dir_recursive(src: &Path, dst: &Path, preserve_generated: bool) -> anyho
             copy_dir_recursive(&src_path, &dst_path, preserve_generated)?;
         } else if file_type.is_file() {
             fs::copy(&src_path, &dst_path).with_context(|| {
-                format!("failed to copy {} to {}", src_path.display(), dst_path.display())
+                format!(
+                    "failed to copy {} to {}",
+                    src_path.display(),
+                    dst_path.display()
+                )
             })?;
         }
     }
@@ -386,9 +428,10 @@ fn looks_like_populated_work_dir(path: &Path) -> bool {
             .flat_map(|entries| entries.filter_map(Result::ok))
             .any(|entry| {
                 let entry_path = entry.path();
-                entry_path.extension().and_then(|value| value.to_str()).is_some_and(|ext| {
-                    matches!(ext, "zip" | "pdf" | "PDF" | "png" | "xml")
-                })
+                entry_path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|ext| matches!(ext, "zip" | "pdf" | "PDF" | "png" | "xml"))
             })
 }
 

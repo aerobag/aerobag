@@ -5,16 +5,17 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use preprocessor_core::{Region, RunPaths};
 use preprocessor_fetch::{
-    PackageOutputRecord, copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
-    read_source_urls_jsonl, write_package_outputs_jsonl,
+    copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
+    read_source_urls_jsonl, write_package_outputs_jsonl, PackageOutputRecord,
 };
 use preprocessor_tools::ToolInvocation;
 
-const TPP_AIRPORT_DIAGRAMS_URL: &str = "https://www.outerworldapps.com/WairToNowWork/avare_aptdiags.php";
+const TPP_AIRPORT_DIAGRAMS_URL: &str =
+    "https://www.outerworldapps.com/WairToNowWork/avare_aptdiags.php";
 
 #[derive(Debug, Clone)]
 pub struct NativeTppRunRequest {
@@ -49,10 +50,10 @@ pub fn run_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<NativeTpp
     fs::create_dir_all(&paths.meta).context("failed to create meta dir")?;
 
     let work_dir = stage_work_dir(&request.source_repo, &request.run_root, request.region)?;
-    let provenance_dir = paths
-        .meta
-        .join("provenance")
-        .join(format!("tpp-{}", request.region.code().to_ascii_lowercase()));
+    let provenance_dir = paths.meta.join("provenance").join(format!(
+        "tpp-{}",
+        request.region.code().to_ascii_lowercase()
+    ));
     fs::create_dir_all(&provenance_dir).context("failed to create provenance dir")?;
 
     let mut prefetch_elapsed_ms = 0_u128;
@@ -94,7 +95,11 @@ fn stage_work_dir(source_repo: &Path, run_root: &Path, region: Region) -> anyhow
     let work_dir = run_root
         .join("work")
         .join(format!("tpp-{}", region.code().to_ascii_lowercase()));
-    copy_dir_recursive(source_repo, &work_dir, looks_like_populated_work_dir(source_repo))?;
+    copy_dir_recursive(
+        source_repo,
+        &work_dir,
+        looks_like_populated_work_dir(source_repo),
+    )?;
     Ok(work_dir)
 }
 
@@ -111,15 +116,25 @@ fn render_tpp_region(work_dir: &Path, region: Region) -> anyhow::Result<()> {
 }
 
 fn uppercase_pdf_names(work_dir: &Path) -> anyhow::Result<()> {
-    for entry in fs::read_dir(work_dir).with_context(|| format!("failed to read {}", work_dir.display()))? {
+    for entry in
+        fs::read_dir(work_dir).with_context(|| format!("failed to read {}", work_dir.display()))?
+    {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("pdf")) {
+        if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+        {
             let upper_name = entry.file_name().to_string_lossy().to_uppercase();
             let upper_path = work_dir.join(&upper_name);
             if path != upper_path && !upper_path.exists() {
                 fs::rename(&path, &upper_path).with_context(|| {
-                    format!("failed to rename {} to {}", path.display(), upper_path.display())
+                    format!(
+                        "failed to rename {} to {}",
+                        path.display(),
+                        upper_path.display()
+                    )
                 })?;
             }
         }
@@ -127,8 +142,11 @@ fn uppercase_pdf_names(work_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn read_airport_diagram_tags(path: &Path) -> anyhow::Result<std::collections::HashMap<String, String>> {
-    let text = fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+fn read_airport_diagram_tags(
+    path: &Path,
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
+    let text =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut map = std::collections::HashMap::new();
     for line in text.lines() {
         let tokens = line.split(',').collect::<Vec<_>>();
@@ -147,18 +165,34 @@ fn parse_region_plates(xml_path: &Path, region: Region) -> anyhow::Result<Vec<Pl
         .with_context(|| format!("failed to parse {}", xml_path.display()))?;
 
     let mut plates = Vec::new();
-    for state in document.descendants().filter(|node| node.has_tag_name("state_code")) {
+    for state in document
+        .descendants()
+        .filter(|node| node.has_tag_name("state_code"))
+    {
         let state_id = state.attribute("ID").unwrap_or("").trim().to_string();
         if state_id.is_empty() || !region.state_codes().contains(&state_id.as_str()) {
             continue;
         }
-        for city in state.children().filter(|node| node.has_tag_name("city_name")) {
-            for airport in city.children().filter(|node| node.has_tag_name("airport_name")) {
-                let apt_id = airport.attribute("apt_ident").unwrap_or("").trim().to_string();
+        for city in state
+            .children()
+            .filter(|node| node.has_tag_name("city_name"))
+        {
+            for airport in city
+                .children()
+                .filter(|node| node.has_tag_name("airport_name"))
+            {
+                let apt_id = airport
+                    .attribute("apt_ident")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 if apt_id.is_empty() {
                     continue;
                 }
-                for record in airport.children().filter(|node| node.has_tag_name("record")) {
+                for record in airport
+                    .children()
+                    .filter(|node| node.has_tag_name("record"))
+                {
                     let chart_name = record
                         .children()
                         .find(|node| node.has_tag_name("chart_name"))
@@ -215,7 +249,8 @@ fn make_plate(
         plate.chart_name.replace('/', " AND ")
     );
     let folder = work_dir.join("plates").join(&plate.apt_id);
-    fs::create_dir_all(&folder).with_context(|| format!("failed to create {}", folder.display()))?;
+    fs::create_dir_all(&folder)
+        .with_context(|| format!("failed to create {}", folder.display()))?;
 
     if output_name.starts_with("MIN-") {
         render_minimum_plate(work_dir, &folder, &pdf_path, &output_name, &plate.apt_id)?;
@@ -249,13 +284,20 @@ fn render_minimum_plate(
     output_name: &str,
     apt_id: &str,
 ) -> anyhow::Result<()> {
-    if existing_pngs_for_prefix(folder, output_name)?.next().is_some() {
+    if existing_pngs_for_prefix(folder, output_name)?
+        .next()
+        .is_some()
+    {
         return Ok(());
     }
 
     let pages = find_plate_pages(pdf_path, apt_id)?;
     if pages.is_empty() {
-        render_basic_png(work_dir, pdf_path, &folder.join(format!("{output_name}.png")))?;
+        render_basic_png(
+            work_dir,
+            pdf_path,
+            &folder.join(format!("{output_name}.png")),
+        )?;
         return Ok(());
     }
 
@@ -296,7 +338,11 @@ fn render_airport_diagram(
     comment: Option<&String>,
 ) -> anyhow::Result<()> {
     render_basic_png(work_dir, pdf_path, png_path)?;
-    write_user_comment(work_dir, png_path, comment.map(String::as_str).unwrap_or(""))?;
+    write_user_comment(
+        work_dir,
+        png_path,
+        comment.map(String::as_str).unwrap_or(""),
+    )?;
     Ok(())
 }
 
@@ -315,7 +361,10 @@ fn render_geotagged_plate(work_dir: &Path, pdf_path: &Path, png_path: &Path) -> 
                 tif_path.to_string_lossy().to_string(),
             ],
             cwd: work_dir.to_path_buf(),
-            label: format!("tpp-gdalwarp-{}", sanitize_label(&png_path.display().to_string())),
+            label: format!(
+                "tpp-gdalwarp-{}",
+                sanitize_label(&png_path.display().to_string())
+            ),
             env: Vec::new(),
             stdin_text: None,
         };
@@ -359,7 +408,10 @@ fn render_basic_png(work_dir: &Path, input_path: &Path, png_path: &Path) -> anyh
             input_path.to_string_lossy().to_string(),
         ],
         cwd: work_dir.to_path_buf(),
-        label: format!("tpp-mogrify-{}", sanitize_label(&png_path.display().to_string())),
+        label: format!(
+            "tpp-mogrify-{}",
+            sanitize_label(&png_path.display().to_string())
+        ),
         env: Vec::new(),
         stdin_text: None,
     };
@@ -380,7 +432,10 @@ fn write_user_comment(work_dir: &Path, png_path: &Path, comment: &str) -> anyhow
             png_path.to_string_lossy().to_string(),
         ],
         cwd: work_dir.to_path_buf(),
-        label: format!("tpp-exif-{}", sanitize_label(&png_path.display().to_string())),
+        label: format!(
+            "tpp-exif-{}",
+            sanitize_label(&png_path.display().to_string())
+        ),
         env: Vec::new(),
         stdin_text: None,
     };
@@ -392,9 +447,7 @@ fn write_user_comment(work_dir: &Path, png_path: &Path, comment: &str) -> anyhow
 }
 
 fn find_plate_pages(pdf_path: &Path, apt_id: &str) -> anyhow::Result<Vec<u32>> {
-    let script_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("scripts")
-        .join("find_plate_pages.py");
+    let script_path = find_plate_pages_script()?;
     let output = Command::new("python3")
         .arg(&script_path)
         .arg(pdf_path)
@@ -412,9 +465,47 @@ fn find_plate_pages(pdf_path: &Path, apt_id: &str) -> anyhow::Result<Vec<u32>> {
         if trimmed.is_empty() {
             continue;
         }
-        pages.push(trimmed.parse().with_context(|| format!("invalid page number: {trimmed}"))?);
+        pages.push(
+            trimmed
+                .parse()
+                .with_context(|| format!("invalid page number: {trimmed}"))?,
+        );
     }
     Ok(pages)
+}
+
+fn find_plate_pages_script() -> anyhow::Result<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut candidates = vec![manifest_dir.join("scripts").join("find_plate_pages.py")];
+
+    // Keep the TPP helper resilient to repo refactors. This compatibility
+    // layer must sometimes run from binaries compiled before or during a tree
+    // reorganization, and we do not want a stale baked-in crate path to break
+    // parity runs when the helper script is still present elsewhere in the
+    // repo. Prefer the current crate layout, then fall back across known
+    // workspace homes for the same compatibility code.
+    if let Ok(current_exe) = std::env::current_exe() {
+        for ancestor in current_exe.ancestors() {
+            candidates.push(
+                ancestor
+                    .join("baseline/avare_equivalent/preprocessor-tpp/scripts/find_plate_pages.py"),
+            );
+            candidates.push(
+                ancestor.join("product/preprocessor/preprocessor-tpp/scripts/find_plate_pages.py"),
+            );
+            candidates.push(
+                ancestor.join("rust-preprocessor/preprocessor-tpp/scripts/find_plate_pages.py"),
+            );
+        }
+    }
+
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    bail!("could not locate find_plate_pages.py in any known workspace layout")
 }
 
 fn read_gdalinfo(path: &Path) -> anyhow::Result<String> {
@@ -455,7 +546,11 @@ fn geotag_comment_from_gdalinfo(info: &str) -> anyhow::Result<String> {
 }
 
 fn parse_plate_size(line: &str) -> anyhow::Result<(f64, f64)> {
-    let value = line.trim().strip_prefix("Size is ").unwrap_or(line).replace(' ', "");
+    let value = line
+        .trim()
+        .strip_prefix("Size is ")
+        .unwrap_or(line)
+        .replace(' ', "");
     let (width, height) = value
         .split_once(',')
         .ok_or_else(|| anyhow::anyhow!("invalid size line: {line}"))?;
@@ -463,21 +558,36 @@ fn parse_plate_size(line: &str) -> anyhow::Result<(f64, f64)> {
 }
 
 fn parse_plate_coordinate(line: &str) -> anyhow::Result<(f64, f64)> {
-    let start = line.rfind('(').ok_or_else(|| anyhow::anyhow!("invalid coordinate line: {line}"))?;
-    let end = line.rfind(')').ok_or_else(|| anyhow::anyhow!("invalid coordinate line: {line}"))?;
+    let start = line
+        .rfind('(')
+        .ok_or_else(|| anyhow::anyhow!("invalid coordinate line: {line}"))?;
+    let end = line
+        .rfind(')')
+        .ok_or_else(|| anyhow::anyhow!("invalid coordinate line: {line}"))?;
     let body = &line[start + 1..end];
     let Some((lon_text, lat_text)) = body.split_once(',') else {
         bail!("invalid coordinate line: {line}");
     };
-    Ok((parse_dms_coordinate(lon_text.trim())?, parse_dms_coordinate(lat_text.trim())?))
+    Ok((
+        parse_dms_coordinate(lon_text.trim())?,
+        parse_dms_coordinate(lat_text.trim())?,
+    ))
 }
 
 fn parse_dms_coordinate(value: &str) -> anyhow::Result<f64> {
     let bytes = value.as_bytes();
-    let d_pos = value.find('d').ok_or_else(|| anyhow::anyhow!("invalid dms coordinate: {value}"))?;
-    let m_pos = value.find('\'').ok_or_else(|| anyhow::anyhow!("invalid dms coordinate: {value}"))?;
-    let q_pos = value.find('"').ok_or_else(|| anyhow::anyhow!("invalid dms coordinate: {value}"))?;
-    let hemi = *bytes.get(q_pos + 1).ok_or_else(|| anyhow::anyhow!("invalid hemisphere: {value}"))? as char;
+    let d_pos = value
+        .find('d')
+        .ok_or_else(|| anyhow::anyhow!("invalid dms coordinate: {value}"))?;
+    let m_pos = value
+        .find('\'')
+        .ok_or_else(|| anyhow::anyhow!("invalid dms coordinate: {value}"))?;
+    let q_pos = value
+        .find('"')
+        .ok_or_else(|| anyhow::anyhow!("invalid dms coordinate: {value}"))?;
+    let hemi = *bytes
+        .get(q_pos + 1)
+        .ok_or_else(|| anyhow::anyhow!("invalid hemisphere: {value}"))? as char;
 
     let degrees: f64 = value[..d_pos].trim().parse()?;
     let minutes: f64 = value[d_pos + 1..m_pos].trim().parse()?;
@@ -494,7 +604,9 @@ fn existing_pngs_for_prefix<'a>(
     prefix: &'a str,
 ) -> anyhow::Result<impl Iterator<Item = PathBuf> + 'a> {
     let mut matches = Vec::new();
-    for entry in fs::read_dir(folder).with_context(|| format!("failed to read {}", folder.display()))? {
+    for entry in
+        fs::read_dir(folder).with_context(|| format!("failed to read {}", folder.display()))?
+    {
         let entry = entry?;
         let path = entry.path();
         if !entry.file_type()?.is_file() {
@@ -655,7 +767,11 @@ fn copy_dir_recursive(src: &Path, dst: &Path, preserve_generated: bool) -> anyho
             copy_dir_recursive(&src_path, &dst_path, preserve_generated)?;
         } else if file_type.is_file() {
             fs::copy(&src_path, &dst_path).with_context(|| {
-                format!("failed to copy {} to {}", src_path.display(), dst_path.display())
+                format!(
+                    "failed to copy {} to {}",
+                    src_path.display(),
+                    dst_path.display()
+                )
             })?;
         }
     }
@@ -671,9 +787,12 @@ fn looks_like_populated_work_dir(path: &Path) -> bool {
             .flat_map(|entries| entries.filter_map(Result::ok))
             .any(|entry| {
                 let entry_path = entry.path();
-                entry_path.extension().and_then(|value| value.to_str()).is_some_and(|ext| {
-                    matches!(ext, "zip" | "pdf" | "PDF" | "png" | "xml" | "php" | "tif")
-                })
+                entry_path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|ext| {
+                        matches!(ext, "zip" | "pdf" | "PDF" | "png" | "xml" | "php" | "tif")
+                    })
             })
 }
 

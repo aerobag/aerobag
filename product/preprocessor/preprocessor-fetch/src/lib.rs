@@ -1,11 +1,10 @@
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use preprocessor_core::CaptureManifest;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::{
-    env,
     collections::VecDeque,
-    fs,
+    env, fs,
     fs::File,
     io::Write,
     path::{Path, PathBuf},
@@ -264,7 +263,8 @@ pub fn write_package_outputs_jsonl(
         if let Some(chart) = &record.chart {
             value["chart"] = serde_json::Value::String(chart.clone());
         }
-        serde_json::to_writer(&mut file, &value).context("failed to encode package output jsonl")?;
+        serde_json::to_writer(&mut file, &value)
+            .context("failed to encode package output jsonl")?;
         file.write_all(b"\n")
             .context("failed to write package output newline")?;
     }
@@ -292,7 +292,9 @@ fn prefetch_archives_inner(
         handles.push(thread::spawn(move || -> anyhow::Result<()> {
             loop {
                 let url = {
-                    let mut guard = queue.lock().map_err(|_| anyhow::anyhow!("queue poisoned"))?;
+                    let mut guard = queue
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("queue poisoned"))?;
                     guard.pop_front()
                 };
                 let Some(url) = url else {
@@ -383,7 +385,8 @@ fn prefetch_one(
             if restore_cached_download(&layout, url, file_name, &archive_path)? {
                 source = "cache";
             } else {
-                if env::var("FETCH_CACHE_MODE").unwrap_or_else(|_| "fill".to_string()) == "offline" {
+                if env::var("FETCH_CACHE_MODE").unwrap_or_else(|_| "fill".to_string()) == "offline"
+                {
                     bail!("cache miss in offline mode for {url}");
                 }
                 fetch_network(url, file_name, dest_dir)?;

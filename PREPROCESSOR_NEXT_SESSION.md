@@ -986,3 +986,54 @@ If the next session starts with no further instruction, do this:
 - Important nuance:
   - baseline `cargo test -p preprocessor-cli` is currently not a trustworthy certification signal because several fixture-style tests still point at stale refactor-broken paths like `/root/aerobag/baseline/runs/...`
   - Banana is the real certification path; fixture tests still need a cleanup pass later
+
+- New detour completed: Rust port of [legacy-capture/emit_source_urls.py](/root/aerobag/legacy-capture/emit_source_urls.py)
+  - new baseline module:
+    - [emit_source_urls.rs](/root/aerobag/baseline/avare_equivalent/preprocessor-cli/src/emit_source_urls.rs)
+  - new CLI commands:
+    - `emit-source-urls --output-dir <path>`
+    - `compare-source-url-emission --repo-root <path> --avare-source-root <path> --work-dir <path>`
+  - parity proof:
+    - offline integration test with a seeded fetch cache:
+      - [source_url_emission.rs](/root/aerobag/baseline/avare_equivalent/preprocessor-cli/tests/source_url_emission.rs)
+      - command:
+        - `cargo test -p preprocessor-cli --test source_url_emission --manifest-path /root/aerobag/baseline/avare_equivalent/Cargo.toml`
+    - real cached FAA crawl parity:
+      - `env FETCH_CACHE_ROOT=/root/aerobag/cache/fetch FETCH_CACHE_MODE=offline cargo run -q -p preprocessor-cli --manifest-path /root/aerobag/baseline/avare_equivalent/Cargo.toml -- compare-source-url-emission --repo-root /root/aerobag --avare-source-root /root/aerobag/avare-source --work-dir /tmp/source-url-real-compare`
+      - all labels matched:
+        - `charts-sec`
+        - `charts-tac`
+        - `charts-enr-l`
+        - `charts-enr-h`
+        - `csup`
+        - `tpp-ne`
+        - `tpp-nw`
+        - `data`
+  - Banana answer:
+    - yes, this belongs in Parity Banana
+    - [full_validation.rs](/root/aerobag/baseline/avare_equivalent/preprocessor-cli/src/full_validation.rs) now emits source URLs in Rust and immediately runs Python-vs-Rust parity before any heavy jobs launch
+    - that makes source discovery part of the certified equivalence surface instead of a hidden Python-only pre-step
+
+- Product build graph MVP exists but is still intentionally separate from baseline parity:
+  - new file:
+    - [product_build.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs)
+  - CLI:
+    - `build-product`
+    - `explain-product-build`
+  - current scope:
+    - content-addressed node fingerprints
+    - per-node `build-record.json`
+    - product manifest
+    - nodes for:
+      - `source-urls`
+      - charts `sec` / `tac` / `enr-l` / `enr-h`
+      - `csup`
+      - `tpp` slice for validation, all regions for production
+      - `data`
+      - `resource-index`
+  - current limitation:
+    - product source-url discovery still shells out to [legacy-capture/emit_source_urls.py](/root/aerobag/legacy-capture/emit_source_urls.py)
+    - that Python emitter was extended to cover `data`
+  - verified:
+    - `cargo check -p preprocessor-cli --manifest-path /root/aerobag/product/preprocessor/Cargo.toml`
+    - `cargo run -q -p preprocessor-cli --manifest-path /root/aerobag/product/preprocessor/Cargo.toml -- explain-product-build --profile production`

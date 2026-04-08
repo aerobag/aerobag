@@ -11,6 +11,8 @@ use std::{
 use anyhow::{Context, bail};
 use chrono::Utc;
 
+use crate::emit_source_urls::{compare_source_url_emission, emit_source_urls};
+
 #[derive(Debug, Clone)]
 pub struct FullValidationConfig {
     pub repo_root: PathBuf,
@@ -479,23 +481,18 @@ pub fn run_full_validation(config: &FullValidationConfig) -> anyhow::Result<()> 
     master_log.log("hydrated legacy sources")?;
 
     let source_urls_dir = config.prep_root().join("source-urls");
+    let source_url_compare_dir = config.prep_root().join("source-url-compare");
     fs::create_dir_all(&source_urls_dir)?;
-    let emit_log_out = log_root.join("emit-source-urls.stdout.log");
-    let emit_log_err = log_root.join("emit-source-urls.stderr.log");
-    let emit_completed = run_command_capture(
-        Command::new("python3")
-            .env("FETCH_CACHE_ROOT", &config.fetch_cache_root)
-            .env("FETCH_CACHE_MODE", &config.fetch_cache_mode)
-            .arg(config.repo_root.join("legacy-capture/emit_source_urls.py"))
-            .args(["--avare-source-root", &config.avare_source_root.display().to_string()])
-            .args(["--output-dir", &source_urls_dir.display().to_string()]),
+    fs::create_dir_all(&source_url_compare_dir)?;
+    env::set_var("FETCH_CACHE_ROOT", &config.fetch_cache_root);
+    env::set_var("FETCH_CACHE_MODE", &config.fetch_cache_mode);
+    emit_source_urls(&source_urls_dir)?;
+    compare_source_url_emission(
+        &config.repo_root,
+        &config.avare_source_root,
+        &source_url_compare_dir,
     )?;
-    fs::write(&emit_log_out, &emit_completed.stdout)?;
-    fs::write(&emit_log_err, &emit_completed.stderr)?;
-    if emit_completed.exit_code != 0 {
-        bail!("emit_source_urls.py failed; see {}", emit_log_err.display());
-    }
-    master_log.log("emitted source url manifests")?;
+    master_log.log("emitted rust source url manifests and matched python parity")?;
 
     let current_exe = env::current_exe().context("failed to resolve current executable")?;
     let mut pending_jobs = Vec::new();

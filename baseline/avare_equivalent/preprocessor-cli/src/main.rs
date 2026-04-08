@@ -1,4 +1,5 @@
 mod full_validation;
+mod emit_source_urls;
 
 use std::{
     collections::BTreeSet,
@@ -8,6 +9,7 @@ use std::{
 };
 
 use anyhow::Context;
+use emit_source_urls::{compare_source_url_emission, emit_source_urls};
 use full_validation::{FullValidationConfig, maybe_reexec_under_cgroup, run_full_validation};
 use preprocessor_charts::{
     ChartRunRequest, NativeChartRunRequest, build_family_tiles, build_family_vrts,
@@ -62,6 +64,8 @@ fn usage() -> &'static str {
   preprocessor-cli compare-tpp-images --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --legacy-work-dir <path> --rust-work-dir <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
   preprocessor-cli compare-provenance --left-provenance-dir <path> --right-provenance-dir <path>
   preprocessor-cli compare-data-db --left-db <path> --right-db <path>
+  preprocessor-cli emit-source-urls --output-dir <path>
+  preprocessor-cli compare-source-url-emission --repo-root <path> --avare-source-root <path> --work-dir <path>
   preprocessor-cli run-full-validation [--run-id <id>] [--validation-root <path>] [--fetch-cache-mode <fill|offline>] [--image-sample-percent <0-100>] [--image-rmse-threshold <0-1>]
   preprocessor-cli compare-sampled-images --left-root <path> --right-root <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
   preprocessor-cli print-cache-layout --cache-root <path> --url <url> --sha256 <sha256>
@@ -1095,6 +1099,43 @@ fn main() -> anyhow::Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
             );
             compare_databases(&left_db, &right_db)?;
+        }
+        Some("emit-source-urls") => {
+            if args.get(2).map(String::as_str) != Some("--output-dir") {
+                anyhow::bail!("{}", usage());
+            }
+            let output_dir = PathBuf::from(
+                args.get(3)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            for result in emit_source_urls(&output_dir)? {
+                println!("{} {}", result.label, result.path.display());
+            }
+        }
+        Some("compare-source-url-emission") => {
+            if args.get(2).map(String::as_str) != Some("--repo-root")
+                || args.get(4).map(String::as_str) != Some("--avare-source-root")
+                || args.get(6).map(String::as_str) != Some("--work-dir")
+            {
+                anyhow::bail!("{}", usage());
+            }
+            let repo_root = PathBuf::from(
+                args.get(3)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let avare_source_root = PathBuf::from(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            let work_dir = PathBuf::from(
+                args.get(7)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            );
+            compare_source_url_emission(&repo_root, &avare_source_root, &work_dir)?;
         }
         Some("run-full-validation") => {
             if maybe_reexec_under_cgroup(&args[2..])? {

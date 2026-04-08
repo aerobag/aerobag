@@ -1,5 +1,5 @@
 use anyhow::{bail, Context};
-use chrono::Utc;
+use chrono::{Datelike, Duration, NaiveDate, Utc};
 use preprocessor_core::Region;
 use preprocessor_fetch::PackageOutputRecord;
 use rusqlite::Connection;
@@ -24,12 +24,14 @@ pub struct ChartSource {
     pub family_id: String,
     pub package_outputs_path: PathBuf,
     pub package_root: PathBuf,
+    pub source_urls_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssetSource {
     pub package_outputs_path: PathBuf,
     pub asset_root: PathBuf,
+    pub source_urls_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -37,6 +39,7 @@ pub struct ResourceIndex {
     pub schema_version: u32,
     pub cycle: Option<String>,
     pub generated_at_utc: String,
+    pub temporal_summary: TemporalSummary,
     pub nav_db: NavDbRef,
     pub families: Vec<ResourceFamily>,
     pub regions: Vec<ResourceRegion>,
@@ -53,6 +56,19 @@ pub struct NavDbRef {
     pub artifact_path: String,
     pub sqlite_entry: String,
     pub cycle_code: Option<String>,
+    pub effective_date: Option<String>,
+    pub expiration_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TemporalSummary {
+    pub cycle_codes: Vec<String>,
+    pub effective_dates: Vec<String>,
+    pub expiration_dates: Vec<String>,
+    pub uniform_cycle_code: Option<String>,
+    pub uniform_effective_date: Option<String>,
+    pub uniform_expiration_date: Option<String>,
+    pub uniform_good_beyond_date: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -77,6 +93,16 @@ pub struct ResourcePackage {
     pub artifact_path: String,
     pub size_bytes: u64,
     pub checksum_sha256: String,
+    pub cycle_code: Option<String>,
+    pub effective_date: Option<String>,
+    pub expiration_date: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FaaTemporalMetadata {
+    cycle_code: Option<String>,
+    effective_date: Option<String>,
+    expiration_date: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -157,6 +183,14 @@ pub struct CsupRecord {
 
 pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Result<ResourceIndex> {
     let nav_cycle_code = read_nav_cycle_code(&request.nav_db_zip)?;
+    let nav_temporal = nav_cycle_code
+        .as_deref()
+        .and_then(temporal_from_cycle_code)
+        .unwrap_or(FaaTemporalMetadata {
+            cycle_code: None,
+            effective_date: None,
+            expiration_date: None,
+        });
     let cycle = infer_cycle(
         &request.chart_sources,
         &request.tpp_sources,
@@ -168,6 +202,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         &request.tpp_sources,
         &request.csup_sources,
     )?;
+    let temporal_summary = build_temporal_summary(&packages, &nav_temporal);
     let chart_collections = collect_chart_collections(&request.chart_sources)?;
     let airports = load_airports_from_nav_db(&request.nav_db_zip)?;
     let airport_aliases = load_airport_aliases_from_nav_db(&request.nav_db_zip)?;
@@ -186,13 +221,16 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         .collect();
 
     Ok(ResourceIndex {
-        schema_version: 1,
+        schema_version: 2,
         cycle,
         generated_at_utc: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        temporal_summary,
         nav_db: NavDbRef {
             artifact_path: request.nav_db_zip.display().to_string(),
             sqlite_entry: "main.db".to_string(),
             cycle_code: nav_cycle_code,
+            effective_date: nav_temporal.effective_date,
+            expiration_date: nav_temporal.expiration_date,
         },
         families,
         regions,
@@ -249,22 +287,36 @@ fn collect_packages(
 ) -> anyhow::Result<Vec<ResourcePackage>> {
     let mut packages = Vec::new();
     for source in chart_sources {
+        let temporal = infer_temporal_from_source_urls(source.source_urls_path.as_deref())?;
         for record in read_package_outputs(&source.package_outputs_path)? {
             packages.push(package_from_record(
                 &source.family_id,
                 &source.package_root,
                 &record,
+                temporal.as_ref(),
             )?);
         }
     }
     for source in tpp_sources {
+        let temporal = infer_temporal_from_source_urls(source.source_urls_path.as_deref())?;
         for record in read_package_outputs(&source.package_outputs_path)? {
-            packages.push(package_from_record("tpp", &source.asset_root, &record)?);
+            packages.push(package_from_record(
+                "tpp",
+                &source.asset_root,
+                &record,
+                temporal.as_ref(),
+            )?);
         }
     }
     for source in csup_sources {
+        let temporal = infer_temporal_from_source_urls(source.source_urls_path.as_deref())?;
         for record in read_package_outputs(&source.package_outputs_path)? {
-            packages.push(package_from_record("csup", &source.asset_root, &record)?);
+            packages.push(package_from_record(
+                "csup",
+                &source.asset_root,
+                &record,
+                temporal.as_ref(),
+            )?);
         }
     }
     packages.sort();
@@ -331,6 +383,7 @@ fn package_from_record(
     family_id: &str,
     package_root: &Path,
     record: &PackageOutputRecord,
+    temporal: Option<&FaaTemporalMetadata>,
 ) -> anyhow::Result<ResourcePackage> {
     let artifact_path = package_root.join(&record.zip);
     let size_bytes = fs::metadata(&artifact_path)
@@ -343,6 +396,9 @@ fn package_from_record(
         artifact_path: artifact_path.display().to_string(),
         size_bytes,
         checksum_sha256: record.zip_sha256.clone(),
+        cycle_code: temporal.and_then(|value| value.cycle_code.clone()),
+        effective_date: temporal.and_then(|value| value.effective_date.clone()),
+        expiration_date: temporal.and_then(|value| value.expiration_date.clone()),
     })
 }
 
@@ -671,8 +727,254 @@ fn read_files_recursive(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 }
 
 fn infer_cycle_from_manifest(manifest: &str) -> Option<String> {
-    let _ = manifest;
-    None
+    let cycle = manifest
+        .split('_')
+        .find(|part| part.len() == 4 && part.chars().all(|ch| ch.is_ascii_digit()))?;
+    Some(cycle.to_string())
+}
+
+fn build_temporal_summary(
+    packages: &[ResourcePackage],
+    nav_temporal: &FaaTemporalMetadata,
+) -> TemporalSummary {
+    let mut cycle_codes = BTreeSet::new();
+    let mut effective_dates = BTreeSet::new();
+    let mut expiration_dates = BTreeSet::new();
+
+    if let Some(value) = &nav_temporal.cycle_code {
+        cycle_codes.insert(value.clone());
+    }
+    if let Some(value) = &nav_temporal.effective_date {
+        effective_dates.insert(value.clone());
+    }
+    if let Some(value) = &nav_temporal.expiration_date {
+        expiration_dates.insert(value.clone());
+    }
+    for package in packages {
+        if let Some(value) = &package.cycle_code {
+            cycle_codes.insert(value.clone());
+        }
+        if let Some(value) = &package.effective_date {
+            effective_dates.insert(value.clone());
+        }
+        if let Some(value) = &package.expiration_date {
+            expiration_dates.insert(value.clone());
+        }
+    }
+
+    let cycle_codes = cycle_codes.into_iter().collect::<Vec<_>>();
+    let effective_dates = effective_dates.into_iter().collect::<Vec<_>>();
+    let expiration_dates = expiration_dates.into_iter().collect::<Vec<_>>();
+    TemporalSummary {
+        uniform_cycle_code: singleton_value(&cycle_codes),
+        uniform_effective_date: singleton_value(&effective_dates),
+        uniform_expiration_date: singleton_value(&expiration_dates),
+        uniform_good_beyond_date: effective_dates.last().cloned(),
+        cycle_codes,
+        effective_dates,
+        expiration_dates,
+    }
+}
+
+fn singleton_value(values: &[String]) -> Option<String> {
+    if values.len() == 1 {
+        Some(values[0].clone())
+    } else {
+        None
+    }
+}
+
+fn infer_temporal_from_source_urls(
+    source_urls_path: Option<&Path>,
+) -> anyhow::Result<Option<FaaTemporalMetadata>> {
+    let Some(path) = source_urls_path else {
+        return Ok(None);
+    };
+    let urls = preprocessor_fetch::read_source_urls_jsonl(path)?;
+    let mut cycle_codes = BTreeSet::new();
+    let mut effective_dates = BTreeSet::new();
+    let mut expiration_dates = BTreeSet::new();
+    for url in urls {
+        let Some(temporal) = temporal_from_url(&url)? else {
+            continue;
+        };
+        if let Some(value) = temporal.cycle_code {
+            cycle_codes.insert(value);
+        }
+        if let Some(value) = temporal.effective_date {
+            effective_dates.insert(value);
+        }
+        if let Some(value) = temporal.expiration_date {
+            expiration_dates.insert(value);
+        }
+    }
+    if cycle_codes.is_empty() && effective_dates.is_empty() && expiration_dates.is_empty() {
+        return Ok(None);
+    }
+    if cycle_codes.len() > 1 {
+        bail!(
+            "mixed FAA cycle codes in {}: {:?}",
+            path.display(),
+            cycle_codes
+        );
+    }
+    if effective_dates.len() > 1 {
+        bail!(
+            "mixed effective dates in {}: {:?}",
+            path.display(),
+            effective_dates
+        );
+    }
+    if expiration_dates.len() > 1 {
+        bail!(
+            "mixed expiration dates in {}: {:?}",
+            path.display(),
+            expiration_dates
+        );
+    }
+    Ok(Some(FaaTemporalMetadata {
+        cycle_code: cycle_codes.into_iter().next(),
+        effective_date: effective_dates.into_iter().next(),
+        expiration_date: expiration_dates.into_iter().next(),
+    }))
+}
+
+fn temporal_from_url(url: &str) -> anyhow::Result<Option<FaaTemporalMetadata>> {
+    if let Some(date) = extract_between(url, "/visual/", "/") {
+        let effective = parse_date(&date, "%m-%d-%Y")?;
+        return Ok(Some(temporal_from_effective_date(effective, 56, None)));
+    }
+    if let Some(compact) = extract_suffix_between(url, "DCS_", ".zip") {
+        let effective = parse_date(&compact, "%Y%m%d")?;
+        return Ok(Some(temporal_from_effective_date(effective, 56, None)));
+    }
+    if let Some(date) = extract_suffix_between(url, "28DaySubscription_Effective_", ".zip") {
+        let effective = parse_date(&date, "%Y-%m-%d")?;
+        return Ok(Some(temporal_from_effective_date(
+            effective,
+            28,
+            Some(cycle_code_from_effective_date(effective)?),
+        )));
+    }
+    if let Some(date) = extract_between(url, "/28DaySub/", "/aixm5.0.zip") {
+        let effective = parse_date(&date, "%Y-%m-%d")?;
+        return Ok(Some(temporal_from_effective_date(
+            effective,
+            28,
+            Some(cycle_code_from_effective_date(effective)?),
+        )));
+    }
+    if let Some(compact) = extract_suffix_between(url, "CIFP_", ".zip") {
+        if compact.len() == 6 && compact.chars().all(|ch| ch.is_ascii_digit()) {
+            let effective = parse_date(&format!("20{}-{}-{}", &compact[0..2], &compact[2..4], &compact[4..6]), "%Y-%m-%d")?;
+            return Ok(Some(temporal_from_effective_date(
+                effective,
+                28,
+                Some(compact[0..4].to_string()),
+            )));
+        }
+    }
+    if let Some(compact) = url
+        .split('/')
+        .next_back()
+        .and_then(|name| name.strip_suffix(".zip"))
+        .and_then(|name| name.rsplit('_').next())
+    {
+        if compact.len() == 6
+            && compact.chars().all(|ch| ch.is_ascii_digit())
+            && url.contains("DDTPP")
+        {
+            let effective = parse_date(
+                &format!("20{}-{}-{}", &compact[0..2], &compact[2..4], &compact[4..6]),
+                "%Y-%m-%d",
+            )?;
+            return Ok(Some(temporal_from_effective_date(
+                effective,
+                28,
+                Some(compact[0..4].to_string()),
+            )));
+        }
+    }
+    Ok(None)
+}
+
+fn temporal_from_cycle_code(cycle_code: &str) -> Option<FaaTemporalMetadata> {
+    let effective = effective_date_from_cycle_code(cycle_code).ok()?;
+    Some(temporal_from_effective_date(
+        effective,
+        28,
+        Some(cycle_code.to_string()),
+    ))
+}
+
+fn temporal_from_effective_date(
+    effective: NaiveDate,
+    cadence_days: i64,
+    cycle_code: Option<String>,
+) -> FaaTemporalMetadata {
+    FaaTemporalMetadata {
+        cycle_code,
+        effective_date: Some(effective.format("%Y-%m-%d").to_string()),
+        expiration_date: Some((effective + Duration::days(cadence_days)).format("%Y-%m-%d").to_string()),
+    }
+}
+
+fn parse_date(value: &str, format: &str) -> anyhow::Result<NaiveDate> {
+    NaiveDate::parse_from_str(value, format)
+        .with_context(|| format!("failed to parse FAA date {value} with {format}"))
+}
+
+fn extract_between(value: &str, prefix: &str, suffix: &str) -> Option<String> {
+    let tail = value.split_once(prefix)?.1;
+    Some(tail.split_once(suffix)?.0.to_string())
+}
+
+fn extract_suffix_between(value: &str, prefix: &str, suffix: &str) -> Option<String> {
+    let tail = value.rsplit_once(prefix)?.1;
+    Some(tail.split_once(suffix)?.0.to_string())
+}
+
+fn cycle_code_from_effective_date(effective: NaiveDate) -> anyhow::Result<String> {
+    let year = effective.year();
+    let first_date =
+        first_cycle_day(year).ok_or_else(|| anyhow::anyhow!("unsupported cycle year {year}"))?;
+    let first = NaiveDate::from_ymd_opt(year, 1, first_date)
+        .ok_or_else(|| anyhow::anyhow!("invalid first cycle day for {year}"))?;
+    let delta_days = effective.signed_duration_since(first).num_days();
+    if delta_days < 0 || delta_days % 28 != 0 {
+        bail!("effective date {effective} does not align to a 28-day FAA cycle");
+    }
+    let cycle = (delta_days / 28) + 1;
+    Ok(format!("{:02}{:02}", year % 100, cycle))
+}
+
+fn effective_date_from_cycle_code(cycle_code: &str) -> anyhow::Result<NaiveDate> {
+    if cycle_code.len() != 4 || !cycle_code.chars().all(|ch| ch.is_ascii_digit()) {
+        bail!("invalid FAA cycle code {cycle_code}");
+    }
+    let year = 2000 + cycle_code[0..2].parse::<i32>().context("invalid FAA cycle year")?;
+    let cycle = cycle_code[2..4].parse::<u32>().context("invalid FAA cycle number")?;
+    let first_date =
+        first_cycle_day(year).ok_or_else(|| anyhow::anyhow!("unsupported cycle year {year}"))?;
+    let first = NaiveDate::from_ymd_opt(year, 1, first_date)
+        .ok_or_else(|| anyhow::anyhow!("invalid first cycle day for {year}"))?;
+    Ok(first + Duration::days(28 * i64::from(cycle.saturating_sub(1))))
+}
+
+fn first_cycle_day(year: i32) -> Option<u32> {
+    match year {
+        2020 => Some(2),
+        2021 => Some(28),
+        2022 => Some(27),
+        2023 => Some(26),
+        2024 => Some(25),
+        2025 => Some(23),
+        2026 => Some(22),
+        2027 => Some(21),
+        2028 => Some(20),
+        2029 => Some(18),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -911,6 +1213,12 @@ mod tests {
             "{\"event\":\"package_output\",\"label\":\"charts-sec\",\"chart\":\"SEC\",\"manifest\":\"NW_SEC\",\"manifest_sha256\":\"m\",\"region\":\"NW\",\"zip\":\"NW_SEC.zip\",\"zip_sha256\":\"abc\"}\n",
         )
         .expect("chart outputs");
+        let chart_source_urls = temp.path().join("chart-source-urls.jsonl");
+        fs::write(
+            &chart_source_urls,
+            "{\"event\":\"list_crawl\",\"label\":\"charts-sec\",\"match\":\"x\",\"results\":[\"https://aeronav.faa.gov/visual/03-19-2026/sectional-files/Seattle.zip\"],\"url\":\"https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/vfr/\"}\n",
+        )
+        .expect("chart source urls");
 
         let tpp_root = temp.path().join("tpp-ne");
         fs::create_dir_all(tpp_root.join("plates/BOS")).expect("tpp root");
@@ -926,6 +1234,12 @@ mod tests {
             "{\"event\":\"package_output\",\"label\":\"tpp-ne\",\"manifest\":\"NE_TPP\",\"manifest_sha256\":\"m\",\"region\":\"NE\",\"zip\":\"NE_TPP.zip\",\"zip_sha256\":\"def\"}\n",
         )
         .expect("tpp outputs");
+        let tpp_source_urls = temp.path().join("tpp-source-urls.jsonl");
+        fs::write(
+            &tpp_source_urls,
+            "{\"event\":\"list_crawl\",\"label\":\"tpp-ne\",\"match\":\"x\",\"results\":[\"https://aeronav.faa.gov/upload_313-d/terminal/DDTPPA_260416.zip\"],\"url\":\"https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/dtpp/\"}\n",
+        )
+        .expect("tpp source urls");
 
         let csup_root = temp.path().join("csup");
         fs::create_dir_all(csup_root.join("afd/BOS")).expect("csup root");
@@ -937,6 +1251,12 @@ mod tests {
             "{\"event\":\"package_output\",\"label\":\"csup\",\"manifest\":\"NE_CSUP\",\"manifest_sha256\":\"m\",\"region\":\"NE\",\"zip\":\"NE_CSUP.zip\",\"zip_sha256\":\"ghi\"}\n",
         )
         .expect("csup outputs");
+        let csup_source_urls = temp.path().join("csup-source-urls.jsonl");
+        fs::write(
+            &csup_source_urls,
+            "{\"event\":\"list_crawl\",\"label\":\"csup\",\"match\":\"x\",\"results\":[\"https://aeronav.faa.gov/Upload_313-d/supplements/DCS_20260319.zip\"],\"url\":\"https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/dafd/\"}\n",
+        )
+        .expect("csup source urls");
 
         let request = BuildResourceIndexRequest {
             nav_db_zip: nav_zip.clone(),
@@ -945,35 +1265,71 @@ mod tests {
                 family_id: "sectional".to_string(),
                 package_outputs_path: chart_outputs,
                 package_root: chart_root,
+                source_urls_path: Some(chart_source_urls),
             }],
             tpp_sources: vec![AssetSource {
                 package_outputs_path: tpp_outputs,
                 asset_root: tpp_root,
+                source_urls_path: Some(tpp_source_urls),
             }],
             csup_sources: vec![AssetSource {
                 package_outputs_path: csup_outputs,
                 asset_root: csup_root,
+                source_urls_path: Some(csup_source_urls),
             }],
         };
 
         let index = write_resource_index(&request).expect("build index");
         assert_eq!(index.cycle.as_deref(), Some("2604"));
+        assert_eq!(index.temporal_summary.uniform_cycle_code.as_deref(), Some("2604"));
+        assert_eq!(
+            index.temporal_summary.effective_dates,
+            vec!["2026-03-19".to_string(), "2026-04-16".to_string()]
+        );
+        assert_eq!(
+            index.temporal_summary.expiration_dates,
+            vec!["2026-05-14".to_string()]
+        );
+        assert_eq!(
+            index.temporal_summary.uniform_good_beyond_date.as_deref(),
+            Some("2026-04-16")
+        );
         assert_eq!(index.nav_db.sqlite_entry, "main.db");
         assert_eq!(index.nav_db.cycle_code.as_deref(), Some("2604"));
+        assert_eq!(index.nav_db.effective_date.as_deref(), Some("2026-04-16"));
+        assert_eq!(index.nav_db.expiration_date.as_deref(), Some("2026-05-14"));
         assert_eq!(index.airports.len(), 2);
         assert_eq!(index.packages[0].id, "NE_CSUP");
         assert!(index
             .packages
             .iter()
             .any(|package| package.family_id == "sectional"));
+        assert!(index.packages.iter().any(|package| {
+            package.family_id == "sectional"
+                && package.effective_date.as_deref() == Some("2026-03-19")
+                && package.expiration_date.as_deref() == Some("2026-05-14")
+                && package.cycle_code.is_none()
+        }));
         assert!(index
             .packages
             .iter()
             .any(|package| package.family_id == "tpp"));
+        assert!(index.packages.iter().any(|package| {
+            package.family_id == "tpp"
+                && package.effective_date.as_deref() == Some("2026-04-16")
+                && package.expiration_date.as_deref() == Some("2026-05-14")
+                && package.cycle_code.as_deref() == Some("2604")
+        }));
         assert!(index
             .packages
             .iter()
             .any(|package| package.family_id == "csup"));
+        assert!(index.packages.iter().any(|package| {
+            package.family_id == "csup"
+                && package.effective_date.as_deref() == Some("2026-03-19")
+                && package.expiration_date.as_deref() == Some("2026-05-14")
+                && package.cycle_code.is_none()
+        }));
         assert_eq!(index.chart_collections.len(), 1);
         assert_eq!(index.chart_collections[0].family_id, "sectional");
         assert_eq!(index.chart_collections[0].region_id, "nw");

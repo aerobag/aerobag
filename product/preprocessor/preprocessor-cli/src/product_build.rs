@@ -278,6 +278,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                     .join(format!("charts-{}", family_slug(family)))
                     .join("package_outputs.jsonl"),
                 package_root: run_root.join("work").join(format!("charts-{}", family_slug(family))),
+                source_urls_path: Some(
+                    run_root
+                        .join("meta")
+                        .join("provenance")
+                        .join(format!("charts-{}", family_slug(family)))
+                        .join("source_urls.jsonl"),
+                ),
             });
         }
 
@@ -292,6 +299,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         let csup_sources = vec![AssetSource {
             package_outputs_path: csup_run_root.join("meta/provenance/csup/package_outputs.jsonl"),
             asset_root: csup_run_root.join("work/csup"),
+            source_urls_path: Some(csup_run_root.join("meta/provenance/csup/source_urls.jsonl")),
         }];
 
         let mut tpp_sources = Vec::new();
@@ -310,6 +318,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 package_outputs_path: run_root
                     .join(format!("meta/provenance/tpp-{region_id}/package_outputs.jsonl")),
                 asset_root: run_root.join(format!("work/tpp-{region_id}")),
+                source_urls_path: Some(
+                    run_root.join(format!("meta/provenance/tpp-{region_id}/source_urls.jsonl")),
+                ),
             });
         }
 
@@ -800,10 +811,15 @@ fn build_resource_index_node(
         .iter()
         .map(|source| {
             format!(
-                "{}:{}:{}",
+                "{}:{}:{}:{}",
                 source.family_id,
                 source.package_outputs_path.display(),
-                source.package_root.display()
+                source.package_root.display(),
+                source
+                    .source_urls_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default()
             )
         })
         .collect::<Vec<_>>()
@@ -812,9 +828,14 @@ fn build_resource_index_node(
         .iter()
         .map(|source| {
             format!(
-                "{}:{}",
+                "{}:{}:{}",
                 source.package_outputs_path.display(),
-                source.asset_root.display()
+                source.asset_root.display(),
+                source
+                    .source_urls_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default()
             )
         })
         .collect::<Vec<_>>()
@@ -823,9 +844,14 @@ fn build_resource_index_node(
         .iter()
         .map(|source| {
             format!(
-                "{}:{}",
+                "{}:{}:{}",
                 source.package_outputs_path.display(),
-                source.asset_root.display()
+                source.asset_root.display(),
+                source
+                    .source_urls_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default()
             )
         })
         .collect::<Vec<_>>()
@@ -835,6 +861,20 @@ fn build_resource_index_node(
         ("chart_sources".to_string(), hash_text(&chart_json)),
         ("tpp_sources".to_string(), hash_text(&tpp_json)),
         ("csup_sources".to_string(), hash_text(&csup_json)),
+        (
+            "resource_index_lib".to_string(),
+            hash_file(
+                &config
+                    .source_root
+                    .join("../product/preprocessor/preprocessor-resource-index/src/lib.rs")
+                    .canonicalize()
+                    .unwrap_or_else(|_| {
+                        config
+                            .source_root
+                            .join("../product/preprocessor/preprocessor-resource-index/src/lib.rs")
+                    }),
+            )?,
+        ),
     ]);
     let prepared = prepare_existing_node_root("resource-index", &node_root, &inputs)?;
     let output_path = node_root.join("resource-index.json");

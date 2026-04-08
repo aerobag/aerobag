@@ -1149,11 +1149,38 @@ If the next session starts with no further instruction, do this:
     - warm `data` no longer pays the large tree-walk cost
     - this is what enabled the current `+0:08` end-to-end warm validation rerun
 
-- Product build metadata still has one obvious self-description gap:
-  - build-level metadata is good:
-    - `product-build.json` records profile, timestamps, node fingerprints, cache-hit state
-    - `resource-index.json` records top-level `cycle` and `nav_db.cycle_code`
-  - missing today:
-    - explicit `cycle_code` on every package entry in the resource index
-  - likely next small metadata improvement:
-    - add per-package `cycle_code` in [preprocessor-resource-index/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-resource-index/src/lib.rs), probably sourced from package manifest first lines where applicable
+- Product resource-index temporal metadata is now richer and sourced from real FAA provenance:
+  - files:
+    - [preprocessor-resource-index/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-resource-index/src/lib.rs)
+    - [product_build.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs)
+    - [main.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/main.rs)
+  - `ChartSource` / `AssetSource` now carry optional `source_urls_path`, and the product build passes each family/asset provenance file into the resource-index builder
+  - package entries in `resource-index.json` now carry:
+    - `cycle_code`
+    - `effective_date`
+    - `expiration_date`
+  - `nav_db` now also carries:
+    - `effective_date`
+    - `expiration_date`
+  - top-level `temporal_summary` now carries:
+    - `cycle_codes`
+    - `effective_dates`
+    - `expiration_dates`
+    - `uniform_cycle_code`
+    - `uniform_effective_date`
+    - `uniform_expiration_date`
+    - `uniform_good_beyond_date`
+  - semantics:
+    - `uniform_good_beyond_date` is the latest effective date across included FAA products
+    - this is the right build-level answer to “from what date onward do I have a complete current set across included families?”
+    - for the current validation build:
+      - charts / `csup` effective `2026-03-19`
+      - `tpp` / nav DB effective `2026-04-16`
+      - shared expiration `2026-05-14`
+      - therefore:
+        - `uniform_effective_date = null`
+        - `uniform_expiration_date = 2026-05-14`
+        - `uniform_good_beyond_date = 2026-04-16`
+  - important cache fix:
+    - `resource-index` node now fingerprints the resource-index Rust library source as an input
+    - without that, schema/code changes could be hidden behind a stale cached `resource-index.json`

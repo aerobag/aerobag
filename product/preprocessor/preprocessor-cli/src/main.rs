@@ -257,7 +257,7 @@ fn compare_image_rmse(left: &Path, right: &Path) -> anyhow::Result<f64> {
 }
 
 fn parse_chart_source_spec(value: &str) -> anyhow::Result<ChartSource> {
-    let mut parts = value.splitn(3, ':');
+    let mut parts = value.splitn(4, ':');
     let family_id = parts
         .next()
         .filter(|part| !part.is_empty())
@@ -270,15 +270,17 @@ fn parse_chart_source_spec(value: &str) -> anyhow::Result<ChartSource> {
         .next()
         .filter(|part| !part.is_empty())
         .ok_or_else(|| anyhow::anyhow!("chart source is missing package root"))?;
+    let source_urls_path = parts.next().filter(|part| !part.is_empty());
     Ok(ChartSource {
         family_id: family_id.to_string(),
         package_outputs_path: PathBuf::from(package_outputs_path),
         package_root: PathBuf::from(package_root),
+        source_urls_path: source_urls_path.map(PathBuf::from),
     })
 }
 
 fn parse_asset_source_spec(value: &str) -> anyhow::Result<AssetSource> {
-    let mut parts = value.splitn(2, ':');
+    let mut parts = value.splitn(3, ':');
     let package_outputs_path = parts
         .next()
         .filter(|part| !part.is_empty())
@@ -287,9 +289,11 @@ fn parse_asset_source_spec(value: &str) -> anyhow::Result<AssetSource> {
         .next()
         .filter(|part| !part.is_empty())
         .ok_or_else(|| anyhow::anyhow!("asset source is missing asset root"))?;
+    let source_urls_path = parts.next().filter(|part| !part.is_empty());
     Ok(AssetSource {
         package_outputs_path: PathBuf::from(package_outputs_path),
         asset_root: PathBuf::from(asset_root),
+        source_urls_path: source_urls_path.map(PathBuf::from),
     })
 }
 

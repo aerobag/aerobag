@@ -160,6 +160,23 @@ Important current Android dev note:
   - `NW_TPP.zip` and `NW_CSUP.zip` via `seedPrototypeChartPackages`
 - `SectionalPackages` and `ChartPackages` both prefer already-seeded local package files
 - current Android plate/CSUP universe is intentionally NW-only because only `NW_TPP` and `NW_CSUP` are seeded
+- important seeding gotcha that bit us:
+  - Gradle was reusing a stale generated `NW_TPP.zip` under:
+    - `ui/android-app/app/build/generated/prototypeSeedChartPackages/chart-packages/NW_TPP.zip`
+  - even though the shared product zip at:
+    - `product-builds/shared/work/tpp-nw/work/tpp-nw/NW_TPP.zip`
+    had already been regenerated with stitched pages / transparent-edge fixes
+  - cause:
+    - the seed staging tasks declared outputs but effectively let Gradle reuse old generated copies
+  - current fix:
+    - [ui/android-app/app/build.gradle.kts](/root/aerobag/ui/android-app/app/build.gradle.kts)
+      forces fresh restaging with `outputs.upToDateWhen { false }` on:
+      - `stagePrototypeSectionalPackages`
+      - `stagePrototypeChartPackages`
+  - symptom to remember:
+    - web shows fresh stitched plate
+    - Android shows old first-page-only or pre-fix imagery
+    - compare seeded device zip size against shared source zip before blaming rendering code
 
 ### Shared Rust core
 

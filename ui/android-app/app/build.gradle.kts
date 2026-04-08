@@ -53,6 +53,7 @@ val generatePrototypeFixture by tasks.registering(Exec::class) {
 val stagePrototypeSectionalPackages by tasks.registering {
     dependsOn(generatePrototypeFixture)
     outputs.dir(generatedPrototypeSeedPackagesDir.map { it.dir("sectional-packages") })
+    outputs.upToDateWhen { false }
     doLast {
         val payload = JsonSlurper().parse(resourceIndexFile) as Map<*, *>
         val packages = (payload["packages"] as List<*>)
@@ -116,6 +117,7 @@ val seedPrototypeSectionalPackages by tasks.registering {
 val stagePrototypeChartPackages by tasks.registering {
     dependsOn(generatePrototypeFixture)
     outputs.dir(generatedPrototypeSeedChartPackagesDir.map { it.dir("chart-packages") })
+    outputs.upToDateWhen { false }
     doLast {
         val payload = JsonSlurper().parse(resourceIndexFile) as Map<*, *>
         val packages = (payload["packages"] as List<*>)

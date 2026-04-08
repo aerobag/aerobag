@@ -478,6 +478,14 @@ fn collect_plate_records(
                 .cloned()
                 .context("missing TPP package for region")?;
             for asset in read_files_recursive(&airport_dir)? {
+                let asset_kind = asset
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if asset_kind != "png" {
+                    continue;
+                }
                 let asset_path = asset.strip_prefix(&source.asset_root).unwrap_or(&asset);
                 let filename = asset.file_name().and_then(|value| value.to_str()).unwrap_or_default();
                 records.push(PlateRecord {
@@ -490,11 +498,7 @@ fn collect_plate_records(
                         .and_then(|value| value.to_str())
                         .unwrap_or_default()
                         .to_string(),
-                    asset_kind: asset
-                        .extension()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or_default()
-                        .to_ascii_lowercase(),
+                    asset_kind,
                     asset_path: asset_path.display().to_string(),
                 });
             }
@@ -1228,6 +1232,11 @@ mod tests {
             b"png",
         )
         .expect("plate file");
+        fs::write(
+            tpp_root.join("plates/BOS/IAP-MA-ILS OR LOC RWY 04R.tif"),
+            b"tif",
+        )
+        .expect("plate tif sidecar");
         let tpp_outputs = temp.path().join("tpp-package-outputs.jsonl");
         fs::write(
             &tpp_outputs,
@@ -1360,6 +1369,7 @@ mod tests {
         assert_eq!(index.plates[0].id, "plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png");
         assert_eq!(index.plates[0].airport_id, "KBOS");
         assert_eq!(index.plates[0].package_id, "NE_TPP");
+        assert_eq!(index.plates.len(), 1);
         assert_eq!(index.csups[0].id, "csup:KBOS:CSUP-NE_0-0.png");
         assert_eq!(index.csups[0].airport_id, "KBOS");
         assert_eq!(index.csups[0].region_id, "ne");

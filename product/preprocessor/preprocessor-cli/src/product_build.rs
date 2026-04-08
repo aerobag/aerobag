@@ -841,6 +841,15 @@ fn build_tpp_node(
         ("source_repo".to_string(), hash_tree(&request.source_repo)?),
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("fetch_jobs".to_string(), request.fetch_jobs.to_string()),
+        (
+            "tpp_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-tpp/src/lib.rs"),
+            )?,
+        ),
     ]);
     let prepared = prepare_existing_node_root(&format!("tpp-{region_id}"), &request.run_root, &inputs)?;
     let package_outputs = request

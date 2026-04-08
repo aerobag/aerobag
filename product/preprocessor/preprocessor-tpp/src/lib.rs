@@ -1,6 +1,7 @@
 use std::{
     collections::VecDeque,
     fs,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -19,6 +20,10 @@ use preprocessor_tools::ToolInvocation;
 
 const TPP_AIRPORT_DIAGRAMS_URL: &str =
     "https://www.outerworldapps.com/WairToNowWork/avare_aptdiags.php";
+const TPP_BASIC_PIPELINE_VERSION: &str = "basic-v1";
+const TPP_AIRPORT_DIAGRAM_PIPELINE_VERSION: &str = "airport-diagram-v1";
+const TPP_GEOTAGGED_PIPELINE_VERSION: &str = "geotagged-v2-dstalpha";
+const TPP_MINIMUM_PIPELINE_VERSION: &str = "minimum-v1";
 
 #[derive(Debug, Clone)]
 pub struct NativeTppRunRequest {
@@ -290,28 +295,54 @@ fn make_plate(
     let folder = work_dir.join("plates").join(&plate.apt_id);
     fs::create_dir_all(&folder)
         .with_context(|| format!("failed to create {}", folder.display()))?;
+    let pdf_hash = hash_file(&pdf_path)?;
 
     if output_name.starts_with("MIN-") {
+        let marker_path = plate_marker_path(&folder, &output_name);
+        let fingerprint = minimum_plate_fingerprint(&pdf_hash, &output_name, &plate.apt_id)?;
+        invalidate_plate_prefix_if_stale(&folder, &output_name, &marker_path, &fingerprint)?;
         render_minimum_plate(work_dir, &folder, &pdf_path, &output_name, &plate.apt_id)?;
+        write_plate_marker(&marker_path, &fingerprint)?;
         return Ok(());
     }
 
     let png_path = folder.join(format!("{output_name}.png"));
-    if png_path.is_file() {
-        return Ok(());
-    }
+    let marker_path = plate_marker_path(&folder, &output_name);
 
     if output_name.starts_with("APD-") {
+        let fingerprint = airport_diagram_fingerprint(
+            &pdf_hash,
+            &output_name,
+            ad_tags.get(&plate.apt_id).map(String::as_str).unwrap_or(""),
+        )?;
+        invalidate_single_plate_if_stale(&png_path, None, &marker_path, &fingerprint)?;
+        if png_path.is_file() {
+            return Ok(());
+        }
         render_airport_diagram(work_dir, &pdf_path, &png_path, ad_tags.get(&plate.apt_id))?;
+        write_plate_marker(&marker_path, &fingerprint)?;
         return Ok(());
     }
 
     let gdalinfo = read_gdalinfo(&pdf_path)?;
     let has_proj = gdalinfo.contains("PROJCRS");
     if has_proj {
+        let tif_path = png_path.with_extension("tif");
+        let fingerprint = geotagged_plate_fingerprint(&pdf_hash, &output_name)?;
+        invalidate_single_plate_if_stale(&png_path, Some(&tif_path), &marker_path, &fingerprint)?;
+        if png_path.is_file() && tif_path.is_file() {
+            return Ok(());
+        }
         render_geotagged_plate(work_dir, &pdf_path, &png_path)?;
+        write_plate_marker(&marker_path, &fingerprint)?;
     } else {
+        let fingerprint = basic_plate_fingerprint(&pdf_hash, &output_name)?;
+        invalidate_single_plate_if_stale(&png_path, None, &marker_path, &fingerprint)?;
+        if png_path.is_file() {
+            return Ok(());
+        }
         render_basic_png(work_dir, &pdf_path, &png_path)?;
+        write_plate_marker(&marker_path, &fingerprint)?;
     }
     Ok(())
 }
@@ -394,6 +425,10 @@ fn render_geotagged_plate(work_dir: &Path, pdf_path: &Path, png_path: &Path) -> 
                 "-q".to_string(),
                 "-r".to_string(),
                 "lanczos".to_string(),
+                // Georeferenced plate PDFs often warp to shapes that do not fill the target
+                // rectangle. Ask GDAL for an explicit alpha band so those edge pixels remain
+                // transparent in the delivered PNG instead of turning into black slivers.
+                "-dstalpha".to_string(),
                 "-t_srs".to_string(),
                 "epsg:3857".to_string(),
                 pdf_path.to_string_lossy().to_string(),
@@ -413,7 +448,7 @@ fn render_geotagged_plate(work_dir: &Path, pdf_path: &Path, png_path: &Path) -> 
         }
     }
 
-    render_basic_png(work_dir, &tif_path, png_path)?;
+    render_png_preserve_alpha(work_dir, &tif_path, png_path)?;
     let info = read_gdalinfo(&tif_path)?;
     let comment = geotag_comment_from_gdalinfo(&info)?;
     write_user_comment(work_dir, png_path, &comment)?;
@@ -449,6 +484,51 @@ fn render_basic_png(work_dir: &Path, input_path: &Path, png_path: &Path) -> anyh
         cwd: work_dir.to_path_buf(),
         label: format!(
             "tpp-mogrify-{}",
+            sanitize_label(&png_path.display().to_string())
+        ),
+        env: Vec::new(),
+        stdin_text: None,
+    };
+    let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
+    if !outcome.success {
+        bail!("mogrify failed for {}", input_path.display());
+    }
+    Ok(())
+}
+
+fn render_png_preserve_alpha(
+    work_dir: &Path,
+    input_path: &Path,
+    png_path: &Path,
+) -> anyhow::Result<()> {
+    let invocation = ToolInvocation {
+        program: "mogrify".to_string(),
+        args: vec![
+            "-quiet".to_string(),
+            "-dither".to_string(),
+            "none".to_string(),
+            "-antialias".to_string(),
+            "-depth".to_string(),
+            "8".to_string(),
+            "-quality".to_string(),
+            "100".to_string(),
+            "-background".to_string(),
+            "none".to_string(),
+            "-alpha".to_string(),
+            "on".to_string(),
+            "-colors".to_string(),
+            "15".to_string(),
+            "-density".to_string(),
+            "150".to_string(),
+            "-format".to_string(),
+            "png".to_string(),
+            "-write".to_string(),
+            png_path.to_string_lossy().to_string(),
+            input_path.to_string_lossy().to_string(),
+        ],
+        cwd: work_dir.to_path_buf(),
+        label: format!(
+            "tpp-mogrify-alpha-{}",
             sanitize_label(&png_path.display().to_string())
         ),
         env: Vec::new(),
@@ -657,6 +737,109 @@ fn existing_pngs_for_prefix<'a>(
         }
     }
     Ok(matches.into_iter())
+}
+
+fn plate_marker_path(folder: &Path, output_name: &str) -> PathBuf {
+    folder.join(format!(".{}.fingerprint", sanitize_label(output_name)))
+}
+
+fn basic_plate_fingerprint(pdf_hash: &str, output_name: &str) -> anyhow::Result<String> {
+    Ok(hash_fingerprint_components(&[
+        TPP_BASIC_PIPELINE_VERSION,
+        pdf_hash,
+        output_name,
+    ]))
+}
+
+fn airport_diagram_fingerprint(
+    pdf_hash: &str,
+    output_name: &str,
+    comment: &str,
+) -> anyhow::Result<String> {
+    Ok(hash_fingerprint_components(&[
+        TPP_AIRPORT_DIAGRAM_PIPELINE_VERSION,
+        pdf_hash,
+        output_name,
+        comment,
+    ]))
+}
+
+fn geotagged_plate_fingerprint(pdf_hash: &str, output_name: &str) -> anyhow::Result<String> {
+    Ok(hash_fingerprint_components(&[
+        TPP_GEOTAGGED_PIPELINE_VERSION,
+        pdf_hash,
+        output_name,
+    ]))
+}
+
+fn minimum_plate_fingerprint(
+    pdf_hash: &str,
+    output_name: &str,
+    apt_id: &str,
+) -> anyhow::Result<String> {
+    let script_hash = hash_file(&find_plate_pages_script()?)?;
+    Ok(hash_fingerprint_components(&[
+        TPP_MINIMUM_PIPELINE_VERSION,
+        pdf_hash,
+        output_name,
+        apt_id,
+        &script_hash,
+    ]))
+}
+
+fn hash_fingerprint_components(parts: &[&str]) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for part in parts {
+        part.hash(&mut hasher);
+    }
+    format!("{:016x}", hasher.finish())
+}
+
+fn invalidate_single_plate_if_stale(
+    png_path: &Path,
+    tif_path: Option<&Path>,
+    marker_path: &Path,
+    expected: &str,
+) -> anyhow::Result<()> {
+    if marker_matches(marker_path, expected)? {
+        return Ok(());
+    }
+    remove_if_exists(png_path)?;
+    if let Some(tif_path) = tif_path {
+        remove_if_exists(tif_path)?;
+    }
+    remove_if_exists(marker_path)?;
+    Ok(())
+}
+
+fn invalidate_plate_prefix_if_stale(
+    folder: &Path,
+    output_name: &str,
+    marker_path: &Path,
+    expected: &str,
+) -> anyhow::Result<()> {
+    if marker_matches(marker_path, expected)? {
+        return Ok(());
+    }
+    for path in existing_pngs_for_prefix(folder, output_name)? {
+        remove_if_exists(&path)?;
+    }
+    remove_if_exists(marker_path)?;
+    Ok(())
+}
+
+fn marker_matches(marker_path: &Path, expected: &str) -> anyhow::Result<bool> {
+    if !marker_path.is_file() {
+        return Ok(false);
+    }
+    let actual = fs::read_to_string(marker_path)
+        .with_context(|| format!("failed to read {}", marker_path.display()))?;
+    Ok(actual.trim() == expected)
+}
+
+fn write_plate_marker(marker_path: &Path, fingerprint: &str) -> anyhow::Result<()> {
+    fs::write(marker_path, format!("{fingerprint}\n"))
+        .with_context(|| format!("failed to write {}", marker_path.display()))
 }
 
 fn package_region(work_dir: &Path, provenance_dir: &Path, region: Region) -> anyhow::Result<usize> {

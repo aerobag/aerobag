@@ -170,8 +170,9 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     )?;
     let chart_collections = collect_chart_collections(&request.chart_sources)?;
     let airports = load_airports_from_nav_db(&request.nav_db_zip)?;
-    let plates = collect_plate_records(&request.tpp_sources)?;
-    let csups = collect_csup_records(&request.csup_sources)?;
+    let airport_aliases = load_airport_aliases_from_nav_db(&request.nav_db_zip)?;
+    let plates = collect_plate_records(&request.tpp_sources, &airport_aliases)?;
+    let csups = collect_csup_records(&request.csup_sources, &airport_aliases)?;
     let airport_resources = collect_airport_resources(&plates, &csups);
     let families = collect_families(&packages, !plates.is_empty(), !csups.is_empty());
     let regions = Region::ALL
@@ -371,7 +372,34 @@ fn load_airports_from_nav_db(nav_db_zip: &Path) -> anyhow::Result<Vec<AirportRec
     Ok(airports)
 }
 
-fn collect_plate_records(sources: &[AssetSource]) -> anyhow::Result<Vec<PlateRecord>> {
+fn load_airport_aliases_from_nav_db(nav_db_zip: &Path) -> anyhow::Result<BTreeMap<String, String>> {
+    let sqlite_path = extract_sqlite_entry(nav_db_zip, "main.db")?;
+    let connection = Connection::open(sqlite_path.path()).context("failed to open main.db")?;
+    let mut statement = connection.prepare(
+        "select alias_id, airport_id
+         from airport_aliases
+         where alias_id is not null
+           and airport_id is not null
+         order by alias_id",
+    )?;
+    let aliases = statement
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .collect::<Result<BTreeMap<_, _>, _>>()
+        .context("failed to read airport_aliases rows")?;
+    Ok(aliases)
+}
+
+fn canonicalize_airport_id(raw_id: &str, airport_aliases: &BTreeMap<String, String>) -> String {
+    airport_aliases
+        .get(raw_id)
+        .cloned()
+        .unwrap_or_else(|| raw_id.to_string())
+}
+
+fn collect_plate_records(
+    sources: &[AssetSource],
+    airport_aliases: &BTreeMap<String, String>,
+) -> anyhow::Result<Vec<PlateRecord>> {
     let mut records = Vec::new();
     for source in sources {
         let package_map = package_map_by_region(&source.package_outputs_path)?;
@@ -380,11 +408,12 @@ fn collect_plate_records(sources: &[AssetSource]) -> anyhow::Result<Vec<PlateRec
             continue;
         }
         for airport_dir in read_child_dirs(&plates_root)? {
-            let airport_id = airport_dir
+            let raw_airport_id = airport_dir
                 .file_name()
                 .and_then(|value| value.to_str())
                 .context("invalid airport directory name")?
                 .to_string();
+            let airport_id = canonicalize_airport_id(&raw_airport_id, airport_aliases);
             let region_id = infer_region_from_airport_dir(&source.asset_root)
                 .or_else(|| infer_region_from_package_map(&package_map))
                 .context("failed to infer TPP region")?;
@@ -419,7 +448,10 @@ fn collect_plate_records(sources: &[AssetSource]) -> anyhow::Result<Vec<PlateRec
     Ok(records)
 }
 
-fn collect_csup_records(sources: &[AssetSource]) -> anyhow::Result<Vec<CsupRecord>> {
+fn collect_csup_records(
+    sources: &[AssetSource],
+    airport_aliases: &BTreeMap<String, String>,
+) -> anyhow::Result<Vec<CsupRecord>> {
     let mut records = Vec::new();
     for source in sources {
         let package_map = package_map_by_region(&source.package_outputs_path)?;
@@ -428,11 +460,12 @@ fn collect_csup_records(sources: &[AssetSource]) -> anyhow::Result<Vec<CsupRecor
             continue;
         }
         for airport_dir in read_child_dirs(&afd_root)? {
-            let airport_id = airport_dir
+            let raw_airport_id = airport_dir
                 .file_name()
                 .and_then(|value| value.to_str())
                 .context("invalid airport directory name")?
                 .to_string();
+            let airport_id = canonicalize_airport_id(&raw_airport_id, airport_aliases);
             for asset in read_files_recursive(&airport_dir)? {
                 let region_id = infer_region_from_csup_filename(&asset)
                     .context("failed to infer CSUP region from filename")?;
@@ -825,10 +858,18 @@ mod tests {
                 Type text,
                 FacilityName text
             );
+            create table airport_aliases (
+                alias_id text,
+                airport_id text
+            );
             insert into airports values ('KBOS', 42.3656, -71.0096, 'AIRPORT', 'Boston Logan');
             insert into airports values ('KRNT', 47.4931, -122.2160, 'AIRPORT', 'Renton');",
         )
         .expect("seed airports");
+        conn.execute("insert into airport_aliases values ('BOS', 'KBOS')", [])
+            .expect("seed airport alias");
+        conn.execute("insert into airport_aliases values ('KBOS', 'KBOS')", [])
+            .expect("seed airport alias");
 
         let nav_zip = temp.path().join("databases.zip");
         {
@@ -872,10 +913,10 @@ mod tests {
         .expect("chart outputs");
 
         let tpp_root = temp.path().join("tpp-ne");
-        fs::create_dir_all(tpp_root.join("plates/KBOS")).expect("tpp root");
+        fs::create_dir_all(tpp_root.join("plates/BOS")).expect("tpp root");
         fs::write(tpp_root.join("NE_TPP.zip"), b"zip-bytes").expect("tpp zip");
         fs::write(
-            tpp_root.join("plates/KBOS/IAP-MA-ILS OR LOC RWY 04R.png"),
+            tpp_root.join("plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png"),
             b"png",
         )
         .expect("plate file");
@@ -887,9 +928,9 @@ mod tests {
         .expect("tpp outputs");
 
         let csup_root = temp.path().join("csup");
-        fs::create_dir_all(csup_root.join("afd/KBOS")).expect("csup root");
+        fs::create_dir_all(csup_root.join("afd/BOS")).expect("csup root");
         fs::write(csup_root.join("NE_CSUP.zip"), b"zip-bytes").expect("csup zip");
-        fs::write(csup_root.join("afd/KBOS/CSUP-NE_0-0.png"), b"png").expect("csup file");
+        fs::write(csup_root.join("afd/BOS/CSUP-NE_0-0.png"), b"png").expect("csup file");
         let csup_outputs = temp.path().join("csup-package-outputs.jsonl");
         fs::write(
             &csup_outputs,
@@ -963,6 +1004,8 @@ mod tests {
         assert_eq!(index.plates[0].id, "plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png");
         assert_eq!(index.plates[0].airport_id, "KBOS");
         assert_eq!(index.plates[0].package_id, "NE_TPP");
+        assert_eq!(index.csups[0].id, "csup:KBOS:CSUP-NE_0-0.png");
+        assert_eq!(index.csups[0].airport_id, "KBOS");
         assert_eq!(index.csups[0].region_id, "ne");
         assert_eq!(index.csups[0].package_id, "NE_CSUP");
         assert_eq!(index.airport_resources.len(), 1);

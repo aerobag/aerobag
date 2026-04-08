@@ -228,6 +228,7 @@ fn setup_schema(conn: &Connection) -> anyhow::Result<()> {
     conn.execute_batch(
         "
 CREATE TABLE airports(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text,Use Text,FSSPhone Text,Manager Text,ManagerPhone Text,ARPElevation Text,MagneticVariation Text,TrafficPatternAltitude Text,FuelTypes Text,Customs Text,Beacon Text,LightSchedule Text,SegCircle Text,ATCT Text,UNICOMFrequencies Text,CTAFFrequency Text,NonCommercialLandingFee Text,State Text, City Text, UNIQUE(LocationID));
+CREATE TABLE airport_aliases(alias_id Text, airport_id Text, UNIQUE(alias_id));
 CREATE TABLE airportfreq(LocationID Text,Type Text, Freq Text);
 CREATE TABLE airportrunways(LocationID Text,Length Text,Width Text,Surface Text,LEIdent Text,HEIdent Text,LELatitude Text,HELatitude Text,LELongitude Text,HELongitude Text,LEElevation Text,HEElevation Text,LEHeadingT Text,HEHeading Text,LEDT Text,HEDT Text,LELights Text,HELights Text,LEILS Text,HEILS Text,LEVGSI Text,HEVGSI Text,LEPattern Text, HEPattern Text);
 CREATE TABLE nav(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text,Variation TinyInt,Class Text,Hiwas Text,Elevation Text);
@@ -326,6 +327,30 @@ fn insert_airports(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize>
             city
         ])?;
         count += 1;
+    }
+    Ok(count)
+}
+
+fn insert_airport_aliases(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
+    let path = input_dir.join("APT.txt");
+    let text = read_text_lossy(&path)?;
+    let mut stmt = conn.prepare("INSERT OR IGNORE INTO airport_aliases VALUES (?1, ?2)")?;
+    let mut count = 0;
+    for raw in text.lines() {
+        if !raw.starts_with("APT") {
+            continue;
+        }
+        let faa = airport_faa_id(raw);
+        let canonical = canonical_airport_id_from_apt_line(raw);
+        if canonical.is_empty() {
+            continue;
+        }
+        for alias in [faa, canonical.clone()] {
+            if alias.is_empty() {
+                continue;
+            }
+            count += stmt.execute(params![alias, canonical])?;
+        }
     }
     Ok(count)
 }
@@ -1054,6 +1079,10 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
         insert_airports(&tx, &request.input_dir)?,
     );
     row_counts.insert(
+        "airport_aliases".to_string(),
+        insert_airport_aliases(&tx, &request.input_dir)?,
+    );
+    row_counts.insert(
         "airportfreq".to_string(),
         insert_airport_freq_with_ids(&tx, &request.input_dir, &airport_ids)?,
     );
@@ -1315,6 +1344,21 @@ mod tests {
             .query_row("SELECT LocationID FROM airports", [], |row| row.get(0))
             .unwrap();
         assert_eq!(airport_id, "KSEA");
+
+        let alias_pairs = conn
+            .prepare("SELECT alias_id, airport_id FROM airport_aliases ORDER BY alias_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            alias_pairs,
+            vec![
+                ("KSEA".to_string(), "KSEA".to_string()),
+                ("SEA".to_string(), "KSEA".to_string())
+            ]
+        );
 
         let freq_id: String = conn
             .query_row(

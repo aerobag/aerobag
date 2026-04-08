@@ -81,6 +81,9 @@ Important recent web rendering fixes:
 - tiled-family adapters now use `tile_size = 512` instead of `256`
 - family mosaic rendering sorts tiles so lower-zoom tiles paint first and higher-zoom tiles paint last
 - this fixed the case where coarse `PAC_TAC` tiles could visually obscure sharper `SW_TAC` tiles in overlapping TAC coverage
+- map overlay hit-testing was tightened:
+  - dead space around `TAC` / `DBG` now falls through to the map
+  - visible button/panel surfaces still own the pointer gesture
 
 Important web serving note:
 - sectional tiles no longer come from mutable `public/sectional-packages`
@@ -132,6 +135,10 @@ What it does now:
   - family status (`Local`, `Partial`, `Package missing`)
   - tile-label debug toggle
 - the old lower-right family-status badge has been removed
+- map control hit-testing was tightened:
+  - root map drag ignores pointer changes already consumed by child controls
+  - drags that start on `SEC`, `DBG`, or the nav element should not pan the map
+  - the old outer tray card around `SEC` was removed, so the extra gray border is gone
 
 Important current Android dev note:
 - do not bundle the full chart zip universe into the APK

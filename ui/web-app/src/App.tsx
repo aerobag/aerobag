@@ -371,10 +371,12 @@ function MapPage(props: {
           </div>
         ))}
 
-        <div className="chartDock" onPointerDown={(event) => event.stopPropagation()} onPointerUp={(event) => event.stopPropagation()}>
+        <div className="chartDock">
           <button
             type="button"
             className={`chartButton${familyTrayOpen ? " isOpen" : ""}`}
+            onPointerDown={(event) => event.stopPropagation()}
+            onPointerUp={(event) => event.stopPropagation()}
             onClick={() => setFamilyTrayOpen((open) => !open)}
           >
             <span className="chartButtonLabel">{selectedFamily.launcherLabel}</span>
@@ -415,21 +417,24 @@ function MapPage(props: {
           <span className="navElementBottom">° ° ^| ° °</span>
         </button>
 
-        <div
-          className="debugDock"
-          onPointerDown={(event) => event.stopPropagation()}
-          onPointerUp={(event) => event.stopPropagation()}
-        >
+        <div className="debugDock">
           <button
             type="button"
             className="debugLauncher"
+            onPointerDown={(event) => event.stopPropagation()}
+            onPointerUp={(event) => event.stopPropagation()}
             onClick={() => setDebugOpen((open) => !open)}
             aria-expanded={debugOpen}
             aria-label="Toggle debug details"
           >
             DBG
           </button>
-          <section className={`debugPanel${debugOpen ? " isOpen" : ""}`} aria-label="Debug metadata">
+          <section
+            className={`debugPanel${debugOpen ? " isOpen" : ""}`}
+            aria-label="Debug metadata"
+            onPointerDown={(event) => event.stopPropagation()}
+            onPointerUp={(event) => event.stopPropagation()}
+          >
             <div className="debugLine">family {selectedFamily.launcherLabel}</div>
             <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
             <div className="debugLine">tiles {debugSummary.tileCount}</div>

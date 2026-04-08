@@ -60,6 +60,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -398,7 +399,7 @@ private fun MapExplorerPage(
                     var pinchSnapshot: net.jonh.aerobag.prototype.domain.PinchSnapshot? = null
                     while (true) {
                         val event = awaitPointerEvent()
-                        val pressed = event.changes.filter { it.pressed }
+                        val pressed = event.changes.filter { it.pressed && !it.isConsumed }
                         if (pressed.isEmpty()) break
                         if (chartTrayOpen) {
                             pressed.forEach { it.consume() }
@@ -838,22 +839,23 @@ private fun MapTray(
     trayOpen: Boolean,
     onToggle: () -> Unit,
 ) {
-    Card(
+    Column(
         modifier = modifier
             .padding(ThumbGap)
             .widthIn(min = ThumbSize, max = ThumbSize * 2.6f),
+        verticalArrangement = Arrangement.spacedBy(ThumbGap),
     ) {
-        Column(
-            modifier = Modifier.padding(ThumbGap),
-            verticalArrangement = Arrangement.spacedBy(ThumbGap),
+        CompactSquareButton(label = selectedLabel, modifier = Modifier.size(ThumbSize), onClick = onToggle)
+        AnimatedVisibility(
+            visible = trayOpen,
+            enter = slideInHorizontally(initialOffsetX = { -it / 3 }) + fadeIn(),
+            exit = slideOutHorizontally(targetOffsetX = { -it / 3 }) + fadeOut(),
         ) {
-            CompactSquareButton(label = selectedLabel, modifier = Modifier.size(ThumbSize), onClick = onToggle)
-            AnimatedVisibility(
-                visible = trayOpen,
-                enter = slideInHorizontally(initialOffsetX = { -it / 3 }) + fadeIn(),
-                exit = slideOutHorizontally(targetOffsetX = { -it / 3 }) + fadeOut(),
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(ThumbGap)) {
+            Card {
+                Column(
+                    modifier = Modifier.padding(ThumbGap),
+                    verticalArrangement = Arrangement.spacedBy(ThumbGap),
+                ) {
                     trayOptions.forEach { option ->
                         OutlinedButton(
                             onClick = option.select ?: {},
@@ -1014,7 +1016,32 @@ private fun ToolbarButton(label: String, modifier: Modifier = Modifier, onClick:
 @Composable
 private fun CompactSquareButton(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Surface(
-        modifier = modifier.clickable(onClick = onClick),
+        modifier = modifier.pointerInput(onClick) {
+            awaitEachGesture {
+                var activePointer: PointerId? = null
+                var moved = false
+                while (true) {
+                    val event = awaitPointerEvent()
+                    if (activePointer == null) {
+                        val downChange = event.changes.firstOrNull { it.pressed } ?: continue
+                        activePointer = downChange.id
+                        downChange.consume()
+                        continue
+                    }
+                    val change = event.changes.firstOrNull { it.id == activePointer } ?: break
+                    if (change.positionChanged()) {
+                        moved = true
+                    }
+                    change.consume()
+                    if (!change.pressed) {
+                        if (!moved) {
+                            onClick()
+                        }
+                        break
+                    }
+                }
+            }
+        },
         shape = RoundedCornerShape(ThumbRadius),
         color = MaterialTheme.colorScheme.primary,
         contentColor = MaterialTheme.colorScheme.onPrimary,

@@ -1,3 +1,4 @@
+use rusqlite::Connection;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -10,7 +11,9 @@ fn repo_root() -> PathBuf {
         .parent()
         .expect("preprocessor-cli crate should live under the workspace root")
         .parent()
-        .expect("workspace root should live under the repo root")
+        .expect("workspace root should live under the product root")
+        .parent()
+        .expect("product root should live under the repo root")
         .to_path_buf()
 }
 
@@ -36,21 +39,18 @@ fn unique_temp_dir() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after unix epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("aerobag-data-parity-{nanos}"))
+    std::env::temp_dir().join(format!("aerobag-product-data-{nanos}"))
 }
 
 #[test]
-fn rust_data_builder_matches_legacy_database_dump() {
+fn product_data_builder_canonicalizes_airport_ids() {
     let root = repo_root();
     let input_dir = root.join("runs/20260407T053200Z-data-build/work/data");
-    let legacy_db = input_dir.join("main.db");
     let output_dir = unique_temp_dir();
     fs::create_dir_all(&output_dir).expect("failed to create temp output dir");
 
     let output_dir_str = output_dir.display().to_string();
     let input_dir_str = input_dir.display().to_string();
-    let legacy_db_str = legacy_db.display().to_string();
-    let rust_db_str = output_dir.join("main.db").display().to_string();
 
     let build_stdout = run_cli(&[
         "build-data",
@@ -62,22 +62,50 @@ fn rust_data_builder_matches_legacy_database_dump() {
         "2604",
     ]);
     assert!(
-        build_stdout.contains("table saa rows 1234"),
-        "expected saa row count in build output\n{build_stdout}"
+        build_stdout.contains("table airports rows 19445"),
+        "expected airports row count in build output\n{build_stdout}"
+    );
+    assert!(
+        build_stdout.contains("table cifp_sid_star_app rows 208451"),
+        "expected cifp row count in build output\n{build_stdout}"
     );
 
-    let compare_stdout = run_cli(&[
-        "compare-data-db",
-        "--left-db",
-        &legacy_db_str,
-        "--right-db",
-        &rust_db_str,
-    ]);
-    assert!(compare_stdout.contains("status match"), "expected data parity match\n{compare_stdout}");
-    assert!(
-        compare_stdout.contains("table cifp_sid_star_app left=208451 right=208451 status=match"),
-        "expected CIFP parity line\n{compare_stdout}"
-    );
+    let db = Connection::open(output_dir.join("main.db")).expect("open product main.db");
+
+    let sea_airport_rows: i64 = db
+        .query_row(
+            "select count(*) from airports where LocationID = 'SEA'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count SEA airport rows");
+    assert_eq!(sea_airport_rows, 0, "airport ids should be canonicalized");
+
+    let ksea_airport_rows: i64 = db
+        .query_row(
+            "select count(*) from airports where LocationID = 'KSEA'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count KSEA airport rows");
+    assert_eq!(ksea_airport_rows, 1, "expected canonical airport id");
+
+    let linked_tables = [
+        ("airportfreq", "LocationID"),
+        ("airportrunways", "LocationID"),
+        ("awos", "LocationID"),
+        ("cifp_sid_star_app", "airport_identifier"),
+    ];
+    for (table, column) in linked_tables {
+        let query = format!("select count(*) from {table} where {column} = 'KSEA'");
+        let count: i64 = db
+            .query_row(&query, [], |row| row.get(0))
+            .unwrap_or_else(|_| panic!("count canonical ids in {table}.{column}"));
+        assert!(
+            count > 0,
+            "expected canonical airport id in {table}.{column}"
+        );
+    }
 
     fs::remove_dir_all(&output_dir).expect("failed to remove temp output dir");
 }

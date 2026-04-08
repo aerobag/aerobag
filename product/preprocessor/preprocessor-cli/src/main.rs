@@ -7,25 +7,24 @@ use std::{
 
 use anyhow::Context;
 use preprocessor_charts::{
-    ChartRunRequest, NativeChartRunRequest, build_family_tiles, build_family_vrts,
-    likely_current_bottleneck, package_family_regions, phase_plan, run_family,
-    run_native_family,
+    build_family_tiles, build_family_vrts, likely_current_bottleneck, package_family_regions,
+    phase_plan, run_family, run_native_family, ChartRunRequest, NativeChartRunRequest,
 };
-use preprocessor_csup::{NativeCsupRunRequest, run_native_csup};
-use preprocessor_data::{DataBuildRequest, build_data_package, compare_databases};
-use preprocessor_tpp::{NativeTppRunRequest, run_native_tpp};
 use preprocessor_core::{
     CaptureManifest, ChartFamily, ConcurrencyConfig, ExpectedTileCounts, Parallelism, Region,
     WorkKind,
 };
+use preprocessor_csup::{run_native_csup, NativeCsupRunRequest};
+use preprocessor_data::{build_data_package, compare_databases, DataBuildRequest};
 use preprocessor_fetch::{
-    CacheLayout, hash_text, manifest_path_for_run, manifest_summary, read_download_records,
-    read_extract_records, read_source_url_set,
+    hash_text, manifest_path_for_run, manifest_summary, read_download_records,
+    read_extract_records, read_source_url_set, CacheLayout,
 };
 use preprocessor_resource_index::{
-    AssetSource, BuildResourceIndexRequest, ChartSource, write_resource_index,
+    write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource,
 };
 use preprocessor_tools::{comparison_targets, ToolInvocation};
+use preprocessor_tpp::{run_native_tpp, NativeTppRunRequest};
 use sha2::{Digest, Sha256};
 
 fn load_manifest(run_root: &PathBuf) -> anyhow::Result<CaptureManifest> {
@@ -69,14 +68,14 @@ fn usage() -> &'static str {
   preprocessor-cli run-native-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> --cpu-jobs <count> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-native-csup --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-native-tpp --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
-  preprocessor-cli build-data --input-dir <path> --output-dir <path> --manifest-version <cycle>
+  preprocessor-cli build-data --input-dir <path> --output-dir <path> --manifest-version <cycle> [--resource-index-output <path>] [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
   preprocessor-cli run-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
 }
 
 fn count_lines(path: &PathBuf) -> anyhow::Result<u64> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let text =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     Ok(text.lines().count() as u64)
 }
 
@@ -286,6 +285,99 @@ fn parse_asset_source_spec(value: &str) -> anyhow::Result<AssetSource> {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BuildDataCommand {
+    input_dir: PathBuf,
+    output_dir: PathBuf,
+    manifest_version: String,
+    resource_index_output: Option<PathBuf>,
+    chart_sources: Vec<ChartSource>,
+    tpp_sources: Vec<AssetSource>,
+    csup_sources: Vec<AssetSource>,
+}
+
+fn parse_build_data_command(args: &[String]) -> anyhow::Result<BuildDataCommand> {
+    let mut input_dir = None;
+    let mut output_dir = None;
+    let mut manifest_version = None;
+    let mut resource_index_output = None;
+    let mut chart_sources = Vec::new();
+    let mut tpp_sources = Vec::new();
+    let mut csup_sources = Vec::new();
+    let mut index = 2;
+    while index < args.len() {
+        match args.get(index).map(String::as_str) {
+            Some("--input-dir") => {
+                input_dir = Some(PathBuf::from(
+                    args.get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                ));
+                index += 2;
+            }
+            Some("--output-dir") => {
+                output_dir = Some(PathBuf::from(
+                    args.get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                ));
+                index += 2;
+            }
+            Some("--manifest-version") => {
+                manifest_version = Some(
+                    args.get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                );
+                index += 2;
+            }
+            Some("--resource-index-output") => {
+                resource_index_output = Some(PathBuf::from(
+                    args.get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                ));
+                index += 2;
+            }
+            Some("--chart-source") => {
+                chart_sources.push(parse_chart_source_spec(
+                    args.get(index + 1)
+                        .map(String::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                )?);
+                index += 2;
+            }
+            Some("--tpp-source") => {
+                tpp_sources.push(parse_asset_source_spec(
+                    args.get(index + 1)
+                        .map(String::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                )?);
+                index += 2;
+            }
+            Some("--csup-source") => {
+                csup_sources.push(parse_asset_source_spec(
+                    args.get(index + 1)
+                        .map(String::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                )?);
+                index += 2;
+            }
+            _ => anyhow::bail!("{}", usage()),
+        }
+    }
+
+    Ok(BuildDataCommand {
+        input_dir: input_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+        output_dir: output_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+        manifest_version: manifest_version.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+        resource_index_output,
+        chart_sources,
+        tpp_sources,
+        csup_sources,
+    })
+}
+
 fn compare_relative_image_paths(
     left_root: &Path,
     right_root: &Path,
@@ -299,8 +391,14 @@ fn compare_relative_image_paths(
         .intersection(&right_paths)
         .cloned()
         .collect::<Vec<_>>();
-    let left_only = left_paths.difference(&right_paths).cloned().collect::<Vec<_>>();
-    let right_only = right_paths.difference(&left_paths).cloned().collect::<Vec<_>>();
+    let left_only = left_paths
+        .difference(&right_paths)
+        .cloned()
+        .collect::<Vec<_>>();
+    let right_only = right_paths
+        .difference(&left_paths)
+        .cloned()
+        .collect::<Vec<_>>();
     let sampled_paths = select_sample_paths(&shared_paths, sample_percent, limit);
 
     println!(
@@ -367,8 +465,12 @@ fn compare_sampled_images(
     compare_relative_image_paths(
         left_root,
         right_root,
-        read_image_paths(left_root)?.into_iter().collect::<BTreeSet<_>>(),
-        read_image_paths(right_root)?.into_iter().collect::<BTreeSet<_>>(),
+        read_image_paths(left_root)?
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        read_image_paths(right_root)?
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
         sample_percent,
         rmse_threshold,
         limit,
@@ -447,7 +549,10 @@ fn compare_tpp_images(
     )
 }
 
-fn parse_image_compare_options(args: &[String], start_index: usize) -> anyhow::Result<(u8, f64, Option<usize>)> {
+fn parse_image_compare_options(
+    args: &[String],
+    start_index: usize,
+) -> anyhow::Result<(u8, f64, Option<usize>)> {
     let mut sample_percent = 1_u8;
     let mut rmse_threshold = 0.0_f64;
     let mut limit = None;
@@ -663,8 +768,14 @@ fn compare_chart_tile_paths(
     );
 
     if legacy_paths != rust_paths {
-        let legacy_set = legacy_paths.iter().cloned().collect::<std::collections::BTreeSet<_>>();
-        let rust_set = rust_paths.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+        let legacy_set = legacy_paths
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let rust_set = rust_paths
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
         for missing in legacy_set.difference(&rust_set).take(10) {
             println!("missing_in_rust {}", missing);
         }
@@ -689,7 +800,10 @@ fn print_set_diff(
     }
 }
 
-fn compare_provenance(left_provenance_dir: &Path, right_provenance_dir: &Path) -> anyhow::Result<()> {
+fn compare_provenance(
+    left_provenance_dir: &Path,
+    right_provenance_dir: &Path,
+) -> anyhow::Result<()> {
     let left_source_urls = read_source_url_set(left_provenance_dir.join("source_urls.jsonl"))?;
     let right_source_urls = read_source_url_set(right_provenance_dir.join("source_urls.jsonl"))?;
     let source_url_status = if left_source_urls == right_source_urls {
@@ -849,10 +963,16 @@ fn main() -> anyhow::Result<()> {
                 ChartFamily::EnrH,
             ] {
                 let label = family.capture_label();
-                let path = run_root.join("meta").join(format!("{label}.tile-paths.txt"));
+                let path = run_root
+                    .join("meta")
+                    .join(format!("{label}.tile-paths.txt"));
                 let actual = count_lines(&path)?;
                 if let Some(expected) = family.baseline_tile_count() {
-                    let status = if actual == expected { "match" } else { "mismatch" };
+                    let status = if actual == expected {
+                        "match"
+                    } else {
+                        "mismatch"
+                    };
                     println!("{label} expected={expected} actual={actual} status={status}");
                 } else {
                     println!("{label} expected=unknown actual={actual} status=unknown");
@@ -1054,7 +1174,10 @@ fn main() -> anyhow::Result<()> {
             println!("url_hash {}", hash_text(&url));
             println!("blob {}", layout.blob_path(&sha256).display());
             println!("http {}", layout.http_metadata_path(&url).display());
-            println!("object {}", layout.object_metadata_path("example-source").display());
+            println!(
+                "object {}",
+                layout.object_metadata_path("example-source").display()
+            );
         }
         Some("compare-provenance") => {
             if args.get(2).map(String::as_str) != Some("--left-provenance-dir")
@@ -1508,36 +1631,32 @@ fn main() -> anyhow::Result<()> {
             println!("csup_count {}", index.csups.len());
         }
         Some("build-data") => {
-            if args.get(2).map(String::as_str) != Some("--input-dir")
-                || args.get(4).map(String::as_str) != Some("--output-dir")
-                || args.get(6).map(String::as_str) != Some("--manifest-version")
-            {
-                anyhow::bail!("{}", usage());
-            }
-            let input_dir = PathBuf::from(
-                args.get(3)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let output_dir = PathBuf::from(
-                args.get(5)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let manifest_version = args
-                .get(7)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?;
+            let command = parse_build_data_command(&args)?;
             let result = build_data_package(&DataBuildRequest {
-                input_dir,
-                output_dir,
-                manifest_version,
+                input_dir: command.input_dir,
+                output_dir: command.output_dir,
+                manifest_version: command.manifest_version,
             })?;
             println!("main_db {}", result.main_db.display());
             println!("manifest {}", result.manifest_path.display());
             println!("zip {}", result.zip_path.display());
             for (table, count) in result.row_counts {
                 println!("table {} rows {}", table, count);
+            }
+            if let Some(output_path) = command.resource_index_output {
+                let request = BuildResourceIndexRequest {
+                    nav_db_zip: result.zip_path.clone(),
+                    output_path,
+                    chart_sources: command.chart_sources,
+                    tpp_sources: command.tpp_sources,
+                    csup_sources: command.csup_sources,
+                };
+                let index = write_resource_index(&request)?;
+                println!("resource_index {}", request.output_path.display());
+                println!("airport_count {}", index.airports.len());
+                println!("package_count {}", index.packages.len());
+                println!("plate_count {}", index.plates.len());
+                println!("csup_count {}", index.csups.len());
             }
         }
         Some("run-chart") => {
@@ -1606,4 +1725,86 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_build_data_command_accepts_minimal_form() {
+        let args = vec![
+            "preprocessor-cli".to_string(),
+            "build-data".to_string(),
+            "--input-dir".to_string(),
+            "/tmp/input".to_string(),
+            "--output-dir".to_string(),
+            "/tmp/output".to_string(),
+            "--manifest-version".to_string(),
+            "2604".to_string(),
+        ];
+        let command = parse_build_data_command(&args).expect("parse build-data");
+        assert_eq!(command.input_dir, PathBuf::from("/tmp/input"));
+        assert_eq!(command.output_dir, PathBuf::from("/tmp/output"));
+        assert_eq!(command.manifest_version, "2604");
+        assert_eq!(command.resource_index_output, None);
+        assert!(command.chart_sources.is_empty());
+        assert!(command.tpp_sources.is_empty());
+        assert!(command.csup_sources.is_empty());
+    }
+
+    #[test]
+    fn parse_build_data_command_accepts_resource_index_options() {
+        let args = vec![
+            "preprocessor-cli".to_string(),
+            "build-data".to_string(),
+            "--input-dir".to_string(),
+            "/tmp/input".to_string(),
+            "--output-dir".to_string(),
+            "/tmp/output".to_string(),
+            "--manifest-version".to_string(),
+            "2604".to_string(),
+            "--resource-index-output".to_string(),
+            "/tmp/output/resource-index.json".to_string(),
+            "--chart-source".to_string(),
+            "sectional:/tmp/sec.jsonl:/tmp/sec-root".to_string(),
+            "--tpp-source".to_string(),
+            "/tmp/tpp.jsonl:/tmp/tpp-root".to_string(),
+            "--csup-source".to_string(),
+            "/tmp/csup.jsonl:/tmp/csup-root".to_string(),
+        ];
+        let command = parse_build_data_command(&args).expect("parse build-data");
+        assert_eq!(
+            command.resource_index_output,
+            Some(PathBuf::from("/tmp/output/resource-index.json"))
+        );
+        assert_eq!(command.chart_sources.len(), 1);
+        assert_eq!(command.chart_sources[0].family_id, "sectional");
+        assert_eq!(
+            command.chart_sources[0].package_outputs_path,
+            PathBuf::from("/tmp/sec.jsonl")
+        );
+        assert_eq!(
+            command.chart_sources[0].package_root,
+            PathBuf::from("/tmp/sec-root")
+        );
+        assert_eq!(command.tpp_sources.len(), 1);
+        assert_eq!(
+            command.tpp_sources[0].package_outputs_path,
+            PathBuf::from("/tmp/tpp.jsonl")
+        );
+        assert_eq!(
+            command.tpp_sources[0].asset_root,
+            PathBuf::from("/tmp/tpp-root")
+        );
+        assert_eq!(command.csup_sources.len(), 1);
+        assert_eq!(
+            command.csup_sources[0].package_outputs_path,
+            PathBuf::from("/tmp/csup.jsonl")
+        );
+        assert_eq!(
+            command.csup_sources[0].asset_root,
+            PathBuf::from("/tmp/csup-root")
+        );
+    }
 }

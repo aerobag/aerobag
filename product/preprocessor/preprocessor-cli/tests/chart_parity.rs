@@ -6,7 +6,9 @@ fn repo_root() -> PathBuf {
         .parent()
         .expect("preprocessor-cli crate should live under the workspace root")
         .parent()
-        .expect("workspace root should live under the repo root")
+        .expect("workspace root should live under the product root")
+        .parent()
+        .expect("product root should live under the repo root")
         .to_path_buf()
 }
 
@@ -185,7 +187,10 @@ fn sec_visual_self_compare_sample_matches() {
         "10",
     ]);
 
-    assert!(stdout.contains("visual status=match"), "expected visual match\n{stdout}");
+    assert!(
+        stdout.contains("visual status=match"),
+        "expected visual match\n{stdout}"
+    );
 }
 
 #[test]
@@ -210,7 +215,10 @@ fn csup_native_dedup_packages_match_legacy_entries() {
             "missing csup package parity line for {region}\n{stdout}"
         );
     }
-    assert!(stdout.contains("members=match"), "expected members=match output\n{stdout}");
+    assert!(
+        stdout.contains("members=match"),
+        "expected members=match output\n{stdout}"
+    );
 }
 
 #[test]

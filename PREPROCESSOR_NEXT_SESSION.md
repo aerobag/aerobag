@@ -1406,3 +1406,67 @@ If the next session starts with no further instruction, do this:
     - Full Banana is now the authoritative parity-certification path
   - consequence:
     - old fixture runs like `20260405T154700Z`, `20260405T154700Z-tpp-retry`, and `20260407T053200Z-data-build` are no longer needed for test coverage
+
+- Product TPP/CSUP packages now include thumbnails as first-class zip members:
+  - files:
+    - [product/preprocessor/preprocessor-tpp/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-tpp/src/lib.rs)
+    - [product/preprocessor/preprocessor-csup/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-csup/src/lib.rs)
+    - [product/preprocessor/preprocessor-resource-index/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-resource-index/src/lib.rs)
+    - [product/preprocessor/preprocessor-tools/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-tools/src/lib.rs)
+  - behavior:
+    - `thumbnail_path` in the product resource index now points at a real member inside the owning `TPP` or `CSUP` zip
+    - package manifests and zips include both:
+      - full asset path, e.g. `plates/SEA/APD-WA-AIRPORT DIAGRAM.png`
+      - thumbnail path, e.g. `thumbnails/plates/SEA/APD-WA-AIRPORT DIAGRAM.png`
+    - resource-index now asserts for every `plates[]` / `csups[]` record that:
+      - `asset_path` exists on disk
+      - `thumbnail_path` exists on disk
+      - both paths exist inside the referenced `package_id` zip
+  - bug found and fixed while adding that assertion:
+    - hidden TPP intermediate paths like `.continued-parts/...png` were leaking into the index
+    - fix: recursive asset scan now ignores hidden path segments
+  - validator performance fix:
+    - package-member validation originally reopened each zip per record and effectively hung production
+    - fix: index each zip’s member list once and validate against that cached set
+  - production proof:
+    - [master.log](/root/aerobag/product-builds/production/orchestrator-logs/master.log)
+    - final result after fix: `complete PASS` at `+2:34`
+  - NW spot-check:
+    - production index:
+      - `NW_TPP` / `KSEA`:
+        - `asset_path = plates/SEA/APD-WA-AIRPORT DIAGRAM.png`
+        - `thumbnail_path = thumbnails/plates/SEA/APD-WA-AIRPORT DIAGRAM.png`
+      - `NW_CSUP` / `KSEA`:
+        - `asset_path = afd/SEA/CSUP-NW_0.png`
+        - `thumbnail_path = thumbnails/afd/SEA/CSUP-NW_0.png`
+    - zip members confirmed:
+      - `/root/aerobag/product-builds/shared/work/tpp-nw/work/tpp-nw/NW_TPP.zip`
+      - `/root/aerobag/product-builds/shared/work/csup/work/csup/NW_CSUP.zip`
+
+- Product TPP build graph is now split at the true reuse boundary:
+  - files:
+    - [product/preprocessor/preprocessor-cli/src/product_build.rs](/root/aerobag/product/preprocessor/preprocessor-cli/src/product_build.rs)
+    - [product/preprocessor/preprocessor-tpp/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-tpp/src/lib.rs)
+    - [product/preprocessor/preprocessor-tpp/src/package.rs](/root/aerobag/product/preprocessor/preprocessor-tpp/src/package.rs)
+  - new shape:
+    - shared `tpp-<region>-render` node produces rendered `plates/`
+    - separate shared `tpp-<region>-package` node builds the region manifest/zip
+  - motivation:
+    - package-only changes like thumbnail packaging or manifest/index behavior should not poison expensive plate rendering
+  - implementation note:
+    - TPP package logic moved out of `lib.rs` into `src/package.rs`
+    - package node fingerprint now tracks `package.rs`
+    - render node fingerprint remains tied to render logic in `lib.rs`
+  - node records now live under:
+    - `product-builds/shared/nodes/tpp-ne-render/.../build-record.json`
+    - `product-builds/shared/nodes/tpp-ne-package/.../build-record.json`
+    - and similarly for other regions
+  - proof:
+    - first validation run with the split:
+      - `tpp-ne-package` completed at `+3:54`
+      - `tpp-nw-package` completed at `+5:22`
+      - final `PASS` at `+6:14`
+    - warm validation rerun:
+      - both `tpp-ne-package` and `tpp-nw-package` completed instantly from cache
+      - `resource-index` was also a cache hit
+      - final `PASS` at `+0:35`

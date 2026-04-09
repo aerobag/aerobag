@@ -14,9 +14,12 @@ use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use preprocessor_core::{Region, RunPaths};
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
-    read_source_urls_jsonl, write_package_outputs_jsonl, PackageOutputRecord,
+    read_source_urls_jsonl,
 };
-use preprocessor_tools::{append_pngs_vertical, write_thumbnail_from_png, ToolInvocation};
+use preprocessor_tools::{append_pngs_vertical, ToolInvocation};
+
+mod package;
+use package::package_region;
 
 const TPP_AIRPORT_DIAGRAMS_URL: &str =
     "https://www.outerworldapps.com/WairToNowWork/avare_aptdiags.php";
@@ -41,6 +44,20 @@ pub struct NativeTppRunResult {
     pub work_dir: PathBuf,
     pub prefetch_elapsed_ms: u128,
     pub render_elapsed_ms: u128,
+    pub package_elapsed_ms: u128,
+    pub package_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeTppRenderResult {
+    pub work_dir: PathBuf,
+    pub provenance_dir: PathBuf,
+    pub prefetch_elapsed_ms: u128,
+    pub render_elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeTppPackageResult {
     pub package_elapsed_ms: u128,
     pub package_count: usize,
 }
@@ -76,6 +93,18 @@ enum PlateRenderKind {
 }
 
 pub fn run_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<NativeTppRunResult> {
+    let render = render_native_tpp(request)?;
+    let package = package_native_tpp(&render.work_dir, &render.provenance_dir, request.region)?;
+    Ok(NativeTppRunResult {
+        work_dir: render.work_dir,
+        prefetch_elapsed_ms: render.prefetch_elapsed_ms,
+        render_elapsed_ms: render.render_elapsed_ms,
+        package_elapsed_ms: package.package_elapsed_ms,
+        package_count: package.package_count,
+    })
+}
+
+pub fn render_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<NativeTppRenderResult> {
     let paths = RunPaths::new(&request.run_root);
     fs::create_dir_all(&paths.logs).context("failed to create logs dir")?;
     fs::create_dir_all(&paths.meta).context("failed to create meta dir")?;
@@ -109,15 +138,23 @@ pub fn run_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<NativeTpp
     render_tpp_region(&work_dir, request.region, request.render_jobs)?;
     let render_elapsed_ms = render_start.elapsed().as_millis();
 
-    let package_start = Instant::now();
-    let package_count = package_region(&work_dir, &provenance_dir, request.region)?;
-    let package_elapsed_ms = package_start.elapsed().as_millis();
-
-    Ok(NativeTppRunResult {
+    Ok(NativeTppRenderResult {
         work_dir,
+        provenance_dir,
         prefetch_elapsed_ms,
         render_elapsed_ms,
-        package_elapsed_ms,
+    })
+}
+
+pub fn package_native_tpp(
+    work_dir: &Path,
+    provenance_dir: &Path,
+    region: Region,
+) -> anyhow::Result<NativeTppPackageResult> {
+    let package_start = Instant::now();
+    let package_count = package_region(work_dir, provenance_dir, region)?;
+    Ok(NativeTppPackageResult {
+        package_elapsed_ms: package_start.elapsed().as_millis(),
         package_count,
     })
 }
@@ -1109,120 +1146,6 @@ fn remove_plate_outputs(folder: &Path, output_names: &[String]) -> anyhow::Resul
     Ok(())
 }
 
-fn package_region(work_dir: &Path, provenance_dir: &Path, region: Region) -> anyhow::Result<usize> {
-    let manifest_name = format!("{}_TPP", region.code());
-    let zip_name = format!("{}_TPP.zip", region.code());
-    let manifest_path = work_dir.join(&manifest_name);
-    let zip_path = work_dir.join(&zip_name);
-    remove_if_exists(&manifest_path)?;
-    remove_if_exists(&zip_path)?;
-
-    let selected = collect_region_pngs(work_dir, region)?;
-    let selected = with_thumbnail_members(work_dir, &selected)?;
-    let mut manifest_text = String::new();
-    manifest_text.push_str(&current_cycle_manifest());
-    manifest_text.push('\n');
-    for path in &selected {
-        manifest_text.push_str(path);
-        manifest_text.push('\n');
-    }
-    fs::write(&manifest_path, manifest_text)
-        .with_context(|| format!("failed to write {}", manifest_path.display()))?;
-
-    let mut stdin_text = String::new();
-    for path in &selected {
-        stdin_text.push_str(path);
-        stdin_text.push('\n');
-    }
-    stdin_text.push_str(&manifest_name);
-    stdin_text.push('\n');
-
-    let invocation = ToolInvocation {
-        program: "zip".to_string(),
-        args: vec!["-q".to_string(), zip_name.clone(), "-@".to_string()],
-        cwd: work_dir.to_path_buf(),
-        label: format!("tpp-package-{}", region.code()),
-        env: Vec::new(),
-        stdin_text: Some(stdin_text),
-    };
-    let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
-    if !outcome.success {
-        bail!("zip failed for region {}", region.code());
-    }
-
-    write_package_outputs_jsonl(
-        provenance_dir,
-        &[PackageOutputRecord {
-            label: format!("tpp-{}", region.code().to_ascii_lowercase()),
-            chart: None,
-            region: region.code().to_string(),
-            manifest: manifest_name,
-            manifest_sha256: hash_file(&manifest_path)?,
-            zip: zip_name,
-            zip_sha256: hash_file(&zip_path)?,
-        }],
-    )?;
-
-    Ok(1)
-}
-
-fn collect_region_pngs(work_dir: &Path, region: Region) -> anyhow::Result<Vec<String>> {
-    let script = r#"import glob, sys
-from pathlib import Path
-root = Path(sys.argv[1])
-seen = set()
-for state in sys.argv[2:]:
-    pattern = root / f"plates/**/*-{state}-*.png"
-    for path in glob.glob(str(pattern), recursive=True):
-        relative = Path(path).relative_to(root).as_posix()
-        if relative not in seen:
-            seen.add(relative)
-            print(relative)
-"#;
-    let mut command = Command::new("python3");
-    command.arg("-c").arg(script).arg(work_dir);
-    for state in region.state_codes() {
-        command.arg(state);
-    }
-    let output = command
-        .output()
-        .with_context(|| format!("failed to enumerate plates under {}", work_dir.display()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("python plate enumeration failed: {stderr}");
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("plate enumeration was not utf-8")?;
-    Ok(stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect())
-}
-
-fn with_thumbnail_members(work_dir: &Path, members: &[String]) -> anyhow::Result<Vec<String>> {
-    let mut all = Vec::with_capacity(members.len() * 2);
-    let thumbnail_root = work_dir.join("thumbnails");
-    for member in members {
-        all.push(member.clone());
-        let asset_path = Path::new(member);
-        let source = work_dir.join(asset_path);
-        write_thumbnail_from_png(&source, &thumbnail_root, asset_path)?;
-        all.push(
-            Path::new("thumbnails")
-                .join(asset_path)
-                .to_string_lossy()
-                .replace('\\', "/"),
-        );
-    }
-    Ok(all)
-}
-
-fn current_cycle_manifest() -> String {
-    let (manifest_cycle, _) = calculate_cycle(1, Utc::now());
-    manifest_cycle.to_string()
-}
 
 fn calculate_cycle(future: i64, now: DateTime<Utc>) -> (u32, u32) {
     let mut start_utc = Utc.with_ymd_and_hms(2020, 1, 2, 9, 0, 0).unwrap();

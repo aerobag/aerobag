@@ -23,7 +23,9 @@ use preprocessor_fetch::{
     read_source_urls_jsonl, write_package_outputs_jsonl, PackageOutputRecord,
 };
 use preprocessor_resource_index::{write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource};
-use preprocessor_tpp::{run_native_tpp, NativeTppRunRequest};
+use preprocessor_tpp::{
+    package_native_tpp, render_native_tpp, NativeTppRunRequest,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -190,7 +192,7 @@ impl HeavyJobSpec {
                     fetch_jobs,
                     render_jobs,
                 };
-                Ok(vec![build_tpp_node(config, &request)?])
+                Ok(vec![build_tpp_render_node(config, &request)?])
             }
             Self::Data { source_urls_dir } => build_data_nodes(config, &source_urls_dir),
         }
@@ -277,7 +279,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             render_jobs: config.cpu_jobs.max(1),
         });
 
-        let mut tpp_sources = Vec::new();
+        let mut tpp_package_requests = Vec::new();
         for region in config.profile.tpp_regions() {
             let region_id = region.code().to_ascii_lowercase();
             let run_root = build_shared_work_root(config, &format!("tpp-{region_id}"))?;
@@ -289,14 +291,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 fetch_jobs: config.fetch_jobs,
                 render_jobs: config.cpu_jobs.max(1),
             });
-            tpp_sources.push(AssetSource {
-                package_outputs_path: run_root
-                    .join(format!("meta/provenance/tpp-{region_id}/package_outputs.jsonl")),
-                asset_root: run_root.join(format!("work/tpp-{region_id}")),
-                source_urls_path: Some(
-                    run_root.join(format!("meta/provenance/tpp-{region_id}/source_urls.jsonl")),
-                ),
-            });
+            tpp_package_requests.push((*region, run_root));
         }
 
         pending_jobs.push_back(HeavyJobSpec::Data {
@@ -379,6 +374,21 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         }
         master_log.log("complete csup-package")?;
         let csup_sources = vec![csup_source];
+
+        let mut tpp_sources = Vec::new();
+        for (region, run_root) in tpp_package_requests {
+            let region_id = region.code().to_ascii_lowercase();
+            master_log.log(format!("launch tpp-{}-package", region_id))?;
+            let (record, source) = build_tpp_package_node(
+                config,
+                region,
+                &run_root,
+                &source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
+            )?;
+            node_records.push(record);
+            master_log.log(format!("complete tpp-{}-package", region_id))?;
+            tpp_sources.push(source);
+        }
 
         let data_zip = node_records
             .iter()
@@ -834,8 +844,8 @@ fn build_csup_package_nodes(
     ))
 }
 
-fn build_tpp_node(
-    _config: &ProductBuildConfig,
+fn build_tpp_render_node(
+    config: &ProductBuildConfig,
     request: &NativeTppRunRequest,
 ) -> anyhow::Result<NodeRecord> {
     let region_id = request.region.code().to_ascii_lowercase();
@@ -843,8 +853,136 @@ fn build_tpp_node(
         .prefetch_source_urls
         .as_ref()
         .context("tpp build requires source urls")?;
+    let node_name = format!("tpp-{region_id}-render");
+    let inputs = tpp_render_inputs(request, source_urls, &region_id)?;
+    let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
+    let plates_root = request.run_root.join(format!("work/tpp-{region_id}/plates"));
+    if let Some(record) = try_load_node_record(&prepared, std::slice::from_ref(&plates_root))? {
+        return Ok(record);
+    }
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    let result = render_native_tpp(request)?;
+    let outputs = BTreeMap::from([
+        ("work_dir".to_string(), result.work_dir.display().to_string()),
+        (
+            "provenance_dir".to_string(),
+            result.provenance_dir.display().to_string(),
+        ),
+        ("plates_root".to_string(), plates_root.display().to_string()),
+    ]);
+    write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )
+}
+
+fn build_tpp_package_node(
+    config: &ProductBuildConfig,
+    region: Region,
+    run_root: &Path,
+    source_urls_path: &Path,
+) -> anyhow::Result<(NodeRecord, AssetSource)> {
+    let region_id = region.code().to_ascii_lowercase();
+    let render_request = NativeTppRunRequest {
+        region,
+        source_repo: config.source_root.join("tpp"),
+        run_root: run_root.to_path_buf(),
+        prefetch_source_urls: Some(source_urls_path.to_path_buf()),
+        fetch_jobs: config.fetch_jobs,
+        render_jobs: config.cpu_jobs.max(1),
+    };
+    let render_node_name = format!("tpp-{region_id}-render");
+    let render_inputs = tpp_render_inputs(&render_request, source_urls_path, &region_id)?;
+    let render_prepared = prepare_node_at(
+        &build_shared_node_dir(config, &render_node_name)?,
+        &render_node_name,
+        &render_inputs,
+    )?;
+    let render_record = load_existing_node_record(&render_prepared.record_path, &render_node_name)?;
     let inputs = BTreeMap::from([
-        ("region".to_string(), region_id.clone()),
+        ("render_fingerprint".to_string(), render_record.fingerprint.clone()),
+        ("region".to_string(), region.code().to_string()),
+        (
+            "tpp_package".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-tpp/src/package.rs"),
+            )?,
+        ),
+        (
+            "tools_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-tools/src/lib.rs"),
+            )?,
+        ),
+    ]);
+    let node_name = format!("tpp-{region_id}-package");
+    let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
+    let package_outputs_path = run_root.join(format!("meta/provenance/tpp-{region_id}/package_outputs.jsonl"));
+    let work_dir = run_root.join(format!("work/tpp-{region_id}"));
+    let zip_path = work_dir.join(format!("{}_TPP.zip", region.code()));
+    let manifest_path = work_dir.join(format!("{}_TPP", region.code()));
+    if let Some(record) = try_load_node_record(
+        &prepared,
+        &[package_outputs_path.clone(), zip_path.clone(), manifest_path.clone()],
+    )? {
+        return Ok((
+            record,
+            AssetSource {
+                package_outputs_path,
+                asset_root: work_dir,
+                source_urls_path: Some(source_urls_path.to_path_buf()),
+            },
+        ));
+    }
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    let provenance_dir = run_root.join(format!("meta/provenance/tpp-{region_id}"));
+    let result = package_native_tpp(&work_dir, &provenance_dir, region)?;
+    let outputs = BTreeMap::from([
+        ("work_dir".to_string(), work_dir.display().to_string()),
+        ("package_outputs".to_string(), package_outputs_path.display().to_string()),
+        ("zip".to_string(), zip_path.display().to_string()),
+        ("manifest".to_string(), manifest_path.display().to_string()),
+        ("package_count".to_string(), result.package_count.to_string()),
+    ]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((
+        record,
+        AssetSource {
+            package_outputs_path,
+            asset_root: work_dir,
+            source_urls_path: Some(source_urls_path.to_path_buf()),
+        },
+    ))
+}
+
+fn tpp_render_inputs(
+    request: &NativeTppRunRequest,
+    source_urls: &Path,
+    region_id: &str,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    Ok(BTreeMap::from([
+        ("region".to_string(), region_id.to_string()),
         ("source_repo".to_string(), hash_tree(&request.source_repo)?),
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("fetch_jobs".to_string(), request.fetch_jobs.to_string()),
@@ -866,30 +1004,7 @@ fn build_tpp_node(
                     .join("preprocessor-tools/src/lib.rs"),
             )?,
         ),
-    ]);
-    let prepared = prepare_existing_node_root(&format!("tpp-{region_id}"), &request.run_root, &inputs)?;
-    let package_outputs = request
-        .run_root
-        .join(format!("meta/provenance/tpp-{region_id}/package_outputs.jsonl"));
-    if let Some(record) = try_load_node_record(&prepared, &[package_outputs.clone()])? {
-        return Ok(record);
-    }
-    let started_at_utc = utc_now_string();
-    let started = Instant::now();
-    let result = run_native_tpp(request)?;
-    let outputs = BTreeMap::from([
-        ("work_dir".to_string(), result.work_dir.display().to_string()),
-        ("package_outputs".to_string(), package_outputs.display().to_string()),
-    ]);
-    write_node_record(
-        prepared,
-        inputs,
-        outputs,
-        false,
-        started_at_utc,
-        utc_now_string(),
-        started.elapsed().as_millis() as u64,
-    )
+    ]))
 }
 
 fn build_data_nodes(

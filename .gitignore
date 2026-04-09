@@ -7,3 +7,6 @@ __pycache__/
 *.swp
 .gradle-user-home/
 .codex
+ui/shared-fixtures/content-prototype/resource-index.json
+ui/web-app/src/domain/generated/resourceIndex.json
+ui/android-app/app/src/main/assets/fixtures/resource-index.json

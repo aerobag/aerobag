@@ -394,6 +394,7 @@ def clear_directory(root: Path) -> None:
 
 def extract_zip_for_web(package: TiledPackage) -> None:
     target_dir = WEB_SECTIONAL_ROOT / package.manifest
+    shutil.rmtree(target_dir, ignore_errors=True)
     target_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(package.artifact_path) as archive:
         extract_zip(archive, target_dir)

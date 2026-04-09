@@ -1,4 +1,12 @@
 {
+  "controls": {
+    "button_bg": "#234f77",
+    "button_fg": "#f7fbff",
+    "panel_bg": "#fefcf7",
+    "panel_border": "#d7d1c5",
+    "panel_fg": "#132129",
+    "panel_muted": "#52656d"
+  },
   "plate_folder": {
     "thumbnail_bg": "#303030",
     "label_colors": {

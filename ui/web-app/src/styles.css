@@ -164,15 +164,14 @@ button {
   width: var(--thumb);
   height: var(--thumb);
   padding: 0;
-  border: 1px solid rgba(19, 33, 41, 0.16);
+  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
   border-radius: var(--thumb-radius);
-  background: rgba(246, 241, 231, 0.92);
+  background: var(--theme-button-bg);
   box-shadow: var(--shadow);
-  color: var(--ink);
+  color: var(--theme-button-fg);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  backdrop-filter: blur(10px);
   flex: 0 0 auto;
   pointer-events: auto;
   position: relative;
@@ -180,7 +179,7 @@ button {
 }
 
 .chartButton.isOpen {
-  background: rgba(233, 241, 239, 0.98);
+  background: color-mix(in srgb, var(--theme-button-bg) 88%, white);
 }
 
 .chartButton.isBlocked {
@@ -247,10 +246,10 @@ button {
   min-width: calc(var(--thumb) * 2.15);
   height: var(--thumb);
   padding: 0 calc(var(--thumb) * 0.22);
-  border: 1px solid rgba(13, 111, 103, 0.18);
+  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
   border-radius: var(--thumb-radius);
-  background: rgba(255, 255, 255, 0.72);
-  color: var(--ink);
+  background: var(--theme-button-bg);
+  color: var(--theme-button-fg);
   text-align: left;
   font-size: var(--thumb-font-small);
   font-weight: 700;
@@ -265,9 +264,9 @@ button {
 }
 
 .trayButton.isActive {
-  background: var(--accent);
+  background: color-mix(in srgb, var(--theme-button-bg) 82%, white);
   border-color: transparent;
-  color: white;
+  color: var(--theme-button-fg);
 }
 
 .trayButton:disabled {
@@ -298,15 +297,14 @@ button {
   width: var(--thumb);
   height: var(--thumb);
   padding: 0;
-  border: 1px solid rgba(19, 33, 41, 0.16);
+  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
   border-radius: var(--thumb-radius);
-  background: rgba(246, 241, 231, 0.92);
+  background: var(--theme-button-bg);
   box-shadow: var(--shadow);
-  color: var(--ink);
+  color: var(--theme-button-fg);
   font-size: calc(var(--thumb) * 0.22);
   font-weight: 800;
   letter-spacing: 0.06em;
-  backdrop-filter: blur(10px);
   pointer-events: auto;
 }
 
@@ -429,26 +427,30 @@ button {
 .planWaypointCell {
   min-height: var(--thumb);
   padding: calc(var(--thumb) * 0.16);
-  background: rgba(255, 252, 246, 0.92);
+  background: var(--theme-panel-bg);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: var(--thumb-radius);
   display: flex;
   align-items: center;
 }
 
 .planHeader {
-  color: var(--muted);
+  color: var(--theme-panel-muted);
   font-size: calc(var(--thumb) * 0.2);
   font-weight: 700;
   letter-spacing: 0.05em;
 }
 
 .planCell {
+  color: var(--theme-panel-fg);
   font-weight: 700;
 }
 
 .planWaypointButton {
   justify-content: flex-start;
-  border: 0;
-  color: var(--ink);
+  border-color: color-mix(in srgb, var(--theme-button-bg) 78%, black);
+  background: var(--theme-button-bg);
+  color: var(--theme-button-fg);
   font-size: calc(var(--thumb) * 0.24);
   font-weight: 700;
 }

@@ -6,7 +6,17 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 data class UiTheme(
+    val controls: ControlsTheme,
     val plateFolder: PlateFolderTheme,
+)
+
+data class ControlsTheme(
+    val buttonBg: Color,
+    val buttonFg: Color,
+    val panelBg: Color,
+    val panelBorder: Color,
+    val panelFg: Color,
+    val panelMuted: Color,
 )
 
 data class PlateFolderTheme(
@@ -16,7 +26,18 @@ data class PlateFolderTheme(
 
 @Serializable
 private data class WireUiTheme(
+    val controls: WireControlsTheme,
     val plate_folder: WirePlateFolderTheme,
+)
+
+@Serializable
+private data class WireControlsTheme(
+    val button_bg: String,
+    val button_fg: String,
+    val panel_bg: String,
+    val panel_border: String,
+    val panel_fg: String,
+    val panel_muted: String,
 )
 
 @Serializable
@@ -36,6 +57,14 @@ object UiThemeLoader {
         val payload = context.assets.open(ASSET_PATH).bufferedReader().use { it.readText() }
         val wire = json.decodeFromString<WireUiTheme>(payload)
         return UiTheme(
+            controls = ControlsTheme(
+                buttonBg = wire.controls.button_bg.toColor(),
+                buttonFg = wire.controls.button_fg.toColor(),
+                panelBg = wire.controls.panel_bg.toColor(),
+                panelBorder = wire.controls.panel_border.toColor(),
+                panelFg = wire.controls.panel_fg.toColor(),
+                panelMuted = wire.controls.panel_muted.toColor(),
+            ),
             plateFolder = PlateFolderTheme(
                 thumbnailBg = wire.plate_folder.thumbnail_bg.toColor(),
                 labelColors = wire.plate_folder.label_colors.mapValues { (_, value) -> value.toColor() },

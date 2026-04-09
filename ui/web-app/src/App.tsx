@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { chartPage, mapViews, samplePlan } from "./domain/sampleData";
 import uiTheme from "./domain/generated/uiTheme.json";
 import {
@@ -59,6 +59,7 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> 
 
 const waypointActions = ["Remove", "Insert", "Reorder", "Waypoint Info", "Add Airway", "Select Procedure", "Charts"];
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
+const controlTheme = uiTheme.controls;
 const plateFolderTheme = uiTheme.plate_folder;
 const plateFolderCategoryOrder: PlateFolderCategory[] = ["airport-diagram", "csup", "takeoff-mins", "approach", "departure", "star"];
 
@@ -275,8 +276,21 @@ export default function App() {
     }
   }
 
+  const themeVars = useMemo(
+    () =>
+      ({
+        "--theme-button-bg": controlTheme.button_bg,
+        "--theme-button-fg": controlTheme.button_fg,
+        "--theme-panel-bg": controlTheme.panel_bg,
+        "--theme-panel-border": controlTheme.panel_border,
+        "--theme-panel-fg": controlTheme.panel_fg,
+        "--theme-panel-muted": controlTheme.panel_muted,
+      }) as CSSProperties,
+    [],
+  );
+
   return (
-    <main className="appShell">
+    <main className="appShell" style={themeVars}>
       <div className={`pageLayer${page === "map" ? " isActive" : ""}`} aria-hidden={page !== "map"}>
         <MapPage
           page={page}
@@ -1251,15 +1265,15 @@ function ChartsPage(props: {
           <button
             type="button"
             className={`chartButton${folderOpen ? " isOpen" : ""}${trayOpen ? " isBlocked" : ""}`}
-            aria-disabled={trayOpen}
+            aria-disabled={trayOpen || folderOpen}
             tabIndex={trayOpen ? -1 : undefined}
             style={trayOpen ? { pointerEvents: "none" } : undefined}
-            onPointerDown={trayOpen ? undefined : stopPointer}
-            onPointerUp={trayOpen ? undefined : stopPointer}
-            onDoubleClick={trayOpen ? undefined : stopDoubleClick}
-            onClick={trayOpen ? undefined : () => onFolderOpenChange(!folderOpen)}
+            onPointerDown={trayOpen || folderOpen ? undefined : stopPointer}
+            onPointerUp={trayOpen || folderOpen ? undefined : stopPointer}
+            onDoubleClick={trayOpen || folderOpen ? undefined : stopDoubleClick}
+            onClick={trayOpen || folderOpen ? undefined : () => onFolderOpenChange(true)}
             aria-pressed={folderOpen}
-            aria-label="Toggle plate folder view"
+            aria-label="Open plate folder view"
           >
             <span className="chartButtonLabel">FLDR</span>
           </button>

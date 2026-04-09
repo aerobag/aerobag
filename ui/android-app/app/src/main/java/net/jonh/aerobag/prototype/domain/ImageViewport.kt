@@ -120,8 +120,7 @@ fun zoomImageAroundPoint(
 }
 
 private fun clampToRange(value: Float, min: Float, max: Float): Float {
-    if (min > max) {
-        return (min + max) / 2f
-    }
-    return value.coerceIn(min, max)
+    val lower = minOf(min, max)
+    val upper = maxOf(min, max)
+    return value.coerceIn(lower, upper)
 }

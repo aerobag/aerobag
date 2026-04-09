@@ -111,8 +111,7 @@ export function zoomImageAroundPoint(
 }
 
 function clampToRange(value: number, min: number, max: number) {
-  if (min > max) {
-    return (min + max) / 2;
-  }
-  return Math.min(max, Math.max(min, value));
+  const lower = Math.min(min, max);
+  const upper = Math.max(min, max);
+  return Math.min(upper, Math.max(lower, value));
 }

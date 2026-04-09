@@ -37,4 +37,12 @@ describe("imageViewport", () => {
     expect(clamped.left).toBeLessThanOrEqual(64);
     expect(clamped.top).toBeLessThanOrEqual(64);
   });
+
+  it("keeps a real drag range when the fitted image is smaller than the viewport", () => {
+    const start = createInitialImageViewport(600, 2400, 1200, 900);
+    const leftDragged = dragImageViewport(start, -800, 0, 600, 2400, 1200, 900, 64);
+    const rightDragged = dragImageViewport(start, 800, 0, 600, 2400, 1200, 900, 64);
+    expect(leftDragged.left).toBeCloseTo(64, 4);
+    expect(rightDragged.left).toBeCloseTo(911, 4);
+  });
 });

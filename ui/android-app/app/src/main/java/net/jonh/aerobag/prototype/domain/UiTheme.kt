@@ -46,6 +46,10 @@ object UiThemeLoader {
 
 private fun String.toColor(): Color {
     val hex = removePrefix("#")
-    val withAlpha = if (hex.length == 6) "FF$hex" else hex
-    return Color(withAlpha.toLong(16))
+    val argb = when (hex.length) {
+        6 -> "FF$hex"
+        8 -> "${hex.takeLast(2)}${hex.dropLast(2)}"
+        else -> error("Unsupported color format: $this")
+    }
+    return Color(argb.toLong(16))
 }

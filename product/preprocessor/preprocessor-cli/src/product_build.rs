@@ -16,7 +16,9 @@ use preprocessor_charts::{
     build_family_tiles, build_family_vrts, package_family_region, stage_work_dir,
 };
 use preprocessor_core::{ChartFamily, Region};
-use preprocessor_csup::{package_csup_region, render_csup_pages, stage_work_dir_for_product};
+use preprocessor_csup::{
+    package_csup_region, prepare_csup_inputs, render_csup_region, stage_work_dir_for_product,
+};
 use preprocessor_data::{build_data_package, DataBuildRequest};
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
@@ -63,7 +65,7 @@ impl ProductBuildProfile {
 
 #[derive(Debug, Clone)]
 pub struct ProductBuildConfig {
-    pub source_root: PathBuf,
+    pub chart_cutline_root: PathBuf,
     pub build_root: PathBuf,
     pub profile: ProductBuildProfile,
     pub fetch_jobs: usize,
@@ -115,6 +117,7 @@ enum HeavyJobSpec {
         cpu_jobs: usize,
     },
     CsupRender {
+        region: Region,
         source_repo: PathBuf,
         run_root: PathBuf,
         prefetch_source_urls: PathBuf,
@@ -138,7 +141,9 @@ impl HeavyJobSpec {
     fn name(&self) -> String {
         match self {
             Self::ChartRender { family, .. } => format!("charts-{}-render", family_slug(*family)),
-            Self::CsupRender { .. } => "csup-render".to_string(),
+            Self::CsupRender { region, .. } => {
+                format!("csup-render-{}", region.code().to_ascii_lowercase())
+            }
             Self::Tpp { region, .. } => format!("tpp-{}", region.code().to_ascii_lowercase()),
             Self::Data { .. } => "data".to_string(),
         }
@@ -163,6 +168,7 @@ impl HeavyJobSpec {
                 cpu_jobs,
             )?]),
             Self::CsupRender {
+                region,
                 source_repo,
                 run_root,
                 prefetch_source_urls,
@@ -170,6 +176,7 @@ impl HeavyJobSpec {
                 render_jobs,
             } => Ok(vec![build_csup_render_node(
                 config,
+                region,
                 &source_repo,
                 &run_root,
                 &prefetch_source_urls,
@@ -206,7 +213,7 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
     let mut lines = Vec::new();
     lines.push(format!("profile {}", config.profile.as_str()));
     lines.push(format!("build_root {}", config.build_root.display()));
-    lines.push(format!("source_root {}", config.source_root.display()));
+    lines.push(format!("chart_cutline_root {}", config.chart_cutline_root.display()));
     lines.push(format!("fetch_cache_root {}", config.fetch_cache_root.display()));
     lines.push(format!("fetch_cache_mode {}", config.fetch_cache_mode));
     lines.push(format!("max_heavy_jobs {}", config.max_heavy_jobs));
@@ -249,7 +256,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             "complete source-urls cache_hit={}",
             source_urls_record.cache_hit
         ))?;
-        node_records.push(source_urls_record);
+        node_records.push(normalize_node_record_paths(source_urls_record, &config.build_root));
 
         let mut pending_jobs = VecDeque::new();
         for family in [
@@ -262,7 +269,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             let run_root = build_shared_work_root(config, &format!("charts-{family_id}"))?;
             pending_jobs.push_back(HeavyJobSpec::ChartRender {
                 family,
-                source_repo: config.source_root.join("charts"),
+                source_repo: config.chart_cutline_root.clone(),
                 run_root: run_root.clone(),
                 prefetch_source_urls: source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl")),
                 fetch_jobs: config.fetch_jobs,
@@ -271,13 +278,27 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         }
 
         let csup_run_root = build_shared_work_root(config, "csup")?;
-        pending_jobs.push_back(HeavyJobSpec::CsupRender {
-            source_repo: config.source_root.join("csup"),
-            run_root: csup_run_root.clone(),
-            prefetch_source_urls: source_urls_dir.join("csup/source_urls.jsonl"),
-            fetch_jobs: config.fetch_jobs,
-            render_jobs: config.cpu_jobs.max(1),
-        });
+        let csup_stage_record = build_csup_stage_node(
+            config,
+            Path::new(""),
+            &csup_run_root,
+            &source_urls_dir.join("csup/source_urls.jsonl"),
+            config.fetch_jobs,
+        )?;
+        node_records.push(normalize_node_record_paths(
+            csup_stage_record.clone(),
+            &config.build_root,
+        ));
+        for region in Region::ALL {
+            pending_jobs.push_back(HeavyJobSpec::CsupRender {
+                region,
+                source_repo: PathBuf::new(),
+                run_root: csup_run_root.clone(),
+                prefetch_source_urls: source_urls_dir.join("csup/source_urls.jsonl"),
+                fetch_jobs: config.fetch_jobs,
+                render_jobs: config.cpu_jobs.max(1),
+            });
+        }
 
         let mut tpp_package_requests = Vec::new();
         for region in config.profile.tpp_regions() {
@@ -285,7 +306,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             let run_root = build_shared_work_root(config, &format!("tpp-{region_id}"))?;
             pending_jobs.push_back(HeavyJobSpec::Tpp {
                 region: *region,
-                source_repo: config.source_root.join("tpp"),
+                source_repo: PathBuf::new(),
                 run_root: run_root.clone(),
                 prefetch_source_urls: source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
                 fetch_jobs: config.fetch_jobs,
@@ -331,7 +352,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             match result {
                 Ok(records) => {
                     for record in records {
-                        node_records.push(record);
+                        node_records.push(normalize_node_record_paths(record, &config.build_root));
                     }
                     master_log.log(format!(
                         "complete {name} progress={}/{}",
@@ -358,7 +379,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             ))?;
             let (records, source) = build_chart_package_nodes(config, family, &source_urls_dir)?;
             for record in records {
-                node_records.push(record);
+                node_records.push(normalize_node_record_paths(record, &config.build_root));
             }
             master_log.log(format!(
                 "complete charts-{}-package",
@@ -370,7 +391,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         master_log.log("launch csup-package")?;
         let (csup_records, csup_source) = build_csup_package_nodes(config, &source_urls_dir)?;
         for record in csup_records {
-            node_records.push(record);
+            node_records.push(normalize_node_record_paths(record, &config.build_root));
         }
         master_log.log("complete csup-package")?;
         let csup_sources = vec![csup_source];
@@ -385,17 +406,17 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 &run_root,
                 &source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
             )?;
-            node_records.push(record);
+            node_records.push(normalize_node_record_paths(record, &config.build_root));
             master_log.log(format!("complete tpp-{}-package", region_id))?;
             tpp_sources.push(source);
         }
 
-        let data_zip = node_records
-            .iter()
-            .find(|record| record.name == "data")
-            .and_then(|record| record.outputs.get("zip").cloned())
-            .map(PathBuf::from)
-            .context("data node did not record zip output")?;
+        let data_zip = build_shared_work_root(config, "data")?
+            .join("output")
+            .join("databases.zip");
+        if !data_zip.is_file() {
+            bail!("missing data zip at {}", data_zip.display());
+        }
 
         master_log.log("launch resource-index")?;
         let resource_index_record =
@@ -404,14 +425,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             "complete resource-index cache_hit={}",
             resource_index_record.cache_hit
         ))?;
-        node_records.push(resource_index_record);
+        node_records.push(normalize_node_record_paths(resource_index_record, &config.build_root));
 
         let manifest = ProductBuildManifest {
             schema_version: 1,
             profile: config.profile.as_str().to_string(),
-            build_root: config.build_root.display().to_string(),
+            build_root: relative_product_build_path(&config.build_root),
             generated_at_utc: utc_now_string(),
-            fetch_cache_root: config.fetch_cache_root.display().to_string(),
+            fetch_cache_root: relative_artifact_path(&config.fetch_cache_root, &config.build_root),
             fetch_cache_mode: config.fetch_cache_mode.clone(),
             nodes: node_records,
         };
@@ -452,7 +473,7 @@ impl ProductBuildConfig {
         let artifact_root = default_artifact_root(&repo_root);
 
         let mut profile = ProductBuildProfile::Production;
-        let mut source_root = repo_root.join("avare-source");
+        let mut chart_cutline_root = repo_root.join("avare-assets").join("chart-cutlines");
         let mut build_root = artifact_root.join("product-builds").join(profile.as_str());
         let mut fetch_jobs = env_usize("FETCH_JOBS").unwrap_or(4);
         let mut cpu_jobs = env_usize("CPU_JOBS").unwrap_or_else(default_cpu_jobs);
@@ -471,8 +492,8 @@ impl ProductBuildConfig {
                     build_root = artifact_root.join("product-builds").join(profile.as_str());
                     index += 2;
                 }
-                "--source-root" => {
-                    source_root = PathBuf::from(args.get(index + 1).context("missing value for --source-root")?);
+                "--chart-cutline-root" => {
+                    chart_cutline_root = PathBuf::from(args.get(index + 1).context("missing value for --chart-cutline-root")?);
                     index += 2;
                 }
                 "--build-root" => {
@@ -509,7 +530,7 @@ impl ProductBuildConfig {
         }
 
         Ok(Self {
-            source_root,
+            chart_cutline_root,
             build_root,
             profile,
             fetch_jobs,
@@ -525,13 +546,7 @@ fn build_source_urls_node(
     config: &ProductBuildConfig,
 ) -> anyhow::Result<(PathBuf, NodeRecord)> {
     let emit_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/emit_source_urls.rs");
-    let inputs = BTreeMap::from([
-        ("emit_source".to_string(), hash_file(&emit_source)?),
-        ("charts_cycle".to_string(), hash_file(&config.source_root.join("charts/cycle.py"))?),
-        ("csup_cycle".to_string(), hash_file(&config.source_root.join("csup/cycle.py"))?),
-        ("tpp_cycle".to_string(), hash_file(&config.source_root.join("tpp/cycle.py"))?),
-        ("data_cycle".to_string(), hash_file(&config.source_root.join("data/cycle.py"))?),
-    ]);
+    let inputs = BTreeMap::from([("emit_source".to_string(), hash_file(&emit_source)?)]);
     let shared_root = build_shared_node_dir(config, "source-urls")?;
     let prepared = prepare_node_at(&shared_root, "source-urls", &inputs)?;
     let output_dir = prepared.dir.join("out");
@@ -561,7 +576,7 @@ fn build_source_urls_node(
     env::set_var("FETCH_CACHE_ROOT", &config.fetch_cache_root);
     env::set_var("FETCH_CACHE_MODE", &config.fetch_cache_mode);
     emit_source_urls(&output_dir)?;
-    let outputs = BTreeMap::from([("output_dir".to_string(), output_dir.display().to_string())]);
+    let outputs = BTreeMap::from([("output_dir".to_string(), relative_artifact_path(&output_dir, &config.build_root))]);
     let record = write_node_record(
         prepared,
         inputs,
@@ -575,7 +590,7 @@ fn build_source_urls_node(
 }
 
 fn build_chart_render_node(
-    _config: &ProductBuildConfig,
+    config: &ProductBuildConfig,
     family: ChartFamily,
     source_repo: &Path,
     run_root: &Path,
@@ -610,8 +625,8 @@ fn build_chart_render_node(
     build_family_vrts(family, &work_dir, cpu_jobs)?;
     build_family_tiles(family, &work_dir, cpu_jobs)?;
     let outputs = BTreeMap::from([
-        ("work_dir".to_string(), work_dir.display().to_string()),
-        ("tiles_root".to_string(), tiles_root.display().to_string()),
+        ("work_dir".to_string(), relative_artifact_path(&work_dir, &config.build_root)),
+        ("tiles_root".to_string(), relative_artifact_path(&tiles_root, &config.build_root)),
     ]);
     write_node_record(
         prepared,
@@ -665,8 +680,8 @@ fn build_chart_package_nodes(
             let started = Instant::now();
             let package_record = package_family_region(family, &work_dir, region)?;
             let outputs = BTreeMap::from([
-                ("zip".to_string(), zip_path.display().to_string()),
-                ("manifest".to_string(), manifest_path.display().to_string()),
+                ("zip".to_string(), relative_artifact_path(&zip_path, &config.build_root)),
+                ("manifest".to_string(), relative_artifact_path(&manifest_path, &config.build_root)),
             ]);
             let record = write_node_record(
                 prepared,
@@ -712,17 +727,19 @@ fn build_chart_package_nodes(
 }
 
 fn build_csup_render_node(
-    _config: &ProductBuildConfig,
+    config: &ProductBuildConfig,
+    region: Region,
     source_repo: &Path,
     run_root: &Path,
-    source_urls: &Path,
-    fetch_jobs: usize,
+    _source_urls: &Path,
+    _fetch_jobs: usize,
     render_jobs: usize,
 ) -> anyhow::Result<NodeRecord> {
+    let stage_record = load_existing_node_record(&run_root.join("build-record.json"), "csup-stage")?;
+    let node_name = format!("csup-render-{}", region.code().to_ascii_lowercase());
     let inputs = BTreeMap::from([
-        ("source_repo".to_string(), hash_tree(source_repo)?),
-        ("source_urls".to_string(), hash_file(source_urls)?),
-        ("fetch_jobs".to_string(), fetch_jobs.to_string()),
+        ("stage_fingerprint".to_string(), stage_record.fingerprint),
+        ("region".to_string(), region.code().to_string()),
         ("render_jobs".to_string(), render_jobs.to_string()),
         (
             "csup_lib".to_string(),
@@ -743,9 +760,56 @@ fn build_csup_render_node(
             )?,
         ),
     ]);
-    let prepared = prepare_existing_node_root("csup-render", run_root, &inputs)?;
-    let afd_root = run_root.join("work").join("csup").join("afd");
-    if let Some(record) = try_load_node_record(&prepared, &[afd_root.clone()])? {
+    let node_root = build_shared_work_root(config, &node_name)?;
+    let prepared = prepare_existing_node_root(&node_name, &node_root, &inputs)?;
+    let marker = node_root.join(".render-complete");
+    if let Some(record) = try_load_node_record(&prepared, std::slice::from_ref(&marker))? {
+        return Ok(record);
+    }
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    let work_dir = stage_work_dir_for_product(source_repo, run_root)?;
+    render_csup_region(&work_dir, region, render_jobs)?;
+    fs::write(&marker, b"ok")
+        .with_context(|| format!("failed to write {}", marker.display()))?;
+    let outputs = BTreeMap::from([
+        ("work_dir".to_string(), relative_artifact_path(&work_dir, &config.build_root)),
+        ("marker".to_string(), relative_artifact_path(&marker, &config.build_root)),
+    ]);
+    write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )
+}
+
+fn build_csup_stage_node(
+    config: &ProductBuildConfig,
+    source_repo: &Path,
+    run_root: &Path,
+    source_urls: &Path,
+    fetch_jobs: usize,
+) -> anyhow::Result<NodeRecord> {
+    let inputs = BTreeMap::from([
+        ("source_urls".to_string(), hash_file(source_urls)?),
+        ("fetch_jobs".to_string(), fetch_jobs.to_string()),
+        (
+            "csup_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-csup/src/lib.rs"),
+            )?,
+        ),
+    ]);
+    let prepared = prepare_existing_node_root("csup-stage", run_root, &inputs)?;
+    let marker = run_root.join(".stage-complete");
+    if let Some(record) = try_load_node_record(&prepared, std::slice::from_ref(&marker))? {
         return Ok(record);
     }
     let started_at_utc = utc_now_string();
@@ -756,10 +820,12 @@ fn build_csup_render_node(
     copy_source_urls_provenance(source_urls, &provenance_dir)?;
     let urls = read_source_urls_jsonl(source_urls)?;
     prefetch_archives_with_provenance(&urls, &work_dir, fetch_jobs, &provenance_dir, "csup")?;
-    render_csup_pages(&work_dir, render_jobs)?;
+    prepare_csup_inputs(&work_dir)?;
+    fs::write(&marker, b"ok")
+        .with_context(|| format!("failed to write {}", marker.display()))?;
     let outputs = BTreeMap::from([
-        ("work_dir".to_string(), work_dir.display().to_string()),
-        ("afd_root".to_string(), afd_root.display().to_string()),
+        ("work_dir".to_string(), relative_artifact_path(&work_dir, &config.build_root)),
+        ("marker".to_string(), relative_artifact_path(&marker, &config.build_root)),
     ]);
     write_node_record(
         prepared,
@@ -780,10 +846,14 @@ fn build_csup_package_nodes(
     let work_dir = run_root.join("work").join("csup");
     let aggregate_path = run_root.join("meta/provenance/csup/package_outputs.jsonl");
     let source_urls_path = run_root.join("meta/provenance/csup/source_urls.jsonl");
-    let render_record = load_existing_node_record(&run_root.join("build-record.json"), "csup-render")?;
     let mut node_records = Vec::new();
     let mut package_records = Vec::new();
     for region in Region::ALL {
+        let render_node_name = format!("csup-render-{}", region.code().to_ascii_lowercase());
+        let render_record = load_existing_node_record(
+            &build_shared_work_root(config, &render_node_name)?.join("build-record.json"),
+            &render_node_name,
+        )?;
         let node_name = format!("csup-package-{}", region.code().to_ascii_lowercase());
         let package_root = build_shared_work_root(config, &node_name)?;
         let inputs = BTreeMap::from([
@@ -818,8 +888,8 @@ fn build_csup_package_nodes(
             let started = Instant::now();
             let package_record = package_csup_region(&work_dir, region)?;
             let outputs = BTreeMap::from([
-                ("zip".to_string(), zip_path.display().to_string()),
-                ("manifest".to_string(), manifest_path.display().to_string()),
+                ("zip".to_string(), relative_artifact_path(&zip_path, &config.build_root)),
+                ("manifest".to_string(), relative_artifact_path(&manifest_path, &config.build_root)),
             ]);
             let record = write_node_record(
                 prepared,
@@ -888,7 +958,7 @@ fn build_tpp_render_node(
             "provenance_dir".to_string(),
             result.provenance_dir.display().to_string(),
         ),
-        ("plates_root".to_string(), plates_root.display().to_string()),
+        ("plates_root".to_string(), relative_artifact_path(&plates_root, &config.build_root)),
     ]);
     write_node_record(
         prepared,
@@ -910,7 +980,7 @@ fn build_tpp_package_node(
     let region_id = region.code().to_ascii_lowercase();
     let render_request = NativeTppRunRequest {
         region,
-        source_repo: config.source_root.join("tpp"),
+        source_repo: PathBuf::new(),
         run_root: run_root.to_path_buf(),
         prefetch_source_urls: Some(source_urls_path.to_path_buf()),
         fetch_jobs: config.fetch_jobs,
@@ -970,10 +1040,10 @@ fn build_tpp_package_node(
     let provenance_dir = run_root.join(format!("meta/provenance/tpp-{region_id}"));
     let result = package_native_tpp(&work_dir, &provenance_dir, region)?;
     let outputs = BTreeMap::from([
-        ("work_dir".to_string(), work_dir.display().to_string()),
-        ("package_outputs".to_string(), package_outputs_path.display().to_string()),
-        ("zip".to_string(), zip_path.display().to_string()),
-        ("manifest".to_string(), manifest_path.display().to_string()),
+        ("work_dir".to_string(), relative_artifact_path(&work_dir, &config.build_root)),
+        ("package_outputs".to_string(), relative_artifact_path(&package_outputs_path, &config.build_root)),
+        ("zip".to_string(), relative_artifact_path(&zip_path, &config.build_root)),
+        ("manifest".to_string(), relative_artifact_path(&manifest_path, &config.build_root)),
         ("package_count".to_string(), result.package_count.to_string()),
     ]);
     let record = write_node_record(
@@ -1002,7 +1072,6 @@ fn tpp_render_inputs(
 ) -> anyhow::Result<BTreeMap<String, String>> {
     Ok(BTreeMap::from([
         ("region".to_string(), region_id.to_string()),
-        ("source_repo".to_string(), hash_tree(&request.source_repo)?),
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("fetch_jobs".to_string(), request.fetch_jobs.to_string()),
         (
@@ -1044,7 +1113,7 @@ fn build_data_nodes(
         manifest_version: current_data_manifest_cycle(),
     };
     let inputs = BTreeMap::from([
-        ("staged_input_dir".to_string(), staged_input_dir.display().to_string()),
+        ("staged_input_dir".to_string(), relative_artifact_path(&staged_input_dir, &config.build_root)),
         (
             "staged_input_fingerprint".to_string(),
             staging_record.fingerprint.clone(),
@@ -1061,9 +1130,9 @@ fn build_data_nodes(
     let started = Instant::now();
     let result = build_data_package(&request)?;
     let outputs = BTreeMap::from([
-        ("main_db".to_string(), result.main_db.display().to_string()),
+        ("main_db".to_string(), relative_artifact_path(&result.main_db, &config.build_root)),
         ("manifest".to_string(), result.manifest_path.display().to_string()),
-        ("zip".to_string(), result.zip_path.display().to_string()),
+        ("zip".to_string(), relative_artifact_path(&result.zip_path, &config.build_root)),
     ]);
     let build_record = write_node_record(
         prepared,
@@ -1082,7 +1151,6 @@ fn build_data_input_node(
     source_urls: &Path,
 ) -> anyhow::Result<(PathBuf, NodeRecord)> {
     let inputs = BTreeMap::from([
-        ("source_repo".to_string(), hash_tree(&config.source_root.join("data"))?),
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("fetch_jobs".to_string(), config.fetch_jobs.to_string()),
         (
@@ -1108,7 +1176,8 @@ fn build_data_input_node(
     }
     let started_at_utc = utc_now_string();
     let started = Instant::now();
-    copy_dir_recursive(&config.source_root.join("data"), &staged_root)?;
+    fs::create_dir_all(&staged_root)
+        .with_context(|| format!("failed to create {}", staged_root.display()))?;
     let provenance_dir = prepared.dir.join("meta/provenance/data-input-staging");
     fs::create_dir_all(&provenance_dir)?;
     copy_source_urls_provenance(source_urls, &provenance_dir)?;
@@ -1123,8 +1192,8 @@ fn build_data_input_node(
     fs::write(&marker, b"ok")
         .with_context(|| format!("failed to write {}", marker.display()))?;
     let outputs = BTreeMap::from([
-        ("staged_input_dir".to_string(), staged_root.display().to_string()),
-        ("provenance_dir".to_string(), provenance_dir.display().to_string()),
+        ("staged_input_dir".to_string(), relative_artifact_path(&staged_root, &config.build_root)),
+        ("provenance_dir".to_string(), relative_artifact_path(&provenance_dir, &config.build_root)),
     ]);
     let record = write_node_record(
         prepared,
@@ -1203,15 +1272,10 @@ fn build_resource_index_node(
         (
             "resource_index_lib".to_string(),
             hash_file(
-                &config
-                    .source_root
-                    .join("../product/preprocessor/preprocessor-resource-index/src/lib.rs")
-                    .canonicalize()
-                    .unwrap_or_else(|_| {
-                        config
-                            .source_root
-                            .join("../product/preprocessor/preprocessor-resource-index/src/lib.rs")
-                    }),
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-resource-index/src/lib.rs"),
             )?,
         ),
         (
@@ -1239,7 +1303,7 @@ fn build_resource_index_node(
         csup_sources,
     };
     write_resource_index(&request)?;
-    let outputs = BTreeMap::from([("resource_index".to_string(), output_path.display().to_string())]);
+    let outputs = BTreeMap::from([("resource_index".to_string(), relative_artifact_path(&output_path, &config.build_root))]);
     write_node_record(
         prepared,
         inputs,
@@ -1302,6 +1366,22 @@ fn try_load_node_record(
     Ok(None)
 }
 
+fn normalize_node_record_paths(mut record: NodeRecord, build_root: &Path) -> NodeRecord {
+    record.outputs = record
+        .outputs
+        .into_iter()
+        .map(|(key, value)| {
+            let normalized = if value.starts_with('/') {
+                relative_artifact_path(Path::new(&value), build_root)
+            } else {
+                value
+            };
+            (key, normalized)
+        })
+        .collect();
+    record
+}
+
 fn write_node_record(
     prepared: PreparedNode,
     inputs: BTreeMap<String, String>,
@@ -1327,6 +1407,27 @@ fn write_node_record(
     )
     .with_context(|| format!("failed to write {}", prepared.record_path.display()))?;
     Ok(record)
+}
+
+fn artifact_root_from_build_root(build_root: &Path) -> &Path {
+    build_root
+        .parent()
+        .and_then(|value| value.parent())
+        .unwrap_or(build_root)
+}
+
+fn relative_artifact_path(path: &Path, build_root: &Path) -> String {
+    path.strip_prefix(artifact_root_from_build_root(build_root))
+        .map(|value| value.display().to_string())
+        .unwrap_or_else(|_| path.display().to_string())
+}
+
+fn relative_product_build_path(path: &Path) -> String {
+    path.parent()
+        .and_then(|value| value.parent())
+        .and_then(|artifact_root| path.strip_prefix(artifact_root).ok())
+        .map(|value| value.display().to_string())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn build_node_root(config: &ProductBuildConfig, name: &str) -> anyhow::Result<PathBuf> {

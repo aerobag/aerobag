@@ -35,7 +35,7 @@ pub struct NativeCsupRunResult {
 }
 
 #[derive(Debug, Clone)]
-struct AirportRecord {
+pub struct AirportRecord {
     apt_id: String,
     pdfs: Vec<String>,
 }
@@ -81,13 +81,10 @@ pub fn run_native_csup(request: &NativeCsupRunRequest) -> anyhow::Result<NativeC
     })
 }
 
-fn stage_work_dir(source_repo: &Path, run_root: &Path) -> anyhow::Result<PathBuf> {
+fn stage_work_dir(_source_repo: &Path, run_root: &Path) -> anyhow::Result<PathBuf> {
     let work_dir = run_root.join("work").join("csup");
-    copy_dir_recursive(
-        source_repo,
-        &work_dir,
-        looks_like_populated_work_dir(source_repo),
-    )?;
+    fs::create_dir_all(&work_dir)
+        .with_context(|| format!("failed to create {}", work_dir.display()))?;
     Ok(work_dir)
 }
 
@@ -98,7 +95,29 @@ pub fn stage_work_dir_for_product(source_repo: &Path, run_root: &Path) -> anyhow
 pub fn render_csup_pages(work_dir: &Path, render_jobs: usize) -> anyhow::Result<()> {
     fs::create_dir_all(work_dir.join("afd")).context("failed to create afd dir")?;
     uppercase_pdf_names(work_dir)?;
-    let airports = parse_airports(&find_xml_path(work_dir)?)?;
+    let airports = load_airports(work_dir)?;
+    render_airport_groups_parallel(work_dir, airports, render_jobs)
+}
+
+pub fn prepare_csup_inputs(work_dir: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(work_dir.join("afd")).context("failed to create afd dir")?;
+    uppercase_pdf_names(work_dir)
+}
+
+pub fn load_airports(work_dir: &Path) -> anyhow::Result<Vec<AirportRecord>> {
+    parse_airports(&find_xml_path(work_dir)?)
+}
+
+pub fn render_csup_region(
+    work_dir: &Path,
+    region: Region,
+    render_jobs: usize,
+) -> anyhow::Result<()> {
+    fs::create_dir_all(work_dir.join("afd")).context("failed to create afd dir")?;
+    let airports = load_airports(work_dir)?
+        .into_iter()
+        .filter(|airport| airport_matches_region(airport, region))
+        .collect::<Vec<_>>();
     render_airport_groups_parallel(work_dir, airports, render_jobs)
 }
 
@@ -155,6 +174,15 @@ fn render_airport_groups_parallel(
     }
 
     Ok(())
+}
+
+fn airport_matches_region(airport: &AirportRecord, region: Region) -> bool {
+    airport.pdfs.iter().any(|pdf_name| {
+        pdf_name
+            .split('_')
+            .next()
+            .is_some_and(|token| token.eq_ignore_ascii_case(region.code()))
+    })
 }
 
 fn uppercase_pdf_names(work_dir: &Path) -> anyhow::Result<()> {

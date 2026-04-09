@@ -16,7 +16,7 @@ use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
     read_source_urls_jsonl, write_package_outputs_jsonl, PackageOutputRecord,
 };
-use preprocessor_tools::{append_pngs_vertical, ToolInvocation};
+use preprocessor_tools::{append_pngs_vertical, write_thumbnail_from_png, ToolInvocation};
 
 const TPP_AIRPORT_DIAGRAMS_URL: &str =
     "https://www.outerworldapps.com/WairToNowWork/avare_aptdiags.php";
@@ -1118,6 +1118,7 @@ fn package_region(work_dir: &Path, provenance_dir: &Path, region: Region) -> any
     remove_if_exists(&zip_path)?;
 
     let selected = collect_region_pngs(work_dir, region)?;
+    let selected = with_thumbnail_members(work_dir, &selected)?;
     let mut manifest_text = String::new();
     manifest_text.push_str(&current_cycle_manifest());
     manifest_text.push('\n');
@@ -1198,6 +1199,24 @@ for state in sys.argv[2:]:
         .filter(|line| !line.is_empty())
         .map(ToOwned::to_owned)
         .collect())
+}
+
+fn with_thumbnail_members(work_dir: &Path, members: &[String]) -> anyhow::Result<Vec<String>> {
+    let mut all = Vec::with_capacity(members.len() * 2);
+    let thumbnail_root = work_dir.join("thumbnails");
+    for member in members {
+        all.push(member.clone());
+        let asset_path = Path::new(member);
+        let source = work_dir.join(asset_path);
+        write_thumbnail_from_png(&source, &thumbnail_root, asset_path)?;
+        all.push(
+            Path::new("thumbnails")
+                .join(asset_path)
+                .to_string_lossy()
+                .replace('\\', "/"),
+        );
+    }
+    Ok(all)
 }
 
 fn current_cycle_manifest() -> String {

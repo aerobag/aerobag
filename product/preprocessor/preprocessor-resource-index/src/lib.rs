@@ -1,8 +1,8 @@
 use anyhow::{bail, Context};
 use chrono::{Datelike, Duration, NaiveDate, Utc};
-use image::{Rgba, RgbaImage};
 use preprocessor_core::Region;
 use preprocessor_fetch::PackageOutputRecord;
+use preprocessor_tools::write_thumbnail_from_png;
 use rayon::prelude::*;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -254,6 +254,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     };
     validate_index_asset_paths(&index, &request.tpp_sources, &request.csup_sources)?;
     validate_thumbnail_paths(&index, &thumbnail_root)?;
+    validate_packaged_assets(&index, &index.packages)?;
     Ok(index)
 }
 
@@ -308,6 +309,95 @@ fn validate_thumbnail_paths(index: &ResourceIndex, thumbnail_root: &Path) -> any
     compare_indexed_vs_actual("plate thumbnails", &indexed_plate, &actual_plate)?;
     compare_indexed_vs_actual("csup thumbnails", &indexed_csup, &actual_csup)?;
     Ok(())
+}
+
+fn validate_packaged_assets(index: &ResourceIndex, packages: &[ResourcePackage]) -> anyhow::Result<()> {
+    let package_map = packages
+        .iter()
+        .map(|package| (package.id.clone(), PathBuf::from(&package.artifact_path)))
+        .collect::<BTreeMap<_, _>>();
+    let package_members = package_map
+        .iter()
+        .map(|(package_id, package_path)| {
+            Ok::<_, anyhow::Error>((
+                package_id.clone(),
+                read_package_members(package_path)?,
+            ))
+        })
+        .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+    for plate in &index.plates {
+        validate_packaged_member(
+            &package_members,
+            &package_map,
+            &plate.package_id,
+            &plate.asset_path,
+            &plate.id,
+        )?;
+        validate_packaged_member(
+            &package_members,
+            &package_map,
+            &plate.package_id,
+            &plate.thumbnail_path,
+            &plate.id,
+        )?;
+    }
+    for csup in &index.csups {
+        validate_packaged_member(
+            &package_members,
+            &package_map,
+            &csup.package_id,
+            &csup.asset_path,
+            &csup.id,
+        )?;
+        validate_packaged_member(
+            &package_members,
+            &package_map,
+            &csup.package_id,
+            &csup.thumbnail_path,
+            &csup.id,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_packaged_member(
+    package_members: &BTreeMap<String, BTreeSet<String>>,
+    package_map: &BTreeMap<String, PathBuf>,
+    package_id: &str,
+    member_path: &str,
+    record_id: &str,
+) -> anyhow::Result<()> {
+    let members = package_members
+        .get(package_id)
+        .with_context(|| format!("missing package member index for {package_id}"))?;
+    if members.contains(member_path) {
+        return Ok(());
+    }
+    let package_path = package_map
+        .get(package_id)
+        .with_context(|| format!("missing package artifact for {package_id}"))?;
+    bail!(
+        "missing packaged member {member_path} in {} for {record_id}",
+        package_path.display()
+    );
+}
+
+fn read_package_members(package_path: &Path) -> anyhow::Result<BTreeSet<String>> {
+    let file = fs::File::open(package_path)
+        .with_context(|| format!("failed to open {}", package_path.display()))?;
+    let mut archive = ZipArchive::new(file)
+        .with_context(|| format!("failed to open zip {}", package_path.display()))?;
+    let mut members = BTreeSet::new();
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).with_context(|| {
+            format!(
+                "failed to read zip member #{index} from {}",
+                package_path.display()
+            )
+        })?;
+        members.insert(entry.name().to_string());
+    }
+    Ok(members)
 }
 
 fn collect_actual_asset_paths(
@@ -644,7 +734,11 @@ fn collect_plate_records(
                     .and_then(|value| value.to_str())
                     .unwrap_or_default()
                     .to_string();
-                let thumbnail_path = write_thumbnail(&asset, thumbnail_root, asset_path)?;
+                let thumbnail_path = write_thumbnail(
+                    &asset,
+                    thumbnail_root,
+                    asset_path,
+                )?;
                 Ok(PlateRecord {
                     id: format!("plate:{airport_id}:{filename}"),
                     airport_id,
@@ -711,7 +805,11 @@ fn collect_csup_records(
                     .and_then(|value| value.to_str())
                     .unwrap_or_default()
                     .to_string();
-                let thumbnail_path = write_thumbnail(&asset, thumbnail_root, asset_path)?;
+                let thumbnail_path = write_thumbnail(
+                    &asset,
+                    thumbnail_root,
+                    asset_path,
+                )?;
                 Ok(CsupRecord {
                     id: format!("csup:{airport_id}:{filename}"),
                     airport_id,
@@ -758,22 +856,7 @@ fn infer_plate_document_type(label: &str) -> &'static str {
 }
 
 fn write_thumbnail(source: &Path, thumbnail_root: &Path, asset_path: &Path) -> anyhow::Result<String> {
-    let thumbnail_path = thumbnail_root.join(asset_path);
-    if let Some(parent) = thumbnail_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let image = image::open(source)
-        .with_context(|| format!("failed to open thumbnail source {}", source.display()))?;
-    let resized = image.thumbnail(100, 150).to_rgba8();
-    let (width, height) = resized.dimensions();
-    let x = i64::from((100 - width) / 2);
-    let y = i64::from((150 - height) / 2);
-    let mut canvas = RgbaImage::from_pixel(100, 150, Rgba([0, 0, 0, 0]));
-    image::imageops::overlay(&mut canvas, &resized, x, y);
-    canvas
-        .save(&thumbnail_path)
-        .with_context(|| format!("failed to write thumbnail {}", thumbnail_path.display()))?;
+    write_thumbnail_from_png(source, thumbnail_root, asset_path)?;
     Ok(Path::new("thumbnails")
         .join(asset_path)
         .display()
@@ -930,6 +1013,13 @@ fn read_child_dirs(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 }
 
 fn read_files_recursive(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    fn is_hidden_name(path: &Path) -> bool {
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .map(|value| value.starts_with('.'))
+            .unwrap_or(false)
+    }
+
     fn visit(path: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
         let mut entries = fs::read_dir(path)
             .with_context(|| format!("failed to read directory {}", path.display()))?
@@ -938,6 +1028,9 @@ fn read_files_recursive(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
         entries.sort_by_key(|entry| entry.path());
         for entry in entries {
             let child = entry.path();
+            if is_hidden_name(&child) {
+                continue;
+            }
             if child.is_dir() {
                 visit(&child, out)?;
             } else if child.is_file() {
@@ -1453,7 +1546,23 @@ mod tests {
 
         let tpp_root = temp.path().join("tpp-ne");
         fs::create_dir_all(tpp_root.join("plates/BOS")).expect("tpp root");
-        fs::write(tpp_root.join("NE_TPP.zip"), b"zip-bytes").expect("tpp zip");
+        {
+            let file = fs::File::create(tpp_root.join("NE_TPP.zip")).expect("tpp zip");
+            let mut zip = ZipWriter::new(file);
+            zip.start_file(
+                "plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png",
+                SimpleFileOptions::default(),
+            )
+            .expect("start tpp png");
+            zip.write_all(b"png").expect("write tpp png");
+            zip.start_file(
+                "thumbnails/plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png",
+                SimpleFileOptions::default(),
+            )
+            .expect("start tpp thumb");
+            zip.write_all(b"thumb").expect("write tpp thumb");
+            zip.finish().expect("finish tpp zip");
+        }
         write_test_png(
             tpp_root.join("plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png"),
             200,
@@ -1479,7 +1588,20 @@ mod tests {
 
         let csup_root = temp.path().join("csup");
         fs::create_dir_all(csup_root.join("afd/BOS")).expect("csup root");
-        fs::write(csup_root.join("NE_CSUP.zip"), b"zip-bytes").expect("csup zip");
+        {
+            let file = fs::File::create(csup_root.join("NE_CSUP.zip")).expect("csup zip");
+            let mut zip = ZipWriter::new(file);
+            zip.start_file("afd/BOS/CSUP-NE_0-0.png", SimpleFileOptions::default())
+                .expect("start csup png");
+            zip.write_all(b"png").expect("write csup png");
+            zip.start_file(
+                "thumbnails/afd/BOS/CSUP-NE_0-0.png",
+                SimpleFileOptions::default(),
+            )
+            .expect("start csup thumb");
+            zip.write_all(b"thumb").expect("write csup thumb");
+            zip.finish().expect("finish csup zip");
+        }
         write_test_png(csup_root.join("afd/BOS/CSUP-NE_0-0.png"), 300, 200);
         let csup_outputs = temp.path().join("csup-package-outputs.jsonl");
         fs::write(

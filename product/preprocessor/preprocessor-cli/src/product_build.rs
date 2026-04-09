@@ -722,6 +722,15 @@ fn build_csup_render_node(
                     .join("preprocessor-csup/src/lib.rs"),
             )?,
         ),
+        (
+            "tools_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-tools/src/lib.rs"),
+            )?,
+        ),
     ]);
     let prepared = prepare_existing_node_root("csup-render", run_root, &inputs)?;
     let afd_root = run_root.join("work").join("csup").join("afd");
@@ -846,6 +855,15 @@ fn build_tpp_node(
                     .parent()
                     .expect("preprocessor-cli should live under workspace root")
                     .join("preprocessor-tpp/src/lib.rs"),
+            )?,
+        ),
+        (
+            "tools_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-tools/src/lib.rs"),
             )?,
         ),
     ]);
@@ -1060,6 +1078,15 @@ fn build_resource_index_node(
                             .source_root
                             .join("../product/preprocessor/preprocessor-resource-index/src/lib.rs")
                     }),
+            )?,
+        ),
+        (
+            "tools_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-tools/src/lib.rs"),
             )?,
         ),
     ]);

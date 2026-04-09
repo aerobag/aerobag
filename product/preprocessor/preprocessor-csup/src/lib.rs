@@ -14,7 +14,7 @@ use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
     read_source_urls_jsonl, write_package_outputs_jsonl, PackageOutputRecord,
 };
-use preprocessor_tools::{append_pngs_vertical, ToolInvocation};
+use preprocessor_tools::{append_pngs_vertical, write_thumbnail_from_png, ToolInvocation};
 
 #[derive(Debug, Clone)]
 pub struct NativeCsupRunRequest {
@@ -422,6 +422,7 @@ fn package_csup_region_records(
         remove_if_exists(&zip_path)?;
 
         let selected = collect_region_pngs(work_dir, region.code())?;
+        let selected = with_thumbnail_members(work_dir, &selected)?;
 
         let mut manifest_text = String::new();
         manifest_text.push_str(&manifest_cycle);
@@ -507,6 +508,24 @@ fn collect_region_pngs(work_dir: &Path, region_code: &str) -> anyhow::Result<Vec
     let mut paths = Vec::new();
     visit(&afd_dir, work_dir, region_code, &mut paths)?;
     Ok(paths)
+}
+
+fn with_thumbnail_members(work_dir: &Path, members: &[String]) -> anyhow::Result<Vec<String>> {
+    let mut all = Vec::with_capacity(members.len() * 2);
+    let thumbnail_root = work_dir.join("thumbnails");
+    for member in members {
+        all.push(member.clone());
+        let asset_path = Path::new(member);
+        let source = work_dir.join(asset_path);
+        write_thumbnail_from_png(&source, &thumbnail_root, asset_path)?;
+        all.push(
+            Path::new("thumbnails")
+                .join(asset_path)
+                .to_string_lossy()
+                .replace('\\', "/"),
+        );
+    }
+    Ok(all)
 }
 
 fn current_cycle_manifest() -> String {

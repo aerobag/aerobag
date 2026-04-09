@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::Context;
+use image::{Rgba, RgbaImage};
 use preprocessor_core::CaptureEntry;
 
 pub fn comparison_targets(entry: &CaptureEntry) -> Vec<&'static str> {
@@ -194,4 +195,28 @@ pub fn append_pngs_vertical(
         anyhow::bail!("convert failed while concatenating PNGs into {}", output.display());
     }
     Ok(())
+}
+
+pub fn write_thumbnail_from_png(
+    source: &Path,
+    thumbnail_root: &Path,
+    asset_path: &Path,
+) -> anyhow::Result<String> {
+    let thumbnail_path = thumbnail_root.join(asset_path);
+    if let Some(parent) = thumbnail_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let image = image::open(source)
+        .with_context(|| format!("failed to open thumbnail source {}", source.display()))?;
+    let resized = image.thumbnail(100, 150).to_rgba8();
+    let (width, height) = resized.dimensions();
+    let x = i64::from((100 - width) / 2);
+    let y = i64::from((150 - height) / 2);
+    let mut canvas = RgbaImage::from_pixel(100, 150, Rgba([0, 0, 0, 0]));
+    image::imageops::overlay(&mut canvas, &resized, x, y);
+    canvas
+        .save(&thumbnail_path)
+        .with_context(|| format!("failed to write thumbnail {}", thumbnail_path.display()))?;
+    Ok(thumbnail_path.display().to_string())
 }

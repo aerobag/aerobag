@@ -175,10 +175,25 @@ button {
   backdrop-filter: blur(10px);
   flex: 0 0 auto;
   pointer-events: auto;
+  position: relative;
+  overflow: hidden;
 }
 
 .chartButton.isOpen {
   background: rgba(233, 241, 239, 0.98);
+}
+
+.chartButton.isBlocked {
+  filter: saturate(0.7);
+  box-shadow: none;
+}
+
+.chartButton.isBlocked::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.26);
+  pointer-events: none;
 }
 
 .chartButtonLabel {

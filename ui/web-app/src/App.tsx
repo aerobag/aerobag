@@ -601,6 +601,7 @@ function MapPage(props: {
           <TrayDock
             launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "CHT"}
             open={pageTrayOpen}
+            blocked={familyTrayOpen}
             onToggle={() =>
               toggleModalTray(
                 "page",
@@ -622,6 +623,7 @@ function MapPage(props: {
           <TrayDock
             launcherLabel={selectedFamily.launcherLabel}
             open={familyTrayOpen}
+            blocked={pageTrayOpen}
             onToggle={() =>
               toggleModalTray(
                 "family",
@@ -788,21 +790,26 @@ function TrayDock(props: {
   open: boolean;
   onToggle: () => void;
   ariaLabel: string;
+  blocked?: boolean;
   style?: TrayDockStyle;
   options: TrayOption[];
 }) {
-  const { launcherLabel, open, onToggle, ariaLabel, style = "compact", options } = props;
+  const { launcherLabel, open, onToggle, ariaLabel, blocked = false, style = "compact", options } = props;
   const launcherWide = style === "plate_wide";
   const trayWide = style === "plate_narrow" || style === "plate_wide";
+  const launcherBlocked = blocked && !open;
   return (
     <div className="chartDockColumn">
       <button
         type="button"
-        className={`chartButton${launcherWide ? " chartButtonWide" : ""}${open ? " isOpen" : ""}`}
-        onPointerDown={stopPointer}
-        onPointerUp={stopPointer}
-        onDoubleClick={stopDoubleClick}
-        onClick={onToggle}
+        className={`chartButton${launcherWide ? " chartButtonWide" : ""}${open ? " isOpen" : ""}${launcherBlocked ? " isBlocked" : ""}`}
+        aria-disabled={launcherBlocked}
+        tabIndex={launcherBlocked ? -1 : undefined}
+        style={launcherBlocked ? { pointerEvents: "none" } : undefined}
+        onPointerDown={launcherBlocked ? undefined : stopPointer}
+        onPointerUp={launcherBlocked ? undefined : stopPointer}
+        onDoubleClick={launcherBlocked ? undefined : stopDoubleClick}
+        onClick={launcherBlocked ? undefined : onToggle}
       >
         <span className={`chartButtonLabel${launcherWide ? " chartButtonLabelWide" : ""}`}>{launcherLabel}</span>
       </button>
@@ -843,7 +850,7 @@ function ChartsPage(props: {
   const { page, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onSelectAirport, onSelectChart } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
-  const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
+  const [imageSize, setImageSize] = useState<{ chartId: string; width: number; height: number } | null>(null);
   const viewportRef = useRef<ImageViewportState | null>(null);
   const lastLocalViewportRef = useRef<ImageViewportState | null>(null);
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
@@ -855,18 +862,19 @@ function ChartsPage(props: {
   const [pageTrayOpen, setPageTrayOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
   const sortedCharts = useMemo(() => sortChartsForFolder(selectedAirport?.charts ?? []), [selectedAirport]);
+  const selectedImageSize = imageSize && imageSize.chartId === (selectedChart?.id ?? "") ? imageSize : null;
   const displaySize = useMemo(() => {
-    if (!imageSize || !viewport || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+    if (!selectedImageSize || !viewport || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return null;
     }
     return imageDisplaySize(
-      imageSize.width,
-      imageSize.height,
+      selectedImageSize.width,
+      selectedImageSize.height,
       surfaceSize.width,
       surfaceSize.height,
       viewport.zoom,
     );
-  }, [imageSize, surfaceSize.height, surfaceSize.width, viewport]);
+  }, [selectedImageSize, surfaceSize.height, surfaceSize.width, viewport]);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -888,6 +896,9 @@ function ChartsPage(props: {
 
   useEffect(() => {
     setImageSize(null);
+    viewportRef.current = null;
+    lastLocalViewportRef.current = null;
+    lastChartLayoutKeyRef.current = "";
   }, [selectedChart?.id]);
 
   useEffect(() => {
@@ -906,12 +917,12 @@ function ChartsPage(props: {
   }, [viewport]);
 
   useEffect(() => {
-    if (!imageSize || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+    if (!selectedImageSize || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
-    const layoutKey = `${selectedChart?.id ?? ""}:${imageSize.width}:${imageSize.height}:${surfaceSize.width}:${surfaceSize.height}`;
+    const layoutKey = `${selectedChart?.id ?? ""}:${selectedImageSize.width}:${selectedImageSize.height}:${surfaceSize.width}:${surfaceSize.height}`;
     if (viewport === null) {
-      const next = createInitialImageViewport(imageSize.width, imageSize.height, surfaceSize.width, surfaceSize.height);
+      const next = createInitialImageViewport(selectedImageSize.width, selectedImageSize.height, surfaceSize.width, surfaceSize.height);
       viewportRef.current = next;
       lastLocalViewportRef.current = next;
       lastChartLayoutKeyRef.current = layoutKey;
@@ -923,8 +934,8 @@ function ChartsPage(props: {
     }
     const normalized = clampImageViewport(
       viewport,
-      imageSize.width,
-      imageSize.height,
+      selectedImageSize.width,
+      selectedImageSize.height,
       surfaceSize.width,
       surfaceSize.height,
       overscrollPx,
@@ -935,7 +946,7 @@ function ChartsPage(props: {
     if (normalized.left !== viewport.left || normalized.top !== viewport.top || normalized.zoom !== viewport.zoom) {
       onViewportChange(normalized);
     }
-  }, [imageSize, selectedChart?.id, surfaceSize.width, surfaceSize.height, viewport, onViewportChange]);
+  }, [selectedImageSize, selectedChart?.id, surfaceSize.width, surfaceSize.height, viewport, onViewportChange]);
 
   const trayOpen = pageTrayOpen || airportTrayOpen || chartTrayOpen;
   const overscrollPx = 64;
@@ -960,7 +971,7 @@ function ChartsPage(props: {
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
-    if (!viewportRef.current || !imageSize || trayOpen || folderOpen) {
+    if (!viewportRef.current || !selectedImageSize || trayOpen || folderOpen) {
       return;
     }
     const point = localPointFromPointerEvent(event);
@@ -981,7 +992,7 @@ function ChartsPage(props: {
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
-    if (!viewportRef.current || !imageSize || trayOpen || folderOpen) {
+    if (!viewportRef.current || !selectedImageSize || trayOpen || folderOpen) {
       return;
     }
     const point = localPointFromPointerEvent(event);
@@ -997,8 +1008,8 @@ function ChartsPage(props: {
         viewportRef.current,
         dx,
         dy,
-        imageSize.width,
-        imageSize.height,
+        selectedImageSize.width,
+        selectedImageSize.height,
         surfaceSize.width,
         surfaceSize.height,
         overscrollPx,
@@ -1017,8 +1028,8 @@ function ChartsPage(props: {
         pinchRef.current.midpoint.x,
         pinchRef.current.midpoint.y,
         clampImageZoom(pinchRef.current.zoom + zoomDelta),
-        imageSize.width,
-        imageSize.height,
+        selectedImageSize.width,
+        selectedImageSize.height,
         surfaceSize.width,
         surfaceSize.height,
         overscrollPx,
@@ -1027,8 +1038,8 @@ function ChartsPage(props: {
         next,
         nextMidpoint.x - pinchRef.current.midpoint.x,
         nextMidpoint.y - pinchRef.current.midpoint.y,
-        imageSize.width,
-        imageSize.height,
+        selectedImageSize.width,
+        selectedImageSize.height,
         surfaceSize.width,
         surfaceSize.height,
         overscrollPx,
@@ -1052,7 +1063,7 @@ function ChartsPage(props: {
     if (folderOpen) {
       return;
     }
-    if (!viewportRef.current || !imageSize || trayOpen) {
+    if (!viewportRef.current || !selectedImageSize || trayOpen) {
       event.preventDefault();
       return;
     }
@@ -1064,8 +1075,8 @@ function ChartsPage(props: {
         point.x,
         point.y,
         viewportRef.current.zoom - event.deltaY / 360,
-        imageSize.width,
-        imageSize.height,
+        selectedImageSize.width,
+        selectedImageSize.height,
         surfaceSize.width,
         surfaceSize.height,
         overscrollPx,
@@ -1074,7 +1085,7 @@ function ChartsPage(props: {
   }
 
   function handleDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
-    if (!viewportRef.current || !imageSize || trayOpen || folderOpen) {
+    if (!viewportRef.current || !selectedImageSize || trayOpen || folderOpen) {
       return;
     }
     const point = localPointFromPointerEvent(event);
@@ -1084,8 +1095,8 @@ function ChartsPage(props: {
         point.x,
         point.y,
         viewportRef.current.zoom + 0.75,
-        imageSize.width,
-        imageSize.height,
+        selectedImageSize.width,
+        selectedImageSize.height,
         surfaceSize.width,
         surfaceSize.height,
         overscrollPx,
@@ -1145,22 +1156,24 @@ function ChartsPage(props: {
           </div>
         ) : selectedChart ? (
           <img
+            key={selectedChart.id}
             className="chartImage"
             src={selectedChart.asset_url}
             alt={selectedChart.label}
             draggable={false}
             onLoad={(event) =>
               setImageSize({
+                chartId: selectedChart.id,
                 width: event.currentTarget.naturalWidth,
                 height: event.currentTarget.naturalHeight,
               })
             }
             style={{
-              left: `${viewport?.left ?? 0}px`,
-              top: `${viewport?.top ?? 0}px`,
+              left: `${selectedImageSize && viewport ? viewport.left : 0}px`,
+              top: `${selectedImageSize && viewport ? viewport.top : 0}px`,
               width: displaySize ? `${displaySize.width}px` : undefined,
               height: displaySize ? `${displaySize.height}px` : undefined,
-              visibility: viewport ? "visible" : "hidden",
+              visibility: selectedImageSize && viewport ? "visible" : "hidden",
             }}
           />
         ) : null}
@@ -1169,6 +1182,7 @@ function ChartsPage(props: {
           <TrayDock
             launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "PLT"}
             open={pageTrayOpen}
+            blocked={airportTrayOpen || chartTrayOpen}
             onToggle={() =>
               toggleExclusiveTray(
                 "page",
@@ -1191,6 +1205,7 @@ function ChartsPage(props: {
           <TrayDock
             launcherLabel={selectedAirport?.label ?? "---"}
             open={airportTrayOpen}
+            blocked={pageTrayOpen || chartTrayOpen}
             onToggle={() =>
               toggleExclusiveTray(
                 "airport",
@@ -1213,6 +1228,7 @@ function ChartsPage(props: {
           <TrayDock
             launcherLabel={selectedChart?.label ?? "---"}
             open={chartTrayOpen}
+            blocked={pageTrayOpen || airportTrayOpen}
             onToggle={() =>
               toggleExclusiveTray(
                 "chart",
@@ -1234,11 +1250,14 @@ function ChartsPage(props: {
           />
           <button
             type="button"
-            className={`chartButton${folderOpen ? " isOpen" : ""}`}
-            onPointerDown={stopPointer}
-            onPointerUp={stopPointer}
-            onDoubleClick={stopDoubleClick}
-            onClick={() => onFolderOpenChange(!folderOpen)}
+            className={`chartButton${folderOpen ? " isOpen" : ""}${trayOpen ? " isBlocked" : ""}`}
+            aria-disabled={trayOpen}
+            tabIndex={trayOpen ? -1 : undefined}
+            style={trayOpen ? { pointerEvents: "none" } : undefined}
+            onPointerDown={trayOpen ? undefined : stopPointer}
+            onPointerUp={trayOpen ? undefined : stopPointer}
+            onDoubleClick={trayOpen ? undefined : stopDoubleClick}
+            onClick={trayOpen ? undefined : () => onFolderOpenChange(!folderOpen)}
             aria-pressed={folderOpen}
             aria-label="Toggle plate folder view"
           >

@@ -788,6 +788,24 @@ fn build_csup_package_nodes(
         let inputs = BTreeMap::from([
             ("render_fingerprint".to_string(), render_record.fingerprint.clone()),
             ("region".to_string(), region.code().to_string()),
+            (
+                "csup_package".to_string(),
+                hash_file(
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .parent()
+                        .expect("preprocessor-cli should live under workspace root")
+                        .join("preprocessor-csup/src/package.rs"),
+                )?,
+            ),
+            (
+                "tools_lib".to_string(),
+                hash_file(
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .parent()
+                        .expect("preprocessor-cli should live under workspace root")
+                        .join("preprocessor-tools/src/lib.rs"),
+                )?,
+            ),
         ]);
         let prepared = prepare_existing_node_root(&node_name, &package_root, &inputs)?;
         let zip_path = work_dir.join(format!("{}_CSUP.zip", region.code()));

@@ -1,0 +1,14 @@
+{
+  "plate_folder": {
+    "thumbnail_bg": "#303030",
+    "label_colors": {
+      "csup": "#1a84d8",
+      "airport-diagram": "#1a84d8",
+      "takeoff-mins": "#1a84d8",
+      "approach": "#b1591a",
+      "departure": "#518b12",
+      "star": "#b93f8a",
+      "other": "#52656d"
+    }
+  }
+}

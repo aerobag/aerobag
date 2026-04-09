@@ -37,6 +37,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -91,6 +94,8 @@ import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
 import net.jonh.aerobag.prototype.domain.SampleData
 import net.jonh.aerobag.prototype.domain.TileStorageKind
+import net.jonh.aerobag.prototype.domain.UiTheme
+import net.jonh.aerobag.prototype.domain.UiThemeLoader
 import net.jonh.aerobag.prototype.domain.applyPinchGesture
 import net.jonh.aerobag.prototype.domain.clampZoom
 import net.jonh.aerobag.prototype.domain.createInitialImageViewport
@@ -109,6 +114,9 @@ import kotlin.math.roundToInt
 private val ThumbSize = 56.dp
 private val ThumbGap = 5.6.dp
 private val ThumbRadius = 10.dp
+private val FolderThumbGutter = ThumbSize * 0.3f
+private val PlateFolderTileWidth = ThumbSize * 2f
+private val PlateFolderTileHeight = ThumbSize * 3f
 private val PlatePageTrayWidth = ThumbSize * 4f
 private const val UiPrefsName = "aerobag_ui"
 private const val UiPrefsPageKey = "page"
@@ -131,6 +139,7 @@ private data class AppViewSnapshot(
     val selectedChartLabel: String,
     val recentAirportIds: List<String>,
     val chartViewport: net.jonh.aerobag.prototype.domain.ImageViewportState?,
+    val chartFolderOpen: Boolean,
 )
 
 private data class PageTrayOption(
@@ -250,6 +259,22 @@ private fun resolveChartId(
     return airport?.charts?.firstOrNull()?.id.orEmpty()
 }
 
+private fun plateFolderCategoryOrder(category: String): Int = when (category) {
+    "airport-diagram" -> 0
+    "csup" -> 1
+    "takeoff-mins" -> 2
+    "approach" -> 3
+    "departure" -> 4
+    "star" -> 5
+    else -> 6
+}
+
+private fun sortChartsForFolder(charts: List<ChartAsset>): List<ChartAsset> =
+    charts.sortedWith(compareBy<ChartAsset>({ plateFolderCategoryOrder(it.folderCategory) }, { it.label }))
+
+private fun plateFolderColor(uiTheme: UiTheme, category: String): Color =
+    uiTheme.plateFolder.labelColors[category] ?: uiTheme.plateFolder.labelColors["other"] ?: Color(0xFF52656D)
+
 private fun readRecentAirportIds(context: Context): List<String> =
     context.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
         .getString(UiPrefsRecentAirportsKey, "")
@@ -294,6 +319,7 @@ class MainActivity : ComponentActivity() {
 private fun AerobagApp() {
     val context = LocalContext.current
     val fixture = remember(context) { SampleData.load(context.applicationContext) }
+    val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
     val initialRecentAirportIds = remember(fixture.chartPage.airports) {
         mergeRecentAirportIds(fixture.chartPage.airports, readRecentAirportIds(context.applicationContext))
@@ -312,6 +338,7 @@ private fun AerobagApp() {
     }
     var mapViewport by remember { mutableStateOf(createInitialViewport(selectedMap.mapView)) }
     var chartViewport by remember { mutableStateOf<net.jonh.aerobag.prototype.domain.ImageViewportState?>(null) }
+    var chartFolderOpen by remember { mutableStateOf(false) }
     var selectedAirportId by remember {
         mutableStateOf(
             resolveAirportId(
@@ -381,6 +408,7 @@ private fun AerobagApp() {
         selectedChartLabel = selectedChart?.label.orEmpty(),
         recentAirportIds = recentAirportIds,
         chartViewport = chartViewport,
+        chartFolderOpen = chartFolderOpen,
     )
 
     fun restoreSnapshot(snapshot: AppViewSnapshot, history: List<AppViewSnapshot>) {
@@ -392,6 +420,7 @@ private fun AerobagApp() {
         selectedChartId = snapshot.selectedChartId
         recentAirportIds = snapshot.recentAirportIds
         chartViewport = snapshot.chartViewport
+        chartFolderOpen = snapshot.chartFolderOpen
     }
 
     fun navigateToPage(nextPage: AppPage) {
@@ -421,7 +450,15 @@ private fun AerobagApp() {
                 selectedMapId = selectedMapId,
                 viewport = mapViewport,
                 onViewportChange = { mapViewport = it },
-                onSelectMapId = { selectedMapId = it },
+                onSelectMapId = {
+                    restoreSnapshot(
+                        currentSnapshot().copy(
+                            page = AppPage.Map,
+                            selectedMapId = it,
+                        ),
+                        pageHistory + currentSnapshot(),
+                    )
+                },
                 onSelectPage = ::navigateToPage,
                 onOpenPlan = { navigateToPage(AppPage.Plan) },
                 legSummary = legSummary,
@@ -456,8 +493,19 @@ private fun AerobagApp() {
                 airports = orderedChartAirports,
                 selectedAirport = selectedAirport,
                 selectedChart = selectedChart,
+                uiTheme = uiTheme,
+                folderOpen = chartFolderOpen,
                 viewport = chartViewport,
                 onViewportChange = { chartViewport = it },
+                onFolderOpenChange = {
+                    restoreSnapshot(
+                        currentSnapshot().copy(
+                            page = AppPage.Charts,
+                            chartFolderOpen = it,
+                        ),
+                        pageHistory + currentSnapshot(),
+                    )
+                },
                 onSelectPage = ::navigateToPage,
                 onSelectAirport = { airportId ->
                     val airport = fixture.chartPage.airports.find { it.id == airportId }
@@ -469,6 +517,7 @@ private fun AerobagApp() {
                             selectedChartLabel = airport?.charts?.firstOrNull()?.label.orEmpty(),
                             recentAirportIds = moveAirportToFront(recentAirportIds, airportId, fixture.chartPage.airports),
                             chartViewport = null,
+                            chartFolderOpen = false,
                         ),
                         pageHistory + currentSnapshot(),
                     )
@@ -480,6 +529,7 @@ private fun AerobagApp() {
                             selectedChartId = it,
                             selectedChartLabel = selectedAirport?.charts?.firstOrNull { chart -> chart.id == it }?.label.orEmpty(),
                             chartViewport = null,
+                            chartFolderOpen = false,
                         ),
                         pageHistory + currentSnapshot(),
                     )
@@ -995,8 +1045,11 @@ private fun ChartsPage(
     airports: List<ChartAirport>,
     selectedAirport: ChartAirport?,
     selectedChart: ChartAsset?,
+    uiTheme: UiTheme,
+    folderOpen: Boolean,
     viewport: net.jonh.aerobag.prototype.domain.ImageViewportState?,
     onViewportChange: (net.jonh.aerobag.prototype.domain.ImageViewportState?) -> Unit,
+    onFolderOpenChange: (Boolean) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onSelectAirport: (String) -> Unit,
     onSelectChart: (String) -> Unit,
@@ -1011,6 +1064,7 @@ private fun ChartsPage(
     var chartTrayOpen by remember { mutableStateOf(false) }
     var debugPanelOpen by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
+    val sortedCharts = remember(selectedAirport) { sortChartsForFolder(selectedAirport?.charts ?: emptyList()) }
     val overscrollPx = with(density) { ThumbSize.toPx() }
     val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, selectedChart?.assetPath) {
         value = selectedChart?.assetPath?.let { path ->
@@ -1035,7 +1089,7 @@ private fun ChartsPage(
     val viewportState = rememberUpdatedState(viewport)
     val imageWidthPx = bitmap?.width?.toFloat() ?: 0f
     val imageHeightPx = bitmap?.height?.toFloat() ?: 0f
-    val trayOpen = airportTrayOpen || chartTrayOpen
+    val trayOpen = pageTrayOpen || airportTrayOpen || chartTrayOpen
 
     LaunchedEffect(bitmap, surfaceSize) {
         val currentBitmap = bitmap
@@ -1060,7 +1114,7 @@ private fun ChartsPage(
             .onSizeChanged { surfaceSize = it }
             .focusable()
             .onPreviewKeyEvent { event ->
-                if (bitmap == null || viewportState.value == null || trayOpen || event.nativeKeyEvent.action != AndroidKeyEvent.ACTION_DOWN) {
+                if (bitmap == null || viewportState.value == null || trayOpen || folderOpen || event.nativeKeyEvent.action != AndroidKeyEvent.ACTION_DOWN) {
                     return@onPreviewKeyEvent false
                 }
                 val nextZoom = when (event.nativeKeyEvent.keyCode) {
@@ -1085,7 +1139,7 @@ private fun ChartsPage(
                 true
             }
             .pointerInput(bitmap, surfaceSize, trayOpen) {
-                if (bitmap == null || viewportState.value == null || trayOpen) {
+                if (bitmap == null || viewportState.value == null || trayOpen || folderOpen) {
                     return@pointerInput
                 }
                 detectTapGestures(
@@ -1105,7 +1159,7 @@ private fun ChartsPage(
                 )
             }
             .pointerInput(bitmap, surfaceSize, trayOpen) {
-                if (bitmap == null || viewportState.value == null || trayOpen) {
+                if (bitmap == null || viewportState.value == null || trayOpen || folderOpen) {
                     return@pointerInput
                 }
                 detectTransformGestures { centroid, pan, zoom, _ ->
@@ -1135,7 +1189,7 @@ private fun ChartsPage(
                 }
             }
             .pointerInteropFilter { event ->
-                if (bitmap == null || viewportState.value == null || trayOpen) {
+                if (bitmap == null || viewportState.value == null || trayOpen || folderOpen) {
                     return@pointerInteropFilter false
                 }
                 if (event.action == MotionEvent.ACTION_SCROLL) {
@@ -1160,33 +1214,47 @@ private fun ChartsPage(
     ) {
         if (trayOpen) {
             Scrim {
+                pageTrayOpen = false
                 airportTrayOpen = false
                 chartTrayOpen = false
             }
         }
 
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val currentViewport = viewport
-            val currentBitmap = bitmap
-            if (currentViewport != null && currentBitmap != null) {
-                val displaySize = imageDisplaySize(
-                    imageWidthPx = currentBitmap.width.toFloat(),
-                    imageHeightPx = currentBitmap.height.toFloat(),
-                    viewportWidthPx = surfaceSize.width.toFloat(),
-                    viewportHeightPx = surfaceSize.height.toFloat(),
-                    zoom = currentViewport.zoom,
-                )
-                drawImage(
-                    image = currentBitmap,
-                    dstOffset = IntOffset(currentViewport.leftPx.roundToInt(), currentViewport.topPx.roundToInt()),
-                    dstSize = IntSize(displaySize.widthPx.roundToInt(), displaySize.heightPx.roundToInt()),
-                )
-                drawRect(
-                    color = Color(0x14000000),
-                    topLeft = Offset(currentViewport.leftPx, currentViewport.topPx),
-                    size = Size(displaySize.widthPx, displaySize.heightPx),
-                    style = Stroke(width = 1.dp.toPx()),
-                )
+        if (folderOpen) {
+            PlateFolderGrid(
+                modifier = Modifier.fillMaxSize(),
+                charts = sortedCharts,
+                selectedChartId = selectedChart?.id,
+                uiTheme = uiTheme,
+                onSelectChart = {
+                    onSelectChart(it)
+                    onFolderOpenChange(false)
+                },
+            )
+        } else {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val currentViewport = viewport
+                val currentBitmap = bitmap
+                if (currentViewport != null && currentBitmap != null) {
+                    val displaySize = imageDisplaySize(
+                        imageWidthPx = currentBitmap.width.toFloat(),
+                        imageHeightPx = currentBitmap.height.toFloat(),
+                        viewportWidthPx = surfaceSize.width.toFloat(),
+                        viewportHeightPx = surfaceSize.height.toFloat(),
+                        zoom = currentViewport.zoom,
+                    )
+                    drawImage(
+                        image = currentBitmap,
+                        dstOffset = IntOffset(currentViewport.leftPx.roundToInt(), currentViewport.topPx.roundToInt()),
+                        dstSize = IntSize(displaySize.widthPx.roundToInt(), displaySize.heightPx.roundToInt()),
+                    )
+                    drawRect(
+                        color = Color(0x14000000),
+                        topLeft = Offset(currentViewport.leftPx, currentViewport.topPx),
+                        size = Size(displaySize.widthPx, displaySize.heightPx),
+                        style = Stroke(width = 1.dp.toPx()),
+                    )
+                }
             }
         }
 
@@ -1196,6 +1264,7 @@ private fun ChartsPage(
             airports = airports,
             selectedAirport = selectedAirport,
             selectedChart = selectedChart,
+            folderOpen = folderOpen,
             pageTrayOpen = pageTrayOpen,
             airportTrayOpen = airportTrayOpen,
             chartTrayOpen = chartTrayOpen,
@@ -1220,13 +1289,21 @@ private fun ChartsPage(
                 pageTrayOpen = false
                 airportTrayOpen = false
             },
+            onToggleFolder = {
+                onFolderOpenChange(!folderOpen)
+                pageTrayOpen = false
+                airportTrayOpen = false
+                chartTrayOpen = false
+            },
             onSelectAirport = {
                 onSelectAirport(it)
                 airportTrayOpen = false
+                onFolderOpenChange(false)
             },
             onSelectChart = {
                 onSelectChart(it)
                 chartTrayOpen = false
+                onFolderOpenChange(false)
             },
         )
 
@@ -1237,7 +1314,7 @@ private fun ChartsPage(
         ) {
             Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text(
-                "stack ${formatPageStack(pageHistory, page, selectedAirport?.id ?: "", selectedChart?.id ?: "", selectedChart?.label ?: "", chartLabelsById)}",
+                "stack ${formatPageStack(pageHistory, page, "", selectedAirport?.id ?: "", selectedChart?.id ?: "", selectedChart?.label ?: "", folderOpen, chartLabelsById)}",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color(0xFF52656D),
             )
@@ -1294,6 +1371,7 @@ private fun ChartViewerSelectors(
     airports: List<ChartAirport>,
     selectedAirport: ChartAirport?,
     selectedChart: ChartAsset?,
+    folderOpen: Boolean,
     pageTrayOpen: Boolean,
     airportTrayOpen: Boolean,
     chartTrayOpen: Boolean,
@@ -1301,6 +1379,7 @@ private fun ChartViewerSelectors(
     onSelectPage: (AppPage) -> Unit,
     onToggleAirportTray: () -> Unit,
     onToggleChartTray: () -> Unit,
+    onToggleFolder: () -> Unit,
     onSelectAirport: (String) -> Unit,
     onSelectChart: (String) -> Unit,
 ) {
@@ -1334,10 +1413,85 @@ private fun ChartViewerSelectors(
             open = chartTrayOpen,
             onToggle = onToggleChartTray,
             style = MenuDockStyle.PlateWide,
-            options = (selectedAirport?.charts ?: emptyList()).map { chart ->
+            options = sortChartsForFolder(selectedAirport?.charts ?: emptyList()).map { chart ->
                 MenuDockOption(chart.id, chart.label) { onSelectChart(chart.id) }
             },
         )
+
+        CompactSquareButton(
+            label = "FLDR",
+            modifier = Modifier.size(ThumbSize),
+            onClick = onToggleFolder,
+        )
+    }
+}
+
+@Composable
+private fun PlateFolderGrid(
+    modifier: Modifier = Modifier,
+    charts: List<ChartAsset>,
+    selectedChartId: String?,
+    uiTheme: UiTheme,
+    onSelectChart: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(minSize = PlateFolderTileWidth),
+        modifier = modifier.padding(top = ThumbSize + (ThumbGap * 2f), start = FolderThumbGutter, end = FolderThumbGutter, bottom = FolderThumbGutter),
+        horizontalArrangement = Arrangement.spacedBy(FolderThumbGutter),
+        verticalArrangement = Arrangement.spacedBy(FolderThumbGutter),
+    ) {
+        items(charts, key = { it.id }) { chart ->
+            val thumbnail by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, chart.id, chart.thumbnailSourceAssetPath) {
+                value = chart.thumbnailSourceAssetPath?.let {
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            val bytes = ChartPackages.loadThumbnailBytes(context, chart) ?: return@runCatching null
+                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                        }.getOrNull()
+                    }
+                }
+            }
+            Surface(
+                modifier = Modifier
+                    .width(PlateFolderTileWidth)
+                    .height(PlateFolderTileHeight)
+                    .border(
+                        width = if (chart.id == selectedChartId) 2.dp else 1.dp,
+                        color = if (chart.id == selectedChartId) MaterialTheme.colorScheme.primary else Color(0x26132129),
+                        shape = RoundedCornerShape(ThumbRadius),
+                    )
+                    .clickable { onSelectChart(chart.id) },
+                shape = RoundedCornerShape(ThumbRadius),
+                color = uiTheme.plateFolder.thumbnailBg,
+                shadowElevation = 2.dp,
+            ) {
+                Box {
+                    if (thumbnail != null) {
+                        androidx.compose.foundation.Image(
+                            bitmap = thumbnail!!,
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .fillMaxWidth()
+                            .background(plateFolderColor(uiTheme, chart.folderCategory))
+                            .padding(horizontal = 6.dp, vertical = 5.dp),
+                    ) {
+                        Text(
+                            text = chart.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFFFF7EF),
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1478,8 +1632,21 @@ private fun formatSnapshot(snapshot: AppViewSnapshot): String {
 
 private fun formatSnapshot(snapshot: AppViewSnapshot, chartLabelsById: Map<String, String>): String {
     val label = pageLabel(snapshot.page)
+    if (snapshot.page == AppPage.Map) {
+        val family = when (snapshot.selectedMapId.substringBefore(':')) {
+            "sectional" -> "SEC"
+            "tac" -> "TAC"
+            "ifr_low" -> "IFR L"
+            "ifr_high" -> "IFR H"
+            else -> ""
+        }
+        return if (family.isBlank()) label else "$label-$family"
+    }
     if (snapshot.page != AppPage.Charts) {
         return label
+    }
+    if (snapshot.chartFolderOpen) {
+        return "$label-FLDR"
     }
     val suffixSource = snapshot.selectedChartLabel
         .ifBlank { chartLabelsById[snapshot.selectedChartId].orEmpty() }
@@ -1491,21 +1658,24 @@ private fun formatSnapshot(snapshot: AppViewSnapshot, chartLabelsById: Map<Strin
 private fun formatPageStack(
     pageHistory: List<AppViewSnapshot>,
     currentPage: AppPage,
+    selectedMapId: String = "",
     selectedAirportId: String = "",
     selectedChartId: String = "",
     selectedChartLabel: String = "",
+    chartFolderOpen: Boolean = false,
     chartLabelsById: Map<String, String> = emptyMap(),
 ): String = (
     listOf(
         AppViewSnapshot(
         page = currentPage,
-        selectedMapId = "",
+        selectedMapId = selectedMapId,
         mapViewport = MapViewportState(0.0, 0.0, 0.0),
         selectedAirportId = selectedAirportId,
         selectedChartId = selectedChartId,
         selectedChartLabel = selectedChartLabel,
         recentAirportIds = emptyList(),
         chartViewport = null,
+        chartFolderOpen = chartFolderOpen,
     )
     ) + pageHistory.asReversed()
 ).joinToString(" > ") { formatSnapshot(it, chartLabelsById) }

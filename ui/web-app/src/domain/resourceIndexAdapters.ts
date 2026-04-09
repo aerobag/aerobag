@@ -5,6 +5,7 @@ type MapViewOption = NonNullable<ContentFixtureBundle["map_views"]>[number];
 type ChartPage = ChartPageData;
 type SupportedChartFamily = Extract<ChartFamilyId, "sectional" | "tac" | "ifr_low" | "ifr_high">;
 type ChartAsset = ChartPage["airports"][number]["charts"][number];
+type FolderCategory = ChartAsset["folder_category"];
 
 const supportedChartFamilies = new Set<SupportedChartFamily>(["sectional", "tac", "ifr_low", "ifr_high"]);
 
@@ -121,6 +122,38 @@ function airportIdsFromPlan(plan: FlightPlan): string[] {
   return [...airportIds];
 }
 
+function folderCategoryForRecord(
+  kind: "plate" | "csup",
+  record: ResourceIndexJson["plates"][number] | ResourceIndexJson["csups"][number],
+): FolderCategory {
+  if (kind === "csup") {
+    return "csup";
+  }
+  const label = record.label.toUpperCase();
+  if (label.includes("AIRPORT DIAGRAM")) {
+    return "airport-diagram";
+  }
+  if (label.startsWith("MIN-") || label.includes("TAKEOFF MINIMUMS") || label.includes("ALTERNATE MINIMUMS")) {
+    return "takeoff-mins";
+  }
+  if (label.startsWith("DP-") || label.startsWith("ODP-") || label.includes("DEPARTURE")) {
+    return "departure";
+  }
+  if (label.startsWith("STAR-") || label.includes(" ARRIVAL")) {
+    return "star";
+  }
+  return "approach";
+}
+
+const folderCategoryRank: Record<FolderCategory, number> = {
+  "airport-diagram": 0,
+  csup: 1,
+  "takeoff-mins": 2,
+  approach: 3,
+  departure: 4,
+  star: 5,
+};
+
 function chartAssetForRecord(
   airportId: string,
   kind: "plate" | "csup",
@@ -130,10 +163,14 @@ function chartAssetForRecord(
   return {
     id: `${kind}:${airportId}:${filename}`,
     airport_id: airportId,
+    package_id: record.package_id,
     label: kind === "csup" ? "CSup" : record.label,
     kind,
+    folder_category: folderCategoryForRecord(kind, record),
     asset_path: `chart-assets/${airportId}/${filename}`,
     asset_url: `/chart-assets/${airportId}/${filename}`,
+    thumbnail_path: record.thumbnail_path ? `chart-thumbnails/${airportId}/${record.thumbnail_path.split("/").pop() ?? filename}` : null,
+    thumbnail_url: record.thumbnail_path ? `/chart-thumbnails/${airportId}/${record.thumbnail_path.split("/").pop() ?? filename}` : null,
   };
 }
 
@@ -167,7 +204,10 @@ export function deriveChartPage(
         .map((id) => csupById.get(id))
         .filter((record): record is ResourceIndexJson["csups"][number] => record !== undefined)
         .map((record) => chartAssetForRecord(airportId, "csup", record));
-      const charts = [...plates, ...csups];
+      const charts = [...plates, ...csups].sort((left, right) => {
+        const rank = folderCategoryRank[left.folder_category] - folderCategoryRank[right.folder_category];
+        return rank !== 0 ? rank : left.label.localeCompare(right.label);
+      });
       if (charts.length === 0) {
         return null;
       }

@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { chartPage, mapViews, samplePlan } from "./domain/sampleData";
+import uiTheme from "./domain/generated/uiTheme.json";
 import {
   applyPinchGesture,
   createInitialViewport,
@@ -40,6 +41,7 @@ type TrayOption = {
 };
 
 type TrayDockStyle = "compact" | "plate_narrow" | "plate_wide";
+type PlateFolderCategory = ChartAsset["folder_category"];
 
 const chartFamilies: Array<{ id: ChartFamilyId; label: string; launcherLabel: string }> = [
   { id: "sectional", label: "SECTIONAL", launcherLabel: "SEC" },
@@ -56,6 +58,8 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> 
 
 const waypointActions = ["Remove", "Insert", "Reorder", "Waypoint Info", "Add Airway", "Select Procedure", "Charts"];
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
+const plateFolderTheme = uiTheme.plate_folder;
+const plateFolderCategoryOrder: PlateFolderCategory[] = ["airport-diagram", "csup", "takeoff-mins", "approach", "departure", "star"];
 
 type PersistedWebUiState = {
   page?: AppPage;
@@ -73,6 +77,7 @@ type AppViewSnapshot = {
   selectedChartLabel: string;
   recentAirportIds: string[];
   chartViewport: ImageViewportState | null;
+  chartFolderOpen: boolean;
 };
 
 type WebHistoryState = {
@@ -111,6 +116,7 @@ export default function App() {
   );
   const [mapViewport, setMapViewport] = useState<MapViewportState>(() => createInitialViewport(selectedMap.map_view));
   const [chartViewport, setChartViewport] = useState<ImageViewportState | null>(null);
+  const [chartFolderOpen, setChartFolderOpen] = useState(false);
   const selectedFamily = useMemo(
     () => chartFamilies.find((family) => family.id === selectedMap.map_view.chart_family) ?? chartFamilies[0],
     [selectedMap],
@@ -185,6 +191,7 @@ export default function App() {
       selectedChartLabel: selectedChart?.label ?? "",
       recentAirportIds,
       chartViewport,
+      chartFolderOpen,
     };
   }
 
@@ -197,6 +204,7 @@ export default function App() {
     setSelectedChartId(snapshot.selectedChartId);
     setRecentAirportIds(snapshot.recentAirportIds);
     setChartViewport(snapshot.chartViewport);
+    setChartFolderOpen(snapshot.chartFolderOpen);
   }
 
   useEffect(() => {
@@ -209,7 +217,7 @@ export default function App() {
       stack: pageHistory,
     };
     window.history.replaceState(state, "");
-  }, [page, pageHistory, selectedMapId, mapViewport, selectedAirportId, selectedChartId, recentAirportIds, chartViewport]);
+  }, [page, pageHistory, selectedMapId, mapViewport, selectedAirportId, selectedChartId, recentAirportIds, chartViewport, chartFolderOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -280,7 +288,12 @@ export default function App() {
           availableFamilies={availableFamilies}
           viewport={mapViewport}
           onViewportChange={setMapViewport}
-          onSelectMapId={setSelectedMapId}
+          onSelectMapId={(mapId) => {
+            pushViewSnapshot({
+              page: "map",
+              selectedMapId: mapId,
+            });
+          }}
           onSelectPage={navigateToPage}
           onOpenPlan={() => navigateToPage("plan")}
           legSummary={legSummary}
@@ -305,8 +318,15 @@ export default function App() {
           airports={orderedChartAirports}
           selectedAirport={selectedAirport}
           selectedChart={selectedChart}
+          folderOpen={chartFolderOpen}
           viewport={chartViewport}
           onViewportChange={setChartViewport}
+          onFolderOpenChange={(next) => {
+            pushViewSnapshot({
+              page: "charts",
+              chartFolderOpen: next,
+            });
+          }}
           onSelectPage={navigateToPage}
           onSelectAirport={(airportId) => {
             const airport = chartPage.airports.find((entry) => entry.id === airportId);
@@ -317,6 +337,7 @@ export default function App() {
               selectedChartLabel: airport?.charts[0]?.label ?? "",
               recentAirportIds: moveAirportToFront(recentAirportIds, airportId, chartPage.airports),
               chartViewport: null,
+              chartFolderOpen: false,
             });
           }}
           onSelectChart={(chartId) => {
@@ -326,6 +347,7 @@ export default function App() {
               selectedChartId: chartId,
               selectedChartLabel: nextChart?.label ?? "",
               chartViewport: null,
+              chartFolderOpen: false,
             });
           }}
         />
@@ -645,7 +667,7 @@ function MapPage(props: {
             onToggle={() => setDebugOpen((open) => !open)}
           >
             <div className="debugLine">page {pageLabel(page)}</div>
-            <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedChartId: "", selectedChartLabel: "" })}</div>
+            <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: selectedMap.id, selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
             <div className="debugLine">family {selectedFamily.launcherLabel}</div>
             <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
             <div className="debugLine">tiles {debugSummary.tileCount}</div>
@@ -727,7 +749,7 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
       <div className="debugDock">
         <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>
           <div className="debugLine">page {pageLabel(props.page)}</div>
-          <div className="debugLine">stack {formatPageStack(props.pageHistory, { page: props.page, selectedChartId: "", selectedChartLabel: "" })}</div>
+          <div className="debugLine">stack {formatPageStack(props.pageHistory, { page: props.page, selectedMapId: "", selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
           <div className="debugLine">rows {rows.length}</div>
         </DebugDock>
       </div>
@@ -809,13 +831,15 @@ function ChartsPage(props: {
   airports: (typeof chartPage)["airports"];
   selectedAirport: (typeof chartPage)["airports"][number] | null;
   selectedChart: ChartAsset | null;
+  folderOpen: boolean;
   viewport: ImageViewportState | null;
   onViewportChange: (next: ImageViewportState | null) => void;
+  onFolderOpenChange: (next: boolean) => void;
   onSelectPage: (page: AppPage) => void;
   onSelectAirport: (airportId: string) => void;
   onSelectChart: (chartId: string) => void;
 }) {
-  const { page, airports, selectedAirport, selectedChart, viewport, onViewportChange, onSelectPage, onSelectAirport, onSelectChart } = props;
+  const { page, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onSelectAirport, onSelectChart } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
@@ -827,6 +851,7 @@ function ChartsPage(props: {
   const [chartTrayOpen, setChartTrayOpen] = useState(false);
   const [pageTrayOpen, setPageTrayOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
+  const sortedCharts = useMemo(() => sortChartsForFolder(selectedAirport?.charts ?? []), [selectedAirport]);
   const displaySize = useMemo(() => {
     if (!imageSize || !viewport || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return null;
@@ -880,7 +905,7 @@ function ChartsPage(props: {
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
-    if (!viewportRef.current || !imageSize || trayOpen) {
+    if (!viewportRef.current || !imageSize || trayOpen || folderOpen) {
       return;
     }
     const point = { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY };
@@ -901,7 +926,7 @@ function ChartsPage(props: {
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
-    if (!viewportRef.current || !imageSize || trayOpen) {
+    if (!viewportRef.current || !imageSize || trayOpen || folderOpen) {
       return;
     }
     const point = { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY };
@@ -970,6 +995,9 @@ function ChartsPage(props: {
   }
 
   function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
+    if (folderOpen) {
+      return;
+    }
     if (!viewportRef.current || !imageSize || trayOpen) {
       event.preventDefault();
       return;
@@ -991,7 +1019,7 @@ function ChartsPage(props: {
   }
 
   function handleDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
-    if (!viewportRef.current || !imageSize || trayOpen) {
+    if (!viewportRef.current || !imageSize || trayOpen || folderOpen) {
       return;
     }
     updateViewport(
@@ -1036,7 +1064,31 @@ function ChartsPage(props: {
           />
         ) : null}
 
-        {selectedChart ? (
+        {folderOpen ? (
+          <div className="plateFolderGrid" onPointerDown={stopPointer} onPointerUp={stopPointer} onDoubleClick={stopDoubleClick}>
+            {sortedCharts.map((chart) => (
+              <button
+                key={chart.id}
+                type="button"
+                className={`plateThumb${chart.id === selectedChart?.id ? " isActive" : ""}`}
+                onPointerDown={stopPointer}
+                onPointerUp={stopPointer}
+                onDoubleClick={stopDoubleClick}
+                onClick={() => {
+                  onSelectChart(chart.id);
+                  onFolderOpenChange(false);
+                }}
+              >
+                <div className="plateThumbMedia" style={{ backgroundColor: plateFolderTheme.thumbnail_bg }}>
+                  {chart.thumbnail_url ? <img className="plateThumbImage" src={chart.thumbnail_url} alt="" draggable={false} /> : null}
+                  <div className="plateThumbLabel" style={{ backgroundColor: plateFolderColor(chart.folder_category) }}>
+                    {chart.label}
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        ) : selectedChart ? (
           <img
             className="chartImage"
             src={selectedChart.asset_url}
@@ -1100,6 +1152,7 @@ function ChartsPage(props: {
               onSelect: () => {
                 onSelectAirport(airport.id);
                 setAirportTrayOpen(false);
+                onFolderOpenChange(false);
               },
             }))}
           />
@@ -1115,22 +1168,35 @@ function ChartsPage(props: {
             }
             ariaLabel="Chart"
             style="plate_wide"
-            options={(selectedAirport?.charts ?? []).map((chart) => ({
+            options={sortedCharts.map((chart) => ({
               id: chart.id,
               label: chart.label,
               active: chart.id === selectedChart?.id,
               onSelect: () => {
                 onSelectChart(chart.id);
                 setChartTrayOpen(false);
+                onFolderOpenChange(false);
               },
             }))}
           />
+          <button
+            type="button"
+            className={`chartButton${folderOpen ? " isOpen" : ""}`}
+            onPointerDown={stopPointer}
+            onPointerUp={stopPointer}
+            onDoubleClick={stopDoubleClick}
+            onClick={() => onFolderOpenChange(!folderOpen)}
+            aria-pressed={folderOpen}
+            aria-label="Toggle plate folder view"
+          >
+            <span className="chartButtonLabel">FLDR</span>
+          </button>
         </div>
 
         <div className="debugDock">
           <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>
             <div className="debugLine">page {pageLabel(page)}</div>
-            <div className="debugLine">stack {formatPageStack(props.pageHistory, { page, selectedChartId: selectedChart?.id ?? "", selectedChartLabel: selectedChart?.label ?? "" })}</div>
+            <div className="debugLine">stack {formatPageStack(props.pageHistory, { page, selectedMapId: "", selectedChartId: selectedChart?.id ?? "", selectedChartLabel: selectedChart?.label ?? "", chartFolderOpen: folderOpen })}</div>
             <div className="debugLine">apt {selectedAirport?.label ?? "---"}</div>
             <div className="debugLine">chart {selectedChart?.label ?? "---"}</div>
             <div className="debugLine">{viewport ? `z${viewport.zoom.toFixed(2)}` : "viewport (none)"}</div>
@@ -1240,6 +1306,17 @@ function resolveAirportId(
   return recentAirportIds[0] ?? airports[0]?.id ?? "";
 }
 
+function plateFolderColor(category: PlateFolderCategory) {
+  return plateFolderTheme.label_colors[category as keyof typeof plateFolderTheme.label_colors] ?? plateFolderTheme.label_colors.other ?? "#52656d";
+}
+
+function sortChartsForFolder(charts: ChartAsset[]) {
+  return [...charts].sort((left, right) => {
+    const rank = plateFolderCategoryOrder.indexOf(left.folder_category) - plateFolderCategoryOrder.indexOf(right.folder_category);
+    return rank !== 0 ? rank : left.label.localeCompare(right.label);
+  });
+}
+
 function resolveChartId(
   airports: (typeof chartPage)["airports"],
   airportId: string,
@@ -1260,17 +1337,25 @@ function pageLabel(page: AppPage) {
   return pageOptions.find((option) => option.id === page)?.launcherLabel ?? page.toUpperCase();
 }
 
-function formatSnapshot(snapshot: Pick<AppViewSnapshot, "page" | "selectedChartId" | "selectedChartLabel">) {
+function formatSnapshot(snapshot: Pick<AppViewSnapshot, "page" | "selectedMapId" | "selectedChartId" | "selectedChartLabel" | "chartFolderOpen">) {
   const label = pageLabel(snapshot.page);
+  if (snapshot.page === "map") {
+    const map = mapViews.find((entry) => entry.id === snapshot.selectedMapId);
+    const family = chartFamilies.find((entry) => entry.id === map?.map_view.chart_family)?.launcherLabel ?? "";
+    return family ? `${label}-${family}` : label;
+  }
   if (snapshot.page !== "charts") {
     return label;
+  }
+  if (snapshot.chartFolderOpen) {
+    return `${label}-FLDR`;
   }
   const suffixSource = snapshot.selectedChartLabel || resolveChartLabel(snapshot.selectedChartId) || snapshot.selectedChartId;
   const suffix = suffixSource.slice(-3).toUpperCase();
   return suffix ? `${label}-${suffix}` : label;
 }
 
-function formatPageStack(pageHistory: AppViewSnapshot[], currentSnapshot: Pick<AppViewSnapshot, "page" | "selectedChartId" | "selectedChartLabel">) {
+function formatPageStack(pageHistory: AppViewSnapshot[], currentSnapshot: Pick<AppViewSnapshot, "page" | "selectedMapId" | "selectedChartId" | "selectedChartLabel" | "chartFolderOpen">) {
   return [currentSnapshot, ...pageHistory.slice().reverse()].map(formatSnapshot).join(" > ");
 }
 

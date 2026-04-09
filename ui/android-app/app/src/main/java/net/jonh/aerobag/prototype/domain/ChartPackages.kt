@@ -25,11 +25,19 @@ object ChartPackages {
         return null
     }
 
-    fun loadChartBytes(context: Context, chart: ChartAsset): ByteArray? {
-        val installed = existingInstalledFile(context, chart.packageId) ?: return null
+    fun loadPackageBytes(context: Context, packageId: String, sourceAssetPath: String): ByteArray? {
+        val installed = existingInstalledFile(context, packageId) ?: return null
         if (!installed.isFile) {
             return null
         }
-        return packageStore.loadTileBytes(installed, chart.sourceAssetPath)
+        return packageStore.loadTileBytes(installed, sourceAssetPath)
+    }
+
+    fun loadChartBytes(context: Context, chart: ChartAsset): ByteArray? =
+        loadPackageBytes(context, chart.packageId, chart.sourceAssetPath)
+
+    fun loadThumbnailBytes(context: Context, chart: ChartAsset): ByteArray? {
+        val thumbnailPath = chart.thumbnailSourceAssetPath ?: return null
+        return loadPackageBytes(context, chart.packageId, thumbnailPath)
     }
 }

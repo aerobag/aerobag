@@ -209,10 +209,14 @@ export type ChartPageData = {
     charts: Array<{
       id: string;
       airport_id: string;
+      package_id: string;
       label: string;
       kind: string;
+      folder_category: string;
       asset_path: string;
       asset_url: string;
+      thumbnail_path: string | null;
+      thumbnail_url: string | null;
     }>;
   }>;
 };
@@ -284,6 +288,7 @@ export type ResourceIndexJson = {
     region_id: RegionId;
     package_id: string;
     asset_path: string;
+    thumbnail_path?: string | null;
     label: string;
     asset_kind: string;
   }>;
@@ -293,6 +298,7 @@ export type ResourceIndexJson = {
     region_id: RegionId;
     package_id: string;
     asset_path: string;
+    thumbnail_path?: string | null;
     label: string;
     asset_kind: string;
   }>;

@@ -59,6 +59,7 @@ function aerobagStaticPlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use("/sectional-packages", mountStaticTree(sectionalRoot));
       server.middlewares.use("/chart-assets", mountStaticTree(chartAssetRoot));
+      server.middlewares.use("/chart-thumbnails", mountStaticTree(chartAssetRoot));
     },
     writeBundle(outputOptions) {
       const outputDir = outputOptions.dir;
@@ -68,6 +69,7 @@ function aerobagStaticPlugin(): Plugin {
       for (const [sourceRoot, targetName] of [
         [sectionalRoot, "sectional-packages"],
         [chartAssetRoot, "chart-assets"],
+        [chartAssetRoot, "chart-thumbnails"],
       ] as const) {
         if (!fs.existsSync(sourceRoot)) {
           continue;

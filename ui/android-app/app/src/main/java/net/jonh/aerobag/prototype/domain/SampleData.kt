@@ -143,9 +143,13 @@ private fun WireChartAsset.toUi() = ChartAsset(
     packageId = "",
     label = label,
     kind = kind,
+    folderCategory = "approach",
     sourceAssetPath = asset_path,
     assetPath = asset_path,
     assetUrl = asset_url,
+    thumbnailSourceAssetPath = null,
+    thumbnailAssetPath = null,
+    thumbnailUrl = null,
 )
 
 private fun WireInitialProbe.toUi() = MapProbe(

@@ -95,6 +95,7 @@ data class WireResourcePlate(
     val region_id: WireRegionId,
     val package_id: String,
     val asset_path: String,
+    val thumbnail_path: String? = null,
     val label: String,
     val asset_kind: String,
 )
@@ -106,6 +107,7 @@ data class WireResourceCsup(
     val region_id: WireRegionId,
     val package_id: String,
     val asset_path: String,
+    val thumbnail_path: String? = null,
     val label: String,
     val asset_kind: String,
 )
@@ -213,23 +215,51 @@ private fun airportIdsFromPlan(plan: FlightPlan): List<String> {
     return result.toList()
 }
 
+private fun folderCategory(kind: String, label: String): String {
+    val normalized = label.uppercase()
+    return when {
+        kind == "csup" -> "csup"
+        "AIRPORT DIAGRAM" in normalized -> "airport-diagram"
+        normalized.startsWith("MIN-") || "TAKEOFF MINIMUMS" in normalized || "ALTERNATE MINIMUMS" in normalized -> "takeoff-mins"
+        normalized.startsWith("DP-") || normalized.startsWith("ODP-") || "DEPARTURE" in normalized -> "departure"
+        normalized.startsWith("STAR-") || " ARRIVAL" in normalized -> "star"
+        else -> "approach"
+    }
+}
+
+private fun folderCategoryRank(category: String): Int = when (category) {
+    "airport-diagram" -> 0
+    "csup" -> 1
+    "takeoff-mins" -> 2
+    "approach" -> 3
+    "departure" -> 4
+    "star" -> 5
+    else -> 6
+}
+
 private fun chartAsset(
     airportId: String,
     packageId: String,
     kind: String,
     label: String,
     assetPath: String,
+    thumbnailPath: String?,
 ): ChartAsset {
     val filename = assetPath.substringAfterLast('/')
+    val thumbnailFilename = thumbnailPath?.substringAfterLast('/')
     return ChartAsset(
         id = "$kind:$airportId:$filename",
         airportId = airportId,
         packageId = packageId,
         label = if (kind == "csup") "CSup" else label,
         kind = kind,
+        folderCategory = folderCategory(kind, label),
         sourceAssetPath = assetPath,
         assetPath = "chart-assets/$airportId/$filename",
         assetUrl = "/chart-assets/$airportId/$filename",
+        thumbnailSourceAssetPath = thumbnailPath,
+        thumbnailAssetPath = thumbnailFilename?.let { "chart-thumbnails/$airportId/$it" },
+        thumbnailUrl = thumbnailFilename?.let { "/chart-thumbnails/$airportId/$it" },
     )
 }
 
@@ -250,14 +280,14 @@ fun deriveChartPage(
             airportResources.plate_ids.mapNotNull(plateById::get).filter { record ->
                 allowedPackageIds == null || allowedPackageIds.contains(record.package_id)
             }.forEach { record ->
-                add(chartAsset(airportId, record.package_id, "plate", record.label, record.asset_path))
+                add(chartAsset(airportId, record.package_id, "plate", record.label, record.asset_path, record.thumbnail_path))
             }
             airportResources.csup_ids.mapNotNull(csupById::get).filter { record ->
                 allowedPackageIds == null || allowedPackageIds.contains(record.package_id)
             }.forEach { record ->
-                add(chartAsset(airportId, record.package_id, "csup", record.label, record.asset_path))
+                add(chartAsset(airportId, record.package_id, "csup", record.label, record.asset_path, record.thumbnail_path))
             }
-        }
+        }.sortedWith(compareBy<ChartAsset>({ folderCategoryRank(it.folderCategory) }, { it.label }))
         if (charts.isEmpty()) {
             null
         } else {

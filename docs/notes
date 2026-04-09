@@ -79,9 +79,9 @@ Once we know we're creating equivalent content, we're free to reorganize it.
 Does the avare android app unpack those zip files? I think it would be more
 awesome to just fetch content out of them as we run.
 
-You did a bunch of this and found "compatibility-first" wonkinesses where
-you had to hold your nose to get parity. What features/protocols/conventions
-would you change to make the new system less brittle and easier to maintain?
+x You did a bunch of this and found "compatibility-first" wonkinesses where
+x you had to hold your nose to get parity. What features/protocols/conventions
+x would you change to make the new system less brittle and easier to maintain?
 
 ------------------------------------------------------------------------------
 
@@ -99,8 +99,8 @@ x so we can see the chart poking beyond) that shows the current chart. Clicking 
 x tray of one-thumb buttons to select among SECTIONAL, TAC, IFR-LOW, IFR-HIGH.
 ------------------------------------------------------------------------------
 
-Trays are modal. They gray everything beyond the tray; clicking outside the tray closes it
-(without effecting a change).
+x Trays are modal. They gray everything beyond the tray; clicking outside the tray closes it
+x (without effecting a change).
 
 ------------------------------------------------------------------------------
 
@@ -137,33 +137,110 @@ Clicking it slides out a tray to select among the available charts for the curre
 
 ------------------------------------------------------------------------------
 
-Okay, we have placeholders for a lot of stuff, but I think it makes sense to
-get real nav data & real plates & complete charts in place to do further
-adventuring.  We have the fixture doing a lot of work that should be getting
-done by a real data stream. Some of the things:
-- We should probably be pulling the aviation database from runs/20260407T053200Z-data-build/work/data/databases.zip
-- We should activate all four chart tile sources for all areas: Sectional, TAC, IFR Low, IFR High
-	- the old avare app "uses hardcoded chart-type lists and hardcoded coverage polygons";
-	we should replace that with a metadata index file
-- We should index and make accessible all the TPP/CSUP data. Again, the avare app just used
-the filesystem contents for that index. We might want to construct a metadata index file
-that travels with the top-level database.zip, so that the UI can tell you what you're
-missing (for example).
+x Okay, we have placeholders for a lot of stuff, but I think it makes sense to
+x get real nav data & real plates & complete charts in place to do further
+x adventuring.  We have the fixture doing a lot of work that should be getting
+x done by a real data stream. Some of the things:
+x - We should probably be pulling the aviation database from runs/20260407T053200Z-data-build/work/data/databases.zip
+x - We should activate all four chart tile sources for all areas: Sectional, TAC, IFR Low, IFR High
+x 	- the old avare app "uses hardcoded chart-type lists and hardcoded coverage polygons";
+x 	we should replace that with a metadata index file
+x - We should index and make accessible all the TPP/CSUP data. Again, the avare app just used
+x the filesystem contents for that index. We might want to construct a metadata index file
+x that travels with the top-level database.zip, so that the UI can tell you what you're
+x missing (for example).
 
 ------------------------------------------------------------------------------
 
 x On android, changing charts resets the lat-lon-zoom. Same bug we had on web. When we fix a bug,
 x always look for it on the other platform, too, I don't want to do all of this stuff twice.
 
-Android buttons aren't 1-thumb yet. And there's some debugging fluff: "Local NW_TAC" and
-(Show labels)". Get rid of that stuff. We'll add a separate debugging HUD later as we need it.
+x Android buttons aren't 1-thumb yet. And there's some debugging fluff: "Local NW_TAC" and
+x (Show labels)". Get rid of that stuff. We'll add a separate debugging HUD later as we need it.
 
 ------------------------------------------------------------------------------
 
-If you leave Android app and return, it starts over at the beginning, rather than picking
-up where it left off (say, on a flight plan page). That seems weird. Did it crash?
+x What stands in the way of showing some plates?
+
+x gdalwarped plates (eg KRNT RNAV Z RWY 16) have little narrow strips of black on the edges that look stupid. Can
+x we fix the pipeline to make those transparent instead?
+
+x (android) The plate selection button and its menu are wide, but too narrow to display the actual
+x plate names. The important part, the runway, is at the end, and it's truncated. On web, the names
+x wrap inside the tray buttons, so the ends are visible.
+
+x (both) there are enough plates that, at one thumb per entry in the tray, they don't all fit
+x on the screen.
+
+x (android) Plates scroll a little left to right (I asked for a thumb of scroll), but not up
+x and down, nor do they zoom.
+
+x (web) Plates start out zoomed wider than the display (perhaps 100%?), and I can't scroll them onto
+x the display. Zoom in works great, but of course I can't get far enough out.
+
+x Many plates and CSups come in two pages ("Continued").  Can we modify the preprocessing to concatenate
+x such plates into one long image, so the user experience is "this is a tall piece of paper I can
+x scroll through", not "I have to sift through a huge list to select page 2".
+
+------------------------------------------------------------------------------
+
+x If you leave Android app and return, it starts over at the beginning, rather than picking
+x up where it left off (say, on a flight plan page). That seems weird. Did it crash?
 
 
-Let's have the "back" button do something meaningful in both UIs. And the same meaningful thing.
-Like, have a stack of views, so if I tap from charts to flight plan to plates, and hit back, I'll
-walk back through those views (including their scroll state).
+x Let's have the "back" button do something meaningful in both UIs. And the same meaningful thing.
+x Like, have a stack of views, so if I tap from charts to flight plan to plates, and hit back, I'll
+x walk back through those views (including their scroll state).
+
+------------------------------------------------------------------------------
+
+x For big airports, the list of plates is long and tedious to scroll through and interpret
+x just as text. Let's add a "folder" view.
+x 
+x On the preprocessing side:
+x Add, if we don't have it, metadata to the index for each plate that describes its type:
+x csup, airport-diagram, takeoff mins -  approach, departure, STAR. (Are there any other types?)
+x For each plate, render its png down to a thumbnail view:
+x 	- the output is a box 100x150 pixels,
+x 	- padding it transparency in whatever dimension is required to maintain the aspect ratio.
+x 
+x On the UI side:
+x I'm going to mention some specific colors.  Make a common theme file (maybe json?) shared by
+x both platforms that defines the colors, so we can iterate the theme in one place.
+x 
+x Add a 1x1 button to the right of the wide plate-selector
+x called FLDR (we'll add icons later :v). When it's clicked, the plate is replaced with a scrollable
+x grid of 2w3h-thumb thumbnail boxes (with 0.3 thumb gutters and margins). Each thumbnail represents a plate.
+x 
+x The box starts with a #303030 background (defined in the theme file). Then, if a thumbnail is available
+x for the plate (preprocessor is working on those now, I'll have them in the index for you shortly),
+x paint that thumbnail image to fill the rect. (It may have transparency, so some gray will peek through the
+x edges. Then paint a rectangle at the bottom, full width, in a color to be specified, as a background for
+x the label. Then paint the plate label over that color block.
+x 
+x Color assignments:
+x 	csup, airport-diagram, takeoff-mins - blue 1a84d8
+x 	approach - burnt orange b1591a
+x 	departure - green 518b12
+x 	STAR - magenta b93f8a
+x On the grid, sort the plate thumbnails:  airport diagram, csup, to-mins, approach, departure, star
+
+------------------------------------------------------------------------------
+
+x (both)
+x Back-button stack should distinguish CHT(SEC) from CHT(IFR-L) and so on, so we can "back" through charts too.
+x Back-button stack should include FLDR.
+
+(web) plate scroll bounds are wonky. If I bring up DP-WA-BELLEVUE FOUR zoomed all the way out and drag it
+around, it's jumpy and snappy, rather than moving smoothly to the margin limits.
+If I then click FLDR and CSup, the CSup chart isn't centered, it's left justified - *until* I drag it.
+If I flip back to a one-page chart (with "back" or going through FLDR), it's now scrolled off screen
+to the right (that is, same left margin as the skinny chart, but that's not right for the tall chart).
+I feel like the scroll bounds logic is kinda broken (for drags) and not being executed at the right time
+for arriving fresh at a chart from one with a different aspect ratio.
+
+(android) no thumbnails on FLDR view.
+Plates don't have 1-thumb margin for draggability.
+Plates don't zoom/unzoom with +/-.
+
+Validate approach plates by drawing the approaches over them from db with crosshairs at the intersections

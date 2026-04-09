@@ -1,0 +1,54 @@
+  - Make package-relative assets first-class, not inferred from legacy filenames and directories.
+      - The resource index is already moving this way.
+      - Keep pushing toward explicit metadata instead of “discover files by path convention.”
+
+* The only way to tell if we're inferring from filenames is to read the UI code, right? Do you see
+evidence that we're doing such inference rather than using metadata?
+
+  - Replace mutable workdirs with more content-addressed outputs.
+      - We fixed several bugs that were really “stale intermediate reused accidentally.”
+      - Per-plate / per-page / per-package fingerprints should gradually replace “if file exists, trust it.”
+
+* Oh, what's left that's not content-addressed?
+
+x   - Split build nodes at the true reuse boundaries.
+x       - We improved this for shared chart/CSUP work and per-region TPP.
+x       - More of the pipeline should work like that, especially expensive sub-artifacts.
+x 
+x * That would have made the last build a lot faster, wouldn't it? Since we'd have been able to reuse
+x all the TPPs. Or not, because the code that builds TPPs was touched, so the TPPs were gonna get poisoned
+x anyway?
+
+  - Stop encoding semantics in filenames when better metadata exists.
+      - Plate type from prefixes like IAP-, DP-, STAR-, MIN- is workable, but brittle.
+      - Same for region inference from CSUP-NE_... and similar conventions.
+      - Long-term, prefer explicit typed records in manifests/indexes.
+
+* is the code (ui code, I guess) *using* the filename encodings,
+
+  - Formalize “intentional divergence from baseline.”
+      - Baseline should stay parity-first and weird where needed.
+      - Product should document where it deliberately improves behavior: merged continued pages, thumbnails, richer metadata,
+        shared-node caching.
+      - That boundary should stay explicit.
+  - Reduce dependency on ambient tool behavior.
+      - A lot of parity pain came from GDAL/ImageMagick/Python glob ordering / resume semantics / process-count behavior.
+      - In production, prefer pinning explicit flags, explicit ordering, explicit invalidation, and fewer hidden filesystem-order
+        assumptions.
+  - Treat the resource index as the contract.
+      - Not just a byproduct.
+      - If the UI needs folders, thumbnails, types, temporal validity, package membership, route relevance later, that belongs
+        there.
+      - The more complete the index gets, the less brittle the rest of the system becomes.
+  - Add invariant checks aggressively.
+      - The best recent changes were assertions:
+          - index matches filesystem
+          - multipage georef weirdness doesn’t silently flatten wrong
+      - I’d keep doing that. Fail loudly beats silently “compatible” garbage.
+  - Eventually replace the remaining legacy-shaped glue inputs.
+      - Examples:
+          - filename-prefix classification
+          - some source discovery logic
+          - odd geotag sidecar conventions
+      - Not immediately, but those are good long-term cleanup targets.
+

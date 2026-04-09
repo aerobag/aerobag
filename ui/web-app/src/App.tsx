@@ -1132,7 +1132,6 @@ function ChartsPage(props: {
                 onDoubleClick={stopDoubleClick}
                 onClick={() => {
                   onSelectChart(chart.id);
-                  onFolderOpenChange(false);
                 }}
               >
                 <div className="plateThumbMedia" style={{ backgroundColor: plateFolderTheme.thumbnail_bg }}>
@@ -1208,7 +1207,6 @@ function ChartsPage(props: {
               onSelect: () => {
                 onSelectAirport(airport.id);
                 setAirportTrayOpen(false);
-                onFolderOpenChange(false);
               },
             }))}
           />
@@ -1231,7 +1229,6 @@ function ChartsPage(props: {
               onSelect: () => {
                 onSelectChart(chart.id);
                 setChartTrayOpen(false);
-                onFolderOpenChange(false);
               },
             }))}
           />

@@ -1228,7 +1228,6 @@ private fun ChartsPage(
                 uiTheme = uiTheme,
                 onSelectChart = {
                     onSelectChart(it)
-                    onFolderOpenChange(false)
                 },
             )
         } else {
@@ -1298,12 +1297,10 @@ private fun ChartsPage(
             onSelectAirport = {
                 onSelectAirport(it)
                 airportTrayOpen = false
-                onFolderOpenChange(false)
             },
             onSelectChart = {
                 onSelectChart(it)
                 chartTrayOpen = false
-                onFolderOpenChange(false)
             },
         )
 

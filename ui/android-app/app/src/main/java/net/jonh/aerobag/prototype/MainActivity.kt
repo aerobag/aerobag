@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -25,6 +26,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -62,6 +64,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
@@ -106,6 +109,7 @@ import kotlin.math.roundToInt
 private val ThumbSize = 56.dp
 private val ThumbGap = 5.6.dp
 private val ThumbRadius = 10.dp
+private val PlatePageTrayWidth = ThumbSize * 4f
 private const val UiPrefsName = "aerobag_ui"
 private const val UiPrefsPageKey = "page"
 private const val UiPrefsSelectedAirportKey = "selected_airport_id"
@@ -117,6 +121,17 @@ private enum class AppPage {
     Plan,
     Charts,
 }
+
+private data class AppViewSnapshot(
+    val page: AppPage,
+    val selectedMapId: String,
+    val mapViewport: MapViewportState,
+    val selectedAirportId: String,
+    val selectedChartId: String,
+    val selectedChartLabel: String,
+    val recentAirportIds: List<String>,
+    val chartViewport: net.jonh.aerobag.prototype.domain.ImageViewportState?,
+)
 
 private data class PageTrayOption(
     val page: AppPage,
@@ -130,6 +145,28 @@ private data class MenuDockOption(
     val enabled: Boolean = true,
     val onSelect: () -> Unit,
 )
+
+private enum class MenuDockStyle(
+    val buttonWidth: androidx.compose.ui.unit.Dp,
+    val trayWidth: androidx.compose.ui.unit.Dp,
+    val launcherMaxLines: Int,
+) {
+    Compact(
+        buttonWidth = ThumbSize,
+        trayWidth = ThumbSize * 2.4f,
+        launcherMaxLines = 1,
+    ),
+    PlateAirport(
+        buttonWidth = ThumbSize,
+        trayWidth = PlatePageTrayWidth,
+        launcherMaxLines = 1,
+    ),
+    PlateWide(
+        buttonWidth = ThumbSize * 3f,
+        trayWidth = PlatePageTrayWidth,
+        launcherMaxLines = 2,
+    ),
+}
 
 private val PageOptions = listOf(
     PageTrayOption(AppPage.Map, "CHART", "CHT"),
@@ -267,12 +304,14 @@ private fun AerobagApp() {
                 .getOrDefault(AppPage.Map),
         )
     }
+    var pageHistory by remember { mutableStateOf<List<AppViewSnapshot>>(emptyList()) }
     var selectedMapId by remember { mutableStateOf(initialMapId(fixture)) }
     var recentAirportIds by remember { mutableStateOf(initialRecentAirportIds) }
     val selectedMap = remember(selectedMapId, fixture.mapViews) {
         fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
     }
     var mapViewport by remember { mutableStateOf(createInitialViewport(selectedMap.mapView)) }
+    var chartViewport by remember { mutableStateOf<net.jonh.aerobag.prototype.domain.ImageViewportState?>(null) }
     var selectedAirportId by remember {
         mutableStateOf(
             resolveAirportId(
@@ -333,38 +372,120 @@ private fun AerobagApp() {
         mapViewport = preserveViewportForMap(mapViewport, selectedMap.mapView)
     }
 
-    when (page) {
-        AppPage.Map -> MapExplorerPage(
-            page = page,
-            fixture = fixture,
-            selectedMapId = selectedMapId,
-            viewport = mapViewport,
-            onViewportChange = { mapViewport = it },
-            onSelectMapId = { selectedMapId = it },
-            onSelectPage = { page = it },
-            onOpenPlan = { page = AppPage.Plan },
-            legSummary = legSummary,
-        )
-        AppPage.Plan -> FlightPlanPage(
-            page = page,
-            legSummary = legSummary,
-            samplePlan = fixture.samplePlan,
-            onSelectPage = { page = it },
-            onOpenCharts = { page = AppPage.Charts },
-        )
-        AppPage.Charts -> ChartsPage(
-            page = page,
-            airports = orderedChartAirports,
-            selectedAirport = selectedAirport,
-            selectedChart = selectedChart,
-            onSelectPage = { page = it },
-            onSelectAirport = { airportId ->
-                selectedAirportId = airportId
-                recentAirportIds = moveAirportToFront(recentAirportIds, airportId, fixture.chartPage.airports)
-                selectedChartId = fixture.chartPage.airports.find { it.id == airportId }?.charts?.firstOrNull()?.id.orEmpty()
-            },
-            onSelectChart = { selectedChartId = it },
-        )
+    fun currentSnapshot(): AppViewSnapshot = AppViewSnapshot(
+        page = page,
+        selectedMapId = selectedMapId,
+        mapViewport = mapViewport,
+        selectedAirportId = selectedAirportId,
+        selectedChartId = selectedChartId,
+        selectedChartLabel = selectedChart?.label.orEmpty(),
+        recentAirportIds = recentAirportIds,
+        chartViewport = chartViewport,
+    )
+
+    fun restoreSnapshot(snapshot: AppViewSnapshot, history: List<AppViewSnapshot>) {
+        pageHistory = history
+        page = snapshot.page
+        selectedMapId = snapshot.selectedMapId
+        mapViewport = snapshot.mapViewport
+        selectedAirportId = snapshot.selectedAirportId
+        selectedChartId = snapshot.selectedChartId
+        recentAirportIds = snapshot.recentAirportIds
+        chartViewport = snapshot.chartViewport
+    }
+
+    fun navigateToPage(nextPage: AppPage) {
+        if (nextPage == page) {
+            return
+        }
+        pageHistory = pageHistory + currentSnapshot()
+        page = nextPage
+    }
+
+    BackHandler(enabled = pageHistory.isNotEmpty()) {
+        val previous = pageHistory.lastOrNull() ?: return@BackHandler
+        restoreSnapshot(previous, pageHistory.dropLast(1))
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(if (page == AppPage.Map) 3f else 0f)
+                .alpha(if (page == AppPage.Map) 1f else 0f),
+        ) {
+            MapExplorerPage(
+                page = page,
+                pageHistory = pageHistory,
+                fixture = fixture,
+                selectedMapId = selectedMapId,
+                viewport = mapViewport,
+                onViewportChange = { mapViewport = it },
+                onSelectMapId = { selectedMapId = it },
+                onSelectPage = ::navigateToPage,
+                onOpenPlan = { navigateToPage(AppPage.Plan) },
+                legSummary = legSummary,
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(if (page == AppPage.Plan) 3f else 0f)
+                .alpha(if (page == AppPage.Plan) 1f else 0f),
+        ) {
+            FlightPlanPage(
+                page = page,
+                pageHistory = pageHistory,
+                legSummary = legSummary,
+                samplePlan = fixture.samplePlan,
+                onSelectPage = ::navigateToPage,
+                onOpenCharts = { navigateToPage(AppPage.Charts) },
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(if (page == AppPage.Charts) 3f else 0f)
+                .alpha(if (page == AppPage.Charts) 1f else 0f),
+        ) {
+            ChartsPage(
+                page = page,
+                pageHistory = pageHistory,
+                airports = orderedChartAirports,
+                selectedAirport = selectedAirport,
+                selectedChart = selectedChart,
+                viewport = chartViewport,
+                onViewportChange = { chartViewport = it },
+                onSelectPage = ::navigateToPage,
+                onSelectAirport = { airportId ->
+                    val airport = fixture.chartPage.airports.find { it.id == airportId }
+                    restoreSnapshot(
+                        currentSnapshot().copy(
+                            page = AppPage.Charts,
+                            selectedAirportId = airportId,
+                            selectedChartId = airport?.charts?.firstOrNull()?.id.orEmpty(),
+                            selectedChartLabel = airport?.charts?.firstOrNull()?.label.orEmpty(),
+                            recentAirportIds = moveAirportToFront(recentAirportIds, airportId, fixture.chartPage.airports),
+                            chartViewport = null,
+                        ),
+                        pageHistory + currentSnapshot(),
+                    )
+                },
+                onSelectChart = {
+                    restoreSnapshot(
+                        currentSnapshot().copy(
+                            page = AppPage.Charts,
+                            selectedChartId = it,
+                            selectedChartLabel = selectedAirport?.charts?.firstOrNull { chart -> chart.id == it }?.label.orEmpty(),
+                            chartViewport = null,
+                        ),
+                        pageHistory + currentSnapshot(),
+                    )
+                },
+            )
+        }
     }
 }
 
@@ -372,6 +493,7 @@ private fun AerobagApp() {
 @Composable
 private fun MapExplorerPage(
     page: AppPage,
+    pageHistory: List<AppViewSnapshot>,
     fixture: net.jonh.aerobag.prototype.domain.ContentFixture,
     selectedMapId: String,
     viewport: MapViewportState,
@@ -728,45 +850,26 @@ private fun MapExplorerPage(
             }
         }
 
-        CompactSquareButton(
-            label = "DBG",
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(ThumbGap)
-                .size(ThumbSize),
-            onClick = { debugPanelOpen = !debugPanelOpen },
-        )
-
-        AnimatedVisibility(
-            visible = debugPanelOpen,
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(start = ThumbSize + ThumbGap * 2, bottom = ThumbGap),
-            enter = slideInHorizontally(initialOffsetX = { -it / 3 }) + fadeIn(),
-            exit = slideOutHorizontally(targetOffsetX = { -it / 3 }) + fadeOut(),
+        DebugDock(
+            open = debugPanelOpen,
+            onToggle = { debugPanelOpen = !debugPanelOpen },
+            modifier = Modifier.align(Alignment.BottomStart),
         ) {
-            Card(
-                modifier = Modifier.width(ThumbSize * 4f),
+            Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("stack ${formatPageStack(pageHistory, page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("family ${selectedLauncher.launcherLabel}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("${String.format("%.3f", center.first)}/${String.format("%.3f", center.second)} z${String.format("%.2f", viewport.zoom)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("tiles ${tiles.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("src z ${if (sourceZooms.isNotEmpty()) sourceZooms.joinToString(", ") else "(none)"}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("pkg ${if (renderedPackages.isNotEmpty()) renderedPackages.joinToString(", ") else "(none)"}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("maps ${selectedFamilyMapViews.joinToString(", ") { it.id }}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text(familyStatus, style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text(if (debugTileLabels) "debugTiles=on" else "debugTiles=off", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            OutlinedButton(
+                onClick = { debugTileLabels = !debugTileLabels },
+                modifier = Modifier.fillMaxWidth().height(ThumbSize * 0.7f),
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    Text("family ${selectedLauncher.launcherLabel}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-                    Text("${String.format("%.3f", center.first)}/${String.format("%.3f", center.second)} z${String.format("%.2f", viewport.zoom)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-                    Text("tiles ${tiles.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-                    Text("src z ${if (sourceZooms.isNotEmpty()) sourceZooms.joinToString(", ") else "(none)"}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-                    Text("pkg ${if (renderedPackages.isNotEmpty()) renderedPackages.joinToString(", ") else "(none)"}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-                    Text("maps ${selectedFamilyMapViews.joinToString(", ") { it.id }}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-                    Text(familyStatus, style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-                    Text(if (debugTileLabels) "debugTiles=on" else "debugTiles=off", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-                    OutlinedButton(
-                        onClick = { debugTileLabels = !debugTileLabels },
-                        modifier = Modifier.fillMaxWidth().height(ThumbSize * 0.7f),
-                    ) {
-                        Text(if (debugTileLabels) "DBG TILES ON" else "DBG TILES", style = MaterialTheme.typography.labelSmall)
-                    }
-                }
+                Text(if (debugTileLabels) "DBG TILES ON" else "DBG TILES", style = MaterialTheme.typography.labelSmall)
             }
         }
     }
@@ -775,6 +878,7 @@ private fun MapExplorerPage(
 @Composable
 private fun FlightPlanPage(
     page: AppPage,
+    pageHistory: List<AppViewSnapshot>,
     legSummary: String,
     samplePlan: net.jonh.aerobag.prototype.domain.FlightPlan,
     onSelectPage: (AppPage) -> Unit,
@@ -782,6 +886,7 @@ private fun FlightPlanPage(
 ) {
     var selectedWaypointIndex by remember { mutableStateOf<Int?>(null) }
     var pageTrayOpen by remember { mutableStateOf(false) }
+    var debugPanelOpen by remember { mutableStateOf(false) }
     val rows = remember(samplePlan) {
         samplePlan.legs.mapIndexed { index, leg ->
             FlightPlanRow(
@@ -814,7 +919,7 @@ private fun FlightPlanPage(
             launcherLabel = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: "PLN",
             open = pageTrayOpen,
             onToggle = { pageTrayOpen = !pageTrayOpen },
-            width = ThumbSize * 2.4f,
+            style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
                 MenuDockOption(option.page.name, option.label) {
                     onSelectPage(option.page)
@@ -841,6 +946,16 @@ private fun FlightPlanPage(
             style = MaterialTheme.typography.labelMedium,
             color = Color(0xFF52656D),
         )
+
+        DebugDock(
+            open = debugPanelOpen,
+            onToggle = { debugPanelOpen = !debugPanelOpen },
+            modifier = Modifier.align(Alignment.BottomStart),
+        ) {
+            Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("stack ${formatPageStack(pageHistory, page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("rows ${rows.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+        }
 
         if (selectedWaypointIndex != null) {
             Scrim { selectedWaypointIndex = null }
@@ -876,18 +991,25 @@ private fun FlightPlanPage(
 @Composable
 private fun ChartsPage(
     page: AppPage,
+    pageHistory: List<AppViewSnapshot>,
     airports: List<ChartAirport>,
     selectedAirport: ChartAirport?,
     selectedChart: ChartAsset?,
+    viewport: net.jonh.aerobag.prototype.domain.ImageViewportState?,
+    onViewportChange: (net.jonh.aerobag.prototype.domain.ImageViewportState?) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onSelectAirport: (String) -> Unit,
     onSelectChart: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
+    val chartLabelsById = remember(airports) {
+        airports.flatMap { airport -> airport.charts }.associate { chart -> chart.id to chart.label }
+    }
     var pageTrayOpen by remember { mutableStateOf(false) }
     var airportTrayOpen by remember { mutableStateOf(false) }
     var chartTrayOpen by remember { mutableStateOf(false) }
+    var debugPanelOpen by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     val overscrollPx = with(density) { ThumbSize.toPx() }
     val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, selectedChart?.assetPath) {
@@ -910,7 +1032,6 @@ private fun ChartsPage(
             }
         }
     }
-    var viewport by remember(selectedChart?.id, surfaceSize) { mutableStateOf<net.jonh.aerobag.prototype.domain.ImageViewportState?>(null) }
     val viewportState = rememberUpdatedState(viewport)
     val imageWidthPx = bitmap?.width?.toFloat() ?: 0f
     val imageHeightPx = bitmap?.height?.toFloat() ?: 0f
@@ -918,13 +1039,13 @@ private fun ChartsPage(
 
     LaunchedEffect(bitmap, surfaceSize) {
         val currentBitmap = bitmap
-        if (currentBitmap != null && surfaceSize.width > 0 && surfaceSize.height > 0) {
-            viewport = createInitialImageViewport(
+        if (currentBitmap != null && surfaceSize.width > 0 && surfaceSize.height > 0 && viewport == null) {
+            onViewportChange(createInitialImageViewport(
                 imageWidthPx = currentBitmap.width.toFloat(),
                 imageHeightPx = currentBitmap.height.toFloat(),
                 viewportWidthPx = surfaceSize.width.toFloat(),
                 viewportHeightPx = surfaceSize.height.toFloat(),
-            )
+            ))
         }
     }
 
@@ -950,7 +1071,7 @@ private fun ChartsPage(
                     AndroidKeyEvent.KEYCODE_NUMPAD_SUBTRACT -> (viewportState.value?.zoom ?: 1f) - 0.3f
                     else -> return@onPreviewKeyEvent false
                 }
-                viewport = zoomImageAroundPoint(
+                onViewportChange(zoomImageAroundPoint(
                     state = viewportState.value ?: return@onPreviewKeyEvent false,
                     anchorX = surfaceSize.width / 2f,
                     anchorY = surfaceSize.height / 2f,
@@ -960,7 +1081,7 @@ private fun ChartsPage(
                     viewportWidthPx = surfaceSize.width.toFloat(),
                     viewportHeightPx = surfaceSize.height.toFloat(),
                     overscrollPx = overscrollPx,
-                )
+                ))
                 true
             }
             .pointerInput(bitmap, surfaceSize, trayOpen) {
@@ -969,7 +1090,7 @@ private fun ChartsPage(
                 }
                 detectTapGestures(
                     onDoubleTap = { tap ->
-                        viewport = zoomImageAroundPoint(
+                        onViewportChange(zoomImageAroundPoint(
                             state = viewportState.value ?: return@detectTapGestures,
                             anchorX = tap.x,
                             anchorY = tap.y,
@@ -979,7 +1100,7 @@ private fun ChartsPage(
                             viewportWidthPx = surfaceSize.width.toFloat(),
                             viewportHeightPx = surfaceSize.height.toFloat(),
                             overscrollPx = overscrollPx,
-                        )
+                        ))
                     },
                 )
             }
@@ -1010,7 +1131,7 @@ private fun ChartsPage(
                         viewportHeightPx = surfaceSize.height.toFloat(),
                         overscrollPx = overscrollPx,
                     )
-                    viewport = next
+                    onViewportChange(next)
                 }
             }
             .pointerInteropFilter { event ->
@@ -1020,7 +1141,7 @@ private fun ChartsPage(
                 if (event.action == MotionEvent.ACTION_SCROLL) {
                     val wheelDelta = event.getAxisValue(MotionEvent.AXIS_VSCROLL).takeIf { it != 0f }
                         ?: event.getAxisValue(MotionEvent.AXIS_SCROLL)
-                    viewport = zoomImageAroundPoint(
+                    onViewportChange(zoomImageAroundPoint(
                         state = viewportState.value ?: return@pointerInteropFilter false,
                         anchorX = surfaceSize.width / 2f,
                         anchorY = surfaceSize.height / 2f,
@@ -1030,7 +1151,7 @@ private fun ChartsPage(
                         viewportWidthPx = surfaceSize.width.toFloat(),
                         viewportHeightPx = surfaceSize.height.toFloat(),
                         overscrollPx = overscrollPx,
-                    )
+                    ))
                     true
                 } else {
                     false
@@ -1109,6 +1230,22 @@ private fun ChartsPage(
             },
         )
 
+        DebugDock(
+            open = debugPanelOpen,
+            onToggle = { debugPanelOpen = !debugPanelOpen },
+            modifier = Modifier.align(Alignment.BottomStart),
+        ) {
+            Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text(
+                "stack ${formatPageStack(pageHistory, page, selectedAirport?.id ?: "", selectedChart?.id ?: "", selectedChart?.label ?: "", chartLabelsById)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFF52656D),
+            )
+            Text("apt ${selectedAirport?.label ?: "---"}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("chart ${selectedChart?.label ?: "---"}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text(viewport?.let { "z${String.format("%.2f", it.zoom)}" } ?: "viewport (none)", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+        }
+
     }
 }
 
@@ -1133,17 +1270,16 @@ private fun MapTopLeftControls(
             launcherLabel = PageOptions.firstOrNull { it.page == currentPage }?.launcherLabel ?: "CHT",
             open = pageTrayOpen,
             onToggle = onTogglePageTray,
-            width = ThumbSize * 2.4f,
+            style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
                 MenuDockOption(option.page.name, option.label) { onSelectPage(option.page) }
             },
         )
         MenuDock(
             launcherLabel = selectedLabel,
-            buttonWidth = ThumbSize,
             open = trayOpen,
             onToggle = onToggle,
-            width = ThumbSize * 2.4f,
+            style = MenuDockStyle.Compact,
             options = trayOptions.map { option ->
                 MenuDockOption(option.id, option.label, option.available) { option.select?.invoke() }
             },
@@ -1177,7 +1313,7 @@ private fun ChartViewerSelectors(
             launcherLabel = PageOptions.firstOrNull { it.page == currentPage }?.launcherLabel ?: "PLT",
             open = pageTrayOpen,
             onToggle = onTogglePageTray,
-            width = ThumbSize * 2.4f,
+            style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
                 MenuDockOption(option.page.name, option.label) { onSelectPage(option.page) }
             },
@@ -1185,10 +1321,9 @@ private fun ChartViewerSelectors(
 
         MenuDock(
             launcherLabel = selectedAirport?.label ?: "---",
-            buttonWidth = ThumbSize,
             open = airportTrayOpen,
             onToggle = onToggleAirportTray,
-            width = ThumbSize * 2.4f,
+            style = MenuDockStyle.PlateAirport,
             options = airports.map { airport ->
                 MenuDockOption(airport.id, airport.label) { onSelectAirport(airport.id) }
             },
@@ -1196,11 +1331,9 @@ private fun ChartViewerSelectors(
 
         MenuDock(
             launcherLabel = selectedChart?.label ?: "---",
-            buttonWidth = ThumbSize * 3f,
             open = chartTrayOpen,
             onToggle = onToggleChartTray,
-            width = ThumbSize * 4f,
-            launcherMaxLines = 2,
+            style = MenuDockStyle.PlateWide,
             options = (selectedAirport?.charts ?: emptyList()).map { chart ->
                 MenuDockOption(chart.id, chart.label) { onSelectChart(chart.id) }
             },
@@ -1214,25 +1347,24 @@ private fun MenuDock(
     launcherLabel: String,
     open: Boolean,
     onToggle: () -> Unit,
-    width: androidx.compose.ui.unit.Dp,
-    buttonWidth: androidx.compose.ui.unit.Dp = ThumbSize,
-    launcherMaxLines: Int = 1,
+    style: MenuDockStyle,
     options: List<MenuDockOption>,
 ) {
-    Box(modifier = modifier.width(buttonWidth).height(ThumbSize)) {
+    Box(modifier = modifier.width(style.buttonWidth).height(ThumbSize)) {
         CompactSquareButton(
             label = launcherLabel,
-            maxLines = launcherMaxLines,
-            modifier = Modifier.width(buttonWidth).height(ThumbSize).align(Alignment.TopStart),
+            maxLines = style.launcherMaxLines,
+            modifier = Modifier.width(style.buttonWidth).height(ThumbSize).align(Alignment.TopStart),
             onClick = onToggle,
         )
         DropdownMenu(
             expanded = open,
             onDismissRequest = onToggle,
-            modifier = Modifier.width(width),
+            modifier = Modifier.width(style.trayWidth),
         ) {
             options.forEach { option ->
                 DropdownMenuItem(
+                    modifier = Modifier.width(style.trayWidth).height(ThumbSize),
                     text = {
                         Text(
                             option.label,
@@ -1302,6 +1434,81 @@ private fun PlanCell(value: String, modifier: Modifier, isHeader: Boolean = fals
         )
     }
 }
+
+@Composable
+private fun DebugDock(
+    open: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Box(modifier = modifier.padding(ThumbGap)) {
+        CompactSquareButton(
+            label = "DBG",
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .size(ThumbSize),
+            onClick = onToggle,
+        )
+
+        AnimatedVisibility(
+            visible = open,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = ThumbSize + ThumbGap, bottom = 0.dp),
+            enter = slideInHorizontally(initialOffsetX = { -it / 3 }) + fadeIn(),
+            exit = slideOutHorizontally(targetOffsetX = { -it / 3 }) + fadeOut(),
+        ) {
+            Card(modifier = Modifier.width(ThumbSize * 4f)) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                    content = content,
+                )
+            }
+        }
+    }
+}
+
+private fun pageLabel(page: AppPage): String = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: page.name.uppercase()
+
+private fun formatSnapshot(snapshot: AppViewSnapshot): String {
+    return formatSnapshot(snapshot, emptyMap())
+}
+
+private fun formatSnapshot(snapshot: AppViewSnapshot, chartLabelsById: Map<String, String>): String {
+    val label = pageLabel(snapshot.page)
+    if (snapshot.page != AppPage.Charts) {
+        return label
+    }
+    val suffixSource = snapshot.selectedChartLabel
+        .ifBlank { chartLabelsById[snapshot.selectedChartId].orEmpty() }
+        .ifBlank { snapshot.selectedChartId }
+    val suffix = suffixSource.takeLast(3).uppercase()
+    return if (suffix.isBlank()) label else "$label-$suffix"
+}
+
+private fun formatPageStack(
+    pageHistory: List<AppViewSnapshot>,
+    currentPage: AppPage,
+    selectedAirportId: String = "",
+    selectedChartId: String = "",
+    selectedChartLabel: String = "",
+    chartLabelsById: Map<String, String> = emptyMap(),
+): String = (
+    listOf(
+        AppViewSnapshot(
+        page = currentPage,
+        selectedMapId = "",
+        mapViewport = MapViewportState(0.0, 0.0, 0.0),
+        selectedAirportId = selectedAirportId,
+        selectedChartId = selectedChartId,
+        selectedChartLabel = selectedChartLabel,
+        recentAirportIds = emptyList(),
+        chartViewport = null,
+    )
+    ) + pageHistory.asReversed()
+).joinToString(" > ") { formatSnapshot(it, chartLabelsById) }
 
 @Composable
 private fun ToolbarButton(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {

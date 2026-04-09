@@ -131,8 +131,7 @@ def clear_tac_tile_roots() -> None:
     for destination_root in [CANONICAL_TILE_ROOT, WEB_TILE_ROOT, ANDROID_TILE_ROOT]:
         target_root = destination_root / "charts-tac" / "1"
         if target_root.exists():
-            clear_directory(target_root)
-            target_root.rmdir()
+            shutil.rmtree(target_root, ignore_errors=True)
 
 
 def copy_tac_tile_subset(tile_windows: dict[int, tuple[int, int, int]]) -> list[dict]:
@@ -221,7 +220,14 @@ def resolve_chart_record_source(record: dict, kind: str) -> Path:
 def extract_chart_record_from_package(record: dict, package_artifacts: dict[str, Path]) -> Path:
     artifact_path = package_artifacts.get(record["package_id"])
     if artifact_path is None or not artifact_path.exists():
-        raise RuntimeError(f"missing package artifact for {record['package_id']}")
+        package_id = record["package_id"]
+        if package_id.endswith("_TPP"):
+            region = package_region(package_id)
+            artifact_path = ROOT / "product-builds" / "shared" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}" / f"{package_id}.zip"
+        elif package_id.endswith("_CSUP"):
+            artifact_path = ROOT / "product-builds" / "shared" / "work" / "csup" / "work" / "csup" / f"{package_id}.zip"
+        if artifact_path is None or not artifact_path.exists():
+            raise RuntimeError(f"missing package artifact for {record['package_id']}")
     cached_target = WEB_CHART_ASSET_ROOT / "__zipcache__" / record["package_id"] / record["asset_path"]
     cached_target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(artifact_path) as archive:
@@ -341,13 +347,7 @@ def extract_zip_for_web(package: TiledPackage) -> None:
 
 def extract_zip(archive: zipfile.ZipFile, target_dir: Path) -> None:
     for member in archive.infolist():
-        target_path = target_dir / member.filename
-        if member.is_dir():
-            target_path.mkdir(parents=True, exist_ok=True)
-            continue
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        with archive.open(member) as source, target_path.open("wb") as target:
-            shutil.copyfileobj(source, target)
+        archive.extract(member, target_dir)
 
 
 def compute_level_bounds_from_zip(package: TiledPackage, chart_index: int = 0) -> list[dict]:

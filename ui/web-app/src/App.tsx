@@ -39,6 +39,8 @@ type TrayOption = {
   onSelect: () => void;
 };
 
+type TrayDockStyle = "compact" | "plate_narrow" | "plate_wide";
+
 const chartFamilies: Array<{ id: ChartFamilyId; label: string; launcherLabel: string }> = [
   { id: "sectional", label: "SECTIONAL", launcherLabel: "SEC" },
   { id: "tac", label: "TAC", launcherLabel: "TAC" },
@@ -62,11 +64,29 @@ type PersistedWebUiState = {
   recentAirportIds?: string[];
 };
 
+type AppViewSnapshot = {
+  page: AppPage;
+  selectedMapId: string;
+  mapViewport: MapViewportState;
+  selectedAirportId: string;
+  selectedChartId: string;
+  selectedChartLabel: string;
+  recentAirportIds: string[];
+  chartViewport: ImageViewportState | null;
+};
+
+type WebHistoryState = {
+  __aerobag?: true;
+  current?: AppViewSnapshot;
+  stack?: AppViewSnapshot[];
+};
+
 export default function App() {
   const locationSearch = typeof window !== "undefined" ? window.location.search : "";
   const debugTileLabels = new URLSearchParams(locationSearch).has("debugTiles");
   const persistedUiState = useMemo(readPersistedWebUiState, []);
   const [page, setPage] = useState<AppPage>(persistedUiState.page ?? "map");
+  const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
   const [selectedMapId, setSelectedMapId] = useState<string>(mapViews[0].id);
   const initialRecentAirportIds = useMemo(
     () => mergeRecentAirportIds(chartPage.airports, persistedUiState.recentAirportIds ?? []),
@@ -90,6 +110,7 @@ export default function App() {
     [selectedMapId],
   );
   const [mapViewport, setMapViewport] = useState<MapViewportState>(() => createInitialViewport(selectedMap.map_view));
+  const [chartViewport, setChartViewport] = useState<ImageViewportState | null>(null);
   const selectedFamily = useMemo(
     () => chartFamilies.find((family) => family.id === selectedMap.map_view.chart_family) ?? chartFamilies[0],
     [selectedMap],
@@ -154,11 +175,103 @@ export default function App() {
     });
   }, [page, recentAirportIds, selectedAirportId, selectedChartId]);
 
+  function currentSnapshot(): AppViewSnapshot {
+    return {
+      page,
+      selectedMapId,
+      mapViewport,
+      selectedAirportId,
+      selectedChartId,
+      selectedChartLabel: selectedChart?.label ?? "",
+      recentAirportIds,
+      chartViewport,
+    };
+  }
+
+  function restoreSnapshot(snapshot: AppViewSnapshot, history: AppViewSnapshot[]) {
+    setPageHistory(history);
+    setPage(snapshot.page);
+    setSelectedMapId(snapshot.selectedMapId);
+    setMapViewport(snapshot.mapViewport);
+    setSelectedAirportId(snapshot.selectedAirportId);
+    setSelectedChartId(snapshot.selectedChartId);
+    setRecentAirportIds(snapshot.recentAirportIds);
+    setChartViewport(snapshot.chartViewport);
+  }
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const state: WebHistoryState = {
+      __aerobag: true,
+      current: currentSnapshot(),
+      stack: pageHistory,
+    };
+    window.history.replaceState(state, "");
+  }, [page, pageHistory, selectedMapId, mapViewport, selectedAirportId, selectedChartId, recentAirportIds, chartViewport]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    function handlePopState(event: PopStateEvent) {
+      const state = (event.state ?? {}) as WebHistoryState;
+      if (state.__aerobag && state.current) {
+        restoreSnapshot(state.current, Array.isArray(state.stack) ? state.stack : []);
+      }
+    }
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  function navigateToPage(nextPage: AppPage) {
+    if (nextPage === page) {
+      return;
+    }
+    const nextHistory = [...pageHistory, currentSnapshot()];
+    setPageHistory(nextHistory);
+    setPage(nextPage);
+    if (typeof window !== "undefined") {
+      const nextCurrent: AppViewSnapshot = {
+        ...currentSnapshot(),
+        page: nextPage,
+      };
+      const state: WebHistoryState = {
+        __aerobag: true,
+        current: nextCurrent,
+        stack: nextHistory,
+      };
+      window.history.pushState(state, "");
+    }
+  }
+
+  function pushViewSnapshot(next: Partial<AppViewSnapshot> & Pick<AppViewSnapshot, "page">) {
+    const nextHistory = [...pageHistory, currentSnapshot()];
+    const nextCurrent: AppViewSnapshot = {
+      ...currentSnapshot(),
+      ...next,
+    };
+    setPageHistory(nextHistory);
+    restoreSnapshot(nextCurrent, nextHistory);
+    if (typeof window !== "undefined") {
+      window.history.pushState(
+        {
+          __aerobag: true,
+          current: nextCurrent,
+          stack: nextHistory,
+        } satisfies WebHistoryState,
+        "",
+      );
+    }
+  }
+
   return (
     <main className="appShell">
-      {page === "map" ? (
+      <div className={`pageLayer${page === "map" ? " isActive" : ""}`} aria-hidden={page !== "map"}>
         <MapPage
           page={page}
+          pageHistory={pageHistory}
           debugTileLabels={debugTileLabels}
           selectedMapId={selectedMapId}
           selectedMap={selectedMap}
@@ -168,44 +281,62 @@ export default function App() {
           viewport={mapViewport}
           onViewportChange={setMapViewport}
           onSelectMapId={setSelectedMapId}
-          onSelectPage={setPage}
-          onOpenPlan={() => setPage("plan")}
+          onSelectPage={navigateToPage}
+          onOpenPlan={() => navigateToPage("plan")}
           legSummary={legSummary}
           locationSearch={locationSearch}
         />
-      ) : null}
+      </div>
 
-      {page === "plan" ? (
+      <div className={`pageLayer${page === "plan" ? " isActive" : ""}`} aria-hidden={page !== "plan"}>
         <FlightPlanPage
           page={page}
+          pageHistory={pageHistory}
           legSummary={legSummary}
-          onSelectPage={setPage}
-          onOpenCharts={() => setPage("charts")}
+          onSelectPage={navigateToPage}
+          onOpenCharts={() => navigateToPage("charts")}
         />
-      ) : null}
+      </div>
 
-      {page === "charts" ? (
+      <div className={`pageLayer${page === "charts" ? " isActive" : ""}`} aria-hidden={page !== "charts"}>
         <ChartsPage
           page={page}
+          pageHistory={pageHistory}
           airports={orderedChartAirports}
           selectedAirport={selectedAirport}
           selectedChart={selectedChart}
-          onSelectPage={setPage}
+          viewport={chartViewport}
+          onViewportChange={setChartViewport}
+          onSelectPage={navigateToPage}
           onSelectAirport={(airportId) => {
-            setSelectedAirportId(airportId);
-            setRecentAirportIds((current) => moveAirportToFront(current, airportId, chartPage.airports));
             const airport = chartPage.airports.find((entry) => entry.id === airportId);
-            setSelectedChartId(airport?.charts[0]?.id ?? "");
+            pushViewSnapshot({
+              page: "charts",
+              selectedAirportId: airportId,
+              selectedChartId: airport?.charts[0]?.id ?? "",
+              selectedChartLabel: airport?.charts[0]?.label ?? "",
+              recentAirportIds: moveAirportToFront(recentAirportIds, airportId, chartPage.airports),
+              chartViewport: null,
+            });
           }}
-          onSelectChart={setSelectedChartId}
+          onSelectChart={(chartId) => {
+            const nextChart = selectedAirport?.charts.find((chart) => chart.id === chartId);
+            pushViewSnapshot({
+              page: "charts",
+              selectedChartId: chartId,
+              selectedChartLabel: nextChart?.label ?? "",
+              chartViewport: null,
+            });
+          }}
         />
-      ) : null}
+      </div>
     </main>
   );
 }
 
 function MapPage(props: {
   page: AppPage;
+  pageHistory: AppViewSnapshot[];
   debugTileLabels: boolean;
   selectedMapId: string;
   selectedMap: (typeof mapViews)[number];
@@ -223,6 +354,7 @@ function MapPage(props: {
   const {
     debugTileLabels,
     page,
+    pageHistory,
     selectedMap,
     selectedFamilyMapViews,
     selectedFamily,
@@ -508,23 +640,12 @@ function MapPage(props: {
         </button>
 
         <div className="debugDock">
-          <button
-            type="button"
-            className="debugLauncher"
-            onPointerDown={stopPointer}
-            onPointerUp={stopPointer}
-            onClick={() => setDebugOpen((open) => !open)}
-            aria-expanded={debugOpen}
-            aria-label="Toggle debug details"
+          <DebugDock
+            open={debugOpen}
+            onToggle={() => setDebugOpen((open) => !open)}
           >
-            DBG
-          </button>
-          <section
-            className={`debugPanel${debugOpen ? " isOpen" : ""}`}
-            aria-label="Debug metadata"
-            onPointerDown={stopPointer}
-            onPointerUp={stopPointer}
-          >
+            <div className="debugLine">page {pageLabel(page)}</div>
+            <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedChartId: "", selectedChartLabel: "" })}</div>
             <div className="debugLine">family {selectedFamily.launcherLabel}</div>
             <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
             <div className="debugLine">tiles {debugSummary.tileCount}</div>
@@ -533,16 +654,17 @@ function MapPage(props: {
             <div className="debugLine">maps {debugSummary.mapIds.join(", ")}</div>
             <div className="debugLine">search {locationSearch || "(empty)"}</div>
             <div className="debugLine">{debugTileLabels ? "debugTiles=on" : "debugTiles=off"}</div>
-          </section>
+          </DebugDock>
         </div>
       </div>
     </section>
   );
 }
 
-function FlightPlanPage(props: { page: AppPage; legSummary: string; onSelectPage: (page: AppPage) => void; onOpenCharts: () => void }) {
+function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; legSummary: string; onSelectPage: (page: AppPage) => void; onOpenCharts: () => void }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
   const [pageTrayOpen, setPageTrayOpen] = useState(false);
+  const [debugOpen, setDebugOpen] = useState(false);
   const rows = useMemo(
     () =>
       samplePlan.legs.map((leg, index) => ({
@@ -602,6 +724,14 @@ function FlightPlanPage(props: { page: AppPage; legSummary: string; onSelectPage
 
       <div className="planFooter">{props.legSummary}</div>
 
+      <div className="debugDock">
+        <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>
+          <div className="debugLine">page {pageLabel(props.page)}</div>
+          <div className="debugLine">stack {formatPageStack(props.pageHistory, { page: props.page, selectedChartId: "", selectedChartLabel: "" })}</div>
+          <div className="debugLine">rows {rows.length}</div>
+        </DebugDock>
+      </div>
+
       {selectedWaypointIndex !== null ? (
         <>
           <button type="button" className="trayScrim" aria-label="Close waypoint actions" onClick={() => setSelectedWaypointIndex(null)} />
@@ -635,23 +765,25 @@ function TrayDock(props: {
   open: boolean;
   onToggle: () => void;
   ariaLabel: string;
-  wide?: boolean;
+  style?: TrayDockStyle;
   options: TrayOption[];
 }) {
-  const { launcherLabel, open, onToggle, ariaLabel, wide, options } = props;
+  const { launcherLabel, open, onToggle, ariaLabel, style = "compact", options } = props;
+  const launcherWide = style === "plate_wide";
+  const trayWide = style === "plate_narrow" || style === "plate_wide";
   return (
     <div className="chartDockColumn">
       <button
         type="button"
-        className={`chartButton${wide ? " chartButtonWide" : ""}${open ? " isOpen" : ""}`}
+        className={`chartButton${launcherWide ? " chartButtonWide" : ""}${open ? " isOpen" : ""}`}
         onPointerDown={stopPointer}
         onPointerUp={stopPointer}
         onDoubleClick={stopDoubleClick}
         onClick={onToggle}
       >
-        <span className={`chartButtonLabel${wide ? " chartButtonLabelWide" : ""}`}>{launcherLabel}</span>
+        <span className={`chartButtonLabel${launcherWide ? " chartButtonLabelWide" : ""}`}>{launcherLabel}</span>
       </button>
-      <section className={`chartTray${wide ? " chartTrayWide" : ""}${open ? " isOpen" : ""}`} aria-label={ariaLabel} onPointerDown={stopPointer} onPointerUp={stopPointer}>
+      <section className={`chartTray${trayWide ? " chartTrayWide" : ""}${open ? " isOpen" : ""}`} aria-label={ariaLabel} onPointerDown={stopPointer} onPointerUp={stopPointer}>
         {options.map((option) => (
           <button
             key={option.id}
@@ -673,18 +805,20 @@ function TrayDock(props: {
 
 function ChartsPage(props: {
   page: AppPage;
+  pageHistory: AppViewSnapshot[];
   airports: (typeof chartPage)["airports"];
   selectedAirport: (typeof chartPage)["airports"][number] | null;
   selectedChart: ChartAsset | null;
+  viewport: ImageViewportState | null;
+  onViewportChange: (next: ImageViewportState | null) => void;
   onSelectPage: (page: AppPage) => void;
   onSelectAirport: (airportId: string) => void;
   onSelectChart: (chartId: string) => void;
 }) {
-  const { page, airports, selectedAirport, selectedChart, onSelectPage, onSelectAirport, onSelectChart } = props;
+  const { page, airports, selectedAirport, selectedChart, viewport, onViewportChange, onSelectPage, onSelectAirport, onSelectChart } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
-  const [viewport, setViewport] = useState<ImageViewportState | null>(null);
   const viewportRef = useRef<ImageViewportState | null>(null);
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
@@ -692,6 +826,7 @@ function ChartsPage(props: {
   const [airportTrayOpen, setAirportTrayOpen] = useState(false);
   const [chartTrayOpen, setChartTrayOpen] = useState(false);
   const [pageTrayOpen, setPageTrayOpen] = useState(false);
+  const [debugOpen, setDebugOpen] = useState(false);
   const displaySize = useMemo(() => {
     if (!imageSize || !viewport || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return null;
@@ -727,17 +862,21 @@ function ChartsPage(props: {
     if (!imageSize || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
+    if (viewport) {
+      viewportRef.current = viewport;
+      return;
+    }
     const next = createInitialImageViewport(imageSize.width, imageSize.height, surfaceSize.width, surfaceSize.height);
     viewportRef.current = next;
-    setViewport(next);
-  }, [imageSize, selectedChart?.id, surfaceSize.width, surfaceSize.height]);
+    onViewportChange(next);
+  }, [imageSize, selectedChart?.id, surfaceSize.width, surfaceSize.height, viewport, onViewportChange]);
 
   const trayOpen = pageTrayOpen || airportTrayOpen || chartTrayOpen;
   const overscrollPx = 64;
 
   function updateViewport(next: ImageViewportState) {
     viewportRef.current = next;
-    setViewport(next);
+    onViewportChange(next);
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
@@ -931,6 +1070,7 @@ function ChartsPage(props: {
               )
             }
             ariaLabel="Page"
+            style="plate_narrow"
             options={pageOptions.map((option) => ({
               id: option.id,
               label: option.label,
@@ -952,6 +1092,7 @@ function ChartsPage(props: {
               )
             }
             ariaLabel="Airport"
+            style="plate_narrow"
             options={airports.map((airport) => ({
               id: airport.id,
               label: airport.label,
@@ -973,7 +1114,7 @@ function ChartsPage(props: {
               )
             }
             ariaLabel="Chart"
-            wide
+            style="plate_wide"
             options={(selectedAirport?.charts ?? []).map((chart) => ({
               id: chart.id,
               label: chart.label,
@@ -986,8 +1127,45 @@ function ChartsPage(props: {
           />
         </div>
 
+        <div className="debugDock">
+          <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>
+            <div className="debugLine">page {pageLabel(page)}</div>
+            <div className="debugLine">stack {formatPageStack(props.pageHistory, { page, selectedChartId: selectedChart?.id ?? "", selectedChartLabel: selectedChart?.label ?? "" })}</div>
+            <div className="debugLine">apt {selectedAirport?.label ?? "---"}</div>
+            <div className="debugLine">chart {selectedChart?.label ?? "---"}</div>
+            <div className="debugLine">{viewport ? `z${viewport.zoom.toFixed(2)}` : "viewport (none)"}</div>
+          </DebugDock>
+        </div>
+
       </div>
     </section>
+  );
+}
+
+function DebugDock(props: { open: boolean; onToggle: () => void; children: React.ReactNode }) {
+  return (
+    <>
+      <button
+        type="button"
+        className="debugLauncher"
+        onPointerDown={stopPointer}
+        onPointerUp={stopPointer}
+        onDoubleClick={stopDoubleClick}
+        onClick={props.onToggle}
+        aria-expanded={props.open}
+        aria-label="Toggle debug details"
+      >
+        DBG
+      </button>
+      <section
+        className={`debugPanel${props.open ? " isOpen" : ""}`}
+        aria-label="Debug metadata"
+        onPointerDown={stopPointer}
+        onPointerUp={stopPointer}
+      >
+        {props.children}
+      </section>
+    </>
   );
 }
 
@@ -1078,10 +1256,38 @@ function sameIds(left: string[], right: string[]) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+function pageLabel(page: AppPage) {
+  return pageOptions.find((option) => option.id === page)?.launcherLabel ?? page.toUpperCase();
+}
+
+function formatSnapshot(snapshot: Pick<AppViewSnapshot, "page" | "selectedChartId" | "selectedChartLabel">) {
+  const label = pageLabel(snapshot.page);
+  if (snapshot.page !== "charts") {
+    return label;
+  }
+  const suffixSource = snapshot.selectedChartLabel || resolveChartLabel(snapshot.selectedChartId) || snapshot.selectedChartId;
+  const suffix = suffixSource.slice(-3).toUpperCase();
+  return suffix ? `${label}-${suffix}` : label;
+}
+
+function formatPageStack(pageHistory: AppViewSnapshot[], currentSnapshot: Pick<AppViewSnapshot, "page" | "selectedChartId" | "selectedChartLabel">) {
+  return [currentSnapshot, ...pageHistory.slice().reverse()].map(formatSnapshot).join(" > ");
+}
+
 function navRefLabel(value: { Airport: string } | { Navaid: string } | { Fix: string }) {
   if ("Airport" in value) return value.Airport;
   if ("Navaid" in value) return value.Navaid;
   return value.Fix;
+}
+
+function resolveChartLabel(chartId: string) {
+  for (const airport of chartPage.airports) {
+    const chart = airport.charts.find((entry) => entry.id === chartId);
+    if (chart) {
+      return chart.label;
+    }
+  }
+  return "";
 }
 
 function distanceBetween(first: ScreenPoint, second: ScreenPoint) {

@@ -46,8 +46,22 @@ button {
 }
 
 .appShell {
+  position: relative;
   width: 100%;
   height: 100%;
+  overflow: hidden;
+}
+
+.pageLayer {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pageLayer.isActive {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .pageSurface,
@@ -193,6 +207,9 @@ button {
   display: flex;
   flex-direction: column;
   gap: var(--thumb-gap);
+  max-height: calc(100vh - (var(--thumb) * 2) - (var(--thumb-gap) * 4));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--thumb-gap);
   border: 1px solid rgba(19, 33, 41, 0.14);
   border-radius: calc(var(--thumb-radius) + 2px);
@@ -226,7 +243,10 @@ button {
 }
 
 .chartTray.chartTrayWide .trayButton {
+  width: calc(var(--thumb) * 4);
   min-width: calc(var(--thumb) * 4);
+  height: var(--thumb);
+  flex: 0 0 auto;
 }
 
 .trayButton.isActive {

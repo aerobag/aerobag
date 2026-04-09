@@ -59,6 +59,11 @@ What it does now:
 - bottom-centered `Nav Element` opens `Flight Plan`
 - `Flight Plan` page shows a waypoint table and waypoint action modal
 - `Charts` page shows flat PNG chart/CSup images with drag/zoom
+- page navigation is now a real view stack, not just a current-page enum
+  - page changes push snapshots onto the stack
+  - on the plate page, changing selected airport/chart also pushes a snapshot
+  - browser back / Android system back pop that same stack
+  - because pages stay mounted, map/plate viewport state survives page changes
 - chart-family tray is modal with scrim
 - chart-family switching preserves lat/lon/continuous zoom
 - leaving `Map` and coming back preserves the map viewport
@@ -70,7 +75,11 @@ What it does now:
 - lower-left debug launcher:
   - closed: `1 thumb`
   - open: `4 thumbs`
-  - shows family, lat/lon/zoom, rendered tile count, source zooms, package ids, active map ids
+  - present on `Map`, `Plan`, and `Charts`, not just `Map`
+  - shows the current view stack
+    - top of stack is leftmost
+    - plate views are abbreviated like `PLT-16C`
+  - on `Map`, also shows family, lat/lon/zoom, rendered tile count, source zooms, package ids, active map ids
   - text is selectable for copy/paste
 - web chart page supports:
   - drag pan
@@ -125,6 +134,11 @@ What it does now:
 - bottom-centered `Nav Element` opens `Flight Plan`
 - `Flight Plan` page with simple waypoint table and modal
 - `Charts` page showing flat chart/CSup PNGs from seeded zip packages, with asset fallback only if needed
+- page navigation is now a real view stack
+  - page changes push snapshots
+  - plate airport/chart changes also push snapshots
+  - Android `BackHandler` pops that stack
+  - mounted-page shell preserves map and plate viewport state across page switches
 - chart-family tray is modal with scrim
 - chart-family switching preserves lat/lon/continuous zoom
 - leaving `Map` and coming back preserves the map viewport
@@ -137,6 +151,9 @@ What it does now:
 - Android startup now prefers the fixture's intended initial map family/package instead of the first arbitrary chart collection from `resource-index`
 - Android map now uses a lower-left `DBG` launcher in the same compact square visual language as `SEC`
 - tapping `DBG` opens a debug panel with:
+  - current view stack
+    - top of stack shown leftmost
+    - plate entries abbreviated like `PLT-16C`
   - family
   - lat/lon/zoom
   - rendered tile count
@@ -146,6 +163,7 @@ What it does now:
   - family status (`Local`, `Partial`, `Package missing`)
   - tile-label debug toggle
 - the old lower-right family-status badge has been removed
+- `DBG` is now present on `Map`, `Plan`, and `Charts`, not only `Map`
 - map control hit-testing was tightened:
   - root map drag ignores pointer changes already consumed by child controls
   - drags that start on `SEC`, `DBG`, or the nav element should not pan the map

@@ -178,6 +178,13 @@ What it does now:
     - tray hangs below the launcher
     - tray height is capped by actual space below the launcher, not a fixed row count
     - if content exceeds that height, it scrolls inside the tray
+- Android hardware `+/-` zoom is now handled at the `MainActivity` level
+  - reason:
+    - Compose focus on the active surface proved too fragile after tray/page changes
+  - current behavior:
+    - `MainActivity.dispatchKeyEvent()` intercepts `+/-`
+    - visible map/plate page registers a zoom callback with the activity via `onHardwareZoomDelta`
+    - this path does not depend on whichever composable currently owns focus
 - important recent Android input/root-cause fix:
   - the app shell previously kept `Map`, `Plan`, and `Charts` all composed at once with hidden pages only faded out
   - hidden pages were still hit-testable and could steal gestures behind the visible page
@@ -201,6 +208,9 @@ Important current Android dev note:
   - Android Gradle staging and `generate_content_fixture.py` both know how to rebase `artifact_path` entries from old `/root/aerobag/product-builds/...` absolute paths onto `/root/aerobag-artifacts/product-builds/...`
   - environment override:
     - `AEROBAG_ARTIFACT_ROOT`
+  - additional fallback:
+    - if an indexed `shared/...` artifact is absent, both helpers now try profile-specific fallbacks like `validation/...`
+    - this currently matters for `NW_CSUP.zip`, which exists under validation artifacts, not shared
 - current fixture-generator note:
   - `copy_tac_tile_subset()` now tolerates missing Boston TAC demo tiles at some zoom levels
   - if a zoom level has no available TAC subset tiles, it is skipped instead of crashing on `min()/max()` over an empty set

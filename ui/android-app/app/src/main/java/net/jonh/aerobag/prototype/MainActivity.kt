@@ -52,6 +52,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -59,6 +60,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -70,6 +72,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
@@ -305,6 +309,8 @@ private fun writeUiPrefs(
 }
 
 class MainActivity : ComponentActivity() {
+    var onHardwareZoomDelta: ((Double) -> Boolean)? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -317,6 +323,23 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun dispatchKeyEvent(event: AndroidKeyEvent): Boolean {
+        if (event.action == AndroidKeyEvent.ACTION_DOWN) {
+            val delta = when (event.keyCode) {
+                AndroidKeyEvent.KEYCODE_EQUALS,
+                AndroidKeyEvent.KEYCODE_PLUS,
+                AndroidKeyEvent.KEYCODE_NUMPAD_ADD -> 0.35
+                AndroidKeyEvent.KEYCODE_MINUS,
+                AndroidKeyEvent.KEYCODE_NUMPAD_SUBTRACT -> -0.35
+                else -> null
+            }
+            if (delta != null && (onHardwareZoomDelta?.invoke(delta) == true)) {
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 }
 
@@ -544,7 +567,9 @@ private fun MapExplorerPage(
     legSummary: String,
 ) {
     val context = LocalContext.current
+    val activity = context as? MainActivity
     val density = LocalDensity.current
+    val focusRequester = remember { FocusRequester() }
     var pageTrayOpen by remember { mutableStateOf(false) }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var debugPanelOpen by remember { mutableStateOf(false) }
@@ -670,6 +695,38 @@ private fun MapExplorerPage(
     }
 
     LaunchedEffect(selectedMap.id) { chartTrayOpen = false }
+    LaunchedEffect(selectedMap.id, pageTrayOpen, chartTrayOpen) {
+        if (!pageTrayOpen && !chartTrayOpen) {
+            withFrameNanos { }
+            focusRequester.requestFocus()
+        }
+    }
+    DisposableEffect(activity, selectedMap.mapView, surfaceWidthUnits, surfaceHeightUnits, viewport, pageTrayOpen, chartTrayOpen) {
+        if (activity != null) {
+            activity.onHardwareZoomDelta = { delta ->
+                if (surfaceWidthUnits == 0f || surfaceHeightUnits == 0f || pageTrayOpen || chartTrayOpen) {
+                    false
+                } else {
+                    onViewportChange(
+                        zoomAroundPoint(
+                            viewport = viewport,
+                            mapView = selectedMap.mapView,
+                            anchor = ScreenPoint(surfaceWidthUnits / 2f, surfaceHeightUnits / 2f),
+                            widthPx = surfaceWidthUnits,
+                            heightPx = surfaceHeightUnits,
+                            nextZoom = clampZoom(viewport.zoom + delta, selectedMap.mapView),
+                        ),
+                    )
+                    true
+                }
+            }
+        }
+        onDispose {
+            if (activity != null && activity.onHardwareZoomDelta != null) {
+                activity.onHardwareZoomDelta = null
+            }
+        }
+    }
 
     LaunchedEffect(selectedMap.id, selectedPackageName, selectedPackageInstalled) {
         if (selectedMap.mapView.storageKind != TileStorageKind.SectionalPackage) {
@@ -696,6 +753,7 @@ private fun MapExplorerPage(
                 ),
             )
             .onSizeChanged { surfaceSize = it }
+            .focusRequester(focusRequester)
             .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.nativeKeyEvent.action != AndroidKeyEvent.ACTION_DOWN ||
                     surfaceWidthUnits == 0f ||
@@ -797,6 +855,7 @@ private fun MapExplorerPage(
                         if (topLeftTrayOpen) {
                             return@pointerInteropFilter false
                         }
+                        focusRequester.requestFocus()
                         motionDragActive = true
                         motionDragLastX = event.x
                         motionDragLastY = event.y
@@ -1081,7 +1140,9 @@ private fun ChartsPage(
     onSelectChart: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val activity = context as? MainActivity
     val density = LocalDensity.current
+    val focusRequester = remember { FocusRequester() }
     val chartLabelsById = remember(airports) {
         airports.flatMap { airport -> airport.charts }.associate { chart -> chart.id to chart.label }
     }
@@ -1128,6 +1189,42 @@ private fun ChartsPage(
             ))
         }
     }
+    LaunchedEffect(selectedChart?.id, trayOpen, folderOpen) {
+        if (!trayOpen && !folderOpen) {
+            withFrameNanos { }
+            focusRequester.requestFocus()
+        }
+    }
+    DisposableEffect(activity, selectedChart?.id, surfaceSize, bitmap, viewportState.value, trayOpen, folderOpen) {
+        if (activity != null) {
+            activity.onHardwareZoomDelta = { delta ->
+                val currentState = viewportState.value
+                if (bitmap == null || currentState == null || trayOpen || folderOpen) {
+                    false
+                } else {
+                    onViewportChange(
+                        zoomImageAroundPoint(
+                            state = currentState,
+                            anchorX = surfaceSize.width / 2f,
+                            anchorY = surfaceSize.height / 2f,
+                            nextZoom = currentState.zoom + delta.toFloat(),
+                            imageWidthPx = imageWidthPx,
+                            imageHeightPx = imageHeightPx,
+                            viewportWidthPx = surfaceSize.width.toFloat(),
+                            viewportHeightPx = surfaceSize.height.toFloat(),
+                            overscrollPx = overscrollPx,
+                        ),
+                    )
+                    true
+                }
+            }
+        }
+        onDispose {
+            if (activity != null && activity.onHardwareZoomDelta != null) {
+                activity.onHardwareZoomDelta = null
+            }
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -1138,6 +1235,7 @@ private fun ChartsPage(
                 ),
             )
             .onSizeChanged { surfaceSize = it }
+            .focusRequester(focusRequester)
             .focusable()
             .onPreviewKeyEvent { event ->
                 if (bitmap == null || viewportState.value == null || trayOpen || folderOpen || event.nativeKeyEvent.action != AndroidKeyEvent.ACTION_DOWN) {
@@ -1217,6 +1315,9 @@ private fun ChartsPage(
             .pointerInteropFilter { event ->
                 if (bitmap == null || viewportState.value == null || trayOpen || folderOpen) {
                     return@pointerInteropFilter false
+                }
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                    focusRequester.requestFocus()
                 }
                 if (event.action == MotionEvent.ACTION_SCROLL) {
                     val wheelDelta = event.getAxisValue(MotionEvent.AXIS_VSCROLL).takeIf { it != 0f }

@@ -325,9 +325,23 @@ def resolve_artifact_path(raw_path: str) -> Path:
     if "product-builds" in path.parts:
         parts = list(path.parts)
         product_builds_index = parts.index("product-builds")
-        rebased = ARTIFACT_ROOT / "product-builds" / Path(*parts[product_builds_index + 1 :])
-        if rebased.exists():
-            return rebased
+        relative = Path(*parts[product_builds_index + 1 :])
+        rebased = ARTIFACT_ROOT / "product-builds" / relative
+        candidates = [rebased]
+        relative_parts = relative.parts
+        if relative_parts and relative_parts[0] == "shared":
+            tail = Path(*relative_parts[1:])
+            candidates.append(ARTIFACT_ROOT / "product-builds" / "validation" / tail)
+            candidates.append(ARTIFACT_ROOT / "product-builds" / "production" / tail)
+        elif relative_parts and relative_parts[0] == "validation":
+            tail = Path(*relative_parts[1:])
+            candidates.append(ARTIFACT_ROOT / "product-builds" / "shared" / tail)
+        elif relative_parts and relative_parts[0] == "production":
+            tail = Path(*relative_parts[1:])
+            candidates.append(ARTIFACT_ROOT / "product-builds" / "shared" / tail)
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
     return path
 
 

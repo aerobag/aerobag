@@ -44,6 +44,24 @@ fun resolveArtifactPath(rawPath: String): File {
         if (rebased.isFile) {
             return rebased
         }
+        val relativePath = relative.replace('\\', '/')
+        val candidates = buildList {
+            add(rebased)
+            if (relativePath.startsWith("shared/")) {
+                add(artifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("shared/").let { "validation/$it" }))
+                add(artifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("shared/").let { "production/$it" }))
+            }
+            if (relativePath.startsWith("validation/")) {
+                add(artifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("validation/").let { "shared/$it" }))
+            }
+            if (relativePath.startsWith("production/")) {
+                add(artifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("production/").let { "shared/$it" }))
+            }
+        }
+        candidates.firstOrNull { it.isFile }?.let { return it }
+        if (rebased.isFile) {
+            return rebased
+        }
     }
     return source
 }

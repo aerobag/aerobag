@@ -43,14 +43,6 @@ type TrayOption = {
 
 type TrayDockStyle = "compact" | "plate_narrow" | "plate_wide";
 type PlateFolderCategory = ChartAsset["folder_category"];
-type PlateDragSample = {
-  pointX: number;
-  pointY: number;
-  dx: number;
-  dy: number;
-  left: number;
-  top: number;
-};
 
 const chartFamilies: Array<{ id: ChartFamilyId; label: string; launcherLabel: string }> = [
   { id: "sectional", label: "SECTIONAL", launcherLabel: "SEC" },
@@ -69,13 +61,6 @@ const waypointActions = ["Remove", "Insert", "Reorder", "Waypoint Info", "Add Ai
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
 const plateFolderTheme = uiTheme.plate_folder;
 const plateFolderCategoryOrder: PlateFolderCategory[] = ["airport-diagram", "csup", "takeoff-mins", "approach", "departure", "star"];
-const plateDragHistoryKey = "__aerobagPlateDragHistory";
-
-declare global {
-  interface Window {
-    __aerobagPlateDragHistory?: PlateDragSample[];
-  }
-}
 
 type PersistedWebUiState = {
   page?: AppPage;
@@ -870,7 +855,6 @@ function ChartsPage(props: {
   const [pageTrayOpen, setPageTrayOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
   const sortedCharts = useMemo(() => sortChartsForFolder(selectedAirport?.charts ?? []), [selectedAirport]);
-  const [dragDebug, setDragDebug] = useState<{ point: ScreenPoint; dx: number; dy: number; left: number; top: number } | null>(null);
   const displaySize = useMemo(() => {
     if (!imageSize || !viewport || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return null;
@@ -985,13 +969,6 @@ function ChartsPage(props: {
     if (activePointersRef.current.size === 1) {
       dragRef.current = { id: event.pointerId, last: point };
       pinchRef.current = null;
-      setDragDebug({
-        point,
-        dx: 0,
-        dy: 0,
-        left: viewportRef.current.left,
-        top: viewportRef.current.top,
-      });
     } else if (activePointersRef.current.size >= 2) {
       const [first, second] = Array.from(activePointersRef.current.values());
       pinchRef.current = {
@@ -1026,21 +1003,6 @@ function ChartsPage(props: {
         surfaceSize.height,
         overscrollPx,
       );
-      setDragDebug({
-        point,
-        dx,
-        dy,
-        left: next.left,
-        top: next.top,
-      });
-      appendPlateDragSample({
-        pointX: point.x,
-        pointY: point.y,
-        dx,
-        dy,
-        left: next.left,
-        top: next.top,
-      });
       updateViewport(next);
       dragRef.current = { id: event.pointerId, last: point };
       return;
@@ -1078,7 +1040,6 @@ function ChartsPage(props: {
   function handlePointerRelease(event: React.PointerEvent<HTMLDivElement>) {
     activePointersRef.current.delete(event.pointerId);
     pinchRef.current = null;
-    setDragDebug(null);
     const remaining = Array.from(activePointersRef.current.entries());
     if (remaining.length === 1) {
       dragRef.current = { id: remaining[0][0], last: remaining[0][1] };
@@ -1295,10 +1256,6 @@ function ChartsPage(props: {
             <div className="debugLine">apt {selectedAirport?.label ?? "---"}</div>
             <div className="debugLine">chart {selectedChart?.label ?? "---"}</div>
             <div className="debugLine">{viewport ? `z${viewport.zoom.toFixed(2)}` : "viewport (none)"}</div>
-            <div className="debugLine">
-              drag {dragDebug ? `${dragDebug.point.x.toFixed(1)},${dragDebug.point.y.toFixed(1)} d${dragDebug.dx.toFixed(1)},${dragDebug.dy.toFixed(1)} -> ${dragDebug.left.toFixed(1)},${dragDebug.top.toFixed(1)}` : "(idle)"}
-            </div>
-            <div className="debugLine">dragHist {typeof window !== "undefined" ? (window.__aerobagPlateDragHistory?.length ?? 0) : 0}</div>
           </DebugDock>
         </div>
 
@@ -1414,18 +1371,6 @@ function sortChartsForFolder(charts: ChartAsset[]) {
     const rank = plateFolderCategoryOrder.indexOf(left.folder_category) - plateFolderCategoryOrder.indexOf(right.folder_category);
     return rank !== 0 ? rank : left.label.localeCompare(right.label);
   });
-}
-
-function appendPlateDragSample(sample: PlateDragSample) {
-  if (typeof window === "undefined") {
-    return;
-  }
-  const history = window[plateDragHistoryKey] ?? [];
-  history.push(sample);
-  if (history.length > 200) {
-    history.splice(0, history.length - 200);
-  }
-  window[plateDragHistoryKey] = history;
 }
 
 function resolveChartId(

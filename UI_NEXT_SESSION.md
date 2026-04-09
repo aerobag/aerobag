@@ -171,6 +171,13 @@ What it does now:
   - root map drag ignores pointer changes already consumed by child controls
   - drags that start on `SEC`, `DBG`, or the nav element should not pan the map
   - the old outer tray card around `SEC` was removed, so the extra gray border is gone
+- Android top-bar trays now use a shared anchored panel instead of `DropdownMenu`
+  - reason:
+    - `DropdownMenu` kept auto-repositioning over the launcher or off-screen
+  - current behavior in `MenuDock`:
+    - tray hangs below the launcher
+    - tray height is capped by actual space below the launcher, not a fixed row count
+    - if content exceeds that height, it scrolls inside the tray
 - important recent Android input/root-cause fix:
   - the app shell previously kept `Map`, `Plan`, and `Charts` all composed at once with hidden pages only faded out
   - hidden pages were still hit-testable and could steal gestures behind the visible page
@@ -194,6 +201,9 @@ Important current Android dev note:
   - Android Gradle staging and `generate_content_fixture.py` both know how to rebase `artifact_path` entries from old `/root/aerobag/product-builds/...` absolute paths onto `/root/aerobag-artifacts/product-builds/...`
   - environment override:
     - `AEROBAG_ARTIFACT_ROOT`
+- current fixture-generator note:
+  - `copy_tac_tile_subset()` now tolerates missing Boston TAC demo tiles at some zoom levels
+  - if a zoom level has no available TAC subset tiles, it is skipped instead of crashing on `min()/max()` over an empty set
 - important seeding gotcha that bit us:
   - Gradle was reusing a stale generated `NW_TPP.zip` under:
     - `ui/android-app/app/build/generated/prototypeSeedChartPackages/chart-packages/NW_TPP.zip`

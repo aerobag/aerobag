@@ -22,6 +22,7 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,15 +37,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items as lazyColumnItems
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.items as lazyGridItems
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -73,8 +75,11 @@ import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -1459,7 +1464,7 @@ private fun PlateFolderGrid(
         horizontalArrangement = Arrangement.spacedBy(FolderThumbGutter),
         verticalArrangement = Arrangement.spacedBy(FolderThumbGutter),
     ) {
-        items(charts, key = { it.id }) { chart ->
+        lazyGridItems(charts, key = { it.id }) { chart ->
             val thumbnail by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, chart.id, chart.thumbnailSourceAssetPath) {
                 value = chart.thumbnailSourceAssetPath?.let {
                     withContext(Dispatchers.IO) {
@@ -1522,32 +1527,68 @@ private fun MenuDock(
     style: MenuDockStyle,
     options: List<MenuDockOption>,
 ) {
-    Box(modifier = modifier.width(style.buttonWidth).height(ThumbSize)) {
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    var anchorTopPx by remember { mutableStateOf(0f) }
+    val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
+    val trayOffsetPx = with(density) { (ThumbSize + ThumbGap).toPx() }
+    val trayBottomMarginPx = with(density) { ThumbGap.toPx() }
+    val trayMaxHeight = with(density) {
+        ((screenHeightPx - anchorTopPx - trayOffsetPx - trayBottomMarginPx).coerceAtLeast(ThumbSize.toPx())).toDp()
+    }
+    Box(
+        modifier = modifier
+            .width(style.buttonWidth)
+            .height(ThumbSize)
+            .wrapContentSize(unbounded = true, align = Alignment.TopStart),
+    ) {
         CompactSquareButton(
             label = launcherLabel,
             maxLines = style.launcherMaxLines,
-            modifier = Modifier.width(style.buttonWidth).height(ThumbSize).align(Alignment.TopStart),
+            modifier = Modifier
+                .width(style.buttonWidth)
+                .height(ThumbSize)
+                .align(Alignment.TopStart)
+                .onGloballyPositioned { coordinates ->
+                    anchorTopPx = coordinates.boundsInWindow().top
+                },
             onClick = onToggle,
         )
-        DropdownMenu(
-            expanded = open,
-            onDismissRequest = onToggle,
-            modifier = Modifier.width(style.trayWidth),
-        ) {
-            options.forEach { option ->
-                DropdownMenuItem(
-                    modifier = Modifier.width(style.trayWidth).height(ThumbSize),
-                    text = {
-                        Text(
-                            option.label,
-                            style = MaterialTheme.typography.labelLarge,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    },
-                    enabled = option.enabled,
-                    onClick = option.onSelect,
-                )
+        if (open) {
+            Card(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = ThumbSize + ThumbGap)
+                    .width(style.trayWidth)
+                    .heightIn(max = trayMaxHeight)
+                    .zIndex(10f),
+            ) {
+                LazyColumn {
+                    lazyColumnItems(options) { option ->
+                        Box(
+                            modifier = Modifier
+                                .width(style.trayWidth)
+                                .height(ThumbSize)
+                                .clickable(
+                                    enabled = option.enabled,
+                                    indication = null,
+                                    interactionSource = remember { MutableInteractionSource() },
+                                ) {
+                                    option.onSelect()
+                                }
+                                .padding(horizontal = 12.dp),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            Text(
+                                option.label,
+                                style = MaterialTheme.typography.labelLarge,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                color = if (option.enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+                            )
+                        }
+                    }
+                }
             }
         }
     }

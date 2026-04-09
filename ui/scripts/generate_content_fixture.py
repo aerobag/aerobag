@@ -159,6 +159,9 @@ def copy_tac_tile_subset(tile_windows: dict[int, tuple[int, int, int]]) -> list[
             if source.exists():
                 available_pairs.append((x, y))
 
+        if not available_pairs:
+            continue
+
         levels.append(
             {
                 "zoom": zoom,

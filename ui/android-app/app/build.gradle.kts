@@ -25,6 +25,28 @@ val generatedPrototypeSeedPackagesDir = layout.buildDirectory.dir("generated/pro
 val generatedPrototypeSeedChartPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedChartPackages")
 val uiFixtureGenerator = file("../../scripts/generate_content_fixture.py")
 val resourceIndexFile = file("../../shared-fixtures/content-prototype/resource-index.json")
+val artifactRoot = File(
+    System.getenv("AEROBAG_ARTIFACT_ROOT")
+        ?: rootDir.parentFile.parentFile.resolveSibling("aerobag-artifacts").absolutePath,
+)
+
+fun resolveArtifactPath(rawPath: String): File {
+    val source = file(rawPath)
+    if (source.isFile) {
+        return source
+    }
+    val marker = "${File.separator}product-builds${File.separator}"
+    val raw = rawPath.replace('\\', File.separatorChar)
+    val markerIndex = raw.indexOf(marker)
+    if (markerIndex >= 0) {
+        val relative = raw.substring(markerIndex + marker.length)
+        val rebased = artifactRoot.resolve("product-builds").resolve(relative)
+        if (rebased.isFile) {
+            return rebased
+        }
+    }
+    return source
+}
 
 val buildRustX86_64Android by tasks.registering(Exec::class) {
     workingDir = rustProjectDir
@@ -62,7 +84,7 @@ val stagePrototypeSectionalPackages by tasks.registering {
                 val familyId = it["family_id"] as? String
                 familyId in setOf("sectional", "tac", "ifr_low", "ifr_high")
             }
-            .map { file(it["artifact_path"] as String) }
+            .map { resolveArtifactPath(it["artifact_path"] as String) }
         val outputDir = generatedPrototypeSeedPackagesDir.get().dir("sectional-packages").asFile
         delete(outputDir)
         outputDir.mkdirs()
@@ -123,7 +145,7 @@ val stagePrototypeChartPackages by tasks.registering {
         val packages = (payload["packages"] as List<*>)
             .filterIsInstance<Map<*, *>>()
             .filter { (it["id"] as? String) in setOf("NW_TPP", "NW_CSUP") }
-            .map { file(it["artifact_path"] as String) }
+            .map { resolveArtifactPath(it["artifact_path"] as String) }
         val outputDir = generatedPrototypeSeedChartPackagesDir.get().dir("chart-packages").asFile
         delete(outputDir)
         outputDir.mkdirs()

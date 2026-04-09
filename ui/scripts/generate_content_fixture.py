@@ -315,6 +315,19 @@ def family_display_name(resource_index: dict, family_id: str) -> str:
     )
 
 
+def resolve_artifact_path(raw_path: str) -> Path:
+    path = Path(raw_path)
+    if path.exists():
+        return path
+    if "product-builds" in path.parts:
+        parts = list(path.parts)
+        product_builds_index = parts.index("product-builds")
+        rebased = ARTIFACT_ROOT / "product-builds" / Path(*parts[product_builds_index + 1 :])
+        if rebased.exists():
+            return rebased
+    return path
+
+
 def load_supported_tiled_packages(resource_index: dict) -> list[TiledPackage]:
     packages = []
     for entry in resource_index["packages"]:
@@ -326,7 +339,7 @@ def load_supported_tiled_packages(resource_index: dict) -> list[TiledPackage]:
                 family_id=family_id,
                 manifest=entry["id"],
                 region=entry["region_id"].lower(),
-                artifact_path=Path(entry["artifact_path"]),
+                artifact_path=resolve_artifact_path(entry["artifact_path"]),
                 zip_sha256=entry["checksum_sha256"],
             )
         )

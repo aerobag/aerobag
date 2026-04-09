@@ -1,6 +1,6 @@
 # UI Next Session Handoff
 
-Snapshot date: 2026-04-08
+Snapshot date: 2026-04-09
 
 ## Current UI State
 
@@ -14,6 +14,9 @@ The current implementation is still driven by generated fixture/index data, but 
 Important current split:
 - web plate/CSUP viewing uses the richer validation `resource-index` and serves chart PNGs directly from real build-output paths via a manifest-backed Vite middleware
 - Android plate/CSUP viewing is intentionally limited to `NW_TPP` and `NW_CSUP`, seeded as zip packages into app-local storage after install
+- preprocessing artifacts now live outside this repo under:
+  - `/root/aerobag-artifacts`
+  - UI bridge/staging code must rebase stale absolute `artifact_path` values onto that root
 
 ## What Works Now
 
@@ -138,7 +141,7 @@ What it does now:
   - page changes push snapshots
   - plate airport/chart changes also push snapshots
   - Android `BackHandler` pops that stack
-  - mounted-page shell preserves map and plate viewport state across page switches
+  - map/plate viewport state survives page switches because it is hoisted in `AerobagApp`, not because hidden pages stay mounted
 - chart-family tray is modal with scrim
 - chart-family switching preserves lat/lon/continuous zoom
 - leaving `Map` and coming back preserves the map viewport
@@ -168,6 +171,15 @@ What it does now:
   - root map drag ignores pointer changes already consumed by child controls
   - drags that start on `SEC`, `DBG`, or the nav element should not pan the map
   - the old outer tray card around `SEC` was removed, so the extra gray border is gone
+- important recent Android input/root-cause fix:
+  - the app shell previously kept `Map`, `Plan`, and `Charts` all composed at once with hidden pages only faded out
+  - hidden pages were still hit-testable and could steal gestures behind the visible page
+  - current fix:
+    - `AerobagApp()` now composes only the active page
+    - back-stack/view state still works because page state is hoisted into app-level state and snapshots
+  - symptom this explained:
+    - chart drag mysteriously stopped working
+    - plate drag could break again while logs showed chart-page handlers receiving the drag
 
 Important current Android dev note:
 - do not bundle the full chart zip universe into the APK
@@ -178,6 +190,10 @@ Important current Android dev note:
   - `NW_TPP.zip` and `NW_CSUP.zip` via `seedPrototypeChartPackages`
 - `SectionalPackages` and `ChartPackages` both prefer already-seeded local package files
 - current Android plate/CSUP universe is intentionally NW-only because only `NW_TPP` and `NW_CSUP` are seeded
+- current repo-layout note:
+  - Android Gradle staging and `generate_content_fixture.py` both know how to rebase `artifact_path` entries from old `/root/aerobag/product-builds/...` absolute paths onto `/root/aerobag-artifacts/product-builds/...`
+  - environment override:
+    - `AEROBAG_ARTIFACT_ROOT`
 - important seeding gotcha that bit us:
   - Gradle was reusing a stale generated `NW_TPP.zip` under:
     - `ui/android-app/app/build/generated/prototypeSeedChartPackages/chart-packages/NW_TPP.zip`

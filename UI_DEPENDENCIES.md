@@ -67,6 +67,11 @@ Current web build behavior:
 - `npm run build` now regenerates `public/generated/app_wasm.js` and `public/generated/app_wasm_bg.wasm`
 - `npm run dev` and `npm run build` now also rerun:
   - [ui/scripts/generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py)
+- build artifacts are no longer expected under this repo's own `product-builds/`
+  - current artifact root:
+    - `/root/aerobag-artifacts`
+  - override supported by the UI bridge:
+    - `AEROBAG_ARTIFACT_ROOT`
 - that generator also extracts real `NW_SEC` / `SW_SEC` web tiles into:
   - [ui/web-app/generated-static/sectional-packages](/root/aerobag/ui/web-app/generated-static/sectional-packages)
 - and stages chart PNG assets into:
@@ -187,6 +192,12 @@ Android build config note:
 - Compose Material 3 UI dependencies do not by themselves provide XML theme resources for the manifest theme
 - for a Compose app using an XML theme such as `Theme.Material3.*`, also add:
   - `com.google.android.material:material`
+- Android package staging now also needs the artifact-root rebasing logic
+  - [ui/android-app/app/build.gradle.kts](/root/aerobag/ui/android-app/app/build.gradle.kts)
+    resolves stale absolute `artifact_path` values from `resource-index` onto:
+    - `/root/aerobag-artifacts/product-builds/...`
+  - override supported by Gradle staging too:
+    - `AEROBAG_ARTIFACT_ROOT`
 
 Confirmed Android blocker after wrapper setup:
 - `./gradlew test` currently fails with:

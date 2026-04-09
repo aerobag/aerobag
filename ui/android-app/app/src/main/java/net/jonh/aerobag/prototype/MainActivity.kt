@@ -437,104 +437,89 @@ private fun AerobagApp() {
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .zIndex(if (page == AppPage.Map) 3f else 0f)
-                .alpha(if (page == AppPage.Map) 1f else 0f),
-        ) {
-            MapExplorerPage(
-                page = page,
-                pageHistory = pageHistory,
-                fixture = fixture,
-                selectedMapId = selectedMapId,
-                viewport = mapViewport,
-                onViewportChange = { mapViewport = it },
-                onSelectMapId = {
-                    restoreSnapshot(
-                        currentSnapshot().copy(
-                            page = AppPage.Map,
-                            selectedMapId = it,
-                        ),
-                        pageHistory + currentSnapshot(),
-                    )
-                },
-                onSelectPage = ::navigateToPage,
-                onOpenPlan = { navigateToPage(AppPage.Plan) },
-                legSummary = legSummary,
-            )
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .zIndex(if (page == AppPage.Plan) 3f else 0f)
-                .alpha(if (page == AppPage.Plan) 1f else 0f),
-        ) {
-            FlightPlanPage(
-                page = page,
-                pageHistory = pageHistory,
-                legSummary = legSummary,
-                samplePlan = fixture.samplePlan,
-                onSelectPage = ::navigateToPage,
-                onOpenCharts = { navigateToPage(AppPage.Charts) },
-            )
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .zIndex(if (page == AppPage.Charts) 3f else 0f)
-                .alpha(if (page == AppPage.Charts) 1f else 0f),
-        ) {
-            ChartsPage(
-                page = page,
-                pageHistory = pageHistory,
-                airports = orderedChartAirports,
-                selectedAirport = selectedAirport,
-                selectedChart = selectedChart,
-                uiTheme = uiTheme,
-                folderOpen = chartFolderOpen,
-                viewport = chartViewport,
-                onViewportChange = { chartViewport = it },
-                onFolderOpenChange = {
-                    restoreSnapshot(
-                        currentSnapshot().copy(
-                            page = AppPage.Charts,
-                            chartFolderOpen = it,
-                        ),
-                        pageHistory + currentSnapshot(),
-                    )
-                },
-                onSelectPage = ::navigateToPage,
-                onSelectAirport = { airportId ->
-                    val airport = fixture.chartPage.airports.find { it.id == airportId }
-                    restoreSnapshot(
-                        currentSnapshot().copy(
-                            page = AppPage.Charts,
-                            selectedAirportId = airportId,
-                            selectedChartId = airport?.charts?.firstOrNull()?.id.orEmpty(),
-                            selectedChartLabel = airport?.charts?.firstOrNull()?.label.orEmpty(),
-                            recentAirportIds = moveAirportToFront(recentAirportIds, airportId, fixture.chartPage.airports),
-                            chartViewport = null,
-                            chartFolderOpen = false,
-                        ),
-                        pageHistory + currentSnapshot(),
-                    )
-                },
-                onSelectChart = {
-                    restoreSnapshot(
-                        currentSnapshot().copy(
-                            page = AppPage.Charts,
-                            selectedChartId = it,
-                            selectedChartLabel = selectedAirport?.charts?.firstOrNull { chart -> chart.id == it }?.label.orEmpty(),
-                            chartViewport = null,
-                            chartFolderOpen = false,
-                        ),
-                        pageHistory + currentSnapshot(),
-                    )
-                },
-            )
+        when (page) {
+            AppPage.Map -> {
+                MapExplorerPage(
+                    page = page,
+                    pageHistory = pageHistory,
+                    fixture = fixture,
+                    selectedMapId = selectedMapId,
+                    viewport = mapViewport,
+                    onViewportChange = { mapViewport = it },
+                    onSelectMapId = {
+                        restoreSnapshot(
+                            currentSnapshot().copy(
+                                page = AppPage.Map,
+                                selectedMapId = it,
+                            ),
+                            pageHistory + currentSnapshot(),
+                        )
+                    },
+                    onSelectPage = ::navigateToPage,
+                    onOpenPlan = { navigateToPage(AppPage.Plan) },
+                    legSummary = legSummary,
+                )
+            }
+            AppPage.Plan -> {
+                FlightPlanPage(
+                    page = page,
+                    pageHistory = pageHistory,
+                    legSummary = legSummary,
+                    samplePlan = fixture.samplePlan,
+                    onSelectPage = ::navigateToPage,
+                    onOpenCharts = { navigateToPage(AppPage.Charts) },
+                )
+            }
+            AppPage.Charts -> {
+                ChartsPage(
+                    page = page,
+                    pageHistory = pageHistory,
+                    airports = orderedChartAirports,
+                    selectedAirport = selectedAirport,
+                    selectedChart = selectedChart,
+                    uiTheme = uiTheme,
+                    folderOpen = chartFolderOpen,
+                    viewport = chartViewport,
+                    onViewportChange = { chartViewport = it },
+                    onFolderOpenChange = {
+                        restoreSnapshot(
+                            currentSnapshot().copy(
+                                page = AppPage.Charts,
+                                chartFolderOpen = it,
+                            ),
+                            pageHistory + currentSnapshot(),
+                        )
+                    },
+                    onSelectPage = ::navigateToPage,
+                    onSelectAirport = { airportId ->
+                        val airport = fixture.chartPage.airports.find { it.id == airportId }
+                        restoreSnapshot(
+                            currentSnapshot().copy(
+                                page = AppPage.Charts,
+                                selectedAirportId = airportId,
+                                selectedChartId = airport?.charts?.firstOrNull()?.id.orEmpty(),
+                                selectedChartLabel = airport?.charts?.firstOrNull()?.label.orEmpty(),
+                                recentAirportIds = moveAirportToFront(recentAirportIds, airportId, fixture.chartPage.airports),
+                                chartViewport = null,
+                                chartFolderOpen = false,
+                            ),
+                            pageHistory + currentSnapshot(),
+                        )
+                    },
+                    onSelectChart = {
+                        restoreSnapshot(
+                            currentSnapshot().copy(
+                                page = AppPage.Charts,
+                                selectedChartId = it,
+                                selectedChartLabel = selectedAirport?.charts?.firstOrNull { chart -> chart.id == it }?.label.orEmpty(),
+                                chartViewport = null,
+                                chartFolderOpen = false,
+                            ),
+                            pageHistory + currentSnapshot(),
+                        )
+                    },
+                )
+            }
         }
     }
 }
@@ -562,6 +547,9 @@ private fun MapExplorerPage(
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     var installingPackage by remember { mutableStateOf<String?>(null) }
     var installRevision by remember { mutableStateOf(0) }
+    var motionDragActive by remember { mutableStateOf(false) }
+    var motionDragLastX by remember { mutableStateOf(0f) }
+    var motionDragLastY by remember { mutableStateOf(0f) }
     val selectedMap = remember(selectedMapId, fixture.mapViews) {
         fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
     }
@@ -798,6 +786,39 @@ private fun MapExplorerPage(
             .pointerInteropFilter { event ->
                 if (surfaceWidthUnits == 0f || surfaceHeightUnits == 0f) {
                     return@pointerInteropFilter false
+                }
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        if (topLeftTrayOpen) {
+                            return@pointerInteropFilter false
+                        }
+                        motionDragActive = true
+                        motionDragLastX = event.x
+                        motionDragLastY = event.y
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        if (!motionDragActive || topLeftTrayOpen) {
+                            return@pointerInteropFilter false
+                        }
+                        val dxPx = event.x - motionDragLastX
+                        val dyPx = event.y - motionDragLastY
+                        onViewportChange(
+                            dragViewport(
+                                viewportState.value,
+                                dx = with(density) { dxPx.toDp().value },
+                                dy = with(density) { dyPx.toDp().value },
+                            ),
+                        )
+                        motionDragLastX = event.x
+                        motionDragLastY = event.y
+                        true
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        val wasDragging = motionDragActive
+                        motionDragActive = false
+                        wasDragging
+                    }
                 }
                 if (event.action == MotionEvent.ACTION_SCROLL) {
                     val wheelDelta = event.getAxisValue(MotionEvent.AXIS_VSCROLL).takeIf { it != 0f }

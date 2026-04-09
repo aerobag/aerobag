@@ -449,15 +449,16 @@ impl ProductBuildConfig {
             .parent()
             .expect("product should live under the repo root")
             .to_path_buf();
+        let artifact_root = default_artifact_root(&repo_root);
 
         let mut profile = ProductBuildProfile::Production;
         let mut source_root = repo_root.join("avare-source");
-        let mut build_root = repo_root.join("product-builds").join(profile.as_str());
+        let mut build_root = artifact_root.join("product-builds").join(profile.as_str());
         let mut fetch_jobs = env_usize("FETCH_JOBS").unwrap_or(4);
         let mut cpu_jobs = env_usize("CPU_JOBS").unwrap_or_else(default_cpu_jobs);
         let mut max_heavy_jobs = env_usize("MAX_HEAVY_JOBS").unwrap_or(4).max(1);
-        let fetch_cache_root =
-            env_path("FETCH_CACHE_ROOT").unwrap_or_else(|| repo_root.join("cache").join("fetch"));
+        let fetch_cache_root = env_path("FETCH_CACHE_ROOT")
+            .unwrap_or_else(|| artifact_root.join("cache").join("fetch"));
         let fetch_cache_mode = env::var("FETCH_CACHE_MODE").unwrap_or_else(|_| "fill".to_string());
 
         let mut index = 0;
@@ -467,7 +468,7 @@ impl ProductBuildConfig {
                     let value = args.get(index + 1).context("missing value for --profile")?;
                     profile = ProductBuildProfile::parse(value)
                         .ok_or_else(|| anyhow::anyhow!("unsupported profile: {value}"))?;
-                    build_root = repo_root.join("product-builds").join(profile.as_str());
+                    build_root = artifact_root.join("product-builds").join(profile.as_str());
                     index += 2;
                 }
                 "--source-root" => {
@@ -1529,6 +1530,15 @@ fn format_elapsed(elapsed_secs: u64) -> String {
 
 fn env_path(name: &str) -> Option<PathBuf> {
     env::var(name).ok().map(PathBuf::from)
+}
+
+fn default_artifact_root(repo_root: &Path) -> PathBuf {
+    env_path("AEROBAG_ARTIFACT_ROOT").unwrap_or_else(|| {
+        repo_root
+            .parent()
+            .map(|parent| parent.join("aerobag-artifacts"))
+            .unwrap_or_else(|| repo_root.join("artifacts"))
+    })
 }
 
 fn env_usize(name: &str) -> Option<usize> {

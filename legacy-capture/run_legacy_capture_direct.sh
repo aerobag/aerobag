@@ -3,9 +3,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ARTIFACT_ROOT="${AEROBAG_ARTIFACT_ROOT:-$(dirname "${ROOT_DIR}")/aerobag-artifacts}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-${ROOT_DIR}/runs/${RUN_ID}}"
-CACHE_ROOT="${CACHE_ROOT:-${ROOT_DIR}/cache}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${ARTIFACT_ROOT}/runs/${RUN_ID}}"
+CACHE_ROOT="${CACHE_ROOT:-${ARTIFACT_ROOT}/cache}"
 
 mkdir -p "${OUTPUT_ROOT}" "${CACHE_ROOT}"
 

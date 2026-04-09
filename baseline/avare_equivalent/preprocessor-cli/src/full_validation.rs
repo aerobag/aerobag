@@ -67,12 +67,13 @@ impl FullValidationConfig {
             .parent()
             .expect("baseline should live under the repo root")
             .to_path_buf();
+        let artifact_root = default_artifact_root(&repo_root);
 
         let run_id = env::var("RUN_ID").unwrap_or_else(|_| Utc::now().format("%Y%m%dT%H%M%SZ").to_string());
         let validation_root = env_path("VALIDATION_ROOT")
-            .unwrap_or_else(|| repo_root.join("runs").join(format!("{run_id}-validation")));
+            .unwrap_or_else(|| artifact_root.join("runs").join(format!("{run_id}-validation")));
         let avare_source_root = env_path("AVARE_SOURCE_ROOT").unwrap_or_else(|| repo_root.join("avare-source"));
-        let cache_root = env_path("CACHE_ROOT").unwrap_or_else(|| repo_root.join("cache"));
+        let cache_root = env_path("CACHE_ROOT").unwrap_or_else(|| artifact_root.join("cache"));
         let fetch_cache_root =
             env_path("FETCH_CACHE_ROOT").unwrap_or_else(|| cache_root.join("fetch"));
         let fetch_cache_mode = env::var("FETCH_CACHE_MODE").unwrap_or_else(|_| "fill".to_string());
@@ -182,6 +183,15 @@ impl FullValidationConfig {
 
 fn env_path(name: &str) -> Option<PathBuf> {
     env::var(name).ok().map(PathBuf::from)
+}
+
+fn default_artifact_root(repo_root: &Path) -> PathBuf {
+    env_path("AEROBAG_ARTIFACT_ROOT").unwrap_or_else(|| {
+        repo_root
+            .parent()
+            .map(|parent| parent.join("aerobag-artifacts"))
+            .unwrap_or_else(|| repo_root.join("artifacts"))
+    })
 }
 
 fn env_usize(name: &str) -> Option<usize> {

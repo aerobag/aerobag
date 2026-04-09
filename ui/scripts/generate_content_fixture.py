@@ -13,8 +13,9 @@ from osgeo import osr
 
 
 ROOT = Path(__file__).resolve().parents[2]
+ARTIFACT_ROOT = Path(os.environ.get("AEROBAG_ARTIFACT_ROOT", ROOT.parent / "aerobag-artifacts"))
 UI_DIR = ROOT / "ui"
-RESOURCE_INDEX = ROOT / "product-builds" / "production" / "work" / "resource-index" / "resource-index.json"
+RESOURCE_INDEX = ARTIFACT_ROOT / "product-builds" / "production" / "work" / "resource-index" / "resource-index.json"
 UI_THEME = UI_DIR / "shared-fixtures" / "ui-theme.json"
 CANONICAL_OUT = UI_DIR / "shared-fixtures" / "content-prototype" / "content_fixture.json"
 CANONICAL_RESOURCE_INDEX_OUT = UI_DIR / "shared-fixtures" / "content-prototype" / "resource-index.json"
@@ -35,9 +36,9 @@ ANDROID_CHART_ASSET_ROOT = UI_DIR / "android-app" / "generated-seed" / "chart-as
 ANDROID_LEGACY_CHART_ASSET_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "chart-assets"
 WEB_NAV_DB_ROOT = UI_DIR / "web-app" / "generated-static" / "nav-db"
 ANDROID_NAV_DB_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "nav-db"
-PRODUCT_MAIN_DB = ROOT / "product-builds" / "shared" / "work" / "data" / "output" / "main.db"
-BOSTON_TAC_GEOJSON = ROOT / "product-builds" / "shared" / "work" / "charts-tac" / "work" / "charts-tac" / "TAC" / "Boston TAC.geojson"
-BOSTON_TAC_TILE_ROOT = ROOT / "product-builds" / "shared" / "work" / "charts-tac" / "work" / "charts-tac" / "tiles" / "1"
+PRODUCT_MAIN_DB = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "data" / "output" / "main.db"
+BOSTON_TAC_GEOJSON = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "charts-tac" / "work" / "charts-tac" / "TAC" / "Boston TAC.geojson"
+BOSTON_TAC_TILE_ROOT = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "charts-tac" / "work" / "charts-tac" / "tiles" / "1"
 
 REGION_ORDER = ["ne", "nc", "nw", "se", "sc", "sw", "ec", "ak", "pac"]
 REGION_DISPLAY_NAMES = {
@@ -200,24 +201,24 @@ def package_family(package_id: str) -> str:
 def plate_root_candidates(package_id: str) -> list[Path]:
     region = package_region(package_id)
     return [
-        ROOT / "product-builds" / "shared" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
-        ROOT / "product-builds" / "production" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
-        ROOT / "product-builds" / "validation" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
+        ARTIFACT_ROOT / "product-builds" / "shared" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
+        ARTIFACT_ROOT / "product-builds" / "production" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
+        ARTIFACT_ROOT / "product-builds" / "validation" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
     ]
 
 
 def thumbnail_root_candidates() -> list[Path]:
     return [
-        ROOT / "product-builds" / "production" / "work" / "resource-index",
-        ROOT / "product-builds" / "validation" / "work" / "resource-index",
+        ARTIFACT_ROOT / "product-builds" / "production" / "work" / "resource-index",
+        ARTIFACT_ROOT / "product-builds" / "validation" / "work" / "resource-index",
     ]
 
 
 def csup_root_candidates() -> list[Path]:
     return [
-        ROOT / "product-builds" / "shared" / "work" / "csup" / "work" / "csup",
-        ROOT / "product-builds" / "production" / "work" / "csup" / "work" / "csup",
-        ROOT / "product-builds" / "validation" / "work" / "csup" / "work" / "csup",
+        ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "csup" / "work" / "csup",
+        ARTIFACT_ROOT / "product-builds" / "production" / "work" / "csup" / "work" / "csup",
+        ARTIFACT_ROOT / "product-builds" / "validation" / "work" / "csup" / "work" / "csup",
     ]
 
 
@@ -239,9 +240,9 @@ def extract_chart_record_from_package(record: dict, package_artifacts: dict[str,
         package_id = record["package_id"]
         if package_id.endswith("_TPP"):
             region = package_region(package_id)
-            artifact_path = ROOT / "product-builds" / "shared" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}" / f"{package_id}.zip"
+            artifact_path = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}" / f"{package_id}.zip"
         elif package_id.endswith("_CSUP"):
-            artifact_path = ROOT / "product-builds" / "shared" / "work" / "csup" / "work" / "csup" / f"{package_id}.zip"
+            artifact_path = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "csup" / "work" / "csup" / f"{package_id}.zip"
         if artifact_path is None or not artifact_path.exists():
             raise RuntimeError(f"missing package artifact for {record['package_id']}")
     cached_target = WEB_CHART_ASSET_ROOT / "__zipcache__" / record["package_id"] / record[asset_key]

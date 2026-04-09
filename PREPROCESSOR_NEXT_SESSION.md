@@ -1379,3 +1379,30 @@ If the next session starts with no further instruction, do this:
     - `KBOS` `CSUP-NE_0`:
       - `document_type = csup`
       - `thumbnail_path = thumbnails/afd/BOS/CSUP-NE_0.png`
+
+- UI fixture generation no longer depends on old Banana or `rust-runs` paths:
+  - file:
+    - [ui/scripts/generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py)
+  - removed legacy holdouts:
+    - `rust-runs/.../charts-tac/TAC/Boston TAC.geojson`
+    - `runs/20260406T003224Z-validation/.../charts-tac/tiles/1`
+    - Banana-native `tpp-*` fallback roots
+    - Banana-native `csup` fallback root
+  - generator now resolves entirely from `product-builds`, primarily:
+    - `product-builds/shared/work/charts-tac/...`
+    - `product-builds/shared/work/tpp-*/...`
+    - `product-builds/shared/work/csup/...`
+    - `product-builds/production/work/resource-index/...`
+
+- Artifact-backed parity fixture tests were removed from both baseline and product:
+  - deleted:
+    - `baseline/avare_equivalent/preprocessor-cli/tests/chart_parity.rs`
+    - `baseline/avare_equivalent/preprocessor-cli/tests/data_parity.rs`
+    - `product/preprocessor/preprocessor-cli/tests/chart_parity.rs`
+    - `product/preprocessor/preprocessor-cli/tests/data_parity.rs`
+  - rationale:
+    - these tests only existed for fast iteration during the translation effort
+    - they depended on pinned heavyweight local runs
+    - Full Banana is now the authoritative parity-certification path
+  - consequence:
+    - old fixture runs like `20260405T154700Z`, `20260405T154700Z-tpp-retry`, and `20260407T053200Z-data-build` are no longer needed for test coverage

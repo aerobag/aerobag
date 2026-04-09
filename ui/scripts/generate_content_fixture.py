@@ -36,8 +36,8 @@ ANDROID_LEGACY_CHART_ASSET_ROOT = UI_DIR / "android-app" / "app" / "src" / "main
 WEB_NAV_DB_ROOT = UI_DIR / "web-app" / "generated-static" / "nav-db"
 ANDROID_NAV_DB_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "nav-db"
 PRODUCT_MAIN_DB = ROOT / "product-builds" / "shared" / "work" / "data" / "output" / "main.db"
-BOSTON_TAC_GEOJSON = ROOT / "rust-runs" / "tac-native" / "work" / "charts-tac" / "TAC" / "Boston TAC.geojson"
-BOSTON_TAC_TILE_ROOT = ROOT / "runs" / "20260406T003224Z-validation" / "native" / "charts-tac" / "work" / "charts-tac" / "tiles" / "1"
+BOSTON_TAC_GEOJSON = ROOT / "product-builds" / "shared" / "work" / "charts-tac" / "work" / "charts-tac" / "TAC" / "Boston TAC.geojson"
+BOSTON_TAC_TILE_ROOT = ROOT / "product-builds" / "shared" / "work" / "charts-tac" / "work" / "charts-tac" / "tiles" / "1"
 
 REGION_ORDER = ["ne", "nc", "nw", "se", "sc", "sw", "ec", "ak", "pac"]
 REGION_DISPLAY_NAMES = {
@@ -203,7 +203,6 @@ def plate_root_candidates(package_id: str) -> list[Path]:
         ROOT / "product-builds" / "shared" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
         ROOT / "product-builds" / "production" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
         ROOT / "product-builds" / "validation" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
-        ROOT / "runs" / "20260406T003224Z-validation" / "native" / f"tpp-{region}" / "work" / f"tpp-{region}",
     ]
 
 
@@ -219,7 +218,6 @@ def csup_root_candidates() -> list[Path]:
         ROOT / "product-builds" / "shared" / "work" / "csup" / "work" / "csup",
         ROOT / "product-builds" / "production" / "work" / "csup" / "work" / "csup",
         ROOT / "product-builds" / "validation" / "work" / "csup" / "work" / "csup",
-        ROOT / "runs" / "20260406T003224Z-validation" / "native" / "csup" / "work" / "csup",
     ]
 
 

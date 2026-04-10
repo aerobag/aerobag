@@ -709,6 +709,7 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
   const [pageTrayOpen, setPageTrayOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
+  const trayOpen = pageTrayOpen;
   const rows = useMemo(
     () =>
       samplePlan.legs.map((leg, index) => ({
@@ -723,6 +724,8 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
 
   return (
     <section className="appPage planPage">
+      {trayOpen ? <button type="button" className="trayScrim" aria-label="Close page tray" onClick={() => setPageTrayOpen(false)} /> : null}
+
       <div className="pageChrome">
         <div className="chartDock">
           <TrayDock

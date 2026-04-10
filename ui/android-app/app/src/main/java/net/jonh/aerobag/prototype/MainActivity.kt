@@ -1471,6 +1471,13 @@ private fun MapTopLeftControls(
     onToggle: () -> Unit,
 ) {
     val anyTrayOpen = pageTrayOpen || trayOpen
+    val dismissOpenTray = {
+        if (pageTrayOpen) {
+            onTogglePageTray()
+        } else if (trayOpen) {
+            onToggle()
+        }
+    }
     Row(
         modifier = modifier.padding(ThumbGap),
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
@@ -1481,6 +1488,7 @@ private fun MapTopLeftControls(
             open = pageTrayOpen,
             onToggle = onTogglePageTray,
             blocked = anyTrayOpen && !pageTrayOpen,
+            onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
                 MenuDockOption(option.page.name, option.label) { onSelectPage(option.page) }
@@ -1491,6 +1499,7 @@ private fun MapTopLeftControls(
             open = trayOpen,
             onToggle = onToggle,
             blocked = anyTrayOpen && !trayOpen,
+            onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.Compact,
             options = trayOptions.map { option ->
                 MenuDockOption(option.id, option.label, option.available) { option.select?.invoke() }
@@ -1519,6 +1528,13 @@ private fun ChartViewerSelectors(
     onSelectChart: (String) -> Unit,
 ) {
     val trayOpen = pageTrayOpen || airportTrayOpen || chartTrayOpen
+    val dismissOpenTray = {
+        when {
+            pageTrayOpen -> onTogglePageTray()
+            airportTrayOpen -> onToggleAirportTray()
+            chartTrayOpen -> onToggleChartTray()
+        }
+    }
     Row(
         modifier = modifier.padding(ThumbGap),
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
@@ -1529,6 +1545,7 @@ private fun ChartViewerSelectors(
             open = pageTrayOpen,
             onToggle = onTogglePageTray,
             blocked = trayOpen && !pageTrayOpen,
+            onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
                 MenuDockOption(option.page.name, option.label) { onSelectPage(option.page) }
@@ -1540,6 +1557,7 @@ private fun ChartViewerSelectors(
             open = airportTrayOpen,
             onToggle = onToggleAirportTray,
             blocked = trayOpen && !airportTrayOpen,
+            onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.PlateAirport,
             options = airports.map { airport ->
                 MenuDockOption(airport.id, airport.label) { onSelectAirport(airport.id) }
@@ -1551,6 +1569,7 @@ private fun ChartViewerSelectors(
             open = chartTrayOpen,
             onToggle = onToggleChartTray,
             blocked = trayOpen && !chartTrayOpen,
+            onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.PlateWide,
             options = sortChartsForFolder(selectedAirport?.charts ?: emptyList()).map { chart ->
                 MenuDockOption(chart.id, chart.label) { onSelectChart(chart.id) }
@@ -1561,6 +1580,7 @@ private fun ChartViewerSelectors(
             label = "FLDR",
             modifier = Modifier.size(ThumbSize),
             enabled = !trayOpen && !folderOpen,
+            onDisabledClick = if (trayOpen) dismissOpenTray else null,
             onClick = onToggleFolder,
         )
     }
@@ -1642,6 +1662,7 @@ private fun MenuDock(
     open: Boolean,
     onToggle: () -> Unit,
     blocked: Boolean = false,
+    onBlockedClick: (() -> Unit)? = null,
     style: MenuDockStyle,
     options: List<MenuDockOption>,
 ) {
@@ -1664,6 +1685,7 @@ private fun MenuDock(
             label = launcherLabel,
             maxLines = style.launcherMaxLines,
             enabled = !blocked || open,
+            onDisabledClick = if (blocked && !open) onBlockedClick else null,
             modifier = Modifier
                 .width(style.buttonWidth)
                 .height(ThumbSize)
@@ -1868,14 +1890,13 @@ private fun CompactSquareButton(
     modifier: Modifier = Modifier,
     maxLines: Int = 1,
     enabled: Boolean = true,
+    onDisabledClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
         modifier = modifier.then(
-            if (!enabled) {
-                Modifier.alpha(0.6f)
-            } else {
+            if (enabled) {
                 Modifier.pointerInput(onClick) {
                     awaitEachGesture {
                         var activePointer: PointerId? = null
@@ -1902,6 +1923,36 @@ private fun CompactSquareButton(
                         }
                     }
                 }
+            } else {
+                Modifier.pointerInput(onDisabledClick) {
+                    if (onDisabledClick == null) {
+                        return@pointerInput
+                    }
+                    awaitEachGesture {
+                        var activePointer: PointerId? = null
+                        var moved = false
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (activePointer == null) {
+                                val downChange = event.changes.firstOrNull { it.pressed } ?: continue
+                                activePointer = downChange.id
+                                downChange.consume()
+                                continue
+                            }
+                            val change = event.changes.firstOrNull { it.id == activePointer } ?: break
+                            if (change.positionChanged()) {
+                                moved = true
+                            }
+                            change.consume()
+                            if (!change.pressed) {
+                                if (!moved) {
+                                    onDisabledClick()
+                                }
+                                break
+                            }
+                        }
+                    }
+                }
             }
         ),
         shape = RoundedCornerShape(ThumbRadius),
@@ -1916,6 +1967,13 @@ private fun CompactSquareButton(
                 maxLines = maxLines,
                 overflow = TextOverflow.Clip,
             )
+            if (!enabled) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(Color(0x42000000)),
+                )
+            }
         }
     }
 }

@@ -16,7 +16,7 @@ use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
     read_source_urls_jsonl,
 };
-use preprocessor_tools::{append_pngs_vertical, ToolInvocation};
+use preprocessor_tools::{append_pngs_vertical, flatten_png_onto_white, ToolInvocation};
 
 mod package;
 use package::package_region;
@@ -573,6 +573,7 @@ fn make_continued_plate_group(
         } else {
             render_basic_png(work_dir, pdf_path, temp_png, *rotation)?;
         }
+        flatten_png_onto_white(temp_png)?;
         rendered_parts.push(temp_png.clone());
     }
 
@@ -1131,10 +1132,12 @@ fn plate_output_name(chart_code: &str, state_id: &str, chart_name: &str) -> Stri
 }
 
 fn basic_plate_fingerprint(pdf_hash: &str, output_name: &str) -> anyhow::Result<String> {
+    let tools_hash = preprocessor_tools_source_hash()?;
     Ok(hash_fingerprint_components(&[
         TPP_BASIC_PIPELINE_VERSION,
         pdf_hash,
         output_name,
+        &tools_hash,
     ]))
 }
 
@@ -1143,19 +1146,23 @@ fn airport_diagram_fingerprint(
     output_name: &str,
     comment: &str,
 ) -> anyhow::Result<String> {
+    let tools_hash = preprocessor_tools_source_hash()?;
     Ok(hash_fingerprint_components(&[
         TPP_AIRPORT_DIAGRAM_PIPELINE_VERSION,
         pdf_hash,
         output_name,
         comment,
+        &tools_hash,
     ]))
 }
 
 fn geotagged_plate_fingerprint(pdf_hash: &str, output_name: &str) -> anyhow::Result<String> {
+    let tools_hash = preprocessor_tools_source_hash()?;
     Ok(hash_fingerprint_components(&[
         TPP_GEOTAGGED_PIPELINE_VERSION,
         pdf_hash,
         output_name,
+        &tools_hash,
     ]))
 }
 
@@ -1164,9 +1171,11 @@ fn continued_plate_fingerprint(
     output_name: &str,
     legacy_continued_outputs: &[String],
 ) -> anyhow::Result<String> {
+    let tools_hash = preprocessor_tools_source_hash()?;
     let mut parts = vec![TPP_CONTINUED_PIPELINE_VERSION.to_string(), output_name.to_string()];
     parts.extend(pdf_hashes.iter().cloned());
     parts.extend(legacy_continued_outputs.iter().cloned());
+    parts.push(tools_hash);
     Ok(hash_fingerprint_components(
         &parts.iter().map(String::as_str).collect::<Vec<_>>(),
     ))
@@ -1185,6 +1194,15 @@ fn minimum_plate_fingerprint(
         apt_id,
         &script_hash,
     ]))
+}
+
+fn preprocessor_tools_source_hash() -> anyhow::Result<String> {
+    hash_file(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .context("preprocessor-tpp crate should live under workspace root")?
+            .join("preprocessor-tools/src/lib.rs"),
+    )
 }
 
 fn hash_fingerprint_components(parts: &[&str]) -> String {

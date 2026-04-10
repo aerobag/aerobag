@@ -176,11 +176,11 @@ pub fn append_pngs_vertical(
         .collect::<Vec<_>>();
     args.extend([
         "-background".to_string(),
-        "white".to_string(),
+        "none".to_string(),
         "-gravity".to_string(),
         "north".to_string(),
         "-append".to_string(),
-        output.to_string_lossy().to_string(),
+        format!("PNG32:{}", output.to_string_lossy()),
     ]);
     let invocation = ToolInvocation {
         program: "convert".to_string(),
@@ -194,6 +194,18 @@ pub fn append_pngs_vertical(
     if !outcome.success {
         anyhow::bail!("convert failed while concatenating PNGs into {}", output.display());
     }
+    Ok(())
+}
+
+pub fn flatten_png_onto_white(path: &Path) -> anyhow::Result<()> {
+    let image = image::open(path)
+        .with_context(|| format!("failed to open PNG for white flatten {}", path.display()))?;
+    let mut canvas = RgbaImage::from_pixel(image.width(), image.height(), Rgba([255, 255, 255, 255]));
+    let rgba = image.to_rgba8();
+    image::imageops::overlay(&mut canvas, &rgba, 0, 0);
+    canvas
+        .save(path)
+        .with_context(|| format!("failed to rewrite flattened PNG {}", path.display()))?;
     Ok(())
 }
 

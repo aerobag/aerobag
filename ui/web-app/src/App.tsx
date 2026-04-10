@@ -891,6 +891,7 @@ function ChartsPage(props: {
   const [imageSize, setImageSize] = useState<{ chartId: string; width: number; height: number } | null>(null);
   const viewportRef = useRef<ImageViewportState | null>(null);
   const lastLocalViewportRef = useRef<ImageViewportState | null>(null);
+  const wheelGestureUntilRef = useRef(0);
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<{ zoom: number; distance: number; midpoint: ScreenPoint } | null>(null);
@@ -946,6 +947,9 @@ function ChartsPage(props: {
       return;
     }
     if (activePointersRef.current.size > 0) {
+      return;
+    }
+    if (Date.now() < wheelGestureUntilRef.current) {
       return;
     }
     if (lastLocalViewportRef.current === viewport) {
@@ -1106,20 +1110,21 @@ function ChartsPage(props: {
       return;
     }
     event.preventDefault();
+    wheelGestureUntilRef.current = Date.now() + 160;
     const point = localPointFromPointerEvent(event);
-    updateViewport(
-      zoomImageAroundPoint(
-        viewportRef.current,
-        point.x,
-        point.y,
-        viewportRef.current.zoom - event.deltaY / 360,
-        selectedImageSize.width,
-        selectedImageSize.height,
-        surfaceSize.width,
-        surfaceSize.height,
-        overscrollPx,
-      ),
+    const zoomTarget = viewportRef.current.zoom - event.deltaY / 360;
+    const next = zoomImageAroundPoint(
+      viewportRef.current,
+      point.x,
+      point.y,
+      zoomTarget,
+      selectedImageSize.width,
+      selectedImageSize.height,
+      surfaceSize.width,
+      surfaceSize.height,
+      overscrollPx,
     );
+    updateViewport(next);
   }
 
   function handleDoubleClick(event: React.MouseEvent<HTMLDivElement>) {

@@ -409,7 +409,13 @@ def extract_zip_for_web(package: TiledPackage) -> None:
 
 def extract_zip(archive: zipfile.ZipFile, target_dir: Path) -> None:
     for member in archive.infolist():
-        archive.extract(member, target_dir)
+        target_path = target_dir / member.filename
+        if member.is_dir():
+            target_path.mkdir(parents=True, exist_ok=True)
+            continue
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with archive.open(member) as source, target_path.open("wb") as destination:
+            shutil.copyfileobj(source, destination)
 
 
 def compute_level_bounds_from_zip(package: TiledPackage, chart_index: int = 0) -> list[dict]:

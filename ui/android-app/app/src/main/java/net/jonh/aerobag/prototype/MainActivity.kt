@@ -1797,9 +1797,10 @@ private fun FlightPlanDataRow(row: FlightPlanRow, onWaypointClick: () -> Unit) {
 @Composable
 private fun PlanCell(value: String, modifier: Modifier, isHeader: Boolean = false) {
     val uiTheme = LocalAerobagUiTheme.current
+    val cellHeight = if (isHeader) ThumbSize * 0.5f else ThumbSize
     Box(
         modifier = modifier
-            .height(ThumbSize)
+            .height(cellHeight)
             .background(uiTheme.controls.panelBg, RoundedCornerShape(ThumbRadius))
             .border(1.dp, uiTheme.controls.panelBorder, RoundedCornerShape(ThumbRadius))
             .padding(horizontal = 10.dp),

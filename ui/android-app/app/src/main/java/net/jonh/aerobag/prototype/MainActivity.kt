@@ -17,6 +17,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -47,6 +48,7 @@ import androidx.compose.foundation.lazy.grid.items as lazyGridItems
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -1710,8 +1712,17 @@ private fun MenuDock(
                     .width(style.trayWidth)
                     .heightIn(max = trayMaxHeight)
                     .zIndex(10f),
+                shape = RoundedCornerShape(ThumbRadius + 2.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = uiTheme.controls.panelBg,
+                    contentColor = uiTheme.controls.panelFg,
+                ),
+                border = BorderStroke(2.dp, uiTheme.controls.panelBorder),
             ) {
-                LazyColumn {
+                LazyColumn(
+                    modifier = Modifier.padding(3.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
                     lazyColumnItems(options) { option ->
                         val rowBackground = when {
                             !option.enabled -> uiTheme.controls.panelBg

@@ -51,8 +51,21 @@ fun resolveArtifactPath(rawPath: String): File {
     if (source.isFile) {
         return source
     }
-    val marker = "${File.separator}product-builds${File.separator}"
     val raw = rawPath.replace('\\', File.separatorChar)
+    val normalizedRelative = raw.removePrefix(".${File.separator}")
+    fun rebasedCandidate(relativePath: String): File =
+        artifactRoot.resolve("product-builds").resolve(relativePath.replace('\\', '/'))
+    if (
+        normalizedRelative.startsWith("shared${File.separator}") ||
+        normalizedRelative.startsWith("validation${File.separator}") ||
+        normalizedRelative.startsWith("production${File.separator}")
+    ) {
+        val rebased = rebasedCandidate(normalizedRelative)
+        if (rebased.isFile) {
+            return rebased
+        }
+    }
+    val marker = "${File.separator}product-builds${File.separator}"
     val markerIndex = raw.indexOf(marker)
     if (markerIndex >= 0) {
         val relative = raw.substring(markerIndex + marker.length)

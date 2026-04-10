@@ -101,8 +101,8 @@ pub fn derive_chart_page_json(
     resource_index_json: &str,
     plan_json: &str,
 ) -> Result<String, String> {
-    let resource_index: app_core::ResourceIndexChartPageInput =
-        serde_json::from_str(resource_index_json).map_err(|err| err.to_string())?;
+    let resource_index =
+        app_core::load_resource_index_chart_page_input(resource_index_json).map_err(|err| err.to_string())?;
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let chart_page = app_core::derive_chart_page(&resource_index, &plan);
@@ -116,8 +116,8 @@ pub fn derive_chart_page_state_json(
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
 ) -> Result<String, String> {
-    let resource_index: app_core::ResourceIndexChartPageInput =
-        serde_json::from_str(resource_index_json).map_err(|err| err.to_string())?;
+    let resource_index =
+        app_core::load_resource_index_chart_page_input(resource_index_json).map_err(|err| err.to_string())?;
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let recent_airport_ids: Vec<String> =
@@ -134,6 +134,84 @@ pub fn derive_chart_page_state_json(
         selected_chart_id.as_deref(),
     );
     serde_json::to_string(&state).map_err(|err| err.to_string())
+}
+
+pub fn create_ui_session_json(
+    catalog_json: &str,
+    resource_index_json: &str,
+    plan_json: &str,
+    recent_airport_ids_json: &str,
+    selected_airport_id_json: &str,
+    selected_chart_id_json: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let recent_airport_ids: Vec<String> =
+        serde_json::from_str(recent_airport_ids_json).map_err(|err| err.to_string())?;
+    let selected_airport_id: Option<String> =
+        serde_json::from_str(selected_airport_id_json).map_err(|err| err.to_string())?;
+    let selected_chart_id: Option<String> =
+        serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
+    let result = app_core::create_ui_session(
+        catalog_json,
+        resource_index_json,
+        plan,
+        &recent_airport_ids,
+        selected_airport_id.as_deref(),
+        selected_chart_id.as_deref(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&result).map_err(|err| err.to_string())
+}
+
+pub fn remove_leg_in_session_json(handle: u64, index: usize) -> Result<String, String> {
+    let snapshot = app_core::remove_leg_in_session(handle, index).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn select_airport_in_session_json(handle: u64, airport_id_json: &str) -> Result<String, String> {
+    let airport_id: String = serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::select_airport_in_session(handle, &airport_id).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn select_chart_in_session_json(handle: u64, chart_id_json: &str) -> Result<String, String> {
+    let chart_id: String = serde_json::from_str(chart_id_json).map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::select_chart_in_session(handle, &chart_id).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn get_session_snapshot_json(handle: u64) -> Result<String, String> {
+    let snapshot = app_core::get_session_snapshot(handle).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn restore_chart_page_state_in_session_json(
+    handle: u64,
+    recent_airport_ids_json: &str,
+    selected_airport_id_json: &str,
+    selected_chart_id_json: &str,
+) -> Result<String, String> {
+    let recent_airport_ids: Vec<String> =
+        serde_json::from_str(recent_airport_ids_json).map_err(|err| err.to_string())?;
+    let selected_airport_id: Option<String> =
+        serde_json::from_str(selected_airport_id_json).map_err(|err| err.to_string())?;
+    let selected_chart_id: Option<String> =
+        serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::restore_chart_page_state_in_session(
+        handle,
+        &recent_airport_ids,
+        selected_airport_id.as_deref(),
+        selected_chart_id.as_deref(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn destroy_session_json(handle: u64) {
+    app_core::destroy_session(handle);
 }
 
 fn get_java_string(env: &mut JNIEnv, value: JString) -> Result<String, String> {
@@ -279,6 +357,115 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_der
         )
     })();
     return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_createUiSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    catalog_json: JString,
+    resource_index_json: JString,
+    plan_json: JString,
+    recent_airport_ids_json: JString,
+    selected_airport_id_json: JString,
+    selected_chart_id_json: JString,
+) -> jstring {
+    let result = (|| {
+        let catalog = get_java_string(&mut env, catalog_json)?;
+        let resource_index = get_java_string(&mut env, resource_index_json)?;
+        let plan = get_java_string(&mut env, plan_json)?;
+        let recent_airport_ids = get_java_string(&mut env, recent_airport_ids_json)?;
+        let selected_airport_id = get_java_string(&mut env, selected_airport_id_json)?;
+        let selected_chart_id = get_java_string(&mut env, selected_chart_id_json)?;
+        create_ui_session_json(
+            &catalog,
+            &resource_index,
+            &plan,
+            &recent_airport_ids,
+            &selected_airport_id,
+            &selected_chart_id,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_removeLegInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    index: i32,
+) -> jstring {
+    return_string(&mut env, remove_leg_in_session_json(handle as u64, index as usize))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectAirportInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    airport_id_json: JString,
+) -> jstring {
+    let result = (|| {
+        let airport_id = get_java_string(&mut env, airport_id_json)?;
+        select_airport_in_session_json(handle as u64, &airport_id)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectChartInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    chart_id_json: JString,
+) -> jstring {
+    let result = (|| {
+        let chart_id = get_java_string(&mut env, chart_id_json)?;
+        select_chart_in_session_json(handle as u64, &chart_id)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getSessionSnapshotJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    return_string(&mut env, get_session_snapshot_json(handle as u64))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_restoreChartPageStateInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    recent_airport_ids_json: JString,
+    selected_airport_id_json: JString,
+    selected_chart_id_json: JString,
+) -> jstring {
+    let result = (|| {
+        let recent_airport_ids = get_java_string(&mut env, recent_airport_ids_json)?;
+        let selected_airport_id = get_java_string(&mut env, selected_airport_id_json)?;
+        let selected_chart_id = get_java_string(&mut env, selected_chart_id_json)?;
+        restore_chart_page_state_in_session_json(
+            handle as u64,
+            &recent_airport_ids,
+            &selected_airport_id,
+            &selected_chart_id,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_destroySession(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) {
+    destroy_session_json(handle as u64)
 }
 
 #[cfg(test)]

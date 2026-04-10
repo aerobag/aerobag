@@ -15,6 +15,8 @@ pub struct DerivedChartPageState {
     pub selected_chart_id: String,
 }
 
+pub type DerivedChartCatalog = DerivedChartPage;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DerivedChartAirport {
     pub id: String,
@@ -78,25 +80,33 @@ pub fn derive_chart_page(
     resource_index: &ResourceIndexChartPageInput,
     plan: &FlightPlan,
 ) -> DerivedChartPage {
-    let mut ordered_airport_ids: Vec<String> = Vec::new();
-    for airport_id in airport_ids_from_plan(plan) {
-        if !ordered_airport_ids.iter().any(|id| id == &airport_id) {
-            ordered_airport_ids.push(airport_id);
-        }
-    }
-    for entry in &resource_index.airport_resources {
-        if !ordered_airport_ids.iter().any(|id| id == &entry.airport_id) {
-            ordered_airport_ids.push(entry.airport_id.clone());
-        }
-    }
+    let catalog = build_chart_catalog(resource_index);
+    derive_chart_page_from_catalog(&catalog, plan)
+}
 
-    let airports = ordered_airport_ids
-        .into_iter()
-        .filter_map(|airport_id| {
-            let airport_resources = resource_index
-                .airport_resources
-                .iter()
-                .find(|entry| entry.airport_id == airport_id)?;
+pub fn derive_chart_page_state(
+    resource_index: &ResourceIndexChartPageInput,
+    plan: &FlightPlan,
+    stored_recent_airport_ids: &[String],
+    candidate_airport_id: Option<&str>,
+    candidate_chart_id: Option<&str>,
+) -> DerivedChartPageState {
+    let catalog = build_chart_catalog(resource_index);
+    derive_chart_page_state_from_catalog(
+        &catalog,
+        plan,
+        stored_recent_airport_ids,
+        candidate_airport_id,
+        candidate_chart_id,
+    )
+}
+
+pub fn build_chart_catalog(resource_index: &ResourceIndexChartPageInput) -> DerivedChartCatalog {
+    let airports = resource_index
+        .airport_resources
+        .iter()
+        .filter_map(|airport_resources| {
+            let airport_id = airport_resources.airport_id.clone();
             let mut charts: Vec<DerivedChartAsset> = Vec::new();
             for plate_id in &airport_resources.plate_ids {
                 if let Some(plate) = resource_index.plates.iter().find(|record| &record.id == plate_id) {
@@ -127,14 +137,31 @@ pub fn derive_chart_page(
     DerivedChartPage { airports }
 }
 
-pub fn derive_chart_page_state(
-    resource_index: &ResourceIndexChartPageInput,
+pub fn derive_chart_page_from_catalog(
+    catalog: &DerivedChartCatalog,
+    plan: &FlightPlan,
+) -> DerivedChartPage {
+    let mut ordered_airport_ids: Vec<String> = Vec::new();
+    for airport_id in airport_ids_from_plan(plan) {
+        if !ordered_airport_ids.iter().any(|id| id == &airport_id) {
+            ordered_airport_ids.push(airport_id);
+        }
+    }
+    let airports = ordered_airport_ids
+        .into_iter()
+        .filter_map(|airport_id| catalog.airports.iter().find(|airport| airport.id == airport_id).cloned())
+        .collect();
+    DerivedChartPage { airports }
+}
+
+pub fn derive_chart_page_state_from_catalog(
+    catalog: &DerivedChartCatalog,
     plan: &FlightPlan,
     stored_recent_airport_ids: &[String],
     candidate_airport_id: Option<&str>,
     candidate_chart_id: Option<&str>,
 ) -> DerivedChartPageState {
-    let page = derive_chart_page(resource_index, plan);
+    let page = derive_chart_page_from_catalog(catalog, plan);
     let recent_airport_ids = merge_recent_airport_ids(&page.airports, stored_recent_airport_ids);
     let selected_airport_id = resolve_airport_id(&page.airports, candidate_airport_id, &recent_airport_ids);
     let selected_chart_id = resolve_chart_id(&page.airports, &selected_airport_id, candidate_chart_id);
@@ -317,7 +344,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn derives_chart_page_in_plan_then_resource_order() {
+    fn derives_chart_page_for_plan_airports_only() {
         let resource_index = ResourceIndexChartPageInput {
             airport_resources: vec![
                 ResourceAirportResources {
@@ -369,7 +396,7 @@ mod tests {
 
         let page = derive_chart_page(&resource_index, &plan);
 
-        assert_eq!(page.airports.iter().map(|airport| airport.id.as_str()).collect::<Vec<_>>(), vec!["KSEA", "KPAE"]);
+        assert_eq!(page.airports.iter().map(|airport| airport.id.as_str()).collect::<Vec<_>>(), vec!["KSEA"]);
         assert_eq!(page.airports[0].charts[0].folder_category, "airport-diagram");
     }
 
@@ -435,9 +462,9 @@ mod tests {
             Some("missing-chart"),
         );
 
-        assert_eq!(state.recent_airport_ids, vec!["KPAE".to_string(), "KSEA".to_string()]);
-        assert_eq!(state.selected_airport_id, "KPAE");
-        assert_eq!(state.selected_chart_id, "plate:KPAE:DP-WA-RNDR TWO.png");
-        assert_eq!(state.airports[0].id, "KPAE");
+        assert_eq!(state.recent_airport_ids, vec!["KSEA".to_string()]);
+        assert_eq!(state.selected_airport_id, "KSEA");
+        assert_eq!(state.selected_chart_id, "plate:KSEA:APD-WA-AIRPORT DIAGRAM.png");
+        assert_eq!(state.airports[0].id, "KSEA");
     }
 }

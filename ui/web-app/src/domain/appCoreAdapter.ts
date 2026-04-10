@@ -8,6 +8,7 @@ import type {
   ChartFamilyId,
   ContentAvailability,
 } from "./types";
+import { sampleCatalog } from "./sampleData";
 
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];
@@ -16,7 +17,36 @@ export type DerivedChartPageState = {
   selected_chart_id: string;
 };
 
+export type UiSessionSnapshot = {
+  app_state: AppState;
+  chart_page_state: UiChartPageState;
+};
+
+export type UiChartPageState = {
+  ordered_airport_ids: string[];
+  recent_airport_ids: string[];
+  selected_airport_id: string;
+  selected_chart_id: string;
+};
+
+export interface UiSession {
+  chartCatalog: ChartPageData;
+  snapshot(): Promise<UiSessionSnapshot>;
+  removeLeg(index: number): Promise<UiSessionSnapshot>;
+  selectAirport(airportId: string): Promise<UiSessionSnapshot>;
+  selectChart(chartId: string): Promise<UiSessionSnapshot>;
+  restoreChartPageState(recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
+  destroy(): Promise<void>;
+}
+
 export interface AppCoreAdapter {
+  createUiSession(
+    resourceIndex: unknown,
+    plan: FlightPlan,
+    recentAirportIds: string[],
+    selectedAirportId?: string,
+    selectedChartId?: string,
+  ): Promise<UiSession>;
   replaceFlightPlanState(state: AppState, catalog: CatalogJson, plan: FlightPlan): Promise<AppState>;
   removeFlightPlanLeg(plan: FlightPlan, index: number): Promise<FlightPlan>;
   deriveChartPage(resourceIndex: unknown, plan: FlightPlan): Promise<ChartPageData>;
@@ -63,6 +93,80 @@ function airportCode(ref: FlightPlan["legs"][number]["from"] | null | undefined)
 }
 
 export class MockAppCoreAdapter implements AppCoreAdapter {
+  async createUiSession(
+    resourceIndex: unknown,
+    plan: FlightPlan,
+    recentAirportIds: string[],
+    selectedAirportId?: string,
+    selectedChartId?: string,
+  ): Promise<UiSession> {
+    const adapter = this;
+    let appState = await this.replaceFlightPlanState(
+      { active_plan: null, content_policy: "PreferLocal", last_content_requirements: [], last_content_report: null },
+      sampleCatalogLike(resourceIndex),
+      plan,
+    );
+    const chartCatalog = await this.deriveChartPage(
+      resourceIndex,
+      plan,
+    );
+    let chartPageState = compactChartPageState(await this.deriveChartPageState(
+      resourceIndex,
+      plan,
+      recentAirportIds,
+      selectedAirportId,
+      selectedChartId,
+    ));
+
+    return {
+      chartCatalog,
+      snapshot: async () => ({ app_state: appState, chart_page_state: chartPageState }),
+      removeLeg: async (index) => {
+        const nextPlan = await adapter.removeFlightPlanLeg(appState.active_plan ?? plan, index);
+        appState = await adapter.replaceFlightPlanState(appState, sampleCatalogLike(resourceIndex), nextPlan);
+        chartPageState = compactChartPageState(await adapter.deriveChartPageState(
+          resourceIndex,
+          nextPlan,
+          chartPageState.recent_airport_ids,
+          chartPageState.selected_airport_id,
+          chartPageState.selected_chart_id,
+        ));
+        return { app_state: appState, chart_page_state: chartPageState };
+      },
+      selectAirport: async (airportId) => {
+        chartPageState = compactChartPageState(await adapter.deriveChartPageState(
+          resourceIndex,
+          appState.active_plan ?? plan,
+          moveAirportToFront(chartPageState.recent_airport_ids, airportId, chartCatalog.airports),
+          airportId,
+          undefined,
+        ));
+        return { app_state: appState, chart_page_state: chartPageState };
+      },
+      selectChart: async (chartId) => {
+        chartPageState = compactChartPageState(await adapter.deriveChartPageState(
+          resourceIndex,
+          appState.active_plan ?? plan,
+          chartPageState.recent_airport_ids,
+          chartPageState.selected_airport_id,
+          chartId,
+        ));
+        return { app_state: appState, chart_page_state: chartPageState };
+      },
+      restoreChartPageState: async (nextRecentAirportIds, nextSelectedAirportId, nextSelectedChartId) => {
+        chartPageState = compactChartPageState(await adapter.deriveChartPageState(
+          resourceIndex,
+          appState.active_plan ?? plan,
+          nextRecentAirportIds,
+          nextSelectedAirportId,
+          nextSelectedChartId,
+        ));
+        return { app_state: appState, chart_page_state: chartPageState };
+      },
+      destroy: async () => {},
+    };
+  }
+
   async replaceFlightPlanState(state: AppState, catalog: CatalogJson, plan: FlightPlan): Promise<AppState> {
     if (plan.legs.length === 0) {
       throw new Error("InvalidFlightPlan: flight plan must contain at least one leg");
@@ -236,6 +340,13 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
 
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
+  create_ui_session(catalogJson: string, resourceIndexJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
+  remove_leg_in_session(handle: number, index: number): Promise<string> | string;
+  select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
+  select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
+  get_session_snapshot(handle: number): Promise<string> | string;
+  restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
+  destroy_session(handle: number): void;
   remove_flight_plan_leg(planJson: string, index: number): Promise<string> | string;
   derive_chart_page(resourceIndexJson: string, planJson: string): Promise<string> | string;
   derive_chart_page_state(resourceIndexJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
@@ -253,6 +364,60 @@ type WasmModule = {
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
   constructor(private readonly module: WasmModule) {}
+
+  async createUiSession(
+    resourceIndex: unknown,
+    plan: FlightPlan,
+    recentAirportIds: string[],
+    selectedAirportId?: string,
+    selectedChartId?: string,
+  ): Promise<UiSession> {
+    const init = JSON.parse(
+      await this.module.create_ui_session(
+        JSON.stringify(sampleCatalogLike(resourceIndex)),
+        JSON.stringify(resourceIndex),
+        JSON.stringify(plan),
+        JSON.stringify(recentAirportIds),
+        JSON.stringify(selectedAirportId ?? null),
+        JSON.stringify(selectedChartId ?? null),
+      ),
+    ) as { handle: number; chart_catalog: ChartPageData; snapshot: UiSessionSnapshot };
+    const { handle } = init;
+    let snapshot = init.snapshot;
+    return {
+      chartCatalog: init.chart_catalog,
+      snapshot: async () => {
+        snapshot = JSON.parse(await this.module.get_session_snapshot(handle)) as UiSessionSnapshot;
+        return snapshot;
+      },
+      removeLeg: async (index) => {
+        snapshot = JSON.parse(await this.module.remove_leg_in_session(handle, index)) as UiSessionSnapshot;
+        return snapshot;
+      },
+      selectAirport: async (airportId) => {
+        snapshot = JSON.parse(await this.module.select_airport_in_session(handle, JSON.stringify(airportId))) as UiSessionSnapshot;
+        return snapshot;
+      },
+      selectChart: async (chartId) => {
+        snapshot = JSON.parse(await this.module.select_chart_in_session(handle, JSON.stringify(chartId))) as UiSessionSnapshot;
+        return snapshot;
+      },
+      restoreChartPageState: async (nextRecentAirportIds, nextSelectedAirportId, nextSelectedChartId) => {
+        snapshot = JSON.parse(
+          await this.module.restore_chart_page_state_in_session(
+            handle,
+            JSON.stringify(nextRecentAirportIds),
+            JSON.stringify(nextSelectedAirportId ?? null),
+            JSON.stringify(nextSelectedChartId ?? null),
+          ),
+        ) as UiSessionSnapshot;
+        return snapshot;
+      },
+      destroy: async () => {
+        this.module.destroy_session(handle);
+      },
+    };
+  }
 
   async removeFlightPlanLeg(plan: FlightPlan, index: number): Promise<FlightPlan> {
     return JSON.parse(
@@ -342,6 +507,13 @@ export async function loadBestAvailableAdapter(
       await mod.default();
     }
     if (
+      typeof mod.create_ui_session !== "function" ||
+      typeof mod.remove_leg_in_session !== "function" ||
+      typeof mod.select_airport_in_session !== "function" ||
+      typeof mod.select_chart_in_session !== "function" ||
+      typeof mod.get_session_snapshot !== "function" ||
+      typeof mod.restore_chart_page_state_in_session !== "function" ||
+      typeof mod.destroy_session !== "function" ||
       typeof mod.replace_flight_plan_state !== "function" ||
       typeof mod.remove_flight_plan_leg !== "function" ||
       typeof mod.derive_chart_page !== "function" ||
@@ -368,6 +540,22 @@ export async function loadBestAvailableAdapter(
   }
 }
 
+function sampleCatalogLike(_resourceIndex: unknown): CatalogJson {
+  return {
+    ...({
+      schema_version: sampleCatalog.schema_version,
+      cycle: sampleCatalog.cycle,
+      catalog_revision: sampleCatalog.catalog_revision,
+      families: sampleCatalog.families,
+      regions: sampleCatalog.regions,
+      packages: sampleCatalog.packages,
+      charts: sampleCatalog.charts,
+      plates: sampleCatalog.plates,
+      supplements: sampleCatalog.supplements,
+    } as CatalogJson),
+  };
+}
+
 function pointInPolygon(lat: number, lon: number, points: number[][]): boolean {
   let inside = false;
   let previousIndex = points.length - 1;
@@ -389,4 +577,28 @@ function pointInPolygon(lat: number, lon: number, points: number[][]): boolean {
   }
 
   return inside;
+}
+
+function moveAirportToFront(
+  recentAirportIds: string[],
+  airportId: string,
+  airports: ChartPageData["airports"],
+): string[] {
+  const validIds = new Set(airports.map((airport) => airport.id));
+  const next = [airportId, ...recentAirportIds.filter((id) => id !== airportId && validIds.has(id))];
+  for (const airport of airports) {
+    if (!next.includes(airport.id)) {
+      next.push(airport.id);
+    }
+  }
+  return next;
+}
+
+function compactChartPageState(state: DerivedChartPageState): UiChartPageState {
+  return {
+    ordered_airport_ids: state.airports.map((airport) => airport.id),
+    recent_airport_ids: state.recent_airport_ids,
+    selected_airport_id: state.selected_airport_id,
+    selected_chart_id: state.selected_chart_id,
+  };
 }

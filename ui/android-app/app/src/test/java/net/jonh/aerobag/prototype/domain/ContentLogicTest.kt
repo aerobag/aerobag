@@ -347,6 +347,36 @@ private class FakeNativeBridge(
 ) : NativeBridge {
     private val mock = MockAppCoreAdapter()
 
+    override fun createUiSessionJson(
+        catalogJson: String,
+        resourceIndexJson: String,
+        planJson: String,
+        recentAirportIdsJson: String,
+        selectedAirportIdJson: String,
+        selectedChartIdJson: String,
+    ): String {
+        return """{"handle":1,"chart_catalog":{"airports":[]},"snapshot":{"app_state":{"active_plan":null,"content_policy":"PreferLocal","last_content_requirements":[],"last_content_report":null},"chart_page_state":{"ordered_airport_ids":[],"recent_airport_ids":[],"selected_airport_id":"","selected_chart_id":""}}}"""
+    }
+
+    override fun removeLegInSessionJson(handle: Long, index: Int): String = getSessionSnapshotJson(handle)
+
+    override fun selectAirportInSessionJson(handle: Long, airportIdJson: String): String = getSessionSnapshotJson(handle)
+
+    override fun selectChartInSessionJson(handle: Long, chartIdJson: String): String = getSessionSnapshotJson(handle)
+
+    override fun getSessionSnapshotJson(handle: Long): String {
+        return """{"app_state":{"active_plan":null,"content_policy":"PreferLocal","last_content_requirements":[],"last_content_report":null},"chart_page_state":{"ordered_airport_ids":[],"recent_airport_ids":[],"selected_airport_id":"","selected_chart_id":""}}"""
+    }
+
+    override fun restoreChartPageStateInSessionJson(
+        handle: Long,
+        recentAirportIdsJson: String,
+        selectedAirportIdJson: String,
+        selectedChartIdJson: String,
+    ): String = getSessionSnapshotJson(handle)
+
+    override fun destroySession(handle: Long) {}
+
     override fun deriveChartPageJson(
         resourceIndexJson: String,
         planJson: String,

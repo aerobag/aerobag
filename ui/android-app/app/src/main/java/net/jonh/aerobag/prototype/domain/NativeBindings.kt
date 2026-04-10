@@ -1,6 +1,41 @@
 package net.jonh.aerobag.prototype.domain
 
 interface NativeBridge {
+    fun createUiSessionJson(
+        catalogJson: String,
+        resourceIndexJson: String,
+        planJson: String,
+        recentAirportIdsJson: String,
+        selectedAirportIdJson: String,
+        selectedChartIdJson: String,
+    ): String
+
+    fun removeLegInSessionJson(
+        handle: Long,
+        index: Int,
+    ): String
+
+    fun selectAirportInSessionJson(
+        handle: Long,
+        airportIdJson: String,
+    ): String
+
+    fun selectChartInSessionJson(
+        handle: Long,
+        chartIdJson: String,
+    ): String
+
+    fun getSessionSnapshotJson(handle: Long): String
+
+    fun restoreChartPageStateInSessionJson(
+        handle: Long,
+        recentAirportIdsJson: String,
+        selectedAirportIdJson: String,
+        selectedChartIdJson: String,
+    ): String
+
+    fun destroySession(handle: Long)
+
     fun removeFlightPlanLegJson(
         planJson: String,
         index: Int,
@@ -50,6 +85,41 @@ object NativeBindings : NativeBridge {
     init {
         System.loadLibrary("app_ffi")
     }
+
+    external override fun createUiSessionJson(
+        catalogJson: String,
+        resourceIndexJson: String,
+        planJson: String,
+        recentAirportIdsJson: String,
+        selectedAirportIdJson: String,
+        selectedChartIdJson: String,
+    ): String
+
+    external override fun removeLegInSessionJson(
+        handle: Long,
+        index: Int,
+    ): String
+
+    external override fun selectAirportInSessionJson(
+        handle: Long,
+        airportIdJson: String,
+    ): String
+
+    external override fun selectChartInSessionJson(
+        handle: Long,
+        chartIdJson: String,
+    ): String
+
+    external override fun getSessionSnapshotJson(handle: Long): String
+
+    external override fun restoreChartPageStateInSessionJson(
+        handle: Long,
+        recentAirportIdsJson: String,
+        selectedAirportIdJson: String,
+        selectedChartIdJson: String,
+    ): String
+
+    external override fun destroySession(handle: Long)
 
     external override fun removeFlightPlanLegJson(
         planJson: String,

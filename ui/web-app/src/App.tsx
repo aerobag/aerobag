@@ -2,7 +2,14 @@ import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 import { chartPage, mapViews, resourceIndex, sampleCatalog, samplePlan } from "./domain/sampleData";
 import type { AppState, ChartPageData } from "./domain/types";
 import uiTheme from "@generated/uiTheme.json";
-import { loadBestAvailableAdapter, MockAppCoreAdapter, type AppCoreAdapter, type DerivedChartPageState } from "./domain/appCoreAdapter";
+import {
+  loadBestAvailableAdapter,
+  MockAppCoreAdapter,
+  type AppCoreAdapter,
+  type DerivedChartPageState,
+  type UiSession,
+  type UiSessionSnapshot,
+} from "./domain/appCoreAdapter";
 import {
   applyPinchGesture,
   createInitialViewport,
@@ -123,26 +130,11 @@ export default function App() {
   const persistedUiState = useMemo(readPersistedWebUiState, []);
   const [page, setPage] = useState<AppPage>(persistedUiState.page ?? "map");
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
-  const [appState, setAppState] = useState<AppState>({ active_plan: null, content_policy: "PreferLocal", last_content_requirements: [], last_content_report: null });
   const [appCoreAdapter, setAppCoreAdapter] = useState<AppCoreAdapter>(() => new MockAppCoreAdapter());
-  const [chartPageData, setChartPageData] = useState<ChartPageData>(chartPage);
-  const currentPlan = appState.active_plan ?? samplePlan;
   const [selectedMapId, setSelectedMapId] = useState<string>(mapViews[0].id);
   const initialRecentAirportIds = useMemo(
-    () => mergeRecentAirportIds(chartPageData.airports, persistedUiState.recentAirportIds ?? []),
-    [chartPageData, persistedUiState],
-  );
-  const [recentAirportIds, setRecentAirportIds] = useState<string[]>(initialRecentAirportIds);
-  const [selectedAirportId, setSelectedAirportId] = useState(
-    () => resolveAirportId(chartPageData.airports, persistedUiState.selectedAirportId, initialRecentAirportIds),
-  );
-  const [selectedChartId, setSelectedChartId] = useState(
-    () =>
-      resolveChartId(
-        chartPageData.airports,
-        resolveAirportId(chartPageData.airports, persistedUiState.selectedAirportId, initialRecentAirportIds),
-        persistedUiState.selectedChartId,
-      ),
+    () => mergeRecentAirportIds(chartPage.airports, persistedUiState.recentAirportIds ?? []),
+    [persistedUiState],
   );
   const initialChartPageState = useMemo<DerivedChartPageState>(
     () => ({
@@ -157,6 +149,34 @@ export default function App() {
     }),
     [initialRecentAirportIds, persistedUiState.selectedAirportId, persistedUiState.selectedChartId],
   );
+  const [uiSession, setUiSession] = useState<UiSession | null>(null);
+  const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
+    app_state: { active_plan: null, content_policy: "PreferLocal", last_content_requirements: [], last_content_report: null },
+    chart_page_state: {
+      ordered_airport_ids: initialChartPageState.airports.map((airport) => airport.id),
+      recent_airport_ids: initialChartPageState.recent_airport_ids,
+      selected_airport_id: initialChartPageState.selected_airport_id,
+      selected_chart_id: initialChartPageState.selected_chart_id,
+    },
+  });
+  const appState: AppState = sessionSnapshot.app_state;
+  const chartCatalog: ChartPageData = uiSession?.chartCatalog ?? chartPage;
+  const chartAirportById = useMemo(
+    () => new Map(chartCatalog.airports.map((airport) => [airport.id, airport])),
+    [chartCatalog],
+  );
+  const chartPageData: ChartPageData = useMemo(
+    () => ({
+      airports: sessionSnapshot.chart_page_state.ordered_airport_ids
+        .map((airportId) => chartAirportById.get(airportId))
+        .filter((airport): airport is ChartPageData["airports"][number] => airport != null),
+    }),
+    [chartAirportById, sessionSnapshot.chart_page_state.ordered_airport_ids],
+  );
+  const currentPlan = appState.active_plan ?? samplePlan;
+  const recentAirportIds = sessionSnapshot.chart_page_state.recent_airport_ids;
+  const selectedAirportId = sessionSnapshot.chart_page_state.selected_airport_id;
+  const selectedChartId = sessionSnapshot.chart_page_state.selected_chart_id;
 
   const selectedMap = useMemo(
     () => mapViews.find((view) => view.id === selectedMapId) ?? mapViews[0],
@@ -213,47 +233,26 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    appCoreAdapter.replaceFlightPlanState(
-      { active_plan: null, content_policy: "PreferLocal", last_content_requirements: [], last_content_report: null },
-      sampleCatalog,
-      currentPlan,
-    ).then((nextState) => {
-      if (!cancelled) {
-        setAppState(nextState);
-      }
-    }).catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [appCoreAdapter]);
-
-  useEffect(() => {
-    let cancelled = false;
-    appCoreAdapter.deriveChartPageState(
+    let nextSession: UiSession | null = null;
+    appCoreAdapter.createUiSession(
       resourceIndex,
-      currentPlan,
-      recentAirportIds,
-      selectedAirportId || initialChartPageState.selected_airport_id,
-      selectedChartId || initialChartPageState.selected_chart_id,
-    ).then((nextState) => {
-      if (cancelled) {
-        return;
-      }
-      setChartPageData({ airports: nextState.airports });
-      if (!sameIds(nextState.recent_airport_ids, recentAirportIds)) {
-        setRecentAirportIds(nextState.recent_airport_ids);
-      }
-      if (nextState.selected_airport_id !== selectedAirportId) {
-        setSelectedAirportId(nextState.selected_airport_id);
-      }
-      if (nextState.selected_chart_id !== selectedChartId) {
-        setSelectedChartId(nextState.selected_chart_id);
+      samplePlan,
+      initialRecentAirportIds,
+      initialChartPageState.selected_airport_id,
+      initialChartPageState.selected_chart_id,
+    ).then(async (created) => {
+      nextSession = created;
+      const snapshot = await created.snapshot();
+      if (!cancelled) {
+        setUiSession(created);
+        setSessionSnapshot(snapshot);
       }
     }).catch(() => {});
     return () => {
       cancelled = true;
+      void nextSession?.destroy();
     };
-  }, [appCoreAdapter, currentPlan, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, recentAirportIds, selectedAirportId, selectedChartId]);
+  }, [appCoreAdapter, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialRecentAirportIds]);
 
   useEffect(() => {
     setMapViewport((current) => preserveViewportForMap(current, selectedMap.map_view));
@@ -287,11 +286,17 @@ export default function App() {
     setPage(snapshot.page);
     setSelectedMapId(snapshot.selectedMapId);
     setMapViewport(snapshot.mapViewport);
-    setSelectedAirportId(snapshot.selectedAirportId);
-    setSelectedChartId(snapshot.selectedChartId);
-    setRecentAirportIds(snapshot.recentAirportIds);
     setChartViewport(snapshot.chartViewport);
     setChartFolderOpen(snapshot.chartFolderOpen);
+    if (uiSession) {
+      void uiSession.restoreChartPageState(
+        snapshot.recentAirportIds,
+        snapshot.selectedAirportId || undefined,
+        snapshot.selectedChartId || undefined,
+      ).then((nextSnapshot) => {
+        setSessionSnapshot(nextSnapshot);
+      }).catch(() => {});
+    }
   }
 
   function boundedHistory(history: AppViewSnapshot[]) {
@@ -416,9 +421,8 @@ export default function App() {
           onSelectPage={navigateToPage}
           onOpenCharts={() => navigateToPage("charts")}
           onRemoveWaypoint={async (index) => {
-            const nextPlan = await appCoreAdapter.removeFlightPlanLeg(currentPlan, index);
-            const nextState = await appCoreAdapter.replaceFlightPlanState(appState, sampleCatalog, nextPlan);
-            setAppState(nextState);
+            if (!uiSession) return;
+            setSessionSnapshot(await uiSession.removeLeg(index));
           }}
         />
       </div>
@@ -443,6 +447,11 @@ export default function App() {
           onSelectPage={navigateToPage}
           onSelectAirport={(airportId) => {
             const airport = chartPageData.airports.find((entry) => entry.id === airportId);
+            if (uiSession) {
+              void uiSession.selectAirport(airportId).then((nextSnapshot) => {
+                setSessionSnapshot(nextSnapshot);
+              }).catch(() => {});
+            }
             pushViewSnapshot({
               page: "charts",
               selectedAirportId: airportId,
@@ -455,6 +464,11 @@ export default function App() {
           }}
           onSelectChart={(chartId) => {
             const nextChart = selectedAirport?.charts.find((chart) => chart.id === chartId);
+            if (uiSession) {
+              void uiSession.selectChart(chartId).then((nextSnapshot) => {
+                setSessionSnapshot(nextSnapshot);
+              }).catch(() => {});
+            }
             pushViewSnapshot({
               page: "charts",
               selectedChartId: chartId,

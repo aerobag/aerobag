@@ -371,6 +371,9 @@ private fun AerobagApp() {
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
     val sessionStartElapsedMs = remember { SystemClock.elapsedRealtime() }
     val uptimeLabel = rememberUptimeLabel(sessionStartElapsedMs)
+    val storedRecentAirportIds = remember { readRecentAirportIds(context.applicationContext) }
+    val storedSelectedAirportId = remember { prefs.getString(UiPrefsSelectedAirportKey, null).orEmpty() }
+    val storedSelectedChartId = remember { prefs.getString(UiPrefsSelectedChartKey, null).orEmpty() }
     var page by remember {
         mutableStateOf(
             runCatching { AppPage.valueOf(prefs.getString(UiPrefsPageKey, AppPage.Map.name) ?: AppPage.Map.name) }
@@ -379,51 +382,41 @@ private fun AerobagApp() {
     }
     var pageHistory by remember { mutableStateOf<List<AppViewSnapshot>>(emptyList()) }
     var selectedMapId by remember { mutableStateOf(initialMapId(fixture)) }
-    var appState by remember { mutableStateOf(appCore.replaceFlightPlan(AppState(), fixture.catalog, fixture.samplePlan)) }
-    val currentPlan = appState.activePlan ?: fixture.samplePlan
-    val storedRecentAirportIds = remember { readRecentAirportIds(context.applicationContext) }
-    var recentAirportIds by remember { mutableStateOf(storedRecentAirportIds) }
-    var selectedAirportId by remember { mutableStateOf(prefs.getString(UiPrefsSelectedAirportKey, null).orEmpty()) }
-    var selectedChartId by remember { mutableStateOf(prefs.getString(UiPrefsSelectedChartKey, null).orEmpty()) }
-    val derivedChartPageState = remember(
-        fixture.resourceIndexJson,
-        currentPlan,
-        recentAirportIds,
-        selectedAirportId,
-        selectedChartId,
-    ) {
-        appCore.deriveChartPageState(
+    val uiSession = remember(appCore, fixture.resourceIndexJson) {
+        appCore.createUiSession(
             fixture.resourceIndexJson,
-            currentPlan,
-            recentAirportIds,
-            selectedAirportId.ifBlank { null },
-            selectedChartId.ifBlank { null },
+            fixture.samplePlan,
+            storedRecentAirportIds,
+            storedSelectedAirportId.ifBlank { null },
+            storedSelectedChartId.ifBlank { null },
         )
     }
+    DisposableEffect(uiSession) {
+        onDispose { uiSession.destroy() }
+    }
+    var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
+    val appState = sessionSnapshot.appState
+    val currentPlan = appState.activePlan ?: fixture.samplePlan
+    val chartCatalog = uiSession.chartCatalog
+    val derivedChartPageState = sessionSnapshot.chartPageState
     val selectedMap = remember(selectedMapId, fixture.mapViews) {
         fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
     }
     var mapViewport by remember { mutableStateOf(createInitialViewport(selectedMap.mapView)) }
     var chartViewport by remember { mutableStateOf<net.jonh.aerobag.prototype.domain.ImageViewportState?>(null) }
     var chartFolderOpen by remember { mutableStateOf(false) }
-    val orderedChartAirports = derivedChartPageState.airports
+    val chartAirportById = remember(chartCatalog.airports) { chartCatalog.airports.associateBy { it.id } }
+    val orderedChartAirports = remember(chartCatalog.airports, derivedChartPageState.orderedAirportIds) {
+        derivedChartPageState.orderedAirportIds.mapNotNull { chartAirportById[it] }
+    }
+    val recentAirportIds = derivedChartPageState.recentAirportIds
+    val selectedAirportId = derivedChartPageState.selectedAirportId
+    val selectedChartId = derivedChartPageState.selectedChartId
     val selectedAirport = remember(selectedAirportId, orderedChartAirports) {
         orderedChartAirports.find { it.id == selectedAirportId } ?: orderedChartAirports.firstOrNull()
     }
     val selectedChart = remember(selectedAirport, selectedChartId) {
         selectedAirport?.charts?.find { it.id == selectedChartId } ?: selectedAirport?.charts?.firstOrNull()
-    }
-
-    LaunchedEffect(derivedChartPageState) {
-        if (derivedChartPageState.recentAirportIds != recentAirportIds) {
-            recentAirportIds = derivedChartPageState.recentAirportIds
-        }
-        if (derivedChartPageState.selectedAirportId != selectedAirportId) {
-            selectedAirportId = derivedChartPageState.selectedAirportId
-        }
-        if (derivedChartPageState.selectedChartId != selectedChartId) {
-            selectedChartId = derivedChartPageState.selectedChartId
-        }
     }
 
     LaunchedEffect(page, selectedAirportId, selectedChartId, recentAirportIds) {
@@ -450,13 +443,18 @@ private fun AerobagApp() {
     )
 
     fun restoreSnapshot(snapshot: AppViewSnapshot, history: List<AppViewSnapshot>) {
+        if (snapshot.selectedAirportId.isNotBlank() || snapshot.selectedChartId.isNotBlank() || snapshot.recentAirportIds.isNotEmpty()) {
+            sessionSnapshot =
+                uiSession.restoreChartPageState(
+                    recentAirportIds = snapshot.recentAirportIds,
+                    selectedAirportId = snapshot.selectedAirportId.ifBlank { null },
+                    selectedChartId = snapshot.selectedChartId.ifBlank { null },
+                )
+        }
         pageHistory = history
         page = snapshot.page
         selectedMapId = snapshot.selectedMapId
         mapViewport = snapshot.mapViewport
-        selectedAirportId = snapshot.selectedAirportId
-        selectedChartId = snapshot.selectedChartId
-        recentAirportIds = snapshot.recentAirportIds
         chartViewport = snapshot.chartViewport
         chartFolderOpen = snapshot.chartFolderOpen
     }
@@ -510,8 +508,7 @@ private fun AerobagApp() {
                     onSelectPage = ::navigateToPage,
                     onOpenCharts = { navigateToPage(AppPage.Charts) },
                     onRemoveWaypoint = { index ->
-                        val nextPlan = appCore.removeFlightPlanLeg(currentPlan, index)
-                        appState = appCore.replaceFlightPlan(appState, fixture.catalog, nextPlan)
+                        sessionSnapshot = uiSession.removeLeg(index)
                     },
                 )
             }
@@ -538,14 +535,15 @@ private fun AerobagApp() {
                     },
                     onSelectPage = ::navigateToPage,
                     onSelectAirport = { airportId ->
-                        val airport = orderedChartAirports.find { it.id == airportId }
+                        sessionSnapshot = uiSession.selectAirport(airportId)
+                        val airport = chartAirportById[airportId]
                         restoreSnapshot(
                             currentSnapshot().copy(
                                 page = AppPage.Charts,
                                 selectedAirportId = airportId,
                                 selectedChartId = airport?.charts?.firstOrNull()?.id.orEmpty(),
                                 selectedChartLabel = airport?.charts?.firstOrNull()?.label.orEmpty(),
-                                recentAirportIds = listOf(airportId) + recentAirportIds.filterNot { it == airportId },
+                                recentAirportIds = sessionSnapshot.chartPageState.recentAirportIds,
                                 chartViewport = null,
                                 chartFolderOpen = false,
                             ),
@@ -553,11 +551,16 @@ private fun AerobagApp() {
                         )
                     },
                     onSelectChart = {
+                        sessionSnapshot = uiSession.selectChart(it)
                         restoreSnapshot(
                             currentSnapshot().copy(
                                 page = AppPage.Charts,
                                 selectedChartId = it,
-                                selectedChartLabel = selectedAirport?.charts?.firstOrNull { chart -> chart.id == it }?.label.orEmpty(),
+                                selectedChartLabel = chartAirportById[sessionSnapshot.chartPageState.selectedAirportId]
+                                    ?.charts
+                                    ?.firstOrNull { chart -> chart.id == it }
+                                    ?.label
+                                    .orEmpty(),
                                 chartViewport = null,
                                 chartFolderOpen = false,
                             ),

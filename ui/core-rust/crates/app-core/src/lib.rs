@@ -5,13 +5,19 @@ pub mod errors;
 pub mod geometry;
 pub mod ids;
 pub mod planning;
+pub mod session;
 pub mod state;
 
 pub use catalog::{
     CatalogBundle, CatalogFamily, CatalogHandle, CatalogPackage, CatalogRegion, ChartCoverage,
     ChartRecord, PlateRecord, SupplementRecord,
 };
-pub use chart_page::{derive_chart_page, derive_chart_page_state, DerivedChartAirport, DerivedChartAsset, DerivedChartPage, DerivedChartPageState, ResourceAirportResources, ResourceCsup, ResourceIndexChartPageInput, ResourcePlate};
+pub use chart_page::{
+    build_chart_catalog, derive_chart_page, derive_chart_page_from_catalog,
+    derive_chart_page_state, derive_chart_page_state_from_catalog, DerivedChartAirport,
+    DerivedChartAsset, DerivedChartCatalog, DerivedChartPage, DerivedChartPageState,
+    ResourceAirportResources, ResourceCsup, ResourceIndexChartPageInput, ResourcePlate,
+};
 pub use content::{
     AvailabilityDetail, CachedPlate, CachedTileset, ContentAvailability, ContentInventory,
     ContentPolicy, ContentReport, ContentReportItem, ContentRequirement, InstalledPackage,
@@ -20,7 +26,18 @@ pub use errors::{AppError, AppErrorKind, AppResult};
 pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord};
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use planning::{FlightPlan, NavRef, PlanLeg};
+pub use session::{
+    create_ui_session, destroy_session, get_session_snapshot, remove_leg_in_session,
+    restore_chart_page_state_in_session, select_airport_in_session, select_chart_in_session,
+    UiChartPageState, UiSessionInitResult, UiSessionSnapshot,
+};
 pub use state::{AppEvent, AppState};
+
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    sync::{Arc, Mutex, OnceLock},
+};
 
 pub fn load_catalog(catalog_json: &str) -> AppResult<CatalogHandle> {
     let bundle: CatalogBundle = serde_json::from_str(catalog_json).map_err(|err| AppError {
@@ -35,6 +52,38 @@ pub fn load_geometry(geometry_json: &str) -> AppResult<GeometryBundle> {
         kind: AppErrorKind::InvalidCatalog,
         message: format!("failed to parse geometry json: {err}"),
     })
+}
+
+pub fn load_resource_index_chart_page_input(
+    resource_index_json: &str,
+) -> AppResult<Arc<ResourceIndexChartPageInput>> {
+    static CACHE: OnceLock<Mutex<HashMap<u64, Arc<ResourceIndexChartPageInput>>>> = OnceLock::new();
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    resource_index_json.hash(&mut hasher);
+    let key = hasher.finish();
+
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(cached) = cache
+        .lock()
+        .expect("resource index cache poisoned")
+        .get(&key)
+        .cloned()
+    {
+        return Ok(cached);
+    }
+
+    let parsed: ResourceIndexChartPageInput =
+        serde_json::from_str(resource_index_json).map_err(|err| AppError {
+            kind: AppErrorKind::InvalidCatalog,
+            message: format!("failed to parse resource index json: {err}"),
+        })?;
+    let parsed = Arc::new(parsed);
+    cache
+        .lock()
+        .expect("resource index cache poisoned")
+        .insert(key, parsed.clone());
+    Ok(parsed)
 }
 
 pub fn chart_for_position(

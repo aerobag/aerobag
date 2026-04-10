@@ -11,6 +11,31 @@ class NativeAppCoreAdapter(
         ignoreUnknownKeys = true
     },
 ) : AppCoreAdapter {
+    fun createUiSession(
+        resourceIndexJson: String,
+        plan: FlightPlan,
+        recentAirportIds: List<String>,
+        selectedAirportId: String?,
+        selectedChartId: String?,
+    ): NativeUiSession {
+        val resultJson = bridge.createUiSessionJson(
+            json.encodeToString(catalog.toWire()),
+            resourceIndexJson,
+            json.encodeToString(plan.toWire()),
+            json.encodeToString(recentAirportIds),
+            json.encodeToString(selectedAirportId),
+            json.encodeToString(selectedChartId),
+        )
+        val result = json.decodeFromString<WireUiSessionInitResult>(resultJson)
+        return NativeUiSession(
+            handle = result.handle,
+            bridge = bridge,
+            json = json,
+            chartCatalog = result.chart_catalog.toUi(),
+            initialSnapshot = result.snapshot.toUi(),
+        )
+    }
+
     fun deriveChartPageState(
         resourceIndexJson: String,
         plan: FlightPlan,
@@ -64,6 +89,61 @@ class NativeAppCoreAdapter(
         val nextJson = bridge.refreshContentStateJson(stateJson, catalogJson, inventoryJson)
         return json.decodeFromString<WireAppState>(nextJson).toUi()
     }
+}
+
+class NativeUiSession internal constructor(
+    private val handle: Long,
+    private val bridge: NativeBridge,
+    private val json: Json,
+    val chartCatalog: ChartPageFixture,
+    initialSnapshot: UiSessionSnapshot,
+) {
+    var snapshot: UiSessionSnapshot = initialSnapshot
+        private set
+
+    fun removeLeg(index: Int): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.removeLegInSessionJson(handle, index))
+        return snapshot
+    }
+
+    fun selectAirport(airportId: String): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.selectAirportInSessionJson(handle, json.encodeToString(airportId)))
+        return snapshot
+    }
+
+    fun selectChart(chartId: String): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.selectChartInSessionJson(handle, json.encodeToString(chartId)))
+        return snapshot
+    }
+
+    fun refreshSnapshot(): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.getSessionSnapshotJson(handle))
+        return snapshot
+    }
+
+    fun restoreChartPageState(
+        recentAirportIds: List<String>,
+        selectedAirportId: String?,
+        selectedChartId: String?,
+    ): UiSessionSnapshot {
+        snapshot =
+            decodeSnapshot(
+                bridge.restoreChartPageStateInSessionJson(
+                    handle,
+                    json.encodeToString(recentAirportIds),
+                    json.encodeToString(selectedAirportId),
+                    json.encodeToString(selectedChartId),
+                ),
+            )
+        return snapshot
+    }
+
+    fun destroy() {
+        bridge.destroySession(handle)
+    }
+
+    private fun decodeSnapshot(snapshotJson: String): UiSessionSnapshot =
+        json.decodeFromString<WireUiSessionSnapshot>(snapshotJson).toUi()
 }
 
 private fun Catalog.toWire() = WireCatalog(
@@ -238,6 +318,27 @@ private data class WireDerivedChartPageState(
 )
 
 @kotlinx.serialization.Serializable
+private data class WireUiChartPageState(
+    val ordered_airport_ids: List<String>,
+    val recent_airport_ids: List<String>,
+    val selected_airport_id: String,
+    val selected_chart_id: String,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireUiSessionSnapshot(
+    val app_state: WireAppState,
+    val chart_page_state: WireUiChartPageState,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireUiSessionInitResult(
+    val handle: Long,
+    val chart_catalog: WireDerivedChartPage,
+    val snapshot: WireUiSessionSnapshot,
+)
+
+@kotlinx.serialization.Serializable
 private data class WireDerivedChartAirport(
     val id: String,
     val label: String,
@@ -269,11 +370,35 @@ data class DerivedChartPageState(
     val selectedChartId: String,
 )
 
+data class UiSessionSnapshot(
+    val appState: AppState,
+    val chartPageState: UiChartPageState,
+)
+
+data class UiChartPageState(
+    val orderedAirportIds: List<String>,
+    val recentAirportIds: List<String>,
+    val selectedAirportId: String,
+    val selectedChartId: String,
+)
+
 private fun WireDerivedChartPageState.toUi() = DerivedChartPageState(
     airports = airports.map { it.toUi() },
     recentAirportIds = recent_airport_ids,
     selectedAirportId = selected_airport_id,
     selectedChartId = selected_chart_id,
+)
+
+private fun WireUiChartPageState.toUi() = UiChartPageState(
+    orderedAirportIds = ordered_airport_ids,
+    recentAirportIds = recent_airport_ids,
+    selectedAirportId = selected_airport_id,
+    selectedChartId = selected_chart_id,
+)
+
+private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
+    appState = app_state.toUi(),
+    chartPageState = chart_page_state.toUi(),
 )
 
 private fun WireDerivedChartAirport.toUi() = ChartAirport(

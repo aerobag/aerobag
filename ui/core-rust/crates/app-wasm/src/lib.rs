@@ -11,6 +11,11 @@ pub fn build_flight_plan(plan_json: &str) -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
+pub fn remove_flight_plan_leg(plan_json: &str, index: usize) -> Result<String, JsValue> {
+    remove_flight_plan_leg_json(plan_json, index).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn replace_flight_plan_state(
     state_json: &str,
     catalog_json: &str,
@@ -62,6 +67,13 @@ fn build_flight_plan_json(plan_json: &str) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let plan = app_core::build_flight_plan(plan).map_err(|err| err.to_string())?;
+    serde_json::to_string(&plan).map_err(|err| err.to_string())
+}
+
+fn remove_flight_plan_leg_json(plan_json: &str, index: usize) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let plan = app_core::remove_flight_plan_leg(&plan, index).map_err(|err| err.to_string())?;
     serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
 

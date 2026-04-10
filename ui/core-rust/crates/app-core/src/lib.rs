@@ -64,6 +64,39 @@ pub fn build_flight_plan(plan: FlightPlan) -> AppResult<FlightPlan> {
     Ok(plan)
 }
 
+pub fn remove_flight_plan_leg(plan: &FlightPlan, index: usize) -> AppResult<FlightPlan> {
+    if index >= plan.legs.len() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("flight plan leg index out of range: {index}"),
+        });
+    }
+
+    let mut next = plan.clone();
+    next.legs.remove(index);
+
+    if next.legs.is_empty() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "flight plan must contain at least one leg".to_string(),
+        });
+    }
+
+    next.departure = next
+        .legs
+        .first()
+        .and_then(|leg| leg.from.airport_code())
+        .map(|code| AirportId(code.to_string()));
+    next.destination = next
+        .legs
+        .last()
+        .and_then(|leg| leg.to.airport_code())
+        .map(|code| AirportId(code.to_string()));
+    next.updated_at_epoch_ms += 1;
+    next.version += 1;
+    Ok(next)
+}
+
 pub fn plan_content_requirements(
     catalog: &CatalogHandle,
     plan: &FlightPlan,
@@ -273,6 +306,41 @@ mod tests {
             updated_at_epoch_ms: 0,
             version: 1,
         }
+    }
+
+    #[test]
+    fn remove_flight_plan_leg_updates_endpoints_and_version() {
+        let plan = FlightPlan {
+            id: "plan-1".to_string(),
+            name: "NW sample".to_string(),
+            legs: vec![
+                PlanLeg {
+                    from: NavRef::Airport("KRNT".to_string()),
+                    to: NavRef::Airport("KSEA".to_string()),
+                    airway: None,
+                },
+                PlanLeg {
+                    from: NavRef::Airport("KSEA".to_string()),
+                    to: NavRef::Airport("KPAE".to_string()),
+                    airway: None,
+                },
+            ],
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KPAE".to_string())),
+            alternate: None,
+            cruise_altitude_ft: Some(3000),
+            notes: None,
+            updated_at_epoch_ms: 10,
+            version: 1,
+        };
+
+        let next = remove_flight_plan_leg(&plan, 0).unwrap();
+
+        assert_eq!(next.legs.len(), 1);
+        assert_eq!(next.departure, Some(AirportId("KSEA".to_string())));
+        assert_eq!(next.destination, Some(AirportId("KPAE".to_string())));
+        assert_eq!(next.updated_at_epoch_ms, 11);
+        assert_eq!(next.version, 2);
     }
 
     #[test]

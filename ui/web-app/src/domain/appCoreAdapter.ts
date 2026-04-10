@@ -10,6 +10,7 @@ import type {
 
 export interface AppCoreAdapter {
   replaceFlightPlanState(state: AppState, catalog: CatalogJson, plan: FlightPlan): Promise<AppState>;
+  removeFlightPlanLeg(plan: FlightPlan, index: number): Promise<FlightPlan>;
   setContentPolicyState(state: AppState, catalog: CatalogJson, policy: ContentPolicy): Promise<AppState>;
   refreshContentState(state: AppState, catalog: CatalogJson, inventory: ContentInventory): Promise<AppState>;
   chartForPosition(
@@ -44,8 +45,8 @@ function packageName(region: string, family: string): string {
   return `${regionCode}_${familyCode}`;
 }
 
-function airportCode(ref: FlightPlan["legs"][number]["from"]): string | null {
-  if ("Airport" in ref) {
+function airportCode(ref: FlightPlan["legs"][number]["from"] | null | undefined): string | null {
+  if (ref && "Airport" in ref) {
     return ref.Airport;
   }
   return null;
@@ -87,6 +88,24 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
         },
       ],
       last_content_report: null,
+    };
+  }
+
+  async removeFlightPlanLeg(plan: FlightPlan, index: number): Promise<FlightPlan> {
+    if (index < 0 || index >= plan.legs.length) {
+      throw new Error(`InvalidFlightPlan: flight plan leg index out of range: ${index}`);
+    }
+    const legs = plan.legs.filter((_, legIndex) => legIndex !== index);
+    if (legs.length === 0) {
+      throw new Error("InvalidFlightPlan: flight plan must contain at least one leg");
+    }
+    return {
+      ...plan,
+      legs,
+      departure: airportCode(legs[0]?.from ?? null),
+      destination: airportCode(legs[legs.length - 1]?.to ?? null),
+      updated_at_epoch_ms: plan.updated_at_epoch_ms + 1,
+      version: plan.version + 1,
     };
   }
 
@@ -175,6 +194,7 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
 
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
+  remove_flight_plan_leg(planJson: string, index: number): Promise<string> | string;
   replace_flight_plan_state(stateJson: string, catalogJson: string, planJson: string): Promise<string> | string;
   set_content_policy_state(stateJson: string, catalogJson: string, policyJson: string): Promise<string> | string;
   refresh_content_state(stateJson: string, catalogJson: string, inventoryJson: string): Promise<string> | string;
@@ -189,6 +209,15 @@ type WasmModule = {
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
   constructor(private readonly module: WasmModule) {}
+
+  async removeFlightPlanLeg(plan: FlightPlan, index: number): Promise<FlightPlan> {
+    return JSON.parse(
+      await this.module.remove_flight_plan_leg(
+        JSON.stringify(plan),
+        index,
+      ),
+    ) as FlightPlan;
+  }
 
   async replaceFlightPlanState(state: AppState, catalog: CatalogJson, plan: FlightPlan): Promise<AppState> {
     return JSON.parse(
@@ -249,6 +278,7 @@ export async function loadBestAvailableAdapter(
     }
     if (
       typeof mod.replace_flight_plan_state !== "function" ||
+      typeof mod.remove_flight_plan_leg !== "function" ||
       typeof mod.set_content_policy_state !== "function" ||
       typeof mod.refresh_content_state !== "function" ||
       typeof mod.chart_for_position !== "function"

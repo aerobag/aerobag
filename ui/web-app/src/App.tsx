@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { chartPage, mapViews, samplePlan } from "./domain/sampleData";
 import uiTheme from "@generated/uiTheme.json";
+import { loadBestAvailableAdapter, MockAppCoreAdapter, type AppCoreAdapter } from "./domain/appCoreAdapter";
 import {
   applyPinchGesture,
   createInitialViewport,
@@ -73,7 +74,7 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> 
 ];
 
 const waypointActions = [
-  { id: "remove", label: "Remove", enabled: false },
+  { id: "remove", label: "Remove", enabled: true },
   { id: "insert", label: "Insert", enabled: false },
   { id: "reorder", label: "Reorder", enabled: false },
   { id: "waypoint_info", label: "Waypoint Info", enabled: false },
@@ -121,6 +122,8 @@ export default function App() {
   const persistedUiState = useMemo(readPersistedWebUiState, []);
   const [page, setPage] = useState<AppPage>(persistedUiState.page ?? "map");
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
+  const [currentPlan, setCurrentPlan] = useState(samplePlan);
+  const [appCoreAdapter, setAppCoreAdapter] = useState<AppCoreAdapter>(() => new MockAppCoreAdapter());
   const [selectedMapId, setSelectedMapId] = useState<string>(mapViews[0].id);
   const initialRecentAirportIds = useMemo(
     () => mergeRecentAirportIds(chartPage.airports, persistedUiState.recentAirportIds ?? []),
@@ -171,13 +174,25 @@ export default function App() {
     [selectedAirport, selectedChartId],
   );
   const legSummary = useMemo(() => {
-    const firstLeg = samplePlan.legs[0];
+    const firstLeg = currentPlan.legs[0];
     if (!firstLeg) {
       return "NO LEG";
     }
     const from = navRefLabel(firstLeg.from);
     const to = navRefLabel(firstLeg.to);
     return `${from} -> ${to} CRS 342`;
+  }, [currentPlan]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadBestAvailableAdapter().then((loaded) => {
+      if (!cancelled) {
+        setAppCoreAdapter(loaded.adapter);
+      }
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -354,8 +369,13 @@ export default function App() {
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
           legSummary={legSummary}
+          plan={currentPlan}
           onSelectPage={navigateToPage}
           onOpenCharts={() => navigateToPage("charts")}
+          onRemoveWaypoint={async (index) => {
+            const next = await appCoreAdapter.removeFlightPlanLeg(currentPlan, index);
+            setCurrentPlan(next);
+          }}
         />
       </div>
 
@@ -737,21 +757,21 @@ function MapPage(props: {
   );
 }
 
-function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; uptimeLabel: string; legSummary: string; onSelectPage: (page: AppPage) => void; onOpenCharts: () => void }) {
+function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; uptimeLabel: string; legSummary: string; plan: typeof samplePlan; onSelectPage: (page: AppPage) => void; onOpenCharts: () => void; onRemoveWaypoint: (index: number) => void | Promise<void> }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
   const [pageTrayOpen, setPageTrayOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
   const trayOpen = pageTrayOpen;
   const rows = useMemo(
     () =>
-      samplePlan.legs.map((leg, index) => ({
+      props.plan.legs.map((leg, index) => ({
         id: `${index}:${navRefLabel(leg.from)}-${navRefLabel(leg.to)}`,
         waypoint: navRefLabel(leg.to),
         distance: index === 0 ? "18.4" : "11.2",
         ete: index === 0 ? "0:07" : "0:04",
         course: index === 0 ? "342" : "161",
       })),
-    [],
+    [props.plan],
   );
 
   return (
@@ -834,7 +854,9 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
                   if (!action.enabled) {
                     return;
                   }
-                  if (action.id === "charts") {
+                  if (action.id === "remove") {
+                    props.onRemoveWaypoint(selectedWaypointIndex);
+                  } else if (action.id === "charts") {
                     props.onOpenCharts();
                   }
                   setSelectedWaypointIndex(null);
@@ -1492,6 +1514,7 @@ function resolveChartId(
   }
   return airport?.charts[0]?.id ?? "";
 }
+
 
 function sameIds(left: string[], right: string[]) {
   return left.length === right.length && left.every((value, index) => value === right[index]);

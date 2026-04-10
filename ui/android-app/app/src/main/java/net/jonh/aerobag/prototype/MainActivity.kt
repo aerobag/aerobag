@@ -107,6 +107,7 @@ import net.jonh.aerobag.prototype.domain.ChartPackages
 import net.jonh.aerobag.prototype.domain.MapChartFamily
 import net.jonh.aerobag.prototype.domain.MapView
 import net.jonh.aerobag.prototype.domain.MapViewportState
+import net.jonh.aerobag.prototype.domain.NativeAppCoreAdapter
 import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
 import net.jonh.aerobag.prototype.domain.SampleData
@@ -365,6 +366,7 @@ private fun AerobagApp() {
     val context = LocalContext.current
     val fixture = remember(context) { SampleData.load(context.applicationContext) }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
+    val appCore = remember(fixture.catalog) { NativeAppCoreAdapter(fixture.catalog) }
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
     val sessionStartElapsedMs = remember { SystemClock.elapsedRealtime() }
     val uptimeLabel = rememberUptimeLabel(sessionStartElapsedMs)
@@ -379,6 +381,7 @@ private fun AerobagApp() {
     }
     var pageHistory by remember { mutableStateOf<List<AppViewSnapshot>>(emptyList()) }
     var selectedMapId by remember { mutableStateOf(initialMapId(fixture)) }
+    var currentPlan by remember { mutableStateOf(fixture.samplePlan) }
     var recentAirportIds by remember { mutableStateOf(initialRecentAirportIds) }
     val selectedMap = remember(selectedMapId, fixture.mapViews) {
         fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
@@ -438,8 +441,8 @@ private fun AerobagApp() {
     LaunchedEffect(page, selectedAirportId, selectedChartId, recentAirportIds) {
         writeUiPrefs(context.applicationContext, page, selectedAirportId, selectedChartId, recentAirportIds)
     }
-    val legSummary = remember(fixture.samplePlan) {
-        fixture.samplePlan.legs.firstOrNull()?.let { "${it.fromAirport} -> ${it.toAirport} CRS 342" } ?: "NO LEG"
+    val legSummary = remember(currentPlan) {
+        currentPlan.legs.firstOrNull()?.let { "${it.fromAirport} -> ${it.toAirport} CRS 342" } ?: "NO LEG"
     }
 
     LaunchedEffect(selectedMap.id) {
@@ -515,9 +518,10 @@ private fun AerobagApp() {
                     pageHistory = pageHistory,
                     uptimeLabel = uptimeLabel,
                     legSummary = legSummary,
-                    samplePlan = fixture.samplePlan,
+                    samplePlan = currentPlan,
                     onSelectPage = ::navigateToPage,
                     onOpenCharts = { navigateToPage(AppPage.Charts) },
+                    onRemoveWaypoint = { index -> currentPlan = appCore.removeFlightPlanLeg(currentPlan, index) },
                 )
             }
             AppPage.Charts -> {
@@ -1045,6 +1049,7 @@ private fun FlightPlanPage(
     samplePlan: net.jonh.aerobag.prototype.domain.FlightPlan,
     onSelectPage: (AppPage) -> Unit,
     onOpenCharts: () -> Unit,
+    onRemoveWaypoint: (Int) -> Unit,
 ) {
     var selectedWaypointIndex by remember { mutableStateOf<Int?>(null) }
     var pageTrayOpen by remember { mutableStateOf(false) }
@@ -1136,7 +1141,7 @@ private fun FlightPlanPage(
                 width = Dp.Unspecified,
             ) {
                 listOf(
-                    "Remove" to false,
+                    "Remove" to true,
                     "Insert" to false,
                     "Reorder" to false,
                     "Waypoint Info" to false,
@@ -1152,7 +1157,9 @@ private fun FlightPlanPage(
                             if (!enabled) {
                                 return@MenuPanelRow
                             }
-                            if (action == "Charts") {
+                            if (action == "Remove") {
+                                onRemoveWaypoint(selectedWaypointIndex!!)
+                            } else if (action == "Charts") {
                                 onOpenCharts()
                             }
                             selectedWaypointIndex = null

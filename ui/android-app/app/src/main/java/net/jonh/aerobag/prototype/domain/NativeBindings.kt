@@ -1,6 +1,11 @@
 package net.jonh.aerobag.prototype.domain
 
 interface NativeBridge {
+    fun removeFlightPlanLegJson(
+        planJson: String,
+        index: Int,
+    ): String
+
     fun replaceFlightPlanStateJson(
         stateJson: String,
         catalogJson: String,
@@ -32,6 +37,11 @@ object NativeBindings : NativeBridge {
     init {
         System.loadLibrary("app_ffi")
     }
+
+    external override fun removeFlightPlanLegJson(
+        planJson: String,
+        index: Int,
+    ): String
 
     external override fun replaceFlightPlanStateJson(
         stateJson: String,

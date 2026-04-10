@@ -347,6 +347,25 @@ private class FakeNativeBridge(
 ) : NativeBridge {
     private val mock = MockAppCoreAdapter()
 
+    override fun removeFlightPlanLegJson(
+        planJson: String,
+        index: Int,
+    ): String {
+        val plan = json.decodeFromString<WireFlightPlan>(planJson).toUiForTesting()
+        require(index in plan.legs.indices) { "Flight plan leg index out of range: $index" }
+        val legs = plan.legs.filterIndexed { legIndex, _ -> legIndex != index }
+        require(legs.isNotEmpty()) { "Flight plan must contain at least one leg" }
+        return json.encodeToString(
+            plan.copy(
+                legs = legs,
+                departure = legs.firstOrNull()?.fromAirport,
+                destination = legs.lastOrNull()?.toAirport,
+                updatedAtEpochMs = plan.updatedAtEpochMs + 1,
+                version = plan.version + 1,
+            ).toWireForTesting(),
+        )
+    }
+
     override fun replaceFlightPlanStateJson(
         stateJson: String,
         catalogJson: String,

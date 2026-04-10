@@ -11,6 +11,12 @@ class NativeAppCoreAdapter(
         ignoreUnknownKeys = true
     },
 ) : AppCoreAdapter {
+    fun removeFlightPlanLeg(plan: FlightPlan, index: Int): FlightPlan {
+        val planJson = json.encodeToString(plan.toWire())
+        val nextJson = bridge.removeFlightPlanLegJson(planJson, index)
+        return json.decodeFromString<WireFlightPlan>(nextJson).toUiFlightPlan()
+    }
+
     override fun replaceFlightPlan(state: AppState, catalog: Catalog, plan: FlightPlan): AppState {
         val stateJson = json.encodeToString(state.toWire())
         val catalogJson = json.encodeToString(catalog.toWire())

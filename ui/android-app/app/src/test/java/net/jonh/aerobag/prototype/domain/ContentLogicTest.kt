@@ -227,8 +227,8 @@ private object SampleDataFixture {
         name = "BOS local",
         legs = listOf(
             FlightPlanLeg(
-                fromAirport = "BOS",
-                toAirport = "BOS",
+                from = NavRef.Airport("BOS"),
+                to = NavRef.Airport("BOS"),
             ),
         ),
         departure = "BOS",
@@ -405,8 +405,8 @@ private class FakeNativeBridge(
         return json.encodeToString(
             plan.copy(
                 legs = legs,
-                departure = legs.firstOrNull()?.fromAirport,
-                destination = legs.lastOrNull()?.toAirport,
+                departure = (legs.firstOrNull()?.from as? NavRef.Airport)?.code,
+                destination = (legs.lastOrNull()?.to as? NavRef.Airport)?.code,
                 updatedAtEpochMs = plan.updatedAtEpochMs + 1,
                 version = plan.version + 1,
             ).toWireForTesting(),

@@ -79,7 +79,7 @@ class ResourceIndexAdaptersTest {
     private val samplePlan = FlightPlan(
         id = "plan-1",
         name = "test",
-        legs = listOf(FlightPlanLeg("BOS", "BOS", null)),
+        legs = listOf(FlightPlanLeg(NavRef.Airport("BOS"), NavRef.Airport("BOS"), null)),
         departure = "BOS",
         destination = "BOS",
         alternate = null,

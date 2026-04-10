@@ -209,10 +209,15 @@ private fun airportIdsFromPlan(plan: FlightPlan): List<String> {
     plan.destination?.let(result::add)
     plan.alternate?.let(result::add)
     plan.legs.forEach { leg ->
-        result.add(leg.fromAirport)
-        result.add(leg.toAirport)
+        airportCode(leg.from)?.let(result::add)
+        airportCode(leg.to)?.let(result::add)
     }
     return result.toList()
+}
+
+private fun airportCode(ref: NavRef): String? = when (ref) {
+    is NavRef.Airport -> ref.code
+    else -> null
 }
 
 private fun folderCategory(kind: String, label: String): String {

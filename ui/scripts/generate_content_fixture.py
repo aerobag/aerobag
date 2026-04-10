@@ -427,9 +427,15 @@ def extract_zip(archive: zipfile.ZipFile, target_dir: Path) -> None:
     for member in archive.infolist():
         target_path = target_dir / member.filename
         if member.is_dir():
+            if target_path.exists() and not target_path.is_dir():
+                target_path.unlink()
             target_path.mkdir(parents=True, exist_ok=True)
             continue
+        if target_path.parent.exists() and not target_path.parent.is_dir():
+            target_path.parent.unlink()
         target_path.parent.mkdir(parents=True, exist_ok=True)
+        if target_path.exists() and target_path.is_dir():
+            shutil.rmtree(target_path, ignore_errors=True)
         with archive.open(member) as source, target_path.open("wb") as destination:
             shutil.copyfileobj(source, destination)
 
@@ -717,20 +723,20 @@ def build_fixture() -> dict:
         },
         "flight_plan": {
             "id": "plan-1",
-            "name": "KRNT KSEA KPAE KAWO",
+            "name": "KRNT SEA PAE KAWO",
             "legs": [
                 {
                     "from": {"Airport": "KRNT"},
-                    "to": {"Airport": "KSEA"},
+                    "to": {"Navaid": "SEA"},
                     "airway": None,
                 },
                 {
-                    "from": {"Airport": "KSEA"},
-                    "to": {"Airport": "KPAE"},
+                    "from": {"Navaid": "SEA"},
+                    "to": {"Navaid": "PAE"},
                     "airway": None,
                 },
                 {
-                    "from": {"Airport": "KPAE"},
+                    "from": {"Navaid": "PAE"},
                     "to": {"Airport": "KAWO"},
                     "airway": None,
                 }

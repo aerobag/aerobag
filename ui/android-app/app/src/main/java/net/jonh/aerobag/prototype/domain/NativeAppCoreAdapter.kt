@@ -217,10 +217,17 @@ private fun FlightPlan.toWire() = WireFlightPlan(
 )
 
 private fun FlightPlanLeg.toWire() = WirePlanLeg(
-    from = WireNavRef.Airport(fromAirport),
-    to = WireNavRef.Airport(toAirport),
+    from = from.toWire(),
+    to = to.toWire(),
     airway = airway,
 )
+
+private fun NavRef.toWire(): WireNavRef = when (this) {
+    is NavRef.Airport -> WireNavRef.Airport(code)
+    is NavRef.Navaid -> WireNavRef.Navaid(code)
+    is NavRef.Fix -> WireNavRef.Fix(code)
+    is NavRef.LatLon -> WireNavRef.LatLon(WireLatLon(lat, lon))
+}
 
 private fun ContentPolicy.toWire() = when (this) {
     ContentPolicy.OfflineRequired -> WireContentPolicy.OfflineRequired
@@ -425,10 +432,17 @@ private fun WireDerivedChartAsset.toUi() = ChartAsset(
 )
 
 private fun WirePlanLeg.toUi() = FlightPlanLeg(
-    fromAirport = (from as WireNavRef.Airport).code,
-    toAirport = (to as WireNavRef.Airport).code,
+    from = from.toUi(),
+    to = to.toUi(),
     airway = airway,
 )
+
+private fun WireNavRef.toUi(): NavRef = when (this) {
+    is WireNavRef.Airport -> NavRef.Airport(code)
+    is WireNavRef.Navaid -> NavRef.Navaid(code)
+    is WireNavRef.Fix -> NavRef.Fix(code)
+    is WireNavRef.LatLon -> NavRef.LatLon(value.lat, value.lon)
+}
 
 private fun PackageId.toWire() = WirePackageId(
     region = region.toWireRegion(),

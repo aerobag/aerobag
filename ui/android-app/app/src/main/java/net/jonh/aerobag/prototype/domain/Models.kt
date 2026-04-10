@@ -31,10 +31,17 @@ data class PackageId(
 }
 
 data class FlightPlanLeg(
-    val fromAirport: String,
-    val toAirport: String,
+    val from: NavRef,
+    val to: NavRef,
     val airway: String? = null,
 )
+
+sealed interface NavRef {
+    data class Airport(val code: String) : NavRef
+    data class Navaid(val code: String) : NavRef
+    data class Fix(val code: String) : NavRef
+    data class LatLon(val lat: Double, val lon: Double) : NavRef
+}
 
 data class FlightPlan(
     val id: String,

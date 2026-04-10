@@ -12,7 +12,7 @@ class MockAppCoreAdapter : AppCoreAdapter {
 
         val packageIds = buildList {
             for (leg in plan.legs) {
-                for (airport in listOf(leg.fromAirport, leg.toAirport)) {
+                for (airport in listOfNotNull(airportCode(leg.from), airportCode(leg.to))) {
                     for (plate in catalog.plates) {
                         if (!plate.airportId.equals(airport, ignoreCase = true)) continue
                         val pkg = catalog.packages.firstOrNull { it.regionId == plate.regionId } ?: continue
@@ -75,4 +75,9 @@ class MockAppCoreAdapter : AppCoreAdapter {
             ),
         )
     }
+}
+
+private fun airportCode(ref: NavRef): String? = when (ref) {
+    is NavRef.Airport -> ref.code
+    else -> null
 }

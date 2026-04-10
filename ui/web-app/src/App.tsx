@@ -421,7 +421,26 @@ export default function App() {
           legSummary={legSummary}
           plan={currentPlan}
           onSelectPage={navigateToPage}
-          onOpenCharts={() => navigateToPage("charts")}
+          onOpenCharts={(airportId) => {
+            if (!airportId) {
+              return;
+            }
+            const airport = chartPageData.airports.find((entry) => entry.id === airportId);
+            if (uiSession) {
+              void uiSession.selectAirport(airportId).then((nextSnapshot) => {
+                setSessionSnapshot(nextSnapshot);
+              }).catch(() => {});
+            }
+            pushViewSnapshot({
+              page: "charts",
+              selectedAirportId: airportId,
+              selectedChartId: airport?.charts[0]?.id ?? "",
+              selectedChartLabel: airport?.charts[0]?.label ?? "",
+              recentAirportIds: moveAirportToFront(recentAirportIds, airportId, chartPageData.airports),
+              chartViewport: null,
+              chartFolderOpen: true,
+            });
+          }}
           onRemoveWaypoint={async (index) => {
             if (!uiSession) return;
             setSessionSnapshot(await uiSession.removeLeg(index));
@@ -820,7 +839,7 @@ function MapPage(props: {
   );
 }
 
-function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; uptimeLabel: string; legSummary: string; plan: typeof samplePlan; onSelectPage: (page: AppPage) => void; onOpenCharts: () => void; onRemoveWaypoint: (index: number) => void | Promise<void> }) {
+function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; uptimeLabel: string; legSummary: string; plan: typeof samplePlan; onSelectPage: (page: AppPage) => void; onOpenCharts: (airportId: string | null) => void; onRemoveWaypoint: (index: number) => void | Promise<void> }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
   const [pageTrayOpen, setPageTrayOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
@@ -830,6 +849,7 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
       props.plan.legs.map((leg, index) => ({
         id: `${index}:${navRefLabel(leg.from)}-${navRefLabel(leg.to)}`,
         waypoint: navRefLabel(leg.to),
+        chartAirportId: "Airport" in leg.to ? leg.to.Airport : null,
         distance: index === 0 ? "18.4" : "11.2",
         ete: index === 0 ? "0:07" : "0:04",
         course: index === 0 ? "342" : "161",
@@ -905,29 +925,32 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
         <>
           <button type="button" className="trayScrim" aria-label="Close waypoint actions" onClick={() => setSelectedWaypointIndex(null)} />
           <section className="waypointModal" aria-label="Waypoint actions">
-            {waypointActions.map((action) => (
+            {waypointActions.map((action) => {
+              const enabled = action.id === "charts" ? rows[selectedWaypointIndex].chartAirportId !== null : action.enabled;
+              return (
               <button
                 key={action.id}
                 type="button"
                 className="trayButton"
-                disabled={!action.enabled}
+                disabled={!enabled}
                 onPointerDown={stopPointer}
                 onPointerUp={stopPointer}
                 onClick={() => {
-                  if (!action.enabled) {
+                  if (!enabled) {
                     return;
                   }
                   if (action.id === "remove") {
                     props.onRemoveWaypoint(selectedWaypointIndex);
                   } else if (action.id === "charts") {
-                    props.onOpenCharts();
+                    props.onOpenCharts(rows[selectedWaypointIndex].chartAirportId);
                   }
                   setSelectedWaypointIndex(null);
                 }}
               >
                 {action.label}
               </button>
-            ))}
+            );
+            })}
           </section>
         </>
       ) : null}

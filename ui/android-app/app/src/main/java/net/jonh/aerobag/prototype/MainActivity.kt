@@ -109,6 +109,7 @@ import net.jonh.aerobag.prototype.domain.MapChartFamily
 import net.jonh.aerobag.prototype.domain.MapView
 import net.jonh.aerobag.prototype.domain.MapViewportState
 import net.jonh.aerobag.prototype.domain.NativeAppCoreAdapter
+import net.jonh.aerobag.prototype.domain.NavRef
 import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
 import net.jonh.aerobag.prototype.domain.SampleData
@@ -423,7 +424,7 @@ private fun AerobagApp() {
         writeUiPrefs(context.applicationContext, page, selectedAirportId, selectedChartId, recentAirportIds)
     }
     val legSummary = remember(currentPlan) {
-        currentPlan.legs.firstOrNull()?.let { "${it.fromAirport} -> ${it.toAirport} CRS 342" } ?: "NO LEG"
+        currentPlan.legs.firstOrNull()?.let { "${navRefLabel(it.from)} -> ${navRefLabel(it.to)} CRS 342" } ?: "NO LEG"
     }
 
     LaunchedEffect(selectedMap.id) {
@@ -467,6 +468,23 @@ private fun AerobagApp() {
         page = nextPage
     }
 
+    fun openChartsForAirport(airportId: String) {
+        sessionSnapshot = uiSession.selectAirport(airportId)
+        val airport = chartAirportById[airportId]
+        restoreSnapshot(
+            currentSnapshot().copy(
+                page = AppPage.Charts,
+                selectedAirportId = airportId,
+                selectedChartId = airport?.charts?.firstOrNull()?.id.orEmpty(),
+                selectedChartLabel = airport?.charts?.firstOrNull()?.label.orEmpty(),
+                recentAirportIds = sessionSnapshot.chartPageState.recentAirportIds,
+                chartViewport = null,
+                chartFolderOpen = true,
+            ),
+            boundedHistory(pageHistory + currentSnapshot()),
+        )
+    }
+
     BackHandler(enabled = pageHistory.isNotEmpty()) {
         val previous = pageHistory.lastOrNull() ?: return@BackHandler
         restoreSnapshot(previous, pageHistory.dropLast(1))
@@ -508,7 +526,7 @@ private fun AerobagApp() {
                     samplePlan = currentPlan,
                     uiTheme = uiTheme,
                     onSelectPage = ::navigateToPage,
-                    onOpenCharts = { navigateToPage(AppPage.Charts) },
+                    onOpenCharts = { airportId -> if (airportId != null) openChartsForAirport(airportId) },
                     onRemoveWaypoint = { index ->
                         sessionSnapshot = uiSession.removeLeg(index)
                     },
@@ -1042,7 +1060,7 @@ private fun FlightPlanPage(
     samplePlan: net.jonh.aerobag.prototype.domain.FlightPlan,
     uiTheme: UiTheme,
     onSelectPage: (AppPage) -> Unit,
-    onOpenCharts: () -> Unit,
+    onOpenCharts: (String?) -> Unit,
     onRemoveWaypoint: (Int) -> Unit,
 ) {
     var selectedWaypointIndex by remember { mutableStateOf<Int?>(null) }
@@ -1051,7 +1069,8 @@ private fun FlightPlanPage(
     val rows = remember(samplePlan) {
         samplePlan.legs.mapIndexed { index, leg ->
             FlightPlanRow(
-                waypoint = leg.toAirport,
+                waypoint = navRefLabel(leg.to),
+                chartAirportId = (leg.to as? NavRef.Airport)?.code,
                 distance = if (index == 0) "18.4" else "11.2",
                 ete = if (index == 0) "0:07" else "0:04",
                 course = if (index == 0) "342" else "161",
@@ -1137,7 +1156,7 @@ private fun FlightPlanPage(
                     "Waypoint Info" to false,
                     "Add Airway" to false,
                     "Select Procedure" to false,
-                    "Charts" to true,
+                    "Charts" to (rows[selectedWaypointIndex!!].chartAirportId != null),
                 ).forEach { (action, enabled) ->
                     MenuPanelRow(
                         label = action,
@@ -1150,7 +1169,7 @@ private fun FlightPlanPage(
                             if (action == "Remove") {
                                 onRemoveWaypoint(selectedWaypointIndex!!)
                             } else if (action == "Charts") {
-                                onOpenCharts()
+                                onOpenCharts(rows[selectedWaypointIndex!!].chartAirportId)
                             }
                             selectedWaypointIndex = null
                         }
@@ -1829,10 +1848,18 @@ private fun PlanHeaderRow() {
 
 private data class FlightPlanRow(
     val waypoint: String,
+    val chartAirportId: String?,
     val distance: String,
     val ete: String,
     val course: String,
 )
+
+private fun navRefLabel(ref: NavRef): String = when (ref) {
+    is NavRef.Airport -> ref.code
+    is NavRef.Navaid -> ref.code
+    is NavRef.Fix -> ref.code
+    is NavRef.LatLon -> "${"%.3f".format(ref.lat)},${"%.3f".format(ref.lon)}"
+}
 
 @Composable
 private fun FlightPlanDataRow(row: FlightPlanRow, selected: Boolean, onWaypointClick: () -> Unit) {

@@ -20,6 +20,7 @@ use preprocessor_csup::{
     package_csup_region, prepare_csup_inputs, render_csup_region, stage_work_dir_for_product,
 };
 use preprocessor_data::{build_data_package, DataBuildRequest};
+use preprocessor_data::{build_data_package, DataBuildMode, DataBuildRequest};
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
     read_source_urls_jsonl, write_package_outputs_jsonl, PackageOutputRecord,
@@ -1111,6 +1112,7 @@ fn build_data_nodes(
         input_dir: staged_input_dir.clone(),
         output_dir: node_root.join("output"),
         manifest_version: current_data_manifest_cycle(),
+        mode: DataBuildMode::Production,
     };
     let inputs = BTreeMap::from([
         ("staged_input_dir".to_string(), relative_artifact_path(&staged_input_dir, &config.build_root)),

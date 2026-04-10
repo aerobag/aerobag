@@ -16,6 +16,13 @@ if [[ -z "${ARTIFACT_ROOT}" ]]; then
     echo "artifact root unset: set AEROBAG_ARTIFACT_ROOT or create ${ARTIFACT_ROOT_CONFIG_FILE}" >&2
     exit 1
 fi
+if [[ -z "${AVARE_SOURCE_ROOT:-}" ]]; then
+    if [[ -d "${ROOT_DIR}/avare-source" ]]; then
+        AVARE_SOURCE_ROOT="${ROOT_DIR}/avare-source"
+    else
+        AVARE_SOURCE_ROOT="$(dirname "${ROOT_DIR}")/../avare-reference/avare-source"
+    fi
+fi
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${ARTIFACT_ROOT}/runs/${RUN_ID}}"
 CACHE_ROOT="${CACHE_ROOT:-${ARTIFACT_ROOT}/cache}"
@@ -39,6 +46,7 @@ done
 
 RUN_ID="${RUN_ID}" \
 ROOT_DIR="${ROOT_DIR}" \
+AVARE_SOURCE_ROOT="${AVARE_SOURCE_ROOT}" \
 OUTPUT_ROOT="${OUTPUT_ROOT}" \
 CACHE_ROOT="${CACHE_ROOT}" \
 FETCH_CACHE_ROOT="${FETCH_CACHE_ROOT:-${CACHE_ROOT}/fetch}" \

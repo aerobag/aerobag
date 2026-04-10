@@ -689,7 +689,8 @@ pub fn run_full_validation(config: &FullValidationConfig) -> anyhow::Result<()> 
             .arg("build-data")
             .args(["--input-dir", &legacy_data_root.display().to_string()])
             .args(["--output-dir", &config.native_root().join("data").display().to_string()])
-            .args(["--manifest-version", &manifest_version]);
+            .args(["--manifest-version", &manifest_version])
+            .args(["--data-mode", "legacy_avare"]);
         let completed = run_command_capture(&mut build_data)?;
         fs::write(log_root.join("native-data.stdout.log"), &completed.stdout)?;
         fs::write(log_root.join("native-data.stderr.log"), &completed.stderr)?;

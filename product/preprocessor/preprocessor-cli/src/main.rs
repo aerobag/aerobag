@@ -17,7 +17,7 @@ use preprocessor_core::{
     WorkKind,
 };
 use preprocessor_csup::{run_native_csup, NativeCsupRunRequest};
-use preprocessor_data::{build_data_package, compare_databases, DataBuildRequest};
+use preprocessor_data::{build_data_package, compare_databases, DataBuildMode, DataBuildRequest};
 use preprocessor_fetch::{
     hash_text, manifest_path_for_run, manifest_summary, read_download_records,
     read_extract_records, read_source_url_set, CacheLayout,
@@ -302,6 +302,7 @@ struct BuildDataCommand {
     input_dir: PathBuf,
     output_dir: PathBuf,
     manifest_version: String,
+    mode: DataBuildMode,
     resource_index_output: Option<PathBuf>,
     chart_sources: Vec<ChartSource>,
     tpp_sources: Vec<AssetSource>,
@@ -312,6 +313,7 @@ fn parse_build_data_command(args: &[String]) -> anyhow::Result<BuildDataCommand>
     let mut input_dir = None;
     let mut output_dir = None;
     let mut manifest_version = None;
+    let mut mode = DataBuildMode::Production;
     let mut resource_index_output = None;
     let mut chart_sources = Vec::new();
     let mut tpp_sources = Vec::new();
@@ -341,6 +343,14 @@ fn parse_build_data_command(args: &[String]) -> anyhow::Result<BuildDataCommand>
                         .cloned()
                         .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
                 );
+                index += 2;
+            }
+            Some("--data-mode") => {
+                mode = DataBuildMode::parse(
+                    args.get(index + 1)
+                        .map(String::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                )?;
                 index += 2;
             }
             Some("--resource-index-output") => {
@@ -383,6 +393,7 @@ fn parse_build_data_command(args: &[String]) -> anyhow::Result<BuildDataCommand>
         input_dir: input_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
         output_dir: output_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
         manifest_version: manifest_version.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+        mode,
         resource_index_output,
         chart_sources,
         tpp_sources,
@@ -1654,6 +1665,7 @@ fn main() -> anyhow::Result<()> {
                 input_dir: command.input_dir,
                 output_dir: command.output_dir,
                 manifest_version: command.manifest_version,
+                mode: command.mode,
             })?;
             println!("main_db {}", result.main_db.display());
             println!("manifest {}", result.manifest_path.display());
@@ -1777,6 +1789,7 @@ mod tests {
         assert_eq!(command.input_dir, PathBuf::from("/tmp/input"));
         assert_eq!(command.output_dir, PathBuf::from("/tmp/output"));
         assert_eq!(command.manifest_version, "2604");
+        assert_eq!(command.mode, DataBuildMode::Production);
         assert_eq!(command.resource_index_output, None);
         assert!(command.chart_sources.is_empty());
         assert!(command.tpp_sources.is_empty());
@@ -1836,5 +1849,23 @@ mod tests {
             command.csup_sources[0].asset_root,
             PathBuf::from("/tmp/csup-root")
         );
+    }
+
+    #[test]
+    fn parse_build_data_command_accepts_data_mode() {
+        let args = vec![
+            "preprocessor-cli".to_string(),
+            "build-data".to_string(),
+            "--input-dir".to_string(),
+            "/tmp/input".to_string(),
+            "--output-dir".to_string(),
+            "/tmp/output".to_string(),
+            "--manifest-version".to_string(),
+            "2604".to_string(),
+            "--data-mode".to_string(),
+            "legacy_avare".to_string(),
+        ];
+        let command = parse_build_data_command(&args).expect("parse build-data");
+        assert_eq!(command.mode, DataBuildMode::LegacyAvare);
     }
 }

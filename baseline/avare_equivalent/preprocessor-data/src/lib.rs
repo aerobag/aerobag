@@ -24,11 +24,28 @@ const TABLES: &[&str] = &[
     "geo",
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataBuildMode {
+    Production,
+    LegacyAvare,
+}
+
+impl DataBuildMode {
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "production" => Ok(Self::Production),
+            "legacy_avare" => Ok(Self::LegacyAvare),
+            other => bail!("unsupported data build mode: {other}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DataBuildRequest {
     pub input_dir: PathBuf,
     pub output_dir: PathBuf,
     pub manifest_version: String,
+    pub mode: DataBuildMode,
 }
 
 #[derive(Debug, Clone)]
@@ -165,9 +182,8 @@ fn awos_coord_lon_bug(value: &str) -> Option<f64> {
     Some(if hemi == "W" { -coord } else { coord })
 }
 
-fn setup_schema(conn: &Connection) -> anyhow::Result<()> {
-    conn.execute_batch(
-        "
+fn setup_schema(conn: &Connection, mode: DataBuildMode) -> anyhow::Result<()> {
+    let base = "
 CREATE TABLE airports(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text,Use Text,FSSPhone Text,Manager Text,ManagerPhone Text,ARPElevation Text,MagneticVariation Text,TrafficPatternAltitude Text,FuelTypes Text,Customs Text,Beacon Text,LightSchedule Text,SegCircle Text,ATCT Text,UNICOMFrequencies Text,CTAFFrequency Text,NonCommercialLandingFee Text,State Text, City Text, UNIQUE(LocationID));
 CREATE TABLE airportfreq(LocationID Text,Type Text, Freq Text);
 CREATE TABLE airportrunways(LocationID Text,Length Text,Width Text,Surface Text,LEIdent Text,HEIdent Text,LELatitude Text,HELatitude Text,LELongitude Text,HELongitude Text,LEElevation Text,HEElevation Text,LEHeadingT Text,HEHeading Text,LEDT Text,HEDT Text,LELights Text,HELights Text,LEILS Text,HEILS Text,LEVGSI Text,HEVGSI Text,LEPattern Text, HEPattern Text);
@@ -176,11 +192,18 @@ CREATE TABLE fix(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,
 CREATE TABLE obs(ARPLatitude float,ARPLongitude float,Height float);
 CREATE TABLE awos(LocationID Text, Type Text, Status Text, Latitude float,Longitude float, Elevation Text, Frequency1 Text, Frequency2 Text, Telephone1 Text, Telephone2 Text, Remark Text);
 CREATE TABLE saa(designator TEXT,name TEXT,upperlimit TEXT,lowerlimit TEXT,begintime TEXT,endtime TEXT,timeref TEXT,beginday TEXT,endday TEXT,day TEXT,FreqTx TEXT,FreqRx TEXT,lat FLOAT,lon FLOAT);
-CREATE TABLE airways(name Text, sequence Text, Latitude float, Longitude float);
 CREATE TABLE cifp_sid_star_app(record_type Text,customer_area_code Text,section_code Text,airport_identifier Text,icao_code_1 Text,subsection_code Text,sid_star_approach_identifier Text,route_type Text,transition_identifier Text,sequence_number Text,fix_identifier Text,icao_code_2 Text,section_code_2 Text,subsection_code_2 Text,continuation_record_number Text,waypoint_description_code Text,turn_direction Text,rnp Text,path_and_termination Text,turn_direction_valid Text,recommended_navaid Text,icao_code_3 Text,arc_radius Text,theta Text,rho Text,magnetic_course Text,route_distance_holding_distance_or_time Text,recd_nav_section Text,recd_nav_subsection Text,reserved Text,altitude_description Text,atc_indicator Text,altitude_1 Text,altitude_2 Text,transition_altitude Text,speed_limit Text,vertical_angle Text,center_fix_or_taa_procedure_turn_indicator Text,multiple_code_or_taa_sector_identifier Text,icao_code_4 Text,section_code_3 Text,subsection_code_3 Text,gps_fms_indication Text,speed_limit_description Text,apch_route_qualifier_1 Text,apch_route_qualifier_2 Text,file_record_number Text,cycle_date Text);
 CREATE TABLE geo(Latitude float, Longitude float, height float, declination float);
-",
-    )
+";
+    let airway_schema = match mode {
+        DataBuildMode::Production => {
+            "CREATE TABLE airways_branch(name Text, branch_key Text, sequence_number Integer, sequence_token Text, point_name Text, Latitude float, Longitude float);"
+        }
+        DataBuildMode::LegacyAvare => {
+            "CREATE TABLE airways(name Text, sequence Text, Latitude float, Longitude float);"
+        }
+    };
+    conn.execute_batch(&format!("{base}\n{airway_schema}\n"))
     .context("failed to create data schema")?;
     Ok(())
 }
@@ -561,6 +584,40 @@ fn insert_awos(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
 fn insert_airways(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
     let path = input_dir.join("AWY.txt");
     let text = read_text_lossy(&path)?;
+    let mut stmt = conn.prepare(
+        "INSERT INTO airways_branch VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?;
+    let mut count = 0;
+    for raw in text.lines() {
+        if !raw.starts_with("AWY2") {
+            continue;
+        }
+        let name = trim(field(raw, 4, 5)).to_string();
+        let seq_token = trim(field(raw, 9, 6)).to_string();
+        let lat_s = trim(field(raw, 83, 14));
+        let lon_s = trim(field(raw, 97, 14));
+        if lat_s.is_empty() || lon_s.is_empty() {
+            continue;
+        }
+        let lat = awy_coord(lat_s);
+        let lon = awy_coord(lon_s);
+        stmt.execute(params![
+            name,
+            airway_branch_key(&seq_token),
+            airway_sequence_number(&seq_token),
+            seq_token,
+            trim(field(raw, 15, 25)).to_string(),
+            lat,
+            lon
+        ])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn insert_airways_legacy(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
+    let path = input_dir.join("AWY.txt");
+    let text = read_text_lossy(&path)?;
     let mut stmt = conn.prepare("INSERT INTO airways VALUES (?1, ?2, ?3, ?4)")?;
     let mut count = 0;
     for raw in text.lines() {
@@ -580,6 +637,23 @@ fn insert_airways(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> 
         count += 1;
     }
     Ok(count)
+}
+
+fn airway_branch_key(sequence_token: &str) -> String {
+    sequence_token
+        .chars()
+        .find(|ch| !ch.is_ascii_digit() && !ch.is_whitespace())
+        .map(|ch| ch.to_string())
+        .unwrap_or_default()
+}
+
+fn airway_sequence_number(sequence_token: &str) -> i32 {
+    trim(sequence_token)
+        .chars()
+        .filter(|ch| ch.is_ascii_digit())
+        .collect::<String>()
+        .parse::<i32>()
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Default)]
@@ -992,7 +1066,7 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
     }
     let conn = Connection::open(&main_db)
         .with_context(|| format!("failed to create {}", main_db.display()))?;
-    setup_schema(&conn)?;
+    setup_schema(&conn, request.mode)?;
     let tx = conn.unchecked_transaction()?;
     let mut row_counts = BTreeMap::new();
     row_counts.insert("airports".to_string(), insert_airports(&tx, &request.input_dir)?);
@@ -1003,7 +1077,14 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
     row_counts.insert("obs".to_string(), insert_obs(&tx, &request.input_dir)?);
     row_counts.insert("awos".to_string(), insert_awos(&tx, &request.input_dir)?);
     row_counts.insert("saa".to_string(), insert_saa(&tx, &request.input_dir)?);
-    row_counts.insert("airways".to_string(), insert_airways(&tx, &request.input_dir)?);
+    match request.mode {
+        DataBuildMode::Production => {
+            row_counts.insert("airways_branch".to_string(), insert_airways(&tx, &request.input_dir)?);
+        }
+        DataBuildMode::LegacyAvare => {
+            row_counts.insert("airways".to_string(), insert_airways_legacy(&tx, &request.input_dir)?);
+        }
+    }
     row_counts.insert("cifp_sid_star_app".to_string(), insert_cifp(&tx, &request.input_dir)?);
     row_counts.insert("geo".to_string(), insert_geo(&tx, &request.input_dir)?);
     tx.commit()?;

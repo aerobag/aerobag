@@ -4,6 +4,7 @@ pub mod content;
 pub mod errors;
 pub mod geometry;
 pub mod ids;
+pub mod navdb;
 pub mod planning;
 pub mod situation;
 pub mod session;
@@ -26,7 +27,17 @@ pub use content::{
 pub use errors::{AppError, AppErrorKind, AppResult};
 pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord};
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
-pub use planning::{FlightPlan, NavRef, PlanLeg};
+pub use navdb::{
+    load_airway_branches, load_airway_points, load_procedure_legs, load_resolved_procedure_legs,
+    resolve_airway_segment, select_airway_branch, AirwayBranch, AirwayFixPoint, AirwayPoint,
+    ProcedureLegRecord, ProcedureVariantKey,
+};
+pub use planning::{
+    delete_component, delete_waypoint_component, flatten_component_to_waypoints,
+    interpret_path_termination, AirwaySegment, DirectToState, FlightPlan, GuidanceState, NavRef,
+    PathTermination, PlanLeg, ProcedureKind, ProcedureSegment, ResolvedLeg, ResolvedLegSource,
+    RouteComponent, SequencingMode,
+};
 pub use situation::{Situation, SituationPosition};
 pub use session::{
     create_ui_session, destroy_session, get_session_snapshot, move_waypoint_in_session,
@@ -109,12 +120,22 @@ pub fn chart_for_position(
 }
 
 pub fn build_flight_plan(plan: FlightPlan) -> AppResult<FlightPlan> {
-    if plan.legs.is_empty() {
+    if plan.legs.is_empty() && plan.route_components.is_empty() && plan.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: "flight plan must contain at least one leg".to_string(),
         });
     }
+
+    let plan = plan.normalized();
+
+    if plan.legs.is_empty() && plan.resolved_legs.is_empty() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "flight plan must contain at least one flyable leg".to_string(),
+        });
+    }
+
     Ok(plan)
 }
 
@@ -228,19 +249,16 @@ pub fn plan_content_requirements(
 ) -> AppResult<Vec<ContentRequirement>> {
     let mut package_ids = Vec::new();
 
-    for leg in &plan.legs {
-        let airport_codes = [leg.from.airport_code(), leg.to.airport_code()];
-        for airport_code in airport_codes.into_iter().flatten() {
-            for plate in &catalog.bundle.plates {
-                if plate.airport_id.0.eq_ignore_ascii_case(airport_code) {
-                    if let Some(pkg) = catalog
-                        .bundle
-                        .packages
-                        .iter()
-                        .find(|pkg| pkg.region_id == plate.region_id)
-                    {
-                        package_ids.push(pkg.id.clone());
-                    }
+    for airport_code in plan_airport_codes(plan) {
+        for plate in &catalog.bundle.plates {
+            if plate.airport_id.0.eq_ignore_ascii_case(airport_code) {
+                if let Some(pkg) = catalog
+                    .bundle
+                    .packages
+                    .iter()
+                    .find(|pkg| pkg.region_id == plate.region_id)
+                {
+                    package_ids.push(pkg.id.clone());
                 }
             }
         }
@@ -254,6 +272,44 @@ pub fn plan_content_requirements(
         chart_ids: Vec::new(),
         plate_ids: Vec::new(),
     }])
+}
+
+fn plan_airport_codes(plan: &FlightPlan) -> Vec<&str> {
+    let mut codes = Vec::new();
+
+    for leg in &plan.legs {
+        if let Some(code) = leg.from.airport_code() {
+            codes.push(code);
+        }
+        if let Some(code) = leg.to.airport_code() {
+            codes.push(code);
+        }
+    }
+
+    for component in &plan.route_components {
+        match component {
+            RouteComponent::Waypoint { waypoint } => {
+                if let Some(code) = waypoint.airport_code() {
+                    codes.push(code);
+                }
+            }
+            RouteComponent::Airway { airway } => {
+                if let Some(code) = airway.entry.airport_code() {
+                    codes.push(code);
+                }
+                if let Some(code) = airway.exit.airport_code() {
+                    codes.push(code);
+                }
+            }
+            RouteComponent::Procedure { procedure } => {
+                codes.push(procedure.airport_id.0.as_str());
+            }
+        }
+    }
+
+    codes.sort();
+    codes.dedup();
+    codes
 }
 
 pub fn resolve_content_status(
@@ -417,14 +473,17 @@ mod tests {
     fn sample_plan() -> FlightPlan {
         FlightPlan {
             id: "plan-1".to_string(),
-            name: "KBOS local".to_string(),
+            name: "KBOS to KJFK".to_string(),
             legs: vec![PlanLeg {
                 from: NavRef::Airport("KBOS".to_string()),
-                to: NavRef::Airport("KBOS".to_string()),
+                to: NavRef::Airport("KJFK".to_string()),
                 airway: None,
             }],
+            route_components: Vec::new(),
+            resolved_legs: Vec::new(),
+            guidance: None,
             departure: Some(AirportId("KBOS".to_string())),
-            destination: Some(AirportId("KBOS".to_string())),
+            destination: Some(AirportId("KJFK".to_string())),
             alternate: None,
             cruise_altitude_ft: Some(3000),
             notes: None,
@@ -502,6 +561,9 @@ mod tests {
             id: "plan-1".to_string(),
             name: "Empty".to_string(),
             legs: Vec::new(),
+            route_components: Vec::new(),
+            resolved_legs: Vec::new(),
+            guidance: None,
             departure: None,
             destination: None,
             alternate: None,
@@ -520,6 +582,91 @@ mod tests {
         assert_eq!(requirements.len(), 1);
         assert_eq!(requirements[0].package_ids.len(), 1);
         assert_eq!(requirements[0].package_ids[0].region, RegionId::Ne);
+    }
+
+    #[test]
+    fn normalizes_legacy_legs_into_route_components_and_resolved_legs() {
+        let plan = build_flight_plan(sample_plan()).unwrap();
+
+        assert_eq!(plan.route_components.len(), 2);
+        assert_eq!(plan.resolved_legs.len(), 1);
+        assert_eq!(plan.legs.len(), 1);
+    }
+
+    #[test]
+    fn accepts_component_only_plan_and_backfills_legacy_legs() {
+        let plan = build_flight_plan(FlightPlan {
+            id: "component-only".to_string(),
+            name: "Component only".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KBOS".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KJFK".to_string()),
+                },
+            ],
+            resolved_legs: Vec::new(),
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+            }),
+            departure: Some(AirportId("KBOS".to_string())),
+            destination: Some(AirportId("KJFK".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        })
+        .unwrap();
+
+        assert_eq!(plan.resolved_legs.len(), 1);
+        assert_eq!(plan.legs.len(), 1);
+        assert_eq!(plan.legs[0].from.airport_code(), Some("KBOS"));
+        assert_eq!(plan.legs[0].to.airport_code(), Some("KJFK"));
+    }
+
+    #[test]
+    fn content_requirements_consider_airports_from_procedure_components() {
+        let catalog = load_catalog(&sample_catalog_json()).unwrap();
+        let plan = build_flight_plan(FlightPlan {
+            id: "proc".to_string(),
+            name: "Procedure".to_string(),
+            legs: Vec::new(),
+            route_components: vec![RouteComponent::Procedure {
+                procedure: ProcedureSegment {
+                    airport_id: AirportId("KBOS".to_string()),
+                    procedure_id: "IAP-ILS-RWY-04R".to_string(),
+                    kind: ProcedureKind::Approach,
+                    runway_transition: Some("04R".to_string()),
+                    enroute_transition: None,
+                },
+            }],
+            resolved_legs: vec![ResolvedLeg {
+                id: "proc-0".to_string(),
+                from: NavRef::Fix("NOONY".to_string()),
+                to: NavRef::Airport("KBOS".to_string()),
+                source: ResolvedLegSource::RouteComponent { component_index: 0 },
+            }],
+            guidance: None,
+            departure: None,
+            destination: Some(AirportId("KBOS".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        })
+        .unwrap();
+
+        let requirements = plan_content_requirements(&catalog, &plan).unwrap();
+
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(requirements[0].package_ids.len(), 1);
+        assert_eq!(requirements[0].package_ids[0].package_name(), "NE_SEC");
     }
 
     #[test]

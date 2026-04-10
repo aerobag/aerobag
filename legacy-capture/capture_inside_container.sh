@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/work}"
+AVARE_SOURCE_ROOT="${AVARE_SOURCE_ROOT:-${ROOT_DIR}/avare-source}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/capture}"
 CACHE_ROOT="${CACHE_ROOT:-/cache}"
 FETCH_CACHE_ROOT="${FETCH_CACHE_ROOT:-${CACHE_ROOT}/fetch}"
@@ -43,7 +44,15 @@ run_capture() {
     local repo_rel="$2"
     shift 2
 
-    local repo_dir="${ROOT_DIR}/${repo_rel}"
+    local repo_dir
+    case "${repo_rel}" in
+        avare-source/*)
+            repo_dir="${AVARE_SOURCE_ROOT}/${repo_rel#avare-source/}"
+            ;;
+        *)
+            repo_dir="${ROOT_DIR}/${repo_rel}"
+            ;;
+    esac
     local work_dir="${RUN_DIR}/work/${label}"
     local stdout_log="${LOG_DIR}/${label}.stdout.log"
     local stderr_log="${LOG_DIR}/${label}.stderr.log"

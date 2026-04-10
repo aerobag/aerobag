@@ -17,7 +17,7 @@ use preprocessor_charts::{
     run_native_family,
 };
 use preprocessor_csup::{NativeCsupRunRequest, run_native_csup};
-use preprocessor_data::{DataBuildRequest, build_data_package, compare_databases};
+use preprocessor_data::{DataBuildMode, DataBuildRequest, build_data_package, compare_databases};
 use preprocessor_tpp::{NativeTppRunRequest, run_native_tpp};
 use preprocessor_core::{
     CaptureManifest, ChartFamily, ConcurrencyConfig, ExpectedTileCounts, Parallelism, Region,
@@ -1560,30 +1560,53 @@ fn main() -> anyhow::Result<()> {
             println!("csup_count {}", index.csups.len());
         }
         Some("build-data") => {
-            if args.get(2).map(String::as_str) != Some("--input-dir")
-                || args.get(4).map(String::as_str) != Some("--output-dir")
-                || args.get(6).map(String::as_str) != Some("--manifest-version")
-            {
-                anyhow::bail!("{}", usage());
+            let mut input_dir = None;
+            let mut output_dir = None;
+            let mut manifest_version = None;
+            let mut mode = DataBuildMode::Production;
+            let mut index = 2;
+            while index < args.len() {
+                match args.get(index).map(String::as_str) {
+                    Some("--input-dir") => {
+                        input_dir = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--output-dir") => {
+                        output_dir = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--manifest-version") => {
+                        manifest_version = Some(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        );
+                        index += 2;
+                    }
+                    Some("--data-mode") => {
+                        mode = DataBuildMode::parse(
+                            args.get(index + 1)
+                                .map(String::as_str)
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        )?;
+                        index += 2;
+                    }
+                    _ => anyhow::bail!("{}", usage()),
+                }
             }
-            let input_dir = PathBuf::from(
-                args.get(3)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let output_dir = PathBuf::from(
-                args.get(5)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-            );
-            let manifest_version = args
-                .get(7)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?;
             let result = build_data_package(&DataBuildRequest {
-                input_dir,
-                output_dir,
-                manifest_version,
+                input_dir: input_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                output_dir: output_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                manifest_version: manifest_version.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                mode,
             })?;
             println!("main_db {}", result.main_db.display());
             println!("manifest {}", result.manifest_path.display());

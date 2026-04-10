@@ -6,4 +6,5 @@ version.workspace = true
 
 [dependencies]
 app-core = { path = "../app-core" }
+serde.workspace = true
 serde_json.workspace = true

@@ -59,6 +59,7 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> 
 
 const waypointActions = ["Remove", "Insert", "Reorder", "Waypoint Info", "Add Airway", "Select Procedure", "Charts"];
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
+const maxViewHistoryDepth = 64;
 const controlTheme = uiTheme.controls;
 const plateFolderTheme = uiTheme.plate_folder;
 const plateFolderCategoryOrder: PlateFolderCategory[] = ["airport-diagram", "csup", "takeoff-mins", "approach", "departure", "star"];
@@ -209,6 +210,10 @@ export default function App() {
     setChartFolderOpen(snapshot.chartFolderOpen);
   }
 
+  function boundedHistory(history: AppViewSnapshot[]) {
+    return history.length <= maxViewHistoryDepth ? history : history.slice(history.length - maxViewHistoryDepth);
+  }
+
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
@@ -239,7 +244,7 @@ export default function App() {
     if (nextPage === page) {
       return;
     }
-    const nextHistory = [...pageHistory, currentSnapshot()];
+    const nextHistory = boundedHistory([...pageHistory, currentSnapshot()]);
     setPageHistory(nextHistory);
     setPage(nextPage);
     if (typeof window !== "undefined") {
@@ -257,7 +262,7 @@ export default function App() {
   }
 
   function pushViewSnapshot(next: Partial<AppViewSnapshot> & Pick<AppViewSnapshot, "page">) {
-    const nextHistory = [...pageHistory, currentSnapshot()];
+    const nextHistory = boundedHistory([...pageHistory, currentSnapshot()]);
     const nextCurrent: AppViewSnapshot = {
       ...currentSnapshot(),
       ...next,

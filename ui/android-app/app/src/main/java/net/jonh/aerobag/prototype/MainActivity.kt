@@ -138,6 +138,7 @@ private const val UiPrefsPageKey = "page"
 private const val UiPrefsSelectedAirportKey = "selected_airport_id"
 private const val UiPrefsSelectedChartKey = "selected_chart_id"
 private const val UiPrefsRecentAirportsKey = "recent_airport_ids"
+private const val MaxViewHistoryDepth = 64
 
 private enum class AppPage {
     Map,
@@ -250,6 +251,9 @@ private fun moveAirportToFront(
     airportId: String,
     airports: List<ChartAirport>,
 ): List<String> = mergeRecentAirportIds(airports, listOf(airportId) + currentIds.filterNot { it == airportId })
+
+private fun boundedHistory(history: List<AppViewSnapshot>): List<AppViewSnapshot> =
+    if (history.size <= MaxViewHistoryDepth) history else history.takeLast(MaxViewHistoryDepth)
 
 private fun resolveAirportId(
     airports: List<ChartAirport>,
@@ -461,7 +465,7 @@ private fun AerobagApp() {
         if (nextPage == page) {
             return
         }
-        pageHistory = pageHistory + currentSnapshot()
+        pageHistory = boundedHistory(pageHistory + currentSnapshot())
         page = nextPage
     }
 
@@ -487,7 +491,7 @@ private fun AerobagApp() {
                                 page = AppPage.Map,
                                 selectedMapId = it,
                             ),
-                            pageHistory + currentSnapshot(),
+                            boundedHistory(pageHistory + currentSnapshot()),
                         )
                     },
                     onSelectPage = ::navigateToPage,
@@ -519,10 +523,10 @@ private fun AerobagApp() {
                     onFolderOpenChange = {
                         restoreSnapshot(
                             currentSnapshot().copy(
-                                page = AppPage.Charts,
-                                chartFolderOpen = it,
+                                    page = AppPage.Charts,
+                                    chartFolderOpen = it,
                             ),
-                            pageHistory + currentSnapshot(),
+                            boundedHistory(pageHistory + currentSnapshot()),
                         )
                     },
                     onSelectPage = ::navigateToPage,
@@ -538,7 +542,7 @@ private fun AerobagApp() {
                                 chartViewport = null,
                                 chartFolderOpen = false,
                             ),
-                            pageHistory + currentSnapshot(),
+                            boundedHistory(pageHistory + currentSnapshot()),
                         )
                     },
                     onSelectChart = {
@@ -550,7 +554,7 @@ private fun AerobagApp() {
                                 chartViewport = null,
                                 chartFolderOpen = false,
                             ),
-                            pageHistory + currentSnapshot(),
+                            boundedHistory(pageHistory + currentSnapshot()),
                         )
                     },
                 )

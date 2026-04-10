@@ -860,7 +860,7 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
           id: `start:${navRefLabel(firstLeg.from)}`,
           waypoint: navRefLabel(firstLeg.from),
           chartAirportId: "Airport" in firstLeg.from ? firstLeg.from.Airport : null,
-          removeLegIndex: null as number | null,
+          removeLegIndex: 0 as number | null,
           distance: "—",
           ete: "—",
           course: "—",

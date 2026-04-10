@@ -1083,7 +1083,7 @@ private fun FlightPlanPage(
                     FlightPlanRow(
                         waypoint = navRefLabel(firstLeg.from),
                         chartAirportId = (firstLeg.from as? NavRef.Airport)?.code,
-                        removeLegIndex = null,
+                        removeLegIndex = 0,
                         distance = "—",
                         ete = "—",
                         course = "—",

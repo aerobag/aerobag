@@ -231,16 +231,72 @@ x (both)
 x Back-button stack should distinguish CHT(SEC) from CHT(IFR-L) and so on, so we can "back" through charts too.
 x Back-button stack should include FLDR.
 
-(web) plate scroll bounds are wonky. If I bring up DP-WA-BELLEVUE FOUR zoomed all the way out and drag it
-around, it's jumpy and snappy, rather than moving smoothly to the margin limits.
-If I then click FLDR and CSup, the CSup chart isn't centered, it's left justified - *until* I drag it.
-If I flip back to a one-page chart (with "back" or going through FLDR), it's now scrolled off screen
-to the right (that is, same left margin as the skinny chart, but that's not right for the tall chart).
-I feel like the scroll bounds logic is kinda broken (for drags) and not being executed at the right time
-for arriving fresh at a chart from one with a different aspect ratio.
+x (web) plate scroll bounds are wonky. If I bring up DP-WA-BELLEVUE FOUR zoomed all the way out and drag it
+x around, it's jumpy and snappy, rather than moving smoothly to the margin limits.
+x If I then click FLDR and CSup, the CSup chart isn't centered, it's left justified - *until* I drag it.
+x If I flip back to a one-page chart (with "back" or going through FLDR), it's now scrolled off screen
+x to the right (that is, same left margin as the skinny chart, but that's not right for the tall chart).
+x I feel like the scroll bounds logic is kinda broken (for drags) and not being executed at the right time
+x for arriving fresh at a chart from one with a different aspect ratio.
 
-(android) no thumbnails on FLDR view.
-Plates don't have 1-thumb margin for draggability.
-Plates don't zoom/unzoom with +/-.
+x The blocked buttons don't end up "under the scrim", so they're not dimmed like the chart/plate display
+x surface. I could imagine that we either move them "under" the grey, or maybe it's easier/cleaner to just have
+x them use the "blocked" flag to dim themselves and fake it to blend in (the same way we fake hit transparency
+x as opposed to having the scrim catch the hits "before" they reach the buttons).
+
+x Selecting a new plate from FLDR should move back to the default zoom, not remember the zoom of the previously
+x viewed plate.
+
+x (android) on plate page, scrim dims the background behind the plate but not the plate
+
+x (web) on android, folder previews are fit to box, showing the entire plate and leaving a dark grey letterbox.
+x On web, the preview is fit-width, which is too zoomed in, you can't see the overall shape.
+
+x (android) no thumbnails on FLDR view.
+
+x (both) the chart labels sit on colored boxes. Those boxes are supposed to be 75% alpha, not 100%, so we can see
+x the chart peeking through them.
+
+x (android) plates come up with no margin; expected 1-thumb margin for draggability.
+x Plates don't zoom/unzoom with +/-. (don't know if they drag, because no margin)
+
+x (web) if I have a plate up and click FLDR and select a different plate, it's not taking me there anymore,
+x but back to the first plate. That's wierd.
+x Clicking FLDR in the FDLR view shouldn't do anything -- it shouldn't be a toggle, it should just idempotently
+x "take us to the folder view".
+
+Buttons and flight plan cells look different on web vs android. Let's define a common appearance.
+I like the rounded rects; each flight plan waypoint should be a rounded rect.
+The colors should be in the theme. Let's say for now buttoncolor is a dark blue.
+
+Probably should bound the depth of the back-button stack.
+
+------------------------------------------------------------------------------
+
+Flight plans
+
+- clicking on a flight plan item brings up a menu tray. That menu should cover the
+non-waypoint columns, but not the waypoints, so we can see the waypoint we clicked
+highlighted.
+
+- disable all the placeholder menu items we haven't implemented.
+
+- remove is easy to implement
+
+- Charts should take us to the plate (and it does) but it should also (a) set the
+airport to match the waypoint, (b) put it into FLDR mode. Also, the charts menu
+item should only be enabled if the waypoint is an airport.
+
+- Reorder should replace the menu with a single 1x1 (up) and (down) button;
+clicking on them moves the waypoint in the list. Clickout outside the reorder
+tray commits the change.
+
+------------------------------------------------------------------------------
+
+Current position and georeferencing
 
 Validate approach plates by drawing the approaches over them from db with crosshairs at the intersections
+
+------------------------------------------------------------------------------
+
+Database plotting

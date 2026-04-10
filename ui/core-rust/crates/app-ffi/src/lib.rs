@@ -97,6 +97,45 @@ pub fn chart_for_position_json(
     serde_json::to_string(&chart).map_err(|err| err.to_string())
 }
 
+pub fn derive_chart_page_json(
+    resource_index_json: &str,
+    plan_json: &str,
+) -> Result<String, String> {
+    let resource_index: app_core::ResourceIndexChartPageInput =
+        serde_json::from_str(resource_index_json).map_err(|err| err.to_string())?;
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let chart_page = app_core::derive_chart_page(&resource_index, &plan);
+    serde_json::to_string(&chart_page).map_err(|err| err.to_string())
+}
+
+pub fn derive_chart_page_state_json(
+    resource_index_json: &str,
+    plan_json: &str,
+    recent_airport_ids_json: &str,
+    selected_airport_id_json: &str,
+    selected_chart_id_json: &str,
+) -> Result<String, String> {
+    let resource_index: app_core::ResourceIndexChartPageInput =
+        serde_json::from_str(resource_index_json).map_err(|err| err.to_string())?;
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let recent_airport_ids: Vec<String> =
+        serde_json::from_str(recent_airport_ids_json).map_err(|err| err.to_string())?;
+    let selected_airport_id: Option<String> =
+        serde_json::from_str(selected_airport_id_json).map_err(|err| err.to_string())?;
+    let selected_chart_id: Option<String> =
+        serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
+    let state = app_core::derive_chart_page_state(
+        &resource_index,
+        &plan,
+        &recent_airport_ids,
+        selected_airport_id.as_deref(),
+        selected_chart_id.as_deref(),
+    );
+    serde_json::to_string(&state).map_err(|err| err.to_string())
+}
+
 fn get_java_string(env: &mut JNIEnv, value: JString) -> Result<String, String> {
     env.get_string(&value)
         .map(|s| s.into())
@@ -196,6 +235,48 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_cha
         let geometry = get_java_string(&mut env, geometry_json)?;
         let family = get_java_string(&mut env, family_json)?;
         chart_for_position_json(&catalog, &geometry, &family, lat, lon)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_deriveChartPageJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    resource_index_json: JString,
+    plan_json: JString,
+) -> jstring {
+    let result = (|| {
+        let resource_index = get_java_string(&mut env, resource_index_json)?;
+        let plan = get_java_string(&mut env, plan_json)?;
+        derive_chart_page_json(&resource_index, &plan)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_deriveChartPageStateJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    resource_index_json: JString,
+    plan_json: JString,
+    recent_airport_ids_json: JString,
+    selected_airport_id_json: JString,
+    selected_chart_id_json: JString,
+) -> jstring {
+    let result = (|| {
+        let resource_index = get_java_string(&mut env, resource_index_json)?;
+        let plan = get_java_string(&mut env, plan_json)?;
+        let recent_airport_ids = get_java_string(&mut env, recent_airport_ids_json)?;
+        let selected_airport_id = get_java_string(&mut env, selected_airport_id_json)?;
+        let selected_chart_id = get_java_string(&mut env, selected_chart_id_json)?;
+        derive_chart_page_state_json(
+            &resource_index,
+            &plan,
+            &recent_airport_ids,
+            &selected_airport_id,
+            &selected_chart_id,
+        )
     })();
     return_string(&mut env, result)
 }

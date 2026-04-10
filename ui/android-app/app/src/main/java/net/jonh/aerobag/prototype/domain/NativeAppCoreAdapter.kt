@@ -11,6 +11,30 @@ class NativeAppCoreAdapter(
         ignoreUnknownKeys = true
     },
 ) : AppCoreAdapter {
+    fun deriveChartPageState(
+        resourceIndexJson: String,
+        plan: FlightPlan,
+        recentAirportIds: List<String>,
+        selectedAirportId: String?,
+        selectedChartId: String?,
+    ): DerivedChartPageState {
+        val planJson = json.encodeToString(plan.toWire())
+        val nextJson = bridge.deriveChartPageStateJson(
+            resourceIndexJson,
+            planJson,
+            json.encodeToString(recentAirportIds),
+            json.encodeToString(selectedAirportId),
+            json.encodeToString(selectedChartId),
+        )
+        return json.decodeFromString<WireDerivedChartPageState>(nextJson).toUi()
+    }
+
+    fun deriveChartPage(resourceIndexJson: String, plan: FlightPlan): ChartPageFixture {
+        val planJson = json.encodeToString(plan.toWire())
+        val nextJson = bridge.deriveChartPageJson(resourceIndexJson, planJson)
+        return json.decodeFromString<WireDerivedChartPage>(nextJson).toUi()
+    }
+
     fun removeFlightPlanLeg(plan: FlightPlan, index: Int): FlightPlan {
         val planJson = json.encodeToString(plan.toWire())
         val nextJson = bridge.removeFlightPlanLegJson(planJson, index)
@@ -198,6 +222,79 @@ internal fun WireFlightPlan.toUiFlightPlan() = FlightPlan(
     notes = notes,
     updatedAtEpochMs = updated_at_epoch_ms,
     version = version,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireDerivedChartPage(
+    val airports: List<WireDerivedChartAirport>,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireDerivedChartPageState(
+    val airports: List<WireDerivedChartAirport>,
+    val recent_airport_ids: List<String>,
+    val selected_airport_id: String,
+    val selected_chart_id: String,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireDerivedChartAirport(
+    val id: String,
+    val label: String,
+    val charts: List<WireDerivedChartAsset>,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireDerivedChartAsset(
+    val id: String,
+    val airport_id: String,
+    val package_id: String,
+    val label: String,
+    val kind: String,
+    val folder_category: String,
+    val asset_path: String,
+    val asset_url: String,
+    val thumbnail_path: String? = null,
+    val thumbnail_url: String? = null,
+)
+
+private fun WireDerivedChartPage.toUi() = ChartPageFixture(
+    airports = airports.map { it.toUi() },
+)
+
+data class DerivedChartPageState(
+    val airports: List<ChartAirport>,
+    val recentAirportIds: List<String>,
+    val selectedAirportId: String,
+    val selectedChartId: String,
+)
+
+private fun WireDerivedChartPageState.toUi() = DerivedChartPageState(
+    airports = airports.map { it.toUi() },
+    recentAirportIds = recent_airport_ids,
+    selectedAirportId = selected_airport_id,
+    selectedChartId = selected_chart_id,
+)
+
+private fun WireDerivedChartAirport.toUi() = ChartAirport(
+    id = id,
+    label = label,
+    charts = charts.map { it.toUi() },
+)
+
+private fun WireDerivedChartAsset.toUi() = ChartAsset(
+    id = id,
+    airportId = airport_id,
+    packageId = package_id,
+    label = label,
+    kind = kind,
+    folderCategory = folder_category,
+    sourceAssetPath = asset_path,
+    assetPath = asset_path,
+    assetUrl = asset_url,
+    thumbnailSourceAssetPath = thumbnail_path,
+    thumbnailAssetPath = thumbnail_path,
+    thumbnailUrl = thumbnail_url,
 )
 
 private fun WirePlanLeg.toUi() = FlightPlanLeg(

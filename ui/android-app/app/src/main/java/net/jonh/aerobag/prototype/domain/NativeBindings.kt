@@ -31,6 +31,19 @@ interface NativeBridge {
         lat: Double,
         lon: Double,
     ): String
+
+    fun deriveChartPageJson(
+        resourceIndexJson: String,
+        planJson: String,
+    ): String
+
+    fun deriveChartPageStateJson(
+        resourceIndexJson: String,
+        planJson: String,
+        recentAirportIdsJson: String,
+        selectedAirportIdJson: String,
+        selectedChartIdJson: String,
+    ): String
 }
 
 object NativeBindings : NativeBridge {
@@ -67,5 +80,18 @@ object NativeBindings : NativeBridge {
         familyJson: String,
         lat: Double,
         lon: Double,
+    ): String
+
+    external override fun deriveChartPageJson(
+        resourceIndexJson: String,
+        planJson: String,
+    ): String
+
+    external override fun deriveChartPageStateJson(
+        resourceIndexJson: String,
+        planJson: String,
+        recentAirportIdsJson: String,
+        selectedAirportIdJson: String,
+        selectedChartIdJson: String,
     ): String
 }

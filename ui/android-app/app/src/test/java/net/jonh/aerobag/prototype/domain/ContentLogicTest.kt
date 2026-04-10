@@ -347,6 +347,23 @@ private class FakeNativeBridge(
 ) : NativeBridge {
     private val mock = MockAppCoreAdapter()
 
+    override fun deriveChartPageJson(
+        resourceIndexJson: String,
+        planJson: String,
+    ): String {
+        return """{"airports":[]}"""
+    }
+
+    override fun deriveChartPageStateJson(
+        resourceIndexJson: String,
+        planJson: String,
+        recentAirportIdsJson: String,
+        selectedAirportIdJson: String,
+        selectedChartIdJson: String,
+    ): String {
+        return """{"airports":[],"recent_airport_ids":[],"selected_airport_id":"","selected_chart_id":""}"""
+    }
+
     override fun removeFlightPlanLegJson(
         planJson: String,
         index: Int,

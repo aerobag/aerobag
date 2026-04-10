@@ -10,6 +10,7 @@ data class ContentFixture(
     val catalog: Catalog,
     val catalogJson: String,
     val geometryJson: String,
+    val resourceIndexJson: String,
     val mapView: MapView,
     val mapViews: List<MapViewOption>,
     val chartPage: ChartPageFixture,
@@ -58,6 +59,7 @@ object SampleData {
             catalog = fixture.catalog.toUiCatalog(),
             catalogJson = fixtureElement.getValue("catalog").toString(),
             geometryJson = fixtureElement.getValue("geometry").toString(),
+            resourceIndexJson = resourceIndexPayload,
             mapView = fixture.map_view.toUi(),
             mapViews = derivedMapViews.ifEmpty {
                 listOf(

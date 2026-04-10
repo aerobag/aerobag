@@ -1,4 +1,5 @@
 pub mod catalog;
+pub mod chart_page;
 pub mod content;
 pub mod errors;
 pub mod geometry;
@@ -10,6 +11,7 @@ pub use catalog::{
     CatalogBundle, CatalogFamily, CatalogHandle, CatalogPackage, CatalogRegion, ChartCoverage,
     ChartRecord, PlateRecord, SupplementRecord,
 };
+pub use chart_page::{derive_chart_page, derive_chart_page_state, DerivedChartAirport, DerivedChartAsset, DerivedChartPage, DerivedChartPageState, ResourceAirportResources, ResourceCsup, ResourceIndexChartPageInput, ResourcePlate};
 pub use content::{
     AvailabilityDetail, CachedPlate, CachedTileset, ContentAvailability, ContentInventory,
     ContentPolicy, ContentReport, ContentReportItem, ContentRequirement, InstalledPackage,

@@ -1,6 +1,7 @@
 import type {
   AppState,
   CatalogJson,
+  ChartPageData,
   ContentInventory,
   ContentPolicy,
   FlightPlan,
@@ -8,9 +9,18 @@ import type {
   ContentAvailability,
 } from "./types";
 
+export type DerivedChartPageState = {
+  airports: ChartPageData["airports"];
+  recent_airport_ids: string[];
+  selected_airport_id: string;
+  selected_chart_id: string;
+};
+
 export interface AppCoreAdapter {
   replaceFlightPlanState(state: AppState, catalog: CatalogJson, plan: FlightPlan): Promise<AppState>;
   removeFlightPlanLeg(plan: FlightPlan, index: number): Promise<FlightPlan>;
+  deriveChartPage(resourceIndex: unknown, plan: FlightPlan): Promise<ChartPageData>;
+  deriveChartPageState(resourceIndex: unknown, plan: FlightPlan, recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<DerivedChartPageState>;
   setContentPolicyState(state: AppState, catalog: CatalogJson, policy: ContentPolicy): Promise<AppState>;
   refreshContentState(state: AppState, catalog: CatalogJson, inventory: ContentInventory): Promise<AppState>;
   chartForPosition(
@@ -109,6 +119,38 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
     };
   }
 
+  async deriveChartPage(resourceIndex: unknown, plan: FlightPlan): Promise<ChartPageData> {
+    const { deriveChartPage } = await import("./resourceIndexAdapters");
+    return deriveChartPage(resourceIndex as Parameters<typeof deriveChartPage>[0], plan);
+  }
+
+  async deriveChartPageState(resourceIndex: unknown, plan: FlightPlan, recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<DerivedChartPageState> {
+    const chartPage = await this.deriveChartPage(resourceIndex, plan);
+    const airports = chartPage.airports;
+    const validIds = new Set(airports.map((airport) => airport.id));
+    const mergedRecentIds = recentAirportIds.filter((id, index) => validIds.has(id) && recentAirportIds.indexOf(id) === index);
+    for (const airport of airports) {
+        if (!mergedRecentIds.includes(airport.id)) {
+          mergedRecentIds.push(airport.id);
+        }
+    }
+    const resolvedAirportId =
+      selectedAirportId && airports.some((airport) => airport.id === selectedAirportId)
+        ? selectedAirportId
+        : mergedRecentIds[0] ?? airports[0]?.id ?? "";
+    const resolvedChartId =
+      selectedChartId && airports.find((airport) => airport.id === resolvedAirportId)?.charts.some((chart) => chart.id === selectedChartId)
+        ? selectedChartId
+        : airports.find((airport) => airport.id === resolvedAirportId)?.charts[0]?.id ?? "";
+    const airportById = new Map(airports.map((airport) => [airport.id, airport]));
+    return {
+      airports: mergedRecentIds.map((airportId) => airportById.get(airportId)).filter((airport): airport is ChartPageData["airports"][number] => airport !== undefined),
+      recent_airport_ids: mergedRecentIds,
+      selected_airport_id: resolvedAirportId,
+      selected_chart_id: resolvedChartId,
+    };
+  }
+
   async setContentPolicyState(state: AppState, _catalog: CatalogJson, policy: ContentPolicy): Promise<AppState> {
     return {
       ...state,
@@ -195,6 +237,8 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
   remove_flight_plan_leg(planJson: string, index: number): Promise<string> | string;
+  derive_chart_page(resourceIndexJson: string, planJson: string): Promise<string> | string;
+  derive_chart_page_state(resourceIndexJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   replace_flight_plan_state(stateJson: string, catalogJson: string, planJson: string): Promise<string> | string;
   set_content_policy_state(stateJson: string, catalogJson: string, policyJson: string): Promise<string> | string;
   refresh_content_state(stateJson: string, catalogJson: string, inventoryJson: string): Promise<string> | string;
@@ -217,6 +261,27 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         index,
       ),
     ) as FlightPlan;
+  }
+
+  async deriveChartPage(resourceIndex: unknown, plan: FlightPlan): Promise<ChartPageData> {
+    return JSON.parse(
+      await this.module.derive_chart_page(
+        JSON.stringify(resourceIndex),
+        JSON.stringify(plan),
+      ),
+    ) as ChartPageData;
+  }
+
+  async deriveChartPageState(resourceIndex: unknown, plan: FlightPlan, recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<DerivedChartPageState> {
+    return JSON.parse(
+      await this.module.derive_chart_page_state(
+        JSON.stringify(resourceIndex),
+        JSON.stringify(plan),
+        JSON.stringify(recentAirportIds),
+        JSON.stringify(selectedAirportId ?? null),
+        JSON.stringify(selectedChartId ?? null),
+      ),
+    ) as DerivedChartPageState;
   }
 
   async replaceFlightPlanState(state: AppState, catalog: CatalogJson, plan: FlightPlan): Promise<AppState> {
@@ -279,6 +344,8 @@ export async function loadBestAvailableAdapter(
     if (
       typeof mod.replace_flight_plan_state !== "function" ||
       typeof mod.remove_flight_plan_leg !== "function" ||
+      typeof mod.derive_chart_page !== "function" ||
+      typeof mod.derive_chart_page_state !== "function" ||
       typeof mod.set_content_policy_state !== "function" ||
       typeof mod.refresh_content_state !== "function" ||
       typeof mod.chart_for_position !== "function"

@@ -57,6 +57,29 @@ pub fn chart_for_position(
         .map_err(|err| JsValue::from_str(&err))
 }
 
+#[wasm_bindgen]
+pub fn derive_chart_page(resource_index_json: &str, plan_json: &str) -> Result<String, JsValue> {
+    derive_chart_page_json(resource_index_json, plan_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn derive_chart_page_state(
+    resource_index_json: &str,
+    plan_json: &str,
+    recent_airport_ids_json: &str,
+    selected_airport_id_json: &str,
+    selected_chart_id_json: &str,
+) -> Result<String, JsValue> {
+    derive_chart_page_state_json(
+        resource_index_json,
+        plan_json,
+        recent_airport_ids_json,
+        selected_airport_id_json,
+        selected_chart_id_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
 fn load_catalog_json(catalog_json: &str) -> Result<String, String> {
     let handle =
         app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
@@ -149,6 +172,45 @@ fn chart_for_position_json(
     let chart =
         app_core::chart_for_position(&catalog, &geometry, family, lat, lon).map_err(|err| err.to_string())?;
     serde_json::to_string(&chart).map_err(|err| err.to_string())
+}
+
+fn derive_chart_page_json(
+    resource_index_json: &str,
+    plan_json: &str,
+) -> Result<String, String> {
+    let resource_index: app_core::ResourceIndexChartPageInput =
+        serde_json::from_str(resource_index_json).map_err(|err| err.to_string())?;
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let chart_page = app_core::derive_chart_page(&resource_index, &plan);
+    serde_json::to_string(&chart_page).map_err(|err| err.to_string())
+}
+
+fn derive_chart_page_state_json(
+    resource_index_json: &str,
+    plan_json: &str,
+    recent_airport_ids_json: &str,
+    selected_airport_id_json: &str,
+    selected_chart_id_json: &str,
+) -> Result<String, String> {
+    let resource_index: app_core::ResourceIndexChartPageInput =
+        serde_json::from_str(resource_index_json).map_err(|err| err.to_string())?;
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let recent_airport_ids: Vec<String> =
+        serde_json::from_str(recent_airport_ids_json).map_err(|err| err.to_string())?;
+    let selected_airport_id: Option<String> =
+        serde_json::from_str(selected_airport_id_json).map_err(|err| err.to_string())?;
+    let selected_chart_id: Option<String> =
+        serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
+    let state = app_core::derive_chart_page_state(
+        &resource_index,
+        &plan,
+        &recent_airport_ids,
+        selected_airport_id.as_deref(),
+        selected_chart_id.as_deref(),
+    );
+    serde_json::to_string(&state).map_err(|err| err.to_string())
 }
 
 #[cfg(test)]

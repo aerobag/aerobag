@@ -21,7 +21,6 @@ const TABLES: &[&str] = &[
     "saa",
     "airways",
     "cifp_sid_star_app",
-    "geo",
 ];
 
 #[derive(Debug, Clone)]
@@ -238,7 +237,6 @@ CREATE TABLE awos(LocationID Text, Type Text, Status Text, Latitude float,Longit
 CREATE TABLE saa(designator TEXT,name TEXT,upperlimit TEXT,lowerlimit TEXT,begintime TEXT,endtime TEXT,timeref TEXT,beginday TEXT,endday TEXT,day TEXT,FreqTx TEXT,FreqRx TEXT,lat FLOAT,lon FLOAT);
 CREATE TABLE airways(name Text, sequence Text, Latitude float, Longitude float);
 CREATE TABLE cifp_sid_star_app(record_type Text,customer_area_code Text,section_code Text,airport_identifier Text,icao_code_1 Text,subsection_code Text,sid_star_approach_identifier Text,route_type Text,transition_identifier Text,sequence_number Text,fix_identifier Text,icao_code_2 Text,section_code_2 Text,subsection_code_2 Text,continuation_record_number Text,waypoint_description_code Text,turn_direction Text,rnp Text,path_and_termination Text,turn_direction_valid Text,recommended_navaid Text,icao_code_3 Text,arc_radius Text,theta Text,rho Text,magnetic_course Text,route_distance_holding_distance_or_time Text,recd_nav_section Text,recd_nav_subsection Text,reserved Text,altitude_description Text,atc_indicator Text,altitude_1 Text,altitude_2 Text,transition_altitude Text,speed_limit Text,vertical_angle Text,center_fix_or_taa_procedure_turn_indicator Text,multiple_code_or_taa_sector_identifier Text,icao_code_4 Text,section_code_3 Text,subsection_code_3 Text,gps_fms_indication Text,speed_limit_description Text,apch_route_qualifier_1 Text,apch_route_qualifier_2 Text,file_record_number Text,cycle_date Text);
-CREATE TABLE geo(Latitude float, Longitude float, height float, declination float);
 ",
     )
     .context("failed to create data schema")?;
@@ -1043,23 +1041,6 @@ fn insert_cifp_with_ids(
     Ok(count)
 }
 
-fn insert_geo(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
-    let path = input_dir.join("geo.csv");
-    let text =
-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut stmt = conn.prepare("INSERT INTO geo VALUES (?1, ?2, ?3, ?4)")?;
-    let mut count = 0;
-    for line in text.lines() {
-        let parts = line.split(',').collect::<Vec<_>>();
-        if parts.len() != 4 {
-            continue;
-        }
-        stmt.execute(params![parts[0], parts[1], parts[2], parts[3]])?;
-        count += 1;
-    }
-    Ok(count)
-}
-
 pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuildResult> {
     fs::create_dir_all(&request.output_dir)
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
@@ -1106,7 +1087,6 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
         "cifp_sid_star_app".to_string(),
         insert_cifp_with_ids(&tx, &request.input_dir, &airport_ids)?,
     );
-    row_counts.insert("geo".to_string(), insert_geo(&tx, &request.input_dir)?);
     tx.commit()?;
 
     let manifest_path = request.output_dir.join("databases");
@@ -1329,7 +1309,7 @@ mod tests {
             format!("{}\n", build_cifp_line("SEA")),
         )
         .unwrap();
-        for name in ["NAV.txt", "FIX.txt", "DOF.DAT", "AWY.txt", "geo.csv"] {
+        for name in ["NAV.txt", "FIX.txt", "DOF.DAT", "AWY.txt"] {
             write_empty(&input_dir.join(name));
         }
         let request = DataBuildRequest {

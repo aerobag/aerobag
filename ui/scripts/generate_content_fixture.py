@@ -93,6 +93,13 @@ def load_resource_index() -> dict:
     return payload
 
 
+def resolve_package_artifact_path(path_value: str) -> Path:
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return ARTIFACT_ROOT / "product-builds" / path
+
+
 def load_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
@@ -261,7 +268,7 @@ def extract_chart_record_from_package(record: dict, package_artifacts: dict[str,
 
 def build_web_chart_asset_manifest(resource_index: dict) -> None:
     package_artifacts = {
-        package["id"]: Path(package["artifact_path"])
+        package["id"]: resolve_package_artifact_path(package["artifact_path"])
         for package in resource_index["packages"]
     }
     manifest = {}
@@ -356,7 +363,11 @@ def load_supported_tiled_packages(resource_index: dict) -> list[TiledPackage]:
                 family_id=family_id,
                 manifest=entry["id"],
                 region=entry["region_id"].lower(),
+<<<<<<< HEAD
                 artifact_path=resolve_artifact_path(entry["artifact_path"]),
+=======
+                artifact_path=resolve_package_artifact_path(entry["artifact_path"]),
+>>>>>>> a12c9d9 (Sever product build from legacy source tree)
                 zip_sha256=entry["checksum_sha256"],
             )
         )

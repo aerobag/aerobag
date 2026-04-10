@@ -188,6 +188,7 @@ pub struct CsupRecord {
 }
 
 pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Result<ResourceIndex> {
+    let product_builds_root = product_builds_root(&request.output_path)?;
     let nav_cycle_code = read_nav_cycle_code(&request.nav_db_zip)?;
     let nav_temporal = nav_cycle_code
         .as_deref()
@@ -207,6 +208,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         &request.chart_sources,
         &request.tpp_sources,
         &request.csup_sources,
+        &product_builds_root,
     )?;
     let temporal_summary = build_temporal_summary(&packages, &nav_temporal);
     let chart_collections = collect_chart_collections(&request.chart_sources)?;
@@ -237,7 +239,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         generated_at_utc: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         temporal_summary,
         nav_db: NavDbRef {
-            artifact_path: request.nav_db_zip.display().to_string(),
+            artifact_path: relativize_to_product_builds_root(&request.nav_db_zip, &product_builds_root),
             sqlite_entry: "main.db".to_string(),
             cycle_code: nav_cycle_code,
             effective_date: nav_temporal.effective_date,
@@ -254,7 +256,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     };
     validate_index_asset_paths(&index, &request.tpp_sources, &request.csup_sources)?;
     validate_thumbnail_paths(&index, &thumbnail_root)?;
-    validate_packaged_assets(&index, &index.packages)?;
+    validate_packaged_assets(&index, &index.packages, &product_builds_root)?;
     Ok(index)
 }
 
@@ -311,10 +313,14 @@ fn validate_thumbnail_paths(index: &ResourceIndex, thumbnail_root: &Path) -> any
     Ok(())
 }
 
-fn validate_packaged_assets(index: &ResourceIndex, packages: &[ResourcePackage]) -> anyhow::Result<()> {
+fn validate_packaged_assets(
+    index: &ResourceIndex,
+    packages: &[ResourcePackage],
+    product_builds_root: &Path,
+) -> anyhow::Result<()> {
     let package_map = packages
         .iter()
-        .map(|package| (package.id.clone(), PathBuf::from(&package.artifact_path)))
+        .map(|package| (package.id.clone(), product_builds_root.join(&package.artifact_path)))
         .collect::<BTreeMap<_, _>>();
     let package_members = package_map
         .iter()
@@ -507,6 +513,7 @@ fn collect_packages(
     chart_sources: &[ChartSource],
     tpp_sources: &[AssetSource],
     csup_sources: &[AssetSource],
+    product_builds_root: &Path,
 ) -> anyhow::Result<Vec<ResourcePackage>> {
     let mut packages = Vec::new();
     for source in chart_sources {
@@ -517,6 +524,7 @@ fn collect_packages(
                 &source.package_root,
                 &record,
                 temporal.as_ref(),
+                product_builds_root,
             )?);
         }
     }
@@ -528,6 +536,7 @@ fn collect_packages(
                 &source.asset_root,
                 &record,
                 temporal.as_ref(),
+                product_builds_root,
             )?);
         }
     }
@@ -539,6 +548,7 @@ fn collect_packages(
                 &source.asset_root,
                 &record,
                 temporal.as_ref(),
+                product_builds_root,
             )?);
         }
     }
@@ -607,6 +617,7 @@ fn package_from_record(
     package_root: &Path,
     record: &PackageOutputRecord,
     temporal: Option<&FaaTemporalMetadata>,
+    product_builds_root: &Path,
 ) -> anyhow::Result<ResourcePackage> {
     let artifact_path = package_root.join(&record.zip);
     let size_bytes = fs::metadata(&artifact_path)
@@ -616,13 +627,27 @@ fn package_from_record(
         id: record.manifest.clone(),
         family_id: family_id.to_string(),
         region_id: record.region.to_ascii_lowercase(),
-        artifact_path: artifact_path.display().to_string(),
+        artifact_path: relativize_to_product_builds_root(&artifact_path, product_builds_root),
         size_bytes,
         checksum_sha256: record.zip_sha256.clone(),
         cycle_code: temporal.and_then(|value| value.cycle_code.clone()),
         effective_date: temporal.and_then(|value| value.effective_date.clone()),
         expiration_date: temporal.and_then(|value| value.expiration_date.clone()),
     })
+}
+
+fn product_builds_root(output_path: &Path) -> anyhow::Result<PathBuf> {
+    output_path
+        .ancestors()
+        .find(|path| path.file_name().and_then(|v| v.to_str()) == Some("product-builds"))
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow::anyhow!("failed to locate product-builds root from {}", output_path.display()))
+}
+
+fn relativize_to_product_builds_root(path: &Path, product_builds_root: &Path) -> String {
+    path.strip_prefix(product_builds_root)
+        .map(|value| value.display().to_string())
+        .unwrap_or_else(|_| path.display().to_string())
 }
 
 fn load_airports_from_nav_db(nav_db_zip: &Path) -> anyhow::Result<Vec<AirportRecord>> {

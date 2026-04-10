@@ -159,15 +159,12 @@ pub fn package_native_tpp(
     })
 }
 
-fn stage_work_dir(source_repo: &Path, run_root: &Path, region: Region) -> anyhow::Result<PathBuf> {
+fn stage_work_dir(_source_repo: &Path, run_root: &Path, region: Region) -> anyhow::Result<PathBuf> {
     let work_dir = run_root
         .join("work")
         .join(format!("tpp-{}", region.code().to_ascii_lowercase()));
-    copy_dir_recursive(
-        source_repo,
-        &work_dir,
-        looks_like_populated_work_dir(source_repo),
-    )?;
+    fs::create_dir_all(&work_dir)
+        .with_context(|| format!("failed to create {}", work_dir.display()))?;
     Ok(work_dir)
 }
 

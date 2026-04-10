@@ -1470,3 +1470,45 @@ If the next session starts with no further instruction, do this:
       - both `tpp-ne-package` and `tpp-nw-package` completed instantly from cache
       - `resource-index` was also a cache hit
       - final `PASS` at `+0:35`
+## 2026-04-10 Product Severance / Metadata Cleanup / CSUP Split
+
+- Product build is now severed from `avare-source`:
+  - charts use [`avare-assets/chart-cutlines`](/root/aerobag-preprocessor/avare-assets/chart-cutlines)
+  - product `tpp` and `csup` no longer stage legacy source trees
+  - product `data` no longer imports `geo.csv`, and the product `geo` table has been removed
+  - `rg -n "avare-source|source_root|geo\\.csv|\\bgeo\\b" product/preprocessor -S` is clean
+
+- Product payload metadata is now portable instead of machine-local:
+  - [`product-build.json`](/root/aerobag-artifacts/product-builds/validation/product-build.json) uses relative paths like `product-builds/...` and `cache/fetch`
+  - [`resource-index.json`](/root/aerobag-artifacts/product-builds/validation/work/resource-index/resource-index.json) uses relative package `artifact_path` entries like `shared/work/...`
+  - validation rerun proved there are no remaining `/root/...` path leaks in those two payloads
+
+- A severance bug was caught and fixed during validation:
+  - stale `source_repo` fingerprint inputs in product `csup`/`tpp` render nodes were still hashing empty paths, causing `failed to read `
+  - removing those fake inputs fixed the crash
+
+- Product CSUP is now finer-grained:
+  - new node shape:
+    - `csup-stage`
+    - `csup-render-ak`
+    - `csup-render-pac`
+    - `csup-render-nw`
+    - `csup-render-sw`
+    - `csup-render-nc`
+    - `csup-render-ec`
+    - `csup-render-sc`
+    - `csup-render-ne`
+    - `csup-render-se`
+    - existing per-region `csup-package-*`
+  - validation proof:
+    - [`master.log`](/root/aerobag-artifacts/product-builds/validation/orchestrator-logs/master.log)
+    - final line after the split: `+6:20 complete PASS manifest=/root/aerobag-artifacts/product-builds/validation/product-build.json`
+  - this means render-affecting CSUP changes can now reuse unaffected regions
+
+- Remaining notable coarse area:
+  - `csup-package` is still one serial orchestrator step even though it writes per-region package node records; after the render split, this is the obvious next CSUP bottleneck if we keep pushing incremental granularity
+
+- There is also a copied asset tree now tracked in this repo:
+  - [`avare-assets/README.md`](/root/aerobag-preprocessor/avare-assets/README.md)
+  - [`avare-assets/chart-cutlines`](/root/aerobag-preprocessor/avare-assets/chart-cutlines)
+  - this was the explicit product-side adoption of legacy chart cutlines

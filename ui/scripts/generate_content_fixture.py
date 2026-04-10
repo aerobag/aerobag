@@ -360,11 +360,7 @@ def load_supported_tiled_packages(resource_index: dict) -> list[TiledPackage]:
                 family_id=family_id,
                 manifest=entry["id"],
                 region=entry["region_id"].lower(),
-<<<<<<< HEAD
-                artifact_path=resolve_artifact_path(entry["artifact_path"]),
-=======
                 artifact_path=resolve_package_artifact_path(entry["artifact_path"]),
->>>>>>> 51275f9 (Centralize artifact root configuration)
                 zip_sha256=entry["checksum_sha256"],
             )
         )

@@ -3,7 +3,19 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ARTIFACT_ROOT="${AEROBAG_ARTIFACT_ROOT:-$(dirname "${ROOT_DIR}")/aerobag-artifacts}"
+ARTIFACT_ROOT_CONFIG_FILE="${ROOT_DIR}/.aerobag-artifact-root"
+if [[ -z "${AEROBAG_ARTIFACT_ROOT:-}" && -f "${ARTIFACT_ROOT_CONFIG_FILE}" ]]; then
+    ARTIFACT_ROOT="$(<"${ARTIFACT_ROOT_CONFIG_FILE}")"
+    if [[ "${ARTIFACT_ROOT}" != /* ]]; then
+        ARTIFACT_ROOT="${ROOT_DIR}/${ARTIFACT_ROOT}"
+    fi
+else
+    ARTIFACT_ROOT="${AEROBAG_ARTIFACT_ROOT:-}"
+fi
+if [[ -z "${ARTIFACT_ROOT}" ]]; then
+    echo "artifact root unset: set AEROBAG_ARTIFACT_ROOT or create ${ARTIFACT_ROOT_CONFIG_FILE}" >&2
+    exit 1
+fi
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${ARTIFACT_ROOT}/runs/${RUN_ID}}"
 CACHE_ROOT="${CACHE_ROOT:-${ARTIFACT_ROOT}/cache}"

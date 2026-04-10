@@ -3,7 +3,19 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ARTIFACT_ROOT="${AEROBAG_ARTIFACT_ROOT:-$(dirname "${ROOT_DIR}")/aerobag-artifacts}"
+ARTIFACT_ROOT_CONFIG_FILE="${ROOT_DIR}/.aerobag-artifact-root"
+if [[ -z "${AEROBAG_ARTIFACT_ROOT:-}" && -f "${ARTIFACT_ROOT_CONFIG_FILE}" ]]; then
+    ARTIFACT_ROOT="$(<"${ARTIFACT_ROOT_CONFIG_FILE}")"
+    if [[ "${ARTIFACT_ROOT}" != /* ]]; then
+        ARTIFACT_ROOT="${ROOT_DIR}/${ARTIFACT_ROOT}"
+    fi
+else
+    ARTIFACT_ROOT="${AEROBAG_ARTIFACT_ROOT:-}"
+fi
+if [[ -z "${ARTIFACT_ROOT}" ]]; then
+    echo "artifact root unset: set AEROBAG_ARTIFACT_ROOT or create ${ARTIFACT_ROOT_CONFIG_FILE}" >&2
+    exit 1
+fi
 LEGACY_DIR="${ROOT_DIR}/legacy-capture"
 IMAGE_TAG="${IMAGE_TAG:-aerobag/legacy-capture:local}"
 RUNTIME="${RUNTIME:-docker}"

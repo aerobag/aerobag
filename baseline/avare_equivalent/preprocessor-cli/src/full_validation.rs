@@ -187,10 +187,25 @@ fn env_path(name: &str) -> Option<PathBuf> {
 
 fn default_artifact_root(repo_root: &Path) -> PathBuf {
     env_path("AEROBAG_ARTIFACT_ROOT").unwrap_or_else(|| {
-        repo_root
-            .parent()
-            .map(|parent| parent.join("aerobag-artifacts"))
-            .unwrap_or_else(|| repo_root.join("artifacts"))
+        let config_path = repo_root.join(".aerobag-artifact-root");
+        let raw = fs::read_to_string(&config_path).unwrap_or_else(|error| {
+            panic!(
+                "artifact root config missing at {} and AEROBAG_ARTIFACT_ROOT is unset: {error}",
+                config_path.display()
+            )
+        });
+        let configured = raw.trim();
+        assert!(
+            !configured.is_empty(),
+            "artifact root config at {} is empty",
+            config_path.display()
+        );
+        let path = PathBuf::from(configured);
+        if path.is_absolute() {
+            path
+        } else {
+            repo_root.join(path)
+        }
     })
 }
 

@@ -14,7 +14,21 @@ from osgeo import osr
 
 ROOT = Path(__file__).resolve().parents[2]
 UI_TARGET_ROOT_FILE = ROOT / "ui" / "target-root.txt"
-ARTIFACT_ROOT = Path(os.environ.get("AEROBAG_ARTIFACT_ROOT", ROOT.parent / "aerobag-artifacts"))
+ARTIFACT_ROOT_CONFIG = ROOT / ".aerobag-artifact-root"
+
+
+def resolve_artifact_root() -> Path:
+    env_value = os.environ.get("AEROBAG_ARTIFACT_ROOT")
+    if env_value:
+        return Path(env_value)
+    configured = ARTIFACT_ROOT_CONFIG.read_text().strip()
+    path = Path(configured)
+    if path.is_absolute():
+        return path
+    return (ROOT / path).resolve()
+
+
+ARTIFACT_ROOT = resolve_artifact_root()
 UI_TARGET_ROOT = Path(
     os.environ.get(
         "AEROBAG_UI_TARGET_ROOT",
@@ -335,33 +349,6 @@ def family_display_name(resource_index: dict, family_id: str) -> str:
     )
 
 
-def resolve_artifact_path(raw_path: str) -> Path:
-    path = Path(raw_path)
-    if path.exists():
-        return path
-    if "product-builds" in path.parts:
-        parts = list(path.parts)
-        product_builds_index = parts.index("product-builds")
-        relative = Path(*parts[product_builds_index + 1 :])
-        rebased = ARTIFACT_ROOT / "product-builds" / relative
-        candidates = [rebased]
-        relative_parts = relative.parts
-        if relative_parts and relative_parts[0] == "shared":
-            tail = Path(*relative_parts[1:])
-            candidates.append(ARTIFACT_ROOT / "product-builds" / "validation" / tail)
-            candidates.append(ARTIFACT_ROOT / "product-builds" / "production" / tail)
-        elif relative_parts and relative_parts[0] == "validation":
-            tail = Path(*relative_parts[1:])
-            candidates.append(ARTIFACT_ROOT / "product-builds" / "shared" / tail)
-        elif relative_parts and relative_parts[0] == "production":
-            tail = Path(*relative_parts[1:])
-            candidates.append(ARTIFACT_ROOT / "product-builds" / "shared" / tail)
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-    return path
-
-
 def load_supported_tiled_packages(resource_index: dict) -> list[TiledPackage]:
     packages = []
     for entry in resource_index["packages"]:
@@ -373,7 +360,11 @@ def load_supported_tiled_packages(resource_index: dict) -> list[TiledPackage]:
                 family_id=family_id,
                 manifest=entry["id"],
                 region=entry["region_id"].lower(),
+<<<<<<< HEAD
                 artifact_path=resolve_artifact_path(entry["artifact_path"]),
+=======
+                artifact_path=resolve_package_artifact_path(entry["artifact_path"]),
+>>>>>>> 51275f9 (Centralize artifact root configuration)
                 zip_sha256=entry["checksum_sha256"],
             )
         )

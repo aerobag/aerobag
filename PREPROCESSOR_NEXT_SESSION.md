@@ -1114,18 +1114,18 @@ If the next session starts with no further instruction, do this:
   - canonical command:
     - `cargo run -q -p preprocessor-cli --manifest-path /root/aerobag/product/preprocessor/Cargo.toml -- build-product --profile validation`
   - current successful build root:
-    - [/root/aerobag/product-builds/validation](/root/aerobag/product-builds/validation)
+    - [<source-root>/../aerobag-artifacts/product-builds/validation](<source-root>/../aerobag-artifacts/product-builds/validation)
   - current master log:
-    - [master.log](/root/aerobag/product-builds/validation/orchestrator-logs/master.log)
+    - [master.log](<source-root>/../aerobag-artifacts/product-builds/validation/orchestrator-logs/master.log)
   - current manifest:
-    - [product-build.json](/root/aerobag/product-builds/validation/product-build.json)
+    - [product-build.json](<source-root>/../aerobag-artifacts/product-builds/validation/product-build.json)
   - current resource index:
-    - [resource-index.json](/root/aerobag/product-builds/validation/work/resource-index/resource-index.json)
+    - [resource-index.json](<source-root>/../aerobag-artifacts/product-builds/validation/work/resource-index/resource-index.json)
   - current state:
     - validation profile completes successfully end to end
     - warm reruns are effectively instant
     - latest warm rerun ended with:
-      - `+0:08 complete PASS manifest=/root/aerobag/product-builds/validation/product-build.json`
+      - `+0:08 complete PASS manifest=<source-root>/../aerobag-artifacts/product-builds/validation/product-build.json`
 
 - Product source-url parser bugs that were shaken out by the first real validation runs:
   - first failure mode:
@@ -1191,7 +1191,7 @@ If the next session starts with no further instruction, do this:
     - [preprocessor-charts/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-charts/src/lib.rs)
     - [preprocessor-csup/src/lib.rs](/root/aerobag/product/preprocessor/preprocessor-csup/src/lib.rs)
   - shared cache root:
-    - [/root/aerobag/product-builds/shared](/root/aerobag/product-builds/shared)
+    - [<source-root>/../aerobag-artifacts/product-builds/shared](<source-root>/../aerobag-artifacts/product-builds/shared)
   - charts:
     - heavy render work is now one shared node per family:
       - `charts-sec-render`
@@ -1213,19 +1213,19 @@ If the next session starts with no further instruction, do this:
 
 - Shared-node validation proof:
   - reran `build-product --profile validation` after the refactor
-  - [master.log](/root/aerobag/product-builds/validation/orchestrator-logs/master.log) now shows:
+  - [master.log](<source-root>/../aerobag-artifacts/product-builds/validation/orchestrator-logs/master.log) now shows:
     - `charts-*-render` heavy phase
     - `charts-*-package` follow-on phase
     - `csup-render` heavy phase
     - `csup-package` follow-on phase
     - final `complete PASS` at `+15:38`
   - shared build-records now exist under:
-    - [/root/aerobag/product-builds/shared/work](/root/aerobag/product-builds/shared/work)
+    - [<source-root>/../aerobag-artifacts/product-builds/shared/work](<source-root>/../aerobag-artifacts/product-builds/shared/work)
   - representative examples:
-    - [charts-sec render record](/root/aerobag/product-builds/shared/work/charts-sec/build-record.json)
-    - [charts-sec NW package record](/root/aerobag/product-builds/shared/work/charts-sec-package-nw/build-record.json)
-    - [csup render record](/root/aerobag/product-builds/shared/work/csup/build-record.json)
-    - [csup NE package record](/root/aerobag/product-builds/shared/work/csup-package-ne/build-record.json)
+    - [charts-sec render record](<source-root>/../aerobag-artifacts/product-builds/shared/work/charts-sec/build-record.json)
+    - [charts-sec NW package record](<source-root>/../aerobag-artifacts/product-builds/shared/work/charts-sec-package-nw/build-record.json)
+    - [csup render record](<source-root>/../aerobag-artifacts/product-builds/shared/work/csup/build-record.json)
+    - [csup NE package record](<source-root>/../aerobag-artifacts/product-builds/shared/work/csup-package-ne/build-record.json)
 
 - Product source-url emission now covers all 9 `tpp-*` labels:
   - file:
@@ -1235,9 +1235,9 @@ If the next session starts with no further instruction, do this:
 
 - Current live state:
   - production product build completed successfully:
-    - [/root/aerobag/product-builds/production](/root/aerobag/product-builds/production)
-    - [master.log](/root/aerobag/product-builds/production/orchestrator-logs/master.log)
-    - [product-build.json](/root/aerobag/product-builds/production/product-build.json)
+    - [<source-root>/../aerobag-artifacts/product-builds/production](<source-root>/../aerobag-artifacts/product-builds/production)
+    - [master.log](<source-root>/../aerobag-artifacts/product-builds/production/orchestrator-logs/master.log)
+    - [product-build.json](<source-root>/../aerobag-artifacts/product-builds/production/product-build.json)
   - final production result:
     - `complete PASS` at `+3:28`
     - all supported product families built:
@@ -1299,13 +1299,13 @@ If the next session starts with no further instruction, do this:
 
 - Validation / production proof for the continued-page rules:
   - validation rerun:
-    - [master.log](/root/aerobag/product-builds/validation/orchestrator-logs/master.log)
+    - [master.log](<source-root>/../aerobag-artifacts/product-builds/validation/orchestrator-logs/master.log)
     - final `complete PASS` at `+4:12`
     - `tpp-ne` completed at `+1:11`
     - `tpp-nw` completed at `+0:49`
     - that confirmed the revised “page 1 geotagged is okay” rule works on the validation slice
   - production rerun:
-    - [master.log](/root/aerobag/product-builds/production/orchestrator-logs/master.log)
+    - [master.log](<source-root>/../aerobag-artifacts/product-builds/production/orchestrator-logs/master.log)
     - final `complete PASS` at `+3:28`
     - confirms:
       - safe continued procedures are collapsed
@@ -1320,13 +1320,13 @@ If the next session starts with no further instruction, do this:
     - fail the `resource-index` step if the sets diverge
     - this catches stale or missing asset references during preprocessing instead of later in the UI
   - production rerun with the assertion enabled:
-    - [master.log](/root/aerobag/product-builds/production/orchestrator-logs/master.log)
+    - [master.log](<source-root>/../aerobag-artifacts/product-builds/production/orchestrator-logs/master.log)
     - final `complete PASS` at `+0:35`
   - investigated stale UI complaint:
     - old complaint was `plates/05C/STAR-IN-LUCIT THREE (RNAV), CONT.1.png`
     - current production index no longer contains that entry
     - current output is the merged file:
-      - `/root/aerobag/product-builds/shared/work/tpp-ec/work/tpp-ec/plates/05C/STAR-IN-LUCIT THREE (RNAV).png`
+      - `<source-root>/../aerobag-artifacts/product-builds/shared/work/tpp-ec/work/tpp-ec/plates/05C/STAR-IN-LUCIT THREE (RNAV).png`
   - current intentional `CONT.1` exceptions still present in production:
     - `plates/ONT/STAR-CA-SCBBY TWO (RNAV), CONT.1.png`
     - `plates/PHX/DP-AZ-MRBIL ONE (RNAV), CONT.1.png`
@@ -1366,7 +1366,7 @@ If the next session starts with no further instruction, do this:
     - thumbnail generation is now native Rust via the `image` crate, not a shell-out
     - generation was parallelized with `rayon` because the full production set is large
   - production proof:
-    - [master.log](/root/aerobag/product-builds/production/orchestrator-logs/master.log)
+    - [master.log](<source-root>/../aerobag-artifacts/product-builds/production/orchestrator-logs/master.log)
     - final result: `complete PASS` at `+2:36`
     - `resource-index` rebuilt cold with thumbnails in `2:36`
   - sample live production records:
@@ -1429,7 +1429,7 @@ If the next session starts with no further instruction, do this:
     - package-member validation originally reopened each zip per record and effectively hung production
     - fix: index each zip’s member list once and validate against that cached set
   - production proof:
-    - [master.log](/root/aerobag/product-builds/production/orchestrator-logs/master.log)
+    - [master.log](<source-root>/../aerobag-artifacts/product-builds/production/orchestrator-logs/master.log)
     - final result after fix: `complete PASS` at `+2:34`
   - NW spot-check:
     - production index:
@@ -1440,8 +1440,8 @@ If the next session starts with no further instruction, do this:
         - `asset_path = afd/SEA/CSUP-NW_0.png`
         - `thumbnail_path = thumbnails/afd/SEA/CSUP-NW_0.png`
     - zip members confirmed:
-      - `/root/aerobag/product-builds/shared/work/tpp-nw/work/tpp-nw/NW_TPP.zip`
-      - `/root/aerobag/product-builds/shared/work/csup/work/csup/NW_CSUP.zip`
+      - `<source-root>/../aerobag-artifacts/product-builds/shared/work/tpp-nw/work/tpp-nw/NW_TPP.zip`
+      - `<source-root>/../aerobag-artifacts/product-builds/shared/work/csup/work/csup/NW_CSUP.zip`
 
 - Product TPP build graph is now split at the true reuse boundary:
   - files:
@@ -1479,8 +1479,8 @@ If the next session starts with no further instruction, do this:
   - `rg -n "avare-source|source_root|geo\\.csv|\\bgeo\\b" product/preprocessor -S` is clean
 
 - Product payload metadata is now portable instead of machine-local:
-  - [`product-build.json`](/root/aerobag-artifacts/product-builds/validation/product-build.json) uses relative paths like `product-builds/...` and `cache/fetch`
-  - [`resource-index.json`](/root/aerobag-artifacts/product-builds/validation/work/resource-index/resource-index.json) uses relative package `artifact_path` entries like `shared/work/...`
+  - [`product-build.json`](<source-root>/../aerobag-artifacts/product-builds/validation/product-build.json) uses relative paths like `product-builds/...` and `cache/fetch`
+  - [`resource-index.json`](<source-root>/../aerobag-artifacts/product-builds/validation/work/resource-index/resource-index.json) uses relative package `artifact_path` entries like `shared/work/...`
   - validation rerun proved there are no remaining `/root/...` path leaks in those two payloads
 
 - A severance bug was caught and fixed during validation:
@@ -1501,8 +1501,8 @@ If the next session starts with no further instruction, do this:
     - `csup-render-se`
     - existing per-region `csup-package-*`
   - validation proof:
-    - [`master.log`](/root/aerobag-artifacts/product-builds/validation/orchestrator-logs/master.log)
-    - final line after the split: `+6:20 complete PASS manifest=/root/aerobag-artifacts/product-builds/validation/product-build.json`
+    - [`master.log`](<source-root>/../aerobag-artifacts/product-builds/validation/orchestrator-logs/master.log)
+    - final line after the split: `+6:20 complete PASS manifest=<source-root>/../aerobag-artifacts/product-builds/validation/product-build.json`
   - this means render-affecting CSUP changes can now reuse unaffected regions
 
 - Remaining notable coarse area:

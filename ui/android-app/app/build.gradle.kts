@@ -32,9 +32,18 @@ val generatedPrototypeSeedPackagesDir = layout.buildDirectory.dir("generated/pro
 val generatedPrototypeSeedChartPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedChartPackages")
 val uiFixtureGenerator = file("../../scripts/generate_content_fixture.py")
 val resourceIndexFile = uiTargetRoot.resolve("shared/content-prototype/resource-index.json")
+val repoRoot = rootDir.parentFile.parentFile
+val artifactRootConfigFile = repoRoot.resolve(".aerobag-artifact-root")
+val configuredArtifactRoot = artifactRootConfigFile.readText().trim()
+val defaultArtifactRoot =
+    if (File(configuredArtifactRoot).isAbsolute) {
+        File(configuredArtifactRoot)
+    } else {
+        repoRoot.resolve(configuredArtifactRoot)
+    }
 val artifactRoot = File(
     System.getenv("AEROBAG_ARTIFACT_ROOT")
-        ?: rootDir.parentFile.parentFile.resolveSibling("aerobag-artifacts").absolutePath,
+        ?: defaultArtifactRoot.absolutePath,
 )
 
 fun resolveArtifactPath(rawPath: String): File {

@@ -69,7 +69,7 @@ Current web build behavior:
   - [ui/scripts/generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py)
 - build artifacts are no longer expected under this repo's own `product-builds/`
   - current artifact root:
-    - `/root/aerobag-artifacts`
+    - `<source-root>/../aerobag-artifacts`
   - override supported by the UI bridge:
     - `AEROBAG_ARTIFACT_ROOT`
 - that generator also extracts real `NW_SEC` / `SW_SEC` web tiles into:
@@ -195,7 +195,7 @@ Android build config note:
 - Android package staging now also needs the artifact-root rebasing logic
   - [ui/android-app/app/build.gradle.kts](/root/aerobag/ui/android-app/app/build.gradle.kts)
     resolves stale absolute `artifact_path` values from `resource-index` onto:
-    - `/root/aerobag-artifacts/product-builds/...`
+    - `<source-root>/../aerobag-artifacts/product-builds/...`
   - override supported by Gradle staging too:
     - `AEROBAG_ARTIFACT_ROOT`
 

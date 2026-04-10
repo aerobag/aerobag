@@ -15,7 +15,7 @@ Important current split:
 - web plate/CSUP viewing uses the richer validation `resource-index` and serves chart PNGs directly from real build-output paths via a manifest-backed Vite middleware
 - Android plate/CSUP viewing is intentionally limited to `NW_TPP` and `NW_CSUP`, seeded as zip packages into app-local storage after install
 - preprocessing artifacts now live outside this repo under:
-  - `/root/aerobag-artifacts`
+  - `<source-root>/../aerobag-artifacts`
   - UI bridge/staging code must rebase stale absolute `artifact_path` values onto that root
 
 ## What Works Now
@@ -205,7 +205,7 @@ Important current Android dev note:
 - `SectionalPackages` and `ChartPackages` both prefer already-seeded local package files
 - current Android plate/CSUP universe is intentionally NW-only because only `NW_TPP` and `NW_CSUP` are seeded
 - current repo-layout note:
-  - Android Gradle staging and `generate_content_fixture.py` both know how to rebase `artifact_path` entries from old `/root/aerobag/product-builds/...` absolute paths onto `/root/aerobag-artifacts/product-builds/...`
+  - Android Gradle staging and `generate_content_fixture.py` both know how to resolve package `artifact_path` entries against `<source-root>/../aerobag-artifacts/product-builds/...`
   - environment override:
     - `AEROBAG_ARTIFACT_ROOT`
   - additional fallback:

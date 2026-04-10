@@ -94,6 +94,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.Dispatchers
@@ -1070,6 +1071,8 @@ private fun FlightPlanPage(
             launcherLabel = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: "PLN",
             open = pageTrayOpen,
             onToggle = { pageTrayOpen = !pageTrayOpen },
+            blocked = selectedWaypointIndex != null,
+            onBlockedClick = { selectedWaypointIndex = null },
             style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
                 MenuDockOption(option.page.name, option.label, active = option.page == page) {
@@ -1087,7 +1090,11 @@ private fun FlightPlanPage(
         ) {
             PlanHeaderRow()
             rows.forEachIndexed { index, row ->
-                FlightPlanDataRow(row = row, onWaypointClick = { selectedWaypointIndex = index })
+                FlightPlanDataRow(
+                    row = row,
+                    selected = selectedWaypointIndex == index,
+                    onWaypointClick = { selectedWaypointIndex = index },
+                )
             }
         }
 
@@ -1110,28 +1117,25 @@ private fun FlightPlanPage(
 
         if (selectedWaypointIndex != null) {
             Scrim { selectedWaypointIndex = null }
-            Card(
+            MenuPanel(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(top = ThumbSize + ThumbGap * 2, start = ThumbSize * 2.6f + ThumbGap * 2, end = ThumbGap),
+                    .padding(top = ThumbSize + ThumbGap * 2, start = ThumbSize * 2.6f + ThumbGap * 2, end = ThumbGap)
+                    .zIndex(5f),
+                width = Dp.Unspecified,
             ) {
-                Column(
-                    modifier = Modifier.padding(ThumbGap),
-                    verticalArrangement = Arrangement.spacedBy(ThumbGap),
-                ) {
-                    listOf("Remove", "Insert", "Reorder", "Waypoint Info", "Add Airway", "Select Procedure", "Charts").forEach { action ->
-                        OutlinedButton(
-                            onClick = {
-                                if (action == "Charts") {
-                                    onOpenCharts()
-                                }
-                                selectedWaypointIndex = null
-                            },
-                            modifier = Modifier.fillMaxWidth().height(ThumbSize),
-                        ) {
-                            Text(action, style = MaterialTheme.typography.labelLarge)
+                listOf("Remove", "Insert", "Reorder", "Waypoint Info", "Add Airway", "Select Procedure", "Charts").forEach { action ->
+                    MenuPanelRow(
+                        label = action,
+                        active = false,
+                        enabled = true,
+                        onSelect = {
+                            if (action == "Charts") {
+                                onOpenCharts()
+                            }
+                            selectedWaypointIndex = null
                         }
-                    }
+                    )
                 }
             }
         }
@@ -1705,61 +1709,94 @@ private fun MenuDock(
             onClick = onToggle,
         )
         if (open) {
-            Card(
+            MenuPanel(
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(top = ThumbSize + ThumbGap)
                     .width(style.trayWidth)
                     .heightIn(max = trayMaxHeight)
                     .zIndex(10f),
-                shape = RoundedCornerShape(ThumbRadius + 2.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = uiTheme.controls.panelBg,
-                    contentColor = uiTheme.controls.panelFg,
-                ),
-                border = BorderStroke(2.dp, uiTheme.controls.panelBorder),
             ) {
-                LazyColumn(
-                    modifier = Modifier.padding(3.dp),
-                    verticalArrangement = Arrangement.spacedBy(3.dp),
-                ) {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     lazyColumnItems(options) { option ->
-                        val rowBackground = when {
-                            !option.enabled -> uiTheme.controls.panelBg
-                            option.active -> lerp(uiTheme.controls.buttonBg, Color.White, 0.18f)
-                            else -> uiTheme.controls.buttonBg
-                        }
-                        val rowTextColor = when {
-                            !option.enabled -> uiTheme.controls.panelMuted.copy(alpha = 0.7f)
-                            else -> uiTheme.controls.buttonFg
-                        }
-                        Box(
-                            modifier = Modifier
-                                .width(style.trayWidth)
-                                .height(ThumbSize)
-                                .background(rowBackground)
-                                .clickable(
-                                    enabled = option.enabled,
-                                    indication = null,
-                                    interactionSource = remember { MutableInteractionSource() },
-                                ) {
-                                    option.onSelect()
-                                }
-                                .padding(horizontal = 12.dp),
-                            contentAlignment = Alignment.CenterStart,
-                        ) {
-                            Text(
-                                option.label,
-                                style = MaterialTheme.typography.labelLarge,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                                color = rowTextColor,
-                            )
-                        }
+                        MenuPanelRow(
+                            label = option.label,
+                            active = option.active,
+                            enabled = option.enabled,
+                            width = style.trayWidth,
+                            onSelect = option.onSelect,
+                        )
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun MenuPanel(
+    modifier: Modifier = Modifier,
+    width: Dp = Dp.Unspecified,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Card(
+        modifier = modifier.then(if (width != Dp.Unspecified) Modifier.width(width) else Modifier),
+        shape = RoundedCornerShape(ThumbRadius + 2.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = uiTheme.controls.panelBg,
+            contentColor = uiTheme.controls.panelFg,
+        ),
+        border = BorderStroke(2.dp, uiTheme.controls.panelBorder),
+    ) {
+        Column(
+            modifier = Modifier.padding(3.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+            content = content,
+        )
+    }
+}
+
+@Composable
+private fun MenuPanelRow(
+    label: String,
+    active: Boolean,
+    enabled: Boolean,
+    width: Dp = Dp.Unspecified,
+    onSelect: () -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val rowBackground = when {
+        !enabled -> uiTheme.controls.panelBg
+        active -> lerp(uiTheme.controls.buttonBg, Color.White, 0.18f)
+        else -> uiTheme.controls.buttonBg
+    }
+    val rowTextColor = when {
+        !enabled -> uiTheme.controls.panelMuted.copy(alpha = 0.7f)
+        else -> uiTheme.controls.buttonFg
+    }
+    Box(
+        modifier = Modifier
+            .then(if (width != Dp.Unspecified) Modifier.width(width) else Modifier.fillMaxWidth())
+            .height(ThumbSize)
+            .background(rowBackground)
+            .clickable(
+                enabled = enabled,
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+            ) {
+                onSelect()
+            }
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            color = rowTextColor,
+        )
     }
 }
 
@@ -1781,11 +1818,19 @@ private data class FlightPlanRow(
 )
 
 @Composable
-private fun FlightPlanDataRow(row: FlightPlanRow, onWaypointClick: () -> Unit) {
+private fun FlightPlanDataRow(row: FlightPlanRow, selected: Boolean, onWaypointClick: () -> Unit) {
+    val uiTheme = LocalAerobagUiTheme.current
     Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
         CompactSquareButton(
             label = row.waypoint,
             modifier = Modifier.width(ThumbSize * 2.5f).height(ThumbSize),
+            selected = selected,
+            selectedColor = uiTheme.controls.buttonBg.copy(
+                red = (uiTheme.controls.buttonBg.red * 0.82f) + 0.18f,
+                green = (uiTheme.controls.buttonBg.green * 0.82f) + 0.18f,
+                blue = (uiTheme.controls.buttonBg.blue * 0.82f) + 0.18f,
+                alpha = uiTheme.controls.buttonBg.alpha,
+            ),
             onClick = onWaypointClick,
         )
         PlanCell(row.distance, Modifier.weight(1f))
@@ -1919,6 +1964,8 @@ private fun CompactSquareButton(
     modifier: Modifier = Modifier,
     maxLines: Int = 1,
     enabled: Boolean = true,
+    selected: Boolean = false,
+    selectedColor: Color? = null,
     onDisabledClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
@@ -1985,7 +2032,7 @@ private fun CompactSquareButton(
             }
         ),
         shape = RoundedCornerShape(ThumbRadius),
-        color = uiTheme.controls.buttonBg,
+        color = if (selected) selectedColor ?: uiTheme.controls.buttonBg.copy(alpha = 0.9f) else uiTheme.controls.buttonBg,
         contentColor = uiTheme.controls.buttonFg,
         shadowElevation = 2.dp,
     ) {

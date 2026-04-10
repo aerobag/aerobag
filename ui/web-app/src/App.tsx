@@ -747,6 +747,7 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
           <TrayDock
             launcherLabel={pageOptions.find((option) => option.id === props.page)?.launcherLabel ?? "PLN"}
             open={pageTrayOpen}
+            blocked={selectedWaypointIndex !== null}
             onToggle={() => setPageTrayOpen((open) => !open)}
             ariaLabel="Page"
             options={pageOptions.map((option) => ({
@@ -769,7 +770,12 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
         <div className="planHeader">Course (°)</div>
         {rows.map((row, index) => (
           <Fragment key={row.id}>
-            <button key={`${row.id}:waypoint`} type="button" className="planWaypointCell planWaypointButton" onClick={() => setSelectedWaypointIndex(index)}>
+            <button
+              key={`${row.id}:waypoint`}
+              type="button"
+              className={`planWaypointCell planWaypointButton${selectedWaypointIndex === index ? " isSelected" : ""}`}
+              onClick={() => setSelectedWaypointIndex(index)}
+            >
               {row.waypoint}
             </button>
             <div className="planCell">

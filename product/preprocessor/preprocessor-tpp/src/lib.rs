@@ -23,9 +23,9 @@ use package::package_region;
 
 const TPP_AIRPORT_DIAGRAMS_URL: &str =
     "https://www.outerworldapps.com/WairToNowWork/avare_aptdiags.php";
-const TPP_BASIC_PIPELINE_VERSION: &str = "basic-v1";
+const TPP_BASIC_PIPELINE_VERSION: &str = "basic-v3-landscape-text-rotation";
 const TPP_AIRPORT_DIAGRAM_PIPELINE_VERSION: &str = "airport-diagram-v1";
-const TPP_CONTINUED_PIPELINE_VERSION: &str = "continued-v3-fallback-on-multipage-geotag";
+const TPP_CONTINUED_PIPELINE_VERSION: &str = "continued-v5-landscape-text-rotation";
 const TPP_GEOTAGGED_PIPELINE_VERSION: &str = "geotagged-v2-dstalpha";
 const TPP_MINIMUM_PIPELINE_VERSION: &str = "minimum-v1";
 
@@ -90,6 +90,13 @@ enum PlateRenderKind {
     AirportDiagram,
     Geotagged,
     Basic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlateRotation {
+    None,
+    Clockwise90,
+    CounterClockwise90,
 }
 
 pub fn run_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<NativeTppRunResult> {
@@ -438,7 +445,25 @@ fn make_plate(
 
     let gdalinfo = read_gdalinfo(&pdf_path)?;
     let has_proj = gdalinfo.contains("PROJCRS");
+    let rotation = detect_plate_rotation(&pdf_path, &output_name)?;
     if has_proj {
+        if rotation != PlateRotation::None {
+            // Some PHX departure plates are tagged as georeferenced by GDAL but also explicitly say
+            // "Chart not to scale", so we treat their geotagging as untrustworthy once we rotate
+            // them into the user-facing reading orientation. As of cycle 2604 this affects:
+            // DP-AZ-BROAK ONE (RNAV), DP-AZ-ECLPS ONE (RNAV), and DP-AZ-FYRBD ONE (RNAV).
+            // Perhaps these charts are actually to scale, in which case we might just transform
+            // the geotagging instead of discarding it here.
+            let tif_path = png_path.with_extension("tif");
+            let fingerprint = basic_plate_fingerprint(&pdf_hash, &output_name)?;
+            invalidate_single_plate_if_stale(&png_path, Some(&tif_path), &marker_path, &fingerprint)?;
+            if png_path.is_file() {
+                return Ok(());
+            }
+            render_basic_png(work_dir, &pdf_path, &png_path, rotation)?;
+            write_plate_marker(&marker_path, &fingerprint)?;
+            return Ok(());
+        }
         let tif_path = png_path.with_extension("tif");
         let fingerprint = geotagged_plate_fingerprint(&pdf_hash, &output_name)?;
         invalidate_single_plate_if_stale(&png_path, Some(&tif_path), &marker_path, &fingerprint)?;
@@ -453,7 +478,7 @@ fn make_plate(
         if png_path.is_file() {
             return Ok(());
         }
-        render_basic_png(work_dir, &pdf_path, &png_path)?;
+        render_basic_png(work_dir, &pdf_path, &png_path, rotation)?;
         write_plate_marker(&marker_path, &fingerprint)?;
     }
     Ok(())
@@ -473,7 +498,6 @@ fn make_continued_plate_group(
     let mut pdf_hashes = Vec::with_capacity(group.members.len());
     let mut part_paths = Vec::with_capacity(group.members.len());
     let mut legacy_continued_outputs = Vec::new();
-    let mut geotag_comment: Option<String> = None;
     let mut should_fallback_to_separate = false;
     let temp_dir = folder.join(format!(
         ".continued-parts-{}",
@@ -506,7 +530,8 @@ fn make_continued_plate_group(
             sanitize_label(&group.output_name),
             part_index
         ));
-        part_paths.push((pdf_path, temp_png, render_kind));
+        let rotation = detect_plate_rotation(&pdf_path, &output_name)?;
+        part_paths.push((pdf_path, temp_png, render_kind, output_name, rotation));
     }
 
     if should_fallback_to_separate {
@@ -536,13 +561,17 @@ fn make_continued_plate_group(
         return Ok(());
     }
 
+    let drop_group_geotag = part_paths.iter().any(|(_, _, render_kind, _, rotation)| {
+        *render_kind == PlateRenderKind::Geotagged && *rotation != PlateRotation::None
+    });
+    let mut geotag_comment: Option<String> = None;
     let mut rendered_parts = Vec::with_capacity(part_paths.len());
-    for (pdf_path, temp_png, render_kind) in &part_paths {
+    for (pdf_path, temp_png, render_kind, _output_name, rotation) in &part_paths {
         remove_if_exists(temp_png)?;
-        if *render_kind == PlateRenderKind::Geotagged {
+        if *render_kind == PlateRenderKind::Geotagged && !drop_group_geotag {
             geotag_comment = Some(render_geotagged_plate(work_dir, pdf_path, temp_png)?);
         } else {
-            render_basic_png(work_dir, pdf_path, temp_png)?;
+            render_basic_png(work_dir, pdf_path, temp_png, *rotation)?;
         }
         rendered_parts.push(temp_png.clone());
     }
@@ -591,6 +620,7 @@ fn render_minimum_plate(
             work_dir,
             pdf_path,
             &folder.join(format!("{output_name}.png")),
+            PlateRotation::None,
         )?;
         return Ok(());
     }
@@ -631,7 +661,7 @@ fn render_airport_diagram(
     png_path: &Path,
     comment: Option<&String>,
 ) -> anyhow::Result<()> {
-    render_basic_png(work_dir, pdf_path, png_path)?;
+    render_basic_png(work_dir, pdf_path, png_path, PlateRotation::None)?;
     write_user_comment(
         work_dir,
         png_path,
@@ -683,7 +713,12 @@ fn render_geotagged_plate(
     Ok(comment)
 }
 
-fn render_basic_png(work_dir: &Path, input_path: &Path, png_path: &Path) -> anyhow::Result<()> {
+fn render_basic_png(
+    work_dir: &Path,
+    input_path: &Path,
+    png_path: &Path,
+    rotation: PlateRotation,
+) -> anyhow::Result<()> {
     let invocation = ToolInvocation {
         program: "mogrify".to_string(),
         args: vec![
@@ -720,6 +755,72 @@ fn render_basic_png(work_dir: &Path, input_path: &Path, png_path: &Path) -> anyh
     let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
     if !outcome.success {
         bail!("mogrify failed for {}", input_path.display());
+    }
+    rotate_png_if_needed(work_dir, png_path, rotation)?;
+    Ok(())
+}
+
+fn detect_plate_rotation(pdf_path: &Path, output_name: &str) -> anyhow::Result<PlateRotation> {
+    if !should_detect_landscape_rotation(output_name) {
+        return Ok(PlateRotation::None);
+    }
+
+    let script_path = detect_landscape_rotation_script()?;
+    let output = Command::new("python3")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .arg(&script_path)
+        .arg(pdf_path)
+        .output()
+        .with_context(|| format!("failed to run {}", script_path.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("detect_landscape_rotation.py failed: {stderr}");
+    }
+    let stdout =
+        String::from_utf8(output.stdout).context("landscape rotation output was not utf-8")?;
+    let rotation = match stdout.trim() {
+        "90" => PlateRotation::Clockwise90,
+        "270" => PlateRotation::CounterClockwise90,
+        _ => PlateRotation::None,
+    };
+    Ok(rotation)
+}
+
+fn should_detect_landscape_rotation(output_name: &str) -> bool {
+    output_name.starts_with("STAR-")
+        || output_name.starts_with("DP-")
+        || output_name.starts_with("ODP-")
+}
+
+fn rotate_png_if_needed(
+    work_dir: &Path,
+    png_path: &Path,
+    rotation: PlateRotation,
+) -> anyhow::Result<()> {
+    let angle = match rotation {
+        PlateRotation::None => return Ok(()),
+        PlateRotation::Clockwise90 => "90",
+        PlateRotation::CounterClockwise90 => "270",
+    };
+    let invocation = ToolInvocation {
+        program: "mogrify".to_string(),
+        args: vec![
+            "-quiet".to_string(),
+            "-rotate".to_string(),
+            angle.to_string(),
+            png_path.to_string_lossy().to_string(),
+        ],
+        cwd: work_dir.to_path_buf(),
+        label: format!(
+            "tpp-rotate-{}",
+            sanitize_label(&png_path.display().to_string())
+        ),
+        env: Vec::new(),
+        stdin_text: None,
+    };
+    let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
+    if !outcome.success {
+        bail!("mogrify rotate failed for {}", png_path.display());
     }
     Ok(())
 }
@@ -810,6 +911,7 @@ fn write_user_comment(work_dir: &Path, png_path: &Path, comment: &str) -> anyhow
 fn find_plate_pages(pdf_path: &Path, apt_id: &str) -> anyhow::Result<Vec<u32>> {
     let script_path = find_plate_pages_script()?;
     let output = Command::new("python3")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .arg(&script_path)
         .arg(pdf_path)
         .arg(apt_id)
@@ -867,6 +969,28 @@ fn find_plate_pages_script() -> anyhow::Result<PathBuf> {
     }
 
     bail!("could not locate find_plate_pages.py in any known workspace layout")
+}
+
+fn detect_landscape_rotation_script() -> anyhow::Result<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut candidates = vec![manifest_dir
+        .join("scripts")
+        .join("detect_landscape_rotation.py")];
+    if let Ok(current_exe) = std::env::current_exe() {
+        for ancestor in current_exe.ancestors() {
+            candidates.push(
+                ancestor.join(
+                    "product/preprocessor/preprocessor-tpp/scripts/detect_landscape_rotation.py",
+                ),
+            );
+        }
+    }
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    bail!("could not locate detect_landscape_rotation.py in any known workspace layout")
 }
 
 fn read_gdalinfo(path: &Path) -> anyhow::Result<String> {
@@ -1178,73 +1302,6 @@ fn sanitize_label(value: &str) -> String {
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
         .collect()
-}
-
-fn copy_dir_recursive(src: &Path, dst: &Path, preserve_generated: bool) -> anyhow::Result<()> {
-    fs::create_dir_all(dst)
-        .with_context(|| format!("failed to create destination {}", dst.display()))?;
-    for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let src_path = entry.path();
-        if should_skip_copy(&src_path, file_type.is_dir(), preserve_generated) {
-            continue;
-        }
-        let dst_path = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path, preserve_generated)?;
-        } else if file_type.is_file() {
-            fs::copy(&src_path, &dst_path).with_context(|| {
-                format!(
-                    "failed to copy {} to {}",
-                    src_path.display(),
-                    dst_path.display()
-                )
-            })?;
-        }
-    }
-    Ok(())
-}
-
-fn looks_like_populated_work_dir(path: &Path) -> bool {
-    path.join("plates").is_dir()
-        || path
-            .read_dir()
-            .ok()
-            .into_iter()
-            .flat_map(|entries| entries.filter_map(Result::ok))
-            .any(|entry| {
-                let entry_path = entry.path();
-                entry_path
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|ext| {
-                        matches!(ext, "zip" | "pdf" | "PDF" | "png" | "xml" | "php" | "tif")
-                    })
-            })
-}
-
-fn should_skip_copy(path: &Path, is_dir: bool, preserve_generated: bool) -> bool {
-    let name = match path.file_name().and_then(|value| value.to_str()) {
-        Some(name) => name,
-        None => return false,
-    };
-
-    if is_dir {
-        if matches!(name, "logs" | "meta" | "work" | "rust-runs") {
-            return true;
-        }
-        return matches!(name, ".git" | "__pycache__" | ".rust-logs");
-    }
-
-    if preserve_generated {
-        return false;
-    }
-
-    matches!(
-        path.extension().and_then(|value| value.to_str()),
-        Some("zip" | "pdf" | "PDF" | "png" | "xml" | "php" | "tif")
-    )
 }
 
 fn remove_if_exists(path: &Path) -> anyhow::Result<()> {

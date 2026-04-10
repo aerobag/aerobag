@@ -1531,23 +1531,6 @@ fn hash_text(text: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
-    for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else if file_type.is_file() {
-            fs::copy(&src_path, &dst_path)
-                .with_context(|| format!("failed to copy {} to {}", src_path.display(), dst_path.display()))?;
-        }
-    }
-    Ok(())
-}
-
 fn utc_now_string() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }

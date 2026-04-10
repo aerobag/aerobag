@@ -531,6 +531,9 @@ function MapPage(props: {
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
 
   useEffect(() => {
+    if (activePointersRef.current.size > 0) {
+      return;
+    }
     viewportRef.current = viewport;
   }, [viewport]);
 

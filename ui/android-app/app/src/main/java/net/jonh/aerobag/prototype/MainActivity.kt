@@ -72,6 +72,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
@@ -167,6 +168,7 @@ private data class PageTrayOption(
 private data class MenuDockOption(
     val key: String,
     val label: String,
+    val active: Boolean = false,
     val enabled: Boolean = true,
     val onSelect: () -> Unit,
 )
@@ -1068,7 +1070,7 @@ private fun FlightPlanPage(
             onToggle = { pageTrayOpen = !pageTrayOpen },
             style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
-                MenuDockOption(option.page.name, option.label) {
+                MenuDockOption(option.page.name, option.label, active = option.page == page) {
                     onSelectPage(option.page)
                     pageTrayOpen = false
                 }
@@ -1495,7 +1497,7 @@ private fun MapTopLeftControls(
             onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
-                MenuDockOption(option.page.name, option.label) { onSelectPage(option.page) }
+                MenuDockOption(option.page.name, option.label, active = option.page == currentPage) { onSelectPage(option.page) }
             },
         )
         MenuDock(
@@ -1506,7 +1508,7 @@ private fun MapTopLeftControls(
             onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.Compact,
             options = trayOptions.map { option ->
-                MenuDockOption(option.id, option.label, option.available) { option.select?.invoke() }
+                MenuDockOption(option.id, option.label, active = option.launcherLabel == selectedLabel, enabled = option.available) { option.select?.invoke() }
             },
         )
     }
@@ -1552,7 +1554,7 @@ private fun ChartViewerSelectors(
             onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
-                MenuDockOption(option.page.name, option.label) { onSelectPage(option.page) }
+                MenuDockOption(option.page.name, option.label, active = option.page == currentPage) { onSelectPage(option.page) }
             },
         )
 
@@ -1564,7 +1566,7 @@ private fun ChartViewerSelectors(
             onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.PlateAirport,
             options = airports.map { airport ->
-                MenuDockOption(airport.id, airport.label) { onSelectAirport(airport.id) }
+                MenuDockOption(airport.id, airport.label, active = airport.id == selectedAirport?.id) { onSelectAirport(airport.id) }
             },
         )
 
@@ -1576,7 +1578,7 @@ private fun ChartViewerSelectors(
             onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.PlateWide,
             options = sortChartsForFolder(selectedAirport?.charts ?: emptyList()).map { chart ->
-                MenuDockOption(chart.id, chart.label) { onSelectChart(chart.id) }
+                MenuDockOption(chart.id, chart.label, active = chart.id == selectedChart?.id) { onSelectChart(chart.id) }
             },
         )
 
@@ -1670,6 +1672,7 @@ private fun MenuDock(
     style: MenuDockStyle,
     options: List<MenuDockOption>,
 ) {
+    val uiTheme = LocalAerobagUiTheme.current
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
     var anchorTopPx by remember { mutableStateOf(0f) }
@@ -1710,10 +1713,20 @@ private fun MenuDock(
             ) {
                 LazyColumn {
                     lazyColumnItems(options) { option ->
+                        val rowBackground = when {
+                            !option.enabled -> uiTheme.controls.panelBg
+                            option.active -> lerp(uiTheme.controls.buttonBg, Color.White, 0.18f)
+                            else -> uiTheme.controls.buttonBg
+                        }
+                        val rowTextColor = when {
+                            !option.enabled -> uiTheme.controls.panelMuted.copy(alpha = 0.7f)
+                            else -> uiTheme.controls.buttonFg
+                        }
                         Box(
                             modifier = Modifier
                                 .width(style.trayWidth)
                                 .height(ThumbSize)
+                                .background(rowBackground)
                                 .clickable(
                                     enabled = option.enabled,
                                     indication = null,
@@ -1729,7 +1742,7 @@ private fun MenuDock(
                                 style = MaterialTheme.typography.labelLarge,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
-                                color = if (option.enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+                                color = rowTextColor,
                             )
                         }
                     }

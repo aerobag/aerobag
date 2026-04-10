@@ -1067,14 +1067,32 @@ private fun FlightPlanPage(
     var pageTrayOpen by remember { mutableStateOf(false) }
     var debugPanelOpen by remember { mutableStateOf(false) }
     val rows = remember(samplePlan) {
-        samplePlan.legs.mapIndexed { index, leg ->
-            FlightPlanRow(
-                waypoint = navRefLabel(leg.to),
-                chartAirportId = (leg.to as? NavRef.Airport)?.code,
-                distance = if (index == 0) "18.4" else "11.2",
-                ete = if (index == 0) "0:07" else "0:04",
-                course = if (index == 0) "342" else "161",
-            )
+        val firstLeg = samplePlan.legs.firstOrNull()
+        if (firstLeg == null) {
+            emptyList()
+        } else {
+            buildList {
+                add(
+                    FlightPlanRow(
+                        waypoint = navRefLabel(firstLeg.from),
+                        chartAirportId = (firstLeg.from as? NavRef.Airport)?.code,
+                        removeLegIndex = null,
+                        distance = "—",
+                        ete = "—",
+                        course = "—",
+                    ),
+                )
+                samplePlan.legs.mapIndexedTo(this) { index, leg ->
+                    FlightPlanRow(
+                        waypoint = navRefLabel(leg.to),
+                        chartAirportId = (leg.to as? NavRef.Airport)?.code,
+                        removeLegIndex = index,
+                        distance = if (index == 0) "18.4" else "11.2",
+                        ete = if (index == 0) "0:07" else "0:04",
+                        course = if (index == 0) "342" else "161",
+                    )
+                }
+            }
         }
     }
 
@@ -1150,7 +1168,7 @@ private fun FlightPlanPage(
                 width = Dp.Unspecified,
             ) {
                 listOf(
-                    "Remove" to true,
+                    "Remove" to (rows[selectedWaypointIndex!!].removeLegIndex != null),
                     "Insert" to false,
                     "Reorder" to false,
                     "Waypoint Info" to false,
@@ -1167,7 +1185,7 @@ private fun FlightPlanPage(
                                 return@MenuPanelRow
                             }
                             if (action == "Remove") {
-                                onRemoveWaypoint(selectedWaypointIndex!!)
+                                rows[selectedWaypointIndex!!].removeLegIndex?.let(onRemoveWaypoint)
                             } else if (action == "Charts") {
                                 onOpenCharts(rows[selectedWaypointIndex!!].chartAirportId)
                             }
@@ -1849,6 +1867,7 @@ private fun PlanHeaderRow() {
 private data class FlightPlanRow(
     val waypoint: String,
     val chartAirportId: String?,
+    val removeLegIndex: Int?,
     val distance: String,
     val ete: String,
     val course: String,

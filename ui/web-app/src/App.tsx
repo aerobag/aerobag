@@ -845,15 +845,32 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
   const [debugOpen, setDebugOpen] = useState(false);
   const trayOpen = pageTrayOpen;
   const rows = useMemo(
-    () =>
-      props.plan.legs.map((leg, index) => ({
-        id: `${index}:${navRefLabel(leg.from)}-${navRefLabel(leg.to)}`,
-        waypoint: navRefLabel(leg.to),
-        chartAirportId: "Airport" in leg.to ? leg.to.Airport : null,
-        distance: index === 0 ? "18.4" : "11.2",
-        ete: index === 0 ? "0:07" : "0:04",
-        course: index === 0 ? "342" : "161",
-      })),
+    () => {
+      const firstLeg = props.plan.legs[0];
+      if (!firstLeg) {
+        return [];
+      }
+      return [
+        {
+          id: `start:${navRefLabel(firstLeg.from)}`,
+          waypoint: navRefLabel(firstLeg.from),
+          chartAirportId: "Airport" in firstLeg.from ? firstLeg.from.Airport : null,
+          removeLegIndex: null as number | null,
+          distance: "—",
+          ete: "—",
+          course: "—",
+        },
+        ...props.plan.legs.map((leg, index) => ({
+          id: `${index}:${navRefLabel(leg.from)}-${navRefLabel(leg.to)}`,
+          waypoint: navRefLabel(leg.to),
+          chartAirportId: "Airport" in leg.to ? leg.to.Airport : null,
+          removeLegIndex: index,
+          distance: index === 0 ? "18.4" : "11.2",
+          ete: index === 0 ? "0:07" : "0:04",
+          course: index === 0 ? "342" : "161",
+        })),
+      ];
+    },
     [props.plan],
   );
 
@@ -926,7 +943,13 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
           <button type="button" className="trayScrim" aria-label="Close waypoint actions" onClick={() => setSelectedWaypointIndex(null)} />
           <section className="waypointModal" aria-label="Waypoint actions">
             {waypointActions.map((action) => {
-              const enabled = action.id === "charts" ? rows[selectedWaypointIndex].chartAirportId !== null : action.enabled;
+              const selectedRow = rows[selectedWaypointIndex];
+              const enabled =
+                action.id === "charts"
+                  ? selectedRow.chartAirportId !== null
+                  : action.id === "remove"
+                    ? selectedRow.removeLegIndex !== null
+                    : action.enabled;
               return (
               <button
                 key={action.id}
@@ -940,9 +963,11 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
                     return;
                   }
                   if (action.id === "remove") {
-                    props.onRemoveWaypoint(selectedWaypointIndex);
+                    if (selectedRow.removeLegIndex !== null) {
+                      props.onRemoveWaypoint(selectedRow.removeLegIndex);
+                    }
                   } else if (action.id === "charts") {
-                    props.onOpenCharts(rows[selectedWaypointIndex].chartAirportId);
+                    props.onOpenCharts(selectedRow.chartAirportId);
                   }
                   setSelectedWaypointIndex(null);
                 }}

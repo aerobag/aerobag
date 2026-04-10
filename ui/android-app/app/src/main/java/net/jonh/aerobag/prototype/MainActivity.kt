@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -1067,6 +1068,7 @@ private fun FlightPlanPage(
     onRemoveWaypoint: (Int) -> Unit,
     onMoveWaypoint: (Int, Int) -> Unit,
 ) {
+    val planWaypointTrayStart = ThumbSize * 2.6f + ThumbGap * 2
     var selectedWaypointIndex by remember { mutableStateOf<Int?>(null) }
     var reorderOpen by remember { mutableStateOf(false) }
     var pageTrayOpen by remember { mutableStateOf(false) }
@@ -1174,35 +1176,57 @@ private fun FlightPlanPage(
                 selectedWaypointIndex = null
                 reorderOpen = false
             }
-            MenuPanel(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(top = ThumbSize + ThumbGap * 2, start = ThumbSize * 2.6f + ThumbGap * 2, end = ThumbGap)
-                    .zIndex(5f),
-                width = Dp.Unspecified,
-            ) {
-                if (reorderOpen) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap)) {
-                        CompactSquareButton(
-                            label = "Up",
-                            modifier = Modifier.size(ThumbSize),
-                            enabled = selectedWaypointIndex!! > 0,
-                            onClick = {
-                                onMoveWaypoint(selectedWaypointIndex!!, -1)
-                                selectedWaypointIndex = selectedWaypointIndex!! - 1
-                            },
-                        )
-                        CompactSquareButton(
-                            label = "Down",
-                            modifier = Modifier.size(ThumbSize),
-                            enabled = selectedWaypointIndex!! < rows.lastIndex,
-                            onClick = {
-                                onMoveWaypoint(selectedWaypointIndex!!, 1)
-                                selectedWaypointIndex = selectedWaypointIndex!! + 1
-                            },
-                        )
+            if (reorderOpen) {
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .zIndex(5f),
+                ) {
+                    val trayWidth = minOf(ThumbSize * 4f, maxWidth - planWaypointTrayStart - ThumbGap)
+                    val trayHeight = maxHeight - (ThumbSize + ThumbGap * 2) - ThumbSize
+                    MenuPanel(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(top = ThumbSize + ThumbGap * 2, start = planWaypointTrayStart, end = ThumbGap, bottom = ThumbSize)
+                            .height(trayHeight),
+                        width = trayWidth,
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(ThumbGap)) {
+                                CompactSquareButton(
+                                    label = "Up",
+                                    modifier = Modifier.size(ThumbSize),
+                                    enabled = selectedWaypointIndex!! > 0,
+                                    onClick = {
+                                        onMoveWaypoint(selectedWaypointIndex!!, -1)
+                                        selectedWaypointIndex = selectedWaypointIndex!! - 1
+                                    },
+                                )
+                                CompactSquareButton(
+                                    label = "Down",
+                                    modifier = Modifier.size(ThumbSize),
+                                    enabled = selectedWaypointIndex!! < rows.lastIndex,
+                                    onClick = {
+                                        onMoveWaypoint(selectedWaypointIndex!!, 1)
+                                        selectedWaypointIndex = selectedWaypointIndex!! + 1
+                                    },
+                                )
+                            }
+                        }
                     }
-                } else {
+                }
+            } else {
+                MenuPanel(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(top = ThumbSize + ThumbGap * 2, start = planWaypointTrayStart, end = ThumbGap)
+                        .zIndex(5f),
+                    width = Dp.Unspecified,
+                ) {
                     listOf(
                         "Remove" to (rows[selectedWaypointIndex!!].removeLegIndex != null),
                         "Insert" to false,

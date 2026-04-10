@@ -957,9 +957,9 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
               setReorderOpen(false);
             }}
           />
-          <section className="waypointModal" aria-label="Waypoint actions">
+          <section className={`waypointModal${reorderOpen ? " isReorder" : ""}`} aria-label="Waypoint actions">
             {reorderOpen ? (
-              <>
+              <div className="waypointReorderTray">
                 <button
                   type="button"
                   className="trayButton trayButtonSquare"
@@ -986,7 +986,7 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
                 >
                   Down
                 </button>
-              </>
+              </div>
             ) : waypointActions.map((action) => {
               const selectedRow = rows[selectedWaypointIndex];
               const enabled =

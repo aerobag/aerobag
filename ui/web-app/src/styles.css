@@ -498,6 +498,24 @@ button {
   box-shadow: var(--shadow);
 }
 
+.waypointModal.isReorder {
+  width: min(calc(var(--thumb) * 4), calc(100% - var(--thumb-gap) * 2 - var(--thumb) * 2.6));
+  min-height: calc(100vh - (var(--thumb) * 1.25) - (var(--thumb) * 0.9) - var(--thumb-gap));
+  right: auto;
+  bottom: auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.waypointReorderTray {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--thumb-gap);
+  width: 100%;
+}
+
 .chartImage {
   position: absolute;
   transform-origin: top left;

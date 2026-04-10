@@ -106,6 +106,11 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun moveWaypoint(index: Int, delta: Int): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.moveWaypointInSessionJson(handle, index, delta))
+        return snapshot
+    }
+
     fun selectAirport(airportId: String): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.selectAirportInSessionJson(handle, json.encodeToString(airportId)))
         return snapshot

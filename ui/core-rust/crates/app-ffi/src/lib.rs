@@ -169,6 +169,16 @@ pub fn remove_leg_in_session_json(handle: u64, index: usize) -> Result<String, S
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn move_waypoint_in_session_json(
+    handle: u64,
+    waypoint_index: usize,
+    delta: isize,
+) -> Result<String, String> {
+    let snapshot = app_core::move_waypoint_in_session(handle, waypoint_index, delta)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn select_airport_in_session_json(handle: u64, airport_id_json: &str) -> Result<String, String> {
     let airport_id: String = serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
     let snapshot =
@@ -397,6 +407,20 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_rem
     index: i32,
 ) -> jstring {
     return_string(&mut env, remove_leg_in_session_json(handle as u64, index as usize))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_moveWaypointInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    waypoint_index: i32,
+    delta: i32,
+) -> jstring {
+    return_string(
+        &mut env,
+        move_waypoint_in_session_json(handle as u64, waypoint_index as usize, delta as isize),
+    )
 }
 
 #[unsafe(no_mangle)]

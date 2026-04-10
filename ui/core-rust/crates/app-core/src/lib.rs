@@ -27,8 +27,9 @@ pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use planning::{FlightPlan, NavRef, PlanLeg};
 pub use session::{
-    create_ui_session, destroy_session, get_session_snapshot, remove_leg_in_session,
-    restore_chart_page_state_in_session, select_airport_in_session, select_chart_in_session,
+    create_ui_session, destroy_session, get_session_snapshot, move_waypoint_in_session,
+    remove_leg_in_session, restore_chart_page_state_in_session, select_airport_in_session,
+    select_chart_in_session,
     UiChartPageState, UiSessionInitResult, UiSessionSnapshot,
 };
 pub use state::{AppEvent, AppState};
@@ -142,6 +143,77 @@ pub fn remove_flight_plan_leg(plan: &FlightPlan, index: usize) -> AppResult<Flig
         .legs
         .last()
         .and_then(|leg| leg.to.airport_code())
+        .map(|code| AirportId(code.to_string()));
+    next.updated_at_epoch_ms += 1;
+    next.version += 1;
+    Ok(next)
+}
+
+pub fn move_flight_plan_waypoint(
+    plan: &FlightPlan,
+    waypoint_index: usize,
+    delta: isize,
+) -> AppResult<FlightPlan> {
+    if delta == 0 {
+        return Ok(plan.clone());
+    }
+
+    if plan.legs.is_empty() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "flight plan must contain at least one leg".to_string(),
+        });
+    }
+
+    let mut waypoints = Vec::with_capacity(plan.legs.len() + 1);
+    waypoints.push(
+        plan.legs
+            .first()
+            .map(|leg| leg.from.clone())
+            .ok_or_else(|| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: "flight plan must contain at least one leg".to_string(),
+            })?,
+    );
+    waypoints.extend(plan.legs.iter().map(|leg| leg.to.clone()));
+
+    if waypoint_index >= waypoints.len() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("flight plan waypoint index out of range: {waypoint_index}"),
+        });
+    }
+
+    let next_index = waypoint_index as isize + delta;
+    if next_index < 0 || next_index >= waypoints.len() as isize {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!(
+                "flight plan waypoint move out of range: {waypoint_index} -> {next_index}"
+            ),
+        });
+    }
+
+    waypoints.swap(waypoint_index, next_index as usize);
+
+    let legs = waypoints
+        .windows(2)
+        .map(|pair| PlanLeg {
+            from: pair[0].clone(),
+            to: pair[1].clone(),
+            airway: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut next = plan.clone();
+    next.legs = legs;
+    next.departure = waypoints
+        .first()
+        .and_then(|waypoint| waypoint.airport_code())
+        .map(|code| AirportId(code.to_string()));
+    next.destination = waypoints
+        .last()
+        .and_then(|waypoint| waypoint.airport_code())
         .map(|code| AirportId(code.to_string()));
     next.updated_at_epoch_ms += 1;
     next.version += 1;
@@ -506,5 +578,64 @@ mod tests {
             report.items[0].availability.availability,
             ContentAvailability::Unavailable
         );
+    }
+
+    #[test]
+    fn move_flight_plan_waypoint_rebuilds_waypoint_sequence() {
+        let plan = FlightPlan {
+            id: "plan-1".to_string(),
+            name: "NW sample".to_string(),
+            legs: vec![
+                PlanLeg {
+                    from: NavRef::Airport("KRNT".to_string()),
+                    to: NavRef::Navaid("SEA".to_string()),
+                    airway: Some("V27".to_string()),
+                },
+                PlanLeg {
+                    from: NavRef::Navaid("SEA".to_string()),
+                    to: NavRef::Navaid("PAE".to_string()),
+                    airway: Some("V27".to_string()),
+                },
+                PlanLeg {
+                    from: NavRef::Navaid("PAE".to_string()),
+                    to: NavRef::Airport("KAWO".to_string()),
+                    airway: None,
+                },
+            ],
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KAWO".to_string())),
+            alternate: None,
+            cruise_altitude_ft: Some(3000),
+            notes: None,
+            updated_at_epoch_ms: 10,
+            version: 1,
+        };
+
+        let next = move_flight_plan_waypoint(&plan, 2, -1).unwrap();
+
+        assert_eq!(
+            next.legs,
+            vec![
+                PlanLeg {
+                    from: NavRef::Airport("KRNT".to_string()),
+                    to: NavRef::Navaid("PAE".to_string()),
+                    airway: None,
+                },
+                PlanLeg {
+                    from: NavRef::Navaid("PAE".to_string()),
+                    to: NavRef::Navaid("SEA".to_string()),
+                    airway: None,
+                },
+                PlanLeg {
+                    from: NavRef::Navaid("SEA".to_string()),
+                    to: NavRef::Airport("KAWO".to_string()),
+                    airway: None,
+                },
+            ]
+        );
+        assert_eq!(next.departure, Some(AirportId("KRNT".to_string())));
+        assert_eq!(next.destination, Some(AirportId("KAWO".to_string())));
+        assert_eq!(next.updated_at_epoch_ms, 11);
+        assert_eq!(next.version, 2);
     }
 }

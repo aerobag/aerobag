@@ -185,13 +185,7 @@ export function deriveChartPage(
   const airportResourcesByAirportId = new Map(
     resourceIndex.airport_resources.map((entry) => [entry.airport_id, entry]),
   );
-  const orderedAirportIds = new Set<string>();
-  for (const airportId of airportIdsFromPlan(samplePlan)) {
-    orderedAirportIds.add(airportId);
-  }
-  for (const entry of resourceIndex.airport_resources) {
-    orderedAirportIds.add(entry.airport_id);
-  }
+  const orderedAirportIds = airportIdsFromPlan(samplePlan);
   const airports = [...orderedAirportIds]
     .map((airportId) => {
       const airportResources = airportResourcesByAirportId.get(airportId);

@@ -530,6 +530,9 @@ private fun AerobagApp() {
                     onRemoveWaypoint = { index ->
                         sessionSnapshot = uiSession.removeLeg(index)
                     },
+                    onMoveWaypoint = { index, delta ->
+                        sessionSnapshot = uiSession.moveWaypoint(index, delta)
+                    },
                 )
             }
             AppPage.Charts -> {
@@ -1062,8 +1065,10 @@ private fun FlightPlanPage(
     onSelectPage: (AppPage) -> Unit,
     onOpenCharts: (String?) -> Unit,
     onRemoveWaypoint: (Int) -> Unit,
+    onMoveWaypoint: (Int, Int) -> Unit,
 ) {
     var selectedWaypointIndex by remember { mutableStateOf<Int?>(null) }
+    var reorderOpen by remember { mutableStateOf(false) }
     var pageTrayOpen by remember { mutableStateOf(false) }
     var debugPanelOpen by remember { mutableStateOf(false) }
     val rows = remember(samplePlan) {
@@ -1114,7 +1119,10 @@ private fun FlightPlanPage(
             open = pageTrayOpen,
             onToggle = { pageTrayOpen = !pageTrayOpen },
             blocked = selectedWaypointIndex != null,
-            onBlockedClick = { selectedWaypointIndex = null },
+            onBlockedClick = {
+                selectedWaypointIndex = null
+                reorderOpen = false
+            },
             style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
                 MenuDockOption(option.page.name, option.label, active = option.page == page) {
@@ -1135,7 +1143,10 @@ private fun FlightPlanPage(
                 FlightPlanDataRow(
                     row = row,
                     selected = selectedWaypointIndex == index,
-                    onWaypointClick = { selectedWaypointIndex = index },
+                    onWaypointClick = {
+                        selectedWaypointIndex = index
+                        reorderOpen = false
+                    },
                 )
             }
         }
@@ -1159,7 +1170,10 @@ private fun FlightPlanPage(
         }
 
         if (selectedWaypointIndex != null) {
-            Scrim { selectedWaypointIndex = null }
+            Scrim {
+                selectedWaypointIndex = null
+                reorderOpen = false
+            }
             MenuPanel(
                 modifier = Modifier
                     .align(Alignment.TopStart)
@@ -1167,31 +1181,58 @@ private fun FlightPlanPage(
                     .zIndex(5f),
                 width = Dp.Unspecified,
             ) {
-                listOf(
-                    "Remove" to (rows[selectedWaypointIndex!!].removeLegIndex != null),
-                    "Insert" to false,
-                    "Reorder" to false,
-                    "Waypoint Info" to false,
-                    "Add Airway" to false,
-                    "Select Procedure" to false,
-                    "Charts" to (rows[selectedWaypointIndex!!].chartAirportId != null),
-                ).forEach { (action, enabled) ->
-                    MenuPanelRow(
-                        label = action,
-                        active = false,
-                        enabled = enabled,
-                        onSelect = {
-                            if (!enabled) {
-                                return@MenuPanelRow
+                if (reorderOpen) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap)) {
+                        CompactSquareButton(
+                            label = "Up",
+                            modifier = Modifier.size(ThumbSize),
+                            enabled = selectedWaypointIndex!! > 0,
+                            onClick = {
+                                onMoveWaypoint(selectedWaypointIndex!!, -1)
+                                selectedWaypointIndex = selectedWaypointIndex!! - 1
+                            },
+                        )
+                        CompactSquareButton(
+                            label = "Down",
+                            modifier = Modifier.size(ThumbSize),
+                            enabled = selectedWaypointIndex!! < rows.lastIndex,
+                            onClick = {
+                                onMoveWaypoint(selectedWaypointIndex!!, 1)
+                                selectedWaypointIndex = selectedWaypointIndex!! + 1
+                            },
+                        )
+                    }
+                } else {
+                    listOf(
+                        "Remove" to (rows[selectedWaypointIndex!!].removeLegIndex != null),
+                        "Insert" to false,
+                        "Reorder" to (rows.size > 1),
+                        "Waypoint Info" to false,
+                        "Add Airway" to false,
+                        "Select Procedure" to false,
+                        "Charts" to (rows[selectedWaypointIndex!!].chartAirportId != null),
+                    ).forEach { (action, enabled) ->
+                        MenuPanelRow(
+                            label = action,
+                            active = false,
+                            enabled = enabled,
+                            onSelect = {
+                                if (!enabled) {
+                                    return@MenuPanelRow
+                                }
+                                if (action == "Remove") {
+                                    rows[selectedWaypointIndex!!].removeLegIndex?.let(onRemoveWaypoint)
+                                } else if (action == "Reorder") {
+                                    reorderOpen = true
+                                    return@MenuPanelRow
+                                } else if (action == "Charts") {
+                                    onOpenCharts(rows[selectedWaypointIndex!!].chartAirportId)
+                                }
+                                reorderOpen = false
+                                selectedWaypointIndex = null
                             }
-                            if (action == "Remove") {
-                                rows[selectedWaypointIndex!!].removeLegIndex?.let(onRemoveWaypoint)
-                            } else if (action == "Charts") {
-                                onOpenCharts(rows[selectedWaypointIndex!!].chartAirportId)
-                            }
-                            selectedWaypointIndex = null
-                        }
-                    )
+                        )
+                    }
                 }
             }
         }

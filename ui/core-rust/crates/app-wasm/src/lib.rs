@@ -106,6 +106,16 @@ pub fn remove_leg_in_session(handle: u64, index: usize) -> Result<String, JsValu
 }
 
 #[wasm_bindgen]
+pub fn move_waypoint_in_session(
+    handle: u64,
+    waypoint_index: usize,
+    delta: isize,
+) -> Result<String, JsValue> {
+    move_waypoint_in_session_json(handle, waypoint_index, delta)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn select_airport_in_session(handle: u64, airport_id_json: &str) -> Result<String, JsValue> {
     select_airport_in_session_json(handle, airport_id_json).map_err(|err| JsValue::from_str(&err))
 }
@@ -304,6 +314,16 @@ fn create_ui_session_json(
 
 fn remove_leg_in_session_json(handle: u64, index: usize) -> Result<String, String> {
     let snapshot = app_core::remove_leg_in_session(handle, index).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn move_waypoint_in_session_json(
+    handle: u64,
+    waypoint_index: usize,
+    delta: isize,
+) -> Result<String, String> {
+    let snapshot = app_core::move_waypoint_in_session(handle, waypoint_index, delta)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 

@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     build_chart_catalog, derive_chart_page_state_from_catalog, load_catalog,
-    load_resource_index_chart_page_input, remove_flight_plan_leg, state, AppError,
-    AppErrorKind, AppEvent, AppResult, AppState, CatalogHandle, DerivedChartCatalog,
-    DerivedChartPageState, FlightPlan,
+    load_resource_index_chart_page_input, move_flight_plan_waypoint, remove_flight_plan_leg,
+    state, AppError, AppErrorKind, AppEvent, AppResult, AppState, CatalogHandle,
+    DerivedChartCatalog, DerivedChartPageState, FlightPlan,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -92,6 +92,30 @@ pub fn remove_leg_in_session(handle: u64, index: usize) -> AppResult<UiSessionSn
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let next_plan = remove_flight_plan_leg(&plan, index)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::ReplaceFlightPlan(next_plan.clone()),
+        &session.catalog,
+    )?;
+    session.chart_page_state = derive_chart_page_state_from_catalog(
+        &session.chart_catalog,
+        &next_plan,
+        &session.chart_page_state.recent_airport_ids,
+        Some(&session.chart_page_state.selected_airport_id),
+        Some(&session.chart_page_state.selected_chart_id),
+    );
+    Ok(snapshot_for_session(session))
+}
+
+pub fn move_waypoint_in_session(
+    handle: u64,
+    waypoint_index: usize,
+    delta: isize,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let next_plan = move_flight_plan_waypoint(&plan, waypoint_index, delta)?;
     session.app_state = state::reduce(
         &session.app_state,
         AppEvent::ReplaceFlightPlan(next_plan.clone()),

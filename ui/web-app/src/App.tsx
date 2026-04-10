@@ -445,6 +445,10 @@ export default function App() {
             if (!uiSession) return;
             setSessionSnapshot(await uiSession.removeLeg(index));
           }}
+          onMoveWaypoint={async (index, delta) => {
+            if (!uiSession) return;
+            setSessionSnapshot(await uiSession.moveWaypoint(index, delta));
+          }}
         />
       </div>
 
@@ -839,8 +843,9 @@ function MapPage(props: {
   );
 }
 
-function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; uptimeLabel: string; legSummary: string; plan: typeof samplePlan; onSelectPage: (page: AppPage) => void; onOpenCharts: (airportId: string | null) => void; onRemoveWaypoint: (index: number) => void | Promise<void> }) {
+function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; uptimeLabel: string; legSummary: string; plan: typeof samplePlan; onSelectPage: (page: AppPage) => void; onOpenCharts: (airportId: string | null) => void; onRemoveWaypoint: (index: number) => void | Promise<void>; onMoveWaypoint: (index: number, delta: number) => void | Promise<void> }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
+  const [reorderOpen, setReorderOpen] = useState(false);
   const [pageTrayOpen, setPageTrayOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
   const trayOpen = pageTrayOpen;
@@ -910,7 +915,10 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
               key={`${row.id}:waypoint`}
               type="button"
               className={`planWaypointCell planWaypointButton${selectedWaypointIndex === index ? " isSelected" : ""}`}
-              onClick={() => setSelectedWaypointIndex(index)}
+              onClick={() => {
+                setSelectedWaypointIndex(index);
+                setReorderOpen(false);
+              }}
             >
               {row.waypoint}
             </button>
@@ -940,13 +948,52 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
 
       {selectedWaypointIndex !== null ? (
         <>
-          <button type="button" className="trayScrim" aria-label="Close waypoint actions" onClick={() => setSelectedWaypointIndex(null)} />
+          <button
+            type="button"
+            className="trayScrim"
+            aria-label="Close waypoint actions"
+            onClick={() => {
+              setSelectedWaypointIndex(null);
+              setReorderOpen(false);
+            }}
+          />
           <section className="waypointModal" aria-label="Waypoint actions">
-            {waypointActions.map((action) => {
+            {reorderOpen ? (
+              <>
+                <button
+                  type="button"
+                  className="trayButton trayButtonSquare"
+                  disabled={selectedWaypointIndex <= 0}
+                  onPointerDown={stopPointer}
+                  onPointerUp={stopPointer}
+                  onClick={async () => {
+                    await props.onMoveWaypoint(selectedWaypointIndex, -1);
+                    setSelectedWaypointIndex((index) => (index === null ? null : index - 1));
+                  }}
+                >
+                  Up
+                </button>
+                <button
+                  type="button"
+                  className="trayButton trayButtonSquare"
+                  disabled={selectedWaypointIndex >= rows.length - 1}
+                  onPointerDown={stopPointer}
+                  onPointerUp={stopPointer}
+                  onClick={async () => {
+                    await props.onMoveWaypoint(selectedWaypointIndex, 1);
+                    setSelectedWaypointIndex((index) => (index === null ? null : index + 1));
+                  }}
+                >
+                  Down
+                </button>
+              </>
+            ) : waypointActions.map((action) => {
               const selectedRow = rows[selectedWaypointIndex];
               const enabled =
                 action.id === "charts"
                   ? selectedRow.chartAirportId !== null
+                  : action.id === "reorder"
+                    ? rows.length > 1
                   : action.id === "remove"
                     ? selectedRow.removeLegIndex !== null
                     : action.enabled;
@@ -966,9 +1013,13 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
                     if (selectedRow.removeLegIndex !== null) {
                       props.onRemoveWaypoint(selectedRow.removeLegIndex);
                     }
+                  } else if (action.id === "reorder") {
+                    setReorderOpen(true);
+                    return;
                   } else if (action.id === "charts") {
                     props.onOpenCharts(selectedRow.chartAirportId);
                   }
+                  setReorderOpen(false);
                   setSelectedWaypointIndex(null);
                 }}
               >

@@ -33,6 +33,7 @@ export interface UiSession {
   chartCatalog: ChartPageData;
   snapshot(): Promise<UiSessionSnapshot>;
   removeLeg(index: number): Promise<UiSessionSnapshot>;
+  moveWaypoint(index: number, delta: number): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   restoreChartPageState(recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
@@ -123,6 +124,18 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
       snapshot: async () => ({ app_state: appState, chart_page_state: chartPageState }),
       removeLeg: async (index) => {
         const nextPlan = await adapter.removeFlightPlanLeg(appState.active_plan ?? plan, index);
+        appState = await adapter.replaceFlightPlanState(appState, sampleCatalogLike(resourceIndex), nextPlan);
+        chartPageState = compactChartPageState(await adapter.deriveChartPageState(
+          resourceIndex,
+          nextPlan,
+          chartPageState.recent_airport_ids,
+          chartPageState.selected_airport_id,
+          chartPageState.selected_chart_id,
+        ));
+        return { app_state: appState, chart_page_state: chartPageState };
+      },
+      moveWaypoint: async (index, delta) => {
+        const nextPlan = moveWaypointInPlan(appState.active_plan ?? plan, index, delta);
         appState = await adapter.replaceFlightPlanState(appState, sampleCatalogLike(resourceIndex), nextPlan);
         chartPageState = compactChartPageState(await adapter.deriveChartPageState(
           resourceIndex,
@@ -342,6 +355,7 @@ type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
   create_ui_session(catalogJson: string, resourceIndexJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   remove_leg_in_session(handle: number, index: number): Promise<string> | string;
+  move_waypoint_in_session(handle: number, waypointIndex: number, delta: number): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
   get_session_snapshot(handle: number): Promise<string> | string;
@@ -392,6 +406,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       removeLeg: async (index) => {
         snapshot = JSON.parse(await this.module.remove_leg_in_session(handle, index)) as UiSessionSnapshot;
+        return snapshot;
+      },
+      moveWaypoint: async (index, delta) => {
+        snapshot = JSON.parse(await this.module.move_waypoint_in_session(handle, index, delta)) as UiSessionSnapshot;
         return snapshot;
       },
       selectAirport: async (airportId) => {
@@ -509,6 +527,7 @@ export async function loadBestAvailableAdapter(
     if (
       typeof mod.create_ui_session !== "function" ||
       typeof mod.remove_leg_in_session !== "function" ||
+      typeof mod.move_waypoint_in_session !== "function" ||
       typeof mod.select_airport_in_session !== "function" ||
       typeof mod.select_chart_in_session !== "function" ||
       typeof mod.get_session_snapshot !== "function" ||
@@ -600,5 +619,34 @@ function compactChartPageState(state: DerivedChartPageState): UiChartPageState {
     recent_airport_ids: state.recent_airport_ids,
     selected_airport_id: state.selected_airport_id,
     selected_chart_id: state.selected_chart_id,
+  };
+}
+
+function moveWaypointInPlan(plan: FlightPlan, waypointIndex: number, delta: number): FlightPlan {
+  const waypoints = [
+    plan.legs[0]?.from,
+    ...plan.legs.map((leg) => leg.to),
+  ].filter((waypoint): waypoint is FlightPlan["legs"][number]["from"] => waypoint !== undefined);
+  if (waypointIndex < 0 || waypointIndex >= waypoints.length) {
+    throw new Error(`InvalidFlightPlan: flight plan waypoint index out of range: ${waypointIndex}`);
+  }
+  const nextIndex = waypointIndex + delta;
+  if (nextIndex < 0 || nextIndex >= waypoints.length) {
+    throw new Error(`InvalidFlightPlan: flight plan waypoint move out of range: ${waypointIndex} -> ${nextIndex}`);
+  }
+  const nextWaypoints = [...waypoints];
+  [nextWaypoints[waypointIndex], nextWaypoints[nextIndex]] = [nextWaypoints[nextIndex], nextWaypoints[waypointIndex]];
+  const nextLegs = nextWaypoints.slice(0, -1).map((from, index) => ({
+    from,
+    to: nextWaypoints[index + 1],
+    airway: null,
+  }));
+  return {
+    ...plan,
+    legs: nextLegs,
+    departure: airportCode(nextWaypoints[0]) ?? null,
+    destination: airportCode(nextWaypoints[nextWaypoints.length - 1]) ?? null,
+    updated_at_epoch_ms: plan.updated_at_epoch_ms + 1,
+    version: plan.version + 1,
   };
 }

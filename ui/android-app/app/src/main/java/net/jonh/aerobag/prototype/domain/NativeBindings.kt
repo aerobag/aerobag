@@ -15,6 +15,12 @@ interface NativeBridge {
         index: Int,
     ): String
 
+    fun moveWaypointInSessionJson(
+        handle: Long,
+        waypointIndex: Int,
+        delta: Int,
+    ): String
+
     fun selectAirportInSessionJson(
         handle: Long,
         airportIdJson: String,
@@ -98,6 +104,12 @@ object NativeBindings : NativeBridge {
     external override fun removeLegInSessionJson(
         handle: Long,
         index: Int,
+    ): String
+
+    external override fun moveWaypointInSessionJson(
+        handle: Long,
+        waypointIndex: Int,
+        delta: Int,
     ): String
 
     external override fun selectAirportInSessionJson(

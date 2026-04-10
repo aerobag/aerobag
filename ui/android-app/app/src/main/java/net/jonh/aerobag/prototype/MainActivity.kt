@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
 import androidx.activity.ComponentActivity
@@ -98,6 +99,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import net.jonh.aerobag.prototype.domain.ChartAirport
 import net.jonh.aerobag.prototype.domain.ChartAsset
@@ -364,6 +366,8 @@ private fun AerobagApp() {
     val fixture = remember(context) { SampleData.load(context.applicationContext) }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
+    val sessionStartElapsedMs = remember { SystemClock.elapsedRealtime() }
+    val uptimeLabel = rememberUptimeLabel(sessionStartElapsedMs)
     val initialRecentAirportIds = remember(fixture.chartPage.airports) {
         mergeRecentAirportIds(fixture.chartPage.airports, readRecentAirportIds(context.applicationContext))
     }
@@ -486,6 +490,7 @@ private fun AerobagApp() {
                 MapExplorerPage(
                     page = page,
                     pageHistory = pageHistory,
+                    uptimeLabel = uptimeLabel,
                     fixture = fixture,
                     selectedMapId = selectedMapId,
                     viewport = mapViewport,
@@ -508,6 +513,7 @@ private fun AerobagApp() {
                 FlightPlanPage(
                     page = page,
                     pageHistory = pageHistory,
+                    uptimeLabel = uptimeLabel,
                     legSummary = legSummary,
                     samplePlan = fixture.samplePlan,
                     onSelectPage = ::navigateToPage,
@@ -518,6 +524,7 @@ private fun AerobagApp() {
                 ChartsPage(
                     page = page,
                     pageHistory = pageHistory,
+                    uptimeLabel = uptimeLabel,
                     airports = orderedChartAirports,
                     selectedAirport = selectedAirport,
                     selectedChart = selectedChart,
@@ -574,6 +581,7 @@ private fun AerobagApp() {
 private fun MapExplorerPage(
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
+    uptimeLabel: String,
     fixture: net.jonh.aerobag.prototype.domain.ContentFixture,
     selectedMapId: String,
     viewport: MapViewportState,
@@ -1008,6 +1016,7 @@ private fun MapExplorerPage(
             modifier = Modifier.align(Alignment.BottomStart),
         ) {
             Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("stack ${formatPageStack(pageHistory, page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("family ${selectedLauncher.launcherLabel}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("${String.format("%.3f", center.first)}/${String.format("%.3f", center.second)} z${String.format("%.2f", viewport.zoom)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
@@ -1031,6 +1040,7 @@ private fun MapExplorerPage(
 private fun FlightPlanPage(
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
+    uptimeLabel: String,
     legSummary: String,
     samplePlan: net.jonh.aerobag.prototype.domain.FlightPlan,
     onSelectPage: (AppPage) -> Unit,
@@ -1111,6 +1121,7 @@ private fun FlightPlanPage(
             modifier = Modifier.align(Alignment.BottomStart),
         ) {
             Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("stack ${formatPageStack(pageHistory, page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("rows ${rows.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
         }
@@ -1124,12 +1135,23 @@ private fun FlightPlanPage(
                     .zIndex(5f),
                 width = Dp.Unspecified,
             ) {
-                listOf("Remove", "Insert", "Reorder", "Waypoint Info", "Add Airway", "Select Procedure", "Charts").forEach { action ->
+                listOf(
+                    "Remove" to false,
+                    "Insert" to false,
+                    "Reorder" to false,
+                    "Waypoint Info" to false,
+                    "Add Airway" to false,
+                    "Select Procedure" to false,
+                    "Charts" to true,
+                ).forEach { (action, enabled) ->
                     MenuPanelRow(
                         label = action,
                         active = false,
-                        enabled = true,
+                        enabled = enabled,
                         onSelect = {
+                            if (!enabled) {
+                                return@MenuPanelRow
+                            }
                             if (action == "Charts") {
                                 onOpenCharts()
                             }
@@ -1147,6 +1169,7 @@ private fun FlightPlanPage(
 private fun ChartsPage(
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
+    uptimeLabel: String,
     airports: List<ChartAirport>,
     selectedAirport: ChartAirport?,
     selectedChart: ChartAsset?,
@@ -1457,6 +1480,7 @@ private fun ChartsPage(
             modifier = Modifier.align(Alignment.BottomStart),
         ) {
             Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text(
                 "stack ${formatPageStack(pageHistory, page, "", selectedAirport?.id ?: "", selectedChart?.id ?: "", selectedChart?.label ?: "", folderOpen, chartLabelsById)}",
                 style = MaterialTheme.typography.labelSmall,
@@ -1898,6 +1922,29 @@ private fun DebugDock(
 }
 
 private fun pageLabel(page: AppPage): String = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: page.name.uppercase()
+
+@Composable
+private fun rememberUptimeLabel(sessionStartElapsedMs: Long): String {
+    val nowMs by produceState(initialValue = SystemClock.elapsedRealtime(), sessionStartElapsedMs) {
+        while (true) {
+            value = SystemClock.elapsedRealtime()
+            delay(1000)
+        }
+    }
+    return formatUptimeLabel(nowMs - sessionStartElapsedMs)
+}
+
+private fun formatUptimeLabel(elapsedMs: Long): String {
+    val totalSeconds = (elapsedMs / 1000).coerceAtLeast(0)
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    return if (hours > 0) {
+        "%d:%02d:%02d".format(hours, minutes, seconds)
+    } else {
+        "%d:%02d".format(minutes, seconds)
+    }
+}
 
 private fun formatSnapshot(snapshot: AppViewSnapshot): String {
     return formatSnapshot(snapshot, emptyMap())

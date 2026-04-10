@@ -72,7 +72,15 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> 
   { id: "plan", label: "PLAN", launcherLabel: "PLN" },
 ];
 
-const waypointActions = ["Remove", "Insert", "Reorder", "Waypoint Info", "Add Airway", "Select Procedure", "Charts"];
+const waypointActions = [
+  { id: "remove", label: "Remove", enabled: false },
+  { id: "insert", label: "Insert", enabled: false },
+  { id: "reorder", label: "Reorder", enabled: false },
+  { id: "waypoint_info", label: "Waypoint Info", enabled: false },
+  { id: "add_airway", label: "Add Airway", enabled: false },
+  { id: "select_procedure", label: "Select Procedure", enabled: false },
+  { id: "charts", label: "Charts", enabled: true },
+] as const;
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
 const maxViewHistoryDepth = 64;
 const loadedUiTheme = uiTheme as UiThemeJson;
@@ -106,6 +114,8 @@ type WebHistoryState = {
 };
 
 export default function App() {
+  const [sessionStartMs] = useState(() => Date.now());
+  const uptimeLabel = useSessionUptimeLabel(sessionStartMs);
   const locationSearch = typeof window !== "undefined" ? window.location.search : "";
   const debugTileLabels = new URLSearchParams(locationSearch).has("debugTiles");
   const persistedUiState = useMemo(readPersistedWebUiState, []);
@@ -316,6 +326,7 @@ export default function App() {
         <MapPage
           page={page}
           pageHistory={pageHistory}
+          uptimeLabel={uptimeLabel}
           debugTileLabels={debugTileLabels}
           selectedMapId={selectedMapId}
           selectedMap={selectedMap}
@@ -341,6 +352,7 @@ export default function App() {
         <FlightPlanPage
           page={page}
           pageHistory={pageHistory}
+          uptimeLabel={uptimeLabel}
           legSummary={legSummary}
           onSelectPage={navigateToPage}
           onOpenCharts={() => navigateToPage("charts")}
@@ -351,6 +363,7 @@ export default function App() {
         <ChartsPage
           page={page}
           pageHistory={pageHistory}
+          uptimeLabel={uptimeLabel}
           airports={orderedChartAirports}
           selectedAirport={selectedAirport}
           selectedChart={selectedChart}
@@ -395,6 +408,7 @@ export default function App() {
 function MapPage(props: {
   page: AppPage;
   pageHistory: AppViewSnapshot[];
+  uptimeLabel: string;
   debugTileLabels: boolean;
   selectedMapId: string;
   selectedMap: (typeof mapViews)[number];
@@ -413,6 +427,7 @@ function MapPage(props: {
     debugTileLabels,
     page,
     pageHistory,
+    uptimeLabel,
     selectedMap,
     selectedFamilyMapViews,
     selectedFamily,
@@ -705,6 +720,7 @@ function MapPage(props: {
             onToggle={() => setDebugOpen((open) => !open)}
           >
             <div className="debugLine">page {pageLabel(page)}</div>
+            <div className="debugLine">up {uptimeLabel}</div>
             <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: selectedMap.id, selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
             <div className="debugLine">family {selectedFamily.launcherLabel}</div>
             <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
@@ -721,7 +737,7 @@ function MapPage(props: {
   );
 }
 
-function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; legSummary: string; onSelectPage: (page: AppPage) => void; onOpenCharts: () => void }) {
+function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; uptimeLabel: string; legSummary: string; onSelectPage: (page: AppPage) => void; onOpenCharts: () => void }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
   const [pageTrayOpen, setPageTrayOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
@@ -796,6 +812,7 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
       <div className="debugDock">
         <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>
           <div className="debugLine">page {pageLabel(props.page)}</div>
+          <div className="debugLine">up {props.uptimeLabel}</div>
           <div className="debugLine">stack {formatPageStack(props.pageHistory, { page: props.page, selectedMapId: "", selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
           <div className="debugLine">rows {rows.length}</div>
         </DebugDock>
@@ -807,19 +824,23 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
           <section className="waypointModal" aria-label="Waypoint actions">
             {waypointActions.map((action) => (
               <button
-                key={action}
+                key={action.id}
                 type="button"
                 className="trayButton"
+                disabled={!action.enabled}
                 onPointerDown={stopPointer}
                 onPointerUp={stopPointer}
                 onClick={() => {
-                  if (action === "Charts") {
+                  if (!action.enabled) {
+                    return;
+                  }
+                  if (action.id === "charts") {
                     props.onOpenCharts();
                   }
                   setSelectedWaypointIndex(null);
                 }}
               >
-                {action}
+                {action.label}
               </button>
             ))}
           </section>
@@ -880,6 +901,7 @@ function TrayDock(props: {
 function ChartsPage(props: {
   page: AppPage;
   pageHistory: AppViewSnapshot[];
+  uptimeLabel: string;
   airports: (typeof chartPage)["airports"];
   selectedAirport: (typeof chartPage)["airports"][number] | null;
   selectedChart: ChartAsset | null;
@@ -891,7 +913,7 @@ function ChartsPage(props: {
   onSelectAirport: (airportId: string) => void;
   onSelectChart: (chartId: string) => void;
 }) {
-  const { page, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onSelectAirport, onSelectChart } = props;
+  const { page, pageHistory, uptimeLabel, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onSelectAirport, onSelectChart } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
   const [imageSize, setImageSize] = useState<{ chartId: string; width: number; height: number } | null>(null);
@@ -1317,7 +1339,8 @@ function ChartsPage(props: {
         <div className="debugDock">
           <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>
             <div className="debugLine">page {pageLabel(page)}</div>
-            <div className="debugLine">stack {formatPageStack(props.pageHistory, { page, selectedMapId: "", selectedChartId: selectedChart?.id ?? "", selectedChartLabel: selectedChart?.label ?? "", chartFolderOpen: folderOpen })}</div>
+            <div className="debugLine">up {uptimeLabel}</div>
+            <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: "", selectedChartId: selectedChart?.id ?? "", selectedChartLabel: selectedChart?.label ?? "", chartFolderOpen: folderOpen })}</div>
             <div className="debugLine">apt {selectedAirport?.label ?? "---"}</div>
             <div className="debugLine">chart {selectedChart?.label ?? "---"}</div>
             <div className="debugLine">{viewport ? `z${viewport.zoom.toFixed(2)}` : "viewport (none)"}</div>
@@ -1396,6 +1419,26 @@ function mergeRecentAirportIds(
     }
   }
   return orderedIds;
+}
+
+function useSessionUptimeLabel(sessionStartMs: number) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, []);
+  return formatUptimeMs(nowMs - sessionStartMs);
+}
+
+function formatUptimeMs(elapsedMs: number) {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 function orderAirportsByRecency(

@@ -5,19 +5,32 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 APP_DIR="$ROOT/ui/android-app"
 APP_ID="net.jonh.aerobag.prototype"
 ACTIVITY="$APP_ID/.MainActivity"
+TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
+DEFAULT_UI_TARGET_ROOT="$(python3 - <<'PY' "$ROOT" "$TARGET_ROOT_FILE"
+from pathlib import Path
+import sys
+repo_root = Path(sys.argv[1])
+target_root_file = Path(sys.argv[2])
+print((repo_root / target_root_file.read_text().strip()).resolve())
+PY
+)"
 GRADLE_USER_HOME="${GRADLE_USER_HOME:-$ROOT/.gradle-user-home}"
+ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/lib/android-sdk}"
+ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+AEROBAG_UI_TARGET_ROOT="${AEROBAG_UI_TARGET_ROOT:-$DEFAULT_UI_TARGET_ROOT}"
+PROJECT_CACHE_DIR="${PROJECT_CACHE_DIR:-$AEROBAG_UI_TARGET_ROOT/android/project-cache}"
 WAIT_SECONDS="${WAIT_SECONDS:-2}"
 
 echo "[1/6] installDebug"
 (
   cd "$APP_DIR"
-  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ./gradlew installDebug
+  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" ./gradlew --project-cache-dir "$PROJECT_CACHE_DIR" installDebug
 )
 
 echo "[2/6] seed chart payloads"
 (
   cd "$APP_DIR"
-  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ./gradlew seedPrototypeSectionalPackages seedPrototypeChartPackages
+  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" ./gradlew --project-cache-dir "$PROJECT_CACHE_DIR" seedPrototypeSectionalPackages seedPrototypeChartPackages
 )
 
 echo "[3/6] clear logcat"

@@ -17,14 +17,21 @@ val rustLinker = "$ndkRoot/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linu
 val rustToolchainBin = "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin"
 val cargoBinary = "$rustToolchainBin/cargo"
 val rustcBinary = "$rustToolchainBin/rustc"
+val targetRootFile = file("../../target-root.txt")
+val uiTargetRoot = File(
+    System.getenv("AEROBAG_UI_TARGET_ROOT")
+        ?: rootDir.parentFile.parentFile.resolve(targetRootFile.readText().trim()).absolutePath,
+)
+val rustTargetDir = uiTargetRoot.resolve("shared/rust-target")
 val rustProjectDir = file("../../core-rust")
+layout.buildDirectory.set(uiTargetRoot.resolve("android/build/app"))
 val rustJniLibsDir = layout.buildDirectory.dir("generated/rustJniLibs")
 val rustOutputAbiDir = layout.buildDirectory.dir("generated/rustJniLibs/x86_64")
-val generatedPrototypeAssetsDir = layout.buildDirectory.dir("generated/prototypeAssets")
+val generatedPrototypeAssetsDir = project.objects.directoryProperty().convention(layout.dir(project.provider { uiTargetRoot.resolve("android/assets") }))
 val generatedPrototypeSeedPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedPackages")
 val generatedPrototypeSeedChartPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedChartPackages")
 val uiFixtureGenerator = file("../../scripts/generate_content_fixture.py")
-val resourceIndexFile = file("../../shared-fixtures/content-prototype/resource-index.json")
+val resourceIndexFile = uiTargetRoot.resolve("shared/content-prototype/resource-index.json")
 val artifactRoot = File(
     System.getenv("AEROBAG_ARTIFACT_ROOT")
         ?: rootDir.parentFile.parentFile.resolveSibling("aerobag-artifacts").absolutePath,
@@ -71,13 +78,14 @@ val buildRustX86_64Android by tasks.registering(Exec::class) {
     environment("CARGO_HOME", "/root/.cargo")
     environment("RUSTUP_HOME", "/root/.rustup")
     environment("RUSTC", rustcBinary)
+    environment("CARGO_TARGET_DIR", rustTargetDir.absolutePath)
     environment("CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER", rustLinker)
     commandLine(cargoBinary, "build", "-p", "app-ffi", "--target", rustTarget)
 }
 
 val copyRustX86_64Library by tasks.registering(Copy::class) {
     dependsOn(buildRustX86_64Android)
-    from(File(rustProjectDir, "target/$rustTarget/debug/libapp_ffi.so"))
+    from(File(rustTargetDir, "$rustTarget/debug/libapp_ffi.so"))
     into(rustOutputAbiDir)
     rename { "libapp_ffi.so" }
 }
@@ -261,8 +269,8 @@ android {
     androidResources {
         noCompress += listOf("webp", "png", "db")
     }
-    sourceSets.getByName("main").jniLibs.srcDir(rustJniLibsDir)
-    sourceSets.getByName("main").assets.srcDir(generatedPrototypeAssetsDir)
+    sourceSets.getByName("main").jniLibs.setSrcDirs(listOf(rustJniLibsDir))
+    sourceSets.getByName("main").assets.setSrcDirs(listOf(generatedPrototypeAssetsDir))
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"

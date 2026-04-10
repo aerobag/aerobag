@@ -1,5 +1,5 @@
-import fixture from "./generated/contentFixture.json";
-import resourceIndexFixture from "./generated/resourceIndex.json";
+import fixture from "@generated/contentFixture.json";
+import resourceIndexFixture from "@generated/resourceIndex.json";
 import { deriveChartPage, deriveMapViews } from "./resourceIndexAdapters";
 import type { AppState, ContentFixtureBundle, ResourceIndexJson } from "./types";
 

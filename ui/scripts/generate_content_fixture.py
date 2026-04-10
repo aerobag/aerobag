@@ -13,29 +13,39 @@ from osgeo import osr
 
 
 ROOT = Path(__file__).resolve().parents[2]
+UI_TARGET_ROOT_FILE = ROOT / "ui" / "target-root.txt"
 ARTIFACT_ROOT = Path(os.environ.get("AEROBAG_ARTIFACT_ROOT", ROOT.parent / "aerobag-artifacts"))
+UI_TARGET_ROOT = Path(
+    os.environ.get(
+        "AEROBAG_UI_TARGET_ROOT",
+        (ROOT / UI_TARGET_ROOT_FILE.read_text().strip()).resolve(),
+    ),
+).expanduser()
 UI_DIR = ROOT / "ui"
 RESOURCE_INDEX = ARTIFACT_ROOT / "product-builds" / "production" / "work" / "resource-index" / "resource-index.json"
 UI_THEME = UI_DIR / "shared-fixtures" / "ui-theme.json"
-CANONICAL_OUT = UI_DIR / "shared-fixtures" / "content-prototype" / "content_fixture.json"
-CANONICAL_RESOURCE_INDEX_OUT = UI_DIR / "shared-fixtures" / "content-prototype" / "resource-index.json"
-CANONICAL_THEME_OUT = UI_DIR / "shared-fixtures" / "content-prototype" / "ui-theme.json"
-WEB_OUT = UI_DIR / "web-app" / "src" / "domain" / "generated" / "contentFixture.json"
-WEB_RESOURCE_INDEX_OUT = UI_DIR / "web-app" / "src" / "domain" / "generated" / "resourceIndex.json"
-WEB_THEME_OUT = UI_DIR / "web-app" / "src" / "domain" / "generated" / "uiTheme.json"
-ANDROID_OUT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "fixtures" / "contentFixture.json"
-ANDROID_RESOURCE_INDEX_OUT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "fixtures" / "resource-index.json"
-ANDROID_THEME_OUT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "fixtures" / "ui-theme.json"
-CANONICAL_TILE_ROOT = UI_DIR / "shared-fixtures" / "content-prototype" / "tiles"
-WEB_TILE_ROOT = UI_DIR / "web-app" / "public" / "prototype-tiles"
-ANDROID_TILE_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "tiles"
-WEB_SECTIONAL_ROOT = UI_DIR / "web-app" / "generated-static" / "sectional-packages"
-WEB_CHART_ASSET_ROOT = UI_DIR / "web-app" / "generated-static" / "chart-assets"
-WEB_CHART_ASSET_MANIFEST = UI_DIR / "web-app" / "generated-static" / "chart-assets-manifest.json"
-ANDROID_CHART_ASSET_ROOT = UI_DIR / "android-app" / "generated-seed" / "chart-assets"
-ANDROID_LEGACY_CHART_ASSET_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "chart-assets"
-WEB_NAV_DB_ROOT = UI_DIR / "web-app" / "generated-static" / "nav-db"
-ANDROID_NAV_DB_ROOT = UI_DIR / "android-app" / "app" / "src" / "main" / "assets" / "nav-db"
+SHARED_TARGET_ROOT = UI_TARGET_ROOT / "shared" / "content-prototype"
+WEB_TARGET_ROOT = UI_TARGET_ROOT / "web"
+ANDROID_TARGET_ROOT = UI_TARGET_ROOT / "android"
+CANONICAL_OUT = SHARED_TARGET_ROOT / "content_fixture.json"
+CANONICAL_RESOURCE_INDEX_OUT = SHARED_TARGET_ROOT / "resource-index.json"
+CANONICAL_THEME_OUT = SHARED_TARGET_ROOT / "ui-theme.json"
+WEB_OUT = WEB_TARGET_ROOT / "generated" / "contentFixture.json"
+WEB_RESOURCE_INDEX_OUT = WEB_TARGET_ROOT / "generated" / "resourceIndex.json"
+WEB_THEME_OUT = WEB_TARGET_ROOT / "generated" / "uiTheme.json"
+ANDROID_OUT = ANDROID_TARGET_ROOT / "assets" / "fixtures" / "contentFixture.json"
+ANDROID_RESOURCE_INDEX_OUT = ANDROID_TARGET_ROOT / "assets" / "fixtures" / "resource-index.json"
+ANDROID_THEME_OUT = ANDROID_TARGET_ROOT / "assets" / "fixtures" / "ui-theme.json"
+CANONICAL_TILE_ROOT = SHARED_TARGET_ROOT / "tiles"
+WEB_TILE_ROOT = WEB_TARGET_ROOT / "prototype-tiles"
+ANDROID_TILE_ROOT = ANDROID_TARGET_ROOT / "assets" / "tiles"
+WEB_SECTIONAL_ROOT = WEB_TARGET_ROOT / "generated-static" / "sectional-packages"
+WEB_CHART_ASSET_ROOT = WEB_TARGET_ROOT / "generated-static" / "chart-assets"
+WEB_CHART_ASSET_MANIFEST = WEB_TARGET_ROOT / "generated-static" / "chart-assets-manifest.json"
+ANDROID_CHART_ASSET_ROOT = ANDROID_TARGET_ROOT / "generated-seed" / "chart-assets"
+ANDROID_LEGACY_CHART_ASSET_ROOT = ANDROID_TARGET_ROOT / "assets" / "chart-assets"
+WEB_NAV_DB_ROOT = WEB_TARGET_ROOT / "generated-static" / "nav-db"
+ANDROID_NAV_DB_ROOT = ANDROID_TARGET_ROOT / "assets" / "nav-db"
 PRODUCT_MAIN_DB = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "data" / "output" / "main.db"
 BOSTON_TAC_GEOJSON = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "charts-tac" / "work" / "charts-tac" / "TAC" / "Boston TAC.geojson"
 BOSTON_TAC_TILE_ROOT = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "charts-tac" / "work" / "charts-tac" / "tiles" / "1"
@@ -389,14 +399,10 @@ def clear_sectional_web_root() -> None:
 def clear_directory(root: Path) -> None:
     if not root.exists():
         return
-    for child in sorted(root.iterdir(), reverse=True):
-        if child.is_dir() and not child.is_symlink():
-            shutil.rmtree(child, ignore_errors=True)
-            if child.exists():
-                clear_directory(child)
-                os.rmdir(child)
-        else:
-            child.unlink(missing_ok=True)
+    if root.is_dir() and not root.is_symlink():
+        shutil.rmtree(root, ignore_errors=True)
+        return
+    root.unlink(missing_ok=True)
 
 
 def extract_zip_for_web(package: TiledPackage) -> None:

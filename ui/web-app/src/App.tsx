@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { chartPage, mapViews, samplePlan } from "./domain/sampleData";
-import uiTheme from "./domain/generated/uiTheme.json";
+import uiTheme from "@generated/uiTheme.json";
 import {
   applyPinchGesture,
   createInitialViewport,
@@ -41,6 +41,21 @@ type TrayOption = {
   onSelect: () => void;
 };
 
+type UiThemeJson = {
+  controls: {
+    button_bg: string;
+    button_fg: string;
+    panel_bg: string;
+    panel_border: string;
+    panel_fg: string;
+    panel_muted: string;
+  };
+  plate_folder: {
+    thumbnail_bg: string;
+    label_colors: Record<string, string>;
+  };
+};
+
 type TrayDockStyle = "compact" | "plate_narrow" | "plate_wide";
 type PlateFolderCategory = ChartAsset["folder_category"];
 
@@ -60,8 +75,9 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> 
 const waypointActions = ["Remove", "Insert", "Reorder", "Waypoint Info", "Add Airway", "Select Procedure", "Charts"];
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
 const maxViewHistoryDepth = 64;
-const controlTheme = uiTheme.controls;
-const plateFolderTheme = uiTheme.plate_folder;
+const loadedUiTheme = uiTheme as UiThemeJson;
+const controlTheme = loadedUiTheme.controls;
+const plateFolderTheme = loadedUiTheme.plate_folder;
 const plateFolderCategoryOrder: PlateFolderCategory[] = ["airport-diagram", "csup", "takeoff-mins", "approach", "departure", "star"];
 
 type PersistedWebUiState = {

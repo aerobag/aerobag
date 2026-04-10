@@ -4,11 +4,14 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "prepare:fixture": "python3 ../scripts/generate_content_fixture.py",
+    "prepare:fixture": "./scripts/prepare-fixture.sh",
     "build:wasm": "./scripts/build-wasm.sh",
-    "dev": "npm run prepare:fixture && npm run build:wasm && vite",
-    "build": "npm run prepare:fixture && npm run build:wasm && tsc --noEmit && vite build",
-    "test": "vitest run"
+    "inner:dev": "npm run prepare:fixture && npm run build:wasm && vite",
+    "inner:build": "npm run prepare:fixture && npm run build:wasm && tsc --noEmit && vite build",
+    "inner:test": "vitest run",
+    "dev": "./scripts/run-target-workspace.sh inner:dev",
+    "build": "./scripts/run-target-workspace.sh inner:build",
+    "test": "./scripts/run-target-workspace.sh inner:test"
   },
   "dependencies": {
     "react": "^18.3.1",

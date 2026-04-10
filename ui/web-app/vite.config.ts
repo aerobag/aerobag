@@ -3,9 +3,19 @@ import path from "node:path";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 
-const sectionalRoot = path.resolve(__dirname, "generated-static", "sectional-packages");
-const chartAssetRoot = path.resolve(__dirname, "generated-static", "chart-assets");
-const chartAssetManifestPath = path.resolve(__dirname, "generated-static", "chart-assets-manifest.json");
+const repoRoot = process.env.AEROBAG_REPO_ROOT
+  ? path.resolve(process.env.AEROBAG_REPO_ROOT)
+  : path.resolve(__dirname, "../..");
+const targetRootFile = path.join(repoRoot, "ui", "target-root.txt");
+const configuredTargetRoot = fs.readFileSync(targetRootFile, "utf8").trim();
+const uiTargetRoot = process.env.AEROBAG_UI_TARGET_ROOT
+  ? path.resolve(process.env.AEROBAG_UI_TARGET_ROOT)
+  : path.resolve(repoRoot, configuredTargetRoot);
+const webTargetRoot = path.join(uiTargetRoot, "web");
+const generatedRoot = path.join(webTargetRoot, "generated");
+const sectionalRoot = path.join(webTargetRoot, "generated-static", "sectional-packages");
+const chartAssetRoot = path.join(webTargetRoot, "generated-static", "chart-assets");
+const chartAssetManifestPath = path.join(webTargetRoot, "generated-static", "chart-assets-manifest.json");
 
 function lookupChartAsset(requestPath: string) {
   if (!fs.existsSync(chartAssetManifestPath)) {
@@ -85,9 +95,18 @@ function aerobagStaticPlugin(): Plugin {
 
 export default defineConfig({
   plugins: [react(), aerobagStaticPlugin()],
+  resolve: {
+    alias: {
+      "@generated": generatedRoot,
+    },
+  },
   server: {
     port: 4173,
     host: "0.0.0.0",
     allowedHosts: ["aerobag-dev.iac.jonh.net"],
+  },
+  build: {
+    outDir: path.join(webTargetRoot, "dist"),
+    emptyOutDir: true,
   },
 });

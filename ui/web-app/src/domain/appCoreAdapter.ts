@@ -240,10 +240,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
 }
 
 export async function loadBestAvailableAdapter(
-  importer: (path: string) => Promise<unknown> = (path) => import(/* @vite-ignore */ path),
+  importer: () => Promise<unknown> = () => import("@generated/app_wasm.js"),
 ): Promise<LoadedAdapter> {
   try {
-    const mod = (await importer("../generated/app_wasm.js")) as Partial<WasmModule>;
+    const mod = (await importer()) as Partial<WasmModule>;
     if (typeof mod.default === "function") {
       await mod.default();
     }

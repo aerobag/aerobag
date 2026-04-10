@@ -26,6 +26,23 @@ cd "$SAVED" >/dev/null
 
 APP_NAME="Gradle"
 APP_BASE_NAME=`basename "$0"`
+TARGET_ROOT_FILE="$APP_HOME/../target-root.txt"
+if [ -n "$AEROBAG_UI_TARGET_ROOT" ] ; then
+    UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT"
+elif [ -f "$TARGET_ROOT_FILE" ] ; then
+    UI_TARGET_ROOT=`cd "$APP_HOME/../../$(cat "$TARGET_ROOT_FILE")" >/dev/null 2>&1 && pwd -P`
+else
+    UI_TARGET_ROOT=`cd "$APP_HOME/../../ui-target" >/dev/null 2>&1 && pwd -P`
+fi
+ANDROID_HOME="${ANDROID_HOME:-/usr/lib/android-sdk}"
+ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+GRADLE_PROJECT_CACHE_DIR="${GRADLE_PROJECT_CACHE_DIR:-$UI_TARGET_ROOT/android/project-cache}"
+GRADLE_OPTS="-Dkotlin.project.persistent.dir=$UI_TARGET_ROOT/android/kotlin ${GRADLE_OPTS:-}"
+KOTLIN_PROJECT_PERSISTENT_DIR="${KOTLIN_PROJECT_PERSISTENT_DIR:-$UI_TARGET_ROOT/android/kotlin}"
+export ANDROID_HOME
+export ANDROID_SDK_ROOT
+export GRADLE_OPTS
+export KOTLIN_PROJECT_PERSISTENT_DIR
 
 # Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 DEFAULT_JVM_OPTS=""
@@ -159,6 +176,9 @@ save () {
     for i do printf %s\\n "$i" | sed "s/'/'\\\\''/g;1s/^/'/;\$s/\$/' \\\\/" ; done
     echo " "
 }
+if [ "${1:-}" != "--project-cache-dir" ]; then
+  set -- --project-cache-dir "$GRADLE_PROJECT_CACHE_DIR" -Pkotlin.project.persistent.dir="$KOTLIN_PROJECT_PERSISTENT_DIR" "$@"
+fi
 APP_ARGS=$(save "$@")
 
 # Collect all arguments for the java command, following the shell quoting and substitution rules

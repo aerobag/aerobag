@@ -14,10 +14,10 @@ target_root_file = Path(sys.argv[2])
 print((repo_root / target_root_file.read_text().strip()).resolve())
 PY
 )"
-GRADLE_USER_HOME="${GRADLE_USER_HOME:-$ROOT/.gradle-user-home}"
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/lib/android-sdk}"
 ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
 AEROBAG_UI_TARGET_ROOT="${AEROBAG_UI_TARGET_ROOT:-$DEFAULT_UI_TARGET_ROOT}"
+GRADLE_USER_HOME="${GRADLE_USER_HOME:-$AEROBAG_UI_TARGET_ROOT/android/gradle-user-home}"
 PROJECT_CACHE_DIR="${PROJECT_CACHE_DIR:-$AEROBAG_UI_TARGET_ROOT/android/project-cache}"
 WAIT_SECONDS="${WAIT_SECONDS:-2}"
 

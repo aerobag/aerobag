@@ -120,6 +120,29 @@ def load_resource_index() -> dict:
 def resolve_package_artifact_path(path_value: str) -> Path:
     path = Path(path_value)
     if path.is_absolute():
+        if path.is_file():
+            return path
+        marker = f"{os.sep}product-builds{os.sep}"
+        raw = str(path).replace("\\", os.sep)
+        marker_index = raw.find(marker)
+        if marker_index >= 0:
+            relative = raw[marker_index + len(marker):]
+            rebased = ARTIFACT_ROOT / "product-builds" / relative
+            candidates = [rebased]
+            normalized = relative.replace("\\", "/")
+            if normalized.startswith("shared/"):
+                suffix = normalized.removeprefix("shared/")
+                candidates.append(ARTIFACT_ROOT / "product-builds" / "validation" / suffix)
+                candidates.append(ARTIFACT_ROOT / "product-builds" / "production" / suffix)
+            elif normalized.startswith("validation/"):
+                suffix = normalized.removeprefix("validation/")
+                candidates.append(ARTIFACT_ROOT / "product-builds" / "shared" / suffix)
+            elif normalized.startswith("production/"):
+                suffix = normalized.removeprefix("production/")
+                candidates.append(ARTIFACT_ROOT / "product-builds" / "shared" / suffix)
+            for candidate in candidates:
+                if candidate.is_file():
+                    return candidate
         return path
     return ARTIFACT_ROOT / "product-builds" / path
 

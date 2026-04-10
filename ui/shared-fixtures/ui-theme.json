@@ -5,7 +5,8 @@
     "panel_bg": "#fefcf7",
     "panel_border": "#d7d1c5",
     "panel_fg": "#132129",
-    "panel_muted": "#52656d"
+    "panel_muted": "#52656d",
+    "chart_surface_bg": "#8c9dad"
   },
   "plate_folder": {
     "thumbnail_bg": "#303030",

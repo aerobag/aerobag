@@ -32,8 +32,10 @@ pub struct DerivedChartAsset {
     pub label: String,
     pub kind: String,
     pub folder_category: String,
+    pub source_asset_path: String,
     pub asset_path: String,
     pub asset_url: String,
+    pub thumbnail_source_path: Option<String>,
     pub thumbnail_path: Option<String>,
     pub thumbnail_url: Option<String>,
 }
@@ -268,8 +270,10 @@ fn chart_asset_for_plate(airport_id: &str, plate: &ResourcePlate) -> DerivedChar
         label: plate.label.clone(),
         kind: "plate".to_string(),
         folder_category: folder_category("plate", &plate.label),
+        source_asset_path: plate.asset_path.clone(),
         asset_path: format!("chart-assets/{airport_id}/{filename}"),
         asset_url: format!("/chart-assets/{airport_id}/{filename}"),
+        thumbnail_source_path: plate.thumbnail_path.clone(),
         thumbnail_path: thumbnail_filename
             .clone()
             .map(|name| format!("chart-thumbnails/{airport_id}/{name}")),
@@ -291,8 +295,10 @@ fn chart_asset_for_csup(airport_id: &str, csup: &ResourceCsup) -> DerivedChartAs
         label: "CSup".to_string(),
         kind: "csup".to_string(),
         folder_category: "csup".to_string(),
+        source_asset_path: csup.asset_path.clone(),
         asset_path: format!("chart-assets/{airport_id}/{filename}"),
         asset_url: format!("/chart-assets/{airport_id}/{filename}"),
+        thumbnail_source_path: csup.thumbnail_path.clone(),
         thumbnail_path: thumbnail_filename
             .clone()
             .map(|name| format!("chart-thumbnails/{airport_id}/{name}")),

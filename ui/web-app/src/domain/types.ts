@@ -213,8 +213,10 @@ export type ChartPageData = {
       label: string;
       kind: string;
       folder_category: string;
+      source_asset_path: string;
       asset_path: string;
       asset_url: string;
+      thumbnail_source_path: string | null;
       thumbnail_path: string | null;
       thumbnail_url: string | null;
     }>;

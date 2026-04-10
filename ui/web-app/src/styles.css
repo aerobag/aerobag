@@ -89,9 +89,9 @@ button {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at center, rgba(255, 255, 255, 0.38), transparent 40%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(11, 78, 95, 0.08)),
-    #dce4e4;
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.18), transparent 40%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(11, 78, 95, 0.04)),
+    var(--theme-chart-surface-bg);
 }
 
 .trayScrim {
@@ -108,7 +108,7 @@ button {
   display: block;
   pointer-events: none;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-  background: rgba(255, 120, 80, 0.08);
+  background: var(--theme-chart-surface-bg);
   overflow: hidden;
 }
 
@@ -406,9 +406,7 @@ button {
 
 .planPage {
   padding: calc(var(--thumb) * 1.25) var(--thumb-gap) calc(var(--thumb) * 0.9);
-  background:
-    radial-gradient(circle at top left, rgba(13, 111, 103, 0.12), transparent 26%),
-    linear-gradient(180deg, #f7f2e9 0%, #ece7db 100%);
+  background: var(--theme-chart-surface-bg);
 }
 
 .planTable {
@@ -498,6 +496,10 @@ button {
   user-select: none;
   pointer-events: none;
   box-shadow: 0 14px 46px rgba(19, 33, 41, 0.22);
+}
+
+.chartSurface {
+  background: var(--theme-chart-surface-bg);
 }
 
 .plateFolderGrid {

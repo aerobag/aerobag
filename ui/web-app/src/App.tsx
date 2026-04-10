@@ -58,6 +58,7 @@ type UiThemeJson = {
     panel_border: string;
     panel_fg: string;
     panel_muted: string;
+    chart_surface_bg: string;
   };
   plate_folder: {
     thumbnail_bg: string;
@@ -379,6 +380,7 @@ export default function App() {
         "--theme-panel-border": controlTheme.panel_border,
         "--theme-panel-fg": controlTheme.panel_fg,
         "--theme-panel-muted": controlTheme.panel_muted,
+        "--theme-chart-surface-bg": controlTheme.chart_surface_bg,
       }) as CSSProperties,
     [],
   );
@@ -687,7 +689,7 @@ function MapPage(props: {
     <section className="pageSurface">
       <div
         ref={containerRef}
-        className="mapSurface"
+        className="mapSurface chartSurface"
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerRelease}
@@ -1259,7 +1261,7 @@ function ChartsPage(props: {
     <section className="pageSurface">
       <div
         ref={containerRef}
-        className="mapSurface"
+        className="mapSurface chartSurface"
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerRelease}

@@ -353,8 +353,10 @@ private data class WireDerivedChartAsset(
     val label: String,
     val kind: String,
     val folder_category: String,
+    val source_asset_path: String,
     val asset_path: String,
     val asset_url: String,
+    val thumbnail_source_path: String? = null,
     val thumbnail_path: String? = null,
     val thumbnail_url: String? = null,
 )
@@ -414,10 +416,10 @@ private fun WireDerivedChartAsset.toUi() = ChartAsset(
     label = label,
     kind = kind,
     folderCategory = folder_category,
-    sourceAssetPath = asset_path,
+    sourceAssetPath = source_asset_path,
     assetPath = asset_path,
     assetUrl = asset_url,
-    thumbnailSourceAssetPath = thumbnail_path,
+    thumbnailSourceAssetPath = thumbnail_source_path,
     thumbnailAssetPath = thumbnail_path,
     thumbnailUrl = thumbnail_url,
 )

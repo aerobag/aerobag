@@ -167,8 +167,10 @@ function chartAssetForRecord(
     label: kind === "csup" ? "CSup" : record.label,
     kind,
     folder_category: folderCategoryForRecord(kind, record),
+    source_asset_path: record.asset_path,
     asset_path: `chart-assets/${airportId}/${filename}`,
     asset_url: `/chart-assets/${airportId}/${filename}`,
+    thumbnail_source_path: record.thumbnail_path ?? null,
     thumbnail_path: record.thumbnail_path ? `chart-thumbnails/${airportId}/${record.thumbnail_path.split("/").pop() ?? filename}` : null,
     thumbnail_url: record.thumbnail_path ? `/chart-thumbnails/${airportId}/${record.thumbnail_path.split("/").pop() ?? filename}` : null,
   };

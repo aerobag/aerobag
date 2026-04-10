@@ -481,6 +481,7 @@ private fun AerobagApp() {
                     pageHistory = pageHistory,
                     uptimeLabel = uptimeLabel,
                     fixture = fixture,
+                    uiTheme = uiTheme,
                     selectedMapId = selectedMapId,
                     viewport = mapViewport,
                     onViewportChange = { mapViewport = it },
@@ -505,6 +506,7 @@ private fun AerobagApp() {
                     uptimeLabel = uptimeLabel,
                     legSummary = legSummary,
                     samplePlan = currentPlan,
+                    uiTheme = uiTheme,
                     onSelectPage = ::navigateToPage,
                     onOpenCharts = { navigateToPage(AppPage.Charts) },
                     onRemoveWaypoint = { index ->
@@ -581,6 +583,7 @@ private fun MapExplorerPage(
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
     fixture: net.jonh.aerobag.prototype.domain.ContentFixture,
+    uiTheme: UiTheme,
     selectedMapId: String,
     viewport: MapViewportState,
     onViewportChange: (MapViewportState) -> Unit,
@@ -770,11 +773,7 @@ private fun MapExplorerPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                brush = Brush.verticalGradient(
-                    colors = listOf(Color(0xFFF6F1E7), Color(0xFFDCE4E4)),
-                ),
-            )
+            .background(uiTheme.controls.chartSurfaceBg)
             .onSizeChanged { surfaceSize = it }
             .focusRequester(focusRequester)
             .onPreviewKeyEvent { keyEvent ->
@@ -938,7 +937,7 @@ private fun MapExplorerPage(
                     )
                 } else {
                     drawRect(
-                        color = Color(0x12000000),
+                        color = uiTheme.controls.chartSurfaceBg,
                         topLeft = Offset(tileRect.leftPx.toFloat(), tileRect.topPx.toFloat()),
                         size = Size(tileRect.widthPx.toFloat(), tileRect.heightPx.toFloat()),
                     )
@@ -1041,6 +1040,7 @@ private fun FlightPlanPage(
     uptimeLabel: String,
     legSummary: String,
     samplePlan: net.jonh.aerobag.prototype.domain.FlightPlan,
+    uiTheme: UiTheme,
     onSelectPage: (AppPage) -> Unit,
     onOpenCharts: () -> Unit,
     onRemoveWaypoint: (Int) -> Unit,
@@ -1062,11 +1062,7 @@ private fun FlightPlanPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                brush = Brush.verticalGradient(
-                    colors = listOf(Color(0xFFF7F2E9), Color(0xFFECE7DB)),
-                ),
-            ),
+            .background(uiTheme.controls.chartSurfaceBg),
     ) {
         if (pageTrayOpen) {
             Scrim { pageTrayOpen = false }
@@ -1273,11 +1269,7 @@ private fun ChartsPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                brush = Brush.verticalGradient(
-                    colors = listOf(Color(0xFFF6F1E7), Color(0xFFDCE4E4)),
-                ),
-            )
+            .background(uiTheme.controls.chartSurfaceBg)
             .onSizeChanged { surfaceSize = it }
             .focusRequester(focusRequester)
             .focusable()

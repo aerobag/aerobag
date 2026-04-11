@@ -306,7 +306,7 @@ pub fn derive_chart_page_state(
 #[wasm_bindgen]
 pub fn create_ui_session(
     catalog_json: &str,
-    resource_index_json: &str,
+    chart_catalog_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
@@ -314,7 +314,7 @@ pub fn create_ui_session(
 ) -> Result<String, JsValue> {
     create_ui_session_json(
         catalog_json,
-        resource_index_json,
+        chart_catalog_json,
         plan_json,
         recent_airport_ids_json,
         selected_airport_id_json,
@@ -324,13 +324,13 @@ pub fn create_ui_session(
 }
 
 #[wasm_bindgen]
-pub fn remove_leg_in_session(handle: u64, index: usize) -> Result<String, JsValue> {
+pub fn remove_leg_in_session(handle: u32, index: usize) -> Result<String, JsValue> {
     remove_leg_in_session_json(handle, index).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
 pub fn move_waypoint_in_session(
-    handle: u64,
+    handle: u32,
     waypoint_index: usize,
     delta: isize,
 ) -> Result<String, JsValue> {
@@ -339,33 +339,33 @@ pub fn move_waypoint_in_session(
 }
 
 #[wasm_bindgen]
-pub fn select_airport_in_session(handle: u64, airport_id_json: &str) -> Result<String, JsValue> {
+pub fn select_airport_in_session(handle: u32, airport_id_json: &str) -> Result<String, JsValue> {
     select_airport_in_session_json(handle, airport_id_json).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
-pub fn set_situation_in_session(handle: u64, situation_json: &str) -> Result<String, JsValue> {
+pub fn set_situation_in_session(handle: u32, situation_json: &str) -> Result<String, JsValue> {
     set_situation_in_session_json(handle, situation_json).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
-pub fn select_chart_in_session(handle: u64, chart_id_json: &str) -> Result<String, JsValue> {
+pub fn select_chart_in_session(handle: u32, chart_id_json: &str) -> Result<String, JsValue> {
     select_chart_in_session_json(handle, chart_id_json).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
-pub fn get_session_snapshot(handle: u64) -> Result<String, JsValue> {
+pub fn get_session_snapshot(handle: u32) -> Result<String, JsValue> {
     get_session_snapshot_json(handle).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
-pub fn ingest_fix_tiles_in_session(handle: u64, tiles_json: &str) -> Result<(), JsValue> {
+pub fn ingest_fix_tiles_in_session(handle: u32, tiles_json: &str) -> Result<(), JsValue> {
     ingest_fix_tiles_in_session_json(handle, tiles_json).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
 pub fn get_map_overlay_in_session(
-    handle: u64,
+    handle: u32,
     viewport_json: &str,
     width_px: f64,
     height_px: f64,
@@ -376,7 +376,7 @@ pub fn get_map_overlay_in_session(
 
 #[wasm_bindgen]
 pub fn restore_chart_page_state_in_session(
-    handle: u64,
+    handle: u32,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
@@ -391,7 +391,7 @@ pub fn restore_chart_page_state_in_session(
 }
 
 #[wasm_bindgen]
-pub fn destroy_session(handle: u64) {
+pub fn destroy_session(handle: u32) {
     destroy_session_json(handle)
 }
 
@@ -856,7 +856,7 @@ fn derive_chart_page_state_json(
 
 fn create_ui_session_json(
     catalog_json: &str,
-    resource_index_json: &str,
+    chart_catalog_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
@@ -872,7 +872,7 @@ fn create_ui_session_json(
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
     let result = app_core::create_ui_session(
         catalog_json,
-        resource_index_json,
+        chart_catalog_json,
         plan,
         &recent_airport_ids,
         selected_airport_id.as_deref(),
@@ -882,13 +882,13 @@ fn create_ui_session_json(
     serde_json::to_string(&result).map_err(|err| err.to_string())
 }
 
-fn remove_leg_in_session_json(handle: u64, index: usize) -> Result<String, String> {
+fn remove_leg_in_session_json(handle: u32, index: usize) -> Result<String, String> {
     let snapshot = app_core::remove_leg_in_session(handle, index).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 fn move_waypoint_in_session_json(
-    handle: u64,
+    handle: u32,
     waypoint_index: usize,
     delta: isize,
 ) -> Result<String, String> {
@@ -897,14 +897,14 @@ fn move_waypoint_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn select_airport_in_session_json(handle: u64, airport_id_json: &str) -> Result<String, String> {
+fn select_airport_in_session_json(handle: u32, airport_id_json: &str) -> Result<String, String> {
     let airport_id: String = serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
     let snapshot =
         app_core::select_airport_in_session(handle, &airport_id).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn set_situation_in_session_json(handle: u64, situation_json: &str) -> Result<String, String> {
+fn set_situation_in_session_json(handle: u32, situation_json: &str) -> Result<String, String> {
     let situation: app_core::Situation =
         serde_json::from_str(situation_json).map_err(|err| err.to_string())?;
     let snapshot =
@@ -912,26 +912,26 @@ fn set_situation_in_session_json(handle: u64, situation_json: &str) -> Result<St
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn select_chart_in_session_json(handle: u64, chart_id_json: &str) -> Result<String, String> {
+fn select_chart_in_session_json(handle: u32, chart_id_json: &str) -> Result<String, String> {
     let chart_id: String = serde_json::from_str(chart_id_json).map_err(|err| err.to_string())?;
     let snapshot =
         app_core::select_chart_in_session(handle, &chart_id).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn get_session_snapshot_json(handle: u64) -> Result<String, String> {
+fn get_session_snapshot_json(handle: u32) -> Result<String, String> {
     let snapshot = app_core::get_session_snapshot(handle).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn ingest_fix_tiles_in_session_json(handle: u64, tiles_json: &str) -> Result<(), String> {
+fn ingest_fix_tiles_in_session_json(handle: u32, tiles_json: &str) -> Result<(), String> {
     let tiles: Vec<app_core::PointTilePayload> =
         serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
     app_core::ingest_fix_tiles_in_session(handle, &tiles).map_err(|err| err.to_string())
 }
 
 fn get_map_overlay_in_session_json(
-    handle: u64,
+    handle: u32,
     viewport_json: &str,
     width_px: f64,
     height_px: f64,
@@ -944,7 +944,7 @@ fn get_map_overlay_in_session_json(
 }
 
 fn restore_chart_page_state_in_session_json(
-    handle: u64,
+    handle: u32,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
@@ -965,7 +965,7 @@ fn restore_chart_page_state_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn destroy_session_json(handle: u64) {
+fn destroy_session_json(handle: u32) {
     app_core::destroy_session(handle);
 }
 

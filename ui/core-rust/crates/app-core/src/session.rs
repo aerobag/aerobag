@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU32, Ordering},
         Mutex, OnceLock,
     },
 };
@@ -9,8 +9,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    build_chart_catalog, derive_chart_page_state_from_catalog, load_catalog,
-    load_resource_index_chart_page_input, move_flight_plan_waypoint, remove_flight_plan_leg,
+    derive_chart_page_state_from_catalog, load_catalog, move_flight_plan_waypoint, remove_flight_plan_leg,
     query_map_overlay, state, AppError, AppErrorKind, AppEvent, AppResult, AppState,
     CatalogHandle, DerivedChartCatalog, DerivedChartPageState, FlightPlan, MapOverlayQueryResult,
     MapViewport, PointTilePayload,
@@ -32,7 +31,7 @@ pub struct UiSessionSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionInitResult {
-    pub handle: u64,
+    pub handle: u32,
     pub chart_catalog: DerivedChartCatalog,
     pub snapshot: UiSessionSnapshot,
 }
@@ -45,24 +44,27 @@ struct UiSession {
     fix_tile_cache: HashMap<String, PointTilePayload>,
 }
 
-static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
-static SESSIONS: OnceLock<Mutex<HashMap<u64, UiSession>>> = OnceLock::new();
+static NEXT_HANDLE: AtomicU32 = AtomicU32::new(1);
+static SESSIONS: OnceLock<Mutex<HashMap<u32, UiSession>>> = OnceLock::new();
 
-fn sessions() -> &'static Mutex<HashMap<u64, UiSession>> {
+fn sessions() -> &'static Mutex<HashMap<u32, UiSession>> {
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn create_ui_session(
     catalog_json: &str,
-    resource_index_json: &str,
+    chart_catalog_json: &str,
     plan: FlightPlan,
     recent_airport_ids: &[String],
     selected_airport_id: Option<&str>,
     selected_chart_id: Option<&str>,
 ) -> AppResult<UiSessionInitResult> {
     let catalog = load_catalog(catalog_json)?;
-    let resource_index = load_resource_index_chart_page_input(resource_index_json)?;
-    let chart_catalog = build_chart_catalog(&resource_index);
+    let chart_catalog: DerivedChartCatalog =
+        serde_json::from_str(chart_catalog_json).map_err(|err| AppError {
+            kind: AppErrorKind::InvalidCatalog,
+            message: format!("failed to parse chart catalog json: {err}"),
+        })?;
     let app_state = state::reduce(&AppState::default(), AppEvent::ReplaceFlightPlan(plan.clone()), &catalog)?;
     let chart_page_state = derive_chart_page_state_from_catalog(
         &chart_catalog,
@@ -90,7 +92,7 @@ pub fn create_ui_session(
     })
 }
 
-pub fn remove_leg_in_session(handle: u64, index: usize) -> AppResult<UiSessionSnapshot> {
+pub fn remove_leg_in_session(handle: u32, index: usize) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
@@ -111,7 +113,7 @@ pub fn remove_leg_in_session(handle: u64, index: usize) -> AppResult<UiSessionSn
 }
 
 pub fn move_waypoint_in_session(
-    handle: u64,
+    handle: u32,
     waypoint_index: usize,
     delta: isize,
 ) -> AppResult<UiSessionSnapshot> {
@@ -134,7 +136,7 @@ pub fn move_waypoint_in_session(
     Ok(snapshot_for_session(session))
 }
 
-pub fn select_airport_in_session(handle: u64, airport_id: &str) -> AppResult<UiSessionSnapshot> {
+pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
@@ -157,7 +159,7 @@ pub fn select_airport_in_session(handle: u64, airport_id: &str) -> AppResult<UiS
     Ok(snapshot_for_session(session))
 }
 
-pub fn select_chart_in_session(handle: u64, chart_id: &str) -> AppResult<UiSessionSnapshot> {
+pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
@@ -172,7 +174,7 @@ pub fn select_chart_in_session(handle: u64, chart_id: &str) -> AppResult<UiSessi
 }
 
 pub fn set_situation_in_session(
-    handle: u64,
+    handle: u32,
     situation: crate::Situation,
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
@@ -186,7 +188,7 @@ pub fn set_situation_in_session(
 }
 
 pub fn restore_chart_page_state_in_session(
-    handle: u64,
+    handle: u32,
     recent_airport_ids: &[String],
     selected_airport_id: Option<&str>,
     selected_chart_id: Option<&str>,
@@ -204,13 +206,13 @@ pub fn restore_chart_page_state_in_session(
     Ok(snapshot_for_session(session))
 }
 
-pub fn get_session_snapshot(handle: u64) -> AppResult<UiSessionSnapshot> {
+pub fn get_session_snapshot(handle: u32) -> AppResult<UiSessionSnapshot> {
     let sessions = sessions().lock().expect("session store poisoned");
     let session = session_ref(&sessions, handle)?;
     Ok(snapshot_for_session(session))
 }
 
-pub fn ingest_fix_tiles_in_session(handle: u64, tiles: &[PointTilePayload]) -> AppResult<()> {
+pub fn ingest_fix_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) -> AppResult<()> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     for tile in tiles {
@@ -222,7 +224,7 @@ pub fn ingest_fix_tiles_in_session(handle: u64, tiles: &[PointTilePayload]) -> A
 }
 
 pub fn get_map_overlay_in_session(
-    handle: u64,
+    handle: u32,
     viewport: MapViewport,
     width_px: f64,
     height_px: f64,
@@ -237,13 +239,13 @@ pub fn get_map_overlay_in_session(
     ))
 }
 
-pub fn destroy_session(handle: u64) {
+pub fn destroy_session(handle: u32) {
     let _ = sessions().lock().expect("session store poisoned").remove(&handle);
 }
 
 fn session_ref(
-    sessions: &HashMap<u64, UiSession>,
-    handle: u64,
+    sessions: &HashMap<u32, UiSession>,
+    handle: u32,
 ) -> AppResult<&UiSession> {
     sessions.get(&handle).ok_or_else(|| AppError {
         kind: AppErrorKind::Internal,
@@ -252,8 +254,8 @@ fn session_ref(
 }
 
 fn session_mut(
-    sessions: &mut HashMap<u64, UiSession>,
-    handle: u64,
+    sessions: &mut HashMap<u32, UiSession>,
+    handle: u32,
 ) -> AppResult<&mut UiSession> {
     sessions.get_mut(&handle).ok_or_else(|| AppError {
         kind: AppErrorKind::Internal,

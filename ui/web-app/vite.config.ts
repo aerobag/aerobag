@@ -20,6 +20,7 @@ const chartAssetRoot = path.join(webTargetRoot, "generated-static", "chart-asset
 const navDbRoot = path.join(webTargetRoot, "generated-static", "nav-db");
 const chartAssetManifestPath = path.join(webTargetRoot, "generated-static", "chart-assets-manifest.json");
 const vectorRoot = path.join(webTargetRoot, "generated-static", "vectors");
+const debugLogPath = path.join("/tmp", "aerobag-web-debug.log");
 
 function lookupChartAsset(requestPath: string) {
   if (!fs.existsSync(chartAssetManifestPath)) {
@@ -71,6 +72,30 @@ function aerobagStaticPlugin(): Plugin {
   return {
     name: "aerobag-static-assets",
     configureServer(server) {
+      server.middlewares.use("/__debug_log", (req, res, next) => {
+        if (req.method !== "POST") {
+          next();
+          return;
+        }
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        req.on("end", () => {
+          try {
+            const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown[];
+            const lines = payload.map((entry) => JSON.stringify(entry)).join("\n");
+            if (lines.length > 0) {
+              fs.appendFileSync(debugLogPath, `${lines}\n`);
+            }
+            res.statusCode = 204;
+            res.end();
+          } catch (error) {
+            res.statusCode = 400;
+            res.end(error instanceof Error ? error.message : String(error));
+          }
+        });
+      });
       server.middlewares.use("/sectional-packages", mountStaticTree(sectionalRoot));
       server.middlewares.use("/chart-assets", mountStaticTree(chartAssetRoot));
       server.middlewares.use("/chart-thumbnails", mountStaticTree(chartAssetRoot));

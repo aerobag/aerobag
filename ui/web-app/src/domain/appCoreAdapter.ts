@@ -9,6 +9,7 @@ import type {
   ContentAvailability,
   Situation,
 } from "./types";
+import { deriveChartPage as deriveChartCatalog } from "./resourceIndexAdapters";
 import { sampleCatalog } from "./sampleData";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 
@@ -415,7 +416,7 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
 
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
-  create_ui_session(catalogJson: string, resourceIndexJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
+  create_ui_session(catalogJson: string, chartCatalogJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   remove_leg_in_session(handle: number, index: number): Promise<string> | string;
   move_waypoint_in_session(handle: number, waypointIndex: number, delta: number): Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
@@ -454,7 +455,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const init = JSON.parse(
       await this.module.create_ui_session(
         JSON.stringify(sampleCatalogLike(resourceIndex)),
-        JSON.stringify(resourceIndex),
+        JSON.stringify(deriveChartCatalog(resourceIndex as Parameters<typeof deriveChartCatalog>[0], plan)),
         JSON.stringify(plan),
         JSON.stringify(recentAirportIds),
         JSON.stringify(selectedAirportId ?? null),

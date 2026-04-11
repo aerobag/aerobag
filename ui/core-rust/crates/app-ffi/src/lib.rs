@@ -399,7 +399,7 @@ pub fn create_ui_session_json(
 }
 
 pub fn remove_leg_in_session_json(handle: u64, index: usize) -> Result<String, String> {
-    let snapshot = app_core::remove_leg_in_session(handle, index).map_err(|err| err.to_string())?;
+    let snapshot = app_core::remove_leg_in_session(handle as u32, index).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -408,7 +408,7 @@ pub fn move_waypoint_in_session_json(
     waypoint_index: usize,
     delta: isize,
 ) -> Result<String, String> {
-    let snapshot = app_core::move_waypoint_in_session(handle, waypoint_index, delta)
+    let snapshot = app_core::move_waypoint_in_session(handle as u32, waypoint_index, delta)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
@@ -416,7 +416,7 @@ pub fn move_waypoint_in_session_json(
 pub fn select_airport_in_session_json(handle: u64, airport_id_json: &str) -> Result<String, String> {
     let airport_id: String = serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
     let snapshot =
-        app_core::select_airport_in_session(handle, &airport_id).map_err(|err| err.to_string())?;
+        app_core::select_airport_in_session(handle as u32, &airport_id).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -424,19 +424,19 @@ pub fn set_situation_in_session_json(handle: u64, situation_json: &str) -> Resul
     let situation: app_core::Situation =
         serde_json::from_str(situation_json).map_err(|err| err.to_string())?;
     let snapshot =
-        app_core::set_situation_in_session(handle, situation).map_err(|err| err.to_string())?;
+        app_core::set_situation_in_session(handle as u32, situation).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 pub fn select_chart_in_session_json(handle: u64, chart_id_json: &str) -> Result<String, String> {
     let chart_id: String = serde_json::from_str(chart_id_json).map_err(|err| err.to_string())?;
     let snapshot =
-        app_core::select_chart_in_session(handle, &chart_id).map_err(|err| err.to_string())?;
+        app_core::select_chart_in_session(handle as u32, &chart_id).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 pub fn get_session_snapshot_json(handle: u64) -> Result<String, String> {
-    let snapshot = app_core::get_session_snapshot(handle).map_err(|err| err.to_string())?;
+    let snapshot = app_core::get_session_snapshot(handle as u32).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -453,7 +453,7 @@ pub fn restore_chart_page_state_in_session_json(
     let selected_chart_id: Option<String> =
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::restore_chart_page_state_in_session(
-        handle,
+        handle as u32,
         &recent_airport_ids,
         selected_airport_id.as_deref(),
         selected_chart_id.as_deref(),
@@ -463,7 +463,7 @@ pub fn restore_chart_page_state_in_session_json(
 }
 
 pub fn destroy_session_json(handle: u64) {
-    app_core::destroy_session(handle);
+    app_core::destroy_session(handle as u32);
 }
 
 fn get_java_string(env: &mut JNIEnv, value: JString) -> Result<String, String> {

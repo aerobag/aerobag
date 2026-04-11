@@ -5,6 +5,7 @@ import uiTheme from "@generated/uiTheme.json";
 import planViewIcon from "./assets/plan-view-icon.svg";
 import {
   loadBestAvailableAdapter,
+  type AdapterBackendKind,
   type AppCoreAdapter,
   type DerivedChartPageState,
   type UiSession,
@@ -151,6 +152,8 @@ export default function App() {
   const [page, setPage] = useState<AppPage>(persistedUiState.page ?? "map");
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
   const [appCoreAdapter, setAppCoreAdapter] = useState<AppCoreAdapter | null>(null);
+  const [adapterBackend, setAdapterBackend] = useState<AdapterBackendKind>("mock");
+  const [adapterDetail, setAdapterDetail] = useState<string>("loading");
   const [selectedMapId, setSelectedMapId] = useState<string>(mapViews[0].id);
   const initialRecentAirportIds = useMemo(
     () => mergeRecentAirportIds(chartPage.airports, persistedUiState.recentAirportIds ?? []),
@@ -257,6 +260,8 @@ export default function App() {
     loadBestAvailableAdapter().then((loaded) => {
       if (!cancelled) {
         setAppCoreAdapter(loaded.adapter);
+        setAdapterBackend(loaded.backend);
+        setAdapterDetail(loaded.detail);
       }
     }).catch(() => {});
     return () => {
@@ -278,9 +283,11 @@ export default function App() {
       initialChartPageState.selected_chart_id,
     ).then(async (created) => {
       nextSession = created;
-      const snapshot = await created.setSituation(demoSituation());
       if (!cancelled) {
         setUiSession(created);
+      }
+      const snapshot = await created.setSituation(demoSituation());
+      if (!cancelled) {
         setSessionSnapshot(snapshot);
       }
     }).catch(() => {});
@@ -288,7 +295,7 @@ export default function App() {
       cancelled = true;
       void nextSession?.destroy();
     };
-  }, [appCoreAdapter, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialRecentAirportIds]);
+  }, [adapterBackend, appCoreAdapter, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialRecentAirportIds]);
 
   useEffect(() => {
     setMapViewport((current) => preserveViewportForMap(current, selectedMap.map_view));
@@ -447,6 +454,8 @@ export default function App() {
           locationSearch={locationSearch}
           situation={appState.situation}
           uiSession={uiSession}
+          adapterBackend={adapterBackend}
+          adapterDetail={adapterDetail}
         />
       </div>
 
@@ -565,6 +574,8 @@ function MapPage(props: {
   locationSearch: string;
   situation: Situation;
   uiSession: UiSession | null;
+  adapterBackend: AdapterBackendKind;
+  adapterDetail: string;
 }) {
   const {
     debugTileLabels,
@@ -584,6 +595,8 @@ function MapPage(props: {
     locationSearch,
     situation,
     uiSession,
+    adapterBackend,
+    adapterDetail,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const trayGroup = useModalTrayGroup(["page", "family"] as const);
@@ -593,6 +606,7 @@ function MapPage(props: {
     visible_features: [],
     warnings: [],
   });
+  const [mapOverlayViewport, setMapOverlayViewport] = useState<MapViewportState | null>(null);
   const viewportRef = useRef<MapViewportState>(viewport);
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
@@ -661,7 +675,12 @@ function MapPage(props: {
     let cancelled = false;
 
     async function syncMapOverlay() {
-      let overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
+      let overlay: MapOverlayQueryResult;
+      try {
+        overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
+      } catch (error) {
+        throw error;
+      }
       if (overlay.needed_fix_tiles.length > 0) {
         const tiles = await Promise.all(
           overlay.needed_fix_tiles.map(async (tile) => {
@@ -689,6 +708,7 @@ function MapPage(props: {
       }
       if (!cancelled) {
         setMapOverlay(overlay);
+        setMapOverlayViewport(viewport);
       }
     }
 
@@ -704,6 +724,18 @@ function MapPage(props: {
       controller.abort();
     };
   }, [surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+
+  const overlayTransform = useMemo(() => {
+    if (!mapOverlayViewport) {
+      return undefined;
+    }
+    const currentScale = scaleForZoom(viewport.zoom);
+    const overlayScale = scaleForZoom(mapOverlayViewport.zoom);
+    const scaleRatio = currentScale / overlayScale;
+    const dx = (mapOverlayViewport.centerWorldX - viewport.centerWorldX) * currentScale;
+    const dy = (mapOverlayViewport.centerWorldY - viewport.centerWorldY) * currentScale;
+    return `translate(${dx}px, ${dy}px) scale(${scaleRatio})`;
+  }, [mapOverlayViewport, viewport]);
 
   function updateViewport(next: MapViewportState) {
     viewportRef.current = next;
@@ -854,7 +886,12 @@ function MapPage(props: {
           </div>
         ))}
         {mapOverlay.visible_features.length > 0 ? (
-          <svg className="vectorOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
+          <svg
+            className="vectorOverlay"
+            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+            preserveAspectRatio="none"
+            style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+          >
             {mapOverlay.visible_features.map((fix) => (
               <g key={fix.id} transform={`translate(${fix.screen_x} ${fix.screen_y})`}>
                 <path d="M 0 -8 L 7 6 L -7 6 Z" className="fixMarker" />
@@ -1049,13 +1086,20 @@ function MapPage(props: {
             onToggle={() => setDebugOpen((open) => !open)}
           >
             <div className="debugLine">page {pageLabel(page)}</div>
+            <div className="debugLine">core {adapterBackend}</div>
+            <div className="debugLine">{adapterDetail}</div>
+            <div className="debugLine">session {uiSession ? "ready" : "null"} surf {Math.round(surfaceSize.width)}x{Math.round(surfaceSize.height)}</div>
             <div className="debugLine">up {uptimeLabel}</div>
             <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: selectedMap.id, selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
             <div className="debugLine">family {selectedFamily.launcherLabel}</div>
             <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
             <div className="debugLine">tiles {debugSummary.tileCount}</div>
+            <div className="debugLine">vec fixes={mapOverlay.visible_features.length} need={mapOverlay.needed_fix_tiles.length} warn={mapOverlay.warnings.length}</div>
             <div className="debugLine">fixes {mapOverlay.visible_features.length}</div>
             <div className="debugLine">needFixTiles {mapOverlay.needed_fix_tiles.length}</div>
+            {mapOverlay.visible_features.slice(0, 3).map((feature) => (
+              <div key={feature.id} className="debugLine">fix {feature.label}</div>
+            ))}
             {mapOverlay.warnings.map((warning) => (
               <div key={warning.code} className="debugLine">warn {warning.code}</div>
             ))}

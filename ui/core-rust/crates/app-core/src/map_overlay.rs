@@ -191,6 +191,7 @@ fn world_to_screen(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{fs, path::PathBuf};
 
     #[test]
     fn suppresses_fix_tiles_below_threshold_zoom() {
@@ -238,5 +239,37 @@ mod tests {
         assert_eq!(result.visible_features.len(), VECTOR_DISPLAY_FEATURE_LIMIT);
         assert_eq!(result.warnings.len(), 1);
         assert_eq!(result.warnings[0].code, "vector_display_feature_limit");
+    }
+
+    #[test]
+    fn real_vamps_viewport_returns_visible_fix_features() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.364_894_444_444_4,
+                lon: -121.980_275,
+            },
+            zoom: 10.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let tile_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../../ui-target/web/generated-static/vectors/points/fix/9");
+        let mut cache = HashMap::new();
+
+        for tile in visible_fix_tile_window(&viewport, 1200.0, 900.0) {
+            let tile_path = tile_root.join(tile.x.to_string()).join(format!("{}.json", tile.y));
+            let payload: PointTilePayload = serde_json::from_str(
+                &fs::read_to_string(&tile_path)
+                    .unwrap_or_else(|err| panic!("failed to read {}: {err}", tile_path.display())),
+            )
+            .unwrap_or_else(|err| panic!("failed to parse {}: {err}", tile_path.display()));
+            cache.insert(tile_key(tile.z, tile.x, tile.y), payload);
+        }
+
+        let result = query_map_overlay(&viewport, 1200.0, 900.0, &cache);
+        assert!(
+            !result.visible_features.is_empty(),
+            "expected visible fix features for VAMPS viewport"
+        );
     }
 }

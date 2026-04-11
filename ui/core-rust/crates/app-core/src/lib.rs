@@ -887,6 +887,7 @@ pub fn resolve_content_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn sample_catalog_json() -> String {
         serde_json::json!({
@@ -1014,7 +1015,27 @@ mod tests {
     }
 
     fn fixture_db_path() -> &'static Path {
-        Path::new("/root/aerobag-three/aerobag/ui/android-app/app/src/main/assets/nav-db/main.db")
+        static DB_PATH: OnceLock<PathBuf> = OnceLock::new();
+        DB_PATH.get_or_init(|| {
+            if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_NAV_DB") {
+                let path = PathBuf::from(value);
+                if path.is_file() {
+                    return path;
+                }
+            }
+            for candidate in [
+                "/root/aerobag-three/ui-target-flightplan/android/assets/nav-db/main.db",
+                "/root/aerobag-three/ui-target/android/assets/nav-db/main.db",
+                "/root/aerobag-artifacts/product-builds/shared/work/data/output/main.db",
+            ] {
+                let path = PathBuf::from(candidate);
+                if path.is_file() {
+                    return path;
+                }
+            }
+            panic!("unable to locate nav database fixture");
+        })
+        .as_path()
     }
 
     #[test]
@@ -1034,6 +1055,9 @@ mod tests {
                     airway: None,
                 },
             ],
+            route_components: Vec::new(),
+            resolved_legs: Vec::new(),
+            guidance: None,
             departure: Some(AirportId("KRNT".to_string())),
             destination: Some(AirportId("KPAE".to_string())),
             alternate: None,
@@ -1552,6 +1576,9 @@ mod tests {
                     airway: None,
                 },
             ],
+            route_components: Vec::new(),
+            resolved_legs: Vec::new(),
+            guidance: None,
             departure: Some(AirportId("KRNT".to_string())),
             destination: Some(AirportId("KAWO".to_string())),
             alternate: None,

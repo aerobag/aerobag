@@ -1663,9 +1663,31 @@ impl<T> OptionalRow<T> for rusqlite::Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
 
     fn fixture_db_path() -> &'static Path {
-        Path::new("/root/aerobag-three/aerobag/ui/android-app/app/src/main/assets/nav-db/main.db")
+        static DB_PATH: OnceLock<PathBuf> = OnceLock::new();
+        DB_PATH.get_or_init(|| {
+            if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_NAV_DB") {
+                let path = PathBuf::from(value);
+                if path.is_file() {
+                    return path;
+                }
+            }
+            for candidate in [
+                "/root/aerobag-three/ui-target-flightplan/android/assets/nav-db/main.db",
+                "/root/aerobag-three/ui-target/android/assets/nav-db/main.db",
+                "/root/aerobag-artifacts/product-builds/shared/work/data/output/main.db",
+            ] {
+                let path = PathBuf::from(candidate);
+                if path.is_file() {
+                    return path;
+                }
+            }
+            panic!("unable to locate nav database fixture");
+        })
+        .as_path()
     }
 
     #[test]

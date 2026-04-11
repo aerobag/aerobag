@@ -50,6 +50,7 @@ type TrayOption = {
   label: string;
   active?: boolean;
   disabled?: boolean;
+  accentColor?: string;
   onSelect: () => void;
 };
 
@@ -1228,6 +1229,7 @@ function TrayDock(props: {
             type="button"
             className={`trayButton${option.active ? " isActive" : ""}`}
             disabled={option.disabled}
+            style={option.accentColor ? ({ ["--tray-accent" as string]: option.accentColor } as CSSProperties) : undefined}
             onPointerDown={stopPointer}
             onPointerUp={stopPointer}
             onDoubleClick={stopDoubleClick}
@@ -1665,6 +1667,7 @@ function ChartsPage(props: {
               id: chart.id,
               label: chart.label,
               active: chart.id === selectedChart?.id,
+              accentColor: plateFolderColor(chart.folder_category),
               onSelect: () => {
                 onSelectChart(chart.id);
                 setChartTrayOpen(false);

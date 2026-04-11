@@ -292,7 +292,14 @@ button {
   padding: 0 calc(var(--thumb) * 0.22);
   border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
   border-radius: var(--thumb-radius);
-  background: var(--theme-button-bg);
+  background:
+    linear-gradient(
+      to bottom,
+      var(--theme-button-bg) 0,
+      var(--theme-button-bg) 50%,
+      var(--tray-accent, var(--theme-button-bg)) 50%,
+      var(--tray-accent, var(--theme-button-bg)) 100%
+    );
   color: var(--theme-button-fg);
   text-align: left;
   font-size: var(--thumb-font-small);
@@ -308,7 +315,14 @@ button {
 }
 
 .trayButton.isActive {
-  background: color-mix(in srgb, var(--theme-button-bg) 82%, white);
+  background:
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--theme-button-bg) 82%, white) 0,
+      color-mix(in srgb, var(--theme-button-bg) 82%, white) 50%,
+      var(--tray-accent, color-mix(in srgb, var(--theme-button-bg) 82%, white)) 50%,
+      var(--tray-accent, color-mix(in srgb, var(--theme-button-bg) 82%, white)) 100%
+    );
   border-color: transparent;
   color: var(--theme-button-fg);
 }

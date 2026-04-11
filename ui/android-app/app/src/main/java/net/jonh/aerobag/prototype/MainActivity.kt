@@ -213,6 +213,7 @@ private data class MenuDockOption(
     val label: String,
     val active: Boolean = false,
     val enabled: Boolean = true,
+    val accentColor: Color? = null,
     val onSelect: () -> Unit,
 )
 
@@ -2009,6 +2010,7 @@ private fun ChartViewerSelectors(
     onSelectAirport: (String) -> Unit,
     onSelectChart: (String) -> Unit,
 ) {
+    val uiTheme = LocalAerobagUiTheme.current
     val trayOpen = pageTrayOpen || airportTrayOpen || chartTrayOpen
     val dismissOpenTray = {
         when {
@@ -2054,7 +2056,12 @@ private fun ChartViewerSelectors(
             onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.PlateWide,
             options = sortChartsForFolder(selectedAirport?.charts ?: emptyList()).map { chart ->
-                MenuDockOption(chart.id, chart.label, active = chart.id == selectedChart?.id) { onSelectChart(chart.id) }
+                MenuDockOption(
+                    chart.id,
+                    chart.label,
+                    active = chart.id == selectedChart?.id,
+                    accentColor = plateFolderColor(uiTheme, chart.folderCategory),
+                ) { onSelectChart(chart.id) }
             },
         )
 
@@ -2193,6 +2200,7 @@ private fun MenuDock(
                             label = option.label,
                             active = option.active,
                             enabled = option.enabled,
+                            accentColor = option.accentColor,
                             width = style.trayWidth,
                             onSelect = option.onSelect,
                         )
@@ -2232,6 +2240,7 @@ private fun MenuPanelRow(
     label: String,
     active: Boolean,
     enabled: Boolean,
+    accentColor: Color? = null,
     width: Dp = Dp.Unspecified,
     onSelect: () -> Unit,
 ) {
@@ -2260,6 +2269,15 @@ private fun MenuPanelRow(
             .padding(horizontal = 12.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
+        if (accentColor != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(ThumbSize / 2f)
+                    .align(Alignment.BottomStart)
+                    .background(accentColor.copy(alpha = if (enabled) 1f else 0.45f)),
+            )
+        }
         Text(
             text = label,
             style = MaterialTheme.typography.labelLarge,

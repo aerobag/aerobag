@@ -27,6 +27,7 @@ use preprocessor_resource_index::{
 };
 use preprocessor_tools::{comparison_targets, ToolInvocation};
 use preprocessor_tpp::{run_native_tpp, NativeTppRunRequest};
+use preprocessor_vectors::{build_vectors_dataset, BuildVectorsRequest};
 use product_build::{
     build_product, explain_product_build, maybe_reexec_build_product_under_cgroup,
     ProductBuildConfig,
@@ -75,6 +76,7 @@ fn usage() -> &'static str {
   preprocessor-cli run-native-csup --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-native-tpp --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli build-data --input-dir <path> --output-dir <path> --manifest-version <cycle> [--resource-index-output <path>] [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
+  preprocessor-cli build-vectors --main-db <path> --output-dir <path> --version-label <label>
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
   preprocessor-cli build-product [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
@@ -1689,6 +1691,50 @@ fn main() -> anyhow::Result<()> {
                 println!("plate_count {}", index.plates.len());
                 println!("csup_count {}", index.csups.len());
             }
+        }
+        Some("build-vectors") => {
+            let mut main_db = None;
+            let mut output_dir = None;
+            let mut version_label = None;
+            let mut index = 2;
+            while index < args.len() {
+                match args.get(index).map(String::as_str) {
+                    Some("--main-db") => {
+                        main_db = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--output-dir") => {
+                        output_dir = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--version-label") => {
+                        version_label = Some(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        );
+                        index += 2;
+                    }
+                    _ => anyhow::bail!("{}", usage()),
+                }
+            }
+            let request = BuildVectorsRequest {
+                main_db: main_db.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                output_dir: output_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                version_label: version_label.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+            };
+            let result = build_vectors_dataset(&request)?;
+            println!("manifest {}", result.manifest_path.display());
+            println!("stats {}", result.stats_path.display());
+            println!("zip {}", result.zip_path.display());
         }
         Some("build-product") => {
             if maybe_reexec_build_product_under_cgroup(&args[2..])? {

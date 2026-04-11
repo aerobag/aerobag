@@ -504,6 +504,7 @@ dependencies = [
  "preprocessor-resource-index",
  "preprocessor-tools",
  "preprocessor-tpp",
+ "preprocessor-vectors",
  "rusqlite",
  "serde",
  "serde_json",
@@ -588,6 +589,17 @@ dependencies = [
  "preprocessor-fetch",
  "preprocessor-tools",
  "roxmltree",
+]
+
+[[package]]
+name = "preprocessor-vectors"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "zip",
 ]
 
 [[package]]

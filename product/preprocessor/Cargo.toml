@@ -8,6 +8,7 @@ members = [ "preprocessor-charts",
   "preprocessor-resource-index",
   "preprocessor-tpp",
   "preprocessor-tools",
+  "preprocessor-vectors",
 ]
 resolver = "2"
 

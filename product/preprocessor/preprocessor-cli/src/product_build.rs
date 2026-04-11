@@ -29,6 +29,7 @@ use preprocessor_resource_index::{write_resource_index, AssetSource, BuildResour
 use preprocessor_tpp::{
     package_native_tpp_versioned, render_native_tpp, NativeTppRunRequest,
 };
+use preprocessor_vectors::{build_vectors_dataset, BuildVectorsRequest};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -229,6 +230,7 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
     }
     lines.push("  data-input-staging".to_string());
     lines.push("  data".to_string());
+    lines.push("  vectors".to_string());
     lines.push("  resource-index".to_string());
     Ok(lines.join("\n") + "\n")
 }
@@ -452,12 +454,25 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             tpp_sources.push(source);
         }
 
-        let data_zip = build_shared_work_root(config, &format!("data-{data_version}"))?
+        let data_root = build_shared_work_root(config, &format!("data-{data_version}"))?;
+        let data_zip = data_root
             .join("output")
             .join(format!("{data_version}.zip"));
         if !data_zip.is_file() {
             bail!("missing data zip at {}", data_zip.display());
         }
+        let data_main_db = data_root.join("output").join("main.db");
+        if !data_main_db.is_file() {
+            bail!("missing data main.db at {}", data_main_db.display());
+        }
+
+        master_log.log("launch vectors")?;
+        let vectors_record = build_vectors_node(config, &data_main_db, &data_version)?;
+        master_log.log(format!(
+            "complete vectors cache_hit={}",
+            vectors_record.cache_hit
+        ))?;
+        node_records.push(normalize_node_record_paths(vectors_record, &config.build_root));
 
         master_log.log("launch resource-index")?;
         let resource_index_record =
@@ -1283,6 +1298,56 @@ fn build_data_nodes(
         started.elapsed().as_millis() as u64,
     )?;
     Ok(vec![staging_record, build_record])
+}
+
+fn build_vectors_node(
+    config: &ProductBuildConfig,
+    main_db: &Path,
+    version_label: &str,
+) -> anyhow::Result<NodeRecord> {
+    let node_root = build_shared_work_root(config, &format!("vectors-{version_label}"))?;
+    let output_dir = node_root.join("output");
+    let request = BuildVectorsRequest {
+        main_db: main_db.to_path_buf(),
+        output_dir: output_dir.clone(),
+        version_label: version_label.to_string(),
+    };
+    let inputs = BTreeMap::from([
+        ("main_db".to_string(), hash_file(main_db)?),
+        ("version_label".to_string(), version_label.to_string()),
+        (
+            "vectors_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-vectors/src/lib.rs"),
+            )?,
+        ),
+    ]);
+    let prepared = prepare_existing_node_root("vectors", &node_root, &inputs)?;
+    let zip_path = output_dir.join(format!("vectors_{version_label}.zip"));
+    let stats_path = output_dir.join("stats.json");
+    if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), stats_path.clone()])? {
+        return Ok(record);
+    }
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    let result = build_vectors_dataset(&request)?;
+    let outputs = BTreeMap::from([
+        ("manifest".to_string(), relative_artifact_path(&result.manifest_path, &config.build_root)),
+        ("stats".to_string(), relative_artifact_path(&result.stats_path, &config.build_root)),
+        ("zip".to_string(), relative_artifact_path(&result.zip_path, &config.build_root)),
+    ]);
+    write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )
 }
 
 fn build_data_input_node(

@@ -18,14 +18,21 @@ ARTIFACT_ROOT_CONFIG = ROOT / ".aerobag-artifact-root"
 
 
 def resolve_artifact_root() -> Path:
+    manifest_relative = Path("product-builds") / "production" / "product-build.json"
     env_value = os.environ.get("AEROBAG_ARTIFACT_ROOT")
     if env_value:
-        return Path(env_value)
+        candidate = Path(env_value).expanduser()
+        if candidate.joinpath(manifest_relative).exists():
+            return candidate
     configured = ARTIFACT_ROOT_CONFIG.read_text().strip()
     path = Path(configured)
-    if path.is_absolute():
-        return path
-    return (ROOT / path).resolve()
+    candidate = path if path.is_absolute() else (ROOT / path).resolve()
+    if candidate.joinpath(manifest_relative).exists():
+        return candidate
+    fallback = Path("/root/aerobag-artifacts")
+    if fallback.joinpath(manifest_relative).exists():
+        return fallback
+    return candidate
 
 
 ARTIFACT_ROOT = resolve_artifact_root()
@@ -36,7 +43,7 @@ UI_TARGET_ROOT = Path(
     ),
 ).expanduser()
 UI_DIR = ROOT / "ui"
-RESOURCE_INDEX = ARTIFACT_ROOT / "product-builds" / "production" / "work" / "resource-index" / "resource-index.json"
+PRODUCT_BUILD = ARTIFACT_ROOT / "product-builds" / "production" / "product-build.json"
 UI_THEME = UI_DIR / "shared-fixtures" / "ui-theme.json"
 SHARED_TARGET_ROOT = UI_TARGET_ROOT / "shared" / "content-prototype"
 WEB_TARGET_ROOT = UI_TARGET_ROOT / "web"
@@ -61,11 +68,9 @@ ANDROID_CHART_ASSET_ROOT = ANDROID_TARGET_ROOT / "generated-seed" / "chart-asset
 ANDROID_LEGACY_CHART_ASSET_ROOT = ANDROID_TARGET_ROOT / "assets" / "chart-assets"
 WEB_NAV_DB_ROOT = WEB_TARGET_ROOT / "generated-static" / "nav-db"
 ANDROID_NAV_DB_ROOT = ANDROID_TARGET_ROOT / "assets" / "nav-db"
-PRODUCT_MAIN_DB = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "data" / "output" / "main.db"
 VECTOR_OUTPUT_ROOT = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "vectors-2604" / "output"
 FIX_VECTOR_TILE_ROOT = VECTOR_OUTPUT_ROOT / "points" / "fix" / "9"
-BOSTON_TAC_GEOJSON = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "charts-tac" / "work" / "charts-tac" / "TAC" / "Boston TAC.geojson"
-BOSTON_TAC_TILE_ROOT = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "charts-tac" / "work" / "charts-tac" / "tiles" / "1"
+CHARTS_TAC_BUILD_RECORD = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "charts-tac-2603" / "build-record.json"
 
 REGION_ORDER = ["ne", "nc", "nw", "se", "sc", "sw", "ec", "ak", "pac"]
 REGION_DISPLAY_NAMES = {
@@ -104,8 +109,58 @@ class TiledPackage:
     zip_sha256: str
 
 
+def resolve_charts_tac_work_dir() -> Path:
+    if CHARTS_TAC_BUILD_RECORD.exists():
+        payload = json.loads(CHARTS_TAC_BUILD_RECORD.read_text())
+        outputs = payload.get("outputs")
+        if isinstance(outputs, dict):
+            work_dir = outputs.get("work_dir")
+            if isinstance(work_dir, str) and work_dir:
+                candidate = ARTIFACT_ROOT / work_dir
+                if candidate.is_dir():
+                    return candidate
+    fallback = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "charts-tac-2603" / "work" / "charts-tac"
+    if fallback.is_dir():
+        return fallback
+    raise RuntimeError(f"missing charts-tac work dir from {CHARTS_TAC_BUILD_RECORD}")
+
+
+def load_product_build_manifest() -> dict:
+    if not PRODUCT_BUILD.exists():
+        raise RuntimeError(f"missing product build manifest {PRODUCT_BUILD}")
+    payload = json.loads(PRODUCT_BUILD.read_text())
+    nodes = payload.get("nodes")
+    if not isinstance(nodes, list):
+        raise RuntimeError(f"invalid product build manifest {PRODUCT_BUILD}: missing nodes[]")
+    return payload
+
+
+def resolve_product_build_output(node_name: str, output_name: str) -> Path:
+    payload = load_product_build_manifest()
+    for node in payload["nodes"]:
+        if not isinstance(node, dict) or node.get("name") != node_name:
+            continue
+        outputs = node.get("outputs")
+        if not isinstance(outputs, dict):
+            break
+        value = outputs.get(output_name)
+        if not isinstance(value, str) or not value:
+            break
+        path = ARTIFACT_ROOT / value
+        if not path.exists():
+            raise RuntimeError(f"missing {node_name}.{output_name} output {path}")
+        return path
+    raise RuntimeError(f"{node_name} node missing outputs.{output_name} in {PRODUCT_BUILD}")
+
+
+CHARTS_TAC_WORK_DIR = resolve_charts_tac_work_dir()
+BOSTON_TAC_GEOJSON = CHARTS_TAC_WORK_DIR / "TAC" / "Boston TAC.geojson"
+BOSTON_TAC_TILE_ROOT = CHARTS_TAC_WORK_DIR / "tiles" / "1"
+PRODUCT_MAIN_DB = resolve_product_build_output("data", "main_db")
+
+
 def load_resource_index() -> dict:
-    payload = json.loads(RESOURCE_INDEX.read_text())
+    payload = json.loads(resolve_resource_index_path().read_text())
     family_map = {
         "sec": "sectional",
         "enr-l": "ifr_low",
@@ -118,6 +173,10 @@ def load_resource_index() -> dict:
     for collection in payload.get("chart_collections", []):
         collection["family_id"] = family_map.get(collection["family_id"], collection["family_id"])
     return payload
+
+
+def resolve_resource_index_path() -> Path:
+    return resolve_product_build_output("resource-index", "resource_index")
 
 
 def resolve_package_artifact_path(path_value: str) -> Path:
@@ -268,7 +327,10 @@ def plate_root_candidates(package_id: str) -> list[Path]:
 
 
 def thumbnail_root_candidates() -> list[Path]:
+    resource_index_root = resolve_resource_index_path().parent
     return [
+        resource_index_root,
+        resource_index_root.parent,
         ARTIFACT_ROOT / "product-builds" / "production" / "work" / "resource-index",
         ARTIFACT_ROOT / "product-builds" / "validation" / "work" / "resource-index",
     ]

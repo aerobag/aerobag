@@ -14,6 +14,7 @@ val rustTarget = "x86_64-linux-android"
 val ndkVersion = "26.3.11579264"
 val ndkRoot = "/usr/lib/android-sdk/ndk/$ndkVersion"
 val rustLinker = "$ndkRoot/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang"
+val rustArchiver = "$ndkRoot/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 val rustToolchainBin = "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin"
 val cargoBinary = "$rustToolchainBin/cargo"
 val rustcBinary = "$rustToolchainBin/rustc"
@@ -41,10 +42,16 @@ val defaultArtifactRoot =
     } else {
         repoRoot.resolve(configuredArtifactRoot)
     }
+val artifactManifestRelative = "product-builds/production/product-build.json"
 val artifactRoot = File(
     System.getenv("AEROBAG_ARTIFACT_ROOT")
         ?: defaultArtifactRoot.absolutePath,
 )
+val resolvedArtifactRoot = when {
+    artifactRoot.resolve(artifactManifestRelative).isFile -> artifactRoot
+    File("/root/aerobag-artifacts").resolve(artifactManifestRelative).isFile -> File("/root/aerobag-artifacts")
+    else -> artifactRoot
+}
 
 fun resolveArtifactPath(rawPath: String): File {
     val source = file(rawPath)
@@ -54,7 +61,7 @@ fun resolveArtifactPath(rawPath: String): File {
     val raw = rawPath.replace('\\', File.separatorChar)
     val normalizedRelative = raw.removePrefix(".${File.separator}")
     fun rebasedCandidate(relativePath: String): File =
-        artifactRoot.resolve("product-builds").resolve(relativePath.replace('\\', '/'))
+        resolvedArtifactRoot.resolve("product-builds").resolve(relativePath.replace('\\', '/'))
     if (
         normalizedRelative.startsWith("shared${File.separator}") ||
         normalizedRelative.startsWith("validation${File.separator}") ||
@@ -69,7 +76,7 @@ fun resolveArtifactPath(rawPath: String): File {
     val markerIndex = raw.indexOf(marker)
     if (markerIndex >= 0) {
         val relative = raw.substring(markerIndex + marker.length)
-        val rebased = artifactRoot.resolve("product-builds").resolve(relative)
+        val rebased = resolvedArtifactRoot.resolve("product-builds").resolve(relative)
         if (rebased.isFile) {
             return rebased
         }
@@ -77,14 +84,14 @@ fun resolveArtifactPath(rawPath: String): File {
         val candidates = buildList {
             add(rebased)
             if (relativePath.startsWith("shared/")) {
-                add(artifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("shared/").let { "validation/$it" }))
-                add(artifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("shared/").let { "production/$it" }))
+                add(resolvedArtifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("shared/").let { "validation/$it" }))
+                add(resolvedArtifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("shared/").let { "production/$it" }))
             }
             if (relativePath.startsWith("validation/")) {
-                add(artifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("validation/").let { "shared/$it" }))
+                add(resolvedArtifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("validation/").let { "shared/$it" }))
             }
             if (relativePath.startsWith("production/")) {
-                add(artifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("production/").let { "shared/$it" }))
+                add(resolvedArtifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("production/").let { "shared/$it" }))
             }
         }
         candidates.firstOrNull { it.isFile }?.let { return it }
@@ -102,6 +109,12 @@ val buildRustX86_64Android by tasks.registering(Exec::class) {
     environment("RUSTC", rustcBinary)
     environment("CARGO_TARGET_DIR", rustTargetDir.absolutePath)
     environment("CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER", rustLinker)
+    environment("CC_x86_64_linux_android", rustLinker)
+    environment("CC_x86_64-linux-android", rustLinker)
+    environment("CXX_x86_64_linux_android", rustLinker.replace("clang", "clang++"))
+    environment("AR_x86_64_linux_android", rustArchiver)
+    environment("ANDROID_NDK_ROOT", ndkRoot)
+    environment("NDK_HOME", ndkRoot)
     commandLine(cargoBinary, "build", "-p", "app-ffi", "--target", rustTarget)
 }
 

@@ -183,7 +183,6 @@ fn build_records() -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>
                     "data",
                     format!("https://nfdc.faa.gov/webContent/28DaySub/{current_start}/aixm5.0.zip"),
                 ),
-                source_url_record("data", "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP".to_string()),
                 source_url_record(
                     "data",
                     format!("https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_{}.zip", &current_compact[2..]),

@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::Context;
+use chrono::{NaiveDate, Utc};
 mod emit_source_urls;
 mod product_build;
 use preprocessor_charts::{
@@ -19,7 +20,7 @@ use preprocessor_core::{
 use preprocessor_csup::{run_native_csup, NativeCsupRunRequest};
 use preprocessor_data::{build_data_package, compare_databases, DataBuildMode, DataBuildRequest};
 use preprocessor_fetch::{
-    hash_text, manifest_path_for_run, manifest_summary, read_download_records,
+    hash_text, manifest_path_for_run, manifest_summary, prefetch_archives_with_provenance, read_download_records,
     read_extract_records, read_source_url_set, CacheLayout,
 };
 use preprocessor_resource_index::{
@@ -27,9 +28,11 @@ use preprocessor_resource_index::{
 };
 use preprocessor_tools::{comparison_targets, ToolInvocation};
 use preprocessor_tpp::{run_native_tpp, NativeTppRunRequest};
-use preprocessor_vectors::{build_vectors_dataset, BuildVectorsRequest};
+use preprocessor_vectors::{
+    build_obstacle_dataset, build_vectors_dataset, BuildObstacleDatasetRequest, BuildVectorsRequest,
+};
 use product_build::{
-    build_product, explain_product_build, maybe_reexec_build_product_under_cgroup,
+    build_product, default_artifact_root, explain_product_build, maybe_reexec_build_product_under_cgroup,
     ProductBuildConfig,
 };
 use sha2::{Digest, Sha256};
@@ -77,6 +80,7 @@ fn usage() -> &'static str {
   preprocessor-cli run-native-tpp --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli build-data --input-dir <path> --output-dir <path> --manifest-version <cycle> [--resource-index-output <path>] [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
   preprocessor-cli build-vectors --main-db <path> --output-dir <path> --version-label <label>
+  preprocessor-cli build-obstacles [--build-root <path>] [--fetch-jobs <count>] [--snapshot-date <YYYY-MM-DD>]
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
   preprocessor-cli build-product [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
@@ -94,6 +98,15 @@ fn hash_file(path: &Path) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn obstacle_snapshot_label(value: &str) -> anyhow::Result<String> {
+    Ok(
+        NaiveDate::parse_from_str(value, "%Y-%m-%d")
+            .with_context(|| format!("failed to parse obstacle snapshot date {value}"))?
+            .format("%Y.%m.%d")
+            .to_string(),
+    )
 }
 
 fn read_zip_members(path: &Path) -> anyhow::Result<Vec<String>> {
@@ -1732,6 +1745,115 @@ fn main() -> anyhow::Result<()> {
                 version_label: version_label.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
             };
             let result = build_vectors_dataset(&request)?;
+            println!("manifest {}", result.manifest_path.display());
+            println!("stats {}", result.stats_path.display());
+            println!("zip {}", result.zip_path.display());
+        }
+        Some("build-obstacles") => {
+            let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("preprocessor-cli crate should live under the workspace root")
+                .to_path_buf();
+            let repo_root = workspace_root
+                .parent()
+                .expect("workspace root should live under product/")
+                .parent()
+                .expect("product should live under the repo root")
+                .to_path_buf();
+            let artifact_root = default_artifact_root(&repo_root);
+
+            let mut build_root = None;
+            let mut fetch_jobs = 4_usize;
+            let mut snapshot_date = env::var("AEROBAG_OBSTACLE_SNAPSHOT_DATE").ok();
+            let mut index = 2;
+            while index < args.len() {
+                match args.get(index).map(String::as_str) {
+                    Some("--build-root") => {
+                        build_root = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--fetch-jobs") => {
+                        fetch_jobs = args
+                            .get(index + 1)
+                            .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                            .parse()
+                            .context("failed to parse fetch jobs")?;
+                        index += 2;
+                    }
+                    Some("--snapshot-date") => {
+                        snapshot_date = Some(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        );
+                        index += 2;
+                    }
+                    _ => anyhow::bail!("{}", usage()),
+                }
+            }
+
+            let snapshot_label = obstacle_snapshot_label(
+                snapshot_date.as_deref().unwrap_or(&Utc::now().format("%Y-%m-%d").to_string()),
+            )?;
+            let build_root =
+                build_root.unwrap_or_else(|| artifact_root.join("obstacles").join(&snapshot_label));
+            let output_dir = build_root.join("output");
+            let manifest_path = output_dir.join(format!("obstacles_{snapshot_label}"));
+            let stats_path = output_dir.join("stats.json");
+            let zip_path = output_dir.join(format!("obstacles_{snapshot_label}.zip"));
+            if manifest_path.is_file() && stats_path.is_file() && zip_path.is_file() {
+                println!("manifest {}", manifest_path.display());
+                println!("stats {}", stats_path.display());
+                println!("zip {}", zip_path.display());
+                return Ok(());
+            }
+
+            let fetch_cache_root = env::var("FETCH_CACHE_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| artifact_root.join("cache").join("fetch"));
+            env::set_var("FETCH_CACHE_ROOT", &fetch_cache_root);
+            if env::var("FETCH_CACHE_MODE").is_err() {
+                env::set_var("FETCH_CACHE_MODE", "fill");
+            }
+
+            let work_dir = build_root.join("work");
+            fs::create_dir_all(&work_dir)
+                .with_context(|| format!("failed to create {}", work_dir.display()))?;
+            let provenance_dir = build_root.join("meta").join("provenance").join("obstacles");
+            fs::create_dir_all(&provenance_dir)
+                .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
+            let logical_url = format!(
+                "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_{snapshot_label}.zip"
+            );
+            fs::write(
+                provenance_dir.join("source_urls.jsonl"),
+                format!(
+                    "{{\"event\":\"source_url\",\"label\":\"obstacles\",\"url\":\"{}\"}}\n",
+                    logical_url
+                ),
+            )
+            .with_context(|| {
+                format!(
+                    "failed to write {}",
+                    provenance_dir.join("source_urls.jsonl").display()
+                )
+            })?;
+            prefetch_archives_with_provenance(
+                &[logical_url],
+                &work_dir,
+                fetch_jobs,
+                &provenance_dir,
+                "obstacles",
+            )?;
+            let result = build_obstacle_dataset(&BuildObstacleDatasetRequest {
+                input_dir: work_dir,
+                output_dir,
+                version_label: snapshot_label,
+            })?;
             println!("manifest {}", result.manifest_path.display());
             println!("stats {}", result.stats_path.display());
             println!("zip {}", result.zip_path.display());

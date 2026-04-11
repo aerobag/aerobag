@@ -1284,7 +1284,6 @@ fn build_data_nodes(
     let source_urls = source_urls_dir.join("data/source_urls.jsonl");
     let data_version = data_version_label(source_urls_dir)?;
     let data_manifest_version = data_manifest_cycle(source_urls_dir)?;
-    let obstacle_snapshot_date = obstacle_snapshot_date_iso();
     let (staged_input_dir, staging_record) = build_data_input_node(config, &source_urls)?;
 
     let node_root = build_shared_work_root(config, &format!("data-{data_version}"))?;
@@ -1308,7 +1307,6 @@ fn build_data_nodes(
         ("source_urls".to_string(), hash_file(&source_urls)?),
         ("manifest_version".to_string(), request.manifest_version.clone()),
         ("artifact_stem".to_string(), request.artifact_stem.clone().unwrap_or_default()),
-        ("obstacle_snapshot_date".to_string(), obstacle_snapshot_date),
     ]);
     let prepared = prepare_existing_node_root("data", &node_root, &inputs)?;
     let zip_path = request
@@ -1391,12 +1389,11 @@ fn build_data_input_node(
     config: &ProductBuildConfig,
     source_urls: &Path,
 ) -> anyhow::Result<(PathBuf, NodeRecord)> {
-    let obstacle_snapshot_label = obstacle_snapshot_date_label();
-    let obstacle_snapshot_date = obstacle_snapshot_date_iso();
+    let urls = cycle_data_urls(read_source_urls_jsonl(source_urls)?);
     let inputs = BTreeMap::from([
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("fetch_jobs".to_string(), config.fetch_jobs.to_string()),
-        ("obstacle_snapshot_date".to_string(), obstacle_snapshot_date),
+        ("cycle_urls".to_string(), hash_text(&urls.join("\n"))),
         (
             "fetch_lib".to_string(),
             hash_file(
@@ -1425,10 +1422,6 @@ fn build_data_input_node(
     let provenance_dir = prepared.dir.join("meta/provenance/data-input-staging");
     fs::create_dir_all(&provenance_dir)?;
     copy_source_urls_provenance(source_urls, &provenance_dir)?;
-    let urls = rewrite_data_urls_for_snapshot(
-        read_source_urls_jsonl(source_urls)?,
-        &obstacle_snapshot_label,
-    );
     prefetch_archives_with_provenance(
         &urls,
         &staged_root,
@@ -1962,8 +1955,15 @@ fn env_path(name: &str) -> Option<PathBuf> {
     env::var(name).ok().map(PathBuf::from)
 }
 
-fn default_artifact_root(repo_root: &Path) -> PathBuf {
-    env_path("AEROBAG_ARTIFACT_ROOT").unwrap_or_else(|| {
+pub(crate) fn default_artifact_root(repo_root: &Path) -> PathBuf {
+    if let Some(path) = env_path("AEROBAG_ARTIFACT_ROOT") {
+        return if path.is_absolute() {
+            path
+        } else {
+            repo_root.join(path)
+        };
+    }
+    {
         let config_path = repo_root.join(".aerobag-artifact-root");
         let raw = fs::read_to_string(&config_path).unwrap_or_else(|error| {
             panic!(
@@ -1983,7 +1983,7 @@ fn default_artifact_root(repo_root: &Path) -> PathBuf {
         } else {
             repo_root.join(path)
         }
-    })
+    }
 }
 
 fn env_usize(name: &str) -> Option<usize> {
@@ -2034,11 +2034,7 @@ fn tpp_region_version_label(source_urls_dir: &Path, region: Region) -> anyhow::R
 }
 
 fn data_version_label(source_urls_dir: &Path) -> anyhow::Result<String> {
-    Ok(format!(
-        "data_{}_obs{}",
-        data_manifest_cycle(source_urls_dir)?,
-        obstacle_snapshot_date_label()
-    ))
+    Ok(format!("data_{}", data_manifest_cycle(source_urls_dir)?))
 }
 
 fn data_manifest_cycle(source_urls_dir: &Path) -> anyhow::Result<String> {
@@ -2049,31 +2045,9 @@ fn data_manifest_cycle(source_urls_dir: &Path) -> anyhow::Result<String> {
     cycle_code_from_effective_date(effective)
 }
 
-fn obstacle_snapshot_date_label() -> String {
-    env::var("AEROBAG_OBSTACLE_SNAPSHOT_DATE")
-        .ok()
-        .and_then(|value| parse_date(&value, "%Y-%m-%d").ok())
-        .map(format_date_label)
-        .unwrap_or_else(|| Utc::now().format("%Y.%m.%d").to_string())
-}
-
-fn obstacle_snapshot_date_iso() -> String {
-    env::var("AEROBAG_OBSTACLE_SNAPSHOT_DATE")
-        .ok()
-        .and_then(|value| parse_date(&value, "%Y-%m-%d").ok())
-        .map(|value| value.format("%Y-%m-%d").to_string())
-        .unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string())
-}
-
-fn rewrite_data_urls_for_snapshot(urls: Vec<String>, snapshot_label: &str) -> Vec<String> {
+fn cycle_data_urls(urls: Vec<String>) -> Vec<String> {
     urls.into_iter()
-        .map(|url| {
-            if url.ends_with("/DAILY_DOF_DAT.ZIP") {
-                format!("{url}#logical_name=obstacle_{snapshot_label}.zip")
-            } else {
-                url
-            }
-        })
+        .filter(|url| !url.split('#').next().unwrap_or(url).ends_with("/DAILY_DOF_DAT.ZIP"))
         .collect()
 }
 
@@ -2189,10 +2163,6 @@ fn first_cycle_day(year: i32) -> Option<u32> {
     }
 }
 
-fn format_date_label(date: NaiveDate) -> String {
-    date.format("%Y.%m.%d").to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2234,13 +2204,8 @@ mod tests {
             "data/source_urls.jsonl",
             &[
                 r#"{"event":"source_url","url":"https://nfdc.faa.gov/webContent/28DaySub/28DaySubscription_Effective_2026-04-16.zip"}"#,
-                r#"{"event":"source_url","url":"https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP"}"#,
             ],
         );
-
-        unsafe {
-            env::set_var("AEROBAG_OBSTACLE_SNAPSHOT_DATE", "2026-04-10");
-        }
 
         assert_eq!(
             chart_family_version_label(temp.path(), ChartFamily::Sec).unwrap(),
@@ -2253,31 +2218,21 @@ mod tests {
         assert_eq!(csup_version_label(temp.path()).unwrap(), "2603");
         assert_eq!(tpp_region_version_label(temp.path(), Region::Ne).unwrap(), "2604");
         assert_eq!(data_manifest_cycle(temp.path()).unwrap(), "2604");
-        assert_eq!(
-            data_version_label(temp.path()).unwrap(),
-            "data_2604_obs2026.04.10"
-        );
+        assert_eq!(data_version_label(temp.path()).unwrap(), "data_2604");
     }
 
     #[test]
-    fn rewrites_daily_obstacle_url_to_snapshot_specific_logical_name() {
+    fn excludes_daily_obstacle_url_from_cycle_data_inputs() {
         let urls = vec![
             "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP".to_string(),
             "https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_260416.zip".to_string(),
         ];
-        let rewritten = rewrite_data_urls_for_snapshot(urls, "2026.04.10");
-        assert_eq!(
-            rewritten[0],
-            "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.10.zip"
-        );
-        assert_eq!(
-            rewritten[1],
-            "https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_260416.zip"
-        );
+        let filtered = cycle_data_urls(urls);
+        assert_eq!(filtered, vec!["https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_260416.zip"]);
     }
 
     #[test]
-    fn versioned_work_roots_are_distinct_between_vintages() {
+    fn versioned_work_roots_are_distinct_between_cycles() {
         let temp = tempdir().unwrap();
         let config = ProductBuildConfig {
             chart_cutline_root: temp.path().join("cutlines"),
@@ -2294,14 +2249,14 @@ mod tests {
         let sec_2605 = build_shared_work_root(&config, "charts-sec-2605").unwrap();
         let tpp_2604 = build_shared_work_root(&config, "tpp-ne-2604").unwrap();
         let tpp_2605 = build_shared_work_root(&config, "tpp-ne-2605").unwrap();
-        let data_a = build_shared_work_root(&config, "data-data_2604_obs2026.04.10").unwrap();
-        let data_b = build_shared_work_root(&config, "data-data_2604_obs2026.04.11").unwrap();
+        let data_a = build_shared_work_root(&config, "data-data_2604").unwrap();
+        let data_b = build_shared_work_root(&config, "data-data_2605").unwrap();
 
         assert_ne!(sec_2603, sec_2605);
         assert_ne!(tpp_2604, tpp_2605);
         assert_ne!(data_a, data_b);
         assert!(sec_2603.ends_with("shared/work/charts-sec-2603"));
         assert!(tpp_2604.ends_with("shared/work/tpp-ne-2604"));
-        assert!(data_a.ends_with("shared/work/data-data_2604_obs2026.04.10"));
+        assert!(data_a.ends_with("shared/work/data-data_2604"));
     }
 }

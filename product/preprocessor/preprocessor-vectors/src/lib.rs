@@ -13,8 +13,8 @@ const POINT_LAYER_ZOOM_POLICY: &[(&str, u8)] = &[
     ("fix", 9),
     ("nav", 9),
     ("awos", 9),
-    ("obstacle", 12),
 ];
+const OBSTACLE_LAYER_ZOOM: u8 = 12;
 
 #[derive(Debug, Clone)]
 pub struct BuildVectorsRequest {
@@ -25,6 +25,20 @@ pub struct BuildVectorsRequest {
 
 #[derive(Debug, Clone)]
 pub struct BuildVectorsResult {
+    pub manifest_path: PathBuf,
+    pub stats_path: PathBuf,
+    pub zip_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildObstacleDatasetRequest {
+    pub input_dir: PathBuf,
+    pub output_dir: PathBuf,
+    pub version_label: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildObstacleDatasetResult {
     pub manifest_path: PathBuf,
     pub stats_path: PathBuf,
     pub zip_path: PathBuf,
@@ -198,6 +212,106 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
     })
 }
 
+pub fn build_obstacle_dataset(
+    request: &BuildObstacleDatasetRequest,
+) -> anyhow::Result<BuildObstacleDatasetResult> {
+    if request.output_dir.exists() {
+        fs::remove_dir_all(&request.output_dir)
+            .with_context(|| format!("failed to clear {}", request.output_dir.display()))?;
+    }
+    fs::create_dir_all(&request.output_dir)
+        .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
+
+    let points = load_obstacle_points(&request.input_dir)?;
+    let stats_path = request.output_dir.join("stats.json");
+    let manifest_path = request
+        .output_dir
+        .join(format!("obstacles_{}", request.version_label));
+    let zip_path = request
+        .output_dir
+        .join(format!("obstacles_{}.zip", request.version_label));
+
+    let point_tiles = build_point_tiles(&points, OBSTACLE_LAYER_ZOOM);
+    let tile_path_template = format!("points/obstacle/{}/{{x}}/{{y}}.json", OBSTACLE_LAYER_ZOOM);
+
+    let mut files = BTreeMap::new();
+    let mut point_layers = BTreeMap::new();
+    let mut zip_members = vec![
+        ("obstacles".to_string(), manifest_path.clone()),
+        ("stats.json".to_string(), stats_path.clone()),
+    ];
+
+    for tile in &point_tiles {
+        let relative_path = point_tile_relative_path("obstacle", tile.z, tile.x, tile.y);
+        let points_path = request.output_dir.join(&relative_path);
+        write_json_pretty(
+            &points_path,
+            &PointTileFile {
+                schema_version: 1,
+                layer: "obstacle".to_string(),
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+                records: tile.records.clone(),
+            },
+        )?;
+        zip_members.push((relative_path, points_path));
+    }
+
+    files.insert("point_tiles_obstacle".to_string(), tile_path_template.clone());
+    files.insert("stats".to_string(), "stats.json".to_string());
+    point_layers.insert(
+        "obstacle".to_string(),
+        PointLayerManifest {
+            zoom: OBSTACLE_LAYER_ZOOM,
+            tile_path_template,
+        },
+    );
+
+    write_json_pretty(
+        &stats_path,
+        &VectorStats {
+            schema_version: 1,
+            version_label: request.version_label.clone(),
+            points: PointStats {
+                total_points: points.len(),
+                layer_counts: BTreeMap::from([("obstacle".to_string(), points.len())]),
+                layers: BTreeMap::from([(
+                    "obstacle".to_string(),
+                    PointLayerStats {
+                        zoom: OBSTACLE_LAYER_ZOOM,
+                        tile_count: point_tiles.len(),
+                        max_points_in_tile: point_tiles
+                            .iter()
+                            .map(|tile| tile.records.len())
+                            .max()
+                            .unwrap_or(0),
+                    },
+                )]),
+            },
+            warnings: vec!["obstacle dataset is published separately from the cycle bundle".to_string()],
+        },
+    )?;
+
+    write_json_pretty(
+        &manifest_path,
+        &VectorManifest {
+            schema_version: 1,
+            version_label: request.version_label.clone(),
+            point_layers,
+            files,
+        },
+    )?;
+
+    write_zip(&zip_path, &zip_members)?;
+
+    Ok(BuildObstacleDatasetResult {
+        manifest_path,
+        stats_path,
+        zip_path,
+    })
+}
+
 fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
     let mut points = Vec::new();
     let mut seen = BTreeSet::new();
@@ -219,7 +333,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
              FROM fix
              WHERE printf('%.6f,%.6f', ARPLatitude, ARPLongitude) IN (
                  SELECT DISTINCT printf('%.6f,%.6f', Latitude, Longitude)
-                 FROM airways
+                 FROM airways_branch
              )",
             "fix",
         ),
@@ -227,11 +341,6 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
             "awos",
             "SELECT LocationID, Latitude, Longitude, Type, Type FROM awos WHERE Latitude != '' AND Longitude != ''",
             "awos",
-        ),
-        (
-            "obs",
-            "SELECT printf('%.6f,%.6f', ARPLatitude, ARPLongitude), ARPLatitude, ARPLongitude, printf('Obstacle %.0fft', Height), 'OBS' FROM obs",
-            "obstacle",
         ),
     ];
 
@@ -263,6 +372,75 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
     }
 
     Ok(points)
+}
+
+fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<PointRecord>> {
+    let dof_path = input_dir.join("DOF.DAT");
+    let text = String::from_utf8_lossy(
+        &fs::read(&dof_path).with_context(|| format!("failed to read {}", dof_path.display()))?,
+    )
+    .into_owned();
+    let mut points = Vec::new();
+    let mut seen = BTreeSet::new();
+    for raw in text.lines() {
+        if raw.len() < 95 {
+            continue;
+        }
+        if !raw.as_bytes()[0].is_ascii_alphanumeric() || raw.as_bytes().get(2) != Some(&b'-') {
+            continue;
+        }
+        let lat_deg = parse_float(field(raw, 35, 2));
+        let lat_min = parse_float(field(raw, 38, 2)) / 60.0;
+        let lat_sec = parse_float(field(raw, 41, 5)) / 3600.0;
+        let lat_hemi = field(raw, 46, 1).trim();
+        let lat = if lat_hemi == "N" {
+            lat_deg + lat_min + lat_sec
+        } else {
+            -(lat_deg + lat_min + lat_sec)
+        };
+        let lon_deg = parse_float(field(raw, 48, 3));
+        let lon_min = parse_float(field(raw, 52, 2)) / 60.0;
+        let lon_sec = parse_float(field(raw, 55, 5)) / 3600.0;
+        let lon_hemi = field(raw, 60, 1).trim();
+        let lon = if lon_hemi == "W" {
+            -(lon_deg + lon_min + lon_sec)
+        } else {
+            lon_deg + lon_min + lon_sec
+        };
+        let height_msl = parse_float(field(raw, 90, 5));
+        let height_agl = parse_float(field(raw, 84, 5));
+        if height_agl < 400.0 || !valid_lat_lon(lat, lon) {
+            continue;
+        }
+        let id = dedup_id(
+            &mut seen,
+            &format!("obs:{lat:.6}:{lon:.6}:{height_msl:.0}"),
+            lat,
+            lon,
+        );
+        points.push(PointRecord {
+            id,
+            kind: "obs".to_string(),
+            lat,
+            lon,
+            label: format!("Obstacle {:.0}ft", height_msl),
+            style_class: "obstacle".to_string(),
+        });
+    }
+    Ok(points)
+}
+
+fn field(line: &str, start: usize, len: usize) -> &str {
+    let bytes = line.as_bytes();
+    if start >= bytes.len() {
+        return "";
+    }
+    let end = (start + len).min(bytes.len());
+    std::str::from_utf8(&bytes[start..end]).unwrap_or("")
+}
+
+fn parse_float(value: &str) -> f64 {
+    value.trim().parse::<f64>().unwrap_or(0.0)
 }
 
 fn build_point_tiles(points: &[PointRecord], zoom: u8) -> Vec<PointTileRecord> {

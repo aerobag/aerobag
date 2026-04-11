@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
+import androidx.appcompat.content.res.AppCompatResources
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -73,6 +74,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
@@ -114,6 +116,8 @@ import net.jonh.aerobag.prototype.domain.NavRef
 import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
 import net.jonh.aerobag.prototype.domain.SampleData
+import net.jonh.aerobag.prototype.domain.Situation
+import net.jonh.aerobag.prototype.domain.SituationPosition
 import net.jonh.aerobag.prototype.domain.TileStorageKind
 import net.jonh.aerobag.prototype.domain.UiTheme
 import net.jonh.aerobag.prototype.domain.UiThemeLoader
@@ -125,12 +129,18 @@ import net.jonh.aerobag.prototype.domain.createPinchSnapshot
 import net.jonh.aerobag.prototype.domain.dragImageViewport
 import net.jonh.aerobag.prototype.domain.dragViewport
 import net.jonh.aerobag.prototype.domain.imageDisplaySize
+import net.jonh.aerobag.prototype.domain.latLonToWorld
 import net.jonh.aerobag.prototype.domain.preserveViewportForMap
 import net.jonh.aerobag.prototype.domain.renderTiles
+import net.jonh.aerobag.prototype.domain.scaleForZoom
 import net.jonh.aerobag.prototype.domain.viewportCenterLatLon
 import net.jonh.aerobag.prototype.domain.zoomAroundPoint
 import net.jonh.aerobag.prototype.domain.zoomImageAroundPoint
 import kotlin.math.roundToInt
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.sin
 
 private val LocalAerobagUiTheme = staticCompositionLocalOf<UiTheme> {
     error("Aerobag UI theme not provided")
@@ -138,6 +148,30 @@ private val LocalAerobagUiTheme = staticCompositionLocalOf<UiTheme> {
 
 private val ThumbSize = 56.dp
 private val ThumbGap = 5.6.dp
+private val VampsPosition = LatLon(47.3648944444444, -121.980275)
+private val SituationRingSizesNm = listOf(0.25, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 150.0, 200.0)
+
+private data class LatLon(val lat: Double, val lon: Double)
+
+private data class SituationOverlay(
+    val pointUnits: Offset,
+    val headingDeg: Float,
+    val predictorUnits: Offset?,
+    val ring: SituationRing,
+)
+
+private data class SituationRing(
+    val radiusUnits: Float,
+    val tickMarks: List<SituationTickMark>,
+    val labelPointUnits: Offset,
+    val labelRotationDeg: Float,
+    val labelText: String,
+)
+
+private data class SituationTickMark(
+    val innerUnits: Offset,
+    val outerUnits: Offset,
+)
 private val ThumbRadius = 10.dp
 private val FolderThumbGutter = ThumbSize * 0.3f
 private val PlateFolderTileWidth = ThumbSize * 2f
@@ -305,6 +339,189 @@ private fun sortChartsForFolder(charts: List<ChartAsset>): List<ChartAsset> =
 private fun plateFolderColor(uiTheme: UiTheme, category: String): Color =
     uiTheme.plateFolder.labelColors[category] ?: uiTheme.plateFolder.labelColors["other"] ?: Color(0xFF52656D)
 
+private fun demoSituation(): Situation =
+    Situation(
+        position = SituationPosition.LatLon(VampsPosition.lat, VampsPosition.lon),
+        orientationDeg = 135.0,
+        speedKt = 105.0,
+    )
+
+private fun createInitialSituationViewport(mapView: MapView): MapViewportState {
+    val center = latLonToWorld(VampsPosition.lat, VampsPosition.lon)
+    return MapViewportState(
+        centerWorldX = center.x,
+        centerWorldY = center.y,
+        zoom = mapView.initialViewport.zoom,
+    )
+}
+
+@Composable
+private fun SituationStatusBadge(
+    situation: Situation,
+    modifier: Modifier = Modifier,
+) {
+    val tone = when (situation.position) {
+        SituationPosition.Unknown -> Triple("Location Unknown", Color(0xFFB3261E), "unknown")
+        is SituationPosition.FlightPlanLocation -> Triple("Simulated Position", Color(0xFFB1591A), "simulated")
+        is SituationPosition.LatLon -> Triple("Live Position", Color(0xFF2A4F66), "live")
+    }
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(ThumbSize * 0.22f),
+        color = Color(0xE6FCF8F1),
+        shadowElevation = 4.dp,
+    ) {
+        Text(
+            text = tone.first,
+            color = tone.second,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = ThumbSize * 0.18f, vertical = ThumbSize * 0.12f),
+        )
+    }
+}
+
+private fun resolveSituationOverlay(
+    situation: Situation,
+    viewport: MapViewportState,
+    widthUnits: Float,
+    heightUnits: Float,
+): SituationOverlay? {
+    if (widthUnits <= 0f || heightUnits <= 0f) return null
+    val position = when (val current = situation.position) {
+        SituationPosition.Unknown -> return null
+        is SituationPosition.LatLon -> LatLon(current.lat, current.lon)
+        is SituationPosition.FlightPlanLocation -> LatLon(current.lat, current.lon)
+    }
+    val point = latLonToScreen(position.lat, position.lon, viewport, widthUnits, heightUnits)
+    val heading = (situation.orientationDeg ?: 0.0).toFloat()
+    val predictor = situation.speedKt?.let { speedKt ->
+        val ahead = projectAhead(position.lat, position.lon, heading.toDouble(), speedKt / 60.0)
+        latLonToScreen(ahead.lat, ahead.lon, viewport, widthUnits, heightUnits)
+    }
+    return SituationOverlay(
+        pointUnits = point,
+        headingDeg = heading,
+        predictorUnits = predictor,
+        ring = selectSituationRing(position, viewport, widthUnits, heightUnits),
+    )
+}
+
+private fun latLonToScreen(
+    lat: Double,
+    lon: Double,
+    viewport: MapViewportState,
+    widthUnits: Float,
+    heightUnits: Float,
+): Offset {
+    val world = latLonToWorld(lat, lon)
+    val scale = scaleForZoom(viewport.zoom)
+    return Offset(
+        x = (((world.x - viewport.centerWorldX) * scale) + widthUnits / 2f).toFloat(),
+        y = (((world.y - viewport.centerWorldY) * scale) + heightUnits / 2f).toFloat(),
+    )
+}
+
+private fun projectAhead(lat: Double, lon: Double, bearingDeg: Double, distanceNm: Double): LatLon {
+    val angularDistance = distanceNm / 3440.065
+    val bearing = Math.toRadians(bearingDeg)
+    val startLat = Math.toRadians(lat)
+    val startLon = Math.toRadians(lon)
+    val nextLat = kotlin.math.asin(
+        kotlin.math.sin(startLat) * kotlin.math.cos(angularDistance) +
+            kotlin.math.cos(startLat) * kotlin.math.sin(angularDistance) * kotlin.math.cos(bearing),
+    )
+    val nextLon = startLon + atan2(
+        sin(bearing) * sin(angularDistance) * kotlin.math.cos(startLat),
+        kotlin.math.cos(angularDistance) - kotlin.math.sin(startLat) * kotlin.math.sin(nextLat),
+    )
+    return LatLon(Math.toDegrees(nextLat), Math.toDegrees(nextLon))
+}
+
+private fun selectSituationRing(
+    position: LatLon,
+    viewport: MapViewportState,
+    widthUnits: Float,
+    heightUnits: Float,
+): SituationRing {
+    val center = latLonToScreen(position.lat, position.lon, viewport, widthUnits, heightUnits)
+    val smaller = minOf(widthUnits, heightUnits)
+    val minDiameter = smaller * 0.5f
+    val maxDiameter = smaller * 0.8f
+    val targetDiameter = smaller * 0.65f
+    val best = SituationRingSizesNm
+        .map { radiusNm ->
+            val edge = projectAhead(position.lat, position.lon, 90.0, radiusNm)
+            val edgePoint = latLonToScreen(edge.lat, edge.lon, viewport, widthUnits, heightUnits)
+            val radiusUnits = hypot(edgePoint.x - center.x, edgePoint.y - center.y)
+            val diameterUnits = radiusUnits * 2f
+            val outOfBounds = when {
+                diameterUnits < minDiameter -> minDiameter - diameterUnits
+                diameterUnits > maxDiameter -> diameterUnits - maxDiameter
+                else -> 0f
+            }
+            val score = if (outOfBounds > 0f) 10000f + outOfBounds else kotlin.math.abs(diameterUnits - targetDiameter)
+            Triple(radiusNm, radiusUnits, score)
+        }
+        .minBy { it.third }
+    val labelPoint = pointOnCircle(center, best.second + 16f, -45f)
+    return SituationRing(
+        radiusUnits = best.second,
+        tickMarks = buildSituationTickMarks(center, best.second),
+        labelPointUnits = labelPoint,
+        labelRotationDeg = 45f,
+        labelText = formatRingDistance(best.first),
+    )
+}
+
+private fun buildSituationTickMarks(center: Offset, radiusUnits: Float): List<SituationTickMark> =
+    List(12) { index ->
+        val angle = index * 30f
+        SituationTickMark(
+            innerUnits = pointOnCircle(center, radiusUnits - 14f, angle),
+            outerUnits = pointOnCircle(center, radiusUnits, angle),
+        )
+    }
+
+private fun pointOnCircle(center: Offset, radiusUnits: Float, angleDeg: Float): Offset {
+    val radians = Math.toRadians(angleDeg.toDouble())
+    return Offset(
+        x = center.x + (radiusUnits * cos(radians)).toFloat(),
+        y = center.y + (radiusUnits * sin(radians)).toFloat(),
+    )
+}
+
+private fun arrowShaftEndPoint(from: Offset, to: Offset): Offset {
+    val angle = atan2(to.y - from.y, to.x - from.x)
+    val headLength = 14f
+    return Offset(
+        x = to.x - headLength * cos(angle),
+        y = to.y - headLength * sin(angle),
+    )
+}
+
+private fun arrowHeadPath(from: Offset, to: Offset): Path {
+    val angle = atan2(to.y - from.y, to.x - from.x)
+    val size = 20f
+    val left = Offset(
+        x = to.x - size * cos(angle - Math.PI.toFloat() / 6f),
+        y = to.y - size * sin(angle - Math.PI.toFloat() / 6f),
+    )
+    val right = Offset(
+        x = to.x - size * cos(angle + Math.PI.toFloat() / 6f),
+        y = to.y - size * sin(angle + Math.PI.toFloat() / 6f),
+    )
+    return Path().apply {
+        moveTo(to.x, to.y)
+        lineTo(left.x, left.y)
+        lineTo(right.x, right.y)
+        close()
+    }
+}
+
+private fun formatRingDistance(radiusNm: Double): String =
+    if (radiusNm % 1.0 == 0.0) "${radiusNm.toInt()}nm" else "${radiusNm}nm"
+
 private fun readRecentAirportIds(context: Context): List<String> =
     context.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
         .getString(UiPrefsRecentAirportsKey, "")
@@ -404,7 +621,7 @@ private fun AerobagApp() {
     val selectedMap = remember(selectedMapId, fixture.mapViews) {
         fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
     }
-    var mapViewport by remember { mutableStateOf(createInitialViewport(selectedMap.mapView)) }
+    var mapViewport by remember { mutableStateOf(createInitialSituationViewport(selectedMap.mapView)) }
     var chartViewport by remember { mutableStateOf<net.jonh.aerobag.prototype.domain.ImageViewportState?>(null) }
     var chartFolderOpen by remember { mutableStateOf(false) }
     val chartAirportById = remember(chartCatalog.airports) { chartCatalog.airports.associateBy { it.id } }
@@ -423,6 +640,9 @@ private fun AerobagApp() {
 
     LaunchedEffect(page, selectedAirportId, selectedChartId, recentAirportIds) {
         writeUiPrefs(context.applicationContext, page, selectedAirportId, selectedChartId, recentAirportIds)
+    }
+    LaunchedEffect(uiSession) {
+        sessionSnapshot = uiSession.setSituation(demoSituation())
     }
     val legSummary = remember(currentPlan) {
         currentPlan.legs.firstOrNull()?.let { "${navRefLabel(it.from)} -> ${navRefLabel(it.to)} CRS 342" } ?: "NO LEG"
@@ -501,6 +721,7 @@ private fun AerobagApp() {
                     uptimeLabel = uptimeLabel,
                     fixture = fixture,
                     uiTheme = uiTheme,
+                    situation = appState.situation,
                     selectedMapId = selectedMapId,
                     viewport = mapViewport,
                     onViewportChange = { mapViewport = it },
@@ -545,6 +766,7 @@ private fun AerobagApp() {
                     selectedAirport = selectedAirport,
                     selectedChart = selectedChart,
                     uiTheme = uiTheme,
+                    situation = appState.situation,
                     folderOpen = chartFolderOpen,
                     viewport = chartViewport,
                     onViewportChange = { chartViewport = it },
@@ -606,6 +828,7 @@ private fun MapExplorerPage(
     uptimeLabel: String,
     fixture: net.jonh.aerobag.prototype.domain.ContentFixture,
     uiTheme: UiTheme,
+    situation: Situation,
     selectedMapId: String,
     viewport: MapViewportState,
     onViewportChange: (MapViewportState) -> Unit,
@@ -717,6 +940,53 @@ private fun MapExplorerPage(
             val (leftPx, widthPx) = columnRects.getValue(tile.x)
             val (topPx, heightPx) = rowRects.getValue(tile.yTms)
             Triple(tile.zoom, tile.x, tile.yTms) to TileRect(leftPx, topPx, widthPx, heightPx)
+        }
+    }
+    val situationOverlay = remember(situation, viewport, surfaceWidthUnits, surfaceHeightUnits) {
+        resolveSituationOverlay(
+            situation = situation,
+            viewport = viewport,
+            widthUnits = surfaceWidthUnits,
+            heightUnits = surfaceHeightUnits,
+        )
+    }
+    val aircraftDrawable = remember(context) { AppCompatResources.getDrawable(context, R.drawable.plan_view_icon)?.mutate() }
+    val outlinePaint = remember {
+        Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.argb(102, 0, 0, 0)
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+    }
+    val fillPaint = remember {
+        Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.WHITE
+            style = Paint.Style.FILL
+        }
+    }
+    val labelStrokePaint = remember {
+        Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.argb(102, 0, 0, 0)
+            style = Paint.Style.STROKE
+            strokeJoin = Paint.Join.ROUND
+            strokeWidth = 5f
+            textAlign = Paint.Align.CENTER
+            textSize = 16f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
+        }
+    }
+    val labelFillPaint = remember {
+        Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.WHITE
+            style = Paint.Style.FILL
+            textAlign = Paint.Align.CENTER
+            textSize = 16f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
         }
     }
     val tileBitmaps = remember(tiles, selectedMap.id, installRevision) {
@@ -984,6 +1254,79 @@ private fun MapExplorerPage(
                 }
             }
         }
+        if (situationOverlay != null) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val densityScale = density.density
+                val center = Offset(situationOverlay.pointUnits.x * densityScale, situationOverlay.pointUnits.y * densityScale)
+                val ringRadius = situationOverlay.ring.radiusUnits * densityScale
+                drawCircle(
+                    color = Color(0x66000000),
+                    radius = ringRadius,
+                    center = center,
+                    style = Stroke(width = 16f),
+                )
+                drawCircle(
+                    color = Color.White,
+                    radius = ringRadius,
+                    center = center,
+                    style = Stroke(width = 6f),
+                )
+                situationOverlay.ring.tickMarks.forEach { tick ->
+                    val inner = Offset(tick.innerUnits.x * densityScale, tick.innerUnits.y * densityScale)
+                    val outer = Offset(tick.outerUnits.x * densityScale, tick.outerUnits.y * densityScale)
+                    drawLine(Color(0x66000000), inner, outer, strokeWidth = 8f)
+                    drawLine(Color.White, inner, outer, strokeWidth = 6f)
+                }
+                drawCircle(
+                    color = Color.White,
+                    radius = ringRadius,
+                    center = center,
+                    style = Stroke(width = 6f),
+                )
+                if (situationOverlay.predictorUnits != null) {
+                    val predictor = Offset(
+                        situationOverlay.predictorUnits.x * densityScale,
+                        situationOverlay.predictorUnits.y * densityScale,
+                    )
+                    val shaftEnd = arrowShaftEndPoint(center, predictor)
+                    drawLine(Color(0x66000000), center, shaftEnd, strokeWidth = 8f)
+                    drawLine(Color.White, center, shaftEnd, strokeWidth = 6f)
+                    val arrow = arrowHeadPath(center, predictor)
+                    drawPath(arrow, Color.White)
+                    drawPath(arrow, Color(0x66000000), style = Stroke(width = 1.5f))
+                }
+                drawContext.canvas.nativeCanvas.apply {
+                    val labelPoint = Offset(
+                        situationOverlay.ring.labelPointUnits.x * densityScale,
+                        situationOverlay.ring.labelPointUnits.y * densityScale,
+                    )
+                    save()
+                    rotate(situationOverlay.ring.labelRotationDeg, labelPoint.x, labelPoint.y)
+                    labelStrokePaint.textSize = 16f * densityScale
+                    labelFillPaint.textSize = 16f * densityScale
+                    drawText(situationOverlay.ring.labelText, labelPoint.x, labelPoint.y + labelFillPaint.textSize * 0.33f, labelStrokePaint)
+                    drawText(situationOverlay.ring.labelText, labelPoint.x, labelPoint.y + labelFillPaint.textSize * 0.33f, labelFillPaint)
+                    restore()
+                    val iconSizePx = ThumbSize.toPx() * 0.72f
+                    val left = (center.x - iconSizePx / 2f).roundToInt()
+                    val top = (center.y - iconSizePx / 2f).roundToInt()
+                    val drawable = aircraftDrawable
+                    if (drawable != null) {
+                        save()
+                        rotate(situationOverlay.headingDeg, center.x, center.y)
+                        drawable.setBounds(left, top, (left + iconSizePx).roundToInt(), (top + iconSizePx).roundToInt())
+                        drawable.draw(this)
+                        restore()
+                    }
+                }
+            }
+        }
+        SituationStatusBadge(
+            situation = situation,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = ThumbGap, end = ThumbGap),
+        )
 
         if (topLeftTrayOpen) {
             Scrim {
@@ -1273,6 +1616,7 @@ private fun ChartsPage(
     selectedAirport: ChartAirport?,
     selectedChart: ChartAsset?,
     uiTheme: UiTheme,
+    situation: Situation,
     folderOpen: Boolean,
     viewport: net.jonh.aerobag.prototype.domain.ImageViewportState?,
     onViewportChange: (net.jonh.aerobag.prototype.domain.ImageViewportState?) -> Unit,
@@ -1521,6 +1865,13 @@ private fun ChartsPage(
                 chartTrayOpen = false
             }
         }
+
+        SituationStatusBadge(
+            situation = situation,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = ThumbGap, end = ThumbGap),
+        )
 
         ChartViewerSelectors(
             modifier = Modifier.align(Alignment.TopStart),

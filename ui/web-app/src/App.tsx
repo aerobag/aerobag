@@ -101,6 +101,7 @@ const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
 const plateFolderCategoryOrder: PlateFolderCategory[] = ["airport-diagram", "csup", "takeoff-mins", "approach", "departure", "star"];
 const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
+const situationRingSizesNm = [0.25, 0.5, 0.8, 1, 1.5, 2, 3, 5, 8, 10, 15, 20, 30, 50, 100, 150, 200] as const;
 
 type PersistedWebUiState = {
   page?: AppPage;
@@ -793,6 +794,79 @@ function MapPage(props: {
         {situationOverlay ? (
           <>
             <svg className="situationOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
+              <circle
+                cx={situationOverlay.point.x}
+                cy={situationOverlay.point.y}
+                r={situationOverlay.ring.radiusPx}
+                fill="none"
+                stroke="rgba(0, 0, 0, 0.4)"
+                strokeWidth="8"
+              />
+              <circle
+                cx={situationOverlay.point.x}
+                cy={situationOverlay.point.y}
+                r={situationOverlay.ring.radiusPx}
+                fill="none"
+                stroke="#ffffff"
+                strokeWidth="3"
+              />
+              {situationOverlay.ring.tickMarks.map((tick, index) => (
+                <Fragment key={index}>
+                  <line
+                    x1={tick.inner.x}
+                    y1={tick.inner.y}
+                    x2={tick.outer.x}
+                    y2={tick.outer.y}
+                    stroke="rgba(0, 0, 0, 0.4)"
+                    strokeWidth="8"
+                    strokeLinecap="round"
+                  />
+                  <line
+                    x1={tick.inner.x}
+                    y1={tick.inner.y}
+                    x2={tick.outer.x}
+                    y2={tick.outer.y}
+                    stroke="#ffffff"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                  />
+                </Fragment>
+              ))}
+              <circle
+                cx={situationOverlay.point.x}
+                cy={situationOverlay.point.y}
+                r={situationOverlay.ring.radiusPx}
+                fill="none"
+                stroke="#ffffff"
+                strokeWidth="3"
+              />
+              <text
+                x={situationOverlay.ring.label.point.x}
+                y={situationOverlay.ring.label.point.y}
+                fill="none"
+                stroke="rgba(0, 0, 0, 0.4)"
+                strokeWidth="5"
+                strokeLinejoin="round"
+                fontSize="16"
+                fontWeight="700"
+                textAnchor="middle"
+                dominantBaseline="middle"
+                transform={`rotate(${situationOverlay.ring.label.rotationDeg} ${situationOverlay.ring.label.point.x} ${situationOverlay.ring.label.point.y})`}
+              >
+                {situationOverlay.ring.label.text}
+              </text>
+              <text
+                x={situationOverlay.ring.label.point.x}
+                y={situationOverlay.ring.label.point.y}
+                fill="#ffffff"
+                fontSize="16"
+                fontWeight="700"
+                textAnchor="middle"
+                dominantBaseline="middle"
+                transform={`rotate(${situationOverlay.ring.label.rotationDeg} ${situationOverlay.ring.label.point.x} ${situationOverlay.ring.label.point.y})`}
+              >
+                {situationOverlay.ring.label.text}
+              </text>
               {situationOverlay.predictor ? (
                 <g>
                   {(() => {
@@ -1842,12 +1916,13 @@ function resolveSituationOverlay(
   }
   const point = latLonToScreen(situation.position.lat, situation.position.lon, viewport, width, height);
   const headingDeg = situation.orientation_deg ?? 0;
+  const ring = selectSituationRing(situation.position.lat, situation.position.lon, viewport, width, height);
   const ahead =
     situation.speed_kt !== null
       ? projectAhead(situation.position.lat, situation.position.lon, headingDeg, situation.speed_kt / 60)
       : null;
   const predictor = ahead ? latLonToScreen(ahead.lat, ahead.lon, viewport, width, height) : null;
-  return { point, predictor, headingDeg };
+  return { point, predictor, headingDeg, ring };
 }
 
 function latLonToScreen(lat: number, lon: number, viewport: MapViewportState, width: number, height: number) {
@@ -1901,6 +1976,65 @@ function arrowShaftEndPoint(from: { x: number; y: number }, to: { x: number; y: 
     x: to.x - headLength * Math.cos(angle),
     y: to.y - headLength * Math.sin(angle),
   };
+}
+
+function selectSituationRing(
+  lat: number,
+  lon: number,
+  viewport: MapViewportState,
+  width: number,
+  height: number,
+) {
+  const center = latLonToScreen(lat, lon, viewport, width, height);
+  const smaller = Math.min(width, height);
+  const minDiameter = smaller * 0.5;
+  const maxDiameter = smaller * 0.8;
+  const targetDiameter = smaller * 0.65;
+  const candidates = situationRingSizesNm.map((radiusNm) => {
+    const edge = projectAhead(lat, lon, 90, radiusNm);
+    const edgePoint = latLonToScreen(edge.lat, edge.lon, viewport, width, height);
+    const radiusPx = Math.hypot(edgePoint.x - center.x, edgePoint.y - center.y);
+    const diameterPx = radiusPx * 2;
+    const outOfBounds =
+      diameterPx < minDiameter ? minDiameter - diameterPx : diameterPx > maxDiameter ? diameterPx - maxDiameter : 0;
+    const score = outOfBounds > 0 ? 10000 + outOfBounds : Math.abs(diameterPx - targetDiameter);
+    return { radiusNm, radiusPx, score };
+  });
+  const best = candidates.reduce((currentBest, candidate) => (candidate.score < currentBest.score ? candidate : currentBest));
+  const labelAngle = -45;
+  const labelPoint = pointOnCircle(center, best.radiusPx + 16, labelAngle);
+  return {
+    radiusNm: best.radiusNm,
+    radiusPx: best.radiusPx,
+    tickMarks: buildRingTickMarks(center, best.radiusPx),
+    label: {
+      point: labelPoint,
+      rotationDeg: 45,
+      text: formatRingDistance(best.radiusNm),
+    },
+  };
+}
+
+function buildRingTickMarks(center: { x: number; y: number }, radiusPx: number) {
+  return Array.from({ length: 12 }, (_, index) => {
+    const angleDeg = index * 30;
+    return {
+      inner: pointOnCircle(center, radiusPx - 14, angleDeg),
+      outer: pointOnCircle(center, radiusPx, angleDeg),
+    };
+  });
+}
+
+function pointOnCircle(center: { x: number; y: number }, radiusPx: number, angleDeg: number) {
+  const radians = (angleDeg * Math.PI) / 180;
+  return {
+    x: center.x + radiusPx * Math.cos(radians),
+    y: center.y + radiusPx * Math.sin(radians),
+  };
+}
+
+function formatRingDistance(radiusNm: number) {
+  return `${Number.isInteger(radiusNm) ? radiusNm.toFixed(0) : radiusNm.toString()}nm`;
 }
 
 function navRefLabel(value: { Airport: string } | { Navaid: string } | { Fix: string }) {

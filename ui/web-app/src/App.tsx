@@ -34,6 +34,7 @@ import {
   zoomImageAroundPoint,
   type ImageViewportState,
 } from "./domain/imageViewport";
+import { pointTileUrl, tileKey, visiblePointRecords, visibleTileWindow, type PointTilePayload } from "./domain/vectorTiles";
 
 type SurfaceSize = {
   width: number;
@@ -581,7 +582,9 @@ function MapPage(props: {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const trayGroup = useModalTrayGroup(["page", "family"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
+  const [fixTilePayloads, setFixTilePayloads] = useState<PointTilePayload[]>([]);
   const viewportRef = useRef<MapViewportState>(viewport);
+  const fixTileCacheRef = useRef<Map<string, PointTilePayload | null>>(new Map());
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<ReturnType<typeof createPinchSnapshot> | null>(null);
@@ -633,6 +636,69 @@ function MapPage(props: {
   const situationOverlay = useMemo(
     () => resolveSituationOverlay(situation, viewport, surfaceSize.width, surfaceSize.height),
     [situation, viewport, surfaceSize.height, surfaceSize.width],
+  );
+  const visibleFixTileWindow = useMemo(
+    () => (viewport.zoom >= 9 ? visibleTileWindow(10, viewport, surfaceSize.width, surfaceSize.height) : []),
+    [surfaceSize.height, surfaceSize.width, viewport],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+    const cache = fixTileCacheRef.current;
+    const visibleKeys = new Set(visibleFixTileWindow.map((tile) => tile.key));
+    const cachedPayloads = visibleFixTileWindow
+      .map((tile) => cache.get(tile.key))
+      .filter((payload): payload is PointTilePayload => payload !== undefined && payload !== null);
+    setFixTilePayloads(cachedPayloads);
+
+    async function loadMissingTiles() {
+      const missingTiles = visibleFixTileWindow.filter((tile) => !cache.has(tile.key));
+      if (missingTiles.length === 0) {
+        return;
+      }
+      await Promise.all(
+        missingTiles.map(async (tile) => {
+          const response = await fetch(pointTileUrl("fix", tile.z, tile.x, tile.y), { signal: controller.signal });
+          if (response.status === 404) {
+            cache.set(tile.key, null);
+            return;
+          }
+          if (!response.ok) {
+            throw new Error(`failed to load fix vector tile ${tile.key}: ${response.status}`);
+          }
+          const payload = (await response.json()) as PointTilePayload;
+          cache.set(tile.key, payload);
+        }),
+      );
+      if (cancelled) {
+        return;
+      }
+      setFixTilePayloads(
+        visibleFixTileWindow
+          .map((tile) => cache.get(tile.key))
+          .filter((payload): payload is PointTilePayload => payload !== undefined && payload !== null),
+      );
+    }
+
+    loadMissingTiles().catch((error: unknown) => {
+      if ((error as { name?: string } | null)?.name === "AbortError") {
+        return;
+      }
+      console.error(error);
+    });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      setFixTilePayloads((current) =>
+        current.filter((payload) => visibleKeys.has(tileKey(payload.z, payload.x, payload.y))),
+      );
+    };
+  }, [visibleFixTileWindow]);
+  const visibleFixes = useMemo(
+    () => visiblePointRecords(fixTilePayloads, viewport, surfaceSize.width, surfaceSize.height),
+    [fixTilePayloads, surfaceSize.height, surfaceSize.width, viewport],
   );
 
   function updateViewport(next: MapViewportState) {
@@ -783,6 +849,18 @@ function MapPage(props: {
             ) : null}
           </div>
         ))}
+        {visibleFixes.length > 0 ? (
+          <svg className="vectorOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
+            {visibleFixes.map((fix) => (
+              <g key={fix.id} transform={`translate(${fix.x} ${fix.y})`}>
+                <path d="M 0 -8 L 7 6 L -7 6 Z" className="fixMarker" />
+                <text x="0" y="20" textAnchor="middle" className="fixLabel">
+                  {fix.label}
+                </text>
+              </g>
+            ))}
+          </svg>
+        ) : null}
         <SituationStatusBadge situation={situation} />
         {situationOverlay ? (
           <>
@@ -1023,25 +1101,23 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
     <section className="appPage planPage">
       {trayOpen ? <TrayScrim ariaLabel="Close page tray" onClose={trayGroup.closeAll} /> : null}
 
-      <div className="pageChrome">
-        <div className="chartDock">
-          <TrayDock
-            launcherLabel={pageOptions.find((option) => option.id === props.page)?.launcherLabel ?? "PLN"}
-            open={trayGroup.isOpen("page")}
-            blocked={selectedWaypointIndex !== null}
-            onToggle={() => trayGroup.toggle("page")}
-            ariaLabel="Page"
-            options={pageOptions.map((option) => ({
-              id: option.id,
-              label: option.label,
-              active: option.id === props.page,
-              onSelect: () => {
-                props.onSelectPage(option.id);
-                trayGroup.close("page");
-              },
-            }))}
-          />
-        </div>
+      <div className="chartDock">
+        <TrayDock
+          launcherLabel={pageOptions.find((option) => option.id === props.page)?.launcherLabel ?? "PLN"}
+          open={trayGroup.isOpen("page")}
+          blocked={selectedWaypointIndex !== null}
+          onToggle={() => trayGroup.toggle("page")}
+          ariaLabel="Page"
+          options={pageOptions.map((option) => ({
+            id: option.id,
+            label: option.label,
+            active: option.id === props.page,
+            onSelect: () => {
+              props.onSelectPage(option.id);
+              trayGroup.close("page");
+            },
+          }))}
+        />
       </div>
 
       <div className="planTable">
@@ -1608,7 +1684,6 @@ function ChartsPage(props: {
             blocked={trayGroup.blocked("page")}
             onToggle={() => trayGroup.toggle("page")}
             ariaLabel="Page"
-            style="plate_narrow"
             options={pageOptions.map((option) => ({
               id: option.id,
               label: option.label,

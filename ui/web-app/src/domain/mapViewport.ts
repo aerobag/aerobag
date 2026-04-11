@@ -50,7 +50,7 @@ export function preserveViewportForMap(
 }
 
 export function clampZoom(zoom: number, mapView: MapView): number {
-  return Math.min(mapView.max_zoom, Math.max(mapView.min_zoom, zoom));
+  return Math.min(mapView.max_zoom + 1, Math.max(mapView.min_zoom, zoom));
 }
 
 export function latLonToWorld(lat: number, lon: number): { x: number; y: number } {
@@ -95,6 +95,19 @@ export function screenToWorld(
   return {
     x: viewport.centerWorldX + (point.x - width / 2) / scale,
     y: viewport.centerWorldY + (point.y - height / 2) / scale,
+  };
+}
+
+export function worldToScreen(
+  viewport: MapViewportState,
+  world: { x: number; y: number },
+  width: number,
+  height: number,
+): ScreenPoint {
+  const scale = scaleForZoom(viewport.zoom);
+  return {
+    x: (world.x - viewport.centerWorldX) * scale + width / 2,
+    y: (world.y - viewport.centerWorldY) * scale + height / 2,
   };
 }
 

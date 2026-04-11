@@ -19,6 +19,7 @@ const sectionalRoot = path.join(webTargetRoot, "generated-static", "sectional-pa
 const chartAssetRoot = path.join(webTargetRoot, "generated-static", "chart-assets");
 const navDbRoot = path.join(webTargetRoot, "generated-static", "nav-db");
 const chartAssetManifestPath = path.join(webTargetRoot, "generated-static", "chart-assets-manifest.json");
+const vectorRoot = path.join(webTargetRoot, "generated-static", "vectors");
 
 function lookupChartAsset(requestPath: string) {
   if (!fs.existsSync(chartAssetManifestPath)) {
@@ -74,6 +75,7 @@ function aerobagStaticPlugin(): Plugin {
       server.middlewares.use("/chart-assets", mountStaticTree(chartAssetRoot));
       server.middlewares.use("/chart-thumbnails", mountStaticTree(chartAssetRoot));
       server.middlewares.use("/nav-db", mountStaticTree(navDbRoot));
+      server.middlewares.use("/vectors", mountStaticTree(vectorRoot));
     },
     writeBundle(outputOptions) {
       const outputDir = outputOptions.dir;
@@ -85,6 +87,7 @@ function aerobagStaticPlugin(): Plugin {
         [chartAssetRoot, "chart-assets"],
         [chartAssetRoot, "chart-thumbnails"],
         [navDbRoot, "nav-db"],
+        [vectorRoot, "vectors"],
       ] as const) {
         if (!fs.existsSync(sourceRoot)) {
           continue;
@@ -110,7 +113,7 @@ export default defineConfig({
     host: "0.0.0.0",
     allowedHosts: ["aerobag-dev.iac.jonh.net"],
     fs: {
-      allow: [workspaceRoot, webSourceRoot, generatedRoot, sectionalRoot, chartAssetRoot, navDbRoot],
+      allow: [workspaceRoot, webSourceRoot, generatedRoot, sectionalRoot, chartAssetRoot, navDbRoot, vectorRoot],
     },
   },
   build: {

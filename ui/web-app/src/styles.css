@@ -101,6 +101,32 @@ button {
   pointer-events: none;
 }
 
+.vectorOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.fixMarker {
+  fill: #39d9ff;
+  stroke: rgba(8, 18, 24, 0.7);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+}
+
+.fixLabel {
+  fill: #39d9ff;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  paint-order: stroke;
+  stroke: rgba(8, 18, 24, 0.7);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
 .situationAircraft {
   position: absolute;
   z-index: 2;
@@ -210,7 +236,14 @@ button {
   padding: 0;
   border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
   border-radius: var(--thumb-radius);
-  background: var(--theme-button-bg);
+  background:
+    linear-gradient(
+      to bottom,
+      var(--theme-button-bg) 0,
+      var(--theme-button-bg) 50%,
+      var(--tray-accent, var(--theme-button-bg)) 50%,
+      var(--tray-accent, var(--theme-button-bg)) 100%
+    );
   box-shadow: var(--shadow);
   color: var(--theme-button-fg);
   display: inline-flex;
@@ -223,7 +256,14 @@ button {
 }
 
 .chartButton.isOpen {
-  background: color-mix(in srgb, var(--theme-button-bg) 88%, white);
+  background:
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--theme-button-bg) 88%, white) 0,
+      color-mix(in srgb, var(--theme-button-bg) 88%, white) 50%,
+      var(--tray-accent, color-mix(in srgb, var(--theme-button-bg) 88%, white)) 50%,
+      var(--tray-accent, color-mix(in srgb, var(--theme-button-bg) 88%, white)) 100%
+    );
 }
 
 .chartButton.isBlocked {

@@ -1261,6 +1261,7 @@ function ChartsPage(props: {
 }) {
   const { page, pageHistory, uptimeLabel, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onSelectAirport, onSelectChart, situation } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
   const [imageSize, setImageSize] = useState<{ chartId: string; width: number; height: number } | null>(null);
   const viewportRef = useRef<ImageViewportState | null>(null);
@@ -1320,6 +1321,31 @@ function ChartsPage(props: {
     lastLocalViewportRef.current = null;
     lastChartLayoutKeyRef.current = "";
   }, [selectedChart?.id]);
+
+  useEffect(() => {
+    const img = imageRef.current;
+    if (!selectedChart || !img) {
+      return;
+    }
+    if (!img.complete || img.naturalWidth <= 0 || img.naturalHeight <= 0) {
+      return;
+    }
+    setImageSize((current) => {
+      if (
+        current &&
+        current.chartId === selectedChart.id &&
+        current.width === img.naturalWidth &&
+        current.height === img.naturalHeight
+      ) {
+        return current;
+      }
+      return {
+        chartId: selectedChart.id,
+        width: img.naturalWidth,
+        height: img.naturalHeight,
+      };
+    });
+  }, [selectedChart?.id, selectedChart?.asset_url]);
 
   useEffect(() => {
     if (viewport === null) {
@@ -1582,6 +1608,7 @@ function ChartsPage(props: {
         ) : selectedChart ? (
           <img
             key={selectedChart.id}
+            ref={imageRef}
             className="chartImage"
             src={selectedChart.asset_url}
             alt={selectedChart.label}

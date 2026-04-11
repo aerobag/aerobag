@@ -63,7 +63,7 @@ WEB_NAV_DB_ROOT = WEB_TARGET_ROOT / "generated-static" / "nav-db"
 ANDROID_NAV_DB_ROOT = ANDROID_TARGET_ROOT / "assets" / "nav-db"
 PRODUCT_MAIN_DB = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "data" / "output" / "main.db"
 VECTOR_OUTPUT_ROOT = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "vectors-2604" / "output"
-FIX_VECTOR_TILE_ROOT = VECTOR_OUTPUT_ROOT / "points" / "fix" / "10"
+FIX_VECTOR_TILE_ROOT = VECTOR_OUTPUT_ROOT / "points" / "fix" / "9"
 BOSTON_TAC_GEOJSON = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "charts-tac" / "work" / "charts-tac" / "TAC" / "Boston TAC.geojson"
 BOSTON_TAC_TILE_ROOT = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "charts-tac" / "work" / "charts-tac" / "tiles" / "1"
 
@@ -373,7 +373,7 @@ def stage_web_vectors() -> None:
     WEB_VECTOR_ROOT.mkdir(parents=True, exist_ok=True)
     if not FIX_VECTOR_TILE_ROOT.exists():
         raise RuntimeError(f"missing vector tile root {FIX_VECTOR_TILE_ROOT}")
-    shutil.copytree(FIX_VECTOR_TILE_ROOT, WEB_VECTOR_ROOT / "points" / "fix" / "10")
+    shutil.copytree(FIX_VECTOR_TILE_ROOT, WEB_VECTOR_ROOT / "points" / "fix" / "9")
 
 
 def family_display_name(resource_index: dict, family_id: str) -> str:

@@ -414,6 +414,12 @@ button {
   pointer-events: auto;
 }
 
+.debugLauncher.isWarn {
+  background: #c8741b;
+  border-color: color-mix(in srgb, #c8741b 72%, black);
+  color: #fff7ef;
+}
+
 .debugPanel {
   width: 0;
   min-height: var(--thumb);

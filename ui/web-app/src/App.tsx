@@ -5,7 +5,6 @@ import uiTheme from "@generated/uiTheme.json";
 import planViewIcon from "./assets/plan-view-icon.svg";
 import {
   loadBestAvailableAdapter,
-  MockAppCoreAdapter,
   type AppCoreAdapter,
   type DerivedChartPageState,
   type UiSession,
@@ -34,7 +33,8 @@ import {
   zoomImageAroundPoint,
   type ImageViewportState,
 } from "./domain/imageViewport";
-import { pointTileUrl, tileKey, visiblePointRecords, visibleTileWindow, type PointTilePayload } from "./domain/vectorTiles";
+import { pointTileUrl, type PointTilePayload } from "./domain/vectorTiles";
+import type { MapOverlayQueryResult } from "./domain/appCoreAdapter";
 
 type SurfaceSize = {
   width: number;
@@ -150,7 +150,7 @@ export default function App() {
   const persistedUiState = useMemo(readPersistedWebUiState, []);
   const [page, setPage] = useState<AppPage>(persistedUiState.page ?? "map");
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
-  const [appCoreAdapter, setAppCoreAdapter] = useState<AppCoreAdapter>(() => new MockAppCoreAdapter());
+  const [appCoreAdapter, setAppCoreAdapter] = useState<AppCoreAdapter | null>(null);
   const [selectedMapId, setSelectedMapId] = useState<string>(mapViews[0].id);
   const initialRecentAirportIds = useMemo(
     () => mergeRecentAirportIds(chartPage.airports, persistedUiState.recentAirportIds ?? []),
@@ -267,6 +267,9 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     let nextSession: UiSession | null = null;
+    if (!appCoreAdapter) {
+      return;
+    }
     appCoreAdapter.createUiSession(
       resourceIndex,
       samplePlan,
@@ -443,6 +446,7 @@ export default function App() {
           legSummary={legSummary}
           locationSearch={locationSearch}
           situation={appState.situation}
+          uiSession={uiSession}
         />
       </div>
 
@@ -560,6 +564,7 @@ function MapPage(props: {
   legSummary: string;
   locationSearch: string;
   situation: Situation;
+  uiSession: UiSession | null;
 }) {
   const {
     debugTileLabels,
@@ -578,13 +583,17 @@ function MapPage(props: {
     legSummary,
     locationSearch,
     situation,
+    uiSession,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const trayGroup = useModalTrayGroup(["page", "family"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
-  const [fixTilePayloads, setFixTilePayloads] = useState<PointTilePayload[]>([]);
+  const [mapOverlay, setMapOverlay] = useState<MapOverlayQueryResult>({
+    needed_fix_tiles: [],
+    visible_features: [],
+    warnings: [],
+  });
   const viewportRef = useRef<MapViewportState>(viewport);
-  const fixTileCacheRef = useRef<Map<string, PointTilePayload | null>>(new Map());
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<ReturnType<typeof createPinchSnapshot> | null>(null);
@@ -637,51 +646,53 @@ function MapPage(props: {
     () => resolveSituationOverlay(situation, viewport, surfaceSize.width, surfaceSize.height),
     [situation, viewport, surfaceSize.height, surfaceSize.width],
   );
-  const visibleFixTileWindow = useMemo(
-    () => (viewport.zoom >= 9 ? visibleTileWindow(10, viewport, surfaceSize.width, surfaceSize.height) : []),
-    [surfaceSize.height, surfaceSize.width, viewport],
-  );
 
   useEffect(() => {
+    if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      setMapOverlay({
+        needed_fix_tiles: [],
+        visible_features: [],
+        warnings: [],
+      });
+      return;
+    }
+    const session = uiSession;
     const controller = new AbortController();
     let cancelled = false;
-    const cache = fixTileCacheRef.current;
-    const visibleKeys = new Set(visibleFixTileWindow.map((tile) => tile.key));
-    const cachedPayloads = visibleFixTileWindow
-      .map((tile) => cache.get(tile.key))
-      .filter((payload): payload is PointTilePayload => payload !== undefined && payload !== null);
-    setFixTilePayloads(cachedPayloads);
 
-    async function loadMissingTiles() {
-      const missingTiles = visibleFixTileWindow.filter((tile) => !cache.has(tile.key));
-      if (missingTiles.length === 0) {
-        return;
+    async function syncMapOverlay() {
+      let overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
+      if (overlay.needed_fix_tiles.length > 0) {
+        const tiles = await Promise.all(
+          overlay.needed_fix_tiles.map(async (tile) => {
+            const response = await fetch(pointTileUrl(tile.layer, tile.z, tile.x, tile.y), {
+              signal: controller.signal,
+            });
+            if (response.status === 404) {
+              return {
+                schema_version: 1,
+                layer: tile.layer,
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+                records: [],
+              } satisfies PointTilePayload;
+            }
+            if (!response.ok) {
+              throw new Error(`failed to load vector tile ${tile.z}/${tile.x}/${tile.y}: ${response.status}`);
+            }
+            return (await response.json()) as PointTilePayload;
+          }),
+        );
+        await session.ingestFixTiles(tiles);
+        overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
       }
-      await Promise.all(
-        missingTiles.map(async (tile) => {
-          const response = await fetch(pointTileUrl("fix", tile.z, tile.x, tile.y), { signal: controller.signal });
-          if (response.status === 404) {
-            cache.set(tile.key, null);
-            return;
-          }
-          if (!response.ok) {
-            throw new Error(`failed to load fix vector tile ${tile.key}: ${response.status}`);
-          }
-          const payload = (await response.json()) as PointTilePayload;
-          cache.set(tile.key, payload);
-        }),
-      );
-      if (cancelled) {
-        return;
+      if (!cancelled) {
+        setMapOverlay(overlay);
       }
-      setFixTilePayloads(
-        visibleFixTileWindow
-          .map((tile) => cache.get(tile.key))
-          .filter((payload): payload is PointTilePayload => payload !== undefined && payload !== null),
-      );
     }
 
-    loadMissingTiles().catch((error: unknown) => {
+    syncMapOverlay().catch((error: unknown) => {
       if ((error as { name?: string } | null)?.name === "AbortError") {
         return;
       }
@@ -691,15 +702,8 @@ function MapPage(props: {
     return () => {
       cancelled = true;
       controller.abort();
-      setFixTilePayloads((current) =>
-        current.filter((payload) => visibleKeys.has(tileKey(payload.z, payload.x, payload.y))),
-      );
     };
-  }, [visibleFixTileWindow]);
-  const visibleFixes = useMemo(
-    () => visiblePointRecords(fixTilePayloads, viewport, surfaceSize.width, surfaceSize.height),
-    [fixTilePayloads, surfaceSize.height, surfaceSize.width, viewport],
-  );
+  }, [surfaceSize.height, surfaceSize.width, uiSession, viewport]);
 
   function updateViewport(next: MapViewportState) {
     viewportRef.current = next;
@@ -849,10 +853,10 @@ function MapPage(props: {
             ) : null}
           </div>
         ))}
-        {visibleFixes.length > 0 ? (
+        {mapOverlay.visible_features.length > 0 ? (
           <svg className="vectorOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
-            {visibleFixes.map((fix) => (
-              <g key={fix.id} transform={`translate(${fix.x} ${fix.y})`}>
+            {mapOverlay.visible_features.map((fix) => (
+              <g key={fix.id} transform={`translate(${fix.screen_x} ${fix.screen_y})`}>
                 <path d="M 0 -8 L 7 6 L -7 6 Z" className="fixMarker" />
                 <text x="0" y="20" textAnchor="middle" className="fixLabel">
                   {fix.label}
@@ -1041,6 +1045,7 @@ function MapPage(props: {
         <div className="debugDock">
           <DebugDock
             open={debugOpen}
+            warn={mapOverlay.warnings.length > 0}
             onToggle={() => setDebugOpen((open) => !open)}
           >
             <div className="debugLine">page {pageLabel(page)}</div>
@@ -1049,6 +1054,11 @@ function MapPage(props: {
             <div className="debugLine">family {selectedFamily.launcherLabel}</div>
             <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
             <div className="debugLine">tiles {debugSummary.tileCount}</div>
+            <div className="debugLine">fixes {mapOverlay.visible_features.length}</div>
+            <div className="debugLine">needFixTiles {mapOverlay.needed_fix_tiles.length}</div>
+            {mapOverlay.warnings.map((warning) => (
+              <div key={warning.code} className="debugLine">warn {warning.code}</div>
+            ))}
             <div className="debugLine">src z {debugSummary.tileZooms.length > 0 ? debugSummary.tileZooms.join(", ") : "(none)"}</div>
             <div className="debugLine">pkg {debugSummary.packages.length > 0 ? debugSummary.packages.join(", ") : "(none)"}</div>
             <div className="debugLine">maps {debugSummary.mapIds.join(", ")}</div>
@@ -1763,12 +1773,12 @@ function ChartsPage(props: {
   );
 }
 
-function DebugDock(props: { open: boolean; onToggle: () => void; children: React.ReactNode }) {
+function DebugDock(props: { open: boolean; warn?: boolean; onToggle: () => void; children: React.ReactNode }) {
   return (
     <>
       <button
         type="button"
-        className="debugLauncher"
+        className={`debugLauncher${props.warn ? " isWarn" : ""}`}
         onPointerDown={stopPointer}
         onPointerUp={stopPointer}
         onDoubleClick={stopDoubleClick}

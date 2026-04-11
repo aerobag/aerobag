@@ -359,6 +359,22 @@ pub fn get_session_snapshot(handle: u64) -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
+pub fn ingest_fix_tiles_in_session(handle: u64, tiles_json: &str) -> Result<(), JsValue> {
+    ingest_fix_tiles_in_session_json(handle, tiles_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn get_map_overlay_in_session(
+    handle: u64,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+) -> Result<String, JsValue> {
+    get_map_overlay_in_session_json(handle, viewport_json, width_px, height_px)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn restore_chart_page_state_in_session(
     handle: u64,
     recent_airport_ids_json: &str,
@@ -906,6 +922,25 @@ fn select_chart_in_session_json(handle: u64, chart_id_json: &str) -> Result<Stri
 fn get_session_snapshot_json(handle: u64) -> Result<String, String> {
     let snapshot = app_core::get_session_snapshot(handle).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn ingest_fix_tiles_in_session_json(handle: u64, tiles_json: &str) -> Result<(), String> {
+    let tiles: Vec<app_core::PointTilePayload> =
+        serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
+    app_core::ingest_fix_tiles_in_session(handle, &tiles).map_err(|err| err.to_string())
+}
+
+fn get_map_overlay_in_session_json(
+    handle: u64,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let overlay = app_core::get_map_overlay_in_session(handle, viewport, width_px, height_px)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&overlay).map_err(|err| err.to_string())
 }
 
 fn restore_chart_page_state_in_session_json(

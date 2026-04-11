@@ -21,6 +21,11 @@ interface NativeBridge {
         delta: Int,
     ): String
 
+    fun setSituationInSessionJson(
+        handle: Long,
+        situationJson: String,
+    ): String
+
     fun selectAirportInSessionJson(
         handle: Long,
         airportIdJson: String,
@@ -110,6 +115,11 @@ object NativeBindings : NativeBridge {
         handle: Long,
         waypointIndex: Int,
         delta: Int,
+    ): String
+
+    external override fun setSituationInSessionJson(
+        handle: Long,
+        situationJson: String,
     ): String
 
     external override fun selectAirportInSessionJson(

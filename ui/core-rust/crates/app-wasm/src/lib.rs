@@ -121,6 +121,11 @@ pub fn select_airport_in_session(handle: u64, airport_id_json: &str) -> Result<S
 }
 
 #[wasm_bindgen]
+pub fn set_situation_in_session(handle: u64, situation_json: &str) -> Result<String, JsValue> {
+    set_situation_in_session_json(handle, situation_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn select_chart_in_session(handle: u64, chart_id_json: &str) -> Result<String, JsValue> {
     select_chart_in_session_json(handle, chart_id_json).map_err(|err| JsValue::from_str(&err))
 }
@@ -331,6 +336,14 @@ fn select_airport_in_session_json(handle: u64, airport_id_json: &str) -> Result<
     let airport_id: String = serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
     let snapshot =
         app_core::select_airport_in_session(handle, &airport_id).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn set_situation_in_session_json(handle: u64, situation_json: &str) -> Result<String, String> {
+    let situation: app_core::Situation =
+        serde_json::from_str(situation_json).map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::set_situation_in_session(handle, situation).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 

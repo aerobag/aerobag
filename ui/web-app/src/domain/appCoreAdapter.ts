@@ -7,6 +7,7 @@ import type {
   FlightPlan,
   ChartFamilyId,
   ContentAvailability,
+  Situation,
 } from "./types";
 import { sampleCatalog } from "./sampleData";
 
@@ -34,6 +35,7 @@ export interface UiSession {
   snapshot(): Promise<UiSessionSnapshot>;
   removeLeg(index: number): Promise<UiSessionSnapshot>;
   moveWaypoint(index: number, delta: number): Promise<UiSessionSnapshot>;
+  setSituation(situation: Situation): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   restoreChartPageState(recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
@@ -103,7 +105,13 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
   ): Promise<UiSession> {
     const adapter = this;
     let appState = await this.replaceFlightPlanState(
-      { active_plan: null, content_policy: "PreferLocal", last_content_requirements: [], last_content_report: null },
+      {
+        active_plan: null,
+        situation: { position: { kind: "unknown" }, orientation_deg: null, speed_kt: null },
+        content_policy: "PreferLocal",
+        last_content_requirements: [],
+        last_content_report: null,
+      },
       sampleCatalogLike(resourceIndex),
       plan,
     );
@@ -144,6 +152,10 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
           chartPageState.selected_airport_id,
           chartPageState.selected_chart_id,
         ));
+        return { app_state: appState, chart_page_state: chartPageState };
+      },
+      setSituation: async (situation) => {
+        appState = { ...appState, situation };
         return { app_state: appState, chart_page_state: chartPageState };
       },
       selectAirport: async (airportId) => {
@@ -356,6 +368,7 @@ type WasmModule = {
   create_ui_session(catalogJson: string, resourceIndexJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   remove_leg_in_session(handle: number, index: number): Promise<string> | string;
   move_waypoint_in_session(handle: number, waypointIndex: number, delta: number): Promise<string> | string;
+  set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
   get_session_snapshot(handle: number): Promise<string> | string;
@@ -410,6 +423,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       moveWaypoint: async (index, delta) => {
         snapshot = JSON.parse(await this.module.move_waypoint_in_session(handle, index, delta)) as UiSessionSnapshot;
+        return snapshot;
+      },
+      setSituation: async (situation) => {
+        snapshot = JSON.parse(await this.module.set_situation_in_session(handle, JSON.stringify(situation))) as UiSessionSnapshot;
         return snapshot;
       },
       selectAirport: async (airportId) => {
@@ -528,6 +545,7 @@ export async function loadBestAvailableAdapter(
       typeof mod.create_ui_session !== "function" ||
       typeof mod.remove_leg_in_session !== "function" ||
       typeof mod.move_waypoint_in_session !== "function" ||
+      typeof mod.set_situation_in_session !== "function" ||
       typeof mod.select_airport_in_session !== "function" ||
       typeof mod.select_chart_in_session !== "function" ||
       typeof mod.get_session_snapshot !== "function" ||

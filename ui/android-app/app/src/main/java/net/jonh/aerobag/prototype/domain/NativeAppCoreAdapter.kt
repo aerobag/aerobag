@@ -111,6 +111,11 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun setSituation(situation: Situation): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.setSituationInSessionJson(handle, json.encodeToString(situation.toWire())))
+        return snapshot
+    }
+
     fun selectAirport(airportId: String): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.selectAirportInSessionJson(handle, json.encodeToString(airportId)))
         return snapshot
@@ -251,6 +256,7 @@ private fun ContentInventory.toWire() = WireContentInventory(
 
 private fun AppState.toWire() = WireAppState(
     active_plan = activePlan?.toWire(),
+    situation = situation.toWire(),
     content_policy = contentPolicy.toWire(),
     last_content_requirements = lastContentRequirements.map { requirement ->
         WireContentRequirement(
@@ -278,6 +284,7 @@ private fun AppState.toWire() = WireAppState(
 
 private fun WireAppState.toUi() = AppState(
     activePlan = active_plan?.toUiFlightPlan(),
+    situation = situation.toUi(),
     contentPolicy = content_policy.toUi(),
     lastContentRequirements = last_content_requirements.map { requirement ->
         ContentRequirement(
@@ -302,6 +309,30 @@ private fun WireAppState.toUi() = AppState(
         )
     },
 )
+
+private fun Situation.toWire() = WireSituation(
+    position = position.toWire(),
+    orientation_deg = orientationDeg,
+    speed_kt = speedKt,
+)
+
+private fun WireSituation.toUi() = Situation(
+    position = position.toUi(),
+    orientationDeg = orientation_deg,
+    speedKt = speed_kt,
+)
+
+private fun SituationPosition.toWire(): WireSituationPosition = when (this) {
+    SituationPosition.Unknown -> WireSituationPosition.Unknown
+    is SituationPosition.LatLon -> WireSituationPosition.LatLon(lat = lat, lon = lon)
+    is SituationPosition.FlightPlanLocation -> WireSituationPosition.FlightPlanLocation(leg_index = legIndex, lat = lat, lon = lon)
+}
+
+private fun WireSituationPosition.toUi(): SituationPosition = when (this) {
+    WireSituationPosition.Unknown -> SituationPosition.Unknown
+    is WireSituationPosition.LatLon -> SituationPosition.LatLon(lat = lat, lon = lon)
+    is WireSituationPosition.FlightPlanLocation -> SituationPosition.FlightPlanLocation(legIndex = leg_index, lat = lat, lon = lon)
+}
 
 internal fun WireFlightPlan.toUiFlightPlan() = FlightPlan(
     id = id,

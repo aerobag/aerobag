@@ -186,6 +186,14 @@ pub fn select_airport_in_session_json(handle: u64, airport_id_json: &str) -> Res
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn set_situation_in_session_json(handle: u64, situation_json: &str) -> Result<String, String> {
+    let situation: app_core::Situation =
+        serde_json::from_str(situation_json).map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::set_situation_in_session(handle, situation).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn select_chart_in_session_json(handle: u64, chart_id_json: &str) -> Result<String, String> {
     let chart_id: String = serde_json::from_str(chart_id_json).map_err(|err| err.to_string())?;
     let snapshot =
@@ -433,6 +441,20 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sel
     let result = (|| {
         let airport_id = get_java_string(&mut env, airport_id_json)?;
         select_airport_in_session_json(handle as u64, &airport_id)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setSituationInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    situation_json: JString,
+) -> jstring {
+    let result = (|| {
+        let situation = get_java_string(&mut env, situation_json)?;
+        set_situation_in_session_json(handle as u64, &situation)
     })();
     return_string(&mut env, result)
 }

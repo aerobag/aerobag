@@ -19,10 +19,27 @@ import kotlinx.serialization.json.jsonPrimitive
 @Serializable
 data class WireAppState(
     val active_plan: WireFlightPlan? = null,
+    val situation: WireSituation = WireSituation(),
     val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
     val last_content_requirements: List<WireContentRequirement> = emptyList(),
     val last_content_report: WireContentReport? = null,
 )
+
+@Serializable
+data class WireSituation(
+    val position: WireSituationPosition = WireSituationPosition.Unknown,
+    val orientation_deg: Double? = null,
+    val speed_kt: Double? = null,
+)
+
+@Serializable(with = WireSituationPositionSerializer::class)
+sealed interface WireSituationPosition {
+    data object Unknown : WireSituationPosition
+
+    data class LatLon(val lat: Double, val lon: Double) : WireSituationPosition
+
+    data class FlightPlanLocation(val leg_index: Int, val lat: Double, val lon: Double) : WireSituationPosition
+}
 
 @Serializable
 data class WireFlightPlan(
@@ -95,6 +112,53 @@ object WireNavRefSerializer : KSerializer<WireNavRef> {
             "Fix" -> WireNavRef.Fix(value.jsonPrimitive.content)
             "LatLon" -> WireNavRef.LatLon(decoder.json.decodeFromJsonElement(WireLatLon.serializer(), value))
             else -> error("Unsupported NavRef variant: $kind")
+        }
+    }
+}
+
+object WireSituationPositionSerializer : KSerializer<WireSituationPosition> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("WireSituationPosition", PrimitiveKind.STRING)
+
+    override fun serialize(encoder: Encoder, value: WireSituationPosition) {
+        require(encoder is JsonEncoder) { "WireSituationPosition is JSON-only" }
+        val element = when (value) {
+            WireSituationPosition.Unknown -> JsonObject(mapOf("kind" to JsonPrimitive("unknown")))
+            is WireSituationPosition.LatLon -> JsonObject(
+                mapOf(
+                    "kind" to JsonPrimitive("lat_lon"),
+                    "lat" to JsonPrimitive(value.lat),
+                    "lon" to JsonPrimitive(value.lon),
+                ),
+            )
+            is WireSituationPosition.FlightPlanLocation -> JsonObject(
+                mapOf(
+                    "kind" to JsonPrimitive("flight_plan_location"),
+                    "leg_index" to JsonPrimitive(value.leg_index),
+                    "lat" to JsonPrimitive(value.lat),
+                    "lon" to JsonPrimitive(value.lon),
+                ),
+            )
+        }
+        encoder.encodeJsonElement(element)
+    }
+
+    override fun deserialize(decoder: Decoder): WireSituationPosition {
+        require(decoder is JsonDecoder) { "WireSituationPosition is JSON-only" }
+        val json = decoder.decodeJsonElement()
+        val obj = json as? JsonObject ?: error("WireSituationPosition must be an object")
+        return when (obj["kind"]?.jsonPrimitive?.content) {
+            "unknown" -> WireSituationPosition.Unknown
+            "lat_lon" -> WireSituationPosition.LatLon(
+                lat = obj["lat"]?.jsonPrimitive?.content?.toDouble() ?: error("lat required"),
+                lon = obj["lon"]?.jsonPrimitive?.content?.toDouble() ?: error("lon required"),
+            )
+            "flight_plan_location" -> WireSituationPosition.FlightPlanLocation(
+                leg_index = obj["leg_index"]?.jsonPrimitive?.content?.toInt() ?: error("leg_index required"),
+                lat = obj["lat"]?.jsonPrimitive?.content?.toDouble() ?: error("lat required"),
+                lon = obj["lon"]?.jsonPrimitive?.content?.toDouble() ?: error("lon required"),
+            )
+            else -> error("Unsupported WireSituationPosition")
         }
     }
 }

@@ -205,7 +205,22 @@ data class ContentReport(
 
 data class AppState(
     val activePlan: FlightPlan? = null,
+    val situation: Situation = Situation(),
     val contentPolicy: ContentPolicy = ContentPolicy.PreferLocal,
     val lastContentRequirements: List<ContentRequirement> = emptyList(),
     val lastContentReport: ContentReport? = null,
 )
+
+data class Situation(
+    val position: SituationPosition = SituationPosition.Unknown,
+    val orientationDeg: Double? = null,
+    val speedKt: Double? = null,
+)
+
+sealed interface SituationPosition {
+    data object Unknown : SituationPosition
+
+    data class LatLon(val lat: Double, val lon: Double) : SituationPosition
+
+    data class FlightPlanLocation(val legIndex: Int, val lat: Double, val lon: Double) : SituationPosition
+}

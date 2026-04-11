@@ -115,6 +115,7 @@ export type ContentInventory = {
 
 export type AppState = {
   active_plan: FlightPlan | null;
+  situation: Situation;
   content_policy: ContentPolicy;
   last_content_requirements: Array<{
     package_ids: Array<{
@@ -139,6 +140,17 @@ export type AppState = {
     }>;
   } | null;
 };
+
+export type Situation = {
+  position: SituationPosition;
+  orientation_deg: number | null;
+  speed_kt: number | null;
+};
+
+export type SituationPosition =
+  | { kind: "unknown" }
+  | { kind: "lat_lon"; lat: number; lon: number }
+  | { kind: "flight_plan_location"; leg_index: number; lat: number; lon: number };
 
 export type ContentFixtureBundle = {
   catalog: CatalogJson;

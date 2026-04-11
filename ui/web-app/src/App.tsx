@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { chartPage, mapViews, resourceIndex, sampleCatalog, samplePlan } from "./domain/sampleData";
-import type { AppState, ChartPageData } from "./domain/types";
+import type { AppState, ChartPageData, Situation } from "./domain/types";
 import uiTheme from "@generated/uiTheme.json";
+import planViewIcon from "./assets/plan-view-icon.svg";
 import {
   loadBestAvailableAdapter,
   MockAppCoreAdapter,
@@ -15,8 +16,10 @@ import {
   createInitialViewport,
   createPinchSnapshot,
   dragViewport,
+  latLonToWorld,
   preserveViewportForMap,
   renderTiles,
+  scaleForZoom,
   viewportCenterLatLon,
   zoomAroundPoint,
   type MapViewportState,
@@ -97,6 +100,7 @@ const loadedUiTheme = uiTheme as UiThemeJson;
 const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
 const plateFolderCategoryOrder: PlateFolderCategory[] = ["airport-diagram", "csup", "takeoff-mins", "approach", "departure", "star"];
+const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
 
 type PersistedWebUiState = {
   page?: AppPage;
@@ -122,6 +126,18 @@ type WebHistoryState = {
   current?: AppViewSnapshot;
   stack?: AppViewSnapshot[];
 };
+
+function demoSituation(): Situation {
+  return {
+    position: {
+      kind: "lat_lon",
+      lat: VAMPS_POSITION.lat,
+      lon: VAMPS_POSITION.lon,
+    },
+    orientation_deg: 135,
+    speed_kt: 105,
+  };
+}
 
 export default function App() {
   const [sessionStartMs] = useState(() => Date.now());
@@ -152,7 +168,13 @@ export default function App() {
   );
   const [uiSession, setUiSession] = useState<UiSession | null>(null);
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
-    app_state: { active_plan: null, content_policy: "PreferLocal", last_content_requirements: [], last_content_report: null },
+    app_state: {
+      active_plan: null,
+      situation: { position: { kind: "unknown" }, orientation_deg: null, speed_kt: null },
+      content_policy: "PreferLocal",
+      last_content_requirements: [],
+      last_content_report: null,
+    },
     chart_page_state: {
       ordered_airport_ids: initialChartPageState.airports.map((airport) => airport.id),
       recent_airport_ids: initialChartPageState.recent_airport_ids,
@@ -183,7 +205,14 @@ export default function App() {
     () => mapViews.find((view) => view.id === selectedMapId) ?? mapViews[0],
     [selectedMapId],
   );
-  const [mapViewport, setMapViewport] = useState<MapViewportState>(() => createInitialViewport(selectedMap.map_view));
+  const [mapViewport, setMapViewport] = useState<MapViewportState>(() => {
+    const center = latLonToWorld(VAMPS_POSITION.lat, VAMPS_POSITION.lon);
+    return {
+      centerWorldX: center.x,
+      centerWorldY: center.y,
+      zoom: selectedMap.map_view.initial_viewport.zoom,
+    };
+  });
   const [chartViewport, setChartViewport] = useState<ImageViewportState | null>(null);
   const [chartFolderOpen, setChartFolderOpen] = useState(false);
   const selectedFamily = useMemo(
@@ -243,7 +272,7 @@ export default function App() {
       initialChartPageState.selected_chart_id,
     ).then(async (created) => {
       nextSession = created;
-      const snapshot = await created.snapshot();
+      const snapshot = await created.setSituation(demoSituation());
       if (!cancelled) {
         setUiSession(created);
         setSessionSnapshot(snapshot);
@@ -410,6 +439,7 @@ export default function App() {
           onOpenPlan={() => navigateToPage("plan")}
           legSummary={legSummary}
           locationSearch={locationSearch}
+          situation={appState.situation}
         />
       </div>
 
@@ -502,6 +532,7 @@ export default function App() {
               chartFolderOpen: false,
             });
           }}
+          situation={appState.situation}
         />
       </div>
     </main>
@@ -525,6 +556,7 @@ function MapPage(props: {
   onOpenPlan: () => void;
   legSummary: string;
   locationSearch: string;
+  situation: Situation;
 }) {
   const {
     debugTileLabels,
@@ -542,6 +574,7 @@ function MapPage(props: {
     onOpenPlan,
     legSummary,
     locationSearch,
+    situation,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [familyTrayOpen, setFamilyTrayOpen] = useState(false);
@@ -596,6 +629,10 @@ function MapPage(props: {
       tileCount: tiles.length,
     };
   }, [selectedFamilyMapViews, tiles]);
+  const situationOverlay = useMemo(
+    () => resolveSituationOverlay(situation, viewport, surfaceSize.width, surfaceSize.height),
+    [situation, viewport, surfaceSize.height, surfaceSize.width],
+  );
 
   function updateViewport(next: MapViewportState) {
     viewportRef.current = next;
@@ -752,6 +789,54 @@ function MapPage(props: {
             ) : null}
           </div>
         ))}
+        <SituationStatusBadge situation={situation} />
+        {situationOverlay ? (
+          <>
+            <svg className="situationOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
+              {situationOverlay.predictor ? (
+                <g>
+                  {(() => {
+                    const shaftEnd = arrowShaftEndPoint(situationOverlay.point, situationOverlay.predictor);
+                    return (
+                      <>
+                  <line
+                    x1={situationOverlay.point.x}
+                    y1={situationOverlay.point.y}
+                    x2={shaftEnd.x}
+                    y2={shaftEnd.y}
+                    stroke="rgba(0, 0, 0, 0.4)"
+                    strokeWidth="8"
+                    strokeLinecap="round"
+                  />
+                  <line
+                    x1={situationOverlay.point.x}
+                    y1={situationOverlay.point.y}
+                    x2={shaftEnd.x}
+                    y2={shaftEnd.y}
+                    stroke="#ffffff"
+                    strokeWidth="6"
+                    strokeLinecap="round"
+                  />
+                  <polygon
+                    points={arrowHeadPoints(situationOverlay.point, situationOverlay.predictor)}
+                    fill="#ffffff"
+                    stroke="rgba(0, 0, 0, 0.4)"
+                    strokeWidth="1.5"
+                    strokeLinejoin="round"
+                  />
+                      </>
+                    );
+                  })()}
+                </g>
+              ) : null}
+            </svg>
+            <SituationAircraft
+              iconSrc={planViewIcon}
+              point={situationOverlay.point}
+              headingDeg={situationOverlay.headingDeg}
+            />
+          </>
+        ) : null}
 
         <div className="chartDock">
           <TrayDock
@@ -1096,8 +1181,9 @@ function ChartsPage(props: {
   onSelectPage: (page: AppPage) => void;
   onSelectAirport: (airportId: string) => void;
   onSelectChart: (chartId: string) => void;
+  situation: Situation;
 }) {
-  const { page, pageHistory, uptimeLabel, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onSelectAirport, onSelectChart } = props;
+  const { page, pageHistory, uptimeLabel, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onSelectAirport, onSelectChart, situation } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
   const [imageSize, setImageSize] = useState<{ chartId: string; width: number; height: number } | null>(null);
@@ -1373,6 +1459,7 @@ function ChartsPage(props: {
         onDoubleClick={handleDoubleClick}
       >
         <div className="mapBackdrop" />
+        <SituationStatusBadge situation={situation} />
         {trayOpen ? (
           <button
             type="button"
@@ -1706,6 +1793,114 @@ function formatSnapshot(snapshot: Pick<AppViewSnapshot, "page" | "selectedMapId"
 
 function formatPageStack(pageHistory: AppViewSnapshot[], currentSnapshot: Pick<AppViewSnapshot, "page" | "selectedMapId" | "selectedChartId" | "selectedChartLabel" | "chartFolderOpen">) {
   return [currentSnapshot, ...pageHistory.slice().reverse()].map(formatSnapshot).join(" > ");
+}
+
+function SituationStatusBadge(props: { situation: Situation }) {
+  const tone =
+    props.situation.position.kind === "unknown"
+      ? "unknown"
+      : props.situation.position.kind === "flight_plan_location"
+        ? "simulated"
+        : "live";
+  const label =
+    tone === "unknown"
+      ? "Location Unknown"
+      : tone === "simulated"
+        ? "Simulated Position"
+        : "Live Position";
+  return <div className={`situationStatus situationStatus-${tone}`}>{label}</div>;
+}
+
+function SituationAircraft(props: {
+  iconSrc: string;
+  point: { x: number; y: number };
+  headingDeg: number;
+}) {
+  return (
+    <img
+      className="situationAircraft"
+      src={props.iconSrc}
+      alt=""
+      draggable={false}
+      style={{
+        left: `${props.point.x}px`,
+        top: `${props.point.y}px`,
+        transform: `translate(-50%, -50%) rotate(${props.headingDeg}deg)`,
+      }}
+    />
+  );
+}
+
+function resolveSituationOverlay(
+  situation: Situation,
+  viewport: MapViewportState,
+  width: number,
+  height: number,
+) {
+  if (width <= 0 || height <= 0 || situation.position.kind === "unknown") {
+    return null;
+  }
+  const point = latLonToScreen(situation.position.lat, situation.position.lon, viewport, width, height);
+  const headingDeg = situation.orientation_deg ?? 0;
+  const ahead =
+    situation.speed_kt !== null
+      ? projectAhead(situation.position.lat, situation.position.lon, headingDeg, situation.speed_kt / 60)
+      : null;
+  const predictor = ahead ? latLonToScreen(ahead.lat, ahead.lon, viewport, width, height) : null;
+  return { point, predictor, headingDeg };
+}
+
+function latLonToScreen(lat: number, lon: number, viewport: MapViewportState, width: number, height: number) {
+  const world = latLonToWorld(lat, lon);
+  const scale = scaleForZoom(viewport.zoom);
+  return {
+    x: ((world.x - viewport.centerWorldX) * scale) + width / 2,
+    y: ((world.y - viewport.centerWorldY) * scale) + height / 2,
+  };
+}
+
+function projectAhead(lat: number, lon: number, bearingDeg: number, distanceNm: number) {
+  const angularDistance = distanceNm / 3440.065;
+  const bearing = (bearingDeg * Math.PI) / 180;
+  const startLat = (lat * Math.PI) / 180;
+  const startLon = (lon * Math.PI) / 180;
+  const nextLat = Math.asin(
+    Math.sin(startLat) * Math.cos(angularDistance) +
+      Math.cos(startLat) * Math.sin(angularDistance) * Math.cos(bearing),
+  );
+  const nextLon =
+    startLon +
+    Math.atan2(
+      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(startLat),
+      Math.cos(angularDistance) - Math.sin(startLat) * Math.sin(nextLat),
+    );
+  return {
+    lat: (nextLat * 180) / Math.PI,
+    lon: (nextLon * 180) / Math.PI,
+  };
+}
+
+function arrowHeadPoints(from: { x: number; y: number }, to: { x: number; y: number }) {
+  const angle = Math.atan2(to.y - from.y, to.x - from.x);
+  const size = 20;
+  const left = {
+    x: to.x - size * Math.cos(angle - Math.PI / 6),
+    y: to.y - size * Math.sin(angle - Math.PI / 6),
+  };
+  const right = {
+    x: to.x - size * Math.cos(angle + Math.PI / 6),
+    y: to.y - size * Math.sin(angle + Math.PI / 6),
+  };
+  return `${to.x},${to.y} ${left.x},${left.y} ${right.x},${right.y}`;
+}
+
+function arrowShaftEndPoint(from: { x: number; y: number }, to: { x: number; y: number }) {
+  const angle = Math.atan2(to.y - from.y, to.x - from.x);
+  const headLength = 14;
+  return {
+    x: to.x - headLength * Math.cos(angle),
+    y: to.y - headLength * Math.sin(angle),
+  };
 }
 
 function navRefLabel(value: { Airport: string } | { Navaid: string } | { Fix: string }) {

@@ -5,6 +5,7 @@ pub mod errors;
 pub mod geometry;
 pub mod ids;
 pub mod planning;
+pub mod situation;
 pub mod session;
 pub mod state;
 
@@ -26,10 +27,11 @@ pub use errors::{AppError, AppErrorKind, AppResult};
 pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord};
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use planning::{FlightPlan, NavRef, PlanLeg};
+pub use situation::{Situation, SituationPosition};
 pub use session::{
     create_ui_session, destroy_session, get_session_snapshot, move_waypoint_in_session,
     remove_leg_in_session, restore_chart_page_state_in_session, select_airport_in_session,
-    select_chart_in_session,
+    select_chart_in_session, set_situation_in_session,
     UiChartPageState, UiSessionInitResult, UiSessionSnapshot,
 };
 pub use state::{AppEvent, AppState};

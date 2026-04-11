@@ -94,6 +94,50 @@ button {
     var(--theme-chart-surface-bg);
 }
 
+.situationOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.situationAircraft {
+  position: absolute;
+  z-index: 2;
+  width: calc(var(--thumb) * 1.44);
+  height: auto;
+  pointer-events: none;
+  user-select: none;
+  filter: drop-shadow(0 1px 1px rgba(18, 26, 33, 0.45));
+}
+
+.situationStatus {
+  position: absolute;
+  top: var(--thumb-gap);
+  right: var(--thumb-gap);
+  z-index: 4;
+  padding: calc(var(--thumb) * 0.12) calc(var(--thumb) * 0.18);
+  border-radius: calc(var(--thumb-radius) * 0.85);
+  background: rgba(252, 248, 241, 0.9);
+  font-size: calc(var(--thumb) * 0.2);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  box-shadow: var(--shadow);
+}
+
+.situationStatus-live {
+  color: #2a4f66;
+}
+
+.situationStatus-simulated {
+  color: #b1591a;
+}
+
+.situationStatus-unknown {
+  color: #b3261e;
+}
+
 .trayScrim {
   position: absolute;
   inset: 0;

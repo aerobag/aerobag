@@ -21,3 +21,8 @@ declare module "@generated/app_wasm.js" {
   export const refresh_content_state: (...args: unknown[]) => string;
   export const chart_for_position: (...args: unknown[]) => Promise<string>;
 }
+
+declare module "*.svg" {
+  const value: string;
+  export default value;
+}

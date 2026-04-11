@@ -4,10 +4,12 @@ use crate::catalog::CatalogHandle;
 use crate::content::{ContentInventory, ContentPolicy, ContentReport, ContentRequirement};
 use crate::errors::AppResult;
 use crate::planning::FlightPlan;
+use crate::situation::Situation;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppState {
     pub active_plan: Option<FlightPlan>,
+    pub situation: Situation,
     pub content_policy: ContentPolicy,
     pub last_content_requirements: Vec<ContentRequirement>,
     pub last_content_report: Option<ContentReport>,
@@ -17,6 +19,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             active_plan: None,
+            situation: Situation::default(),
             content_policy: ContentPolicy::PreferLocal,
             last_content_requirements: Vec::new(),
             last_content_report: None,
@@ -27,6 +30,7 @@ impl Default for AppState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AppEvent {
     SetContentPolicy(ContentPolicy),
+    SetSituation(Situation),
     ReplaceFlightPlan(FlightPlan),
     RefreshContent {
         inventory: ContentInventory,
@@ -47,6 +51,9 @@ pub fn reduce(
             if let Some(report) = refresh_report_if_possible(&next, catalog)? {
                 next.last_content_report = Some(report);
             }
+        }
+        AppEvent::SetSituation(situation) => {
+            next.situation = situation;
         }
         AppEvent::ReplaceFlightPlan(plan) => {
             let plan = crate::build_flight_plan(plan)?;
@@ -196,6 +203,34 @@ mod tests {
         assert!(next.active_plan.is_some());
         assert_eq!(next.last_content_requirements.len(), 1);
         assert!(next.last_content_report.is_none());
+    }
+
+    #[test]
+    fn set_situation_updates_state() {
+        let catalog = sample_catalog();
+        let next = reduce(
+            &AppState::default(),
+            AppEvent::SetSituation(Situation {
+                position: crate::SituationPosition::LatLon {
+                    lat: 47.5,
+                    lon: -122.3,
+                },
+                orientation_deg: Some(90.0),
+                speed_kt: Some(120.0),
+            }),
+            &catalog,
+        )
+        .unwrap();
+
+        assert_eq!(
+            next.situation.position,
+            crate::SituationPosition::LatLon {
+                lat: 47.5,
+                lon: -122.3,
+            }
+        );
+        assert_eq!(next.situation.orientation_deg, Some(90.0));
+        assert_eq!(next.situation.speed_kt, Some(120.0));
     }
 
     #[test]

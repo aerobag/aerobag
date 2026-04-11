@@ -168,6 +168,20 @@ pub fn select_chart_in_session(handle: u64, chart_id: &str) -> AppResult<UiSessi
     Ok(snapshot_for_session(session))
 }
 
+pub fn set_situation_in_session(
+    handle: u64,
+    situation: crate::Situation,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::SetSituation(situation),
+        &session.catalog,
+    )?;
+    Ok(snapshot_for_session(session))
+}
+
 pub fn restore_chart_page_state_in_session(
     handle: u64,
     recent_airport_ids: &[String],

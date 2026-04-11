@@ -22,6 +22,11 @@ export const installedInventory = contentFixture.installed_inventory;
 
 export const emptyState: AppState = {
   active_plan: null,
+  situation: {
+    position: { kind: "unknown" },
+    orientation_deg: null,
+    speed_kt: null,
+  },
   content_policy: "PreferLocal",
   last_content_requirements: [],
   last_content_report: null,

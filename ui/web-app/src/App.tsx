@@ -1274,8 +1274,15 @@ function ChartsPage(props: {
   const [debugOpen, setDebugOpen] = useState(false);
   const sortedCharts = useMemo(() => sortChartsForFolder(selectedAirport?.charts ?? []), [selectedAirport]);
   const selectedImageSize = imageSize && imageSize.chartId === (selectedChart?.id ?? "") ? imageSize : null;
+  const fallbackViewport = useMemo(() => {
+    if (!selectedImageSize || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      return null;
+    }
+    return createInitialImageViewport(selectedImageSize.width, selectedImageSize.height, surfaceSize.width, surfaceSize.height);
+  }, [selectedImageSize, surfaceSize.height, surfaceSize.width]);
+  const effectiveViewport = viewport ?? fallbackViewport;
   const displaySize = useMemo(() => {
-    if (!selectedImageSize || !viewport || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+    if (!selectedImageSize || !effectiveViewport || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return null;
     }
     return imageDisplaySize(
@@ -1283,9 +1290,9 @@ function ChartsPage(props: {
       selectedImageSize.height,
       surfaceSize.width,
       surfaceSize.height,
-      viewport.zoom,
+      effectiveViewport.zoom,
     );
-  }, [selectedImageSize, surfaceSize.height, surfaceSize.width, viewport]);
+  }, [selectedImageSize, surfaceSize.height, surfaceSize.width, effectiveViewport]);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -1585,11 +1592,11 @@ function ChartsPage(props: {
               })
             }
             style={{
-              left: `${selectedImageSize && viewport ? viewport.left : 0}px`,
-              top: `${selectedImageSize && viewport ? viewport.top : 0}px`,
+              left: `${selectedImageSize && effectiveViewport ? effectiveViewport.left : 0}px`,
+              top: `${selectedImageSize && effectiveViewport ? effectiveViewport.top : 0}px`,
               width: displaySize ? `${displaySize.width}px` : undefined,
               height: displaySize ? `${displaySize.height}px` : undefined,
-              visibility: selectedImageSize && viewport ? "visible" : "hidden",
+              visibility: selectedImageSize && effectiveViewport ? "visible" : "hidden",
             }}
           />
         ) : null}

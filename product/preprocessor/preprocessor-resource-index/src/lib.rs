@@ -264,12 +264,17 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
 }
 
 pub fn write_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Result<ResourceIndex> {
-    let index = build_resource_index(request)?;
     let parent = request
         .output_path
         .parent()
         .context("output path must have a parent directory")?;
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    let thumbnail_root = parent.join("thumbnails");
+    if thumbnail_root.exists() {
+        fs::remove_dir_all(&thumbnail_root)
+            .with_context(|| format!("failed to clear {}", thumbnail_root.display()))?;
+    }
+    let index = build_resource_index(request)?;
     let json = serde_json::to_vec_pretty(&index).context("failed to serialize resource index")?;
     fs::write(&request.output_path, json)
         .with_context(|| format!("failed to write {}", request.output_path.display()))?;

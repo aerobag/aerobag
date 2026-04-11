@@ -798,6 +798,7 @@ fn build_chart_package_nodes(
         &run_root.join("build-record.json"),
         &format!("charts-{family_id}-render"),
     )?;
+    let existing_package_records = read_package_outputs_by_region(&aggregate_path)?;
     let mut node_records = Vec::new();
     let mut package_records = Vec::new();
     for region in Region::ALL {
@@ -850,25 +851,29 @@ fn build_chart_package_nodes(
             package_records.push(package_record);
             continue;
         }
-        package_records.push(PackageOutputRecord {
-            label: family.capture_label().to_string(),
-            chart: Some(manifest_chart_name(family).to_string()),
-            region: region.code().to_string(),
-            manifest: format!(
-                "{}_{}_{}",
-                region.code(),
-                manifest_chart_name(family),
-                version_label
-            ),
-            manifest_sha256: hash_file(&manifest_path)?,
-            zip: format!(
-                "{}_{}_{}.zip",
-                region.code(),
-                manifest_chart_name(family),
-                version_label
-            ),
-            zip_sha256: hash_file(&zip_path)?,
-        });
+        if let Some(existing) = existing_package_records.get(region.code()) {
+            package_records.push(existing.clone());
+        } else {
+            package_records.push(PackageOutputRecord {
+                label: family.capture_label().to_string(),
+                chart: Some(manifest_chart_name(family).to_string()),
+                region: region.code().to_string(),
+                manifest: format!(
+                    "{}_{}_{}",
+                    region.code(),
+                    manifest_chart_name(family),
+                    version_label
+                ),
+                manifest_sha256: hash_file(&manifest_path)?,
+                zip: format!(
+                    "{}_{}_{}.zip",
+                    region.code(),
+                    manifest_chart_name(family),
+                    version_label
+                ),
+                zip_sha256: hash_file(&zip_path)?,
+            });
+        }
     }
     if let Some(parent) = aggregate_path.parent() {
         fs::create_dir_all(parent)?;
@@ -1013,6 +1018,7 @@ fn build_csup_package_nodes(
     let work_dir = run_root.join("work").join("csup");
     let aggregate_path = run_root.join("meta/provenance/csup/package_outputs.jsonl");
     let source_urls_path = run_root.join("meta/provenance/csup/source_urls.jsonl");
+    let existing_package_records = read_package_outputs_by_region(&aggregate_path)?;
     let mut node_records = Vec::new();
     let mut package_records = Vec::new();
     for region in Region::ALL {
@@ -1074,15 +1080,19 @@ fn build_csup_package_nodes(
             package_records.push(package_record);
             continue;
         }
-        package_records.push(PackageOutputRecord {
-            label: "csup".to_string(),
-            chart: None,
-            region: region.code().to_string(),
-            manifest: format!("{}_CSUP_{}", region.code(), version_label),
-            manifest_sha256: hash_file(&manifest_path)?,
-            zip: format!("{}_CSUP_{}.zip", region.code(), version_label),
-            zip_sha256: hash_file(&zip_path)?,
-        });
+        if let Some(existing) = existing_package_records.get(region.code()) {
+            package_records.push(existing.clone());
+        } else {
+            package_records.push(PackageOutputRecord {
+                label: "csup".to_string(),
+                chart: None,
+                region: region.code().to_string(),
+                manifest: format!("{}_CSUP_{}", region.code(), version_label),
+                manifest_sha256: hash_file(&manifest_path)?,
+                zip: format!("{}_CSUP_{}.zip", region.code(), version_label),
+                zip_sha256: hash_file(&zip_path)?,
+            });
+        }
     }
     if let Some(parent) = aggregate_path.parent() {
         fs::create_dir_all(parent)?;
@@ -1526,9 +1536,12 @@ fn build_resource_index_node(
             )?,
         ),
     ]);
-    let prepared = prepare_existing_node_root("resource-index", &node_root, &inputs)?;
-    let output_path = node_root.join("resource-index.json");
-    if let Some(record) = try_load_node_record(&prepared, &[output_path.clone()])? {
+    let prepared = prepare_node_at(&node_root, "resource-index", &inputs)?;
+    let output_path = prepared.dir.join("resource-index.json");
+    let thumbnail_root = prepared.dir.join("thumbnails");
+    if let Some(record) =
+        try_load_node_record(&prepared, &[output_path.clone(), thumbnail_root.clone()])?
+    {
         return Ok(record);
     }
     let started_at_utc = utc_now_string();
@@ -1579,16 +1592,78 @@ fn summarize_package_records(records: &[NodeRecord]) -> PackageSummary {
     }
 }
 
+fn read_package_outputs_by_region(path: &Path) -> anyhow::Result<BTreeMap<String, PackageOutputRecord>> {
+    if !path.is_file() {
+        return Ok(BTreeMap::new());
+    }
+    let text = fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut records = BTreeMap::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let value: serde_json::Value =
+            serde_json::from_str(line).context("failed to parse package output json")?;
+        if value.get("event").and_then(|v| v.as_str()) != Some("package_output") {
+            continue;
+        }
+        let record = PackageOutputRecord {
+            label: value
+                .get("label")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            chart: value.get("chart").and_then(|v| v.as_str()).map(ToOwned::to_owned),
+            region: value
+                .get("region")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            manifest: value
+                .get("manifest")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            manifest_sha256: value
+                .get("manifest_sha256")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            zip: value
+                .get("zip")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            zip_sha256: value
+                .get("zip_sha256")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        };
+        records.insert(record.region.clone(), record);
+    }
+    Ok(records)
+}
+
 fn prepare_existing_node_root(
     name: &str,
     root: &Path,
     inputs: &BTreeMap<String, String>,
 ) -> anyhow::Result<PreparedNode> {
     let fingerprint = fingerprint_for_node(name, inputs)?;
+    let record_path = root.join("build-record.json");
+    if record_path.is_file() {
+        let existing = load_existing_node_record(&record_path, name)?;
+        if existing.fingerprint != fingerprint {
+            bail!(
+                "immutable output collision for node {name} at {}: existing fingerprint {} != new fingerprint {}; rename/version this output root instead of reusing it",
+                root.display(),
+                existing.fingerprint,
+                fingerprint
+            );
+        }
+    }
     Ok(PreparedNode {
         name: name.to_string(),
         fingerprint,
-        record_path: root.join("build-record.json"),
+        record_path,
         dir: root.to_path_buf(),
     })
 }

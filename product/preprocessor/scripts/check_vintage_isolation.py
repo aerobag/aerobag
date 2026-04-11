@@ -253,6 +253,33 @@ def run_build_once(
     subprocess.run(cmd, cwd=repo_root, env=env, check=True)
 
 
+def print_cache_summary(artifact_root: Path, label: str) -> None:
+    manifest_path = artifact_root / "product-builds" / "validation" / "product-build.json"
+    if not manifest_path.is_file():
+        print(f"{label} cache summary unavailable: missing {manifest_path}")
+        return
+    manifest = json.loads(manifest_path.read_text())
+    nodes = manifest.get("nodes", [])
+    cache_hits = sum(1 for node in nodes if node.get("cache_hit"))
+    rebuilt = len(nodes) - cache_hits
+    elapsed_ms = sum(int(node.get("elapsed_ms", 0)) for node in nodes)
+    rebuilt_names = [node.get("name", "?") for node in nodes if not node.get("cache_hit")]
+    print(
+        json.dumps(
+            {
+                "label": label,
+                "node_count": len(nodes),
+                "cache_hits": cache_hits,
+                "rebuilt": rebuilt,
+                "elapsed_ms_sum": elapsed_ms,
+                "rebuilt_names": rebuilt_names,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
 def run_build(
     repo_root: Path,
     artifact_root: Path,
@@ -264,6 +291,7 @@ def run_build(
     for attempt in range(1, attempts + 1):
         try:
             run_build_once(repo_root, artifact_root, source_urls_root, obstacle_snapshot)
+            print_cache_summary(artifact_root, label)
             return
         except subprocess.CalledProcessError:
             if attempt == attempts:
@@ -320,6 +348,9 @@ def main() -> int:
         "new_fetch_paths": len(fetch_after) - len(fetch_before),
         "new_shared_paths": len(shared_after) - len(shared_before),
     }
+    summary_path = artifact_root / "vintage_isolation_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    print(f"summary_path {summary_path}")
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
 

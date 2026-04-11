@@ -41,7 +41,7 @@ pub fn emit_source_urls(output_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
 }
 
 fn build_records() -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>> {
-    let now = Utc::now();
+    let now = source_url_now()?;
     let charts_start = version_start(
         cycle_download(now, DownloadCycleKind::Legacy56),
         CycleFormat::Charts,
@@ -213,6 +213,15 @@ fn build_records() -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>
     }
 
     Ok(records)
+}
+
+fn source_url_now() -> anyhow::Result<DateTime<Utc>> {
+    match env::var("AEROBAG_SOURCE_URL_NOW") {
+        Ok(value) => DateTime::parse_from_rfc3339(&value)
+            .map(|value| value.with_timezone(&Utc))
+            .with_context(|| format!("failed to parse AEROBAG_SOURCE_URL_NOW={value} as RFC3339")),
+        Err(_) => Ok(Utc::now()),
+    }
 }
 
 fn list_crawl_record(

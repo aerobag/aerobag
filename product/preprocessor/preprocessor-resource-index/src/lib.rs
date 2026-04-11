@@ -58,6 +58,7 @@ pub struct NavDbRef {
     pub artifact_path: String,
     pub sqlite_entry: String,
     pub cycle_code: Option<String>,
+    pub version_label: Option<String>,
     pub effective_date: Option<String>,
     pub expiration_date: Option<String>,
 }
@@ -96,6 +97,7 @@ pub struct ResourcePackage {
     pub size_bytes: u64,
     pub checksum_sha256: String,
     pub cycle_code: Option<String>,
+    pub version_label: Option<String>,
     pub effective_date: Option<String>,
     pub expiration_date: Option<String>,
 }
@@ -234,7 +236,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         .collect();
 
     let index = ResourceIndex {
-        schema_version: 3,
+        schema_version: 4,
         cycle,
         generated_at_utc: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         temporal_summary,
@@ -242,6 +244,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
             artifact_path: relativize_to_product_builds_root(&request.nav_db_zip, &product_builds_root),
             sqlite_entry: "main.db".to_string(),
             cycle_code: nav_cycle_code,
+            version_label: nav_db_version_label(&request.nav_db_zip, &nav_temporal),
             effective_date: nav_temporal.effective_date,
             expiration_date: nav_temporal.expiration_date,
         },
@@ -631,6 +634,7 @@ fn package_from_record(
         size_bytes,
         checksum_sha256: record.zip_sha256.clone(),
         cycle_code: temporal.and_then(|value| value.cycle_code.clone()),
+        version_label: package_version_label(temporal),
         effective_date: temporal.and_then(|value| value.effective_date.clone()),
         expiration_date: temporal.and_then(|value| value.expiration_date.clone()),
     })
@@ -1024,6 +1028,15 @@ fn read_nav_cycle_code(nav_db_zip: &Path) -> anyhow::Result<Option<String>> {
         .map(ToOwned::to_owned))
 }
 
+fn nav_db_version_label(nav_db_zip: &Path, temporal: &FaaTemporalMetadata) -> Option<String> {
+    nav_db_zip
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| value.starts_with("data_"))
+        .map(ToOwned::to_owned)
+        .or_else(|| temporal.expiration_date.as_deref().map(version_label_from_date))
+}
+
 fn read_child_dirs(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let mut dirs = fs::read_dir(root)
         .with_context(|| format!("failed to read directory {}", root.display()))?
@@ -1119,6 +1132,34 @@ fn build_temporal_summary(
     }
 }
 
+fn package_version_label(temporal: Option<&FaaTemporalMetadata>) -> Option<String> {
+    let temporal = temporal?;
+    if let Some(cycle_code) = &temporal.cycle_code {
+        return Some(cycle_code.clone());
+    }
+    if temporal_cadence_days(temporal) == Some(56) {
+        if let Some(effective_date) = &temporal.effective_date {
+            let effective = NaiveDate::parse_from_str(effective_date, "%Y-%m-%d").ok()?;
+            return cycle_code_from_effective_date(effective).ok();
+        }
+    }
+    temporal
+        .expiration_date
+        .as_deref()
+        .map(version_label_from_date)
+}
+
+fn temporal_cadence_days(temporal: &FaaTemporalMetadata) -> Option<i64> {
+    let effective = NaiveDate::parse_from_str(temporal.effective_date.as_deref()?, "%Y-%m-%d").ok()?;
+    let expiration =
+        NaiveDate::parse_from_str(temporal.expiration_date.as_deref()?, "%Y-%m-%d").ok()?;
+    Some((expiration - effective).num_days())
+}
+
+fn version_label_from_date(date: &str) -> String {
+    date.replace('-', ".")
+}
+
 fn singleton_value(values: &[String]) -> Option<String> {
     if values.len() == 1 {
         Some(values[0].clone())
@@ -1183,7 +1224,12 @@ fn infer_temporal_from_source_urls(
 }
 
 fn temporal_from_url(url: &str) -> anyhow::Result<Option<FaaTemporalMetadata>> {
+    let url = url.split('#').next().unwrap_or(url);
     if let Some(date) = extract_between(url, "/visual/", "/") {
+        let effective = parse_date(&date, "%m-%d-%Y")?;
+        return Ok(Some(temporal_from_effective_date(effective, 56, None)));
+    }
+    if let Some(date) = extract_between(url, "/enroute/", "/") {
         let effective = parse_date(&date, "%m-%d-%Y")?;
         return Ok(Some(temporal_from_effective_date(effective, 56, None)));
     }
@@ -1643,7 +1689,9 @@ mod tests {
 
         let request = BuildResourceIndexRequest {
             nav_db_zip: nav_zip.clone(),
-            output_path: temp.path().join("resource-index.json"),
+            output_path: temp
+                .path()
+                .join("product-builds/test/work/resource-index/resource-index.json"),
             chart_sources: vec![ChartSource {
                 family_id: "sectional".to_string(),
                 package_outputs_path: chart_outputs,
@@ -1679,6 +1727,7 @@ mod tests {
         );
         assert_eq!(index.nav_db.sqlite_entry, "main.db");
         assert_eq!(index.nav_db.cycle_code.as_deref(), Some("2604"));
+        assert_eq!(index.nav_db.version_label.as_deref(), Some("2026.05.14"));
         assert_eq!(index.nav_db.effective_date.as_deref(), Some("2026-04-16"));
         assert_eq!(index.nav_db.expiration_date.as_deref(), Some("2026-05-14"));
         assert_eq!(index.airports.len(), 2);
@@ -1692,6 +1741,7 @@ mod tests {
                 && package.effective_date.as_deref() == Some("2026-03-19")
                 && package.expiration_date.as_deref() == Some("2026-05-14")
                 && package.cycle_code.is_none()
+                && package.version_label.as_deref() == Some("2603")
         }));
         assert!(index
             .packages
@@ -1702,6 +1752,7 @@ mod tests {
                 && package.effective_date.as_deref() == Some("2026-04-16")
                 && package.expiration_date.as_deref() == Some("2026-05-14")
                 && package.cycle_code.as_deref() == Some("2604")
+                && package.version_label.as_deref() == Some("2604")
         }));
         assert!(index
             .packages
@@ -1712,6 +1763,7 @@ mod tests {
                 && package.effective_date.as_deref() == Some("2026-03-19")
                 && package.expiration_date.as_deref() == Some("2026-05-14")
                 && package.cycle_code.is_none()
+                && package.version_label.as_deref() == Some("2603")
         }));
         assert_eq!(index.chart_collections.len(), 1);
         assert_eq!(index.chart_collections[0].family_id, "sectional");
@@ -1764,10 +1816,16 @@ mod tests {
         assert_eq!(index.airport_resources[0].csup_ids, vec!["csup:KBOS:CSUP-NE_0-0.png"]);
         assert_eq!(index.airport_resources[0].package_ids, vec!["NE_CSUP", "NE_TPP"]);
         assert!(request.output_path.exists());
-        let plate_thumb = image::open(temp.path().join("thumbnails/plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png"))
-            .expect("open plate thumbnail");
+        let thumbnail_root = request
+            .output_path
+            .parent()
+            .expect("resource-index parent")
+            .join("thumbnails");
+        let plate_thumb =
+            image::open(thumbnail_root.join("plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png"))
+                .expect("open plate thumbnail");
         assert_eq!(plate_thumb.dimensions(), (100, 150));
-        let csup_thumb = image::open(temp.path().join("thumbnails/afd/BOS/CSUP-NE_0-0.png"))
+        let csup_thumb = image::open(thumbnail_root.join("afd/BOS/CSUP-NE_0-0.png"))
             .expect("open csup thumbnail");
         assert_eq!(csup_thumb.dimensions(), (100, 150));
     }

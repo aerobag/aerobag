@@ -11,13 +11,13 @@ use std::{
 };
 
 use anyhow::{bail, Context};
-use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
+use chrono::{Datelike, NaiveDate, Utc};
 use preprocessor_charts::{
-    build_family_tiles, build_family_vrts, package_family_region, stage_work_dir,
+    build_family_tiles, build_family_vrts, package_family_region_versioned, stage_work_dir,
 };
 use preprocessor_core::{ChartFamily, Region};
 use preprocessor_csup::{
-    package_csup_region, prepare_csup_inputs, render_csup_region, stage_work_dir_for_product,
+    package_csup_region_versioned, prepare_csup_inputs, render_csup_region, stage_work_dir_for_product,
 };
 use preprocessor_data::{build_data_package, DataBuildRequest};
 use preprocessor_data::{build_data_package, DataBuildMode, DataBuildRequest};
@@ -27,7 +27,7 @@ use preprocessor_fetch::{
 };
 use preprocessor_resource_index::{write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource};
 use preprocessor_tpp::{
-    package_native_tpp, render_native_tpp, NativeTppRunRequest,
+    package_native_tpp_versioned, render_native_tpp, NativeTppRunRequest,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -259,6 +259,28 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         ))?;
         node_records.push(normalize_node_record_paths(source_urls_record, &config.build_root));
 
+        let chart_versions = [
+            ("sec".to_string(), chart_family_version_label(&source_urls_dir, ChartFamily::Sec)?),
+            ("tac".to_string(), chart_family_version_label(&source_urls_dir, ChartFamily::Tac)?),
+            ("enr-l".to_string(), chart_family_version_label(&source_urls_dir, ChartFamily::EnrL)?),
+            ("enr-h".to_string(), chart_family_version_label(&source_urls_dir, ChartFamily::EnrH)?),
+        ]
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+        let csup_version = csup_version_label(&source_urls_dir)?;
+        let tpp_versions = config
+            .profile
+            .tpp_regions()
+            .iter()
+            .map(|region| {
+                Ok((
+                    region.code().to_ascii_lowercase(),
+                    tpp_region_version_label(&source_urls_dir, *region)?,
+                ))
+            })
+            .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+        let data_version = data_version_label(&source_urls_dir)?;
+
         let mut pending_jobs = VecDeque::new();
         for family in [
             ChartFamily::Sec,
@@ -267,7 +289,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             ChartFamily::EnrH,
         ] {
             let family_id = family_slug(family).to_string();
-            let run_root = build_shared_work_root(config, &format!("charts-{family_id}"))?;
+            let version = chart_versions
+                .get(&family_id)
+                .expect("chart family version should exist");
+            let run_root =
+                build_shared_work_root(config, &format!("charts-{family_id}-{version}"))?;
             pending_jobs.push_back(HeavyJobSpec::ChartRender {
                 family,
                 source_repo: config.chart_cutline_root.clone(),
@@ -278,7 +304,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             });
         }
 
-        let csup_run_root = build_shared_work_root(config, "csup")?;
+        let csup_run_root = build_shared_work_root(config, &format!("csup-{csup_version}"))?;
         let csup_stage_record = build_csup_stage_node(
             config,
             Path::new(""),
@@ -304,7 +330,10 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         let mut tpp_package_requests = Vec::new();
         for region in config.profile.tpp_regions() {
             let region_id = region.code().to_ascii_lowercase();
-            let run_root = build_shared_work_root(config, &format!("tpp-{region_id}"))?;
+            let version = tpp_versions
+                .get(&region_id)
+                .expect("tpp region version should exist");
+            let run_root = build_shared_work_root(config, &format!("tpp-{region_id}-{version}"))?;
             pending_jobs.push_back(HeavyJobSpec::Tpp {
                 region: *region,
                 source_repo: PathBuf::new(),
@@ -378,7 +407,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 "launch charts-{}-package",
                 family_slug(family)
             ))?;
-            let (records, source) = build_chart_package_nodes(config, family, &source_urls_dir)?;
+            let (records, source) = build_chart_package_nodes(
+                config,
+                family,
+                &source_urls_dir,
+                chart_versions
+                    .get(family_slug(family))
+                    .expect("chart family version should exist"),
+            )?;
             for record in records {
                 node_records.push(normalize_node_record_paths(record, &config.build_root));
             }
@@ -390,7 +426,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         }
 
         master_log.log("launch csup-package")?;
-        let (csup_records, csup_source) = build_csup_package_nodes(config, &source_urls_dir)?;
+        let (csup_records, csup_source) =
+            build_csup_package_nodes(config, &source_urls_dir, &csup_version)?;
         for record in csup_records {
             node_records.push(normalize_node_record_paths(record, &config.build_root));
         }
@@ -406,15 +443,18 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 region,
                 &run_root,
                 &source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
+                tpp_versions
+                    .get(&region_id)
+                    .expect("tpp region version should exist"),
             )?;
             node_records.push(normalize_node_record_paths(record, &config.build_root));
             master_log.log(format!("complete tpp-{}-package", region_id))?;
             tpp_sources.push(source);
         }
 
-        let data_zip = build_shared_work_root(config, "data")?
+        let data_zip = build_shared_work_root(config, &format!("data-{data_version}"))?
             .join("output")
-            .join("databases.zip");
+            .join(format!("{data_version}.zip"));
         if !data_zip.is_file() {
             bail!("missing data zip at {}", data_zip.display());
         }
@@ -546,6 +586,9 @@ impl ProductBuildConfig {
 fn build_source_urls_node(
     config: &ProductBuildConfig,
 ) -> anyhow::Result<(PathBuf, NodeRecord)> {
+    if let Some(override_root) = env_path("AEROBAG_SOURCE_URLS_ROOT") {
+        return build_overridden_source_urls_node(config, &override_root);
+    }
     let emit_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/emit_source_urls.rs");
     let inputs = BTreeMap::from([("emit_source".to_string(), hash_file(&emit_source)?)]);
     let shared_root = build_shared_node_dir(config, "source-urls")?;
@@ -578,6 +621,55 @@ fn build_source_urls_node(
     env::set_var("FETCH_CACHE_MODE", &config.fetch_cache_mode);
     emit_source_urls(&output_dir)?;
     let outputs = BTreeMap::from([("output_dir".to_string(), relative_artifact_path(&output_dir, &config.build_root))]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((output_dir, record))
+}
+
+fn build_overridden_source_urls_node(
+    config: &ProductBuildConfig,
+    override_root: &Path,
+) -> anyhow::Result<(PathBuf, NodeRecord)> {
+    let inputs = BTreeMap::from([("source_urls_root".to_string(), hash_tree(override_root)?)]);
+    let shared_root = build_shared_node_dir(config, "source-urls")?;
+    let prepared = prepare_node_at(&shared_root, "source-urls", &inputs)?;
+    let output_dir = prepared.dir.join("out");
+    let expected = vec![
+        output_dir.join("charts-sec/source_urls.jsonl"),
+        output_dir.join("charts-tac/source_urls.jsonl"),
+        output_dir.join("charts-enr-l/source_urls.jsonl"),
+        output_dir.join("charts-enr-h/source_urls.jsonl"),
+        output_dir.join("csup/source_urls.jsonl"),
+        output_dir.join("tpp-ak/source_urls.jsonl"),
+        output_dir.join("tpp-pac/source_urls.jsonl"),
+        output_dir.join("tpp-sw/source_urls.jsonl"),
+        output_dir.join("tpp-nc/source_urls.jsonl"),
+        output_dir.join("tpp-ec/source_urls.jsonl"),
+        output_dir.join("tpp-sc/source_urls.jsonl"),
+        output_dir.join("tpp-ne/source_urls.jsonl"),
+        output_dir.join("tpp-nw/source_urls.jsonl"),
+        output_dir.join("tpp-se/source_urls.jsonl"),
+        output_dir.join("data/source_urls.jsonl"),
+    ];
+    if let Some(record) = try_load_node_record(&prepared, &expected)? {
+        return Ok((output_dir, record));
+    }
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir)
+            .with_context(|| format!("failed to remove {}", output_dir.display()))?;
+    }
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    copy_dir_recursive(override_root, &output_dir)?;
+    let outputs =
+        BTreeMap::from([("output_dir".to_string(), relative_artifact_path(&output_dir, &config.build_root))]);
     let record = write_node_record(
         prepared,
         inputs,
@@ -644,9 +736,10 @@ fn build_chart_package_nodes(
     config: &ProductBuildConfig,
     family: ChartFamily,
     _source_urls_dir: &Path,
+    version_label: &str,
 ) -> anyhow::Result<(Vec<NodeRecord>, ChartSource)> {
     let family_id = family_slug(family).to_string();
-    let run_root = build_shared_work_root(config, &format!("charts-{family_id}"))?;
+    let run_root = build_shared_work_root(config, &format!("charts-{family_id}-{version_label}"))?;
     let work_dir = run_root.join("work").join(format!("charts-{family_id}"));
     let aggregate_path = run_root
         .join("meta")
@@ -666,20 +759,37 @@ fn build_chart_package_nodes(
     let mut package_records = Vec::new();
     for region in Region::ALL {
         let node_name = format!("charts-{family_id}-package-{}", region.code().to_ascii_lowercase());
-        let package_root = build_shared_work_root(config, &node_name)?;
+        let package_root = build_shared_work_root(config, &format!("{node_name}-{version_label}"))?;
         let inputs = BTreeMap::from([
             ("render_fingerprint".to_string(), render_record.fingerprint.clone()),
             ("region".to_string(), region.code().to_string()),
+            ("version_label".to_string(), version_label.to_string()),
         ]);
         let prepared = prepare_existing_node_root(&node_name, &package_root, &inputs)?;
-        let zip_path = work_dir.join(format!("{}_{}.zip", region.code(), manifest_chart_name(family)));
-        let manifest_path = work_dir.join(format!("{}_{}", region.code(), manifest_chart_name(family)));
+        let zip_path = work_dir.join(format!(
+            "{}_{}_{}.zip",
+            region.code(),
+            manifest_chart_name(family),
+            version_label
+        ));
+        let manifest_path = work_dir.join(format!(
+            "{}_{}_{}",
+            region.code(),
+            manifest_chart_name(family),
+            version_label
+        ));
         if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
             node_records.push(record);
         } else {
             let started_at_utc = utc_now_string();
             let started = Instant::now();
-            let package_record = package_family_region(family, &work_dir, region)?;
+            let package_record = package_family_region_versioned(
+                family,
+                &work_dir,
+                region,
+                version_label,
+                version_label,
+            )?;
             let outputs = BTreeMap::from([
                 ("zip".to_string(), relative_artifact_path(&zip_path, &config.build_root)),
                 ("manifest".to_string(), relative_artifact_path(&manifest_path, &config.build_root)),
@@ -701,9 +811,19 @@ fn build_chart_package_nodes(
             label: family.capture_label().to_string(),
             chart: Some(manifest_chart_name(family).to_string()),
             region: region.code().to_string(),
-            manifest: format!("{}_{}", region.code(), manifest_chart_name(family)),
+            manifest: format!(
+                "{}_{}_{}",
+                region.code(),
+                manifest_chart_name(family),
+                version_label
+            ),
             manifest_sha256: hash_file(&manifest_path)?,
-            zip: format!("{}_{}.zip", region.code(), manifest_chart_name(family)),
+            zip: format!(
+                "{}_{}_{}.zip",
+                region.code(),
+                manifest_chart_name(family),
+                version_label
+            ),
             zip_sha256: hash_file(&zip_path)?,
         });
     }
@@ -737,11 +857,13 @@ fn build_csup_render_node(
     render_jobs: usize,
 ) -> anyhow::Result<NodeRecord> {
     let stage_record = load_existing_node_record(&run_root.join("build-record.json"), "csup-stage")?;
+    let version_label = csup_version_label_from_run_root(run_root)?;
     let node_name = format!("csup-render-{}", region.code().to_ascii_lowercase());
     let inputs = BTreeMap::from([
         ("stage_fingerprint".to_string(), stage_record.fingerprint),
         ("region".to_string(), region.code().to_string()),
         ("render_jobs".to_string(), render_jobs.to_string()),
+        ("version_label".to_string(), version_label.clone()),
         (
             "csup_lib".to_string(),
             hash_file(
@@ -761,7 +883,7 @@ fn build_csup_render_node(
             )?,
         ),
     ]);
-    let node_root = build_shared_work_root(config, &node_name)?;
+    let node_root = build_shared_work_root(config, &format!("{node_name}-{version_label}"))?;
     let prepared = prepare_existing_node_root(&node_name, &node_root, &inputs)?;
     let marker = node_root.join(".render-complete");
     if let Some(record) = try_load_node_record(&prepared, std::slice::from_ref(&marker))? {
@@ -842,8 +964,9 @@ fn build_csup_stage_node(
 fn build_csup_package_nodes(
     config: &ProductBuildConfig,
     _source_urls_dir: &Path,
+    version_label: &str,
 ) -> anyhow::Result<(Vec<NodeRecord>, AssetSource)> {
-    let run_root = build_shared_work_root(config, "csup")?;
+    let run_root = build_shared_work_root(config, &format!("csup-{version_label}"))?;
     let work_dir = run_root.join("work").join("csup");
     let aggregate_path = run_root.join("meta/provenance/csup/package_outputs.jsonl");
     let source_urls_path = run_root.join("meta/provenance/csup/source_urls.jsonl");
@@ -852,14 +975,16 @@ fn build_csup_package_nodes(
     for region in Region::ALL {
         let render_node_name = format!("csup-render-{}", region.code().to_ascii_lowercase());
         let render_record = load_existing_node_record(
-            &build_shared_work_root(config, &render_node_name)?.join("build-record.json"),
+            &build_shared_work_root(config, &format!("{render_node_name}-{version_label}"))?
+                .join("build-record.json"),
             &render_node_name,
         )?;
         let node_name = format!("csup-package-{}", region.code().to_ascii_lowercase());
-        let package_root = build_shared_work_root(config, &node_name)?;
+        let package_root = build_shared_work_root(config, &format!("{node_name}-{version_label}"))?;
         let inputs = BTreeMap::from([
             ("render_fingerprint".to_string(), render_record.fingerprint.clone()),
             ("region".to_string(), region.code().to_string()),
+            ("version_label".to_string(), version_label.to_string()),
             (
                 "csup_package".to_string(),
                 hash_file(
@@ -880,14 +1005,15 @@ fn build_csup_package_nodes(
             ),
         ]);
         let prepared = prepare_existing_node_root(&node_name, &package_root, &inputs)?;
-        let zip_path = work_dir.join(format!("{}_CSUP.zip", region.code()));
-        let manifest_path = work_dir.join(format!("{}_CSUP", region.code()));
+        let zip_path = work_dir.join(format!("{}_CSUP_{}.zip", region.code(), version_label));
+        let manifest_path = work_dir.join(format!("{}_CSUP_{}", region.code(), version_label));
         if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
             node_records.push(record);
         } else {
             let started_at_utc = utc_now_string();
             let started = Instant::now();
-            let package_record = package_csup_region(&work_dir, region)?;
+            let package_record =
+                package_csup_region_versioned(&work_dir, region, version_label, version_label)?;
             let outputs = BTreeMap::from([
                 ("zip".to_string(), relative_artifact_path(&zip_path, &config.build_root)),
                 ("manifest".to_string(), relative_artifact_path(&manifest_path, &config.build_root)),
@@ -909,9 +1035,9 @@ fn build_csup_package_nodes(
             label: "csup".to_string(),
             chart: None,
             region: region.code().to_string(),
-            manifest: format!("{}_CSUP", region.code()),
+            manifest: format!("{}_CSUP_{}", region.code(), version_label),
             manifest_sha256: hash_file(&manifest_path)?,
-            zip: format!("{}_CSUP.zip", region.code()),
+            zip: format!("{}_CSUP_{}.zip", region.code(), version_label),
             zip_sha256: hash_file(&zip_path)?,
         });
     }
@@ -977,6 +1103,7 @@ fn build_tpp_package_node(
     region: Region,
     run_root: &Path,
     source_urls_path: &Path,
+    version_label: &str,
 ) -> anyhow::Result<(NodeRecord, AssetSource)> {
     let region_id = region.code().to_ascii_lowercase();
     let render_request = NativeTppRunRequest {
@@ -998,6 +1125,7 @@ fn build_tpp_package_node(
     let inputs = BTreeMap::from([
         ("render_fingerprint".to_string(), render_record.fingerprint.clone()),
         ("region".to_string(), region.code().to_string()),
+        ("version_label".to_string(), version_label.to_string()),
         (
             "tpp_package".to_string(),
             hash_file(
@@ -1021,8 +1149,8 @@ fn build_tpp_package_node(
     let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
     let package_outputs_path = run_root.join(format!("meta/provenance/tpp-{region_id}/package_outputs.jsonl"));
     let work_dir = run_root.join(format!("work/tpp-{region_id}"));
-    let zip_path = work_dir.join(format!("{}_TPP.zip", region.code()));
-    let manifest_path = work_dir.join(format!("{}_TPP", region.code()));
+    let zip_path = work_dir.join(format!("{}_TPP_{}.zip", region.code(), version_label));
+    let manifest_path = work_dir.join(format!("{}_TPP_{}", region.code(), version_label));
     if let Some(record) = try_load_node_record(
         &prepared,
         &[package_outputs_path.clone(), zip_path.clone(), manifest_path.clone()],
@@ -1039,7 +1167,8 @@ fn build_tpp_package_node(
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     let provenance_dir = run_root.join(format!("meta/provenance/tpp-{region_id}"));
-    let result = package_native_tpp(&work_dir, &provenance_dir, region)?;
+    let result =
+        package_native_tpp_versioned(&work_dir, &provenance_dir, region, version_label, version_label)?;
     let outputs = BTreeMap::from([
         ("work_dir".to_string(), relative_artifact_path(&work_dir, &config.build_root)),
         ("package_outputs".to_string(), relative_artifact_path(&package_outputs_path, &config.build_root)),
@@ -1101,9 +1230,12 @@ fn build_data_nodes(
     source_urls_dir: &Path,
 ) -> anyhow::Result<Vec<NodeRecord>> {
     let source_urls = source_urls_dir.join("data/source_urls.jsonl");
+    let data_version = data_version_label(source_urls_dir)?;
+    let data_manifest_version = data_manifest_cycle(source_urls_dir)?;
+    let obstacle_snapshot_date = obstacle_snapshot_date_iso();
     let (staged_input_dir, staging_record) = build_data_input_node(config, &source_urls)?;
 
-    let node_root = build_shared_work_root(config, "data")?;
+    let node_root = build_shared_work_root(config, &format!("data-{data_version}"))?;
     let provenance_dir = node_root.join("meta/provenance/data");
     fs::create_dir_all(&provenance_dir)?;
     copy_source_urls_provenance(&source_urls, &provenance_dir)?;
@@ -1111,8 +1243,9 @@ fn build_data_nodes(
     let request = DataBuildRequest {
         input_dir: staged_input_dir.clone(),
         output_dir: node_root.join("output"),
-        manifest_version: current_data_manifest_cycle(),
         mode: DataBuildMode::Production,
+        manifest_version: data_manifest_version.clone(),
+        artifact_stem: Some(data_version.clone()),
     };
     let inputs = BTreeMap::from([
         ("staged_input_dir".to_string(), relative_artifact_path(&staged_input_dir, &config.build_root)),
@@ -1122,9 +1255,13 @@ fn build_data_nodes(
         ),
         ("source_urls".to_string(), hash_file(&source_urls)?),
         ("manifest_version".to_string(), request.manifest_version.clone()),
+        ("artifact_stem".to_string(), request.artifact_stem.clone().unwrap_or_default()),
+        ("obstacle_snapshot_date".to_string(), obstacle_snapshot_date),
     ]);
     let prepared = prepare_existing_node_root("data", &node_root, &inputs)?;
-    let zip_path = request.output_dir.join("databases.zip");
+    let zip_path = request
+        .output_dir
+        .join(format!("{}.zip", request.artifact_stem.as_deref().unwrap_or("databases")));
     if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone()])? {
         return Ok(vec![staging_record, record]);
     }
@@ -1152,9 +1289,12 @@ fn build_data_input_node(
     config: &ProductBuildConfig,
     source_urls: &Path,
 ) -> anyhow::Result<(PathBuf, NodeRecord)> {
+    let obstacle_snapshot_label = obstacle_snapshot_date_label();
+    let obstacle_snapshot_date = obstacle_snapshot_date_iso();
     let inputs = BTreeMap::from([
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("fetch_jobs".to_string(), config.fetch_jobs.to_string()),
+        ("obstacle_snapshot_date".to_string(), obstacle_snapshot_date),
         (
             "fetch_lib".to_string(),
             hash_file(
@@ -1183,7 +1323,10 @@ fn build_data_input_node(
     let provenance_dir = prepared.dir.join("meta/provenance/data-input-staging");
     fs::create_dir_all(&provenance_dir)?;
     copy_source_urls_provenance(source_urls, &provenance_dir)?;
-    let urls = read_source_urls_jsonl(source_urls)?;
+    let urls = rewrite_data_urls_for_snapshot(
+        read_source_urls_jsonl(source_urls)?,
+        &obstacle_snapshot_label,
+    );
     prefetch_archives_with_provenance(
         &urls,
         &staged_root,
@@ -1518,6 +1661,30 @@ fn collect_files(root: &Path, current: &Path, out: &mut Vec<(String, PathBuf)>) 
     Ok(())
 }
 
+fn copy_dir_recursive(from: &Path, to: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(to).with_context(|| format!("failed to create {}", to.display()))?;
+    let mut entries = fs::read_dir(from)
+        .with_context(|| format!("failed to read {}", from.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to iterate {}", from.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let source = entry.path();
+        let dest = to.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", source.display()))?;
+        if file_type.is_dir() {
+            copy_dir_recursive(&source, &dest)?;
+        } else if file_type.is_file() {
+            fs::copy(&source, &dest).with_context(|| {
+                format!("failed to copy {} to {}", source.display(), dest.display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
 fn fingerprint_for_node(name: &str, inputs: &BTreeMap<String, String>) -> anyhow::Result<String> {
     let value = serde_json::json!({
         "schema_version": 1,
@@ -1652,44 +1819,312 @@ fn default_cpu_jobs() -> usize {
         .unwrap_or(8)
 }
 
-fn calculate_cycle(future: i64, now: DateTime<Utc>) -> (u32, u32) {
-    let mut start_utc = Utc.with_ymd_and_hms(2020, 1, 2, 9, 0, 0).unwrap();
-    let mut cycle = 1_u32;
-    let mut last_year = 2019_i32;
-    let mut combined = 2001_u32;
-    let mut is56 = true;
-    let now_utc = now + Duration::days(28 * future);
-
-    while start_utc < now_utc {
-        if last_year != start_utc.year() {
-            cycle = 1;
-            last_year = start_utc.year();
-        } else {
-            cycle += 1;
-        }
-        combined = ((start_utc.year() % 2000) as u32) * 100 + cycle;
-        is56 = !is56;
-        start_utc += Duration::days(28);
-    }
-
-    if is56 {
-        (combined, combined)
-    } else {
-        let (_, previous_56) = calculate_cycle(future - 1, now);
-        (combined, previous_56)
-    }
-}
-
-fn current_data_manifest_cycle() -> String {
-    let (cycle, _) = calculate_cycle(1, Utc::now());
-    cycle.to_string()
-}
-
 fn family_slug(family: ChartFamily) -> &'static str {
     match family {
         ChartFamily::Sec => "sec",
         ChartFamily::Tac => "tac",
         ChartFamily::EnrL => "enr-l",
         ChartFamily::EnrH => "enr-h",
+    }
+}
+
+fn chart_family_version_label(
+    source_urls_dir: &Path,
+    family: ChartFamily,
+) -> anyhow::Result<String> {
+    let source_urls = source_urls_dir.join(format!("charts-{}/source_urls.jsonl", family_slug(family)));
+    let effective =
+        find_effective_date_from_urls(&read_source_urls_jsonl(&source_urls)?)
+            .with_context(|| format!("missing chart effective date in {}", source_urls.display()))?;
+    cycle_code_from_effective_date(effective)
+}
+
+fn csup_version_label(source_urls_dir: &Path) -> anyhow::Result<String> {
+    let source_urls = source_urls_dir.join("csup/source_urls.jsonl");
+    let effective =
+        find_effective_date_from_urls(&read_source_urls_jsonl(&source_urls)?)
+            .with_context(|| format!("missing csup effective date in {}", source_urls.display()))?;
+    cycle_code_from_effective_date(effective)
+}
+
+fn tpp_region_version_label(source_urls_dir: &Path, region: Region) -> anyhow::Result<String> {
+    let region_id = region.code().to_ascii_lowercase();
+    let source_urls = source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl"));
+    let effective =
+        find_effective_date_from_urls(&read_source_urls_jsonl(&source_urls)?)
+            .with_context(|| format!("missing tpp effective date in {}", source_urls.display()))?;
+    cycle_code_from_effective_date(effective)
+}
+
+fn data_version_label(source_urls_dir: &Path) -> anyhow::Result<String> {
+    Ok(format!(
+        "data_{}_obs{}",
+        data_manifest_cycle(source_urls_dir)?,
+        obstacle_snapshot_date_label()
+    ))
+}
+
+fn data_manifest_cycle(source_urls_dir: &Path) -> anyhow::Result<String> {
+    let source_urls = source_urls_dir.join("data/source_urls.jsonl");
+    let effective =
+        find_effective_date_from_urls(&read_source_urls_jsonl(&source_urls)?)
+            .with_context(|| format!("missing data effective date in {}", source_urls.display()))?;
+    cycle_code_from_effective_date(effective)
+}
+
+fn obstacle_snapshot_date_label() -> String {
+    env::var("AEROBAG_OBSTACLE_SNAPSHOT_DATE")
+        .ok()
+        .and_then(|value| parse_date(&value, "%Y-%m-%d").ok())
+        .map(format_date_label)
+        .unwrap_or_else(|| Utc::now().format("%Y.%m.%d").to_string())
+}
+
+fn obstacle_snapshot_date_iso() -> String {
+    env::var("AEROBAG_OBSTACLE_SNAPSHOT_DATE")
+        .ok()
+        .and_then(|value| parse_date(&value, "%Y-%m-%d").ok())
+        .map(|value| value.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string())
+}
+
+fn rewrite_data_urls_for_snapshot(urls: Vec<String>, snapshot_label: &str) -> Vec<String> {
+    urls.into_iter()
+        .map(|url| {
+            if url.ends_with("/DAILY_DOF_DAT.ZIP") {
+                format!("{url}#logical_name=obstacle_{snapshot_label}.zip")
+            } else {
+                url
+            }
+        })
+        .collect()
+}
+
+fn csup_version_label_from_run_root(run_root: &Path) -> anyhow::Result<String> {
+    let name = run_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow::anyhow!("invalid csup run root {}", run_root.display()))?;
+    name.strip_prefix("csup-")
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("csup run root {} missing version suffix", run_root.display()))
+}
+
+fn find_effective_date_from_urls(urls: &[String]) -> Option<NaiveDate> {
+    urls.iter().find_map(|url| {
+        let url = url.split('#').next().unwrap_or(url);
+        extract_between(url, "/visual/", "/")
+            .and_then(|value| parse_date(&value, "%m-%d-%Y").ok())
+            .or_else(|| {
+                extract_between(url, "/enroute/", "/")
+            .and_then(|value| parse_date(&value, "%m-%d-%Y").ok())
+            })
+            .or_else(|| {
+                extract_suffix_between(url, "DCS_", ".zip")
+                    .and_then(|value| parse_date(&value, "%Y%m%d").ok())
+            })
+            .or_else(|| {
+                extract_between(url, "28DaySubscription_Effective_", ".zip")
+                    .and_then(|value| parse_date(&value, "%Y-%m-%d").ok())
+            })
+            .or_else(|| {
+                extract_between(url, "/28DaySub/", "/aixm5.0.zip")
+                    .and_then(|value| parse_date(&value, "%Y-%m-%d").ok())
+            })
+            .or_else(|| {
+                extract_suffix_between(url, "CIFP_", ".zip").and_then(|compact| {
+                    if compact.len() == 6 && compact.chars().all(|ch| ch.is_ascii_digit()) {
+                        parse_date(
+                            &format!("20{}-{}-{}", &compact[0..2], &compact[2..4], &compact[4..6]),
+                            "%Y-%m-%d",
+                        )
+                        .ok()
+                    } else {
+                        None
+                    }
+                })
+            })
+            .or_else(|| {
+                url.split('/')
+                    .next_back()
+                    .and_then(|name| name.strip_suffix(".zip"))
+                    .and_then(|name| name.rsplit('_').next())
+                    .and_then(|compact| {
+                        if compact.len() == 6
+                            && compact.chars().all(|ch| ch.is_ascii_digit())
+                            && url.contains("DDTPP")
+                        {
+                            parse_date(
+                                &format!("20{}-{}-{}", &compact[0..2], &compact[2..4], &compact[4..6]),
+                                "%Y-%m-%d",
+                            )
+                            .ok()
+                        } else {
+                            None
+                        }
+                    })
+            })
+    })
+}
+
+fn extract_between(value: &str, prefix: &str, suffix: &str) -> Option<String> {
+    let tail = value.split_once(prefix)?.1;
+    Some(tail.split_once(suffix)?.0.to_string())
+}
+
+fn extract_suffix_between(value: &str, prefix: &str, suffix: &str) -> Option<String> {
+    let tail = value.rsplit_once(prefix)?.1;
+    Some(tail.split_once(suffix)?.0.to_string())
+}
+
+fn parse_date(value: &str, format: &str) -> anyhow::Result<NaiveDate> {
+    NaiveDate::parse_from_str(value, format)
+        .with_context(|| format!("failed to parse FAA date {value} with {format}"))
+}
+
+fn cycle_code_from_effective_date(effective: NaiveDate) -> anyhow::Result<String> {
+    let year = effective.year();
+    let first_date = first_cycle_day(year)
+        .ok_or_else(|| anyhow::anyhow!("unsupported cycle year {year}"))?;
+    let first = NaiveDate::from_ymd_opt(year, 1, first_date)
+        .ok_or_else(|| anyhow::anyhow!("invalid first cycle day for {year}"))?;
+    let delta_days = effective.signed_duration_since(first).num_days();
+    if delta_days < 0 || delta_days % 28 != 0 {
+        bail!("effective date {effective} does not align to a 28-day FAA cycle");
+    }
+    let cycle = (delta_days / 28) + 1;
+    Ok(format!("{:02}{:02}", year % 100, cycle))
+}
+
+fn first_cycle_day(year: i32) -> Option<u32> {
+    match year {
+        2020 => Some(2),
+        2021 => Some(28),
+        2022 => Some(27),
+        2023 => Some(26),
+        2024 => Some(25),
+        2025 => Some(23),
+        2026 => Some(22),
+        2027 => Some(21),
+        2028 => Some(20),
+        2029 => Some(18),
+        _ => None,
+    }
+}
+
+fn format_date_label(date: NaiveDate) -> String {
+    date.format("%Y.%m.%d").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn write_source_urls(root: &Path, relative: &str, lines: &[&str]) {
+        let path = root.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, lines.join("\n") + "\n").unwrap();
+    }
+
+    #[test]
+    fn derives_distinct_vintage_labels_from_source_urls() {
+        let temp = tempdir().unwrap();
+        write_source_urls(
+            temp.path(),
+            "charts-sec/source_urls.jsonl",
+            &[r#"{"event":"list_crawl","results":["https://aeronav.faa.gov/visual/03-19-2026/sectional-files/Seattle.zip"]}"#],
+        );
+        write_source_urls(
+            temp.path(),
+            "charts-enr-l/source_urls.jsonl",
+            &[r#"{"event":"list_crawl","results":["https://aeronav.faa.gov/enroute/03-19-2026/enr_l01.zip"]}"#],
+        );
+        write_source_urls(
+            temp.path(),
+            "csup/source_urls.jsonl",
+            &[r#"{"event":"list_crawl","results":["https://aeronav.faa.gov/Upload_313-d/supplements/DCS_20260319.zip"]}"#],
+        );
+        write_source_urls(
+            temp.path(),
+            "tpp-ne/source_urls.jsonl",
+            &[r#"{"event":"list_crawl","results":["https://aeronav.faa.gov/upload_313-d/terminal/DDTPPA_260416.zip"]}"#],
+        );
+        write_source_urls(
+            temp.path(),
+            "data/source_urls.jsonl",
+            &[
+                r#"{"event":"source_url","url":"https://nfdc.faa.gov/webContent/28DaySub/28DaySubscription_Effective_2026-04-16.zip"}"#,
+                r#"{"event":"source_url","url":"https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP"}"#,
+            ],
+        );
+
+        unsafe {
+            env::set_var("AEROBAG_OBSTACLE_SNAPSHOT_DATE", "2026-04-10");
+        }
+
+        assert_eq!(
+            chart_family_version_label(temp.path(), ChartFamily::Sec).unwrap(),
+            "2603"
+        );
+        assert_eq!(
+            chart_family_version_label(temp.path(), ChartFamily::EnrL).unwrap(),
+            "2603"
+        );
+        assert_eq!(csup_version_label(temp.path()).unwrap(), "2603");
+        assert_eq!(tpp_region_version_label(temp.path(), Region::Ne).unwrap(), "2604");
+        assert_eq!(data_manifest_cycle(temp.path()).unwrap(), "2604");
+        assert_eq!(
+            data_version_label(temp.path()).unwrap(),
+            "data_2604_obs2026.04.10"
+        );
+    }
+
+    #[test]
+    fn rewrites_daily_obstacle_url_to_snapshot_specific_logical_name() {
+        let urls = vec![
+            "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP".to_string(),
+            "https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_260416.zip".to_string(),
+        ];
+        let rewritten = rewrite_data_urls_for_snapshot(urls, "2026.04.10");
+        assert_eq!(
+            rewritten[0],
+            "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.10.zip"
+        );
+        assert_eq!(
+            rewritten[1],
+            "https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_260416.zip"
+        );
+    }
+
+    #[test]
+    fn versioned_work_roots_are_distinct_between_vintages() {
+        let temp = tempdir().unwrap();
+        let config = ProductBuildConfig {
+            chart_cutline_root: temp.path().join("cutlines"),
+            build_root: temp.path().join("product-builds/validation"),
+            profile: ProductBuildProfile::Validation,
+            fetch_jobs: 1,
+            cpu_jobs: 1,
+            max_heavy_jobs: 1,
+            fetch_cache_root: temp.path().join("cache/fetch"),
+            fetch_cache_mode: "fill".to_string(),
+        };
+
+        let sec_2603 = build_shared_work_root(&config, "charts-sec-2603").unwrap();
+        let sec_2605 = build_shared_work_root(&config, "charts-sec-2605").unwrap();
+        let tpp_2604 = build_shared_work_root(&config, "tpp-ne-2604").unwrap();
+        let tpp_2605 = build_shared_work_root(&config, "tpp-ne-2605").unwrap();
+        let data_a = build_shared_work_root(&config, "data-data_2604_obs2026.04.10").unwrap();
+        let data_b = build_shared_work_root(&config, "data-data_2604_obs2026.04.11").unwrap();
+
+        assert_ne!(sec_2603, sec_2605);
+        assert_ne!(tpp_2604, tpp_2605);
+        assert_ne!(data_a, data_b);
+        assert!(sec_2603.ends_with("shared/work/charts-sec-2603"));
+        assert!(tpp_2604.ends_with("shared/work/tpp-ne-2604"));
+        assert!(data_a.ends_with("shared/work/data-data_2604_obs2026.04.10"));
     }
 }

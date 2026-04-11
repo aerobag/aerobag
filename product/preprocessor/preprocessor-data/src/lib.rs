@@ -45,6 +45,7 @@ pub struct DataBuildRequest {
     pub output_dir: PathBuf,
     pub manifest_version: String,
     pub mode: DataBuildMode,
+    pub artifact_stem: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1176,13 +1177,17 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
     );
     tx.commit()?;
 
-    let manifest_path = request.output_dir.join("databases");
+    let artifact_stem = request
+        .artifact_stem
+        .as_deref()
+        .unwrap_or("databases");
+    let manifest_path = request.output_dir.join(artifact_stem);
     fs::write(
         &manifest_path,
         format!("{}\nmain.db\n", request.manifest_version),
     )
     .with_context(|| format!("failed to write {}", manifest_path.display()))?;
-    let zip_path = request.output_dir.join("databases.zip");
+    let zip_path = request.output_dir.join(format!("{artifact_stem}.zip"));
     if zip_path.exists() {
         fs::remove_file(&zip_path)
             .with_context(|| format!("failed to remove {}", zip_path.display()))?;
@@ -1404,6 +1409,7 @@ mod tests {
             output_dir,
             manifest_version: "2604".to_string(),
             mode: DataBuildMode::Production,
+            artifact_stem: None,
         };
         let result = build_data_package(&request).unwrap();
         let conn = Connection::open(result.main_db).unwrap();

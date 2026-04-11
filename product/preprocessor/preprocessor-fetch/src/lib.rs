@@ -376,30 +376,46 @@ fn prefetch_one(
     dest_dir: &Path,
     recorder: Option<&PrefetchProvenanceRecorder>,
 ) -> anyhow::Result<()> {
-    let file_name = url
-        .rsplit('/')
-        .next()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("failed to derive filename from {url}"))?;
+    let parsed = parse_logical_download(url)?;
+    let file_name = parsed
+        .logical_file_name
+        .as_deref()
+        .unwrap_or_else(|| {
+            parsed
+                .network_url
+                .rsplit('/')
+                .next()
+                .filter(|value| !value.is_empty())
+                .expect("network url should have a filename")
+        });
     let archive_path = dest_dir.join(file_name);
     let mut source = "local";
+
+    if archive_path.is_file() && !existing_download_is_usable(&archive_path) {
+        fs::remove_file(&archive_path).with_context(|| {
+            format!(
+                "failed to remove corrupted partial download {}",
+                archive_path.display()
+            )
+        })?;
+    }
 
     if !archive_path.is_file() {
         if let Some(cache_root) = env::var_os("FETCH_CACHE_ROOT") {
             let layout = CacheLayout::new(cache_root);
-            if restore_cached_download(&layout, url, file_name, &archive_path)? {
+            if restore_cached_download(&layout, &parsed.cache_key, file_name, &archive_path)? {
                 source = "cache";
             } else {
                 if env::var("FETCH_CACHE_MODE").unwrap_or_else(|_| "fill".to_string()) == "offline"
                 {
                     bail!("cache miss in offline mode for {url}");
                 }
-                fetch_network(url, file_name, dest_dir)?;
-                store_cached_download(&layout, url, file_name, &archive_path)?;
+                fetch_network(&parsed.network_url, file_name, dest_dir)?;
+                store_cached_download(&layout, &parsed.cache_key, file_name, &archive_path)?;
                 source = "network";
             }
         } else {
-            fetch_network(url, file_name, dest_dir)?;
+            fetch_network(&parsed.network_url, file_name, dest_dir)?;
             source = "network";
         }
     }
@@ -436,21 +452,61 @@ fn prefetch_one(
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LogicalDownload {
+    cache_key: String,
+    network_url: String,
+    logical_file_name: Option<String>,
+}
+
+fn parse_logical_download(url: &str) -> anyhow::Result<LogicalDownload> {
+    let (network_url, fragment) = match url.split_once('#') {
+        Some((base, fragment)) => (base.to_string(), Some(fragment)),
+        None => (url.to_string(), None),
+    };
+    let logical_file_name = fragment
+        .and_then(|value| value.strip_prefix("logical_name="))
+        .map(ToOwned::to_owned);
+    let file_name_source = logical_file_name
+        .as_deref()
+        .unwrap_or(&network_url);
+    file_name_source
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("failed to derive filename from {url}"))?;
+    Ok(LogicalDownload {
+        cache_key: url.to_string(),
+        network_url,
+        logical_file_name,
+    })
+}
+
 fn fetch_network(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Result<()> {
+    let archive_path = dest_dir.join(file_name);
+    let temp_path = temporary_download_path(&archive_path);
     let status = Command::new("curl")
         .arg("-L")
         .arg("--fail")
         .arg("--silent")
         .arg("--show-error")
         .arg("--output")
-        .arg(file_name)
+        .arg(&temp_path)
         .arg(url)
         .current_dir(dest_dir)
         .status()
         .with_context(|| format!("failed to fetch {url}"))?;
     if !status.success() {
+        let _ = fs::remove_file(&temp_path);
         bail!("curl failed for {url}");
     }
+    fs::rename(&temp_path, &archive_path).with_context(|| {
+        format!(
+            "failed to move downloaded file {} into place at {}",
+            temp_path.display(),
+            archive_path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -475,10 +531,18 @@ fn restore_cached_download(
     if !blob_path.is_file() {
         return Ok(false);
     }
-    fs::copy(&blob_path, archive_path).with_context(|| {
+    let temp_path = temporary_download_path(archive_path);
+    fs::copy(&blob_path, &temp_path).with_context(|| {
         format!(
             "failed to copy cached blob {} to {}",
             blob_path.display(),
+            temp_path.display()
+        )
+    })?;
+    fs::rename(&temp_path, archive_path).with_context(|| {
+        format!(
+            "failed to move cached blob {} into place at {}",
+            temp_path.display(),
             archive_path.display()
         )
     })?;
@@ -546,4 +610,65 @@ fn list_zip_members(path: &Path) -> anyhow::Result<Vec<String>> {
         .collect::<Vec<_>>();
     members.sort();
     Ok(members)
+}
+
+fn temporary_download_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("download");
+    path.with_file_name(format!(
+        ".{file_name}.part-{}-{:?}",
+        std::process::id(),
+        thread::current().id()
+    ))
+}
+
+fn existing_download_is_usable(path: &Path) -> bool {
+    if path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("zip"))
+        .unwrap_or(false)
+    {
+        return list_zip_members(path).is_ok();
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logical_download_uses_snapshot_name_for_cache_identity() {
+        let parsed = parse_logical_download(
+            "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.10.zip",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.network_url,
+            "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP"
+        );
+        assert_eq!(
+            parsed.logical_file_name.as_deref(),
+            Some("obstacle_2026.04.10.zip")
+        );
+        assert_eq!(
+            parsed.cache_key,
+            "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.10.zip"
+        );
+    }
+
+    #[test]
+    fn different_obstacle_snapshots_produce_distinct_cache_metadata_paths() {
+        let layout = CacheLayout::new("/tmp/fetch-cache-test");
+        let a = layout.http_metadata_path(
+            "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.10.zip",
+        );
+        let b = layout.http_metadata_path(
+            "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.11.zip",
+        );
+        assert_ne!(a, b);
+    }
 }

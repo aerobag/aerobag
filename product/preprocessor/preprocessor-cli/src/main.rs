@@ -1666,6 +1666,7 @@ fn main() -> anyhow::Result<()> {
                 output_dir: command.output_dir,
                 manifest_version: command.manifest_version,
                 mode: command.mode,
+                artifact_stem: None,
             })?;
             println!("main_db {}", result.main_db.display());
             println!("manifest {}", result.manifest_path.display());

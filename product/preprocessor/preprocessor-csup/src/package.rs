@@ -12,14 +12,32 @@ use preprocessor_tools::{write_thumbnail_from_png, ToolInvocation};
 use crate::{calculate_cycle, remove_if_exists};
 
 pub fn package_csup_region(work_dir: &Path, region: Region) -> anyhow::Result<PackageOutputRecord> {
-    let mut records = package_csup_region_records(work_dir, &[region], true)?;
+    let manifest_cycle = current_cycle_manifest();
+    package_csup_region_versioned(work_dir, region, &manifest_cycle, &manifest_cycle)
+}
+
+pub fn package_csup_region_versioned(
+    work_dir: &Path,
+    region: Region,
+    manifest_version: &str,
+    artifact_version: &str,
+) -> anyhow::Result<PackageOutputRecord> {
+    let mut records =
+        package_csup_region_records(work_dir, &[region], true, manifest_version, artifact_version)?;
     records
         .pop()
         .ok_or_else(|| anyhow::anyhow!("no csup package record generated for {}", region.code()))
 }
 
 pub fn package_csup_regions(work_dir: &Path, provenance_dir: &Path) -> anyhow::Result<usize> {
-    let records = package_csup_region_records(work_dir, &Region::ALL, true)?;
+    let manifest_cycle = current_cycle_manifest();
+    let records = package_csup_region_records(
+        work_dir,
+        &Region::ALL,
+        true,
+        &manifest_cycle,
+        &manifest_cycle,
+    )?;
     write_package_outputs_jsonl(provenance_dir, &records)?;
     Ok(Region::ALL.len())
 }
@@ -28,13 +46,14 @@ fn package_csup_region_records(
     work_dir: &Path,
     regions: &[Region],
     produce_records: bool,
+    manifest_version: &str,
+    artifact_version: &str,
 ) -> anyhow::Result<Vec<PackageOutputRecord>> {
-    let manifest_cycle = current_cycle_manifest();
     let mut package_records = Vec::with_capacity(regions.len());
 
     for region in regions {
-        let manifest_name = format!("{}_CSUP", region.code());
-        let zip_name = format!("{}_CSUP.zip", region.code());
+        let manifest_name = format!("{}_CSUP_{}", region.code(), artifact_version);
+        let zip_name = format!("{}_CSUP_{}.zip", region.code(), artifact_version);
         let manifest_path = work_dir.join(&manifest_name);
         let zip_path = work_dir.join(&zip_name);
         remove_if_exists(&manifest_path)?;
@@ -44,7 +63,7 @@ fn package_csup_region_records(
         let selected = with_thumbnail_members(work_dir, &selected)?;
 
         let mut manifest_text = String::new();
-        manifest_text.push_str(&manifest_cycle);
+        manifest_text.push_str(manifest_version);
         manifest_text.push('\n');
         for path in &selected {
             manifest_text.push_str(path);

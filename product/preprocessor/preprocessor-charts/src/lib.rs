@@ -376,8 +376,31 @@ pub fn package_family_region(
     work_dir: impl AsRef<Path>,
     region: Region,
 ) -> anyhow::Result<PackageOutputRecord> {
+    package_family_region_versioned(
+        family,
+        work_dir,
+        region,
+        &calculate_manifest_cycle(),
+        &calculate_manifest_cycle(),
+    )
+}
+
+pub fn package_family_region_versioned(
+    family: ChartFamily,
+    work_dir: impl AsRef<Path>,
+    region: Region,
+    manifest_version: &str,
+    artifact_version: &str,
+) -> anyhow::Result<PackageOutputRecord> {
     let spec = ChartSpec::for_family(family);
-    package_region_records_from_spec(work_dir.as_ref(), spec, &[region], true)?
+    package_region_records_from_spec(
+        work_dir.as_ref(),
+        spec,
+        &[region],
+        true,
+        manifest_version,
+        artifact_version,
+    )?
         .into_iter()
         .next()
         .ok_or_else(|| anyhow::anyhow!("no package record generated for {}", region.code()))
@@ -815,8 +838,15 @@ fn package_regions_from_spec(
 ) -> anyhow::Result<PackageBuildResult> {
     let start = Instant::now();
     let regions = Region::ALL;
-    let package_records =
-        package_region_records_from_spec(work_dir, spec, &regions, provenance_dir.is_some())?;
+    let manifest_cycle = calculate_manifest_cycle();
+    let package_records = package_region_records_from_spec(
+        work_dir,
+        spec,
+        &regions,
+        provenance_dir.is_some(),
+        &manifest_cycle,
+        &manifest_cycle,
+    )?;
 
     if let Some(provenance_dir) = provenance_dir {
         write_package_outputs_jsonl(provenance_dir, &package_records)?;
@@ -834,14 +864,15 @@ fn package_region_records_from_spec(
     spec: ChartSpec,
     regions: &[Region],
     produce_records: bool,
+    manifest_version: &str,
+    artifact_version: &str,
 ) -> anyhow::Result<Vec<PackageOutputRecord>> {
-    let manifest_cycle = calculate_manifest_cycle();
     let tile_paths = collect_tile_paths_glob(work_dir, spec.tile_index)?;
     let mut package_records = Vec::with_capacity(regions.len());
 
     for region in regions {
-        let manifest_name = format!("{}_{}", region.code(), spec.chart_name);
-        let zip_name = format!("{}_{}.zip", region.code(), spec.chart_name);
+        let manifest_name = format!("{}_{}_{}", region.code(), spec.chart_name, artifact_version);
+        let zip_name = format!("{}_{}_{}.zip", region.code(), spec.chart_name, artifact_version);
         let manifest_path = work_dir.join(&manifest_name);
         let zip_path = work_dir.join(&zip_name);
 
@@ -858,7 +889,7 @@ fn package_region_records_from_spec(
         }
 
         let mut manifest_text = String::new();
-        manifest_text.push_str(&manifest_cycle);
+        manifest_text.push_str(manifest_version);
         manifest_text.push('\n');
         for path in &selected {
             manifest_text.push_str(path);

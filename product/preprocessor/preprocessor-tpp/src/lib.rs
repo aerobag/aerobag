@@ -19,7 +19,7 @@ use preprocessor_fetch::{
 use preprocessor_tools::{append_pngs_vertical, flatten_png_onto_white, ToolInvocation};
 
 mod package;
-use package::package_region;
+use package::{package_region, package_region_versioned};
 
 const TPP_AIRPORT_DIAGRAMS_URL: &str =
     "https://www.outerworldapps.com/WairToNowWork/avare_aptdiags.php";
@@ -160,6 +160,22 @@ pub fn package_native_tpp(
 ) -> anyhow::Result<NativeTppPackageResult> {
     let package_start = Instant::now();
     let package_count = package_region(work_dir, provenance_dir, region)?;
+    Ok(NativeTppPackageResult {
+        package_elapsed_ms: package_start.elapsed().as_millis(),
+        package_count,
+    })
+}
+
+pub fn package_native_tpp_versioned(
+    work_dir: &Path,
+    provenance_dir: &Path,
+    region: Region,
+    manifest_version: &str,
+    artifact_version: &str,
+) -> anyhow::Result<NativeTppPackageResult> {
+    let package_start = Instant::now();
+    let package_count =
+        package_region_versioned(work_dir, provenance_dir, region, manifest_version, artifact_version)?;
     Ok(NativeTppPackageResult {
         package_elapsed_ms: package_start.elapsed().as_millis(),
         package_count,

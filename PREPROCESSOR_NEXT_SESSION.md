@@ -2,6 +2,46 @@
 
 ## Session Notes
 
+- TODO:
+  - `data` currently mixes a 28-day cycle (`NASR`/`AIXM`/`CIFP`) with the daily obstacle feed `DAILY_DOF_DAT.ZIP`.
+  - For now, product metadata/build labeling should treat the database as a compound vintage like:
+    - `data_<cycle>_obs<YYYY.MM.DD>`
+  - Top-level validity roll-up can continue to follow the 28-day cycle inputs for now.
+  - Long-term, obstacles probably want to be split into their own independently updatable product/artifact.
+
+- 2026-04-11 05:50:00Z:
+  - Full real two-vintage isolation test is in flight under the dedicated throwaway artifact root:
+    - `<source-root>/../aerobag-artifacts-vintage-test`
+  - Exact command currently running:
+    - `env AEROBAG_VINTAGE_TEST_RESUME=1 python3 product/preprocessor/scripts/check_vintage_isolation.py`
+  - Purpose:
+    - run a real cold `validation` build for an older vintage and then a newer vintage against the same fresh:
+      - `cache/fetch`
+      - `product-builds/shared`
+    - then assert both trees are strict supersets after the second build
+  - Historical source-url fixes already landed in the script:
+    - full historical chart directory listings instead of representative single ZIPs
+    - full historical TPP archive set `DDTPP[A-E]`
+  - The test already flushed out two real hidden assumptions and the code fixes are in:
+    - partial ZIP downloads were being trusted on rerun
+      - fixed by temp-file download/restore plus ZIP validation in [`preprocessor-fetch/src/lib.rs`](/root/aerobag-preprocessor/product/preprocessor/preprocessor-fetch/src/lib.rs)
+    - historical TPP manifests were incomplete
+      - fixed in [`check_vintage_isolation.py`](/root/aerobag-preprocessor/product/preprocessor/scripts/check_vintage_isolation.py)
+  - The latest older-vintage run completed all heavy work and package tails, then failed only because the orchestrator looked for the wrong versioned data zip filename:
+    - expected incorrectly:
+      - `.../output/databases_data_2601_obs2026.01.23.zip`
+    - actual emitted file:
+      - `.../output/data_2601_obs2026.01.23.zip`
+  - That mismatch is now fixed in [`product_build.rs`](/root/aerobag-preprocessor/product/preprocessor/preprocessor-cli/src/product_build.rs).
+  - Current resumed run should therefore:
+    - fast-path the completed older-vintage `2601` work from cache
+    - proceed into the current-vintage build
+    - then execute the actual fetch/shared-tree superset assertions
+  - If this run fails again, inspect:
+    - [`master.log`](/root/aerobag-preprocessor/../aerobag-artifacts-vintage-test/product-builds/validation/orchestrator-logs/master.log)
+    - the script output from:
+      - [`check_vintage_isolation.py`](/root/aerobag-preprocessor/product/preprocessor/scripts/check_vintage_isolation.py)
+
 - 2026-04-07 07:05:00Z:
   - Replaced the old Bash full-validation harness logic with a Rust subprocess orchestrator under:
     - [`baseline/avare_equivalent/preprocessor-cli/src/full_validation.rs`](/root/aerobag/baseline/avare_equivalent/preprocessor-cli/src/full_validation.rs)

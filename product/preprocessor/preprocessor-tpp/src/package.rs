@@ -19,8 +19,25 @@ pub(crate) fn package_region(
     provenance_dir: &Path,
     region: Region,
 ) -> anyhow::Result<usize> {
-    let manifest_name = format!("{}_TPP", region.code());
-    let zip_name = format!("{}_TPP.zip", region.code());
+    let manifest_cycle = current_cycle_manifest();
+    package_region_versioned(
+        work_dir,
+        provenance_dir,
+        region,
+        &manifest_cycle,
+        &manifest_cycle,
+    )
+}
+
+pub(crate) fn package_region_versioned(
+    work_dir: &Path,
+    provenance_dir: &Path,
+    region: Region,
+    manifest_version: &str,
+    artifact_version: &str,
+) -> anyhow::Result<usize> {
+    let manifest_name = format!("{}_TPP_{}", region.code(), artifact_version);
+    let zip_name = format!("{}_TPP_{}.zip", region.code(), artifact_version);
     let manifest_path = work_dir.join(&manifest_name);
     let zip_path = work_dir.join(&zip_name);
     remove_if_exists(&manifest_path)?;
@@ -29,7 +46,7 @@ pub(crate) fn package_region(
     let selected = collect_region_pngs(work_dir, region)?;
     let selected = with_thumbnail_members(work_dir, &selected)?;
     let mut manifest_text = String::new();
-    manifest_text.push_str(&current_cycle_manifest());
+    manifest_text.push_str(manifest_version);
     manifest_text.push('\n');
     for path in &selected {
         manifest_text.push_str(path);

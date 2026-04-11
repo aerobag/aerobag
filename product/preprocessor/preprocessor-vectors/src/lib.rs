@@ -10,7 +10,7 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 const POINT_LAYER_ZOOM_POLICY: &[(&str, u8)] = &[
     ("airport", 9),
-    ("fix", 10),
+    ("fix", 9),
     ("nav", 9),
     ("awos", 9),
     ("obstacle", 12),
@@ -215,7 +215,12 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
         ),
         (
             "fix",
-            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type FROM fix",
+            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type
+             FROM fix
+             WHERE printf('%.6f,%.6f', ARPLatitude, ARPLongitude) IN (
+                 SELECT DISTINCT printf('%.6f,%.6f', Latitude, Longitude)
+                 FROM airways
+             )",
             "fix",
         ),
         (

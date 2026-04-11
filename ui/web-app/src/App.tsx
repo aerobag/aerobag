@@ -579,8 +579,7 @@ function MapPage(props: {
     situation,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [familyTrayOpen, setFamilyTrayOpen] = useState(false);
-  const [pageTrayOpen, setPageTrayOpen] = useState(false);
+  const trayGroup = useModalTrayGroup(["page", "family"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
   const viewportRef = useRef<MapViewportState>(viewport);
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
@@ -642,7 +641,7 @@ function MapPage(props: {
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
-    if (familyTrayOpen) {
+    if (trayGroup.scrimOpen) {
       return;
     }
     const point = { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY };
@@ -665,7 +664,7 @@ function MapPage(props: {
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
-    if (familyTrayOpen || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+    if (trayGroup.scrimOpen || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
     const point = { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY };
@@ -717,7 +716,7 @@ function MapPage(props: {
   }
 
   function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
-    if (familyTrayOpen || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+    if (trayGroup.scrimOpen || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       event.preventDefault();
       return;
     }
@@ -735,7 +734,7 @@ function MapPage(props: {
   }
 
   function handleDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
-    if (familyTrayOpen || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+    if (trayGroup.scrimOpen || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
     updateViewport(
@@ -764,14 +763,7 @@ function MapPage(props: {
         onDoubleClick={handleDoubleClick}
       >
         <div className="mapBackdrop" />
-        {familyTrayOpen ? (
-          <button
-            type="button"
-            className="trayScrim"
-            aria-label="Close chart tray"
-            onClick={() => setFamilyTrayOpen(false)}
-          />
-        ) : null}
+        {trayGroup.scrimOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
         {tiles.map((tile) => (
           <div
             key={`${tile.zoom}-${tile.x}-${tile.yTms}`}
@@ -916,15 +908,9 @@ function MapPage(props: {
         <div className="chartDock">
           <TrayDock
             launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "CHT"}
-            open={pageTrayOpen}
-            blocked={familyTrayOpen}
-            onToggle={() =>
-              toggleModalTray(
-                "page",
-                { page: pageTrayOpen, family: familyTrayOpen },
-                { setPage: setPageTrayOpen, setFamily: setFamilyTrayOpen },
-              )
-            }
+            open={trayGroup.isOpen("page")}
+            blocked={trayGroup.blocked("page")}
+            onToggle={() => trayGroup.toggle("page")}
             ariaLabel="Page"
             options={pageOptions.map((option) => ({
               id: option.id,
@@ -932,21 +918,15 @@ function MapPage(props: {
               active: option.id === page,
               onSelect: () => {
                 onSelectPage(option.id);
-                setPageTrayOpen(false);
+                trayGroup.close("page");
               },
             }))}
           />
           <TrayDock
             launcherLabel={selectedFamily.launcherLabel}
-            open={familyTrayOpen}
-            blocked={pageTrayOpen}
-            onToggle={() =>
-              toggleModalTray(
-                "family",
-                { page: pageTrayOpen, family: familyTrayOpen },
-                { setPage: setPageTrayOpen, setFamily: setFamilyTrayOpen },
-              )
-            }
+            open={trayGroup.isOpen("family")}
+            blocked={trayGroup.blocked("family")}
+            onToggle={() => trayGroup.toggle("family")}
             ariaLabel="Chart family"
             options={chartFamilies.map((family) => {
               const available = availableFamilies.has(family.id);
@@ -961,7 +941,7 @@ function MapPage(props: {
                   if (nextMap) {
                     onSelectMapId(nextMap.id);
                   }
-                  setFamilyTrayOpen(false);
+                  trayGroup.close("family");
                 },
               };
             })}
@@ -1006,9 +986,9 @@ function MapPage(props: {
 function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; uptimeLabel: string; legSummary: string; plan: typeof samplePlan; onSelectPage: (page: AppPage) => void; onOpenCharts: (airportId: string | null) => void; onRemoveWaypoint: (index: number) => void | Promise<void>; onMoveWaypoint: (index: number, delta: number) => void | Promise<void> }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
   const [reorderOpen, setReorderOpen] = useState(false);
-  const [pageTrayOpen, setPageTrayOpen] = useState(false);
+  const trayGroup = useModalTrayGroup(["page"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
-  const trayOpen = pageTrayOpen;
+  const trayOpen = trayGroup.scrimOpen;
   const rows = useMemo(
     () => {
       const firstLeg = props.plan.legs[0];
@@ -1041,15 +1021,15 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
 
   return (
     <section className="appPage planPage">
-      {trayOpen ? <button type="button" className="trayScrim" aria-label="Close page tray" onClick={() => setPageTrayOpen(false)} /> : null}
+      {trayOpen ? <TrayScrim ariaLabel="Close page tray" onClose={trayGroup.closeAll} /> : null}
 
       <div className="pageChrome">
         <div className="chartDock">
           <TrayDock
             launcherLabel={pageOptions.find((option) => option.id === props.page)?.launcherLabel ?? "PLN"}
-            open={pageTrayOpen}
+            open={trayGroup.isOpen("page")}
             blocked={selectedWaypointIndex !== null}
-            onToggle={() => setPageTrayOpen((open) => !open)}
+            onToggle={() => trayGroup.toggle("page")}
             ariaLabel="Page"
             options={pageOptions.map((option) => ({
               id: option.id,
@@ -1057,7 +1037,7 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
               active: option.id === props.page,
               onSelect: () => {
                 props.onSelectPage(option.id);
-                setPageTrayOpen(false);
+                trayGroup.close("page");
               },
             }))}
           />
@@ -1201,9 +1181,10 @@ function TrayDock(props: {
   ariaLabel: string;
   blocked?: boolean;
   style?: TrayDockStyle;
+  launcherAccentColor?: string;
   options: TrayOption[];
 }) {
-  const { launcherLabel, open, onToggle, ariaLabel, blocked = false, style = "compact", options } = props;
+  const { launcherLabel, open, onToggle, ariaLabel, blocked = false, style = "compact", launcherAccentColor, options } = props;
   const launcherWide = style === "plate_wide";
   const trayWide = style === "plate_narrow" || style === "plate_wide";
   const launcherBlocked = blocked && !open;
@@ -1214,7 +1195,10 @@ function TrayDock(props: {
         className={`chartButton${launcherWide ? " chartButtonWide" : ""}${open ? " isOpen" : ""}${launcherBlocked ? " isBlocked" : ""}`}
         aria-disabled={launcherBlocked}
         tabIndex={launcherBlocked ? -1 : undefined}
-        style={launcherBlocked ? { pointerEvents: "none" } : undefined}
+        style={{
+          ...(launcherBlocked ? { pointerEvents: "none" } : undefined),
+          ...(launcherAccentColor ? ({ ["--tray-accent" as string]: launcherAccentColor } as CSSProperties) : undefined),
+        }}
         onPointerDown={launcherBlocked ? undefined : stopPointer}
         onPointerUp={launcherBlocked ? undefined : stopPointer}
         onDoubleClick={launcherBlocked ? undefined : stopDoubleClick}
@@ -1271,9 +1255,7 @@ function ChartsPage(props: {
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<{ zoom: number; distance: number; midpoint: ScreenPoint } | null>(null);
   const lastChartLayoutKeyRef = useRef("");
-  const [airportTrayOpen, setAirportTrayOpen] = useState(false);
-  const [chartTrayOpen, setChartTrayOpen] = useState(false);
-  const [pageTrayOpen, setPageTrayOpen] = useState(false);
+  const trayGroup = useModalTrayGroup(["page", "airport", "chart"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
   const sortedCharts = useMemo(() => sortChartsForFolder(selectedAirport?.charts ?? []), [selectedAirport]);
   const selectedImageSize = imageSize && imageSize.chartId === (selectedChart?.id ?? "") ? imageSize : null;
@@ -1397,7 +1379,7 @@ function ChartsPage(props: {
     }
   }, [selectedImageSize, selectedChart?.id, surfaceSize.width, surfaceSize.height, viewport, onViewportChange]);
 
-  const trayOpen = pageTrayOpen || airportTrayOpen || chartTrayOpen;
+  const trayOpen = trayGroup.scrimOpen;
   const overscrollPx = 64;
 
   function localPointFromPointerEvent(
@@ -1569,18 +1551,7 @@ function ChartsPage(props: {
       >
         <div className="mapBackdrop" />
         <SituationStatusBadge situation={situation} />
-        {trayOpen ? (
-          <button
-            type="button"
-            className="trayScrim"
-            aria-label="Close chart tray"
-            onClick={() => {
-              setPageTrayOpen(false);
-              setAirportTrayOpen(false);
-              setChartTrayOpen(false);
-            }}
-          />
-        ) : null}
+        {trayOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
 
         {folderOpen ? (
           <div className="plateFolderGrid" onPointerDown={stopPointer} onPointerUp={stopPointer} onDoubleClick={stopDoubleClick}>
@@ -1633,15 +1604,9 @@ function ChartsPage(props: {
         <div className="chartDock chartDockDouble">
           <TrayDock
             launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "PLT"}
-            open={pageTrayOpen}
-            blocked={airportTrayOpen || chartTrayOpen}
-            onToggle={() =>
-              toggleExclusiveTray(
-                "page",
-                { page: pageTrayOpen, airport: airportTrayOpen, chart: chartTrayOpen },
-                { setPage: setPageTrayOpen, setAirport: setAirportTrayOpen, setChart: setChartTrayOpen },
-              )
-            }
+            open={trayGroup.isOpen("page")}
+            blocked={trayGroup.blocked("page")}
+            onToggle={() => trayGroup.toggle("page")}
             ariaLabel="Page"
             style="plate_narrow"
             options={pageOptions.map((option) => ({
@@ -1650,21 +1615,15 @@ function ChartsPage(props: {
               active: option.id === page,
               onSelect: () => {
                 onSelectPage(option.id);
-                setPageTrayOpen(false);
+                trayGroup.close("page");
               },
             }))}
           />
           <TrayDock
             launcherLabel={selectedAirport?.label ?? "---"}
-            open={airportTrayOpen}
-            blocked={pageTrayOpen || chartTrayOpen}
-            onToggle={() =>
-              toggleExclusiveTray(
-                "airport",
-                { page: pageTrayOpen, airport: airportTrayOpen, chart: chartTrayOpen },
-                { setPage: setPageTrayOpen, setAirport: setAirportTrayOpen, setChart: setChartTrayOpen },
-              )
-            }
+            open={trayGroup.isOpen("airport")}
+            blocked={trayGroup.blocked("airport")}
+            onToggle={() => trayGroup.toggle("airport")}
             ariaLabel="Airport"
             style="plate_narrow"
             options={airports.map((airport) => ({
@@ -1673,21 +1632,16 @@ function ChartsPage(props: {
               active: airport.id === selectedAirport?.id,
               onSelect: () => {
                 onSelectAirport(airport.id);
-                setAirportTrayOpen(false);
+                trayGroup.close("airport");
               },
             }))}
           />
           <TrayDock
             launcherLabel={selectedChart?.label ?? "---"}
-            open={chartTrayOpen}
-            blocked={pageTrayOpen || airportTrayOpen}
-            onToggle={() =>
-              toggleExclusiveTray(
-                "chart",
-                { page: pageTrayOpen, airport: airportTrayOpen, chart: chartTrayOpen },
-                { setPage: setPageTrayOpen, setAirport: setAirportTrayOpen, setChart: setChartTrayOpen },
-              )
-            }
+            open={trayGroup.isOpen("chart")}
+            blocked={trayGroup.blocked("chart")}
+            launcherAccentColor={selectedChart ? plateFolderColor(selectedChart.folder_category) : undefined}
+            onToggle={() => trayGroup.toggle("chart")}
             ariaLabel="Chart"
             style="plate_wide"
             options={sortedCharts.map((chart) => ({
@@ -1697,7 +1651,7 @@ function ChartsPage(props: {
               accentColor: plateFolderColor(chart.folder_category),
               onSelect: () => {
                 onSelectChart(chart.id);
-                setChartTrayOpen(false);
+                trayGroup.close("chart");
               },
             }))}
           />
@@ -2103,62 +2057,56 @@ function stopDoubleClick(event: React.MouseEvent<HTMLElement>) {
   event.stopPropagation();
 }
 
-function toggleModalTray(
-  target: "page" | "family",
-  state: { page: boolean; family: boolean },
-  actions: {
-    setPage: React.Dispatch<React.SetStateAction<boolean>>;
-    setFamily: React.Dispatch<React.SetStateAction<boolean>>;
-  },
-) {
-  if (target === "page") {
-    if (state.family) {
-      actions.setFamily(false);
-      return;
-    }
-    actions.setPage((open) => !open);
-    return;
-  }
-  if (state.page) {
-    actions.setPage(false);
-    return;
-  }
-  actions.setFamily((open) => !open);
+function TrayScrim(props: { ariaLabel: string; onClose: () => void }) {
+  return (
+    <button
+      type="button"
+      className="trayScrim"
+      aria-label={props.ariaLabel}
+      onPointerDown={stopPointer}
+      onPointerUp={stopPointer}
+      onDoubleClick={stopDoubleClick}
+      onClick={props.onClose}
+    />
+  );
 }
 
-function toggleExclusiveTray(
-  target: "page" | "airport" | "chart",
-  state: { page: boolean; airport: boolean; chart: boolean },
-  actions: {
-    setPage: React.Dispatch<React.SetStateAction<boolean>>;
-    setAirport: React.Dispatch<React.SetStateAction<boolean>>;
-    setChart: React.Dispatch<React.SetStateAction<boolean>>;
-  },
-) {
-  if (target === "page") {
-    if (state.airport || state.chart) {
-      actions.setAirport(false);
-      actions.setChart(false);
+function useModalTrayGroup<const T extends string>(ids: readonly T[]) {
+  const [openId, setOpenId] = useState<T | null>(null);
+  const allowedIds = useMemo(() => new Set<T>(ids), [ids]);
+
+  function isOpen(id: T) {
+    return openId === id;
+  }
+
+  function blocked(id: T) {
+    return openId !== null && openId !== id;
+  }
+
+  function toggle(id: T) {
+    if (!allowedIds.has(id)) {
       return;
     }
-    actions.setPage((open) => !open);
-    return;
+    setOpenId((current) => (current === id ? null : current === null ? id : current));
   }
-  if (target === "airport") {
-    if (state.page || state.chart) {
-      actions.setPage(false);
-      actions.setChart(false);
-      return;
-    }
-    actions.setAirport((open) => !open);
-    return;
+
+  function close(id: T) {
+    setOpenId((current) => (current === id ? null : current));
   }
-  if (state.page || state.airport) {
-    actions.setPage(false);
-    actions.setAirport(false);
-    return;
+
+  function closeAll() {
+    setOpenId(null);
   }
-  actions.setChart((open) => !open);
+
+  return {
+    close,
+    closeAll,
+    blocked,
+    isOpen,
+    openId,
+    scrimOpen: openId !== null,
+    toggle,
+  };
 }
 
 function midpoint(first: ScreenPoint, second: ScreenPoint): ScreenPoint {

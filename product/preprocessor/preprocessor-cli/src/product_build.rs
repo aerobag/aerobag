@@ -108,6 +108,13 @@ struct PreparedNode {
     record_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PackageSummary {
+    total: usize,
+    cache_hits: usize,
+    rebuilt: usize,
+}
+
 #[derive(Debug, Clone)]
 enum HeavyJobSpec {
     ChartRender {
@@ -405,6 +412,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             ChartFamily::EnrL,
             ChartFamily::EnrH,
         ] {
+            let started = Instant::now();
             master_log.log(format!(
                 "launch charts-{}-package",
                 family_slug(family)
@@ -417,28 +425,42 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                     .get(family_slug(family))
                     .expect("chart family version should exist"),
             )?;
+            let summary = summarize_package_records(&records);
             for record in records {
                 node_records.push(normalize_node_record_paths(record, &config.build_root));
             }
             master_log.log(format!(
-                "complete charts-{}-package",
-                family_slug(family)
+                "complete charts-{}-package elapsed_ms={} regions={} cache_hits={} rebuilt={}",
+                family_slug(family),
+                started.elapsed().as_millis(),
+                summary.total,
+                summary.cache_hits,
+                summary.rebuilt,
             ))?;
             chart_sources.push(source);
         }
 
+        let started = Instant::now();
         master_log.log("launch csup-package")?;
         let (csup_records, csup_source) =
             build_csup_package_nodes(config, &source_urls_dir, &csup_version)?;
+        let summary = summarize_package_records(&csup_records);
         for record in csup_records {
             node_records.push(normalize_node_record_paths(record, &config.build_root));
         }
-        master_log.log("complete csup-package")?;
+        master_log.log(format!(
+            "complete csup-package elapsed_ms={} regions={} cache_hits={} rebuilt={}",
+            started.elapsed().as_millis(),
+            summary.total,
+            summary.cache_hits,
+            summary.rebuilt,
+        ))?;
         let csup_sources = vec![csup_source];
 
         let mut tpp_sources = Vec::new();
         for (region, run_root) in tpp_package_requests {
             let region_id = region.code().to_ascii_lowercase();
+            let started = Instant::now();
             master_log.log(format!("launch tpp-{}-package", region_id))?;
             let (record, source) = build_tpp_package_node(
                 config,
@@ -449,8 +471,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                     .get(&region_id)
                     .expect("tpp region version should exist"),
             )?;
+            let cache_hit = record.cache_hit;
             node_records.push(normalize_node_record_paths(record, &config.build_root));
-            master_log.log(format!("complete tpp-{}-package", region_id))?;
+            master_log.log(format!(
+                "complete tpp-{}-package elapsed_ms={} cache_hit={}",
+                region_id,
+                started.elapsed().as_millis(),
+                cache_hit,
+            ))?;
             tpp_sources.push(source);
         }
 
@@ -1539,6 +1567,16 @@ fn prepare_node_at(
         record_path: dir.join("build-record.json"),
         dir,
     })
+}
+
+fn summarize_package_records(records: &[NodeRecord]) -> PackageSummary {
+    let total = records.len();
+    let cache_hits = records.iter().filter(|record| record.cache_hit).count();
+    PackageSummary {
+        total,
+        cache_hits,
+        rebuilt: total.saturating_sub(cache_hits),
+    }
 }
 
 fn prepare_existing_node_root(

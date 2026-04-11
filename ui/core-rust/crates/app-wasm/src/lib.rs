@@ -11,6 +11,131 @@ pub fn build_flight_plan(plan_json: &str) -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
+pub fn build_flight_plan_ui(plan_json: &str) -> Result<String, JsValue> {
+    build_flight_plan_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn activate_leg_ui(plan_json: &str, leg_index: usize) -> Result<String, JsValue> {
+    activate_leg_ui_json(plan_json, leg_index).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn activate_next_leg_ui(plan_json: &str) -> Result<String, JsValue> {
+    activate_next_leg_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn suspend_sequencing_ui(plan_json: &str) -> Result<String, JsValue> {
+    suspend_sequencing_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn unsuspend_sequencing_ui(plan_json: &str) -> Result<String, JsValue> {
+    unsuspend_sequencing_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn sequence_active_leg_ui(plan_json: &str) -> Result<String, JsValue> {
+    sequence_active_leg_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn activate_direct_to_leg_ui(
+    plan_json: &str,
+    lat: f64,
+    lon: f64,
+    target_leg_id: &str,
+) -> Result<String, JsValue> {
+    activate_direct_to_leg_ui_json(plan_json, lat, lon, target_leg_id)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn insert_airway_from_anchors_ui(
+    db_path: &str,
+    plan_json: &str,
+    start_component_index: usize,
+    end_component_index: usize,
+    airway_name: &str,
+    origin_anchor_json: &str,
+    destination_anchor_json: &str,
+) -> Result<String, JsValue> {
+    insert_airway_from_anchors_ui_json(
+        db_path,
+        plan_json,
+        start_component_index,
+        end_component_index,
+        airway_name,
+        origin_anchor_json,
+        destination_anchor_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn replace_airway_from_selection_ui(
+    db_path: &str,
+    plan_json: &str,
+    component_index: usize,
+    entry_json: &str,
+    exit_json: &str,
+) -> Result<String, JsValue> {
+    replace_airway_from_selection_ui_json(db_path, plan_json, component_index, entry_json, exit_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn insert_procedure_from_selection_ui(
+    db_path: &str,
+    plan_json: &str,
+    start_component_index: usize,
+    end_component_index: usize,
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    runway_transition_json: &str,
+    enroute_transition_json: &str,
+) -> Result<String, JsValue> {
+    insert_procedure_from_selection_ui_json(
+        db_path,
+        plan_json,
+        start_component_index,
+        end_component_index,
+        airport_id,
+        procedure_id,
+        kind_json,
+        runway_transition_json,
+        enroute_transition_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn replace_procedure_from_selection_ui(
+    db_path: &str,
+    plan_json: &str,
+    component_index: usize,
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    runway_transition_json: &str,
+    enroute_transition_json: &str,
+) -> Result<String, JsValue> {
+    replace_procedure_from_selection_ui_json(
+        db_path,
+        plan_json,
+        component_index,
+        airport_id,
+        procedure_id,
+        kind_json,
+        runway_transition_json,
+        enroute_transition_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn remove_flight_plan_leg(plan_json: &str, index: usize) -> Result<String, JsValue> {
     remove_flight_plan_leg_json(plan_json, index).map_err(|err| JsValue::from_str(&err))
 }
@@ -26,6 +151,16 @@ pub fn replace_flight_plan_state(
 }
 
 #[wasm_bindgen]
+pub fn replace_flight_plan_ui_state(
+    state_json: &str,
+    catalog_json: &str,
+    plan_json: &str,
+) -> Result<String, JsValue> {
+    replace_flight_plan_ui_state_json(state_json, catalog_json, plan_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn set_content_policy_state(
     state_json: &str,
     catalog_json: &str,
@@ -36,12 +171,32 @@ pub fn set_content_policy_state(
 }
 
 #[wasm_bindgen]
+pub fn set_content_policy_ui_state(
+    state_json: &str,
+    catalog_json: &str,
+    policy_json: &str,
+) -> Result<String, JsValue> {
+    set_content_policy_ui_state_json(state_json, catalog_json, policy_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn refresh_content_state(
     state_json: &str,
     catalog_json: &str,
     inventory_json: &str,
 ) -> Result<String, JsValue> {
     refresh_content_state_json(state_json, catalog_json, inventory_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn refresh_content_ui_state(
+    state_json: &str,
+    catalog_json: &str,
+    inventory_json: &str,
+) -> Result<String, JsValue> {
+    refresh_content_ui_state_json(state_json, catalog_json, inventory_json)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -176,6 +331,183 @@ fn remove_flight_plan_leg_json(plan_json: &str, index: usize) -> Result<String, 
     serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
 
+fn build_flight_plan_ui_json(plan_json: &str) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let ui = app_core::build_flight_plan_ui(plan).map_err(|err| err.to_string())?;
+    serde_json::to_string(&ui).map_err(|err| err.to_string())
+}
+
+fn activate_leg_ui_json(plan_json: &str, leg_index: usize) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::activate_leg_ui(&plan, leg_index).map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+fn activate_next_leg_ui_json(plan_json: &str) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::activate_next_leg_ui(&plan).map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+fn suspend_sequencing_ui_json(plan_json: &str) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::suspend_sequencing_ui(&plan).map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+fn unsuspend_sequencing_ui_json(plan_json: &str) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::unsuspend_sequencing_ui(&plan).map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+fn sequence_active_leg_ui_json(plan_json: &str) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::sequence_active_leg_ui(&plan).map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+fn activate_direct_to_leg_ui_json(
+    plan_json: &str,
+    lat: f64,
+    lon: f64,
+    target_leg_id: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::activate_direct_to_leg_ui(
+        &plan,
+        app_core::LatLon { lat, lon },
+        target_leg_id,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+fn insert_airway_from_anchors_ui_json(
+    db_path: &str,
+    plan_json: &str,
+    start_component_index: usize,
+    end_component_index: usize,
+    airway_name: &str,
+    origin_anchor_json: &str,
+    destination_anchor_json: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let origin_anchor: app_core::NavRef =
+        serde_json::from_str(origin_anchor_json).map_err(|err| err.to_string())?;
+    let destination_anchor: app_core::NavRef =
+        serde_json::from_str(destination_anchor_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::insert_airway_from_anchors_ui(
+        std::path::Path::new(db_path),
+        &plan,
+        start_component_index,
+        end_component_index,
+        airway_name,
+        &origin_anchor,
+        &destination_anchor,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+fn replace_airway_from_selection_ui_json(
+    db_path: &str,
+    plan_json: &str,
+    component_index: usize,
+    entry_json: &str,
+    exit_json: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let entry: app_core::AirwayEntryCandidate =
+        serde_json::from_str(entry_json).map_err(|err| err.to_string())?;
+    let exit: app_core::AirwayExitCandidate =
+        serde_json::from_str(exit_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::replace_airway_from_selection_ui(
+        std::path::Path::new(db_path),
+        &plan,
+        component_index,
+        &entry,
+        &exit,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+fn insert_procedure_from_selection_ui_json(
+    db_path: &str,
+    plan_json: &str,
+    start_component_index: usize,
+    end_component_index: usize,
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    runway_transition_json: &str,
+    enroute_transition_json: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let kind: app_core::ProcedureKind =
+        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
+    let runway_transition: Option<String> =
+        serde_json::from_str(runway_transition_json).map_err(|err| err.to_string())?;
+    let enroute_transition: Option<String> =
+        serde_json::from_str(enroute_transition_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::insert_procedure_from_selection_ui(
+        std::path::Path::new(db_path),
+        &plan,
+        start_component_index,
+        end_component_index,
+        airport_id,
+        procedure_id,
+        kind,
+        runway_transition.as_deref(),
+        enroute_transition.as_deref(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+fn replace_procedure_from_selection_ui_json(
+    db_path: &str,
+    plan_json: &str,
+    component_index: usize,
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    runway_transition_json: &str,
+    enroute_transition_json: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let kind: app_core::ProcedureKind =
+        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
+    let runway_transition: Option<String> =
+        serde_json::from_str(runway_transition_json).map_err(|err| err.to_string())?;
+    let enroute_transition: Option<String> =
+        serde_json::from_str(enroute_transition_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::replace_procedure_from_selection_ui(
+        std::path::Path::new(db_path),
+        &plan,
+        component_index,
+        airport_id,
+        procedure_id,
+        kind,
+        runway_transition.as_deref(),
+        enroute_transition.as_deref(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
 fn replace_flight_plan_state_json(
     state_json: &str,
     catalog_json: &str,
@@ -193,6 +525,25 @@ fn replace_flight_plan_state_json(
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&next).map_err(|err| err.to_string())
+}
+
+fn replace_flight_plan_ui_state_json(
+    state_json: &str,
+    catalog_json: &str,
+    plan_json: &str,
+) -> Result<String, String> {
+    let state: app_core::AppState =
+        serde_json::from_str(state_json).map_err(|err| err.to_string())?;
+    let catalog = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let next = app_core::state::reduce(
+        &state,
+        app_core::AppEvent::ReplaceFlightPlan(plan),
+        &catalog,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&app_core::project_app_ui_state(&next)).map_err(|err| err.to_string())
 }
 
 fn set_content_policy_state_json(
@@ -214,6 +565,25 @@ fn set_content_policy_state_json(
     serde_json::to_string(&next).map_err(|err| err.to_string())
 }
 
+fn set_content_policy_ui_state_json(
+    state_json: &str,
+    catalog_json: &str,
+    policy_json: &str,
+) -> Result<String, String> {
+    let state: app_core::AppState =
+        serde_json::from_str(state_json).map_err(|err| err.to_string())?;
+    let catalog = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
+    let policy: app_core::ContentPolicy =
+        serde_json::from_str(policy_json).map_err(|err| err.to_string())?;
+    let next = app_core::state::reduce(
+        &state,
+        app_core::AppEvent::SetContentPolicy(policy),
+        &catalog,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&app_core::project_app_ui_state(&next)).map_err(|err| err.to_string())
+}
+
 fn refresh_content_state_json(
     state_json: &str,
     catalog_json: &str,
@@ -231,6 +601,25 @@ fn refresh_content_state_json(
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&next).map_err(|err| err.to_string())
+}
+
+fn refresh_content_ui_state_json(
+    state_json: &str,
+    catalog_json: &str,
+    inventory_json: &str,
+) -> Result<String, String> {
+    let state: app_core::AppState =
+        serde_json::from_str(state_json).map_err(|err| err.to_string())?;
+    let catalog = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
+    let inventory: app_core::ContentInventory =
+        serde_json::from_str(inventory_json).map_err(|err| err.to_string())?;
+    let next = app_core::state::reduce(
+        &state,
+        app_core::AppEvent::RefreshContent { inventory },
+        &catalog,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&app_core::project_app_ui_state(&next)).map_err(|err| err.to_string())
 }
 
 fn chart_for_position_json(
@@ -519,6 +908,10 @@ mod tests {
         .to_string()
     }
 
+    fn fixture_db_path() -> &'static str {
+        "/root/aerobag-three/aerobag/ui/android-app/app/src/main/assets/nav-db/main.db"
+    }
+
     #[test]
     fn replace_flight_plan_state_json_populates_requirements() {
         let next_json = replace_flight_plan_state_json(
@@ -531,6 +924,141 @@ mod tests {
 
         assert!(next.active_plan.is_some());
         assert_eq!(next.last_content_requirements.len(), 1);
+    }
+
+    #[test]
+    fn build_flight_plan_ui_json_returns_projected_plan_view() {
+        let ui_json = build_flight_plan_ui_json(&sample_plan_json()).unwrap();
+        let ui: app_core::FlightPlanUiState = serde_json::from_str(&ui_json).unwrap();
+
+        assert!(!ui.components.is_empty());
+        assert_eq!(ui.components[0].summary, "KBOS");
+    }
+
+    #[test]
+    fn replace_flight_plan_ui_state_json_returns_projected_app_view() {
+        let next_json = replace_flight_plan_ui_state_json(
+            &empty_state_json(),
+            &sample_catalog_json(),
+            &sample_plan_json(),
+        )
+        .unwrap();
+        let next: app_core::AppUiState = serde_json::from_str(&next_json).unwrap();
+
+        assert!(next.active_plan.is_some());
+        assert_eq!(next.last_content_requirements.len(), 1);
+    }
+
+    #[test]
+    fn activate_leg_ui_json_returns_projected_mutation() {
+        let plan_json = serde_json::json!({
+            "id": "plan-2",
+            "name": "Guided",
+            "legs": [],
+            "route_components": [
+                {"kind":"waypoint","waypoint":{"Airport":"KRNT"}},
+                {"kind":"waypoint","waypoint":{"Navaid":"SEA"}},
+                {"kind":"waypoint","waypoint":{"Airport":"KUAO"}}
+            ],
+            "resolved_legs": [
+                {"id":"component-0-1","from":{"Airport":"KRNT"},"to":{"Navaid":"SEA"},"source":{"kind":"route_component","component_index":0}},
+                {"id":"component-1-2","from":{"Navaid":"SEA"},"to":{"Airport":"KUAO"},"source":{"kind":"route_component","component_index":1}}
+            ],
+            "guidance": {"active_leg_index":0,"sequencing_mode":"follow_plan","direct_to":null},
+            "departure": "KRNT",
+            "destination": "KUAO",
+            "alternate": null,
+            "cruise_altitude_ft": null,
+            "notes": null,
+            "updated_at_epoch_ms": 0,
+            "version": 1
+        })
+        .to_string();
+
+        let next_json = activate_leg_ui_json(&plan_json, 1).unwrap();
+        let next: app_core::FlightPlanUiMutation = serde_json::from_str(&next_json).unwrap();
+
+        assert_eq!(next.ui_state.guidance.as_ref().unwrap().active_leg_index, Some(1));
+        assert_eq!(next.ui_state.guidance.as_ref().unwrap().active_component_index, Some(1));
+    }
+
+    #[test]
+    fn insert_airway_from_anchors_ui_json_returns_projected_grouped_edit() {
+        let plan_json = serde_json::json!({
+            "id": "airway-insert",
+            "name": "Airway insert",
+            "legs": [],
+            "route_components": [
+                {"kind":"waypoint","waypoint":{"Airport":"KRNT"}},
+                {"kind":"waypoint","waypoint":{"Airport":"KUAO"}},
+                {"kind":"waypoint","waypoint":{"Airport":"KHIO"}}
+            ],
+            "resolved_legs": [],
+            "guidance": null,
+            "departure": "KRNT",
+            "destination": "KHIO",
+            "alternate": null,
+            "cruise_altitude_ft": null,
+            "notes": null,
+            "updated_at_epoch_ms": 0,
+            "version": 1
+        })
+        .to_string();
+
+        let next_json = insert_airway_from_anchors_ui_json(
+            fixture_db_path(),
+            &plan_json,
+            0,
+            1,
+            "V2",
+            &serde_json::to_string(&app_core::NavRef::Airport("KRNT".to_string())).unwrap(),
+            &serde_json::to_string(&app_core::NavRef::Airport("KUAO".to_string())).unwrap(),
+        )
+        .unwrap();
+        let next: app_core::AirwayPlanUiMutation = serde_json::from_str(&next_json).unwrap();
+
+        assert_eq!(next.mutation.component_index, 1);
+        assert!(matches!(next.ui_state.components[1].kind, app_core::RouteComponentViewKind::Airway));
+    }
+
+    #[test]
+    fn insert_procedure_from_selection_ui_json_returns_projected_grouped_edit() {
+        let plan_json = serde_json::json!({
+            "id": "procedure-insert",
+            "name": "Procedure insert",
+            "legs": [],
+            "route_components": [
+                {"kind":"waypoint","waypoint":{"Fix":"ETX"}},
+                {"kind":"waypoint","waypoint":{"Airport":"KBOS"}}
+            ],
+            "resolved_legs": [],
+            "guidance": null,
+            "departure": null,
+            "destination": "KBOS",
+            "alternate": null,
+            "cruise_altitude_ft": null,
+            "notes": null,
+            "updated_at_epoch_ms": 0,
+            "version": 1
+        })
+        .to_string();
+
+        let next_json = insert_procedure_from_selection_ui_json(
+            fixture_db_path(),
+            &plan_json,
+            0,
+            1,
+            "KBOS",
+            "I04R",
+            &serde_json::to_string(&app_core::ProcedureKind::Approach).unwrap(),
+            &serde_json::to_string(&Option::<String>::None).unwrap(),
+            &serde_json::to_string(&Some("GOSHI".to_string())).unwrap(),
+        )
+        .unwrap();
+        let next: app_core::ProcedurePlanUiMutation = serde_json::from_str(&next_json).unwrap();
+
+        assert_eq!(next.mutation.component_index, 1);
+        assert!(matches!(next.ui_state.components[1].kind, app_core::RouteComponentViewKind::Procedure));
     }
 
     #[test]

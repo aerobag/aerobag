@@ -1,3 +1,7 @@
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
 pub mod catalog;
 pub mod chart_page;
 pub mod content;
@@ -28,15 +32,29 @@ pub use errors::{AppError, AppErrorKind, AppResult};
 pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord};
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use navdb::{
-    load_airway_branches, load_airway_points, load_procedure_legs, load_resolved_procedure_legs,
-    resolve_airway_segment, select_airway_branch, AirwayBranch, AirwayFixPoint, AirwayPoint,
-    ProcedureLegRecord, ProcedureVariantKey,
+    choose_best_airway_plan, describe_procedure_options, list_airway_entry_candidates,
+    list_airway_exit_candidates, list_procedures, load_airway_branches, load_airway_points,
+    load_procedure_concretized_items, load_procedure_legs, load_resolved_procedure_legs,
+    materialize_airway_selection, materialize_procedure_selection, resolve_airway_segment,
+    resolve_airway_segment_by_index, resolve_nav_ref_position, select_airway_branch,
+    suggest_airways_near, AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate,
+    AirwayExitCandidate, AirwayExitSelection, AirwayFixPoint, AirwayPoint, AirwaySuggestion,
+    MaterializedProcedure, ProcedureLegRecord, ProcedureOptions, ProcedureSpecChoice,
+    ProcedureSummary, ProcedureVariantKey,
 };
 pub use planning::{
-    delete_component, delete_waypoint_component, flatten_component_to_waypoints,
-    interpret_path_termination, AirwaySegment, DirectToState, FlightPlan, GuidanceState, NavRef,
-    PathTermination, PlanLeg, ProcedureKind, ProcedureSegment, ResolvedLeg, ResolvedLegSource,
-    RouteComponent, SequencingMode,
+    activate_direct_to, activate_direct_to_leg, activate_leg, activate_next_leg,
+    active_guidance_leg, change_airway_entry, change_airway_exit,
+    change_procedure_enroute_transition, change_procedure_runway_transition, delete_component,
+    delete_waypoint_component,
+    flatten_component_to_waypoints, insert_airway_between_waypoints,
+    insert_procedure_between_waypoints, interpret_path_termination, project_ui_state,
+    replace_airway_component, replace_procedure_component, sequence_active_leg, suspend_sequencing,
+    unsuspend_sequencing, AirwaySegment, ConcretizedNavItem, DirectToState, FlightPlan,
+    FlightPlanUiState, GuidanceState, GuidanceUiView, NavRef, PathTermination, PlanLeg,
+    ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegment,
+    ProcedureSegmentRole, ResolvedLeg, ResolvedLegSource, ResolvedLegUiView, RouteComponent,
+    RouteComponentUiView, RouteComponentViewKind, SequencingMode, DirectToUiView,
 };
 pub use situation::{Situation, SituationPosition};
 pub use session::{
@@ -45,7 +63,43 @@ pub use session::{
     select_chart_in_session, set_situation_in_session,
     UiChartPageState, UiSessionInitResult, UiSessionSnapshot,
 };
-pub use state::{AppEvent, AppState};
+pub use state::{project_app_ui_state, AppEvent, AppState, AppUiState};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirwayPlanMutation {
+    pub plan: FlightPlan,
+    pub component_index: usize,
+    pub selection: AirwayAutoSelection,
+    pub airway: AirwaySegment,
+    pub resolved_legs: Vec<ResolvedLeg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcedurePlanMutation {
+    pub plan: FlightPlan,
+    pub component_index: usize,
+    pub procedure: ProcedureSegment,
+    pub concretized_items: Vec<ConcretizedNavItem>,
+    pub resolved_legs: Vec<ResolvedLeg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlightPlanUiMutation {
+    pub plan: FlightPlan,
+    pub ui_state: FlightPlanUiState,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirwayPlanUiMutation {
+    pub mutation: AirwayPlanMutation,
+    pub ui_state: FlightPlanUiState,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcedurePlanUiMutation {
+    pub mutation: ProcedurePlanMutation,
+    pub ui_state: FlightPlanUiState,
+}
 
 use std::{
     collections::HashMap,
@@ -241,6 +295,369 @@ pub fn move_flight_plan_waypoint(
     next.updated_at_epoch_ms += 1;
     next.version += 1;
     Ok(next)
+}
+
+pub fn build_flight_plan_ui(plan: FlightPlan) -> AppResult<FlightPlanUiState> {
+    let plan = build_flight_plan(plan)?;
+    Ok(project_ui_state(&plan))
+}
+
+pub fn insert_airway_from_anchors(
+    db_path: &Path,
+    plan: &FlightPlan,
+    start_component_index: usize,
+    end_component_index: usize,
+    airway_name: &str,
+    origin_anchor: &NavRef,
+    destination_anchor: &NavRef,
+) -> AppResult<AirwayPlanMutation> {
+    let selection = choose_best_airway_plan(db_path, airway_name, origin_anchor, destination_anchor)?;
+    let entry = selection.entry.clone();
+    let exit = selection.exit.clone();
+    insert_airway_from_selection(
+        db_path,
+        plan,
+        start_component_index,
+        end_component_index,
+        &entry,
+        &exit,
+        Some(selection),
+    )
+}
+
+pub fn insert_airway_from_anchors_ui(
+    db_path: &Path,
+    plan: &FlightPlan,
+    start_component_index: usize,
+    end_component_index: usize,
+    airway_name: &str,
+    origin_anchor: &NavRef,
+    destination_anchor: &NavRef,
+) -> AppResult<AirwayPlanUiMutation> {
+    let mutation = insert_airway_from_anchors(
+        db_path,
+        plan,
+        start_component_index,
+        end_component_index,
+        airway_name,
+        origin_anchor,
+        destination_anchor,
+    )?;
+    Ok(project_airway_mutation(mutation))
+}
+
+pub fn insert_airway_from_selection(
+    db_path: &Path,
+    plan: &FlightPlan,
+    start_component_index: usize,
+    end_component_index: usize,
+    entry: &AirwayEntryCandidate,
+    exit: &AirwayExitCandidate,
+    selection: Option<AirwayAutoSelection>,
+) -> AppResult<AirwayPlanMutation> {
+    let (airway, legs) = materialize_airway_selection(db_path, entry, exit, 0)?;
+    let mutation_legs = with_component_index_source(&legs, start_component_index + 1);
+    let inserted = insert_airway_between_waypoints(
+        plan,
+        start_component_index,
+        end_component_index,
+        airway,
+        legs,
+    )?;
+    let component_index = start_component_index + 1;
+    Ok(AirwayPlanMutation {
+        airway: component_airway(&inserted, component_index)?,
+        resolved_legs: mutation_legs,
+        plan: inserted,
+        component_index,
+        selection: selection.unwrap_or_else(|| AirwayAutoSelection {
+            airway_name: entry.airway_name.clone(),
+            branch_key: entry.branch_key.clone(),
+            entry: entry.clone(),
+            exit: exit.clone(),
+            origin_distance_nm: entry.distance_from_anchor_nm,
+            destination_distance_nm: exit.distance_from_target_nm.unwrap_or(0.0),
+            total_anchor_distance_nm: entry.distance_from_anchor_nm
+                + exit.distance_from_target_nm.unwrap_or(0.0),
+        }),
+    })
+}
+
+pub fn insert_airway_from_selection_ui(
+    db_path: &Path,
+    plan: &FlightPlan,
+    start_component_index: usize,
+    end_component_index: usize,
+    entry: &AirwayEntryCandidate,
+    exit: &AirwayExitCandidate,
+    selection: Option<AirwayAutoSelection>,
+) -> AppResult<AirwayPlanUiMutation> {
+    let mutation = insert_airway_from_selection(
+        db_path,
+        plan,
+        start_component_index,
+        end_component_index,
+        entry,
+        exit,
+        selection,
+    )?;
+    Ok(project_airway_mutation(mutation))
+}
+
+pub fn replace_airway_from_selection(
+    db_path: &Path,
+    plan: &FlightPlan,
+    component_index: usize,
+    entry: &AirwayEntryCandidate,
+    exit: &AirwayExitCandidate,
+) -> AppResult<AirwayPlanMutation> {
+    let (airway, legs) = materialize_airway_selection(db_path, entry, exit, component_index)?;
+    let mutation_legs = with_component_index_source(&legs, component_index);
+    let replaced = replace_airway_component(plan, component_index, airway, legs)?;
+    Ok(AirwayPlanMutation {
+        airway: component_airway(&replaced, component_index)?,
+        resolved_legs: mutation_legs,
+        plan: replaced,
+        component_index,
+        selection: AirwayAutoSelection {
+            airway_name: entry.airway_name.clone(),
+            branch_key: entry.branch_key.clone(),
+            entry: entry.clone(),
+            exit: exit.clone(),
+            origin_distance_nm: entry.distance_from_anchor_nm,
+            destination_distance_nm: exit.distance_from_target_nm.unwrap_or(0.0),
+            total_anchor_distance_nm: entry.distance_from_anchor_nm
+                + exit.distance_from_target_nm.unwrap_or(0.0),
+        },
+    })
+}
+
+pub fn replace_airway_from_selection_ui(
+    db_path: &Path,
+    plan: &FlightPlan,
+    component_index: usize,
+    entry: &AirwayEntryCandidate,
+    exit: &AirwayExitCandidate,
+) -> AppResult<AirwayPlanUiMutation> {
+    let mutation = replace_airway_from_selection(db_path, plan, component_index, entry, exit)?;
+    Ok(project_airway_mutation(mutation))
+}
+
+pub fn insert_procedure_from_selection(
+    db_path: &Path,
+    plan: &FlightPlan,
+    start_component_index: usize,
+    end_component_index: usize,
+    airport_id: &str,
+    procedure_id: &str,
+    kind: ProcedureKind,
+    runway_transition: Option<&str>,
+    enroute_transition: Option<&str>,
+) -> AppResult<ProcedurePlanMutation> {
+    let built = materialize_procedure_selection(
+        db_path,
+        airport_id,
+        procedure_id,
+        kind,
+        runway_transition,
+        enroute_transition,
+        0,
+    )?;
+    let inserted = insert_procedure_between_waypoints(
+        plan,
+        start_component_index,
+        end_component_index,
+        built.procedure.clone(),
+        built.resolved_legs.clone(),
+    )?;
+    let component_index = start_component_index + 1;
+
+    Ok(ProcedurePlanMutation {
+        procedure: component_procedure(&inserted, component_index)?,
+        resolved_legs: with_component_index_source(&built.resolved_legs, component_index),
+        concretized_items: built.concretized_items,
+        plan: inserted,
+        component_index,
+    })
+}
+
+pub fn insert_procedure_from_selection_ui(
+    db_path: &Path,
+    plan: &FlightPlan,
+    start_component_index: usize,
+    end_component_index: usize,
+    airport_id: &str,
+    procedure_id: &str,
+    kind: ProcedureKind,
+    runway_transition: Option<&str>,
+    enroute_transition: Option<&str>,
+) -> AppResult<ProcedurePlanUiMutation> {
+    let mutation = insert_procedure_from_selection(
+        db_path,
+        plan,
+        start_component_index,
+        end_component_index,
+        airport_id,
+        procedure_id,
+        kind,
+        runway_transition,
+        enroute_transition,
+    )?;
+    Ok(project_procedure_mutation(mutation))
+}
+
+pub fn replace_procedure_from_selection(
+    db_path: &Path,
+    plan: &FlightPlan,
+    component_index: usize,
+    airport_id: &str,
+    procedure_id: &str,
+    kind: ProcedureKind,
+    runway_transition: Option<&str>,
+    enroute_transition: Option<&str>,
+) -> AppResult<ProcedurePlanMutation> {
+    let built = materialize_procedure_selection(
+        db_path,
+        airport_id,
+        procedure_id,
+        kind,
+        runway_transition,
+        enroute_transition,
+        component_index,
+    )?;
+    let replaced = replace_procedure_component(
+        plan,
+        component_index,
+        built.procedure.clone(),
+        built.resolved_legs.clone(),
+    )?;
+
+    Ok(ProcedurePlanMutation {
+        procedure: component_procedure(&replaced, component_index)?,
+        resolved_legs: with_component_index_source(&built.resolved_legs, component_index),
+        concretized_items: built.concretized_items,
+        plan: replaced,
+        component_index,
+    })
+}
+
+pub fn replace_procedure_from_selection_ui(
+    db_path: &Path,
+    plan: &FlightPlan,
+    component_index: usize,
+    airport_id: &str,
+    procedure_id: &str,
+    kind: ProcedureKind,
+    runway_transition: Option<&str>,
+    enroute_transition: Option<&str>,
+) -> AppResult<ProcedurePlanUiMutation> {
+    let mutation = replace_procedure_from_selection(
+        db_path,
+        plan,
+        component_index,
+        airport_id,
+        procedure_id,
+        kind,
+        runway_transition,
+        enroute_transition,
+    )?;
+    Ok(project_procedure_mutation(mutation))
+}
+
+pub fn sequence_active_leg_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutation> {
+    let plan = sequence_active_leg(plan)?;
+    Ok(project_plan_mutation(plan))
+}
+
+pub fn activate_leg_ui(plan: &FlightPlan, leg_index: usize) -> AppResult<FlightPlanUiMutation> {
+    let plan = activate_leg(plan, leg_index)?;
+    Ok(project_plan_mutation(plan))
+}
+
+pub fn activate_next_leg_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutation> {
+    let plan = activate_next_leg(plan)?;
+    Ok(project_plan_mutation(plan))
+}
+
+pub fn suspend_sequencing_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutation> {
+    let plan = suspend_sequencing(plan)?;
+    Ok(project_plan_mutation(plan))
+}
+
+pub fn unsuspend_sequencing_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutation> {
+    let plan = unsuspend_sequencing(plan)?;
+    Ok(project_plan_mutation(plan))
+}
+
+pub fn activate_direct_to_ui(
+    plan: &FlightPlan,
+    from_position: LatLon,
+    target: NavRef,
+) -> AppResult<FlightPlanUiMutation> {
+    let plan = activate_direct_to(plan, from_position, target)?;
+    Ok(project_plan_mutation(plan))
+}
+
+pub fn activate_direct_to_leg_ui(
+    plan: &FlightPlan,
+    from_position: LatLon,
+    target_leg_id: &str,
+) -> AppResult<FlightPlanUiMutation> {
+    let plan = activate_direct_to_leg(plan, from_position, target_leg_id)?;
+    Ok(project_plan_mutation(plan))
+}
+
+fn with_component_index_source(legs: &[ResolvedLeg], component_index: usize) -> Vec<ResolvedLeg> {
+    legs.iter()
+        .cloned()
+        .map(|leg| ResolvedLeg {
+            source: ResolvedLegSource::RouteComponent { component_index },
+            ..leg
+        })
+        .collect()
+}
+
+fn project_plan_mutation(plan: FlightPlan) -> FlightPlanUiMutation {
+    let ui_state = project_ui_state(&plan);
+    FlightPlanUiMutation { plan, ui_state }
+}
+
+fn project_airway_mutation(mutation: AirwayPlanMutation) -> AirwayPlanUiMutation {
+    let ui_state = project_ui_state(&mutation.plan);
+    AirwayPlanUiMutation { mutation, ui_state }
+}
+
+fn project_procedure_mutation(mutation: ProcedurePlanMutation) -> ProcedurePlanUiMutation {
+    let ui_state = project_ui_state(&mutation.plan);
+    ProcedurePlanUiMutation { mutation, ui_state }
+}
+
+fn component_airway(plan: &FlightPlan, component_index: usize) -> AppResult<AirwaySegment> {
+    match plan.route_components.get(component_index) {
+        Some(RouteComponent::Airway { airway }) => Ok(airway.clone()),
+        Some(_) => Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("component at index {component_index} is not an airway"),
+        }),
+        None => Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("component index out of bounds: {component_index}"),
+        }),
+    }
+}
+
+fn component_procedure(plan: &FlightPlan, component_index: usize) -> AppResult<ProcedureSegment> {
+    match plan.route_components.get(component_index) {
+        Some(RouteComponent::Procedure { procedure }) => Ok(procedure.clone()),
+        Some(_) => Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("component at index {component_index} is not a procedure"),
+        }),
+        None => Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("component index out of bounds: {component_index}"),
+        }),
+    }
 }
 
 pub fn plan_content_requirements(
@@ -492,6 +909,10 @@ mod tests {
         }
     }
 
+    fn fixture_db_path() -> &'static Path {
+        Path::new("/root/aerobag-three/aerobag/ui/android-app/app/src/main/assets/nav-db/main.db")
+    }
+
     #[test]
     fn remove_flight_plan_leg_updates_endpoints_and_version() {
         let plan = FlightPlan {
@@ -630,6 +1051,168 @@ mod tests {
     }
 
     #[test]
+    fn inserts_airway_from_origin_and_destination_anchors() {
+        let plan = FlightPlan {
+            id: "airway-insert".to_string(),
+            name: "Airway insert".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KUAO".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KHIO".to_string()),
+                },
+            ],
+            resolved_legs: Vec::new(),
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+            }),
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KHIO".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let mutation = insert_airway_from_anchors(
+            fixture_db_path(),
+            &plan,
+            0,
+            1,
+            "V2",
+            &NavRef::Airport("KRNT".to_string()),
+            &NavRef::Airport("KUAO".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(mutation.component_index, 1);
+        assert_eq!(mutation.selection.branch_key, "V2-A");
+        assert_eq!(mutation.selection.entry.nav_ref, NavRef::Navaid("SEA".to_string()));
+        assert_eq!(mutation.selection.exit.nav_ref, NavRef::Fix("VAMPS".to_string()));
+        assert!(matches!(mutation.plan.route_components[1], RouteComponent::Airway { .. }));
+        assert!(mutation.plan.guidance.is_none());
+        assert_eq!(mutation.resolved_legs.first().unwrap().from, NavRef::Navaid("SEA".to_string()));
+        assert_eq!(mutation.resolved_legs.last().unwrap().to, NavRef::Fix("VAMPS".to_string()));
+    }
+
+    #[test]
+    fn inserts_procedure_from_selection_returns_mutated_plan_and_component_payload() {
+        let plan = FlightPlan {
+            id: "procedure-insert".to_string(),
+            name: "Procedure insert".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("ETX".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KBOS".to_string()),
+                },
+            ],
+            resolved_legs: Vec::new(),
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+            }),
+            departure: None,
+            destination: Some(AirportId("KBOS".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let mutation = insert_procedure_from_selection(
+            fixture_db_path(),
+            &plan,
+            0,
+            1,
+            "KBOS",
+            "I04R",
+            ProcedureKind::Approach,
+            None,
+            Some("GOSHI"),
+        )
+        .unwrap();
+
+        assert_eq!(mutation.component_index, 1);
+        assert!(matches!(
+            mutation.plan.route_components[1],
+            RouteComponent::Procedure { .. }
+        ));
+        assert_eq!(mutation.procedure.procedure_id, "I04R");
+        assert!(!mutation.concretized_items.is_empty());
+        assert!(!mutation.resolved_legs.is_empty());
+    }
+
+    #[test]
+    fn replaces_procedure_from_selection_returns_updated_atomic_component_payload() {
+        let inserted = insert_procedure_from_selection(
+            fixture_db_path(),
+            &FlightPlan {
+                id: "procedure-replace".to_string(),
+                name: "Procedure replace".to_string(),
+                legs: Vec::new(),
+                route_components: vec![
+                    RouteComponent::Waypoint {
+                        waypoint: NavRef::Fix("ETX".to_string()),
+                    },
+                    RouteComponent::Waypoint {
+                        waypoint: NavRef::Airport("KBOS".to_string()),
+                    },
+                ],
+                resolved_legs: Vec::new(),
+                guidance: None,
+                departure: None,
+                destination: Some(AirportId("KBOS".to_string())),
+                alternate: None,
+                cruise_altitude_ft: None,
+                notes: None,
+                updated_at_epoch_ms: 0,
+                version: 1,
+            },
+            0,
+            1,
+            "KBOS",
+            "I04R",
+            ProcedureKind::Approach,
+            None,
+            Some("GOSHI"),
+        )
+        .unwrap();
+
+        let replaced = replace_procedure_from_selection(
+            fixture_db_path(),
+            &inserted.plan,
+            inserted.component_index,
+            "KBOS",
+            "R04R",
+            ProcedureKind::Approach,
+            None,
+            Some("GOSHI"),
+        )
+        .unwrap();
+
+        assert_eq!(replaced.component_index, inserted.component_index);
+        assert_eq!(replaced.procedure.procedure_id, "R04R");
+        assert!(matches!(
+            replaced.plan.route_components[replaced.component_index],
+            RouteComponent::Procedure { .. }
+        ));
+        assert!(!replaced.resolved_legs.is_empty());
+    }
+
+    #[test]
     fn content_requirements_consider_airports_from_procedure_components() {
         let catalog = load_catalog(&sample_catalog_json()).unwrap();
         let plan = build_flight_plan(FlightPlan {
@@ -643,6 +1226,7 @@ mod tests {
                     kind: ProcedureKind::Approach,
                     runway_transition: Some("04R".to_string()),
                     enroute_transition: None,
+                    terminal_discontinuity: None,
                 },
             }],
             resolved_legs: vec![ResolvedLeg {
@@ -650,6 +1234,7 @@ mod tests {
                 from: NavRef::Fix("NOONY".to_string()),
                 to: NavRef::Airport("KBOS".to_string()),
                 source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                procedure_provenance: None,
             }],
             guidance: None,
             departure: None,

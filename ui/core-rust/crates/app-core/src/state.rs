@@ -3,13 +3,21 @@ use serde::{Deserialize, Serialize};
 use crate::catalog::CatalogHandle;
 use crate::content::{ContentInventory, ContentPolicy, ContentReport, ContentRequirement};
 use crate::errors::AppResult;
-use crate::planning::FlightPlan;
+use crate::planning::{project_ui_state, FlightPlan, FlightPlanUiState};
 use crate::situation::Situation;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppState {
     pub active_plan: Option<FlightPlan>,
     pub situation: Situation,
+    pub content_policy: ContentPolicy,
+    pub last_content_requirements: Vec<ContentRequirement>,
+    pub last_content_report: Option<ContentReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppUiState {
+    pub active_plan: Option<FlightPlanUiState>,
     pub content_policy: ContentPolicy,
     pub last_content_requirements: Vec<ContentRequirement>,
     pub last_content_report: Option<ContentReport>,
@@ -91,6 +99,15 @@ fn refresh_report_if_possible(
     // A policy change alone should not fabricate a new report without inventory.
     // The report is recomputed once the platform provides current inventory.
     Ok(state.last_content_report.clone())
+}
+
+pub fn project_app_ui_state(state: &AppState) -> AppUiState {
+    AppUiState {
+        active_plan: state.active_plan.as_ref().map(project_ui_state),
+        content_policy: state.content_policy,
+        last_content_requirements: state.last_content_requirements.clone(),
+        last_content_report: state.last_content_report.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -364,5 +381,32 @@ mod tests {
         );
 
         assert_eq!(result.unwrap_err().kind, AppErrorKind::InvalidFlightPlan);
+    }
+
+    #[test]
+    fn project_app_ui_state_projects_active_plan() {
+        let catalog = sample_catalog();
+        let with_plan = reduce(
+            &AppState::default(),
+            AppEvent::ReplaceFlightPlan(sample_plan()),
+            &catalog,
+        )
+        .unwrap();
+
+        let ui = project_app_ui_state(&with_plan);
+
+        assert!(ui.active_plan.is_some());
+        assert_eq!(ui.content_policy, with_plan.content_policy);
+        assert_eq!(
+            ui.active_plan.as_ref().unwrap().components.len(),
+            with_plan
+                .active_plan
+                .as_ref()
+                .unwrap()
+                .clone()
+                .normalized()
+                .route_components
+                .len()
+        );
     }
 }

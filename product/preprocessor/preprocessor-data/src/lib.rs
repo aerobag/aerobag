@@ -256,7 +256,9 @@ CREATE TABLE geo(Latitude float, Longitude float, height float, declination floa
 ";
     let airway_schema = match mode {
         DataBuildMode::Production => {
-            "CREATE TABLE airways_branch(name Text, branch_key Text, sequence_number Integer, sequence_token Text, point_name Text, Latitude float, Longitude float);"
+            "CREATE TABLE airways_branch(name Text, branch_key Text, sequence_number Integer, sequence_token Text, point_name Text, Latitude float, Longitude float);
+CREATE INDEX idx_airways_branch_name_branch_sequence ON airways_branch(name, branch_key, sequence_number);
+CREATE INDEX idx_airways_branch_lat_lon ON airways_branch(Latitude, Longitude);"
         }
         DataBuildMode::LegacyAvare => {
             "CREATE TABLE airways(name Text, sequence Text, Latitude float, Longitude float);"

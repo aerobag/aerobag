@@ -16,6 +16,7 @@ use zip::ZipArchive;
 pub struct BuildResourceIndexRequest {
     pub nav_db_zip: PathBuf,
     pub output_path: PathBuf,
+    pub catalog_output_path: Option<PathBuf>,
     pub chart_sources: Vec<ChartSource>,
     pub tpp_sources: Vec<AssetSource>,
     pub csup_sources: Vec<AssetSource>,
@@ -51,6 +52,99 @@ pub struct ResourceIndex {
     pub airport_resources: Vec<AirportResourcesRecord>,
     pub plates: Vec<PlateRecord>,
     pub csups: Vec<CsupRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Catalog {
+    pub schema_version: u32,
+    pub cycle: String,
+    pub catalog_revision: String,
+    pub families: Vec<CatalogFamily>,
+    pub regions: Vec<ResourceRegion>,
+    pub packages: Vec<CatalogPackage>,
+    pub charts: Vec<CatalogChartRecord>,
+    pub plates: Vec<CatalogPlateRecord>,
+    pub supplements: Vec<CatalogSupplementRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CatalogFamily {
+    pub id: String,
+    pub display_name: String,
+    pub kind: String,
+    pub max_zoom: Option<u32>,
+    pub tile_size: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CatalogPackage {
+    pub id: CatalogPackageId,
+    pub package_name: String,
+    pub family_id: String,
+    pub region_id: String,
+    pub cycle: String,
+    pub artifact_kind: String,
+    pub relative_url: String,
+    pub manifest_name: String,
+    pub size_bytes: Option<u64>,
+    pub checksum_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CatalogPackageId {
+    pub region: String,
+    pub family: String,
+    pub cycle: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CatalogChartRecord {
+    pub id: CatalogChartId,
+    pub family_id: String,
+    pub name: String,
+    pub display_name: String,
+    pub cycle: String,
+    pub region_ids: Vec<String>,
+    pub max_zoom: u32,
+    pub tile_path_template: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CatalogChartId {
+    pub family: String,
+    pub name: String,
+    pub cycle: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CatalogPlateRecord {
+    pub id: CatalogPlateId,
+    pub airport_id: String,
+    pub region_id: String,
+    pub cycle: String,
+    pub procedure_code: String,
+    pub display_name: String,
+    pub kind: String,
+    pub georeferenced: bool,
+    pub page_count: u32,
+    pub asset_base_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CatalogPlateId {
+    pub airport_id: String,
+    pub procedure_code: String,
+    pub page: u32,
+    pub cycle: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CatalogSupplementRecord {
+    pub airport_id: String,
+    pub region_id: String,
+    pub cycle: String,
+    pub page_count: u32,
+    pub asset_base_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -278,7 +372,182 @@ pub fn write_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     let json = serde_json::to_vec_pretty(&index).context("failed to serialize resource index")?;
     fs::write(&request.output_path, json)
         .with_context(|| format!("failed to write {}", request.output_path.display()))?;
+    let catalog_output_path = request
+        .catalog_output_path
+        .clone()
+        .unwrap_or_else(|| parent.join("catalog.json"));
+    let catalog = build_catalog(&index);
+    let catalog_json = serde_json::to_vec_pretty(&catalog).context("failed to serialize catalog")?;
+    fs::write(&catalog_output_path, catalog_json)
+        .with_context(|| format!("failed to write {}", catalog_output_path.display()))?;
     Ok(index)
+}
+
+pub fn build_catalog(index: &ResourceIndex) -> Catalog {
+    let cycle = index.cycle.clone().unwrap_or_else(|| "unknown".to_string());
+    let supported_families = BTreeSet::from([
+        "sectional".to_string(),
+        "tac".to_string(),
+        "ifr_low".to_string(),
+        "ifr_high".to_string(),
+    ]);
+    let family_by_id = index
+        .families
+        .iter()
+        .map(|family| (family.id.clone(), family))
+        .collect::<BTreeMap<_, _>>();
+    let package_by_id = index
+        .packages
+        .iter()
+        .map(|package| (package.id.clone(), package))
+        .collect::<BTreeMap<_, _>>();
+
+    let families = index
+        .families
+        .iter()
+        .filter(|family| supported_families.contains(&family.id))
+        .map(|family| CatalogFamily {
+            id: family.id.clone(),
+            display_name: family.display_name.clone(),
+            kind: family.kind.clone(),
+            max_zoom: index
+                .chart_collections
+                .iter()
+                .filter(|collection| collection.family_id == family.id)
+                .flat_map(|collection| collection.levels.iter().map(|level| level.zoom))
+                .max(),
+            tile_size: (family.kind == "tiled_raster").then_some(512),
+        })
+        .collect::<Vec<_>>();
+
+    let packages = index
+        .packages
+        .iter()
+        .filter(|package| supported_families.contains(&package.family_id))
+        .map(|package| CatalogPackage {
+            id: CatalogPackageId {
+                region: package.region_id.clone(),
+                family: package.family_id.clone(),
+                cycle: cycle.clone(),
+            },
+            package_name: package.id.clone(),
+            family_id: package.family_id.clone(),
+            region_id: package.region_id.clone(),
+            cycle: cycle.clone(),
+            artifact_kind: "zip".to_string(),
+            relative_url: package.id.clone(),
+            manifest_name: package.id.clone(),
+            size_bytes: Some(package.size_bytes),
+            checksum_sha256: Some(package.checksum_sha256.clone()),
+        })
+        .collect::<Vec<_>>();
+
+    let charts = index
+        .chart_collections
+        .iter()
+        .filter(|collection| supported_families.contains(&collection.family_id))
+        .map(|collection| CatalogChartRecord {
+            id: CatalogChartId {
+                family: collection.family_id.clone(),
+                name: collection.id.clone(),
+                cycle: cycle.clone(),
+            },
+            family_id: collection.family_id.clone(),
+            name: collection.id.clone(),
+            display_name: format!(
+                "{} {}",
+                region_display_name_from_id(&index.regions, &collection.region_id),
+                family_display_name_from_id(&family_by_id, &collection.family_id)
+            ),
+            cycle: cycle.clone(),
+            region_ids: vec![collection.region_id.clone()],
+            max_zoom: collection
+                .levels
+                .iter()
+                .map(|level| level.zoom)
+                .max()
+                .unwrap_or(0),
+            tile_path_template: collection.tile_path_template.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let plates = index
+        .plates
+        .iter()
+        .filter_map(|plate| {
+            let package_record = package_by_id.get(&plate.package_id)?;
+            Some(CatalogPlateRecord {
+                id: CatalogPlateId {
+                    airport_id: plate.airport_id.clone(),
+                    procedure_code: plate.id.clone(),
+                    page: 1,
+                    cycle: cycle.clone(),
+                },
+                airport_id: plate.airport_id.clone(),
+                region_id: plate.region_id.clone(),
+                cycle: cycle.clone(),
+                procedure_code: plate.id.clone(),
+                display_name: plate.label.clone(),
+                kind: plate.asset_kind.clone(),
+                georeferenced: true,
+                page_count: 1,
+                asset_base_path: format!(
+                    "{}/{}",
+                    package_record.id,
+                    plate.asset_path.strip_suffix(".png").unwrap_or(&plate.asset_path)
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let supplements = index
+        .csups
+        .iter()
+        .filter_map(|csup| {
+            let package_record = package_by_id.get(&csup.package_id)?;
+            Some(CatalogSupplementRecord {
+                airport_id: csup.airport_id.clone(),
+                region_id: csup.region_id.clone(),
+                cycle: cycle.clone(),
+                page_count: 1,
+                asset_base_path: format!(
+                    "{}/{}",
+                    package_record.id,
+                    csup.asset_path.strip_suffix(".png").unwrap_or(&csup.asset_path)
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Catalog {
+        schema_version: index.schema_version,
+        cycle,
+        catalog_revision: index.generated_at_utc.clone(),
+        families,
+        regions: index.regions.clone(),
+        packages,
+        charts,
+        plates,
+        supplements,
+    }
+}
+
+fn region_display_name_from_id(regions: &[ResourceRegion], region_id: &str) -> String {
+    regions
+        .iter()
+        .find(|region| region.id == region_id)
+        .map(|region| region.display_name.clone())
+        .unwrap_or_else(|| region_id.to_ascii_uppercase())
+}
+
+fn family_display_name_from_id(
+    families: &BTreeMap<String, &ResourceFamily>,
+    family_id: &str,
+) -> String {
+    families
+        .get(family_id)
+        .map(|family| family.display_name.clone())
+        .unwrap_or_else(|| family_id.to_string())
 }
 
 fn validate_index_asset_paths(
@@ -1697,6 +1966,7 @@ mod tests {
             output_path: temp
                 .path()
                 .join("product-builds/test/work/resource-index/resource-index.json"),
+            catalog_output_path: None,
             chart_sources: vec![ChartSource {
                 family_id: "sectional".to_string(),
                 package_outputs_path: chart_outputs,

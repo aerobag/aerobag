@@ -1530,6 +1530,7 @@ fn build_resource_index_node(
     ]);
     let prepared = prepare_node_at(&node_root, "resource-index", &inputs)?;
     let output_path = prepared.dir.join("resource-index.json");
+    let catalog_output_path = prepared.dir.join("catalog.json");
     let thumbnail_root = prepared.dir.join("thumbnails");
     if let Some(record) =
         try_load_node_record(&prepared, &[output_path.clone(), thumbnail_root.clone()])?
@@ -1541,12 +1542,22 @@ fn build_resource_index_node(
     let request = BuildResourceIndexRequest {
         nav_db_zip: nav_db_zip.to_path_buf(),
         output_path: output_path.clone(),
+        catalog_output_path: Some(catalog_output_path.clone()),
         chart_sources,
         tpp_sources,
         csup_sources,
     };
     write_resource_index(&request)?;
-    let outputs = BTreeMap::from([("resource_index".to_string(), relative_artifact_path(&output_path, &config.build_root))]);
+    let outputs = BTreeMap::from([
+        (
+            "resource_index".to_string(),
+            relative_artifact_path(&output_path, &config.build_root),
+        ),
+        (
+            "catalog".to_string(),
+            relative_artifact_path(&catalog_output_path, &config.build_root),
+        ),
+    ]);
     write_node_record(
         prepared,
         inputs,

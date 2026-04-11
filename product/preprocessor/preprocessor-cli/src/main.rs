@@ -1663,6 +1663,7 @@ fn main() -> anyhow::Result<()> {
             let request = BuildResourceIndexRequest {
                 nav_db_zip: nav_db_zip.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
                 output_path: output_path.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                catalog_output_path: None,
                 chart_sources,
                 tpp_sources,
                 csup_sources,
@@ -1693,6 +1694,7 @@ fn main() -> anyhow::Result<()> {
                 let request = BuildResourceIndexRequest {
                     nav_db_zip: result.zip_path.clone(),
                     output_path,
+                    catalog_output_path: None,
                     chart_sources: command.chart_sources,
                     tpp_sources: command.tpp_sources,
                     csup_sources: command.csup_sources,

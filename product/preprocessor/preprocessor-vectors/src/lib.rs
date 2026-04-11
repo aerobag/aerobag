@@ -56,7 +56,7 @@ struct PointStats {
 #[derive(Debug, Clone, Serialize)]
 struct PointLayerManifest {
     zoom: u8,
-    file: String,
+    tile_path_template: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -69,8 +69,11 @@ struct PointLayerStats {
 #[derive(Debug, Clone, Serialize)]
 struct PointTileFile {
     schema_version: u32,
-    zoom: u8,
-    tiles: Vec<PointTileRecord>,
+    layer: String,
+    z: u8,
+    x: u32,
+    y: u32,
+    records: Vec<PointRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +95,10 @@ struct PointRecord {
 }
 
 pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<BuildVectorsResult> {
+    if request.output_dir.exists() {
+        fs::remove_dir_all(&request.output_dir)
+            .with_context(|| format!("failed to clear {}", request.output_dir.display()))?;
+    }
     fs::create_dir_all(&request.output_dir)
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
 
@@ -117,22 +124,29 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
     for (layer_name, layer_points) in points_by_layer(&points) {
         let zoom = layer_tile_zoom(&layer_name);
         let point_tiles = build_point_tiles(&layer_points, zoom);
-        let file_name = format!("point_tiles_{}_z{zoom}.json", layer_name);
-        let points_path = request.output_dir.join(&file_name);
-        write_json_pretty(
-            &points_path,
-            &PointTileFile {
-                schema_version: 1,
-                zoom,
-                tiles: point_tiles.clone(),
-            },
-        )?;
-        files.insert(format!("point_tiles_{layer_name}"), file_name.clone());
+        let tile_path_template = format!("points/{layer_name}/{zoom}/{{x}}/{{y}}.json");
+        for tile in &point_tiles {
+            let relative_path = point_tile_relative_path(&layer_name, tile.z, tile.x, tile.y);
+            let points_path = request.output_dir.join(&relative_path);
+            write_json_pretty(
+                &points_path,
+                &PointTileFile {
+                    schema_version: 1,
+                    layer: layer_name.clone(),
+                    z: tile.z,
+                    x: tile.x,
+                    y: tile.y,
+                    records: tile.records.clone(),
+                },
+            )?;
+            zip_members.push((relative_path, points_path));
+        }
+        files.insert(format!("point_tiles_{layer_name}"), tile_path_template.clone());
         point_layers.insert(
             layer_name.clone(),
             PointLayerManifest {
                 zoom,
-                file: file_name.clone(),
+                tile_path_template,
             },
         );
         layer_stats.insert(
@@ -147,7 +161,6 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                     .unwrap_or(0),
             },
         );
-        zip_members.push((file_name, points_path));
     }
 
     let stats = VectorStats {
@@ -259,6 +272,10 @@ fn build_point_tiles(points: &[PointRecord], zoom: u8) -> Vec<PointTileRecord> {
         .collect()
 }
 
+fn point_tile_relative_path(layer_name: &str, z: u8, x: u32, y: u32) -> String {
+    format!("points/{layer_name}/{z}/{x}/{y}.json")
+}
+
 fn points_by_layer(points: &[PointRecord]) -> BTreeMap<String, Vec<PointRecord>> {
     let mut layers = BTreeMap::<String, Vec<PointRecord>>::new();
     for point in points {
@@ -332,6 +349,10 @@ fn parse_f64_cell(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<f64
 }
 
 fn write_json_pretty<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
     fs::write(
         path,
         serde_json::to_vec_pretty(value).context("failed to encode json")?,

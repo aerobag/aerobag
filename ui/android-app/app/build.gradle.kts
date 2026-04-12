@@ -44,22 +44,38 @@ val artifactRoot = File(
     System.getenv("AEROBAG_ARTIFACT_ROOT")
         ?: defaultArtifactRoot.absolutePath,
 )
-fun latestBuildManifest(root: File): File? =
+fun latestCurrentArtifacts(root: File): File? =
     root.resolve("product-builds/production")
         .listFiles()
-        ?.filter { it.isFile && it.name.startsWith("build-manifest_") && it.name.endsWith(".json") }
+        ?.filter { it.isFile && it.name.startsWith("current_artifacts_") && it.name.endsWith(".json") }
         ?.maxByOrNull { it.name }
 
 val resolvedArtifactRoot = when {
-    latestBuildManifest(artifactRoot)?.isFile == true -> artifactRoot
-    latestBuildManifest(File("/root/aerobag-artifacts"))?.isFile == true -> File("/root/aerobag-artifacts")
+    latestCurrentArtifacts(artifactRoot)?.isFile == true -> artifactRoot
+    latestCurrentArtifacts(File("/root/aerobag-artifacts"))?.isFile == true -> File("/root/aerobag-artifacts")
     else -> artifactRoot
 }
-val productBuildFile = latestBundleManifest(resolvedArtifactRoot)
-    ?: throw GradleException("missing bundle_*.json under ${resolvedArtifactRoot.resolve("product-builds/production").absolutePath}")
+val currentArtifactsFile = latestCurrentArtifacts(resolvedArtifactRoot)
+    ?: throw GradleException("missing current_artifacts_*.json under ${resolvedArtifactRoot.resolve("product-builds/production").absolutePath}")
+val currentArtifactsPayload by lazy { JsonSlurper().parse(currentArtifactsFile) as Map<*, *> }
+val bundleFilename = ((currentArtifactsPayload["bundles"] as? List<*>)?.lastOrNull() as? Map<*, *>)?.get("filename") as? String
+    ?: throw GradleException("missing bundles[-1].filename in ${currentArtifactsFile.absolutePath}")
+val productBuildFile = resolvedArtifactRoot.resolve("product-builds/production").resolve(bundleFilename)
 val productBuildPayload by lazy { JsonSlurper().parse(productBuildFile) as Map<*, *> }
 
 fun resolveProductBuildOutput(nodeName: String, outputName: String): File {
+    val topLevel = productBuildPayload[nodeName] as? Map<*, *>
+    if (topLevel != null) {
+        val rawPath = topLevel["relative_path"] as? String
+        if (!rawPath.isNullOrBlank()) {
+            val relative = if (rawPath.startsWith("product-builds/")) rawPath else "product-builds/$rawPath"
+            val resolved = resolvedArtifactRoot.resolve(relative)
+            if (resolved.isFile) {
+                return resolved
+            }
+            throw GradleException("missing product build output $nodeName at ${resolved.absolutePath}")
+        }
+    }
     val nodes = productBuildPayload["nodes"] as? List<*> ?: error("invalid product build manifest ${productBuildFile.absolutePath}")
     for (node in nodes) {
         val nodeMap = node as? Map<*, *> ?: continue
@@ -75,7 +91,7 @@ fun resolveProductBuildOutput(nodeName: String, outputName: String): File {
     throw GradleException("missing product build output ${nodeName}.${outputName} in ${productBuildFile.absolutePath}")
 }
 
-val resourceIndexFile = resolveProductBuildOutput("resource-index", "resource_index")
+val resourceIndexFile = resolveProductBuildOutput("resource_index", "resource_index")
 val mainDbFile = resolveProductBuildOutput("data", "main_db")
 val uiThemeFile = file("../../shared-fixtures/ui-theme.json")
 val devBootstrapFile = file("../../shared/dev-bootstrap.json")

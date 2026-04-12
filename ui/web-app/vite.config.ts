@@ -24,31 +24,45 @@ const vectorRoot = path.join(staticRoot, "vectors");
 const sharedRoot = path.join(repoRoot, "ui", "shared");
 const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
 const debugLogPath = path.join("/tmp", "aerobag-web-debug.log");
+const requestLogPath = path.join("/tmp", "aerobag-web-requests.log");
 const artifactRootConfigFile = path.join(repoRoot, ".aerobag-artifact-root");
 const configuredArtifactRoot = fs.readFileSync(artifactRootConfigFile, "utf8").trim();
 const configuredArtifactPath = path.isAbsolute(configuredArtifactRoot)
   ? configuredArtifactRoot
   : path.resolve(repoRoot, configuredArtifactRoot);
-const bundleManifestDir = path.join("product-builds", "production");
-function latestBundleManifest(root: string): string | null {
-  const manifestDir = path.join(root, bundleManifestDir);
+const productionManifestDir = path.join("product-builds", "production");
+function latestCurrentArtifacts(root: string): string | null {
+  const manifestDir = path.join(root, productionManifestDir);
   if (!fs.existsSync(manifestDir) || !fs.statSync(manifestDir).isDirectory()) {
     return null;
   }
   const manifests = fs.readdirSync(manifestDir)
-    .filter((name) => name.startsWith("bundle_") && name.endsWith(".json"))
+    .filter((name) => name.startsWith("current_artifacts_") && name.endsWith(".json"))
     .sort();
   return manifests.length > 0 ? path.join(manifestDir, manifests[manifests.length - 1]) : null;
 }
-const artifactRoot = latestBundleManifest(configuredArtifactPath)
+const artifactRoot = latestCurrentArtifacts(configuredArtifactPath)
   ? configuredArtifactPath
-  : latestBundleManifest("/root/aerobag-artifacts")
+  : latestCurrentArtifacts("/root/aerobag-artifacts")
     ? "/root/aerobag-artifacts"
     : configuredArtifactPath;
-const productBuildPath = latestBundleManifest(artifactRoot) ?? path.join(artifactRoot, bundleManifestDir, "bundle_missing.json");
+const currentArtifactsPath = latestCurrentArtifacts(artifactRoot) ?? path.join(artifactRoot, productionManifestDir, "current_artifacts_missing.json");
+const currentArtifacts = JSON.parse(fs.readFileSync(currentArtifactsPath, "utf8")) as { bundles?: Array<{ filename?: string }> };
+const productBuildPath = path.join(
+  artifactRoot,
+  productionManifestDir,
+  currentArtifacts.bundles?.[currentArtifacts.bundles.length - 1]?.filename ?? "bundle_missing.json",
+);
 
 function resolveProductBuildOutput(nodeName: string, outputName: string): string {
-  const payload = JSON.parse(fs.readFileSync(productBuildPath, "utf8")) as { nodes?: Array<Record<string, unknown>> };
+  const payload = JSON.parse(fs.readFileSync(productBuildPath, "utf8")) as Record<string, unknown> & { nodes?: Array<Record<string, unknown>> };
+  const topLevel = payload[nodeName];
+  if (topLevel && typeof topLevel === "object") {
+    const rawPath = (topLevel as Record<string, unknown>).relative_path;
+    if (typeof rawPath === "string" && rawPath.length > 0) {
+      return path.join(artifactRoot, rawPath.startsWith("product-builds/") ? rawPath : path.join("product-builds", rawPath));
+    }
+  }
   for (const node of payload.nodes ?? []) {
     if (node.name !== nodeName) {
       continue;
@@ -66,13 +80,19 @@ function resolveProductBuildOutput(nodeName: string, outputName: string): string
   throw new Error(`missing product build output ${nodeName}.${outputName}`);
 }
 
-const resourceIndexPath = resolveProductBuildOutput("resource-index", "resource_index");
+const resourceIndexPath = resolveProductBuildOutput("resource_index", "resource_index");
 
 function mountStaticTree(sourceRoot: string) {
   return (req: { url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
     const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
     const relativePath = requestPath.replace(/^\/+/, "");
     const filePath = path.resolve(sourceRoot, relativePath);
+    if (sourceRoot === vectorRoot) {
+      fs.appendFileSync(
+        requestLogPath,
+        `${JSON.stringify({ ts: Date.now(), kind: "vector_request", requestPath, filePath, exists: fs.existsSync(filePath) })}\n`,
+      );
+    }
     if (!filePath.startsWith(sourceRoot)) {
       res.statusCode = 403;
       res.end("forbidden");
@@ -115,6 +135,7 @@ function aerobagStaticPlugin(): Plugin {
             const lines = payload.map((entry) => JSON.stringify(entry)).join("\n");
             if (lines.length > 0) {
               fs.appendFileSync(debugLogPath, `${lines}\n`);
+              fs.appendFileSync(requestLogPath, `${JSON.stringify({ ts: Date.now(), kind: "client_debug_post", count: payload.length })}\n`);
             }
             res.statusCode = 204;
             res.end();
@@ -123,6 +144,19 @@ function aerobagStaticPlugin(): Plugin {
             res.end(error instanceof Error ? error.message : String(error));
           }
         });
+      });
+      server.middlewares.use("/__ping", (req, res, next) => {
+        const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
+        if (requestPath !== "/") {
+          next();
+          return;
+        }
+        fs.appendFileSync(
+          requestLogPath,
+          `${JSON.stringify({ ts: Date.now(), kind: "ping", url: req.url ?? "" })}\n`,
+        );
+        res.statusCode = 204;
+        res.end();
       });
       server.middlewares.use("/sectional-packages", mountStaticTree(sectionalRoot));
       server.middlewares.use("/chart-assets", mountStaticTree(chartAssetRoot));

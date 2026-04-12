@@ -105,6 +105,19 @@ const plateFolderTheme = loadedUiTheme.plate_folder;
 const plateFolderCategoryOrder: PlateFolderCategory[] = ["airport-diagram", "csup", "takeoff-mins", "approach", "departure", "star"];
 const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
 const situationRingSizesNm = [0.25, 0.5, 0.8, 1, 1.5, 2, 3, 5, 8, 10, 15, 20, 30, 50, 100, 150, 200] as const;
+let overlayDebugSeq = 0;
+
+function postOverlayDebug(entry: Record<string, unknown>) {
+  void fetch("/__debug_log", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify([{ seq: ++overlayDebugSeq, ts: Date.now(), ...entry }]),
+  }).catch(() => {});
+}
+
+function pingOverlay(url: string) {
+  void fetch(url).catch(() => {});
+}
 
 type PersistedWebUiState = {
   page?: AppPage;
@@ -677,10 +690,28 @@ function MapPage(props: {
     let cancelled = false;
 
     async function syncMapOverlay() {
+      pingOverlay(`/__ping?kind=overlay_sync_enter&session=${session ? 1 : 0}&w=${surfaceSize.width}&h=${surfaceSize.height}&z=${viewport.zoom.toFixed(2)}`);
+      postOverlayDebug({
+        kind: "overlay_sync_enter",
+        has_session: Boolean(session),
+        width: surfaceSize.width,
+        height: surfaceSize.height,
+        zoom: viewport.zoom,
+      });
       let overlay: MapOverlayQueryResult;
       try {
         overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
+        postOverlayDebug({
+          kind: "overlay_query_1",
+          zoom: viewport.zoom,
+          needed_fix_tiles: overlay.needed_fix_tiles.length,
+          visible_features: overlay.visible_features.length,
+        });
       } catch (error) {
+        postOverlayDebug({
+          kind: "overlay_query_1_error",
+          message: error instanceof Error ? error.message : String(error),
+        });
         throw error;
       }
       if (overlay.needed_fix_tiles.length > 0) {
@@ -688,6 +719,12 @@ function MapPage(props: {
           overlay.needed_fix_tiles.map(async (tile) => {
             const response = await fetch(pointTileUrl(tile.layer, tile.z, tile.x, tile.y), {
               signal: controller.signal,
+            });
+            postOverlayDebug({
+              kind: "overlay_tile_fetch",
+              path: pointTileUrl(tile.layer, tile.z, tile.x, tile.y),
+              status: response.status,
+              content_type: response.headers.get("content-type"),
             });
             if (response.status === 404) {
               return {
@@ -702,11 +739,24 @@ function MapPage(props: {
             if (!response.ok) {
               throw new Error(`failed to load vector tile ${tile.z}/${tile.x}/${tile.y}: ${response.status}`);
             }
-            return (await response.json()) as PointTilePayload;
+            const text = await response.text();
+            postOverlayDebug({
+              kind: "overlay_tile_body",
+              path: pointTileUrl(tile.layer, tile.z, tile.x, tile.y),
+              bytes: text.length,
+              sample: text.slice(0, 80),
+            });
+            return JSON.parse(text) as PointTilePayload;
           }),
         );
         await session.ingestFixTiles(tiles);
         overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
+        postOverlayDebug({
+          kind: "overlay_query_2",
+          zoom: viewport.zoom,
+          needed_fix_tiles: overlay.needed_fix_tiles.length,
+          visible_features: overlay.visible_features.length,
+        });
       }
       if (!cancelled) {
         setMapOverlay(overlay);

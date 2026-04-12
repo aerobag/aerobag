@@ -586,8 +586,18 @@ button {
 }
 
 .planPage {
+  display: flex;
+  flex-direction: column;
   padding: calc(var(--thumb) * 1.25) var(--thumb-gap) calc(var(--thumb) * 0.9);
   background: var(--theme-chart-surface-bg);
+}
+
+.planScrollSurface {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: calc(var(--thumb) * 0.1);
+  margin-bottom: calc(var(--thumb) * 0.1);
 }
 
 .planTable {

@@ -1520,59 +1520,61 @@ function FlightPlanPage(props: {
         />
       </div>
 
-      {showComponentViews ? (
-        <div className="planComponentList">
-          {componentViews.map((component) => (
-            <div
-              key={component.component_index}
-              className={`planComponentCard${component.active ? " isActive" : ""}`}
-            >
-              <div className="planComponentHeader">
-                <span className="planComponentKind">{component.kind.toUpperCase()}</span>
-                <span className="planComponentSummary">{component.summary}</span>
+      <div className="planScrollSurface">
+        {showComponentViews ? (
+          <div className="planComponentList">
+            {componentViews.map((component) => (
+              <div
+                key={component.component_index}
+                className={`planComponentCard${component.active ? " isActive" : ""}`}
+              >
+                <div className="planComponentHeader">
+                  <span className="planComponentKind">{component.kind.toUpperCase()}</span>
+                  <span className="planComponentSummary">{component.summary}</span>
+                </div>
+                <div className="planComponentItems">
+                  {component.items.map((item, index) => (
+                    <span key={`${component.component_index}:${index}`} className={`planComponentItem${item.kind === "discontinuity" ? " isDiscontinuity" : ""}`}>
+                      {concretizedNavItemLabel(item)}
+                    </span>
+                  ))}
+                </div>
               </div>
-              <div className="planComponentItems">
-                {component.items.map((item, index) => (
-                  <span key={`${component.component_index}:${index}`} className={`planComponentItem${item.kind === "discontinuity" ? " isDiscontinuity" : ""}`}>
-                    {concretizedNavItemLabel(item)}
-                  </span>
-                ))}
+            ))}
+          </div>
+        ) : null}
+
+        <div className="planTable">
+          <div className="planHeader planWaypointCell">Waypoint</div>
+          <div className="planHeader">Dist (nm)</div>
+          <div className="planHeader">ETE (h:m)</div>
+          <div className="planHeader">Course (°)</div>
+          {rows.map((row, index) => (
+            <Fragment key={row.id}>
+              <button
+                key={`${row.id}:waypoint`}
+                type="button"
+                className={`planWaypointCell planWaypointButton${selectedWaypointIndex === index ? " isSelected" : ""}${row.active ? " isActiveLeg" : ""}`}
+                onClick={() => {
+                  setSelectedWaypointIndex(index);
+                  setReorderOpen(false);
+                  setAirwayPicker(null);
+                }}
+              >
+                {row.waypoint}
+              </button>
+              <div className="planCell">
+                {row.distance}
               </div>
-            </div>
+              <div className="planCell">
+                {row.ete}
+              </div>
+              <div className="planCell">
+                {row.course}
+              </div>
+            </Fragment>
           ))}
         </div>
-      ) : null}
-
-      <div className="planTable">
-        <div className="planHeader planWaypointCell">Waypoint</div>
-        <div className="planHeader">Dist (nm)</div>
-        <div className="planHeader">ETE (h:m)</div>
-        <div className="planHeader">Course (°)</div>
-        {rows.map((row, index) => (
-          <Fragment key={row.id}>
-            <button
-              key={`${row.id}:waypoint`}
-              type="button"
-              className={`planWaypointCell planWaypointButton${selectedWaypointIndex === index ? " isSelected" : ""}${row.active ? " isActiveLeg" : ""}`}
-              onClick={() => {
-                setSelectedWaypointIndex(index);
-                setReorderOpen(false);
-                setAirwayPicker(null);
-              }}
-            >
-              {row.waypoint}
-            </button>
-            <div className="planCell">
-              {row.distance}
-            </div>
-            <div className="planCell">
-              {row.ete}
-            </div>
-            <div className="planCell">
-              {row.course}
-            </div>
-          </Fragment>
-        ))}
       </div>
 
       <div className="planControls">

@@ -31,7 +31,7 @@ const configuredArtifactRoot = fs.readFileSync(artifactReadPathConfigFile, "utf8
 const configuredArtifactPath = path.isAbsolute(configuredArtifactRoot)
   ? configuredArtifactRoot
   : path.resolve(repoRoot, configuredArtifactRoot);
-const productionManifestDir = path.join("product-builds", "production");
+const productionManifestDir = path.join("published-packaged", "production");
 function latestCurrentArtifacts(root: string): string | null {
   const manifestDir = path.join(root, productionManifestDir);
   if (!fs.existsSync(manifestDir) || !fs.statSync(manifestDir).isDirectory()) {
@@ -58,7 +58,15 @@ function resolveProductBuildOutput(nodeName: string, outputName: string): string
   if (topLevel && typeof topLevel === "object") {
     const rawPath = (topLevel as Record<string, unknown>).relative_path;
     if (typeof rawPath === "string" && rawPath.length > 0) {
-      return path.join(artifactRoot, rawPath.startsWith("product-builds/") ? rawPath : path.join("product-builds", rawPath));
+      return path.join(
+        artifactRoot,
+        rawPath.startsWith("published-packaged/")
+          || rawPath.startsWith("published-unpacked/")
+          || rawPath.startsWith("cache/")
+          || rawPath.startsWith("private-work/")
+          ? rawPath
+          : path.join("published-packaged", rawPath),
+      );
     }
   }
   for (const node of payload.nodes ?? []) {

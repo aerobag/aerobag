@@ -372,7 +372,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             pending_tasks.push(ScheduledTask {
                 id: render_id.clone(),
                 deps: vec![],
-                weight: 2,
+                weight: 1,
                 kind: ScheduledTaskKind::TppRender {
                     region: *region,
                     run_root: run_root.clone(),
@@ -435,7 +435,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
 
         let total_tasks = pending_tasks.len();
         master_log.log(format!(
-            "scheduler-ready tasks={} work_unit_budget={} heavy_task_weight=4 light_task_weight=1 resource_index_weight=2",
+            "scheduler-ready tasks={} work_unit_budget={} chart_and_data_weight=4 csup_weight=2 tpp_weight=1 light_weight=1 resource_index_weight=2",
             total_tasks, work_unit_budget
         ))?;
         let (tx, rx) = mpsc::channel::<(String, usize, anyhow::Result<TaskCompletion>)>();
@@ -982,11 +982,7 @@ fn resolve_artifact_path(config: &ProductBuildConfig, relative_path: &str) -> Pa
 }
 
 fn resolve_product_build_path(config: &ProductBuildConfig, relative_path: &str) -> PathBuf {
-    config
-        .build_root
-        .parent()
-        .expect("build root should live under <artifact-root>/product-builds/<profile>")
-        .join(relative_path)
+    artifact_root_from_build_root(&config.build_root).join(relative_path)
 }
 
 fn published_unpacked_root(
@@ -1159,7 +1155,7 @@ impl ProductBuildConfig {
 
         let mut profile = ProductBuildProfile::Production;
         let mut chart_cutline_root = repo_root.join("avare-assets").join("chart-cutlines");
-        let mut build_root = artifact_root.join("product-builds").join(profile.as_str());
+        let mut build_root = artifact_root.join("published-packaged").join(profile.as_str());
         let mut target_cycle = None;
         let mut fetch_jobs = env_usize("FETCH_JOBS").unwrap_or(4);
         let mut cpu_jobs = env_usize("CPU_JOBS").unwrap_or_else(default_cpu_jobs);
@@ -1175,7 +1171,7 @@ impl ProductBuildConfig {
                     let value = args.get(index + 1).context("missing value for --profile")?;
                     profile = ProductBuildProfile::parse(value)
                         .ok_or_else(|| anyhow::anyhow!("unsupported profile: {value}"))?;
-                    build_root = artifact_root.join("product-builds").join(profile.as_str());
+                    build_root = artifact_root.join("published-packaged").join(profile.as_str());
                     index += 2;
                 }
                 "--chart-cutline-root" => {
@@ -2578,23 +2574,20 @@ fn build_node_root(config: &ProductBuildConfig, name: &str) -> anyhow::Result<Pa
 }
 
 fn build_shared_work_root(config: &ProductBuildConfig, name: &str) -> anyhow::Result<PathBuf> {
-    let root = shared_build_root(config).join("work").join(name);
+    let root = artifact_root_from_build_root(&config.build_root)
+        .join("private-work")
+        .join(name);
     fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
     Ok(root)
 }
 
 fn build_shared_node_dir(config: &ProductBuildConfig, name: &str) -> anyhow::Result<PathBuf> {
-    let root = shared_build_root(config).join("nodes").join(name);
+    let root = artifact_root_from_build_root(&config.build_root)
+        .join("cache")
+        .join("nodes")
+        .join(name);
     fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
     Ok(root)
-}
-
-fn shared_build_root(config: &ProductBuildConfig) -> PathBuf {
-    config
-        .build_root
-        .parent()
-        .unwrap_or(&config.build_root)
-        .join("shared")
 }
 
 fn load_existing_node_record(record_path: &Path, expected_name: &str) -> anyhow::Result<NodeRecord> {
@@ -3088,7 +3081,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let config = ProductBuildConfig {
             chart_cutline_root: temp.path().join("cutlines"),
-            build_root: temp.path().join("product-builds/validation"),
+            build_root: temp.path().join("published-packaged/validation"),
             profile: ProductBuildProfile::Validation,
             target_cycle: None,
             fetch_jobs: 1,
@@ -3108,8 +3101,8 @@ mod tests {
         assert_ne!(sec_2603, sec_2605);
         assert_ne!(tpp_2604, tpp_2605);
         assert_ne!(data_a, data_b);
-        assert!(sec_2603.ends_with("shared/work/charts-sec-2603"));
-        assert!(tpp_2604.ends_with("shared/work/tpp-ne-2604"));
-        assert!(data_a.ends_with("shared/work/data-data_2604"));
+        assert!(sec_2603.ends_with("private-work/charts-sec-2603"));
+        assert!(tpp_2604.ends_with("private-work/tpp-ne-2604"));
+        assert!(data_a.ends_with("private-work/data-data_2604"));
     }
 }

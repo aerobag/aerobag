@@ -111,6 +111,8 @@ struct PointRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     fuel_available: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    longest_runway_length_ft: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     longest_runway_heading_true_deg: Option<f64>,
 }
 
@@ -321,7 +323,7 @@ pub fn build_obstacle_dataset(
 fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
     let mut points = Vec::new();
     let mut seen = BTreeSet::new();
-    let longest_runway_headings = load_longest_runway_headings(conn)?;
+    let longest_runways = load_longest_runways(conn)?;
 
     let point_sources = [
         (
@@ -365,7 +367,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                 let atct: String = row.get::<_, String>(5)?;
                 let fuel_types: String = row.get::<_, String>(6)?;
                 (
-                    Some(!atct.trim().is_empty()),
+                    Some(atct.trim().eq_ignore_ascii_case("Y")),
                     Some(!fuel_types.trim().is_empty()),
                 )
             } else {
@@ -388,8 +390,11 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                 style_class: style_class.to_string(),
                 towered,
                 fuel_available,
+                longest_runway_length_ft: (table_name == "airports")
+                    .then(|| longest_runways.get(&raw_id).map(|runway| runway.length_ft))
+                    .flatten(),
                 longest_runway_heading_true_deg: (table_name == "airports")
-                    .then(|| longest_runway_headings.get(&raw_id).copied())
+                    .then(|| longest_runways.get(&raw_id).map(|runway| runway.heading_true_deg))
                     .flatten(),
             });
         }
@@ -451,13 +456,20 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<PointRecord>> {
             style_class: "obstacle".to_string(),
             towered: None,
             fuel_available: None,
+            longest_runway_length_ft: None,
             longest_runway_heading_true_deg: None,
         });
     }
     Ok(points)
 }
 
-fn load_longest_runway_headings(conn: &Connection) -> anyhow::Result<BTreeMap<String, f64>> {
+#[derive(Debug, Clone, Copy)]
+struct LongestRunwayInfo {
+    length_ft: f64,
+    heading_true_deg: f64,
+}
+
+fn load_longest_runways(conn: &Connection) -> anyhow::Result<BTreeMap<String, LongestRunwayInfo>> {
     let mut stmt = conn.prepare(
         "SELECT LocationID, Length, LEHeadingT, LELatitude, LELongitude, HELatitude, HELongitude
          FROM airportrunways",
@@ -474,7 +486,7 @@ fn load_longest_runway_headings(conn: &Connection) -> anyhow::Result<BTreeMap<St
         ))
     })?;
 
-    let mut by_airport = BTreeMap::<String, (f64, f64)>::new();
+    let mut by_airport = BTreeMap::<String, LongestRunwayInfo>::new();
     for row in rows {
         let (location_id, length_text, le_heading_text, le_lat_text, le_lon_text, he_lat_text, he_lon_text) = row?;
         let length = parse_float(&length_text);
@@ -495,17 +507,20 @@ fn load_longest_runway_headings(conn: &Connection) -> anyhow::Result<BTreeMap<St
             bearing_true_deg(le_lat, le_lon, he_lat, he_lon)
         };
         match by_airport.get(&location_id) {
-            Some((best_length, _)) if *best_length >= length => {}
+            Some(best) if best.length_ft >= length => {}
             _ => {
-                by_airport.insert(location_id, (length, heading));
+                by_airport.insert(
+                    location_id,
+                    LongestRunwayInfo {
+                        length_ft: length,
+                        heading_true_deg: heading,
+                    },
+                );
             }
         }
     }
 
-    Ok(by_airport
-        .into_iter()
-        .map(|(location_id, (_, heading))| (location_id, heading))
-        .collect())
+    Ok(by_airport)
 }
 
 fn bearing_true_deg(start_lat: f64, start_lon: f64, end_lat: f64, end_lon: f64) -> f64 {

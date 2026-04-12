@@ -5,7 +5,7 @@ SOURCE_ROOT=/root/aerobag-artifacts
 set -euo pipefail
 
 rm -rf $DEST
-mkdir -p "$DEST/product-builds"
+mkdir -p "$DEST/published-packaged"
 
-time cp -rl "$SOURCE_ROOT/product-builds/production" "$DEST/product-builds/production"
-time cp -rl "$SOURCE_ROOT/product-builds/shared" "$DEST/product-builds/shared"
+time cp -rl "$SOURCE_ROOT/published-packaged/production" "$DEST/published-packaged/production"
+time cp -rl "$SOURCE_ROOT/published-unpacked" "$DEST/published-unpacked"

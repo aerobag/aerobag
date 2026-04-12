@@ -164,8 +164,12 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
             .as_deref()
             .unwrap_or(&Utc::now().format("%Y-%m-%d").to_string()),
     )?;
-    let build_root =
-        build_root.unwrap_or_else(|| artifact_root.join("obstacles").join(&snapshot_label));
+    let build_root = build_root.unwrap_or_else(|| {
+        artifact_root
+            .join("published-packaged")
+            .join("obstacles")
+            .join(&snapshot_label)
+    });
     let output_dir = build_root.join("output");
     let manifest_path = output_dir.join(format!("obstacles_{snapshot_label}"));
     let stats_path = output_dir.join("stats.json");
@@ -182,10 +186,20 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
         env::set_var("FETCH_CACHE_MODE", "fill");
     }
 
-    let work_dir = build_root.join("work");
+    let work_dir = artifact_root
+        .join("private-work")
+        .join("obstacles")
+        .join(&snapshot_label)
+        .join("work");
     fs::create_dir_all(&work_dir)
         .with_context(|| format!("failed to create {}", work_dir.display()))?;
-    let provenance_dir = build_root.join("meta").join("provenance").join("obstacles");
+    let provenance_dir = artifact_root
+        .join("private-work")
+        .join("obstacles")
+        .join(&snapshot_label)
+        .join("meta")
+        .join("provenance")
+        .join("obstacles");
     fs::create_dir_all(&provenance_dir)
         .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
     let logical_url = format!(

@@ -70,6 +70,7 @@ class BuildState:
 
         match = BEGIN_RE.match(line)
         if match:
+            self._reset_for_new_run()
             self.header = f"{match.group('ts')} {match.group('rest')}"
             self.pid = parse_pid(match.group("rest"))
             self.last_timestamp = match.group("ts")
@@ -132,6 +133,21 @@ class BuildState:
             self.final_details = match.group("rest").strip()
             self.final_at = match.group("ts")
             return
+
+    def _reset_for_new_run(self) -> None:
+        self.total_tasks = 0
+        self.work_unit_budget = 0
+        self.launched = 0
+        self.completed = 0
+        self.running_units = 0
+        self.header = ""
+        self.pid = None
+        self.final_result = None
+        self.final_details = ""
+        self.final_at = None
+        self.tasks = {}
+        self.completion_order = []
+        self.last_timestamp = ""
 
     def active_tasks(self) -> list[TaskState]:
         return sorted(
@@ -343,7 +359,7 @@ def main() -> int:
     parser.add_argument(
         "log_path",
         nargs="?",
-        default="/root/aerobag-artifacts/product-builds/production/orchestrator-logs/master.log",
+        default="/root/aerobag-artifacts/published-packaged/production/orchestrator-logs/master.log",
         help="Path to master.log",
     )
     parser.add_argument(

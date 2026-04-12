@@ -1126,16 +1126,46 @@ mod tests {
             for candidate in [
                 "/root/aerobag-three/ui-target-flightplan/android/assets/nav-db/main.db",
                 "/root/aerobag-three/ui-target/android/assets/nav-db/main.db",
-                "/root/aerobag-artifacts/product-builds/shared/work/data/output/main.db",
             ] {
                 let path = PathBuf::from(candidate);
                 if path.is_file() {
                     return path;
                 }
             }
+            for root in [
+                "/root/aerobag-artifacts/published-unpacked",
+                "/root/aerobag-artifacts/cache/nodes",
+                "/root/aerobag-artifacts/private-work",
+            ] {
+                if let Some(path) = find_fixture_nav_db(Path::new(root)) {
+                    return path;
+                }
+            }
             panic!("unable to locate nav database fixture");
         })
         .as_path()
+    }
+
+    fn find_fixture_nav_db(root: &Path) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(root).ok()?;
+        for entry in entries {
+            let path = entry.ok()?.path();
+            if path.is_dir() {
+                if let Some(found) = find_fixture_nav_db(&path) {
+                    return Some(found);
+                }
+                continue;
+            }
+            if path.file_name().is_some_and(|name| name == "main.db")
+                && path
+                    .parent()
+                    .and_then(|parent| parent.file_name())
+                    .is_some_and(|name| name == "output" || name == "data_2604")
+            {
+                return Some(path);
+            }
+        }
+        None
     }
 
     #[test]

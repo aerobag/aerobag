@@ -45,18 +45,18 @@ val artifactRoot = File(
         ?: defaultArtifactRoot.absolutePath,
 )
 fun latestCurrentArtifacts(root: File): File? =
-    root.resolve("product-builds/production")
+    root.resolve("published-packaged/production")
         .listFiles()
         ?.filter { it.isFile && it.name.startsWith("current_artifacts_") && it.name.endsWith(".json") }
         ?.maxByOrNull { it.name }
 
 val resolvedArtifactRoot = artifactRoot
 val currentArtifactsFile = latestCurrentArtifacts(resolvedArtifactRoot)
-    ?: throw GradleException("missing current_artifacts_*.json under ${resolvedArtifactRoot.resolve("product-builds/production").absolutePath}")
+    ?: throw GradleException("missing current_artifacts_*.json under ${resolvedArtifactRoot.resolve("published-packaged/production").absolutePath}")
 val currentArtifactsPayload by lazy { JsonSlurper().parse(currentArtifactsFile) as Map<*, *> }
 val bundleFilename = ((currentArtifactsPayload["bundles"] as? List<*>)?.lastOrNull() as? Map<*, *>)?.get("filename") as? String
     ?: throw GradleException("missing bundles[-1].filename in ${currentArtifactsFile.absolutePath}")
-val productBuildFile = resolvedArtifactRoot.resolve("product-builds/production").resolve(bundleFilename)
+val productBuildFile = resolvedArtifactRoot.resolve("published-packaged/production").resolve(bundleFilename)
 val productBuildPayload by lazy { JsonSlurper().parse(productBuildFile) as Map<*, *> }
 
 fun resolveProductBuildOutput(nodeName: String, outputName: String): File {
@@ -64,7 +64,17 @@ fun resolveProductBuildOutput(nodeName: String, outputName: String): File {
     if (topLevel != null) {
         val rawPath = topLevel["relative_path"] as? String
         if (!rawPath.isNullOrBlank()) {
-            val relative = if (rawPath.startsWith("product-builds/")) rawPath else "product-builds/$rawPath"
+            val relative =
+                if (
+                    rawPath.startsWith("published-packaged/") ||
+                    rawPath.startsWith("published-unpacked/") ||
+                    rawPath.startsWith("cache/") ||
+                    rawPath.startsWith("private-work/")
+                ) {
+                    rawPath
+                } else {
+                    "published-packaged/$rawPath"
+                }
             val resolved = resolvedArtifactRoot.resolve(relative)
             if (resolved.isFile) {
                 return resolved
@@ -101,40 +111,23 @@ fun resolveArtifactPath(rawPath: String): File {
     val raw = rawPath.replace('\\', File.separatorChar)
     val normalizedRelative = raw.removePrefix(".${File.separator}")
     fun rebasedCandidate(relativePath: String): File =
-        resolvedArtifactRoot.resolve("product-builds").resolve(relativePath.replace('\\', '/'))
+        resolvedArtifactRoot.resolve(relativePath.replace('\\', '/'))
     if (
-        normalizedRelative.startsWith("shared${File.separator}") ||
-        normalizedRelative.startsWith("validation${File.separator}") ||
-        normalizedRelative.startsWith("production${File.separator}")
+        normalizedRelative.startsWith("published-packaged${File.separator}") ||
+        normalizedRelative.startsWith("published-unpacked${File.separator}") ||
+        normalizedRelative.startsWith("cache${File.separator}") ||
+        normalizedRelative.startsWith("private-work${File.separator}")
     ) {
         val rebased = rebasedCandidate(normalizedRelative)
         if (rebased.isFile) {
             return rebased
         }
     }
-    val marker = "${File.separator}product-builds${File.separator}"
+    val marker = "${File.separator}published-packaged${File.separator}"
     val markerIndex = raw.indexOf(marker)
     if (markerIndex >= 0) {
         val relative = raw.substring(markerIndex + marker.length)
-        val rebased = resolvedArtifactRoot.resolve("product-builds").resolve(relative)
-        if (rebased.isFile) {
-            return rebased
-        }
-        val relativePath = relative.replace('\\', '/')
-        val candidates = buildList {
-            add(rebased)
-            if (relativePath.startsWith("shared/")) {
-                add(resolvedArtifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("shared/").let { "validation/$it" }))
-                add(resolvedArtifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("shared/").let { "production/$it" }))
-            }
-            if (relativePath.startsWith("validation/")) {
-                add(resolvedArtifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("validation/").let { "shared/$it" }))
-            }
-            if (relativePath.startsWith("production/")) {
-                add(resolvedArtifactRoot.resolve("product-builds").resolve(relativePath.removePrefix("production/").let { "shared/$it" }))
-            }
-        }
-        candidates.firstOrNull { it.isFile }?.let { return it }
+        val rebased = resolvedArtifactRoot.resolve("published-packaged").resolve(relative)
         if (rebased.isFile) {
             return rebased
         }

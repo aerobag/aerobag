@@ -1685,6 +1685,7 @@ function FlightPlanPage(props: {
         canAddAirwayAfter: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_add_airway_after ?? false : false,
         canChangeAirway: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_change_airway ?? false : false,
         canRemoveComponent: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_remove ?? false : false,
+        canReorderComponent: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_reorder ?? false : false,
         precedingWaypoint: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.preceding_waypoint ?? null : null,
         followingWaypoint: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.following_waypoint ?? null : null,
       };
@@ -1789,7 +1790,9 @@ function FlightPlanPage(props: {
         action.id === "activate_leg"
           ? selectedRow.legIndex !== null
           : action.id === "remove"
-            ? selectedRow.removeLegIndex !== null
+            ? selectedRow.canRemoveComponent && selectedRow.componentIndex !== null
+          : action.id === "reorder"
+            ? selectedRow.canReorderComponent && selectedRow.componentIndex !== null
           : action.id === "add_airway"
             ? selectedRow.canAddAirwayAfter &&
               selectedRow.startComponentIndex !== null &&
@@ -1813,8 +1816,12 @@ function FlightPlanPage(props: {
             return;
           }
           if (action.id === "remove") {
-            void props.onRemoveWaypoint(selectedRow.removeLegIndex!);
+            void props.onDeleteComponent(selectedRow.componentIndex!);
             closeTray();
+            return;
+          }
+          if (action.id === "reorder") {
+            setReorderOpen(true);
             return;
           }
           if (action.id === "add_airway") {
@@ -3312,7 +3319,8 @@ function buildLegacyComponentViews(plan: typeof samplePlan): FlightPlanUiState["
     active: false,
     can_add_airway_after: index + 1 < waypoints.length,
     can_change_airway: false,
-    can_remove: false,
+    can_remove: waypoints.length > 2,
+    can_reorder: waypoints.length > 2,
     preceding_waypoint: index > 0 ? waypoints[index - 1] : null,
     following_waypoint: index + 1 < waypoints.length ? waypoints[index + 1] : null,
   }));

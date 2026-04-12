@@ -205,6 +205,7 @@ pub struct RouteComponentUiView {
     pub can_add_airway_after: bool,
     pub can_change_airway: bool,
     pub can_remove: bool,
+    pub can_reorder: bool,
     pub preceding_waypoint: Option<NavRef>,
     pub following_waypoint: Option<NavRef>,
 }
@@ -628,7 +629,8 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
                 can_change_airway: matches!(component, RouteComponent::Airway { .. })
                     && preceding_waypoint.is_some()
                     && following_waypoint.is_some(),
-                can_remove: !matches!(component, RouteComponent::Waypoint { .. }),
+                can_remove: can_remove_component(&plan, component_index),
+                can_reorder: can_reorder_component(&plan, component_index),
                 preceding_waypoint,
                 following_waypoint,
             }
@@ -710,6 +712,25 @@ fn adjacent_waypoint_component(
         Some(RouteComponent::Waypoint { waypoint }) => Some(waypoint.clone()),
         _ => None,
     }
+}
+
+fn can_remove_component(plan: &FlightPlan, component_index: usize) -> bool {
+    match plan.route_components.get(component_index) {
+        Some(RouteComponent::Waypoint { .. }) => delete_waypoint_component(plan, component_index).is_ok(),
+        Some(RouteComponent::Airway { .. }) | Some(RouteComponent::Procedure { .. }) => {
+            delete_component(plan, component_index).is_ok()
+        }
+        None => false,
+    }
+}
+
+fn can_reorder_component(plan: &FlightPlan, component_index: usize) -> bool {
+    matches!(plan.route_components.get(component_index), Some(RouteComponent::Waypoint { .. }))
+        && plan
+            .route_components
+            .iter()
+            .all(|component| matches!(component, RouteComponent::Waypoint { .. }))
+        && plan.route_components.len() > 2
 }
 
 pub fn delete_component(plan: &FlightPlan, component_index: usize) -> AppResult<FlightPlan> {
@@ -3173,6 +3194,18 @@ mod tests {
         assert!(ui.components[1].can_remove);
         assert_eq!(ui.components[1].preceding_waypoint, Some(NavRef::Airport("KRNT".to_string())));
         assert_eq!(ui.components[1].following_waypoint, Some(NavRef::Airport("KUAO".to_string())));
+    }
+
+    #[test]
+    fn project_ui_state_enables_remove_and_reorder_for_plain_waypoint_routes() {
+        let ui = project_ui_state(&sample_waypoint_only_plan());
+
+        assert!(ui.components.iter().all(|component| component.can_remove));
+        assert!(ui.components.iter().all(|component| component.can_reorder));
+
+        let grouped = project_ui_state(&sample_airway_component_plan());
+        assert!(grouped.components[0].can_remove);
+        assert!(!grouped.components[0].can_reorder);
     }
 
     #[test]

@@ -186,6 +186,7 @@ export type RouteComponentUiView = {
   can_add_airway_after: boolean;
   can_change_airway: boolean;
   can_remove: boolean;
+  can_reorder: boolean;
   preceding_waypoint: NavRef | null;
   following_waypoint: NavRef | null;
 };

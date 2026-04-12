@@ -600,6 +600,58 @@ button {
   margin-bottom: calc(var(--thumb) * 0.1);
 }
 
+.planTableWrap {
+  position: relative;
+}
+
+.planTableWrap.isStructured {
+  padding-left: calc(var(--thumb) * 0.5);
+  padding-right: calc(var(--thumb) * 0.5);
+}
+
+.planTableWrap.isStructured .planTable {
+  gap: calc(var(--thumb) * 0.14);
+  padding-top: calc(var(--thumb) * 0.22);
+  background: transparent;
+  box-shadow: none;
+}
+
+.planStructuredArrowLayer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.planStructuredGroupBoxLayer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.planStructuredGroupBoxOverlay {
+  position: absolute;
+  border: 2px solid color-mix(in srgb, var(--theme-panel-border) 88%, white);
+  border-radius: calc(var(--thumb-radius) * 1.15);
+  background: color-mix(in srgb, var(--theme-panel-bg) 80%, rgba(19, 33, 41, 0.06));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+.planStructuredArrowPath {
+  fill: none;
+  stroke: #d45a7a;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.planStructuredArrowHead {
+  fill: #d45a7a;
+}
+
 .planTable {
   display: grid;
   grid-template-columns: calc(var(--thumb) * 2.5) repeat(3, minmax(calc(var(--thumb) * 1.4), 1fr));
@@ -609,67 +661,8 @@ button {
   border-radius: calc(var(--thumb-radius) * 0.9);
   overflow: hidden;
   box-shadow: var(--shadow);
-}
-
-.planComponentList {
-  display: flex;
-  flex-direction: column;
-  gap: calc(var(--thumb) * 0.16);
-  margin-bottom: calc(var(--thumb) * 0.2);
-}
-
-.planComponentCard {
-  display: flex;
-  flex-direction: column;
-  gap: calc(var(--thumb) * 0.08);
-  padding: calc(var(--thumb) * 0.14) calc(var(--thumb) * 0.18);
-  border: 1px solid var(--theme-panel-border);
-  border-radius: calc(var(--thumb-radius) * 0.9);
-  background: var(--theme-panel-bg);
-  box-shadow: var(--shadow);
-}
-
-.planComponentCard.isActive {
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 80%, white), var(--shadow);
-}
-
-.planComponentHeader {
-  display: flex;
-  align-items: baseline;
-  gap: calc(var(--thumb) * 0.12);
-}
-
-.planComponentKind {
-  color: var(--theme-panel-muted);
-  font-size: calc(var(--thumb) * 0.18);
-  font-weight: 800;
-  letter-spacing: 0.06em;
-}
-
-.planComponentSummary {
-  color: var(--theme-panel-fg);
-  font-size: calc(var(--thumb) * 0.24);
-  font-weight: 700;
-}
-
-.planComponentItems {
-  display: flex;
-  flex-wrap: wrap;
-  gap: calc(var(--thumb) * 0.08);
-}
-
-.planComponentItem {
-  padding: calc(var(--thumb) * 0.06) calc(var(--thumb) * 0.12);
-  border-radius: calc(var(--thumb-radius) * 0.7);
-  background: color-mix(in srgb, var(--theme-button-bg) 20%, white);
-  color: var(--theme-panel-fg);
-  font-size: calc(var(--thumb) * 0.18);
-  font-weight: 700;
-}
-
-.planComponentItem.isDiscontinuity {
-  background: color-mix(in srgb, #c97832 18%, white);
-  color: #8b3e00;
+  position: relative;
+  z-index: 1;
 }
 
 .planHeader,
@@ -710,6 +703,34 @@ button {
 .planWaypointButton.isSelected {
   background: color-mix(in srgb, var(--theme-button-bg) 82%, white);
   border-color: color-mix(in srgb, var(--theme-button-bg) 60%, white);
+}
+
+.planStructuredWaypointCell {
+  position: relative;
+}
+
+.planStructuredWaypointCell.isGroupHeader {
+  background: color-mix(in srgb, var(--theme-button-bg) 74%, white);
+  border-color: color-mix(in srgb, var(--theme-button-bg) 55%, white);
+  font-weight: 800;
+}
+
+.planStructuredWaypointCell.isChildRow {
+  margin-left: calc(var(--thumb) * 0.38);
+}
+
+.planStructuredWaypointCell.isDiscontinuityItem {
+  color: #8b3e00;
+  background: color-mix(in srgb, #c97832 18%, white);
+}
+
+.planStructuredLabel {
+  position: relative;
+  z-index: 1;
+}
+
+.planStructuredLabel.isIndented {
+  padding-left: calc(var(--thumb) * 0.18);
 }
 
 .planFooter {

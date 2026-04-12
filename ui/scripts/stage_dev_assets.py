@@ -60,6 +60,7 @@ CURRENT_ARTIFACTS = json.loads(CURRENT_ARTIFACTS_FILE.read_text())
 bundle_filename = CURRENT_ARTIFACTS["bundles"][-1]["filename"]
 PRODUCT_BUILD_FILE = ARTIFACT_ROOT / PRODUCTION_MANIFEST_DIR / bundle_filename
 CYCLE = PRODUCT_BUILD_FILE.stem.split("_", 1)[1]
+BUILD_MANIFEST_FILE = ARTIFACT_ROOT / PRODUCTION_MANIFEST_DIR / f"build-manifest_{CYCLE}.json"
 PUBLISHED_ROOT = ARTIFACT_ROOT / "published-unpacked" / "production" / CYCLE
 
 
@@ -67,7 +68,12 @@ def load_product_build() -> dict:
     return json.loads(PRODUCT_BUILD_FILE.read_text())
 
 
+def load_build_manifest() -> dict:
+    return json.loads(BUILD_MANIFEST_FILE.read_text())
+
+
 PRODUCT_BUILD = load_product_build()
+BUILD_MANIFEST = load_build_manifest()
 
 
 def resolve_product_build_output(node_name: str, output_name: str) -> Path:

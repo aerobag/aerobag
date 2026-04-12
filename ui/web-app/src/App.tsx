@@ -399,16 +399,18 @@ export default function App() {
     if (!appCoreAdapter) {
       return;
     }
-    appCoreAdapter.createUiSession(
-      resourceIndex,
-      samplePlan,
-      initialRecentAirportIds,
-      initialChartPageState.selected_airport_id,
-      initialChartPageState.selected_chart_id,
-    ).then(async (created) => {
+    buildSeededDevPlan(appCoreAdapter).then(async (initialPlan) => {
+      const created = await appCoreAdapter.createUiSession(
+        resourceIndex,
+        initialPlan.plan,
+        initialRecentAirportIds,
+        initialChartPageState.selected_airport_id,
+        initialChartPageState.selected_chart_id,
+      );
       nextSession = created;
       if (!cancelled) {
         setUiSession(created);
+        setPlanUiState(initialPlan.uiState);
       }
       const snapshot = await created.setSituation(demoSituation());
       if (!cancelled) {
@@ -1426,6 +1428,11 @@ function FlightPlanPage(props: {
   const [debugOpen, setDebugOpen] = useState(false);
   const trayOpen = trayGroup.scrimOpen;
   const guidance = props.planUiState?.guidance ?? null;
+  const structuredSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const structuredTableRef = useRef<HTMLDivElement | null>(null);
+  const structuredRowRefs = useRef(new Map<string, HTMLElement>());
+  const [structuredArrow, setStructuredArrow] = useState<{ path: string; head: string } | null>(null);
+  const [structuredGroupBoxes, setStructuredGroupBoxes] = useState<Array<{ key: string; top: number; left: number; width: number; height: number }>>([]);
   const componentViews = useMemo(
     () => props.planUiState?.components ?? buildLegacyComponentViews(props.plan),
     [props.plan, props.planUiState?.components],
@@ -1437,65 +1444,221 @@ function FlightPlanPage(props: {
     () => componentViews.some((component) => component.kind !== "waypoint"),
     [componentViews],
   );
-  const rows = useMemo(
-    () => {
-      if (props.planUiState?.resolved_legs.length) {
-        const firstLeg = props.planUiState.resolved_legs[0];
-        const startRow = firstLeg
-          ? [{
-              id: `start:${firstLeg.leg_id}`,
-              waypoint: navRefLabel(firstLeg.from),
-              distance: "—",
-              ete: "—",
-              course: "—",
-              chartAirportId: "Airport" in firstLeg.from ? firstLeg.from.Airport : null,
-              removeLegIndex: null as number | null,
-              legIndex: null as number | null,
-              startComponentIndex: componentViews.length > 1 ? 0 : null as number | null,
-              endComponentIndex: componentViews.length > 1 ? 1 : null as number | null,
-              originAnchor: firstLeg.from,
-              destinationAnchor: componentViews.length > 1 ? componentWaypointNavRef(componentViews[1]) : null as NavRef | null,
-              active: false,
-            }]
-          : [];
-        return [
-          ...startRow,
-          ...props.planUiState.resolved_legs.map((leg) => {
-            const componentSummary =
-              leg.component_index !== null
-                ? componentViews.find((component) => component.component_index === leg.component_index)?.summary ?? "ROUTE"
-                : "LEGACY";
-            return {
-              id: leg.leg_id,
-              waypoint: navRefLabel(leg.to),
-              distance: leg.leg_index === 0 ? "18.4" : "11.2",
-              ete: leg.leg_index === 0 ? "0:07" : "0:04",
-              course: leg.active ? "ACT" : leg.suspend_boundary_after ? "SUSP" : "161",
-              chartAirportId: "Airport" in leg.to ? leg.to.Airport : null,
-              removeLegIndex: null as number | null,
-              legIndex: leg.leg_index,
-              startComponentIndex: !showComponentViews && leg.component_index !== null && leg.component_index + 2 <= componentViews.length - 1
-                ? leg.component_index + 1
-                : null as number | null,
-              endComponentIndex: !showComponentViews && leg.component_index !== null && leg.component_index + 2 <= componentViews.length - 1
-                ? leg.component_index + 2
-                : null as number | null,
-              originAnchor: !showComponentViews && leg.component_index !== null && leg.component_index + 2 <= componentViews.length - 1
-                ? leg.to
-                : null as NavRef | null,
-              destinationAnchor: !showComponentViews && leg.component_index !== null && leg.component_index + 2 <= componentViews.length - 1
-                ? componentWaypointNavRef(componentViews[leg.component_index + 2])
-                : null as NavRef | null,
-              active: leg.active,
-            };
-          }),
-        ];
+  const hierarchicalRows = useMemo(() => {
+    const nextRows: Array<{
+      id: string;
+      kind: "group" | "waypoint" | "discontinuity";
+      label: string;
+      navRef: NavRef | null;
+      depth: number;
+      groupKey: string | null;
+      componentIndex: number | null;
+    }> = [];
+
+    for (const component of componentViews) {
+      if (component.kind === "waypoint") {
+        const navRef = componentWaypointNavRef(component);
+        nextRows.push({
+          id: `component:${component.component_index}`,
+          kind: "waypoint",
+          label: navRef ? navRefLabel(navRef) : component.summary,
+          navRef,
+          depth: 0,
+          groupKey: null,
+          componentIndex: component.component_index,
+        });
+        continue;
       }
 
-      return buildLegacyResolvedRows(props.plan, guidance?.active_leg_index ?? null);
-    },
-    [componentViews, guidance?.active_leg_index, props.plan, props.planUiState?.resolved_legs],
-  );
+      const groupKey = `group:${component.component_index}`;
+      nextRows.push({
+        id: groupKey,
+        kind: "group",
+        label: structuredComponentLabel(component),
+        navRef: null,
+        depth: 0,
+        groupKey,
+        componentIndex: component.component_index,
+      });
+
+      component.items.forEach((item, index) => {
+        nextRows.push({
+          id: `group:${component.component_index}:item:${index}`,
+          kind: item.kind === "waypoint" ? "waypoint" : "discontinuity",
+          label: concretizedNavItemLabel(item),
+          navRef: item.kind === "waypoint" ? item.nav_ref : null,
+          depth: 1,
+          groupKey,
+          componentIndex: component.component_index,
+        });
+      });
+    }
+
+    return nextRows;
+  }, [componentViews]);
+  const displayRows = useMemo(() => {
+    const resolvedLegs = props.planUiState?.resolved_legs ?? [];
+    let nextLegCursor = 0;
+    return hierarchicalRows.map((row) => {
+      let matchingLeg = null as (typeof resolvedLegs)[number] | null;
+      if (row.kind === "waypoint" && row.navRef) {
+        for (let index = nextLegCursor; index < resolvedLegs.length; index += 1) {
+          const leg = resolvedLegs[index];
+          if (navRefsEqual(leg.to, row.navRef)) {
+            matchingLeg = leg;
+            nextLegCursor = index + 1;
+            break;
+          }
+        }
+      }
+
+      const chartAirportId = row.navRef && "Airport" in row.navRef ? row.navRef.Airport : null;
+      const nextTopLevelWaypoint = row.depth === 0 && row.kind === "waypoint"
+        ? hierarchicalRows.slice(hierarchicalRows.indexOf(row) + 1).find((candidate) => candidate.depth === 0 && candidate.kind === "waypoint" && candidate.navRef)
+        : null;
+
+      return {
+        id: row.id,
+        label: row.label,
+        distance: row.kind === "group" ? "" : matchingLeg ? "11.2" : "—",
+        ete: row.kind === "group" ? "" : matchingLeg ? "0:04" : "—",
+        course: row.kind === "group" ? "" : matchingLeg?.active ? "ACT" : matchingLeg?.suspend_boundary_after ? "SUSP" : matchingLeg ? "161" : "—",
+        active: matchingLeg?.active ?? false,
+        depth: row.depth,
+        rowKind: row.kind,
+        refKey: row.id,
+        chartAirportId,
+        legIndex: row.kind === "waypoint" ? matchingLeg?.leg_index ?? null : null,
+        removeLegIndex: null as number | null,
+        startComponentIndex:
+          row.depth === 0 && row.kind === "waypoint" && row.componentIndex !== null && nextTopLevelWaypoint && nextTopLevelWaypoint.componentIndex !== null
+            ? row.componentIndex
+            : null as number | null,
+        endComponentIndex:
+          row.depth === 0 && row.kind === "waypoint" && nextTopLevelWaypoint && nextTopLevelWaypoint.componentIndex !== null
+            ? nextTopLevelWaypoint.componentIndex
+            : null as number | null,
+        originAnchor:
+          row.depth === 0 && row.kind === "waypoint" && row.navRef && nextTopLevelWaypoint?.navRef
+            ? row.navRef
+            : null as NavRef | null,
+        destinationAnchor:
+          row.depth === 0 && row.kind === "waypoint" && nextTopLevelWaypoint?.navRef
+            ? nextTopLevelWaypoint.navRef
+            : null as NavRef | null,
+        navRef: row.navRef,
+        groupKey: row.groupKey,
+      };
+    });
+  }, [hierarchicalRows, props.planUiState?.resolved_legs]);
+
+  useEffect(() => {
+    if (!showComponentViews) {
+      setStructuredGroupBoxes([]);
+      return;
+    }
+    const surface = structuredSurfaceRef.current;
+    const table = structuredTableRef.current;
+    if (!surface || !table) {
+      setStructuredGroupBoxes([]);
+      return;
+    }
+
+    const surfaceRect = surface.getBoundingClientRect();
+    const tableRect = table.getBoundingClientRect();
+    const computedStyle = window.getComputedStyle(table);
+    const rowGap = Number.parseFloat(computedStyle.rowGap || computedStyle.gap || "0") || 0;
+    const columnGap = Number.parseFloat(computedStyle.columnGap || computedStyle.gap || "0") || 0;
+    const verticalInset = rowGap * 0.6;
+    const horizontalInset = columnGap * 0.6;
+    const orderedGroupKeys = hierarchicalRows
+      .filter((row) => row.kind === "group" && row.groupKey)
+      .map((row) => row.groupKey as string);
+
+    const nextBoxes = orderedGroupKeys.flatMap((groupKey) => {
+      const groupRows = hierarchicalRows.filter((row) => row.groupKey === groupKey);
+      const firstRow = groupRows[0];
+      const lastRow = groupRows[groupRows.length - 1];
+      if (!firstRow || !lastRow) {
+        return [];
+      }
+      const firstElement = structuredRowRefs.current.get(firstRow.id);
+      const lastElement = structuredRowRefs.current.get(lastRow.id);
+      if (!firstElement || !lastElement) {
+        return [];
+      }
+      const firstRect = firstElement.getBoundingClientRect();
+      const lastRect = lastElement.getBoundingClientRect();
+      return [{
+        key: groupKey,
+        left: tableRect.left - surfaceRect.left - horizontalInset,
+        width: tableRect.width + horizontalInset * 2,
+        top: firstRect.top - surfaceRect.top - verticalInset,
+        height: lastRect.bottom - firstRect.top + verticalInset * 2,
+      }];
+    });
+    setStructuredGroupBoxes(nextBoxes);
+  }, [hierarchicalRows, showComponentViews]);
+
+  useEffect(() => {
+    if (!showComponentViews || !guidance?.active_leg) {
+      setStructuredArrow(null);
+      return;
+    }
+    const surface = structuredSurfaceRef.current;
+    if (!surface) {
+      setStructuredArrow(null);
+      return;
+    }
+
+    const fromIndex = displayRows.findIndex((row) => row.rowKind === "waypoint" && navRefsEqual(row.navRef, guidance.active_leg?.from ?? null));
+    if (fromIndex < 0) {
+      setStructuredArrow(null);
+      return;
+    }
+
+    let toIndex = -1;
+    for (let index = fromIndex + 1; index < displayRows.length; index += 1) {
+      const row = displayRows[index];
+      if (row.rowKind === "waypoint" && navRefsEqual(row.navRef, guidance.active_leg.to)) {
+        toIndex = index;
+        break;
+      }
+    }
+    if (toIndex < 0) {
+      toIndex = displayRows.findIndex((row) => row.rowKind === "waypoint" && navRefsEqual(row.navRef, guidance.active_leg.to));
+    }
+    if (toIndex < 0) {
+      setStructuredArrow(null);
+      return;
+    }
+
+    const fromElement = structuredRowRefs.current.get(displayRows[fromIndex]?.id ?? "");
+    const toElement = structuredRowRefs.current.get(displayRows[toIndex]?.id ?? "");
+    if (!fromElement || !toElement) {
+      setStructuredArrow(null);
+      return;
+    }
+
+    const surfaceRect = surface.getBoundingClientRect();
+    const fromRect = fromElement.getBoundingClientRect();
+    const toRect = toElement.getBoundingClientRect();
+    const fromPoint = {
+      x: fromRect.left - surfaceRect.left,
+      y: fromRect.top - surfaceRect.top + fromRect.height / 2,
+    };
+    const toPoint = {
+      x: toRect.left - surfaceRect.left,
+      y: toRect.top - surfaceRect.top + toRect.height / 2,
+    };
+    const marginX = Math.max(8, Math.min(fromPoint.x, toPoint.x) / 2);
+    const shaftEnd = { x: Math.max(marginX, toPoint.x - 14), y: toPoint.y };
+
+    setStructuredArrow({
+      path: `M ${fromPoint.x} ${fromPoint.y} H ${marginX} V ${toPoint.y} H ${shaftEnd.x}`,
+      head: arrowHeadPoints(shaftEnd, toPoint),
+    });
+  }, [displayRows, guidance?.active_leg, showComponentViews]);
 
   return (
     <section className="appPage planPage">
@@ -1521,59 +1684,68 @@ function FlightPlanPage(props: {
       </div>
 
       <div className="planScrollSurface">
-        {showComponentViews ? (
-          <div className="planComponentList">
-            {componentViews.map((component) => (
-              <div
-                key={component.component_index}
-                className={`planComponentCard${component.active ? " isActive" : ""}`}
-              >
-                <div className="planComponentHeader">
-                  <span className="planComponentKind">{component.kind.toUpperCase()}</span>
-                  <span className="planComponentSummary">{component.summary}</span>
-                </div>
-                <div className="planComponentItems">
-                  {component.items.map((item, index) => (
-                    <span key={`${component.component_index}:${index}`} className={`planComponentItem${item.kind === "discontinuity" ? " isDiscontinuity" : ""}`}>
-                      {concretizedNavItemLabel(item)}
-                    </span>
-                  ))}
-                </div>
-              </div>
+        <div className={`planTableWrap${showComponentViews ? " isStructured" : ""}`} ref={structuredSurfaceRef}>
+          {showComponentViews ? (
+            <div className="planStructuredGroupBoxLayer" aria-hidden="true">
+              {structuredGroupBoxes.map((box) => (
+                <div
+                  key={box.key}
+                  className="planStructuredGroupBoxOverlay"
+                  style={{ top: `${box.top}px`, left: `${box.left}px`, width: `${box.width}px`, height: `${box.height}px` }}
+                />
+              ))}
+            </div>
+          ) : null}
+          {showComponentViews && structuredArrow ? (
+            <svg className="planStructuredArrowLayer" aria-hidden="true">
+              <path className="planStructuredArrowPath" d={structuredArrow.path} />
+              <polygon className="planStructuredArrowHead" points={structuredArrow.head} />
+            </svg>
+          ) : null}
+          <div className="planTable" ref={structuredTableRef}>
+            <div className="planHeader planWaypointCell">Waypoint</div>
+            <div className="planHeader">Dist (nm)</div>
+            <div className="planHeader">ETE (h:m)</div>
+            <div className="planHeader">Course (°)</div>
+            {displayRows.map((row, index) => (
+              <Fragment key={row.id}>
+                <button
+                  key={`${row.id}:waypoint`}
+                  type="button"
+                  ref={(node) => {
+                    if (!showComponentViews || row.refKey === null) {
+                      return;
+                    }
+                    if (node) {
+                      structuredRowRefs.current.set(row.refKey, node);
+                    } else {
+                      structuredRowRefs.current.delete(row.refKey);
+                    }
+                  }}
+                  className={[
+                    "planWaypointCell",
+                    "planWaypointButton",
+                    selectedWaypointIndex === index ? "isSelected" : "",
+                    row.active ? "isActiveLeg" : "",
+                    showComponentViews ? "planStructuredWaypointCell" : "",
+                    showComponentViews && row.rowKind === "group" ? "isGroupHeader" : "",
+                    showComponentViews && row.depth > 0 ? "isChildRow" : "",
+                    showComponentViews && row.rowKind === "discontinuity" ? "isDiscontinuityItem" : "",
+                  ].filter(Boolean).join(" ")}
+                  onClick={() => {
+                    setSelectedWaypointIndex(index);
+                    setReorderOpen(false);
+                    setAirwayPicker(null);
+                  }}
+                >
+                  <span className={`planStructuredLabel${showComponentViews && row.depth > 0 ? " isIndented" : ""}`}>{row.label}</span>
+                </button>
+                <div className="planCell">{row.distance}</div>
+                <div className="planCell">{row.ete}</div>
+                <div className="planCell">{row.course}</div>
+              </Fragment>
             ))}
           </div>
-        ) : null}
-
-        <div className="planTable">
-          <div className="planHeader planWaypointCell">Waypoint</div>
-          <div className="planHeader">Dist (nm)</div>
-          <div className="planHeader">ETE (h:m)</div>
-          <div className="planHeader">Course (°)</div>
-          {rows.map((row, index) => (
-            <Fragment key={row.id}>
-              <button
-                key={`${row.id}:waypoint`}
-                type="button"
-                className={`planWaypointCell planWaypointButton${selectedWaypointIndex === index ? " isSelected" : ""}${row.active ? " isActiveLeg" : ""}`}
-                onClick={() => {
-                  setSelectedWaypointIndex(index);
-                  setReorderOpen(false);
-                  setAirwayPicker(null);
-                }}
-              >
-                {row.waypoint}
-              </button>
-              <div className="planCell">
-                {row.distance}
-              </div>
-              <div className="planCell">
-                {row.ete}
-              </div>
-              <div className="planCell">
-                {row.course}
-              </div>
-            </Fragment>
-          ))}
         </div>
       </div>
 
@@ -1614,7 +1786,7 @@ function FlightPlanPage(props: {
           <div className="debugLine">stack {formatPageStack(props.pageHistory, { page: props.page, selectedMapId: "", selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
           <div className="debugLine">components {componentViews.length}</div>
           <div className="debugLine">grouped {showComponentViews ? "yes" : "no"}</div>
-          <div className="debugLine">rows {rows.length}</div>
+          <div className="debugLine">rows {displayRows.length}</div>
         </DebugDock>
       </div>
 
@@ -1802,7 +1974,7 @@ function FlightPlanPage(props: {
                 <button
                   type="button"
                   className="trayButton trayButtonSquare"
-                  disabled={selectedWaypointIndex >= rows.length - 1}
+                  disabled={selectedWaypointIndex >= displayRows.length - 1}
                   onPointerDown={stopPointer}
                   onPointerUp={stopPointer}
                   onClick={async () => {
@@ -1814,15 +1986,14 @@ function FlightPlanPage(props: {
                 </button>
               </div>
             ) : waypointActions.map((action) => {
-              const selectedRow = rows[selectedWaypointIndex];
+              const selectedRow = displayRows[selectedWaypointIndex];
               const enabled =
                 action.id === "activate_leg"
                   ? selectedRow.legIndex !== null
                   : action.id === "charts"
                   ? selectedRow.chartAirportId !== null
                   : action.id === "add_airway"
-                    ? !showComponentViews &&
-                      selectedRow.startComponentIndex !== null &&
+                    ? selectedRow.startComponentIndex !== null &&
                       selectedRow.endComponentIndex !== null &&
                       selectedRow.originAnchor !== null &&
                       selectedRow.destinationAnchor !== null
@@ -2778,6 +2949,47 @@ function applyFlightPlanMutation(
   setPlanUiState(mutation.ui_state);
 }
 
+async function buildSeededDevPlan(adapter: AppCoreAdapter): Promise<{ plan: typeof samplePlan; uiState: FlightPlanUiState }> {
+  const originAnchor: NavRef = { Airport: "KRNT" };
+  const destinationAnchor: NavRef = { Airport: "KUAO" };
+  const presentation = await prepareAirwayPresentationForAnchors(
+    adapter,
+    "V23",
+    originAnchor,
+    destinationAnchor,
+  );
+  const entryIndex = presentation.points.findIndex((point) => navRefLabel(point.nav_ref) === "SEA");
+  if (entryIndex < 0) {
+    throw new Error("failed to seed V23 airway: SEA not found in presentation");
+  }
+  const entry = airwayEntryCandidateFromPresentation(presentation, entryIndex);
+  const exit = airwayExitCandidatesFromPresentation(presentation, entryIndex).find(
+    (candidate) => navRefLabel(candidate.nav_ref) === "RAWER",
+  );
+  if (!exit) {
+    throw new Error("failed to seed V23 airway: RAWER not found in exit candidates");
+  }
+  const materialized = await materializeAirwaySelection(
+    0,
+    entry,
+    exit,
+    originAnchor,
+    destinationAnchor,
+  );
+  const mutation = await adapter.insertAirwayMaterializedUi(
+    samplePlan,
+    0,
+    1,
+    materialized.selection,
+    materialized.airway,
+    materialized.resolvedLegs,
+  );
+  return {
+    plan: mutation.plan,
+    uiState: mutation.ui_state,
+  };
+}
+
 function buildLegacyComponentViews(plan: typeof samplePlan): FlightPlanUiState["components"] {
   if (plan.legs.length === 0) {
     return [];
@@ -2793,51 +3005,18 @@ function buildLegacyComponentViews(plan: typeof samplePlan): FlightPlanUiState["
   }));
 }
 
-function buildLegacyResolvedRows(plan: typeof samplePlan, activeLegIndex: number | null) {
-  const firstLeg = plan.legs[0];
-  const rows = firstLeg
-    ? [{
-        id: `start:${navRefLabel(firstLeg.from)}`,
-        waypoint: navRefLabel(firstLeg.from),
-        distance: "—",
-        ete: "—",
-        course: "—",
-        chartAirportId: "Airport" in firstLeg.from ? firstLeg.from.Airport : null,
-        removeLegIndex: null as number | null,
-        legIndex: null as number | null,
-        startComponentIndex: plan.legs.length > 0 ? 0 : null as number | null,
-        endComponentIndex: plan.legs.length > 0 ? 1 : null as number | null,
-        originAnchor: firstLeg.from,
-        destinationAnchor: firstLeg.to,
-        active: false,
-      }]
-    : [];
-
-  return [
-    ...rows,
-    ...plan.legs.map((leg, index) => ({
-      id: `${index}:${navRefLabel(leg.from)}-${navRefLabel(leg.to)}`,
-      waypoint: navRefLabel(leg.to),
-      distance: index === 0 ? "18.4" : "11.2",
-      ete: index === 0 ? "0:07" : "0:04",
-      course: activeLegIndex === index ? "ACT" : "161",
-      chartAirportId: "Airport" in leg.to ? leg.to.Airport : null,
-      removeLegIndex: index,
-      legIndex: index,
-      startComponentIndex: index + 1 < plan.legs.length ? index + 1 : null as number | null,
-      endComponentIndex: index + 2 < plan.legs.length + 1 ? index + 2 : null as number | null,
-      originAnchor: index + 1 < plan.legs.length ? leg.to : null as NavRef | null,
-      destinationAnchor: index + 1 < plan.legs.length ? plan.legs[index + 1].to : null as NavRef | null,
-      active: activeLegIndex === index,
-    })),
-  ];
-}
-
 function concretizedNavItemLabel(item: FlightPlanUiState["components"][number]["items"][number]) {
   if (item.kind === "waypoint") {
     return navRefLabel(item.nav_ref);
   }
   return item.label;
+}
+
+function structuredComponentLabel(component: FlightPlanUiState["components"][number]) {
+  if (component.kind === "airway") {
+    return component.summary.split("(")[0].trim();
+  }
+  return component.summary;
 }
 
 function componentWaypointNavRef(component: FlightPlanUiState["components"][number] | undefined): NavRef | null {
@@ -2846,6 +3025,19 @@ function componentWaypointNavRef(component: FlightPlanUiState["components"][numb
   }
   const item = component.items[0];
   return item && item.kind === "waypoint" ? item.nav_ref : null;
+}
+
+function navRefsEqual(left: NavRef | null, right: NavRef | null) {
+  if (!left || !right) {
+    return false;
+  }
+  if ("Airport" in left && "Airport" in right) return left.Airport === right.Airport;
+  if ("Navaid" in left && "Navaid" in right) return left.Navaid === right.Navaid;
+  if ("Fix" in left && "Fix" in right) return left.Fix === right.Fix;
+  if ("LatLon" in left && "LatLon" in right) {
+    return left.LatLon.lat === right.LatLon.lat && left.LatLon.lon === right.LatLon.lon;
+  }
+  return false;
 }
 
 function navRefLabel(value: NavRef) {

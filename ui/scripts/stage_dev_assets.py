@@ -11,7 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TARGET_ROOT_FILE = ROOT / "ui" / "target-root.txt"
 ARTIFACT_READ_PATH_CONFIG = ROOT / ".aerobag-artifact-read-path"
-PRODUCTION_MANIFEST_DIR = Path("published-packaged") / "production"
+PACKAGED_PRODUCTION_DIR = Path("published-packaged") / "production"
+UNPACKED_PRODUCTION_DIR = Path("published-unpacked") / "production"
 
 
 def resolve_ui_target_root() -> Path:
@@ -25,20 +26,20 @@ def resolve_artifact_root() -> Path:
     env_value = os.environ.get("AEROBAG_ARTIFACT_READ_PATH")
     if env_value:
         candidate = Path(env_value).expanduser()
-        if not any(candidate.joinpath(PRODUCTION_MANIFEST_DIR).glob("current_artifacts_*.json")):
+        if not any(candidate.joinpath(PACKAGED_PRODUCTION_DIR).glob("current_artifacts_*.json")):
             raise RuntimeError(
                 f"AEROBAG_ARTIFACT_READ_PATH does not contain current_artifacts_*.json under "
-                f"{candidate.joinpath(PRODUCTION_MANIFEST_DIR)}"
+                f"{candidate.joinpath(PACKAGED_PRODUCTION_DIR)}"
             )
         return candidate
     configured = ARTIFACT_READ_PATH_CONFIG.read_text().strip()
     candidate = Path(configured)
     if not candidate.is_absolute():
         candidate = (ROOT / candidate).resolve()
-    if not any(candidate.joinpath(PRODUCTION_MANIFEST_DIR).glob("current_artifacts_*.json")):
+    if not any(candidate.joinpath(PACKAGED_PRODUCTION_DIR).glob("current_artifacts_*.json")):
         raise RuntimeError(
             f"configured artifact root does not contain current_artifacts_*.json under "
-            f"{candidate.joinpath(PRODUCTION_MANIFEST_DIR)}"
+            f"{candidate.joinpath(PACKAGED_PRODUCTION_DIR)}"
         )
     return candidate
 
@@ -50,18 +51,18 @@ STAGE_STAMP_PATH = WEB_STATIC_ROOT / ".stage-stamp.json"
 
 
 def latest_current_artifacts(root: Path) -> Path:
-    manifests = sorted(root.joinpath(PRODUCTION_MANIFEST_DIR).glob("current_artifacts_*.json"))
+    manifests = sorted(root.joinpath(PACKAGED_PRODUCTION_DIR).glob("current_artifacts_*.json"))
     if not manifests:
-        raise RuntimeError(f"missing current_artifacts_*.json under {root.joinpath(PRODUCTION_MANIFEST_DIR)}")
+        raise RuntimeError(f"missing current_artifacts_*.json under {root.joinpath(PACKAGED_PRODUCTION_DIR)}")
     return manifests[-1]
 
 CURRENT_ARTIFACTS_FILE = latest_current_artifacts(ARTIFACT_ROOT)
 CURRENT_ARTIFACTS = json.loads(CURRENT_ARTIFACTS_FILE.read_text())
 bundle_filename = CURRENT_ARTIFACTS["bundles"][-1]["filename"]
-PRODUCT_BUILD_FILE = ARTIFACT_ROOT / PRODUCTION_MANIFEST_DIR / bundle_filename
+PRODUCT_BUILD_FILE = ARTIFACT_ROOT / PACKAGED_PRODUCTION_DIR / bundle_filename
 CYCLE = PRODUCT_BUILD_FILE.stem.split("_", 1)[1]
-BUILD_MANIFEST_FILE = ARTIFACT_ROOT / PRODUCTION_MANIFEST_DIR / f"build-manifest_{CYCLE}.json"
-PUBLISHED_ROOT = ARTIFACT_ROOT / "published-unpacked" / "production" / CYCLE
+BUILD_MANIFEST_FILE = ARTIFACT_ROOT / PACKAGED_PRODUCTION_DIR / f"build-manifest_{CYCLE}.json"
+PUBLISHED_ROOT = ARTIFACT_ROOT / UNPACKED_PRODUCTION_DIR / CYCLE
 
 
 def load_product_build() -> dict:
@@ -76,6 +77,13 @@ PRODUCT_BUILD = load_product_build()
 BUILD_MANIFEST = load_build_manifest()
 
 
+def resolve_manifest_relative_path(raw_path: str) -> Path:
+    relative = Path(raw_path)
+    if relative.parts[:2] == ("published-packaged", "production"):
+        return ARTIFACT_ROOT / relative
+    return PUBLISHED_ROOT / relative
+
+
 def resolve_product_build_output(node_name: str, output_name: str) -> Path:
     for node in BUILD_MANIFEST.get("nodes", []):
         if not isinstance(node, dict) or node.get("name") != node_name:
@@ -86,7 +94,7 @@ def resolve_product_build_output(node_name: str, output_name: str) -> Path:
         raw_path = outputs.get(output_name)
         if not isinstance(raw_path, str) or not raw_path:
             break
-        resolved = ARTIFACT_ROOT / raw_path
+        resolved = resolve_manifest_relative_path(raw_path)
         if resolved.exists():
             return resolved
         raise RuntimeError(f"missing product build output {node_name}.{output_name}: {resolved}")
@@ -94,15 +102,29 @@ def resolve_product_build_output(node_name: str, output_name: str) -> Path:
         record = PRODUCT_BUILD[node_name]
         raw_path = record.get("relative_path")
         if isinstance(raw_path, str) and raw_path:
-            resolved = ARTIFACT_ROOT / raw_path
+            resolved = resolve_manifest_relative_path(raw_path)
             if resolved.exists():
                 return resolved
             raise RuntimeError(f"missing product build output {node_name}: {resolved}")
     raise RuntimeError(f"missing product build output {node_name}.{output_name} in {PRODUCT_BUILD_FILE}")
 
 
+def resolve_build_manifest_output_relative_path(node_name: str, output_name: str) -> str:
+    for node in BUILD_MANIFEST.get("nodes", []):
+        if not isinstance(node, dict) or node.get("name") != node_name:
+            continue
+        outputs = node.get("outputs")
+        if not isinstance(outputs, dict):
+            break
+        raw_path = outputs.get(output_name)
+        if isinstance(raw_path, str) and raw_path:
+            return raw_path
+        break
+    raise RuntimeError(f"missing build manifest output path {node_name}.{output_name} in {BUILD_MANIFEST_FILE}")
+
+
 RESOURCE_INDEX_PATH = resolve_product_build_output("resource_index", "resource_index")
-VECTOR_ZIP_PATH = resolve_product_build_output("vectors", "zip")
+VECTOR_ZIP_RELATIVE_PATH = resolve_build_manifest_output_relative_path("vectors", "zip")
 NAV_DB_PATH = resolve_product_build_output("data", "main_db")
 
 
@@ -160,7 +182,7 @@ RESOURCE_INDEX = load_resource_index()
 
 
 def published_path_from_relative(relative_path: str) -> Path:
-    return PUBLISHED_ROOT / "product-builds" / relative_path
+    return resolve_manifest_relative_path(relative_path)
 
 
 def unpacked_dir_from_relative_zip(relative_zip_path: str) -> Path:
@@ -243,8 +265,7 @@ def stage_chart_assets() -> None:
 def stage_vectors() -> None:
     target = WEB_STATIC_ROOT / "vectors"
     reset_dir(target)
-    vectors_relative_zip = str(VECTOR_ZIP_PATH.relative_to(ARTIFACT_ROOT / "product-builds"))
-    vectors_root = unpacked_dir_from_relative_zip(vectors_relative_zip) / "points"
+    vectors_root = unpacked_dir_from_relative_zip(VECTOR_ZIP_RELATIVE_PATH) / "points"
     if not vectors_root.is_dir():
         raise RuntimeError(f"missing published vector points dir {vectors_root}")
     ensure_symlink(vectors_root, target / "points")
@@ -267,7 +288,7 @@ def current_stage_stamp() -> dict:
 
     return {
         "resource_index": file_stamp(RESOURCE_INDEX_PATH),
-        "vectors_zip": file_stamp(VECTOR_ZIP_PATH),
+        "vectors_points": file_stamp(unpacked_dir_from_relative_zip(VECTOR_ZIP_RELATIVE_PATH) / "points"),
         "nav_db": file_stamp(NAV_DB_PATH),
         "current_artifacts": file_stamp(CURRENT_ARTIFACTS_FILE),
         "bundle_manifest": file_stamp(PRODUCT_BUILD_FILE),

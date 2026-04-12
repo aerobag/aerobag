@@ -127,6 +127,32 @@ button {
   stroke-linejoin: round;
 }
 
+.vorBand {
+  fill: #4aa3ff;
+  stroke: rgba(8, 18, 24, 0.82);
+  stroke-width: 1.6px;
+  stroke-linejoin: round;
+  paint-order: stroke fill;
+}
+
+.vorBorder {
+  fill: none;
+  stroke: rgba(8, 18, 24, 0.82);
+  stroke-width: 1.6px;
+  stroke-linejoin: round;
+}
+
+.vorLabel {
+  fill: #4aa3ff;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  paint-order: stroke;
+  stroke: rgba(8, 18, 24, 0.7);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
 .situationAircraft {
   position: absolute;
   z-index: 2;

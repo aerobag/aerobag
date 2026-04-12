@@ -329,6 +329,15 @@ private class FakeNativeBridge(
         selectedChartIdJson: String,
     ): String = getSessionSnapshotJson(handle)
 
+    override fun ingestPointTilesInSessionJson(handle: Long, tilesJson: String): String = "null"
+
+    override fun getMapOverlayInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+    ): String = """{"needed_point_tiles":[],"visible_features":[],"warnings":[]}"""
+
     override fun destroySession(handle: Long) {}
 
     override fun deriveChartPageJson(

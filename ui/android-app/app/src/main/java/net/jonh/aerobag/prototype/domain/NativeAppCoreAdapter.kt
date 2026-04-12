@@ -3,6 +3,55 @@ package net.jonh.aerobag.prototype.domain
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
+data class VectorTileRequest(
+    val layer: String,
+    val z: Int,
+    val x: Int,
+    val y: Int,
+)
+
+@kotlinx.serialization.Serializable
+data class PointVectorRecord(
+    val id: String,
+    val kind: String,
+    val lat: Double,
+    val lon: Double,
+    val label: String,
+    @kotlinx.serialization.SerialName("style_class")
+    val styleClass: String,
+)
+
+@kotlinx.serialization.Serializable
+data class PointTilePayload(
+    @kotlinx.serialization.SerialName("schema_version")
+    val schemaVersion: Int,
+    val layer: String,
+    val z: Int,
+    val x: Int,
+    val y: Int,
+    val records: List<PointVectorRecord>,
+)
+
+data class VisibleMapFeature(
+    val id: String,
+    val kind: String,
+    val label: String,
+    val styleClass: String,
+    val screenX: Double,
+    val screenY: Double,
+)
+
+data class MapOverlayWarning(
+    val code: String,
+    val message: String,
+)
+
+data class MapOverlayQueryResult(
+    val neededPointTiles: List<VectorTileRequest>,
+    val visibleFeatures: List<VisibleMapFeature>,
+    val warnings: List<MapOverlayWarning>,
+)
+
 class NativeAppCoreAdapter(
     private val catalogJson: String,
     private val chartCatalogJson: String,
@@ -145,12 +194,32 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun ingestPointTiles(tiles: List<PointTilePayload>) {
+        bridge.ingestPointTilesInSessionJson(handle, json.encodeToString(tiles.map { it.toWire() }))
+    }
+
+    fun queryMapOverlay(viewport: MapViewportState, widthPx: Double, heightPx: Double): MapOverlayQueryResult {
+        val viewportJson = json.encodeToString(viewport.toWire())
+        val resultJson = bridge.getMapOverlayInSessionJson(handle, viewportJson, widthPx, heightPx)
+        return json.decodeFromString<WireMapOverlayQueryResult>(resultJson).toUi()
+    }
+
     fun destroy() {
         bridge.destroySession(handle)
     }
 
     private fun decodeSnapshot(snapshotJson: String): UiSessionSnapshot =
         json.decodeFromString<WireUiSessionSnapshot>(snapshotJson).toUi()
+}
+
+private fun MapViewportState.toWire(): WireMapViewport {
+    val (lat, lon) = viewportCenterLatLon(this)
+    return WireMapViewport(
+        center = WireLatLon(lat = lat, lon = lon),
+        zoom = zoom,
+        rotation_deg = 0.0,
+        pitch_deg = 0.0,
+    )
 }
 
 private fun FlightPlan.toWire() = WireFlightPlan(
@@ -405,6 +474,59 @@ private fun WireDerivedChartAsset.toUi() = ChartAsset(
     thumbnailSourceAssetPath = thumbnail_source_path,
     thumbnailAssetPath = thumbnail_path,
     thumbnailUrl = thumbnail_url,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireMapViewport(
+    val center: WireLatLon,
+    val zoom: Double,
+    val rotation_deg: Double,
+    val pitch_deg: Double,
+)
+
+private fun PointTilePayload.toWire() = WirePointTilePayload(
+    schema_version = schemaVersion,
+    layer = layer,
+    z = z,
+    x = x,
+    y = y,
+    records = records.map { it.toWire() },
+)
+
+private fun PointVectorRecord.toWire() = WirePointVectorRecord(
+    id = id,
+    kind = kind,
+    lat = lat,
+    lon = lon,
+    label = label,
+    style_class = styleClass,
+)
+
+private fun WireMapOverlayQueryResult.toUi() = MapOverlayQueryResult(
+    neededPointTiles = needed_point_tiles.map { it.toUi() },
+    visibleFeatures = visible_features.map { it.toUi() },
+    warnings = warnings.map { it.toUi() },
+)
+
+private fun WireVectorTileRequest.toUi() = VectorTileRequest(
+    layer = layer,
+    z = z,
+    x = x,
+    y = y,
+)
+
+private fun WireVisibleMapFeature.toUi() = VisibleMapFeature(
+    id = id,
+    kind = kind,
+    label = label,
+    styleClass = style_class,
+    screenX = screen_x,
+    screenY = screen_y,
+)
+
+private fun WireMapOverlayWarning.toUi() = MapOverlayWarning(
+    code = code,
+    message = message,
 )
 
 private fun WirePlanLeg.toUi() = FlightPlanLeg(

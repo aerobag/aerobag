@@ -347,8 +347,8 @@ pub fn get_session_snapshot(handle: u32) -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn ingest_fix_tiles_in_session(handle: u32, tiles_json: &str) -> Result<(), JsValue> {
-    ingest_fix_tiles_in_session_json(handle, tiles_json).map_err(|err| JsValue::from_str(&err))
+pub fn ingest_point_tiles_in_session(handle: u32, tiles_json: &str) -> Result<(), JsValue> {
+    ingest_point_tiles_in_session_json(handle, tiles_json).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -895,10 +895,10 @@ fn get_session_snapshot_json(handle: u32) -> Result<String, String> {
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn ingest_fix_tiles_in_session_json(handle: u32, tiles_json: &str) -> Result<(), String> {
+fn ingest_point_tiles_in_session_json(handle: u32, tiles_json: &str) -> Result<(), String> {
     let tiles: Vec<app_core::PointTilePayload> =
         serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
-    app_core::ingest_fix_tiles_in_session(handle, &tiles).map_err(|err| err.to_string())
+    app_core::ingest_point_tiles_in_session(handle, &tiles).map_err(|err| err.to_string())
 }
 
 fn get_map_overlay_in_session_json(

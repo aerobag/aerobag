@@ -75,6 +75,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
@@ -109,10 +110,13 @@ import net.jonh.aerobag.prototype.domain.ChartAsset
 import net.jonh.aerobag.prototype.domain.ChartPackages
 import net.jonh.aerobag.prototype.domain.AppState
 import net.jonh.aerobag.prototype.domain.MapChartFamily
+import net.jonh.aerobag.prototype.domain.MapOverlayQueryResult
 import net.jonh.aerobag.prototype.domain.MapView
 import net.jonh.aerobag.prototype.domain.MapViewportState
 import net.jonh.aerobag.prototype.domain.NativeAppCoreAdapter
+import net.jonh.aerobag.prototype.domain.NativeUiSession
 import net.jonh.aerobag.prototype.domain.NavRef
+import net.jonh.aerobag.prototype.domain.PointTilePayload
 import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
 import net.jonh.aerobag.prototype.domain.SampleData
@@ -133,9 +137,13 @@ import net.jonh.aerobag.prototype.domain.latLonToWorld
 import net.jonh.aerobag.prototype.domain.preserveViewportForMap
 import net.jonh.aerobag.prototype.domain.renderTiles
 import net.jonh.aerobag.prototype.domain.scaleForZoom
+import net.jonh.aerobag.prototype.domain.screenToWorld
 import net.jonh.aerobag.prototype.domain.viewportCenterLatLon
 import net.jonh.aerobag.prototype.domain.zoomAroundPoint
 import net.jonh.aerobag.prototype.domain.zoomImageAroundPoint
+import kotlinx.serialization.json.Json
+import java.io.BufferedInputStream
+import java.util.zip.ZipInputStream
 import kotlin.math.roundToInt
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -172,6 +180,46 @@ private data class SituationTickMark(
     val innerUnits: Offset,
     val outerUnits: Offset,
 )
+
+private object VectorTileAssets {
+    private const val VECTOR_ZIP_ASSET_PATH = "fixtures/vectors.zip"
+    private val json = Json {
+        ignoreUnknownKeys = true
+    }
+    private val cache = mutableMapOf<String, PointTilePayload?>()
+
+    suspend fun loadPointTiles(context: Context, requests: List<net.jonh.aerobag.prototype.domain.VectorTileRequest>): List<PointTilePayload> =
+        withContext(Dispatchers.IO) {
+            if (requests.isEmpty()) {
+                return@withContext emptyList()
+            }
+            val entryNames = requests.map { request ->
+                "points/${request.layer}/${request.z}/${request.x}/${request.y}.json"
+            }
+            val missing = synchronized(cache) { entryNames.filter { !cache.containsKey(it) }.toSet() }
+            if (missing.isNotEmpty()) {
+                context.assets.open(VECTOR_ZIP_ASSET_PATH).use { assetStream ->
+                    ZipInputStream(BufferedInputStream(assetStream)).use { zipStream ->
+                        while (true) {
+                            val entry = zipStream.nextEntry ?: break
+                            if (entry.isDirectory || entry.name !in missing) {
+                                continue
+                            }
+                            val payload = runCatching {
+                                json.decodeFromString<PointTilePayload>(zipStream.readBytes().decodeToString())
+                            }.getOrNull()
+                            synchronized(cache) {
+                                cache[entry.name] = payload
+                            }
+                        }
+                    }
+                }
+            }
+            synchronized(cache) {
+                entryNames.mapNotNull { cache[it] }
+            }
+        }
+}
 private val ThumbRadius = 10.dp
 private val FolderThumbGutter = ThumbSize * 0.3f
 private val PlateFolderTileWidth = ThumbSize * 2f
@@ -258,6 +306,11 @@ private data class TileRect(
     val topPx: Int,
     val widthPx: Int,
     val heightPx: Int,
+)
+
+private data class OverlaySurfaceUnits(
+    val width: Float,
+    val height: Float,
 )
 
 private fun initialMapId(fixture: net.jonh.aerobag.prototype.domain.ContentFixture): String {
@@ -520,6 +573,120 @@ private fun arrowHeadPath(from: Offset, to: Offset): Path {
     }
 }
 
+private fun fixTrianglePath(center: Offset, radius: Float): Path =
+    Path().apply {
+        moveTo(center.x, center.y - radius)
+        lineTo(center.x + radius * 0.875f, center.y + radius * 0.75f)
+        lineTo(center.x - radius * 0.875f, center.y + radius * 0.75f)
+        close()
+    }
+
+private fun vorHexPoints(center: Offset, radius: Float): List<Offset> =
+    List(6) { index ->
+        val angle = Math.toRadians((-90 + index * 60).toDouble())
+        Offset(
+            x = center.x + (radius * cos(angle)).toFloat(),
+            y = center.y + (radius * sin(angle)).toFloat(),
+        )
+    }
+
+private fun polygonSignedArea(points: List<Offset>): Float {
+    var area = 0f
+    points.forEachIndexed { index, point ->
+        val next = points[(index + 1) % points.size]
+        area += point.x * next.y - next.x * point.y
+    }
+    return area / 2f
+}
+
+private fun intersectLines(originA: Offset, directionA: Offset, originB: Offset, directionB: Offset): Offset {
+    val cross = directionA.x * directionB.y - directionA.y * directionB.x
+    if (kotlin.math.abs(cross) < 1e-6f) {
+        return originA
+    }
+    val delta = originB - originA
+    val t = (delta.x * directionB.y - delta.y * directionB.x) / cross
+    return originA + directionA * t
+}
+
+private fun offsetPolygonByEdgeDistances(points: List<Offset>, edgeDistances: List<Float>): List<Offset> {
+    val signedArea = polygonSignedArea(points)
+    fun inwardNormal(from: Offset, to: Offset, distance: Float): Offset {
+        val dx = to.x - from.x
+        val dy = to.y - from.y
+        val length = kotlin.math.hypot(dx, dy).takeIf { it > 0f } ?: 1f
+        return if (signedArea > 0f) {
+            Offset((dy / length) * distance, (-dx / length) * distance)
+        } else {
+            Offset((-dy / length) * distance, (dx / length) * distance)
+        }
+    }
+
+    return points.mapIndexed { index, point ->
+        val prevIndex = (index + points.size - 1) % points.size
+        val nextIndex = (index + 1) % points.size
+        val prevPoint = points[prevIndex]
+        val nextPoint = points[nextIndex]
+        val prevShift = inwardNormal(prevPoint, point, edgeDistances[prevIndex])
+        val nextShift = inwardNormal(point, nextPoint, edgeDistances[index])
+        val prevOrigin = prevPoint + prevShift
+        val nextOrigin = point + nextShift
+        intersectLines(
+            prevOrigin,
+            point - prevPoint,
+            nextOrigin,
+            nextPoint - point,
+        )
+    }
+}
+
+private fun polygonPath(points: List<Offset>): Path =
+    Path().apply {
+        if (points.isNotEmpty()) {
+            moveTo(points.first().x, points.first().y)
+            points.drop(1).forEach { point -> lineTo(point.x, point.y) }
+            close()
+        }
+    }
+
+private fun vorBandPath(center: Offset, radius: Float): Path {
+    val outer = vorHexPoints(center, radius)
+    val inner = offsetPolygonByEdgeDistances(outer, listOf(
+        radius * 0.47f,
+        radius * 0.24f,
+        radius * 0.47f,
+        radius * 0.24f,
+        radius * 0.47f,
+        radius * 0.24f,
+    ))
+    return Path().apply {
+        fillType = PathFillType.EvenOdd
+        addPath(polygonPath(outer))
+        addPath(polygonPath(inner))
+    }
+}
+
+private fun transformVisibleFeature(
+    feature: net.jonh.aerobag.prototype.domain.VisibleMapFeature,
+    fromViewport: MapViewportState,
+    fromSurface: OverlaySurfaceUnits,
+    toViewport: MapViewportState,
+    toSurface: OverlaySurfaceUnits,
+): net.jonh.aerobag.prototype.domain.VisibleMapFeature {
+    val world =
+        screenToWorld(
+            viewport = fromViewport,
+            point = ScreenPoint(feature.screenX.toFloat(), feature.screenY.toFloat()),
+            widthPx = fromSurface.width,
+            heightPx = fromSurface.height,
+        )
+    val nextScale = scaleForZoom(toViewport.zoom)
+    return feature.copy(
+        screenX = (world.x - toViewport.centerWorldX) * nextScale + toSurface.width / 2.0,
+        screenY = (world.y - toViewport.centerWorldY) * nextScale + toSurface.height / 2.0,
+    )
+}
+
 private fun formatRingDistance(radiusNm: Double): String =
     if (radiusNm % 1.0 == 0.0) "${radiusNm.toInt()}nm" else "${radiusNm}nm"
 
@@ -720,6 +887,7 @@ private fun AerobagApp() {
                     pageHistory = pageHistory,
                     uptimeLabel = uptimeLabel,
                     fixture = fixture,
+                    uiSession = uiSession,
                     uiTheme = uiTheme,
                     situation = appState.situation,
                     selectedMapId = selectedMapId,
@@ -827,6 +995,7 @@ private fun MapExplorerPage(
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
     fixture: net.jonh.aerobag.prototype.domain.ContentFixture,
+    uiSession: NativeUiSession,
     uiTheme: UiTheme,
     situation: Situation,
     selectedMapId: String,
@@ -846,6 +1015,18 @@ private fun MapExplorerPage(
     var debugPanelOpen by remember { mutableStateOf(false) }
     var debugTileLabels by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
+    var committedMapOverlay by remember(uiSession) {
+        mutableStateOf(
+            MapOverlayQueryResult(
+                neededPointTiles = emptyList(),
+                visibleFeatures = emptyList(),
+                warnings = emptyList(),
+            ),
+        )
+    }
+    var committedOverlayViewport by remember(uiSession) { mutableStateOf<MapViewportState?>(null) }
+    var committedOverlaySurfaceUnits by remember(uiSession) { mutableStateOf<OverlaySurfaceUnits?>(null) }
+    var mapOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
     var installingPackage by remember { mutableStateOf<String?>(null) }
     var installRevision by remember { mutableStateOf(0) }
     var motionDragActive by remember { mutableStateOf(false) }
@@ -1011,12 +1192,99 @@ private fun MapExplorerPage(
             color = android.graphics.Color.argb(224, 14, 22, 28)
         }
     }
+    val fixMarkerStrokeColor = Color(0xB3081218)
+    val fixMarkerFillColor = Color(0xFF39D9FF)
+    val vorMarkerColor = Color(0xFF4AA3FF)
+    val vorMarkerStrokeColor = Color(0xD1081218)
+    val fixLabelStrokePaint = remember {
+        Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.argb(179, 8, 18, 24)
+            style = Paint.Style.STROKE
+            strokeJoin = Paint.Join.ROUND
+            strokeWidth = 4f
+            textAlign = Paint.Align.CENTER
+            textSize = 14f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
+        }
+    }
+    val vorLabelFillPaint = remember {
+        Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.rgb(74, 163, 255)
+            style = Paint.Style.FILL
+            textAlign = Paint.Align.CENTER
+            textSize = 14f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
+        }
+    }
+    val fixLabelFillPaint = remember {
+        Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.rgb(57, 217, 255)
+            style = Paint.Style.FILL
+            textAlign = Paint.Align.CENTER
+            textSize = 14f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
+        }
+    }
 
     LaunchedEffect(selectedMap.id) { chartTrayOpen = false }
     LaunchedEffect(selectedMap.id, pageTrayOpen, chartTrayOpen) {
         if (!pageTrayOpen && !chartTrayOpen) {
             withFrameNanos { }
             focusRequester.requestFocus()
+        }
+    }
+    LaunchedEffect(uiSession, viewport, surfaceSize) {
+        if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+            mapOverlayError = null
+            return@LaunchedEffect
+        }
+        runCatching {
+            val firstPass = uiSession.queryMapOverlay(viewport, surfaceWidthUnits.toDouble(), surfaceHeightUnits.toDouble())
+            val payloads = if (firstPass.neededPointTiles.isNotEmpty()) {
+                VectorTileAssets.loadPointTiles(context.applicationContext, firstPass.neededPointTiles)
+            } else {
+                emptyList()
+            }
+            if (payloads.isNotEmpty()) {
+                uiSession.ingestPointTiles(payloads)
+                uiSession.queryMapOverlay(viewport, surfaceWidthUnits.toDouble(), surfaceHeightUnits.toDouble())
+            } else {
+                firstPass
+            }
+        }.onSuccess { overlay ->
+            committedMapOverlay = overlay
+            committedOverlayViewport = viewport
+            committedOverlaySurfaceUnits = OverlaySurfaceUnits(surfaceWidthUnits, surfaceHeightUnits)
+            mapOverlayError = null
+        }.onFailure { error ->
+            mapOverlayError = error.message ?: error::class.java.simpleName
+        }
+    }
+    val displayedOverlayFeatures = remember(
+        committedMapOverlay,
+        committedOverlayViewport,
+        committedOverlaySurfaceUnits,
+        viewport,
+        surfaceWidthUnits,
+        surfaceHeightUnits,
+    ) {
+        val baseViewport = committedOverlayViewport
+        val baseSurface = committedOverlaySurfaceUnits
+        if (baseViewport == null || baseSurface == null || baseSurface.width <= 0f || baseSurface.height <= 0f || surfaceWidthUnits <= 0f || surfaceHeightUnits <= 0f) {
+            committedMapOverlay.visibleFeatures
+        } else {
+            committedMapOverlay.visibleFeatures.map { feature ->
+                transformVisibleFeature(
+                    feature = feature,
+                    fromViewport = baseViewport,
+                    fromSurface = baseSurface,
+                    toViewport = viewport,
+                    toSurface = OverlaySurfaceUnits(surfaceWidthUnits, surfaceHeightUnits),
+                )
+            }
         }
     }
     DisposableEffect(activity, selectedMap.mapView, surfaceWidthUnits, surfaceHeightUnits, viewport, pageTrayOpen, chartTrayOpen) {
@@ -1254,6 +1522,41 @@ private fun MapExplorerPage(
                 }
             }
         }
+        if (displayedOverlayFeatures.isNotEmpty()) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val densityScale = density.density
+                fixLabelStrokePaint.textSize = 14f * densityScale
+                fixLabelStrokePaint.strokeWidth = 3f * densityScale
+                fixLabelFillPaint.textSize = 14f * densityScale
+                vorLabelFillPaint.textSize = 14f * densityScale
+                displayedOverlayFeatures.forEach { feature ->
+                    val center = Offset(feature.screenX.toFloat() * densityScale, feature.screenY.toFloat() * densityScale)
+                    val isVor = feature.styleClass == "nav" || feature.kind.lowercase().contains("vor")
+                    if (isVor) {
+                        val radius = 8f * densityScale
+                        val outerHex = polygonPath(vorHexPoints(center, radius))
+                        val band = vorBandPath(center, radius)
+                        drawPath(band, vorMarkerColor)
+                        drawPath(band, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
+                        drawPath(outerHex, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
+                        drawContext.canvas.nativeCanvas.apply {
+                            val textY = center.y + 20f * densityScale
+                            drawText(feature.label, center.x, textY, fixLabelStrokePaint)
+                            drawText(feature.label, center.x, textY, vorLabelFillPaint)
+                        }
+                    } else {
+                        val triangle = fixTrianglePath(center, 8f * densityScale)
+                        drawPath(triangle, fixMarkerFillColor)
+                        drawPath(triangle, fixMarkerStrokeColor, style = Stroke(width = 2.5f * densityScale))
+                        drawContext.canvas.nativeCanvas.apply {
+                            val textY = center.y + 20f * densityScale
+                            drawText(feature.label, center.x, textY, fixLabelStrokePaint)
+                            drawText(feature.label, center.x, textY, fixLabelFillPaint)
+                        }
+                    }
+                }
+            }
+        }
         if (situationOverlay != null) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val densityScale = density.density
@@ -1375,6 +1678,7 @@ private fun MapExplorerPage(
         DebugDock(
             open = debugPanelOpen,
             onToggle = { debugPanelOpen = !debugPanelOpen },
+            highlight = committedMapOverlay.warnings.isNotEmpty() || mapOverlayError != null,
             modifier = Modifier.align(Alignment.BottomStart),
         ) {
             Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
@@ -1383,6 +1687,10 @@ private fun MapExplorerPage(
             Text("family ${selectedLauncher.launcherLabel}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("${String.format("%.3f", center.first)}/${String.format("%.3f", center.second)} z${String.format("%.2f", viewport.zoom)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("tiles ${tiles.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("vec pts=${committedMapOverlay.visibleFeatures.size} need=${committedMapOverlay.neededPointTiles.size} warn=${committedMapOverlay.warnings.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            if (mapOverlayError != null) {
+                Text("fatal $mapOverlayError", style = MaterialTheme.typography.labelSmall, color = Color(0xFFB85C00))
+            }
             Text("src z ${if (sourceZooms.isNotEmpty()) sourceZooms.joinToString(", ") else "(none)"}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("pkg ${if (renderedPackages.isNotEmpty()) renderedPackages.joinToString(", ") else "(none)"}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("maps ${selectedFamilyMapViews.joinToString(", ") { it.id }}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
@@ -2362,6 +2670,7 @@ private fun PlanCell(value: String, modifier: Modifier, isHeader: Boolean = fals
 private fun DebugDock(
     open: Boolean,
     onToggle: () -> Unit,
+    highlight: Boolean = false,
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -2371,6 +2680,8 @@ private fun DebugDock(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .size(ThumbSize),
+            selected = highlight,
+            selectedColor = Color(0xFFB85C00),
             onClick = onToggle,
         )
 

@@ -64,7 +64,7 @@ export type VisibleMapFeature = {
 };
 
 export type MapOverlayQueryResult = {
-  needed_fix_tiles: VectorTileRequest[];
+  needed_point_tiles: VectorTileRequest[];
   visible_features: VisibleMapFeature[];
   warnings: Array<{
     code: string;
@@ -80,7 +80,7 @@ export interface UiSession {
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
-  ingestFixTiles(tiles: PointTilePayload[]): Promise<void>;
+  ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
   queryMapOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<MapOverlayQueryResult>;
   restoreChartPageState(recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
   destroy(): Promise<void>;
@@ -215,9 +215,9 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
         ));
         return { app_state: appState, chart_page_state: chartPageState };
       },
-      ingestFixTiles: async () => {},
+      ingestPointTiles: async () => {},
       queryMapOverlay: async () => ({
-        needed_fix_tiles: [],
+        needed_point_tiles: [],
         visible_features: [],
         warnings: [],
       }),
@@ -387,7 +387,7 @@ type WasmModule = {
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
-  ingest_fix_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
+  ingest_point_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   get_session_snapshot(handle: number): Promise<string> | string;
   restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
@@ -448,8 +448,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         snapshot = JSON.parse(await this.module.select_chart_in_session(handle, JSON.stringify(chartId))) as UiSessionSnapshot;
         return snapshot;
       },
-      ingestFixTiles: async (tiles) => {
-        await this.module.ingest_fix_tiles_in_session(handle, JSON.stringify(tiles));
+      ingestPointTiles: async (tiles) => {
+        await this.module.ingest_point_tiles_in_session(handle, JSON.stringify(tiles));
       },
       queryMapOverlay: async (viewport, widthPx, heightPx) =>
         JSON.parse(
@@ -554,7 +554,7 @@ export async function loadBestAvailableAdapter(
       typeof mod.set_situation_in_session !== "function" ||
       typeof mod.select_airport_in_session !== "function" ||
       typeof mod.select_chart_in_session !== "function" ||
-      typeof mod.ingest_fix_tiles_in_session !== "function" ||
+      typeof mod.ingest_point_tiles_in_session !== "function" ||
       typeof mod.get_map_overlay_in_session !== "function" ||
       typeof mod.get_session_snapshot !== "function" ||
       typeof mod.restore_chart_page_state_in_session !== "function" ||

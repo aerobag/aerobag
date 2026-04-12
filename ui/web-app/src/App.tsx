@@ -106,6 +106,15 @@ const plateFolderTheme = loadedUiTheme.plate_folder;
 const plateFolderCategoryOrder: PlateFolderCategory[] = ["airport-diagram", "csup", "takeoff-mins", "approach", "departure", "star"];
 const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
 const situationRingSizesNm = [0.25, 0.5, 0.8, 1, 1.5, 2, 3, 5, 8, 10, 15, 20, 30, 50, 100, 150, 200] as const;
+const vorOuterHexPoints = [
+  { x: -8, y: 0 },
+  { x: -4, y: -7 },
+  { x: 4, y: -7 },
+  { x: 8, y: 0 },
+  { x: 4, y: 7 },
+  { x: -4, y: 7 },
+] as const;
+const vorEdgeInsetDistances = [3.8, 1.9, 3.8, 1.9, 3.8, 1.9] as const;
 
 type PersistedWebUiState = {
   page?: AppPage;
@@ -131,6 +140,72 @@ type WebHistoryState = {
   current?: AppViewSnapshot;
   stack?: AppViewSnapshot[];
 };
+
+type VorPoint = {
+  x: number;
+  y: number;
+};
+
+function polygonSignedArea(points: readonly VorPoint[]) {
+  let area = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    const next = points[(index + 1) % points.length];
+    area += current.x * next.y - next.x * current.y;
+  }
+  return area / 2;
+}
+
+function intersectLines(originA: VorPoint, directionA: VorPoint, originB: VorPoint, directionB: VorPoint): VorPoint {
+  const cross = directionA.x * directionB.y - directionA.y * directionB.x;
+  if (Math.abs(cross) < 1e-6) {
+    return originA;
+  }
+  const deltaX = originB.x - originA.x;
+  const deltaY = originB.y - originA.y;
+  const t = (deltaX * directionB.y - deltaY * directionB.x) / cross;
+  return {
+    x: originA.x + directionA.x * t,
+    y: originA.y + directionA.y * t,
+  };
+}
+
+function offsetPolygonByEdgeDistances(points: readonly VorPoint[], edgeDistances: readonly number[]) {
+  const signedArea = polygonSignedArea(points);
+  const inwardNormalForEdge = (from: VorPoint, to: VorPoint, distance: number): VorPoint => {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.hypot(dx, dy) || 1;
+    if (signedArea > 0) {
+      return { x: (dy / length) * distance, y: (-dx / length) * distance };
+    }
+    return { x: (-dy / length) * distance, y: (dx / length) * distance };
+  };
+  return points.map((point, index) => {
+    const prevIndex = (index + points.length - 1) % points.length;
+    const nextIndex = (index + 1) % points.length;
+    const prevPoint = points[prevIndex];
+    const nextPoint = points[nextIndex];
+    const prevShift = inwardNormalForEdge(prevPoint, point, edgeDistances[prevIndex]);
+    const nextShift = inwardNormalForEdge(point, nextPoint, edgeDistances[index]);
+    const prevOrigin = { x: prevPoint.x + prevShift.x, y: prevPoint.y + prevShift.y };
+    const nextOrigin = { x: point.x + nextShift.x, y: point.y + nextShift.y };
+    return intersectLines(
+      prevOrigin,
+      { x: point.x - prevPoint.x, y: point.y - prevPoint.y },
+      nextOrigin,
+      { x: nextPoint.x - point.x, y: nextPoint.y - point.y },
+    );
+  });
+}
+
+function polygonPathData(points: readonly VorPoint[]) {
+  return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ") + " Z";
+}
+
+const vorInnerHexPoints = offsetPolygonByEdgeDistances(vorOuterHexPoints, vorEdgeInsetDistances);
+const vorOuterHexPath = polygonPathData(vorOuterHexPoints);
+const vorBandPath = `${vorOuterHexPath} ${polygonPathData(vorInnerHexPoints)}`;
 
 function demoSituation(): Situation {
   return {
@@ -625,7 +700,7 @@ function MapPage(props: {
   const trayGroup = useModalTrayGroup(["page", "family"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
   const [mapOverlay, setMapOverlay] = useState<MapOverlayQueryResult>({
-    needed_fix_tiles: [],
+    needed_point_tiles: [],
     visible_features: [],
     warnings: [],
   });
@@ -687,7 +762,7 @@ function MapPage(props: {
   useEffect(() => {
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       setMapOverlay({
-        needed_fix_tiles: [],
+        needed_point_tiles: [],
         visible_features: [],
         warnings: [],
       });
@@ -704,9 +779,9 @@ function MapPage(props: {
       } catch (error) {
         throw error;
       }
-      if (overlay.needed_fix_tiles.length > 0) {
+      if (overlay.needed_point_tiles.length > 0) {
         const tiles = await Promise.all(
-          overlay.needed_fix_tiles.map(async (tile) => {
+          overlay.needed_point_tiles.map(async (tile) => {
             const response = await fetch(pointTileUrl(tile.layer, tile.z, tile.x, tile.y), {
               signal: controller.signal,
             });
@@ -726,7 +801,7 @@ function MapPage(props: {
             return (await response.json()) as PointTilePayload;
           }),
         );
-        await session.ingestFixTiles(tiles);
+        await session.ingestPointTiles(tiles);
         overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
       }
       if (!cancelled) {
@@ -915,12 +990,26 @@ function MapPage(props: {
             preserveAspectRatio="none"
             style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
           >
-            {mapOverlay.visible_features.map((fix) => (
-              <g key={fix.id} transform={`translate(${fix.screen_x} ${fix.screen_y})`}>
-                <path d="M 0 -8 L 7 6 L -7 6 Z" className="fixMarker" />
-                <text x="0" y="20" textAnchor="middle" className="fixLabel">
-                  {fix.label}
-                </text>
+            {mapOverlay.visible_features.map((feature) => (
+              <g key={feature.id} transform={`translate(${feature.screen_x} ${feature.screen_y})`}>
+                {feature.kind.toLowerCase().includes("vor") || feature.style_class === "nav"
+                  ? (
+                    <>
+                      <path d={vorBandPath} className="vorBand" fillRule="evenodd" />
+                      <path d={vorOuterHexPath} className="vorBorder" />
+                      <text x="0" y="20" textAnchor="middle" className="vorLabel">
+                        {feature.label}
+                      </text>
+                    </>
+                    )
+                  : (
+                    <>
+                      <path d="M 0 -8 L 7 6 L -7 6 Z" className="fixMarker" />
+                      <text x="0" y="20" textAnchor="middle" className="fixLabel">
+                        {feature.label}
+                      </text>
+                    </>
+                    )}
               </g>
             ))}
           </svg>
@@ -1113,7 +1202,7 @@ function MapPage(props: {
             <div className="debugLine">session {uiSession ? "ready" : "null"} surf {Math.round(surfaceSize.width)}x{Math.round(surfaceSize.height)}</div>
             {sessionInitError ? <div className="debugLine">fatal session init</div> : null}
             <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
-            <div className="debugLine">vec fixes={mapOverlay.visible_features.length} need={mapOverlay.needed_fix_tiles.length} warn={mapOverlay.warnings.length}</div>
+            <div className="debugLine">vec pts={mapOverlay.visible_features.length} need={mapOverlay.needed_point_tiles.length} warn={mapOverlay.warnings.length}</div>
             {mapOverlay.warnings.map((warning) => (
               <div key={warning.code} className="debugLine">warn {warning.code}</div>
             ))}

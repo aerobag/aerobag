@@ -116,6 +116,11 @@ function mountStaticTree(sourceRoot: string) {
       return;
     }
     if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      if (sourceRoot === vectorRoot) {
+        res.statusCode = 404;
+        res.end("not found");
+        return;
+      }
       next();
       return;
     }

@@ -88,6 +88,7 @@ fun resolveProductBuildOutput(nodeName: String, outputName: String): File {
 }
 
 val resourceIndexFile = resolveProductBuildOutput("resource_index", "resource_index")
+val vectorsZipFile = resolveProductBuildOutput("vectors", "zip")
 val mainDbFile = resolveProductBuildOutput("data", "main_db")
 val uiThemeFile = file("../../shared-fixtures/ui-theme.json")
 val devBootstrapFile = file("../../shared/dev-bootstrap.json")
@@ -177,6 +178,7 @@ val stageCanonicalAndroidAssets by tasks.registering {
         fixturesDir.mkdirs()
         navDbDir.mkdirs()
         Files.copy(resourceIndexFile.toPath(), fixturesDir.resolve("resource-index.json").toPath(), StandardCopyOption.REPLACE_EXISTING)
+        Files.copy(vectorsZipFile.toPath(), fixturesDir.resolve("vectors.zip").toPath(), StandardCopyOption.REPLACE_EXISTING)
         Files.copy(uiThemeFile.toPath(), fixturesDir.resolve("ui-theme.json").toPath(), StandardCopyOption.REPLACE_EXISTING)
         Files.copy(devBootstrapFile.toPath(), fixturesDir.resolve("dev-bootstrap.json").toPath(), StandardCopyOption.REPLACE_EXISTING)
         Files.copy(mainDbFile.toPath(), navDbDir.resolve("main.db").toPath(), StandardCopyOption.REPLACE_EXISTING)

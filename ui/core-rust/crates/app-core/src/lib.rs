@@ -33,7 +33,7 @@ pub use errors::{AppError, AppErrorKind, AppResult};
 pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord};
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use map_overlay::{
-    query_map_overlay, tile_key, visible_fix_tile_window, MapOverlayQueryResult,
+    query_map_overlay, tile_key, visible_point_tile_window, MapOverlayQueryResult,
     MapOverlayWarning, PointTilePayload, PointVectorRecord, VectorTileRequest,
     VisibleMapFeature, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
@@ -69,7 +69,7 @@ pub use planning::{
 pub use situation::{Situation, SituationPosition};
 pub use session::{
     create_ui_session, destroy_session, get_map_overlay_in_session, get_session_snapshot,
-    ingest_fix_tiles_in_session, move_waypoint_in_session, remove_leg_in_session,
+    ingest_point_tiles_in_session, move_waypoint_in_session, remove_leg_in_session,
     restore_chart_page_state_in_session, select_airport_in_session, select_chart_in_session,
     set_situation_in_session,
     UiChartPageState, UiSessionInitResult, UiSessionSnapshot,

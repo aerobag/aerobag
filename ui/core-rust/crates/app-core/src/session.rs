@@ -41,7 +41,7 @@ struct UiSession {
     chart_catalog: DerivedChartCatalog,
     app_state: AppState,
     chart_page_state: DerivedChartPageState,
-    fix_tile_cache: HashMap<String, PointTilePayload>,
+    point_tile_cache: HashMap<String, PointTilePayload>,
 }
 
 static NEXT_HANDLE: AtomicU32 = AtomicU32::new(1);
@@ -82,7 +82,7 @@ pub fn create_ui_session(
             chart_catalog: chart_catalog.clone(),
             app_state,
             chart_page_state,
-            fix_tile_cache: HashMap::new(),
+            point_tile_cache: HashMap::new(),
         },
     );
     Ok(UiSessionInitResult {
@@ -212,13 +212,13 @@ pub fn get_session_snapshot(handle: u32) -> AppResult<UiSessionSnapshot> {
     Ok(snapshot_for_session(session))
 }
 
-pub fn ingest_fix_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) -> AppResult<()> {
+pub fn ingest_point_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) -> AppResult<()> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     for tile in tiles {
         session
-            .fix_tile_cache
-            .insert(crate::tile_key(tile.z, tile.x, tile.y), tile.clone());
+            .point_tile_cache
+            .insert(crate::tile_key(&tile.layer, tile.z, tile.x, tile.y), tile.clone());
     }
     Ok(())
 }
@@ -235,7 +235,7 @@ pub fn get_map_overlay_in_session(
         &viewport,
         width_px,
         height_px,
-        &session.fix_tile_cache,
+        &session.point_tile_cache,
     ))
 }
 

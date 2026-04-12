@@ -252,6 +252,57 @@ data class WireInstalledPackage(
 )
 
 @Serializable
+data class WireVectorTileRequest(
+    val layer: String,
+    val z: Int,
+    val x: Int,
+    val y: Int,
+)
+
+@Serializable
+data class WirePointVectorRecord(
+    val id: String,
+    val kind: String,
+    val lat: Double,
+    val lon: Double,
+    val label: String,
+    val style_class: String,
+)
+
+@Serializable
+data class WirePointTilePayload(
+    val schema_version: Int,
+    val layer: String,
+    val z: Int,
+    val x: Int,
+    val y: Int,
+    val records: List<WirePointVectorRecord>,
+)
+
+@Serializable
+data class WireVisibleMapFeature(
+    val id: String,
+    val kind: String,
+    val label: String,
+    val style_class: String,
+    val screen_x: Double,
+    val screen_y: Double,
+)
+
+@Serializable
+data class WireMapOverlayWarning(
+    val code: String,
+    val message: String,
+)
+
+@Serializable
+data class WireMapOverlayQueryResult(
+    val needed_point_tiles: List<WireVectorTileRequest>,
+    val visible_features: List<WireVisibleMapFeature>,
+    val warnings: List<WireMapOverlayWarning>,
+)
+
+@Serializable
 data class WireContentInventory(
     val installed_packages: List<WireInstalledPackage>,
     val cached_tilesets: List<WireCachedTileset> = emptyList(),

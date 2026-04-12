@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::{geometry::LatLon, MapViewport};
 
 pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 1000;
-const FIX_TILE_ZOOM: u32 = 9;
-const FIX_MIN_DISPLAY_ZOOM: f64 = 9.0;
+const POINT_TILE_ZOOM: u32 = 9;
+const POINT_MIN_DISPLAY_ZOOM: f64 = 9.0;
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.051_128_78;
 
@@ -56,27 +56,40 @@ pub struct MapOverlayWarning {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapOverlayQueryResult {
-    pub needed_fix_tiles: Vec<VectorTileRequest>,
+    pub needed_point_tiles: Vec<VectorTileRequest>,
     pub visible_features: Vec<VisibleMapFeature>,
     pub warnings: Vec<MapOverlayWarning>,
 }
 
-pub fn visible_fix_tile_window(
+pub fn visible_point_tile_window(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
 ) -> Vec<VectorTileRequest> {
-    if viewport.zoom < FIX_MIN_DISPLAY_ZOOM || width_px <= 0.0 || height_px <= 0.0 {
+    if viewport.zoom < POINT_MIN_DISPLAY_ZOOM || width_px <= 0.0 || height_px <= 0.0 {
         return Vec::new();
     }
+    let mut tiles = Vec::new();
+    tiles.extend(visible_layer_tile_window("fix", POINT_TILE_ZOOM, viewport, width_px, height_px));
+    tiles.extend(visible_layer_tile_window("nav", POINT_TILE_ZOOM, viewport, width_px, height_px));
+    tiles
+}
+
+fn visible_layer_tile_window(
+    layer: &str,
+    zoom: u32,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+) -> Vec<VectorTileRequest> {
     let center_world = lat_lon_to_world(viewport.center);
     let scale = 2.0_f64.powf(viewport.zoom);
     let min_world_x = center_world.x - width_px / 2.0 / scale;
     let max_world_x = center_world.x + width_px / 2.0 / scale;
     let min_world_y = center_world.y - height_px / 2.0 / scale;
     let max_world_y = center_world.y + height_px / 2.0 / scale;
-    let tile_world_size = WORLD_SIZE / (2_u32.pow(FIX_TILE_ZOOM) as f64);
-    let max_index = (2_u32.pow(FIX_TILE_ZOOM) - 1) as i32;
+    let tile_world_size = WORLD_SIZE / (2_u32.pow(zoom) as f64);
+    let max_index = (2_u32.pow(zoom) - 1) as i32;
     let x_start = (min_world_x / tile_world_size).floor() as i32;
     let x_end = (max_world_x / tile_world_size).floor() as i32;
     let y_start = (min_world_y / tile_world_size).floor() as i32;
@@ -86,8 +99,8 @@ pub fn visible_fix_tile_window(
     for y in y_start.max(0)..=y_end.min(max_index) {
         for x in x_start.max(0)..=x_end.min(max_index) {
             tiles.push(VectorTileRequest {
-                layer: "fix".to_string(),
-                z: FIX_TILE_ZOOM,
+                layer: layer.to_string(),
+                z: zoom,
                 x: x as u32,
                 y: y as u32,
             });
@@ -101,19 +114,19 @@ pub fn query_map_overlay(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
-    fix_tile_cache: &HashMap<String, PointTilePayload>,
+    point_tile_cache: &HashMap<String, PointTilePayload>,
 ) -> MapOverlayQueryResult {
-    let tile_window = visible_fix_tile_window(viewport, width_px, height_px);
-    let mut needed_fix_tiles = Vec::new();
+    let tile_window = visible_point_tile_window(viewport, width_px, height_px);
+    let mut needed_point_tiles = Vec::new();
     let mut visible_features = Vec::new();
     let mut limit_hit = false;
     let center_world = lat_lon_to_world(viewport.center);
     let scale = 2.0_f64.powf(viewport.zoom);
 
     for tile in tile_window {
-        let key = tile_key(tile.z, tile.x, tile.y);
-        let Some(payload) = fix_tile_cache.get(&key) else {
-            needed_fix_tiles.push(tile);
+        let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
+        let Some(payload) = point_tile_cache.get(&key) else {
+            needed_point_tiles.push(tile);
             continue;
         };
         for record in &payload.records {
@@ -125,7 +138,7 @@ pub fn query_map_overlay(
             visible_features.push(VisibleMapFeature {
                 id: record.id.clone(),
                 kind: record.kind.clone(),
-                label: record.label.trim().to_uppercase(),
+                label: display_label(record),
                 style_class: record.style_class.clone(),
                 screen_x: point.x,
                 screen_y: point.y,
@@ -149,14 +162,33 @@ pub fn query_map_overlay(
     };
 
     MapOverlayQueryResult {
-        needed_fix_tiles,
+        needed_point_tiles,
         visible_features,
         warnings,
     }
 }
 
-pub fn tile_key(z: u32, x: u32, y: u32) -> String {
-    format!("{z}/{x}/{y}")
+pub fn tile_key(layer: &str, z: u32, x: u32, y: u32) -> String {
+    format!("{layer}:{z}/{x}/{y}")
+}
+
+fn display_label(record: &PointVectorRecord) -> String {
+    if record.style_class == "nav" && is_vor_family_kind(&record.kind) {
+        let ident = record
+            .id
+            .strip_prefix("nav:")
+            .map(|tail| tail.split(':').next().unwrap_or(tail).trim())
+            .filter(|value| !value.is_empty());
+        let frequency = record.label.split_whitespace().last().map(str::trim).filter(|value| !value.is_empty());
+        if let (Some(ident), Some(frequency)) = (ident, frequency) {
+            return format!("{ident} {frequency}").to_uppercase();
+        }
+    }
+    record.label.trim().to_uppercase()
+}
+
+fn is_vor_family_kind(kind: &str) -> bool {
+    matches!(kind.to_ascii_lowercase().as_str(), "vor" | "vor/dme" | "vortac")
 }
 
 #[derive(Clone, Copy)]
@@ -203,7 +235,7 @@ mod tests {
             rotation_deg: 0.0,
             pitch_deg: 0.0,
         };
-        assert!(visible_fix_tile_window(&viewport, 1200.0, 900.0).is_empty());
+        assert!(visible_point_tile_window(&viewport, 1200.0, 900.0).is_empty());
     }
 
     #[test]
@@ -214,14 +246,14 @@ mod tests {
             rotation_deg: 0.0,
             pitch_deg: 0.0,
         };
-        let window = visible_fix_tile_window(&viewport, 1200.0, 900.0);
-        let first = window.first().expect("expected visible tile");
+        let window = visible_point_tile_window(&viewport, 1200.0, 900.0);
+        let first = window.iter().find(|tile| tile.layer == "fix").expect("expected visible tile");
         let mut cache = HashMap::new();
         cache.insert(
-            tile_key(first.z, first.x, first.y),
+            tile_key(&first.layer, first.z, first.x, first.y),
             PointTilePayload {
                 schema_version: 1,
-                layer: "fix".to_string(),
+                layer: first.layer.clone(),
                 z: first.z,
                 x: first.x,
                 y: first.y,
@@ -257,14 +289,17 @@ mod tests {
         let tile_root = fixture_vector_tile_root();
         let mut cache = HashMap::new();
 
-        for tile in visible_fix_tile_window(&viewport, 1200.0, 900.0) {
+        for tile in visible_point_tile_window(&viewport, 1200.0, 900.0) {
+            if tile.layer != "fix" {
+                continue;
+            }
             let tile_path = tile_root.join(tile.x.to_string()).join(format!("{}.json", tile.y));
             let payload: PointTilePayload = serde_json::from_str(
                 &fs::read_to_string(&tile_path)
                     .unwrap_or_else(|err| panic!("failed to read {}: {err}", tile_path.display())),
             )
             .unwrap_or_else(|err| panic!("failed to parse {}: {err}", tile_path.display()));
-            cache.insert(tile_key(tile.z, tile.x, tile.y), payload);
+            cache.insert(tile_key(&tile.layer, tile.z, tile.x, tile.y), payload);
         }
 
         let result = query_map_overlay(&viewport, 1200.0, 900.0, &cache);

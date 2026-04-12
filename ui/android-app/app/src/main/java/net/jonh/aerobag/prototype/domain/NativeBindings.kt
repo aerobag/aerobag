@@ -45,6 +45,18 @@ interface NativeBridge {
         selectedChartIdJson: String,
     ): String
 
+    fun ingestPointTilesInSessionJson(
+        handle: Long,
+        tilesJson: String,
+    ): String
+
+    fun getMapOverlayInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+    ): String
+
     fun destroySession(handle: Long)
 
     fun removeFlightPlanLegJson(
@@ -131,6 +143,18 @@ object NativeBindings : NativeBridge {
         recentAirportIdsJson: String,
         selectedAirportIdJson: String,
         selectedChartIdJson: String,
+    ): String
+
+    external override fun ingestPointTilesInSessionJson(
+        handle: Long,
+        tilesJson: String,
+    ): String
+
+    external override fun getMapOverlayInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
     ): String
 
     external override fun destroySession(handle: Long)

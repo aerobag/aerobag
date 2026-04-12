@@ -61,11 +61,12 @@ CANONICAL_TILE_ROOT = SHARED_TARGET_ROOT / "tiles"
 WEB_TILE_ROOT = WEB_TARGET_ROOT / "prototype-tiles"
 ANDROID_TILE_ROOT = ANDROID_TARGET_ROOT / "assets" / "tiles"
 WEB_SECTIONAL_ROOT = WEB_TARGET_ROOT / "generated-static" / "sectional-packages"
-WEB_CHART_ASSET_ROOT = WEB_TARGET_ROOT / "generated-static" / "chart-assets"
+WEB_CHART_ASSET_ROOT = WEB_TARGET_ROOT / "generated-static"
+WEB_CHART_ASSET_CACHE_ROOT = WEB_CHART_ASSET_ROOT / "__zipcache__"
 WEB_CHART_ASSET_MANIFEST = WEB_TARGET_ROOT / "generated-static" / "chart-assets-manifest.json"
 WEB_VECTOR_ROOT = WEB_TARGET_ROOT / "generated-static" / "vectors"
-ANDROID_CHART_ASSET_ROOT = ANDROID_TARGET_ROOT / "generated-seed" / "chart-assets"
-ANDROID_LEGACY_CHART_ASSET_ROOT = ANDROID_TARGET_ROOT / "assets" / "chart-assets"
+ANDROID_CHART_ASSET_ROOT = ANDROID_TARGET_ROOT / "generated-seed"
+ANDROID_LEGACY_CHART_ASSET_ROOT = ANDROID_TARGET_ROOT / "assets"
 WEB_NAV_DB_ROOT = WEB_TARGET_ROOT / "generated-static" / "nav-db"
 ANDROID_NAV_DB_ROOT = ANDROID_TARGET_ROOT / "assets" / "nav-db"
 CHARTS_TAC_BUILD_RECORD = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "charts-tac-2603" / "build-record.json"
@@ -293,19 +294,16 @@ def copy_tac_tile_subset(tile_windows: dict[int, tuple[int, int, int]]) -> list[
 
 def chart_asset(record: dict, kind: str) -> dict:
     airport_id = record["airport_id"]
-    source_path = Path(record["asset_path"])
-    thumbnail_path = record.get("thumbnail_path")
-    thumbnail_name = Path(thumbnail_path).name if thumbnail_path else None
     label = "CSup" if kind == "csup" else record["label"]
     return {
-        "id": f"{kind}:{airport_id}:{source_path.name}",
+        "id": f"{kind}:{airport_id}:{Path(record['asset_path']).name}",
         "airport_id": airport_id,
         "label": label,
         "kind": kind,
-        "asset_path": f"chart-assets/{airport_id}/{source_path.name}",
-        "asset_url": f"/chart-assets/{airport_id}/{source_path.name}",
-        "thumbnail_path": f"chart-thumbnails/{airport_id}/{thumbnail_name}" if thumbnail_name else None,
-        "thumbnail_url": f"/chart-thumbnails/{airport_id}/{thumbnail_name}" if thumbnail_name else None,
+        "asset_path": record["asset_path"],
+        "asset_url": f"/{record['asset_path']}",
+        "thumbnail_path": record.get("thumbnail_path"),
+        "thumbnail_url": f"/{record['thumbnail_path']}" if record.get("thumbnail_path") else None,
     }
 
 
@@ -317,57 +315,11 @@ def package_family(package_id: str) -> str:
     return package_id.split("_", 1)[1].lower()
 
 
-def plate_root_candidates(package_id: str) -> list[Path]:
-    region = package_region(package_id)
-    return [
-        ARTIFACT_ROOT / "product-builds" / "shared" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
-        ARTIFACT_ROOT / "product-builds" / "production" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
-        ARTIFACT_ROOT / "product-builds" / "validation" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}",
-    ]
-
-
-def thumbnail_root_candidates() -> list[Path]:
-    resource_index_root = resolve_resource_index_path().parent
-    return [
-        resource_index_root,
-        resource_index_root.parent,
-        ARTIFACT_ROOT / "product-builds" / "production" / "work" / "resource-index",
-        ARTIFACT_ROOT / "product-builds" / "validation" / "work" / "resource-index",
-    ]
-
-
-def csup_root_candidates() -> list[Path]:
-    return [
-        ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "csup" / "work" / "csup",
-        ARTIFACT_ROOT / "product-builds" / "production" / "work" / "csup" / "work" / "csup",
-        ARTIFACT_ROOT / "product-builds" / "validation" / "work" / "csup" / "work" / "csup",
-    ]
-
-
-def resolve_chart_record_source(record: dict, kind: str, asset_key: str = "asset_path") -> Path:
-    if asset_key == "thumbnail_path":
-        candidates = thumbnail_root_candidates()
-    else:
-        candidates = plate_root_candidates(record["package_id"]) if kind == "plate" else csup_root_candidates()
-    for root in candidates:
-        source = root / record[asset_key]
-        if source.exists():
-            return source
-    raise RuntimeError(f"missing {kind} asset {record[asset_key]} for {record['package_id']}")
-
-
 def extract_chart_record_from_package(record: dict, package_artifacts: dict[str, Path], asset_key: str = "asset_path") -> Path:
     artifact_path = package_artifacts.get(record["package_id"])
     if artifact_path is None or not artifact_path.exists():
-        package_id = record["package_id"]
-        if package_id.endswith("_TPP"):
-            region = package_region(package_id)
-            artifact_path = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / f"tpp-{region}" / "work" / f"tpp-{region}" / f"{package_id}.zip"
-        elif package_id.endswith("_CSUP"):
-            artifact_path = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "csup" / "work" / "csup" / f"{package_id}.zip"
-        if artifact_path is None or not artifact_path.exists():
-            raise RuntimeError(f"missing package artifact for {record['package_id']}")
-    cached_target = WEB_CHART_ASSET_ROOT / "__zipcache__" / record["package_id"] / record[asset_key]
+        raise RuntimeError(f"missing package artifact for {record['package_id']}")
+    cached_target = WEB_CHART_ASSET_CACHE_ROOT / record["package_id"] / record[asset_key]
     cached_target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(artifact_path) as archive:
         try:
@@ -386,20 +338,12 @@ def build_web_chart_asset_manifest(resource_index: dict) -> None:
     manifest = {}
     for kind, records in (("plate", resource_index["plates"]), ("csup", resource_index["csups"])):
         for record in records:
-            try:
-                source = resolve_chart_record_source(record, kind)
-            except RuntimeError:
-                source = extract_chart_record_from_package(record, package_artifacts)
-            airport_id = record["airport_id"]
-            filename = Path(record["asset_path"]).name
-            manifest[f"/chart-assets/{airport_id}/{filename}"] = str(source)
+            source = extract_chart_record_from_package(record, package_artifacts)
+            manifest[f"/{record['asset_path']}"] = str(source)
             thumbnail_path = record.get("thumbnail_path")
             if thumbnail_path:
-                try:
-                    thumbnail_source = resolve_chart_record_source(record, kind, "thumbnail_path")
-                except RuntimeError:
-                    thumbnail_source = extract_chart_record_from_package(record, package_artifacts, "thumbnail_path")
-                manifest[f"/chart-thumbnails/{airport_id}/{Path(thumbnail_path).name}"] = str(thumbnail_source)
+                thumbnail_source = extract_chart_record_from_package(record, package_artifacts, "thumbnail_path")
+                manifest[f"/{thumbnail_path}"] = str(thumbnail_source)
     WEB_CHART_ASSET_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
     WEB_CHART_ASSET_MANIFEST.write_text(json.dumps(manifest, indent=2, sort_keys=True))
 
@@ -605,8 +549,8 @@ def build_fixture() -> dict:
     packages_by_id = package_by_id(supported_tiled_packages)
     sample_plan_airports = ["KRNT", "KSEA", "KPAE", "KAWO"]
     chart_airport_ids = select_chart_airports(resource_index, sample_plan_airports)
-    clear_directory(WEB_CHART_ASSET_ROOT)
-    WEB_CHART_ASSET_ROOT.mkdir(parents=True, exist_ok=True)
+    clear_directory(WEB_CHART_ASSET_CACHE_ROOT)
+    WEB_CHART_ASSET_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
     clear_directory(ANDROID_LEGACY_CHART_ASSET_ROOT)
     clear_directory(ANDROID_CHART_ASSET_ROOT)
     ANDROID_CHART_ASSET_ROOT.mkdir(parents=True, exist_ok=True)

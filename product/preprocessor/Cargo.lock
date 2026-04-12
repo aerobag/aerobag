@@ -529,6 +529,9 @@ dependencies = [
  "preprocessor-fetch",
  "preprocessor-tools",
  "roxmltree",
+ "serde_json",
+ "tempfile",
+ "zip",
 ]
 
 [[package]]
@@ -589,6 +592,9 @@ dependencies = [
  "preprocessor-fetch",
  "preprocessor-tools",
  "roxmltree",
+ "serde_json",
+ "tempfile",
+ "zip",
 ]
 
 [[package]]

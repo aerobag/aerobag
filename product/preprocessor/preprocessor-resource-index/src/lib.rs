@@ -1,9 +1,7 @@
 use anyhow::{bail, Context};
 use chrono::{Datelike, Duration, NaiveDate, Utc};
-use preprocessor_core::Region;
+use preprocessor_core::{PackageAssetManifest, PackageAssetRecord, Region, PACKAGE_ASSET_MANIFEST_NAME};
 use preprocessor_fetch::PackageOutputRecord;
-use preprocessor_tools::write_thumbnail_from_png;
-use rayon::prelude::*;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,6 +32,7 @@ pub struct ChartSource {
 pub struct AssetSource {
     pub package_outputs_path: PathBuf,
     pub asset_root: PathBuf,
+    pub package_root: PathBuf,
     pub source_urls_path: Option<PathBuf>,
 }
 
@@ -351,7 +350,6 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         plates,
         csups,
     };
-    validate_index_asset_paths(&index, &request.tpp_sources, &request.csup_sources)?;
     validate_thumbnail_paths(&index, &thumbnail_root)?;
     validate_packaged_assets(&index, &index.packages, &product_builds_root)?;
     Ok(index)
@@ -550,28 +548,6 @@ fn family_display_name_from_id(
         .unwrap_or_else(|| family_id.to_string())
 }
 
-fn validate_index_asset_paths(
-    index: &ResourceIndex,
-    tpp_sources: &[AssetSource],
-    csup_sources: &[AssetSource],
-) -> anyhow::Result<()> {
-    let indexed_tpp = index
-        .plates
-        .iter()
-        .map(|record| record.asset_path.clone())
-        .collect::<BTreeSet<_>>();
-    let indexed_csup = index
-        .csups
-        .iter()
-        .map(|record| record.asset_path.clone())
-        .collect::<BTreeSet<_>>();
-    let actual_tpp = collect_actual_asset_paths(tpp_sources, "plates")?;
-    let actual_csup = collect_actual_asset_paths(csup_sources, "afd")?;
-    compare_indexed_vs_actual("tpp", &indexed_tpp, &actual_tpp)?;
-    compare_indexed_vs_actual("csup", &indexed_csup, &actual_csup)?;
-    Ok(())
-}
-
 fn validate_thumbnail_paths(index: &ResourceIndex, thumbnail_root: &Path) -> anyhow::Result<()> {
     let indexed_plate = index
         .plates
@@ -683,34 +659,6 @@ fn read_package_members(package_path: &Path) -> anyhow::Result<BTreeSet<String>>
     Ok(members)
 }
 
-fn collect_actual_asset_paths(
-    sources: &[AssetSource],
-    root_dir_name: &str,
-) -> anyhow::Result<BTreeSet<String>> {
-    let mut paths = BTreeSet::new();
-    for source in sources {
-        let root = source.asset_root.join(root_dir_name);
-        if !root.is_dir() {
-            continue;
-        }
-        for asset in read_files_recursive(&root)? {
-            let extension = asset
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if extension != "png" {
-                continue;
-            }
-            let relative = asset
-                .strip_prefix(&source.asset_root)
-                .with_context(|| format!("failed to relativize {}", asset.display()))?;
-            paths.insert(relative.display().to_string());
-        }
-    }
-    Ok(paths)
-}
-
 fn collect_actual_thumbnail_paths(
     thumbnail_root: &Path,
     root_dir_name: &str,
@@ -810,7 +758,7 @@ fn collect_packages(
         for record in read_package_outputs(&source.package_outputs_path)? {
             packages.push(package_from_record(
                 "tpp",
-                &source.asset_root,
+                &source.package_root,
                 &record,
                 temporal.as_ref(),
                 product_builds_root,
@@ -822,7 +770,7 @@ fn collect_packages(
         for record in read_package_outputs(&source.package_outputs_path)? {
             packages.push(package_from_record(
                 "csup",
-                &source.asset_root,
+                &source.package_root,
                 &record,
                 temporal.as_ref(),
                 product_builds_root,
@@ -985,78 +933,24 @@ fn collect_plate_records(
 ) -> anyhow::Result<Vec<PlateRecord>> {
     let mut records = Vec::new();
     for source in sources {
-        let package_map = package_map_by_region(&source.package_outputs_path)?;
-        let plates_root = source.asset_root.join("plates");
-        if !plates_root.is_dir() {
-            continue;
-        }
-        let mut jobs = Vec::new();
-        for airport_dir in read_child_dirs(&plates_root)? {
-            let raw_airport_id = airport_dir
-                .file_name()
-                .and_then(|value| value.to_str())
-                .context("invalid airport directory name")?
-                .to_string();
-            let airport_id = canonicalize_airport_id(&raw_airport_id, airport_aliases);
-            let region_id = infer_region_from_airport_dir(&source.asset_root)
-                .or_else(|| infer_region_from_package_map(&package_map))
-                .context("failed to infer TPP region")?;
-            let package_name = package_map
-                .get(&region_id.to_ascii_uppercase())
-                .cloned()
-                .context("missing TPP package for region")?;
-            for asset in read_files_recursive(&airport_dir)? {
-                let asset_kind = asset
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                if asset_kind != "png" {
-                    continue;
-                }
-                jobs.push((
-                    airport_id.clone(),
-                    region_id.clone(),
-                    package_name.clone(),
-                    asset,
-                    source.asset_root.clone(),
-                ));
-            }
-        }
-        let built = jobs
-            .into_par_iter()
-            .map(|(airport_id, region_id, package_id, asset, asset_root)| -> anyhow::Result<PlateRecord> {
-                let asset_path = asset.strip_prefix(&asset_root).unwrap_or(&asset);
-                let filename = asset
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let label = asset
-                    .file_stem()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let thumbnail_path = write_thumbnail(
-                    &asset,
-                    thumbnail_root,
-                    asset_path,
-                )?;
-                Ok(PlateRecord {
-                    id: format!("plate:{airport_id}:{filename}"),
-                    airport_id,
-                    region_id,
-                    package_id,
-                    label: label.clone(),
-                    asset_kind: "png".to_string(),
-                    document_type: infer_plate_document_type(&label).to_string(),
-                    asset_path: asset_path.display().to_string(),
-                    thumbnail_path,
-                })
-            })
-            .collect::<Vec<_>>();
-        for record in built {
-            records.push(record?);
+        for packaged in packaged_asset_entries(source, "tpp")? {
+            mirror_thumbnail_from_package(
+                &packaged.package_zip_path,
+                thumbnail_root,
+                &packaged.asset.thumbnail_path,
+            )?;
+            let airport_id = canonicalize_airport_id(&packaged.asset.airport_id, airport_aliases);
+            records.push(PlateRecord {
+                id: packaged.asset.id.clone(),
+                airport_id,
+                region_id: packaged.region_id.clone(),
+                package_id: packaged.package_id.clone(),
+                label: packaged.asset.label.clone(),
+                asset_kind: packaged.asset.asset_kind.clone(),
+                document_type: packaged.asset.document_type.clone(),
+                asset_path: packaged.asset.asset_path.clone(),
+                thumbnail_path: packaged.asset.thumbnail_path.clone(),
+            });
         }
     }
     records.sort();
@@ -1070,100 +964,113 @@ fn collect_csup_records(
 ) -> anyhow::Result<Vec<CsupRecord>> {
     let mut records = Vec::new();
     for source in sources {
-        let package_map = package_map_by_region(&source.package_outputs_path)?;
-        let afd_root = source.asset_root.join("afd");
-        if !afd_root.is_dir() {
-            continue;
-        }
-        let mut jobs = Vec::new();
-        for airport_dir in read_child_dirs(&afd_root)? {
-            let raw_airport_id = airport_dir
-                .file_name()
-                .and_then(|value| value.to_str())
-                .context("invalid airport directory name")?
-                .to_string();
-            let airport_id = canonicalize_airport_id(&raw_airport_id, airport_aliases);
-            for asset in read_files_recursive(&airport_dir)? {
-                let region_id = infer_region_from_csup_filename(&asset)
-                    .context("failed to infer CSUP region from filename")?;
-                let package_name = package_map
-                    .get(&region_id.to_ascii_uppercase())
-                    .cloned()
-                    .context("missing CSUP package for region")?;
-                jobs.push((
-                    airport_id.clone(),
-                    region_id,
-                    package_name.clone(),
-                    asset,
-                    source.asset_root.clone(),
-                ));
-            }
-        }
-        let built = jobs
-            .into_par_iter()
-            .map(|(airport_id, region_id, package_id, asset, asset_root)| -> anyhow::Result<CsupRecord> {
-                let asset_path = asset.strip_prefix(&asset_root).unwrap_or(&asset);
-                let filename = asset
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let thumbnail_path = write_thumbnail(
-                    &asset,
-                    thumbnail_root,
-                    asset_path,
-                )?;
-                Ok(CsupRecord {
-                    id: format!("csup:{airport_id}:{filename}"),
-                    airport_id,
-                    region_id,
-                    package_id,
-                    label: asset
-                        .file_stem()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                    thumbnail_path,
-                    asset_kind: "png".to_string(),
-                    document_type: "csup".to_string(),
-                    asset_path: asset_path.display().to_string(),
-                })
-            })
-            .collect::<Vec<_>>();
-        for record in built {
-            records.push(record?);
+        for packaged in packaged_asset_entries(source, "csup")? {
+            mirror_thumbnail_from_package(
+                &packaged.package_zip_path,
+                thumbnail_root,
+                &packaged.asset.thumbnail_path,
+            )?;
+            let airport_id = canonicalize_airport_id(&packaged.asset.airport_id, airport_aliases);
+            records.push(CsupRecord {
+                id: packaged.asset.id.clone(),
+                airport_id,
+                region_id: packaged.region_id.clone(),
+                package_id: packaged.package_id.clone(),
+                label: packaged.asset.label.clone(),
+                thumbnail_path: packaged.asset.thumbnail_path.clone(),
+                asset_kind: packaged.asset.asset_kind.clone(),
+                document_type: packaged.asset.document_type.clone(),
+                asset_path: packaged.asset.asset_path.clone(),
+            });
         }
     }
     records.sort();
     Ok(records)
 }
 
-fn infer_plate_document_type(label: &str) -> &'static str {
-    if label.starts_with("APD-") {
-        "airport_diagram"
-    } else if label.starts_with("MIN-") && label.contains("TAKEOFF MINIMUMS") {
-        "takeoff_minimums"
-    } else if label.starts_with("MIN-") && label.contains("ALTERNATE MINIMUMS") {
-        "alternate_minimums"
-    } else if label.starts_with("MIN-") {
-        "minimums"
-    } else if label.starts_with("IAP-") {
-        "approach"
-    } else if label.starts_with("DP-") {
-        "departure"
-    } else if label.starts_with("STAR-") {
-        "star"
-    } else {
-        "other"
-    }
+#[derive(Debug, Clone)]
+struct PackagedAssetEntry {
+    package_id: String,
+    region_id: String,
+    package_zip_path: PathBuf,
+    asset: PackageAssetRecord,
 }
 
-fn write_thumbnail(source: &Path, thumbnail_root: &Path, asset_path: &Path) -> anyhow::Result<String> {
-    write_thumbnail_from_png(source, thumbnail_root, asset_path)?;
-    Ok(Path::new("thumbnails")
-        .join(asset_path)
-        .display()
-        .to_string())
+fn packaged_asset_entries(
+    source: &AssetSource,
+    expected_family_id: &str,
+) -> anyhow::Result<Vec<PackagedAssetEntry>> {
+    let mut entries = Vec::new();
+    for record in read_package_outputs(&source.package_outputs_path)? {
+        let package_zip_path = source.package_root.join(&record.zip);
+        let manifest = read_package_asset_manifest(&package_zip_path)?;
+        if manifest.family_id != expected_family_id {
+            bail!(
+                "unexpected package asset manifest family {} in {}",
+                manifest.family_id,
+                package_zip_path.display()
+            );
+        }
+        if manifest.package_id != record.manifest {
+            bail!(
+                "package asset manifest id {} != package output manifest {} in {}",
+                manifest.package_id,
+                record.manifest,
+                package_zip_path.display()
+            );
+        }
+        for asset in manifest.assets {
+            entries.push(PackagedAssetEntry {
+                package_id: record.manifest.clone(),
+                region_id: record.region.to_ascii_lowercase(),
+                package_zip_path: package_zip_path.clone(),
+                asset,
+            });
+        }
+    }
+    Ok(entries)
+}
+
+fn read_package_asset_manifest(package_zip_path: &Path) -> anyhow::Result<PackageAssetManifest> {
+    let file = fs::File::open(package_zip_path)
+        .with_context(|| format!("failed to open {}", package_zip_path.display()))?;
+    let mut archive = ZipArchive::new(file)
+        .with_context(|| format!("failed to open zip {}", package_zip_path.display()))?;
+    let mut entry = archive
+        .by_name(PACKAGE_ASSET_MANIFEST_NAME)
+        .with_context(|| format!("missing {} in {}", PACKAGE_ASSET_MANIFEST_NAME, package_zip_path.display()))?;
+    serde_json::from_reader(&mut entry)
+        .with_context(|| format!("failed to parse {} in {}", PACKAGE_ASSET_MANIFEST_NAME, package_zip_path.display()))
+}
+
+fn mirror_thumbnail_from_package(
+    package_zip_path: &Path,
+    thumbnail_root: &Path,
+    thumbnail_member_path: &str,
+) -> anyhow::Result<()> {
+    let target_path = thumbnail_root
+        .parent()
+        .unwrap_or(thumbnail_root)
+        .join(thumbnail_member_path);
+    if target_path.is_file() {
+        return Ok(());
+    }
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let file = fs::File::open(package_zip_path)
+        .with_context(|| format!("failed to open {}", package_zip_path.display()))?;
+    let mut archive = ZipArchive::new(file)
+        .with_context(|| format!("failed to open zip {}", package_zip_path.display()))?;
+    let mut entry = archive
+        .by_name(thumbnail_member_path)
+        .with_context(|| format!("missing {thumbnail_member_path} in {}", package_zip_path.display()))?;
+    let mut output = fs::File::create(&target_path)
+        .with_context(|| format!("failed to create {}", target_path.display()))?;
+    std::io::copy(&mut entry, &mut output)
+        .with_context(|| format!("failed to extract {} from {}", thumbnail_member_path, package_zip_path.display()))?;
+    Ok(())
 }
 
 fn collect_airport_resources(
@@ -1209,14 +1116,6 @@ fn collect_airport_resources(
         .collect::<Vec<_>>();
     values.sort();
     values
-}
-
-fn package_map_by_region(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
-    let mut map = BTreeMap::new();
-    for record in read_package_outputs(path)? {
-        map.insert(record.region.to_ascii_uppercase(), record.manifest);
-    }
-    Ok(map)
 }
 
 fn read_package_outputs(path: &Path) -> anyhow::Result<Vec<PackageOutputRecord>> {
@@ -1309,19 +1208,6 @@ fn nav_db_version_label(nav_db_zip: &Path, temporal: &FaaTemporalMetadata) -> Op
         .filter(|value| value.starts_with("data_"))
         .map(ToOwned::to_owned)
         .or_else(|| temporal.expiration_date.as_deref().map(version_label_from_date))
-}
-
-fn read_child_dirs(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    let mut dirs = fs::read_dir(root)
-        .with_context(|| format!("failed to read directory {}", root.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("failed to iterate {}", root.display()))?
-        .into_iter()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .collect::<Vec<_>>();
-    dirs.sort();
-    Ok(dirs)
 }
 
 fn read_files_recursive(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
@@ -1739,31 +1625,6 @@ fn tile_x_to_lon(tile_x: f64, scale: f64) -> f64 {
 fn tile_y_to_lat(tile_y_xyz: f64, scale: f64) -> f64 {
     let n = std::f64::consts::PI - (2.0 * std::f64::consts::PI * tile_y_xyz) / scale;
     n.sinh().atan().to_degrees()
-}
-
-fn infer_region_from_airport_dir(root: &Path) -> Option<String> {
-    root.file_name()
-        .and_then(|value| value.to_str())
-        .and_then(|name| name.strip_prefix("tpp-"))
-        .map(|value| value.to_ascii_lowercase())
-}
-
-fn infer_region_from_package_map(package_map: &BTreeMap<String, String>) -> Option<String> {
-    if package_map.len() == 1 {
-        package_map
-            .keys()
-            .next()
-            .map(|value| value.to_ascii_lowercase())
-    } else {
-        None
-    }
-}
-
-fn infer_region_from_csup_filename(path: &Path) -> Option<String> {
-    let stem = path.file_stem()?.to_str()?;
-    let suffix = stem.strip_prefix("CSUP-")?;
-    let region = suffix.split('_').next()?;
-    Some(region.to_ascii_lowercase())
 }
 
 fn family_display_name(id: &str) -> &'static str {

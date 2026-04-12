@@ -1,6 +1,27 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub const PACKAGE_ASSET_MANIFEST_NAME: &str = "package-assets.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PackageAssetManifest {
+    pub schema_version: u32,
+    pub family_id: String,
+    pub package_id: String,
+    pub assets: Vec<PackageAssetRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PackageAssetRecord {
+    pub id: String,
+    pub airport_id: String,
+    pub label: String,
+    pub asset_kind: String,
+    pub document_type: String,
+    pub asset_path: String,
+    pub thumbnail_path: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureManifest {
     pub schema_version: u32,

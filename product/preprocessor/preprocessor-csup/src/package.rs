@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{bail, Context};
 use chrono::Utc;
-use preprocessor_core::Region;
+use preprocessor_core::{PackageAssetManifest, PackageAssetRecord, Region, PACKAGE_ASSET_MANIFEST_NAME};
 use preprocessor_fetch::{hash_file, write_package_outputs_jsonl, PackageOutputRecord};
 use preprocessor_tools::{write_thumbnail_from_png, ToolInvocation};
 
@@ -60,7 +60,14 @@ fn package_csup_region_records(
         remove_if_exists(&zip_path)?;
 
         let selected = collect_region_pngs(work_dir, region.code())?;
+        let package_assets_path = work_dir.join(PACKAGE_ASSET_MANIFEST_NAME);
+        remove_if_exists(&package_assets_path)?;
         let selected = with_thumbnail_members(work_dir, &selected)?;
+        write_package_asset_manifest(
+            &package_assets_path,
+            &manifest_name,
+            &selected,
+        )?;
 
         let mut manifest_text = String::new();
         manifest_text.push_str(manifest_version);
@@ -77,6 +84,8 @@ fn package_csup_region_records(
             stdin_text.push_str(path);
             stdin_text.push('\n');
         }
+        stdin_text.push_str(PACKAGE_ASSET_MANIFEST_NAME);
+        stdin_text.push('\n');
         stdin_text.push_str(&manifest_name);
         stdin_text.push('\n');
 
@@ -155,18 +164,111 @@ fn with_thumbnail_members(work_dir: &Path, members: &[String]) -> anyhow::Result
         all.push(member.clone());
         let asset_path = Path::new(member);
         let source = work_dir.join(asset_path);
-        write_thumbnail_from_png(&source, &thumbnail_root, asset_path)?;
-        all.push(
-            Path::new("thumbnails")
-                .join(asset_path)
-                .to_string_lossy()
-                .replace('\\', "/"),
-        );
+        let thumbnail_path = Path::new("thumbnails")
+            .join(asset_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !work_dir.join(&thumbnail_path).is_file() {
+            write_thumbnail_from_png(&source, &thumbnail_root, asset_path)?;
+        }
+        all.push(thumbnail_path);
     }
     Ok(all)
+}
+
+fn write_package_asset_manifest(
+    output_path: &Path,
+    package_id: &str,
+    members: &[String],
+) -> anyhow::Result<()> {
+    let assets = members
+        .iter()
+        .filter(|member| member.ends_with(".png") && !member.starts_with("thumbnails/"))
+        .map(|member| {
+            let asset_path = Path::new(member);
+            let airport_id = asset_path
+                .components()
+                .nth(1)
+                .and_then(|value| value.as_os_str().to_str())
+                .unwrap_or_default()
+                .to_string();
+            let filename = asset_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_string();
+            PackageAssetRecord {
+                id: format!("csup:{airport_id}:{filename}"),
+                airport_id,
+                label: asset_path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                asset_kind: "png".to_string(),
+                document_type: "csup".to_string(),
+                asset_path: member.clone(),
+                thumbnail_path: Path::new("thumbnails")
+                    .join(asset_path)
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            }
+        })
+        .collect::<Vec<_>>();
+    let manifest = PackageAssetManifest {
+        schema_version: 1,
+        family_id: "csup".to_string(),
+        package_id: package_id.to_string(),
+        assets,
+    };
+    fs::write(
+        output_path,
+        serde_json::to_vec_pretty(&manifest).context("failed to encode csup package asset manifest")?,
+    )
+    .with_context(|| format!("failed to write {}", output_path.display()))
 }
 
 fn current_cycle_manifest() -> String {
     let (manifest_cycle, _) = calculate_cycle(1, Utc::now());
     manifest_cycle.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use zip::ZipArchive;
+
+    const ONE_BY_ONE_PNG: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
+        b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+        0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, b'I', b'D', b'A', b'T', 0x78,
+        0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99,
+        0x3D, 0x1D, 0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    #[test]
+    fn csup_package_includes_package_asset_manifest() {
+        let temp = tempdir().unwrap();
+        let work_dir = temp.path();
+        let airport_dir = work_dir.join("afd/AK84");
+        fs::create_dir_all(&airport_dir).unwrap();
+        fs::write(airport_dir.join("CSUP-AK_0.png"), ONE_BY_ONE_PNG).unwrap();
+
+        let record = package_csup_region_versioned(work_dir, Region::Ak, "2603", "2603").unwrap();
+        let zip_path = work_dir.join(record.zip);
+        let file = fs::File::open(zip_path).unwrap();
+        let mut archive = ZipArchive::new(file).unwrap();
+        let manifest: PackageAssetManifest =
+            serde_json::from_reader(archive.by_name(PACKAGE_ASSET_MANIFEST_NAME).unwrap()).unwrap();
+
+        assert_eq!(manifest.family_id, "csup");
+        assert_eq!(manifest.package_id, "AK_CSUP_2603");
+        assert_eq!(manifest.assets.len(), 1);
+        assert_eq!(manifest.assets[0].asset_path, "afd/AK84/CSUP-AK_0.png");
+        assert_eq!(
+            manifest.assets[0].thumbnail_path,
+            "thumbnails/afd/AK84/CSUP-AK_0.png"
+        );
+    }
 }

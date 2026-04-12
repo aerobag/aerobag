@@ -165,10 +165,9 @@ enum HeavyJobSpec {
     },
     CsupRender {
         region: Region,
-        source_repo: PathBuf,
-        run_root: PathBuf,
-        prefetch_source_urls: PathBuf,
-        fetch_jobs: usize,
+        work_dir: PathBuf,
+        stage_fingerprint: String,
+        version_label: String,
         render_jobs: usize,
     },
     Tpp {
@@ -216,18 +215,16 @@ impl HeavyJobSpec {
             )?]),
             Self::CsupRender {
                 region,
-                source_repo,
-                run_root,
-                prefetch_source_urls,
-                fetch_jobs,
+                work_dir,
+                stage_fingerprint,
+                version_label,
                 render_jobs,
             } => Ok(vec![build_csup_render_node(
                 config,
                 region,
-                &source_repo,
-                &run_root,
-                &prefetch_source_urls,
-                fetch_jobs,
+                &work_dir,
+                &stage_fingerprint,
+                &version_label,
                 render_jobs,
             )?]),
             Self::Tpp {
@@ -352,14 +349,14 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             });
         }
 
-        let csup_run_root = build_shared_work_root(config, &format!("csup-{csup_version}"))?;
         let csup_stage_record = build_csup_stage_node(
             config,
             Path::new(""),
-            &csup_run_root,
             &source_urls_dir.join("csup/source_urls.jsonl"),
             config.fetch_jobs,
         )?;
+        let csup_work_dir =
+            resolve_artifact_path(config, output_path(&csup_stage_record, "work_dir")?);
         node_records.push(normalize_node_record_paths(
             csup_stage_record.clone(),
             &config.build_root,
@@ -367,10 +364,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         for region in Region::ALL {
             pending_jobs.push_back(HeavyJobSpec::CsupRender {
                 region,
-                source_repo: PathBuf::new(),
-                run_root: csup_run_root.clone(),
-                prefetch_source_urls: source_urls_dir.join("csup/source_urls.jsonl"),
-                fetch_jobs: config.fetch_jobs,
+                work_dir: csup_work_dir.clone(),
+                stage_fingerprint: csup_stage_record.fingerprint.clone(),
+                version_label: csup_version.clone(),
                 render_jobs: config.cpu_jobs.max(1),
             });
         }
@@ -1005,13 +1001,12 @@ fn build_chart_package_nodes(
     let mut package_records = Vec::new();
     for region in Region::ALL {
         let node_name = format!("charts-{family_id}-package-{}", region.code().to_ascii_lowercase());
-        let package_root = build_shared_work_root(config, &format!("{node_name}-{version_label}"))?;
         let inputs = BTreeMap::from([
             ("render_fingerprint".to_string(), render_record.fingerprint.clone()),
             ("region".to_string(), region.code().to_string()),
             ("version_label".to_string(), version_label.to_string()),
         ]);
-        let prepared = prepare_existing_node_root(&node_name, &package_root, &inputs)?;
+        let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
         let zip_path = work_dir.join(format!(
             "{}_{}_{}.zip",
             region.code(),
@@ -1100,53 +1095,25 @@ fn build_chart_package_nodes(
 fn build_csup_render_node(
     config: &ProductBuildConfig,
     region: Region,
-    source_repo: &Path,
-    run_root: &Path,
-    _source_urls: &Path,
-    _fetch_jobs: usize,
+    work_dir: &Path,
+    stage_fingerprint: &str,
+    version_label: &str,
     render_jobs: usize,
 ) -> anyhow::Result<NodeRecord> {
-    let stage_record = load_existing_node_record(&run_root.join("build-record.json"), "csup-stage")?;
-    let version_label = csup_version_label_from_run_root(run_root)?;
     let node_name = format!("csup-render-{}", region.code().to_ascii_lowercase());
-    let inputs = BTreeMap::from([
-        ("stage_fingerprint".to_string(), stage_record.fingerprint),
-        ("region".to_string(), region.code().to_string()),
-        ("render_jobs".to_string(), render_jobs.to_string()),
-        ("version_label".to_string(), version_label.clone()),
-        (
-            "csup_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-csup/src/lib.rs"),
-            )?,
-        ),
-        (
-            "tools_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-tools/src/lib.rs"),
-            )?,
-        ),
-    ]);
-    let node_root = build_shared_work_root(config, &format!("{node_name}-{version_label}"))?;
-    let prepared = prepare_existing_node_root(&node_name, &node_root, &inputs)?;
-    let marker = node_root.join(".render-complete");
+    let inputs = csup_render_inputs(stage_fingerprint, region, render_jobs, version_label)?;
+    let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
+    let marker = work_dir.join(format!(".render-complete-{}", region.code().to_ascii_lowercase()));
     if let Some(record) = try_load_node_record(&prepared, std::slice::from_ref(&marker))? {
         return Ok(record);
     }
     let started_at_utc = utc_now_string();
     let started = Instant::now();
-    let work_dir = stage_work_dir_for_product(source_repo, run_root)?;
-    render_csup_region(&work_dir, region, render_jobs)?;
+    render_csup_region(work_dir, region, render_jobs)?;
     fs::write(&marker, b"ok")
         .with_context(|| format!("failed to write {}", marker.display()))?;
     let outputs = BTreeMap::from([
-        ("work_dir".to_string(), relative_artifact_path(&work_dir, &config.build_root)),
+        ("work_dir".to_string(), relative_artifact_path(work_dir, &config.build_root)),
         ("marker".to_string(), relative_artifact_path(&marker, &config.build_root)),
     ]);
     write_node_record(
@@ -1163,32 +1130,20 @@ fn build_csup_render_node(
 fn build_csup_stage_node(
     config: &ProductBuildConfig,
     source_repo: &Path,
-    run_root: &Path,
     source_urls: &Path,
     fetch_jobs: usize,
 ) -> anyhow::Result<NodeRecord> {
-    let inputs = BTreeMap::from([
-        ("source_urls".to_string(), hash_file(source_urls)?),
-        ("fetch_jobs".to_string(), fetch_jobs.to_string()),
-        (
-            "csup_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-csup/src/lib.rs"),
-            )?,
-        ),
-    ]);
-    let prepared = prepare_existing_node_root("csup-stage", run_root, &inputs)?;
-    let marker = run_root.join(".stage-complete");
+    let inputs = csup_stage_inputs(source_urls, fetch_jobs)?;
+    let prepared = prepare_node_at(&build_shared_node_dir(config, "csup-stage")?, "csup-stage", &inputs)?;
+    let work_root = prepared.dir.clone();
+    let marker = work_root.join(".stage-complete");
     if let Some(record) = try_load_node_record(&prepared, std::slice::from_ref(&marker))? {
         return Ok(record);
     }
     let started_at_utc = utc_now_string();
     let started = Instant::now();
-    let work_dir = stage_work_dir_for_product(source_repo, run_root)?;
-    let provenance_dir = run_root.join("meta").join("provenance").join("csup");
+    let work_dir = stage_work_dir_for_product(source_repo, &work_root)?;
+    let provenance_dir = work_root.join("meta").join("provenance").join("csup");
     fs::create_dir_all(&provenance_dir)?;
     copy_source_urls_provenance(source_urls, &provenance_dir)?;
     let urls = read_source_urls_jsonl(source_urls)?;
@@ -1198,6 +1153,10 @@ fn build_csup_stage_node(
         .with_context(|| format!("failed to write {}", marker.display()))?;
     let outputs = BTreeMap::from([
         ("work_dir".to_string(), relative_artifact_path(&work_dir, &config.build_root)),
+        (
+            "provenance_dir".to_string(),
+            relative_artifact_path(&provenance_dir, &config.build_root),
+        ),
         ("marker".to_string(), relative_artifact_path(&marker, &config.build_root)),
     ]);
     write_node_record(
@@ -1213,25 +1172,28 @@ fn build_csup_stage_node(
 
 fn build_csup_package_nodes(
     config: &ProductBuildConfig,
-    _source_urls_dir: &Path,
+    source_urls_dir: &Path,
     version_label: &str,
 ) -> anyhow::Result<(Vec<NodeRecord>, AssetSource)> {
-    let run_root = build_shared_work_root(config, &format!("csup-{version_label}"))?;
-    let work_dir = run_root.join("work").join("csup");
-    let aggregate_path = run_root.join("meta/provenance/csup/package_outputs.jsonl");
-    let source_urls_path = run_root.join("meta/provenance/csup/source_urls.jsonl");
+    let source_urls_path = source_urls_dir.join("csup/source_urls.jsonl");
+    let stage_inputs = csup_stage_inputs(&source_urls_path, config.fetch_jobs)?;
+    let stage_prepared = prepare_node_at(&build_shared_node_dir(config, "csup-stage")?, "csup-stage", &stage_inputs)?;
+    let stage_record = load_existing_node_record(&stage_prepared.record_path, "csup-stage")?;
+    let work_dir = resolve_artifact_path(config, output_path(&stage_record, "work_dir")?);
+    let provenance_dir = resolve_artifact_path(config, output_path(&stage_record, "provenance_dir")?);
+    let aggregate_path = provenance_dir.join("package_outputs.jsonl");
     let existing_package_records = read_package_outputs_by_region(&aggregate_path)?;
     let mut node_records = Vec::new();
     let mut package_records = Vec::new();
     for region in Region::ALL {
         let render_node_name = format!("csup-render-{}", region.code().to_ascii_lowercase());
-        let render_record = load_existing_node_record(
-            &build_shared_work_root(config, &format!("{render_node_name}-{version_label}"))?
-                .join("build-record.json"),
-            &render_node_name,
-        )?;
+        let render_inputs =
+            csup_render_inputs(&stage_record.fingerprint, region, config.cpu_jobs.max(1), version_label)?;
+        let render_prepared =
+            prepare_node_at(&build_shared_node_dir(config, &render_node_name)?, &render_node_name, &render_inputs)?;
+        let render_record =
+            load_existing_node_record(&render_prepared.record_path, &render_node_name)?;
         let node_name = format!("csup-package-{}", region.code().to_ascii_lowercase());
-        let package_root = build_shared_work_root(config, &format!("{node_name}-{version_label}"))?;
         let inputs = BTreeMap::from([
             ("render_fingerprint".to_string(), render_record.fingerprint.clone()),
             ("region".to_string(), region.code().to_string()),
@@ -1255,7 +1217,7 @@ fn build_csup_package_nodes(
                 )?,
             ),
         ]);
-        let prepared = prepare_existing_node_root(&node_name, &package_root, &inputs)?;
+        let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
         let zip_path = work_dir.join(format!("{}_CSUP_{}.zip", region.code(), version_label));
         let manifest_path = work_dir.join(format!("{}_CSUP_{}", region.code(), version_label));
         if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
@@ -1309,7 +1271,8 @@ fn build_csup_package_nodes(
         node_records,
         AssetSource {
             package_outputs_path: aggregate_path,
-            asset_root: work_dir,
+            asset_root: work_dir.clone(),
+            package_root: work_dir.clone(),
             source_urls_path: Some(source_urls_path),
         },
     ))
@@ -1414,7 +1377,8 @@ fn build_tpp_package_node(
             record,
             AssetSource {
                 package_outputs_path,
-                asset_root: work_dir,
+                asset_root: work_dir.clone(),
+                package_root: work_dir.clone(),
                 source_urls_path: Some(source_urls_path.to_path_buf()),
             },
         ));
@@ -1444,10 +1408,77 @@ fn build_tpp_package_node(
         record,
         AssetSource {
             package_outputs_path,
-            asset_root: work_dir,
+            asset_root: work_dir.clone(),
+            package_root: work_dir.clone(),
             source_urls_path: Some(source_urls_path.to_path_buf()),
         },
     ))
+}
+
+fn csup_stage_inputs(source_urls: &Path, fetch_jobs: usize) -> anyhow::Result<BTreeMap<String, String>> {
+    Ok(BTreeMap::from([
+        ("source_urls".to_string(), hash_file(source_urls)?),
+        ("fetch_jobs".to_string(), fetch_jobs.to_string()),
+        (
+            "csup_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-csup/src/lib.rs"),
+            )?,
+        ),
+        (
+            "csup_package".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-csup/src/package.rs"),
+            )?,
+        ),
+        (
+            "tools_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-tools/src/lib.rs"),
+            )?,
+        ),
+    ]))
+}
+
+fn csup_render_inputs(
+    stage_fingerprint: &str,
+    region: Region,
+    render_jobs: usize,
+    version_label: &str,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    Ok(BTreeMap::from([
+        ("stage_fingerprint".to_string(), stage_fingerprint.to_string()),
+        ("region".to_string(), region.code().to_string()),
+        ("render_jobs".to_string(), render_jobs.to_string()),
+        ("version_label".to_string(), version_label.to_string()),
+        (
+            "csup_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-csup/src/lib.rs"),
+            )?,
+        ),
+        (
+            "tools_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-tools/src/lib.rs"),
+            )?,
+        ),
+    ]))
 }
 
 fn tpp_render_inputs(
@@ -1679,9 +1710,10 @@ fn build_resource_index_node(
         .iter()
         .map(|source| {
             format!(
-                "{}:{}:{}",
+                "{}:{}:{}:{}",
                 source.package_outputs_path.display(),
                 source.asset_root.display(),
+                source.package_root.display(),
                 source
                     .source_urls_path
                     .as_ref()
@@ -1695,9 +1727,10 @@ fn build_resource_index_node(
         .iter()
         .map(|source| {
             format!(
-                "{}:{}:{}",
+                "{}:{}:{}:{}",
                 source.package_outputs_path.display(),
                 source.asset_root.display(),
+                source.package_root.display(),
                 source
                     .source_urls_path
                     .as_ref()
@@ -2263,16 +2296,6 @@ fn cycle_data_urls(urls: Vec<String>) -> Vec<String> {
     urls.into_iter()
         .filter(|url| !url.split('#').next().unwrap_or(url).ends_with("/DAILY_DOF_DAT.ZIP"))
         .collect()
-}
-
-fn csup_version_label_from_run_root(run_root: &Path) -> anyhow::Result<String> {
-    let name = run_root
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| anyhow::anyhow!("invalid csup run root {}", run_root.display()))?;
-    name.strip_prefix("csup-")
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| anyhow::anyhow!("csup run root {} missing version suffix", run_root.display()))
 }
 
 fn find_effective_date_from_urls(urls: &[String]) -> Option<NaiveDate> {

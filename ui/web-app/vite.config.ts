@@ -17,8 +17,9 @@ const workspaceRoot = path.join(webTargetRoot, "workspace");
 const generatedRoot = path.join(webTargetRoot, "generated");
 const staticRoot = path.join(webTargetRoot, "generated-static");
 const sectionalRoot = path.join(staticRoot, "sectional-packages");
-const chartAssetRoot = path.join(staticRoot, "chart-assets");
-const chartThumbnailRoot = path.join(staticRoot, "chart-thumbnails");
+const plateRoot = path.join(staticRoot, "plates");
+const csupRoot = path.join(staticRoot, "afd");
+const thumbnailRoot = path.join(staticRoot, "thumbnails");
 const navDbRoot = path.join(staticRoot, "nav-db");
 const vectorRoot = path.join(staticRoot, "vectors");
 const sharedRoot = path.join(repoRoot, "ui", "shared");
@@ -193,8 +194,9 @@ function aerobagStaticPlugin(): Plugin {
         res.end();
       });
       server.middlewares.use("/sectional-packages", mountStaticTree(sectionalRoot));
-      server.middlewares.use("/chart-assets", mountStaticTree(chartAssetRoot));
-      server.middlewares.use("/chart-thumbnails", mountStaticTree(chartThumbnailRoot));
+      server.middlewares.use("/plates", mountStaticTree(plateRoot));
+      server.middlewares.use("/afd", mountStaticTree(csupRoot));
+      server.middlewares.use("/thumbnails", mountStaticTree(thumbnailRoot));
       server.middlewares.use("/nav-db", mountStaticTree(navDbRoot));
       server.middlewares.use("/vectors", mountStaticTree(vectorRoot));
     },
@@ -205,8 +207,9 @@ function aerobagStaticPlugin(): Plugin {
       }
       for (const [sourceRoot, targetName] of [
         [sectionalRoot, "sectional-packages"],
-        [chartAssetRoot, "chart-assets"],
-        [chartThumbnailRoot, "chart-thumbnails"],
+        [plateRoot, "plates"],
+        [csupRoot, "afd"],
+        [thumbnailRoot, "thumbnails"],
         [navDbRoot, "nav-db"],
         [vectorRoot, "vectors"],
       ] as const) {

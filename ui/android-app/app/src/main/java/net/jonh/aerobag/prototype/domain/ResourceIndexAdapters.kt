@@ -378,21 +378,19 @@ private fun chartAsset(
     assetPath: String,
     thumbnailPath: String?,
 ): ChartAsset {
-    val filename = assetPath.substringAfterLast('/')
-    val thumbnailFilename = thumbnailPath?.substringAfterLast('/')
     return ChartAsset(
-        id = "$kind:$airportId:$filename",
+        id = "$kind:$airportId:${assetPath.substringAfterLast('/')}",
         airportId = airportId,
         packageId = packageId,
         label = if (kind == "csup") "CSup" else label,
         kind = kind,
         folderCategory = folderCategory(kind, label),
         sourceAssetPath = assetPath,
-        assetPath = "chart-assets/$airportId/$filename",
-        assetUrl = "/chart-assets/$airportId/$filename",
+        assetPath = assetPath,
+        assetUrl = "/$assetPath",
         thumbnailSourceAssetPath = thumbnailPath,
-        thumbnailAssetPath = thumbnailFilename?.let { "chart-thumbnails/$airportId/$it" },
-        thumbnailUrl = thumbnailFilename?.let { "/chart-thumbnails/$airportId/$it" },
+        thumbnailAssetPath = thumbnailPath,
+        thumbnailUrl = thumbnailPath?.let { "/$it" },
     )
 }
 

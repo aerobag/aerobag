@@ -80,10 +80,10 @@ fn usage() -> &'static str {
   preprocessor-cli run-native-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> --cpu-jobs <count> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-native-csup --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli run-native-tpp --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
-  preprocessor-cli build-data --input-dir <path> --output-dir <path> --manifest-version <cycle> [--resource-index-output <path>] [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
+  preprocessor-cli build-data --input-dir <path> --output-dir <path> --manifest-version <cycle> [--resource-index-output <path>] [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>]...
   preprocessor-cli build-vectors --main-db <path> --output-dir <path> --version-label <label>
   preprocessor-cli build-obstacles [--build-root <path>] [--fetch-jobs <count>] [--snapshot-date <YYYY-MM-DD>]
-  preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
+  preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>]...
   preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
@@ -592,7 +592,7 @@ fn parse_chart_source_spec(value: &str) -> anyhow::Result<ChartSource> {
 }
 
 fn parse_asset_source_spec(value: &str) -> anyhow::Result<AssetSource> {
-    let mut parts = value.splitn(3, ':');
+    let mut parts = value.splitn(4, ':');
     let package_outputs_path = parts
         .next()
         .filter(|part| !part.is_empty())
@@ -601,10 +601,21 @@ fn parse_asset_source_spec(value: &str) -> anyhow::Result<AssetSource> {
         .next()
         .filter(|part| !part.is_empty())
         .ok_or_else(|| anyhow::anyhow!("asset source is missing asset root"))?;
-    let source_urls_path = parts.next().filter(|part| !part.is_empty());
+    let third = parts.next().filter(|part| !part.is_empty());
+    let fourth = parts.next().filter(|part| !part.is_empty());
+    let (package_root, source_urls_path) = match (third, fourth) {
+        (Some(package_root), Some(source_urls_path)) => (package_root, Some(source_urls_path)),
+        (Some(source_urls_path), None) if source_urls_path.ends_with(".jsonl") => {
+            (asset_root, Some(source_urls_path))
+        }
+        (Some(package_root), None) => (package_root, None),
+        (None, None) => (asset_root, None),
+        (None, Some(_)) => unreachable!("splitn(4) cannot yield fourth without third"),
+    };
     Ok(AssetSource {
         package_outputs_path: PathBuf::from(package_outputs_path),
         asset_root: PathBuf::from(asset_root),
+        package_root: PathBuf::from(package_root),
         source_urls_path: source_urls_path.map(PathBuf::from),
     })
 }

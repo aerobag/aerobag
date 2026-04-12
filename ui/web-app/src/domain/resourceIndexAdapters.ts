@@ -249,20 +249,19 @@ function chartAssetForRecord(
   kind: "plate" | "csup",
   record: ResourceIndexJson["plates"][number] | ResourceIndexJson["csups"][number],
 ): ChartAsset {
-  const filename = record.asset_path.split("/").pop() ?? record.asset_path;
   return {
-    id: `${kind}:${airportId}:${filename}`,
+    id: `${kind}:${airportId}:${record.asset_path.split("/").pop() ?? record.asset_path}`,
     airport_id: airportId,
     package_id: record.package_id,
     label: kind === "csup" ? "CSup" : record.label,
     kind,
     folder_category: folderCategoryForRecord(kind, record),
     source_asset_path: record.asset_path,
-    asset_path: `chart-assets/${airportId}/${filename}`,
-    asset_url: `/chart-assets/${airportId}/${filename}`,
+    asset_path: record.asset_path,
+    asset_url: `/${record.asset_path}`,
     thumbnail_source_path: record.thumbnail_path ?? null,
-    thumbnail_path: record.thumbnail_path ? `chart-thumbnails/${airportId}/${record.thumbnail_path.split("/").pop() ?? filename}` : null,
-    thumbnail_url: record.thumbnail_path ? `/chart-thumbnails/${airportId}/${record.thumbnail_path.split("/").pop() ?? filename}` : null,
+    thumbnail_path: record.thumbnail_path ?? null,
+    thumbnail_url: record.thumbnail_path ? `/${record.thumbnail_path}` : null,
   };
 }
 

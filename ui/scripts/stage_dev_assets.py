@@ -110,6 +110,36 @@ def resolve_build_manifest_node(node_name: str) -> dict:
     raise RuntimeError(f"missing build manifest node {node_name} in {BUILD_MANIFEST_FILE}")
 
 
+def resolve_package_artifact_path(path_value: str) -> Path:
+    path = Path(path_value)
+    if path.is_absolute():
+        if path.is_file():
+            return path
+        marker = f"{os.sep}product-builds{os.sep}"
+        raw = str(path).replace("\\", os.sep)
+        marker_index = raw.find(marker)
+        if marker_index >= 0:
+            relative = raw[marker_index + len(marker):]
+            rebased = ARTIFACT_ROOT / "product-builds" / relative
+            candidates = [rebased]
+            normalized = relative.replace("\\", "/")
+            if normalized.startswith("shared/"):
+                suffix = normalized.removeprefix("shared/")
+                candidates.append(ARTIFACT_ROOT / "product-builds" / "validation" / suffix)
+                candidates.append(ARTIFACT_ROOT / "product-builds" / "production" / suffix)
+            elif normalized.startswith("validation/"):
+                suffix = normalized.removeprefix("validation/")
+                candidates.append(ARTIFACT_ROOT / "product-builds" / "shared" / suffix)
+            elif normalized.startswith("production/"):
+                suffix = normalized.removeprefix("production/")
+                candidates.append(ARTIFACT_ROOT / "product-builds" / "shared" / suffix)
+            for candidate in candidates:
+                if candidate.is_file():
+                    return candidate
+        return path
+    return ARTIFACT_ROOT / "product-builds" / path
+
+
 RESOURCE_INDEX_PATH = resolve_product_build_output("resource_index", "resource_index")
 VECTOR_ZIP_PATH = resolve_product_build_output("vectors", "zip")
 NAV_DB_PATH = resolve_product_build_output("data", "main_db")
@@ -191,47 +221,27 @@ def package_region(package_id: str) -> str:
     return package_id.split("_", 1)[0].lower()
 
 
-def resolve_bundle_package_dir(family_id: str, region: str) -> Path:
-    for package in PRODUCT_BUILD.get("packages", []):
-        if not isinstance(package, dict):
-            continue
-        if package.get("family_id") != family_id or package.get("region_id") != region:
-            continue
+def package_artifacts_by_id() -> dict[str, Path]:
+    artifacts: dict[str, Path] = {}
+    for package in RESOURCE_INDEX.get("packages", []):
         package_id = package.get("id")
-        if not isinstance(package_id, str) or not package_id:
-            break
-        node_name = f"{family_id}-{region}-package" if family_id == "tpp" else f"{family_id}-package-{region}"
-        if family_id in {"sec", "tac", "enr-l", "enr-h"}:
-            node_name = f"charts-{family_id}-package-{region}"
-        node = resolve_build_manifest_node(node_name)
-        outputs = node.get("outputs", {})
-        manifest_path = outputs.get("work_dir") if isinstance(outputs, dict) else None
-        if not isinstance(manifest_path, str) or not manifest_path:
-            manifest_path = outputs.get("manifest") if isinstance(outputs, dict) else None
-        if not isinstance(manifest_path, str) or not manifest_path:
-            break
-        package_dir = (ARTIFACT_ROOT / manifest_path).parent if manifest_path.endswith(package_id) or manifest_path.endswith(".zip") else (ARTIFACT_ROOT / manifest_path)
-        if package_dir.is_dir():
-            return package_dir
-        raise RuntimeError(f"missing {family_id} package dir {package_dir}")
-    raise RuntimeError(f"missing bundle package for family={family_id} region={region} in {PRODUCT_BUILD_FILE}")
+        artifact_path = package.get("artifact_path")
+        if isinstance(package_id, str) and isinstance(artifact_path, str):
+            artifacts[package_id] = resolve_package_artifact_path(artifact_path)
+    return artifacts
 
 
-def tpp_work_dir(region: str) -> Path:
-    return resolve_bundle_package_dir("tpp", region)
-
-
-def csup_work_dir(region: str) -> Path:
-    return resolve_bundle_package_dir("csup", region)
-
-
-def source_chart_asset_path(record: dict, kind: str, asset_key: str) -> Path:
-    if asset_key == "thumbnail_path":
-        return RESOURCE_INDEX_PATH.parent / record[asset_key]
-    region = package_region(record["package_id"])
-    if kind == "plate":
-        return tpp_work_dir(region) / record[asset_key]
-    return csup_work_dir(region) / record[asset_key]
+def extract_package_member(package_path: Path, member_path: str, target_root: Path) -> None:
+    target = target_root / member_path
+    if target.is_file():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(package_path) as bundle:
+        try:
+            with bundle.open(member_path) as source, target.open("wb") as output:
+                shutil.copyfileobj(source, output)
+        except KeyError as exc:
+            raise RuntimeError(f"missing packaged member {member_path} in {package_path}") from exc
 
 
 def stage_sectional_packages() -> None:
@@ -246,22 +256,18 @@ def stage_sectional_packages() -> None:
 
 
 def stage_chart_assets() -> None:
-    chart_asset_root = WEB_STATIC_ROOT / "chart-assets"
-    chart_thumbnail_root = WEB_STATIC_ROOT / "chart-thumbnails"
-    reset_dir(chart_asset_root)
-    reset_dir(chart_thumbnail_root)
+    for relative_root in ("plates", "afd", "thumbnails"):
+        reset_dir(WEB_STATIC_ROOT / relative_root)
+    package_artifacts = package_artifacts_by_id()
     for kind, records in (("plate", RESOURCE_INDEX.get("plates", [])), ("csup", RESOURCE_INDEX.get("csups", []))):
         for record in records:
-            source = source_chart_asset_path(record, kind, "asset_path")
-            if not source.is_file():
-                raise RuntimeError(f"missing {kind} asset source {source} for {record['package_id']}")
-            ensure_hard_link(source, chart_asset_root / record["airport_id"] / Path(record["asset_path"]).name)
+            package_path = package_artifacts.get(record["package_id"])
+            if package_path is None or not package_path.is_file():
+                raise RuntimeError(f"missing package artifact for {record['package_id']}")
+            extract_package_member(package_path, record["asset_path"], WEB_STATIC_ROOT)
             thumbnail_path = record.get("thumbnail_path")
             if thumbnail_path:
-                thumbnail_source = source_chart_asset_path(record, kind, "thumbnail_path")
-                if not thumbnail_source.is_file():
-                    raise RuntimeError(f"missing {kind} thumbnail source {thumbnail_source} for {record['package_id']}")
-                ensure_hard_link(thumbnail_source, chart_thumbnail_root / record["airport_id"] / Path(thumbnail_path).name)
+                extract_package_member(package_path, thumbnail_path, WEB_STATIC_ROOT)
 
 
 def stage_vectors() -> None:

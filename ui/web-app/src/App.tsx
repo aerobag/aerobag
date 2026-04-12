@@ -455,26 +455,6 @@ export default function App() {
     currentPlan !== null &&
     planUiState !== null;
 
-  if (sessionInitError) {
-    return (
-      <main className="appFrame">
-        <section className="appPage planPage">
-          <div className="planGuidanceSummary">{sessionInitError}</div>
-        </section>
-      </main>
-    );
-  }
-
-  if (!appReady || !currentPlan || !planUiState) {
-    return (
-      <main className="appFrame">
-        <section className="appPage planPage">
-          <div className="planGuidanceSummary">INITIALIZING CORE…</div>
-        </section>
-      </main>
-    );
-  }
-
   useEffect(() => {
     writePersistedWebUiState({
       page,
@@ -600,6 +580,26 @@ export default function App() {
       }) as CSSProperties,
     [],
   );
+
+  if (sessionInitError) {
+    return (
+      <main className="appFrame">
+        <section className="appPage planPage">
+          <div className="planGuidanceSummary">{sessionInitError}</div>
+        </section>
+      </main>
+    );
+  }
+
+  if (!appReady || !currentPlan || !planUiState) {
+    return (
+      <main className="appFrame">
+        <section className="appPage planPage">
+          <div className="planGuidanceSummary">INITIALIZING CORE…</div>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="appShell" style={themeVars}>

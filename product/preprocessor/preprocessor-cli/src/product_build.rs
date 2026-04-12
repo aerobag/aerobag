@@ -948,7 +948,7 @@ fn build_chart_render_node(
     let node_name = format!("charts-{family_id}-render");
     let inputs = chart_render_inputs(family, source_repo, source_urls, fetch_jobs, cpu_jobs)?;
     let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
-    let work_dir = stage_work_dir(family, source_repo, &prepared.dir)?;
+    let work_dir = prepared.dir.join("work").join(family.capture_label());
     let tiles_root = work_dir.join("tiles");
     let _build_lock = match claim_or_wait_for_node(&prepared, &[tiles_root.clone()])? {
         NodeCacheState::CacheHit(record) => return Ok(record),
@@ -956,6 +956,7 @@ fn build_chart_render_node(
     };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
+    let work_dir = stage_work_dir(family, source_repo, &prepared.dir)?;
     let provenance_dir = prepared
         .dir
         .join("meta")

@@ -324,7 +324,9 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
         ),
         (
             "nav",
-            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type FROM nav",
+            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type
+             FROM nav
+             WHERE UPPER(TRIM(Type)) IN ('VOR', 'VOR/DME', 'VORTAC')",
             "nav",
         ),
         (

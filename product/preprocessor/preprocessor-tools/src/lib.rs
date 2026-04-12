@@ -67,11 +67,23 @@ impl ToolInvocation {
         if let Some(parent) = logs.stdout.parent() {
             fs::create_dir_all(parent).context("failed to create logs directory")?;
         }
+        let image_magick_temp_dir = self.cwd.join(".tmp-imagemagick");
+        let needs_image_magick_temp_dir =
+            matches!(self.program.as_str(), "mogrify" | "convert" | "magick");
+        if needs_image_magick_temp_dir {
+            fs::create_dir_all(&image_magick_temp_dir)
+                .context("failed to create ImageMagick temp directory")?;
+        }
 
         let mut command = Command::new(&self.program);
         command.args(&self.args).current_dir(&self.cwd);
         for (key, value) in &self.env {
             command.env(key, value);
+        }
+        if needs_image_magick_temp_dir {
+            let temp_dir = image_magick_temp_dir.to_string_lossy().to_string();
+            command.env("MAGICK_TEMPORARY_PATH", &temp_dir);
+            command.env("TMPDIR", &temp_dir);
         }
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         if self.stdin_text.is_some() {

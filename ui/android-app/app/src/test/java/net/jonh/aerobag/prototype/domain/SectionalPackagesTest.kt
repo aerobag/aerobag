@@ -56,52 +56,58 @@ class SectionalPackagesTest {
 
     @Test
     fun zipPackageStoreCachesOpenZipAndEntryIndex() {
-        val zipFile = createZip(
+        createZip(
             "tiles/0/10/198/650.webp" to "tile-a".encodeToByteArray(),
             "tiles/0/10/198/651.webp" to "tile-b".encodeToByteArray(),
-        )
-        val store = ZipPackageStore()
+        ).use { tempZip ->
+            val zipFile = tempZip.zipFile
+            val store = ZipPackageStore()
 
-        val first = store.loadTileBytes(zipFile, "tiles/0/10/198/650.webp")
-        val firstIdentity = store.cachedIdentity(zipFile)
+            val first = store.loadTileBytes(zipFile, "tiles/0/10/198/650.webp")
+            val firstIdentity = store.cachedIdentity(zipFile)
 
-        val second = store.loadTileBytes(zipFile, "tiles/0/10/198/651.webp")
-        val secondIdentity = store.cachedIdentity(zipFile)
+            val second = store.loadTileBytes(zipFile, "tiles/0/10/198/651.webp")
+            val secondIdentity = store.cachedIdentity(zipFile)
 
-        assertEquals("tile-a", first?.decodeToString())
-        assertEquals("tile-b", second?.decodeToString())
-        assertEquals(2, store.cachedEntryCount(zipFile))
-        assertEquals(firstIdentity, secondIdentity)
+            assertEquals("tile-a", first?.decodeToString())
+            assertEquals("tile-b", second?.decodeToString())
+            assertEquals(2, store.cachedEntryCount(zipFile))
+            assertEquals(firstIdentity, secondIdentity)
+        }
     }
 
     @Test
     fun zipPackageStoreReloadsCacheWhenZipChanges() {
-        val zipFile = createZip("tiles/0/10/198/650.webp" to "old".encodeToByteArray())
-        val store = ZipPackageStore()
+        createZip("tiles/0/10/198/650.webp" to "old".encodeToByteArray()).use { tempZip ->
+            val zipFile = tempZip.zipFile
+            val store = ZipPackageStore()
 
-        assertEquals("old", store.loadTileBytes(zipFile, "tiles/0/10/198/650.webp")?.decodeToString())
-        val firstIdentity = store.cachedIdentity(zipFile)
+            assertEquals("old", store.loadTileBytes(zipFile, "tiles/0/10/198/650.webp")?.decodeToString())
+            val firstIdentity = store.cachedIdentity(zipFile)
 
-        rewriteZip(zipFile, "tiles/0/10/198/650.webp" to "new".encodeToByteArray())
+            rewriteZip(zipFile, "tiles/0/10/198/650.webp" to "new".encodeToByteArray())
 
-        assertEquals("new", store.loadTileBytes(zipFile, "tiles/0/10/198/650.webp")?.decodeToString())
-        assertNotEquals(firstIdentity, store.cachedIdentity(zipFile))
+            assertEquals("new", store.loadTileBytes(zipFile, "tiles/0/10/198/650.webp")?.decodeToString())
+            assertNotEquals(firstIdentity, store.cachedIdentity(zipFile))
+        }
     }
 
     @Test
     fun zipPackageStoreUsesEntryIndexToShortCircuitMissingPaths() {
-        val zipFile = createZip("tiles/0/10/198/650.webp" to "tile".encodeToByteArray())
-        val store = ZipPackageStore()
+        createZip("tiles/0/10/198/650.webp" to "tile".encodeToByteArray()).use { tempZip ->
+            val zipFile = tempZip.zipFile
+            val store = ZipPackageStore()
 
-        assertNull(store.loadTileBytes(zipFile, "tiles/0/10/198/999.webp"))
-        assertTrue((store.cachedEntryCount(zipFile) ?: 0) >= 1)
+            assertNull(store.loadTileBytes(zipFile, "tiles/0/10/198/999.webp"))
+            assertTrue((store.cachedEntryCount(zipFile) ?: 0) >= 1)
+        }
     }
 
-    private fun createZip(vararg entries: Pair<String, ByteArray>): File {
+    private fun createZip(vararg entries: Pair<String, ByteArray>): TempZip {
         val directory = Files.createTempDirectory("sectional-packages-test").toFile()
         val zipFile = File(directory, "package.zip")
         writeZip(zipFile, *entries)
-        return zipFile
+        return TempZip(directory, zipFile)
     }
 
     private fun rewriteZip(zipFile: File, vararg entries: Pair<String, ByteArray>) {
@@ -116,6 +122,15 @@ class SectionalPackagesTest {
                 zip.write(bytes)
                 zip.closeEntry()
             }
+        }
+    }
+
+    private data class TempZip(
+        private val directory: File,
+        val zipFile: File,
+    ) : AutoCloseable {
+        override fun close() {
+            directory.deleteRecursively()
         }
     }
 }

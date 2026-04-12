@@ -206,7 +206,7 @@ enum TaskValue {
 struct TaskCompletion {
     node_records: Vec<NodeRecord>,
     value: TaskValue,
-    completion_log: String,
+    completion_detail: String,
 }
 
 const PRODUCT_BUILD_CGROUP_ACTIVE_ENV: &str = "PRODUCT_BUILD_CGROUP_ACTIVE";
@@ -244,7 +244,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         .with_context(|| format!("failed to create {}", log_root.display()))?;
     let mut master_log = MasterLog::create(&log_root.join("master.log"))?;
     master_log.log(format!(
-        "begin profile={} build_root={} max_heavy_jobs={} cpu_jobs={} fetch_jobs={} fetch_cache_mode={}",
+        "begin profile={} build_root={} scheduler=weighted_dag scheduler_version=2 max_heavy_jobs={} cpu_jobs={} fetch_jobs={} fetch_cache_mode={}",
         config.profile.as_str(),
         config.build_root.display(),
         config.max_heavy_jobs,
@@ -388,6 +388,10 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         });
 
         let total_tasks = pending_tasks.len();
+        master_log.log(format!(
+            "scheduler-ready tasks={} work_unit_budget={} heavy_task_weight=4 light_task_weight=1 resource_index_weight=2",
+            total_tasks, work_unit_budget
+        ))?;
         let (tx, rx) = mpsc::channel::<(String, usize, anyhow::Result<TaskCompletion>)>();
         let mut running_jobs = 0_usize;
         let mut running_units = 0_usize;
@@ -413,9 +417,11 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 let task_weight = task.weight;
                 launched_tasks += 1;
                 master_log.log(format!(
-                    "launch {} progress={}/{} weight={} running_units={}/{}",
+                    "launch {} launched={}/{} completed={}/{} weight={} running_units={}/{}",
                     task_id,
                     launched_tasks,
+                    total_tasks,
+                    completed_tasks,
                     total_tasks,
                     task_weight,
                     running_units + task_weight,
@@ -444,7 +450,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             .map(|record| TaskCompletion {
                                 node_records: vec![record],
                                 value: TaskValue::None,
-                                completion_log: format!("complete {} progress={{}}/{}", task_id, total_tasks),
+                                completion_detail: "cache_or_rebuild".to_string(),
                             });
                             record
                         }
@@ -460,7 +466,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 Ok(TaskCompletion {
                                     node_records: vec![record.clone()],
                                     value: TaskValue::CsupStage { record, work_dir },
-                                    completion_log: format!("complete {} progress={{}}/{}", task_id, total_tasks),
+                                    completion_detail: "cache_or_rebuild".to_string(),
                                 })
                             });
                             record
@@ -481,7 +487,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             .map(|record| TaskCompletion {
                                 node_records: vec![record],
                                 value: TaskValue::None,
-                                completion_log: format!("complete {} progress={{}}/{}", task_id, total_tasks),
+                                completion_detail: "cache_or_rebuild".to_string(),
                             })
                         }
                         ScheduledTaskKind::TppRender { region, run_root } => {
@@ -499,7 +505,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             build_tpp_render_node(&config, &request).map(|record| TaskCompletion {
                                 node_records: vec![record],
                                 value: TaskValue::None,
-                                completion_log: format!("complete {} progress={{}}/{}", task_id, total_tasks),
+                                completion_detail: "cache_or_rebuild".to_string(),
                             })
                         }
                         ScheduledTaskKind::Data => build_data_nodes(&config, &source_urls_dir).and_then(|records| {
@@ -513,7 +519,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             Ok(TaskCompletion {
                                 node_records: records,
                                 value: TaskValue::Data { main_db, zip },
-                                completion_log: format!("complete {} progress={{}}/{}", task_id, total_tasks),
+                                completion_detail: "cache_or_rebuild".to_string(),
                             })
                         }),
                         ScheduledTaskKind::ChartPackage { family } => {
@@ -531,9 +537,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             Ok(TaskCompletion {
                                 node_records: records,
                                 value: TaskValue::ChartSource(source),
-                                completion_log: format!(
-                                    "complete {} elapsed_ms={} regions={} cache_hits={} rebuilt={}",
-                                    task_id,
+                                completion_detail: format!(
+                                    "elapsed_ms={} regions={} cache_hits={} rebuilt={}",
                                     started.elapsed().as_millis(),
                                     summary.total,
                                     summary.cache_hits,
@@ -549,9 +554,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             Ok(TaskCompletion {
                                 node_records: records,
                                 value: TaskValue::CsupSource(source),
-                                completion_log: format!(
-                                    "complete {} elapsed_ms={} regions={} cache_hits={} rebuilt={}",
-                                    task_id,
+                                completion_detail: format!(
+                                    "elapsed_ms={} regions={} cache_hits={} rebuilt={}",
                                     started.elapsed().as_millis(),
                                     summary.total,
                                     summary.cache_hits,
@@ -575,9 +579,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             Ok(TaskCompletion {
                                 node_records: vec![record],
                                 value: TaskValue::TppSource(source),
-                                completion_log: format!(
-                                    "complete {} elapsed_ms={} cache_hit={}",
-                                    task_id,
+                                completion_detail: format!(
+                                    "elapsed_ms={} cache_hit={}",
                                     started.elapsed().as_millis(),
                                     cache_hit,
                                 ),
@@ -593,7 +596,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             Ok(TaskCompletion {
                                 node_records: vec![record],
                                 value: TaskValue::None,
-                                completion_log: format!("complete {} cache_hit={}", task_id, cache_hit),
+                                completion_detail: format!("cache_hit={}", cache_hit),
                             })
                         }
                         ScheduledTaskKind::ResourceIndex => {
@@ -634,7 +637,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             Ok(TaskCompletion {
                                 node_records: vec![record],
                                 value: TaskValue::None,
-                                completion_log: format!("complete {} cache_hit={}", task_id, cache_hit),
+                                completion_detail: format!("cache_hit={}", cache_hit),
                             })
                         }
                     };
@@ -668,11 +671,16 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         node_records.push(normalize_node_record_paths(record, &config.build_root));
                     }
                     completed_ids.insert(task_id.clone());
-                    task_values.insert(task_id, completion.value);
-                    let completion_log = completion
-                        .completion_log
-                        .replace("{}", &completed_tasks.to_string());
-                    master_log.log(completion_log)?;
+                    task_values.insert(task_id.clone(), completion.value);
+                    master_log.log(format!(
+                        "complete {} completed={}/{} running_units={}/{} {}",
+                        task_id,
+                        completed_tasks,
+                        total_tasks,
+                        running_units,
+                        work_unit_budget,
+                        completion.completion_detail,
+                    ))?;
                 }
                 Err(err) => {
                     completed_ids.insert(task_id.clone());

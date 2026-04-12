@@ -723,6 +723,26 @@ export default function App() {
             );
             applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
           }}
+          onReplaceAirway={async (componentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
+            if (!appCoreAdapter) return;
+            const entry = airwayEntryCandidateFromPresentation(presentation, entryIndex);
+            const exit = airwayExitCandidatesFromPresentation(presentation, entryIndex)[exitIndex];
+            const materialized = await materializeAirwaySelection(
+              componentIndex,
+              entry,
+              exit,
+              originAnchor,
+              destinationAnchor,
+            );
+            const mutation = await appCoreAdapter.replaceAirwayMaterializedUi(
+              currentPlan,
+              componentIndex,
+              materialized.selection,
+              materialized.airway,
+              materialized.resolvedLegs,
+            );
+            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+          }}
         />
       </div>
 
@@ -1414,6 +1434,14 @@ function FlightPlanPage(props: {
     originAnchor: NavRef,
     destinationAnchor: NavRef,
   ) => void | Promise<void>;
+  onReplaceAirway: (
+    componentIndex: number,
+    entryIndex: number,
+    exitIndex: number,
+    presentation: AirwayPresentationPlan,
+    originAnchor: NavRef,
+    destinationAnchor: NavRef,
+  ) => void | Promise<void>;
 }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
   const [selectedWaypointAnchor, setSelectedWaypointAnchor] = useState<{ top: number; height: number } | null>(null);
@@ -1421,8 +1449,10 @@ function FlightPlanPage(props: {
   const [airwayPicker, setAirwayPicker] = useState<{
     loading: boolean;
     error: string | null;
-    startComponentIndex: number;
-    endComponentIndex: number;
+    mode: "insert" | "replace";
+    componentIndex: number | null;
+    startComponentIndex: number | null;
+    endComponentIndex: number | null;
     originAnchor: NavRef;
     destinationAnchor: NavRef;
     suggestions: AirwaySuggestion[];
@@ -1507,7 +1537,7 @@ function FlightPlanPage(props: {
   }, [componentViews]);
   const displayRows = useMemo(() => {
     const resolvedLegs = props.planUiState?.resolved_legs ?? [];
-    const componentKindByIndex = new Map(componentViews.map((component) => [component.component_index, component.kind]));
+    const componentByIndex = new Map(componentViews.map((component) => [component.component_index, component]));
     let nextLegCursor = 0;
     return hierarchicalRows.map((row) => {
       let matchingLeg = null as (typeof resolvedLegs)[number] | null;
@@ -1559,7 +1589,12 @@ function FlightPlanPage(props: {
         navRef: row.navRef,
         groupKey: row.groupKey,
         componentIndex: row.componentIndex,
-        componentKind: row.componentIndex !== null ? componentKindByIndex.get(row.componentIndex) ?? null : null,
+        componentKind: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.kind ?? null : null,
+        canAddAirwayAfter: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_add_airway_after ?? false : false,
+        canChangeAirway: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_change_airway ?? false : false,
+        canRemoveComponent: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_remove ?? false : false,
+        precedingWaypoint: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.preceding_waypoint ?? null : null,
+        followingWaypoint: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.following_waypoint ?? null : null,
       };
     });
   }, [componentViews, hierarchicalRows, props.planUiState?.resolved_legs]);
@@ -1572,10 +1607,63 @@ function FlightPlanPage(props: {
     if (selectedRow.rowKind === "group" && selectedRow.componentKind === "airway" && selectedRow.componentIndex !== null) {
       return [
         {
+          id: "change_airway",
+          label: "Change Airway",
+          enabled:
+            selectedRow.canChangeAirway &&
+            selectedRow.precedingWaypoint !== null &&
+            selectedRow.followingWaypoint !== null,
+          onSelect: () => {
+            if (
+              !selectedRow.canChangeAirway ||
+              selectedRow.precedingWaypoint === null ||
+              selectedRow.followingWaypoint === null
+            ) {
+              return;
+            }
+            const adapter = props.appCoreAdapter;
+            if (!adapter) {
+              return;
+            }
+            setAirwayPicker({
+              loading: true,
+              error: null,
+              mode: "replace",
+              componentIndex: selectedRow.componentIndex,
+              startComponentIndex: null,
+              endComponentIndex: null,
+              originAnchor: selectedRow.precedingWaypoint,
+              destinationAnchor: selectedRow.followingWaypoint,
+              suggestions: [],
+              selectedAirwayName: null,
+              presentation: null,
+              selectedEntryIndex: null,
+            });
+            window.requestAnimationFrame(() => {
+              void suggestAirwaysNearAnchor(adapter, selectedRow.precedingWaypoint!).then((suggestions) => {
+                setAirwayPicker((current) => current ? {
+                  ...current,
+                  loading: false,
+                  suggestions,
+                } : current);
+              }).catch((error) => {
+                setAirwayPicker((current) => current ? {
+                  ...current,
+                  loading: false,
+                  error: error instanceof Error ? error.message : String(error),
+                } : current);
+              });
+            });
+          },
+        },
+        {
           id: "remove_airway",
           label: "Remove Airway",
-          enabled: true,
+          enabled: selectedRow.canRemoveComponent,
           onSelect: () => {
+            if (!selectedRow.canRemoveComponent) {
+              return;
+            }
             void props.onDeleteComponent(selectedRow.componentIndex!);
             setReorderOpen(false);
             setSelectedWaypointIndex(null);
@@ -1618,7 +1706,8 @@ function FlightPlanPage(props: {
           : action.id === "remove"
             ? selectedRow.removeLegIndex !== null
           : action.id === "add_airway"
-            ? selectedRow.startComponentIndex !== null &&
+            ? selectedRow.canAddAirwayAfter &&
+              selectedRow.startComponentIndex !== null &&
               selectedRow.endComponentIndex !== null &&
               selectedRow.originAnchor !== null &&
               selectedRow.destinationAnchor !== null &&
@@ -1653,6 +1742,8 @@ function FlightPlanPage(props: {
             setAirwayPicker({
               loading: true,
               error: null,
+              mode: "insert",
+              componentIndex: null,
               startComponentIndex: selectedRow.startComponentIndex!,
               endComponentIndex: selectedRow.endComponentIndex!,
               originAnchor: selectedRow.originAnchor!,
@@ -2087,15 +2178,31 @@ function FlightPlanPage(props: {
                           );
                           setAirwayPicker((current) => current ? { ...current, loading: true, error: null } : current);
                           try {
-                            await props.onInsertAirway(
-                              airwayPicker.startComponentIndex,
-                              airwayPicker.endComponentIndex,
-                              selectedEntryIndex,
-                              index,
-                              presentation,
-                              airwayPicker.originAnchor,
-                              airwayPicker.destinationAnchor,
-                            );
+                            if (airwayPicker.mode === "replace" && airwayPicker.componentIndex !== null) {
+                              await props.onReplaceAirway(
+                                airwayPicker.componentIndex,
+                                selectedEntryIndex,
+                                index,
+                                presentation,
+                                airwayPicker.originAnchor,
+                                airwayPicker.destinationAnchor,
+                              );
+                            } else if (
+                              airwayPicker.startComponentIndex !== null &&
+                              airwayPicker.endComponentIndex !== null
+                            ) {
+                              await props.onInsertAirway(
+                                airwayPicker.startComponentIndex,
+                                airwayPicker.endComponentIndex,
+                                selectedEntryIndex,
+                                index,
+                                presentation,
+                                airwayPicker.originAnchor,
+                                airwayPicker.destinationAnchor,
+                              );
+                            } else {
+                              throw new Error("airway picker missing insertion span");
+                            }
                             setAirwayPicker(null);
                             setSelectedWaypointIndex(null);
                           } catch (error) {
@@ -3098,6 +3205,11 @@ function buildLegacyComponentViews(plan: typeof samplePlan): FlightPlanUiState["
     summary: navRefLabel(waypoint),
     items: [{ kind: "waypoint", nav_ref: waypoint }],
     active: false,
+    can_add_airway_after: index + 1 < waypoints.length,
+    can_change_airway: false,
+    can_remove: false,
+    preceding_waypoint: index > 0 ? waypoints[index - 1] : null,
+    following_waypoint: index + 1 < waypoints.length ? waypoints[index + 1] : null,
   }));
 }
 

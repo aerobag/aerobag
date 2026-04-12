@@ -183,6 +183,11 @@ export type RouteComponentUiView = {
   summary: string;
   items: ConcretizedNavItem[];
   active: boolean;
+  can_add_airway_after: boolean;
+  can_change_airway: boolean;
+  can_remove: boolean;
+  preceding_waypoint: NavRef | null;
+  following_waypoint: NavRef | null;
 };
 
 export type ResolvedLegUiView = {

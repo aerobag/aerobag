@@ -200,6 +200,11 @@ pub struct RouteComponentUiView {
     pub summary: String,
     pub items: Vec<ConcretizedNavItem>,
     pub active: bool,
+    pub can_add_airway_after: bool,
+    pub can_change_airway: bool,
+    pub can_remove: bool,
+    pub preceding_waypoint: Option<NavRef>,
+    pub following_waypoint: Option<NavRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -588,6 +593,15 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
                 intrinsic_component_legs(&plan, &grouped_legs, component_index),
             ),
             active: active_component_index == Some(component_index),
+            can_add_airway_after: matches!(component, RouteComponent::Waypoint { .. })
+                && matches!(
+                    plan.route_components.get(component_index + 1),
+                    Some(RouteComponent::Waypoint { .. })
+                ),
+            can_change_airway: matches!(component, RouteComponent::Airway { .. }),
+            can_remove: !matches!(component, RouteComponent::Waypoint { .. }),
+            preceding_waypoint: adjacent_waypoint_component(&plan.route_components, component_index, -1),
+            following_waypoint: adjacent_waypoint_component(&plan.route_components, component_index, 1),
         })
         .collect();
 
@@ -638,6 +652,22 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         components,
         resolved_legs,
         guidance,
+    }
+}
+
+fn adjacent_waypoint_component(
+    components: &[RouteComponent],
+    component_index: usize,
+    direction: isize,
+) -> Option<NavRef> {
+    let adjacent_index = if direction < 0 {
+        component_index.checked_sub(direction.unsigned_abs())?
+    } else {
+        component_index.checked_add(direction as usize)?
+    };
+    match components.get(adjacent_index) {
+        Some(RouteComponent::Waypoint { waypoint }) => Some(waypoint.clone()),
+        _ => None,
     }
 }
 
@@ -3000,6 +3030,30 @@ mod tests {
         );
         assert_eq!(ui.resolved_legs[0].from, NavRef::Airport("KRNT".to_string()));
         assert_eq!(ui.resolved_legs[0].to, NavRef::Navaid("SEA".to_string()));
+    }
+
+    #[test]
+    fn project_ui_state_exposes_airway_editability_and_span_occupancy_flags() {
+        let inserted = insert_airway_between_waypoints(
+            &sample_waypoint_only_plan(),
+            0,
+            1,
+            sample_inserted_airway().0,
+            sample_inserted_airway().1,
+        )
+        .unwrap();
+
+        let ui = project_ui_state(&inserted);
+
+        assert!(!ui.components[0].can_add_airway_after);
+        assert_eq!(ui.components[0].following_waypoint, None);
+
+        assert!(ui.components[2].can_add_airway_after);
+
+        assert!(ui.components[1].can_change_airway);
+        assert!(ui.components[1].can_remove);
+        assert_eq!(ui.components[1].preceding_waypoint, Some(NavRef::Airport("KRNT".to_string())));
+        assert_eq!(ui.components[1].following_waypoint, Some(NavRef::Airport("KUAO".to_string())));
     }
 
     #[test]

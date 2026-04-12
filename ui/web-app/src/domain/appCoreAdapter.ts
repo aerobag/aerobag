@@ -144,6 +144,13 @@ export interface AppCoreAdapter {
     airway: AirwaySegment,
     resolvedLegs: ResolvedLeg[],
   ): Promise<FlightPlanUiMutation>;
+  replaceAirwayMaterializedUi(
+    plan: FlightPlan,
+    componentIndex: number,
+    selection: AirwayAutoSelection,
+    airway: AirwaySegment,
+    resolvedLegs: ResolvedLeg[],
+  ): Promise<FlightPlanUiMutation>;
   chartForPosition(
     catalog: CatalogJson,
     geometry: { polygons: Array<{ id: string; points: number[][] }> },
@@ -507,6 +514,10 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
     throw new Error("airway insertion requires wasm adapter");
   }
 
+  async replaceAirwayMaterializedUi(): Promise<FlightPlanUiMutation> {
+    throw new Error("airway replacement requires wasm adapter");
+  }
+
   async chartForPosition(
     catalog: CatalogJson,
     geometry: { polygons: Array<{ id: string; points: number[][] }> },
@@ -572,6 +583,13 @@ type WasmModule = {
     planJson: string,
     startComponentIndex: number,
     endComponentIndex: number,
+    selectionJson: string,
+    airwayJson: string,
+    resolvedLegsJson: string,
+  ): Promise<string> | string;
+  replace_airway_materialized_ui(
+    planJson: string,
+    componentIndex: number,
     selectionJson: string,
     airwayJson: string,
     resolvedLegsJson: string,
@@ -810,6 +828,28 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     };
   }
 
+  async replaceAirwayMaterializedUi(
+    plan: FlightPlan,
+    componentIndex: number,
+    selection: AirwayAutoSelection,
+    airway: AirwaySegment,
+    resolvedLegs: ResolvedLeg[],
+  ): Promise<FlightPlanUiMutation> {
+    const result = JSON.parse(
+      await this.module.replace_airway_materialized_ui(
+        JSON.stringify(plan),
+        componentIndex,
+        JSON.stringify(selection),
+        JSON.stringify(airway),
+        JSON.stringify(resolvedLegs),
+      ),
+    ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
+    return {
+      plan: result.mutation.plan,
+      ui_state: result.ui_state,
+    };
+  }
+
   async chartForPosition(
     catalog: CatalogJson,
     geometry: { polygons: Array<{ id: string; points: number[][] }> },
@@ -863,6 +903,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.prepare_airway_presentation !== "function" ||
     typeof mod.sort_airway_suggestions_for_ui !== "function" ||
     typeof mod.insert_airway_materialized_ui !== "function" ||
+    typeof mod.replace_airway_materialized_ui !== "function" ||
     typeof mod.derive_chart_page !== "function" ||
     typeof mod.derive_chart_page_state !== "function" ||
     typeof mod.set_content_policy_state !== "function" ||

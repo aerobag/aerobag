@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.os.Bundle
 import android.os.SystemClock
+import android.util.Log
 import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
 import androidx.appcompat.content.res.AppCompatResources
@@ -140,6 +141,7 @@ import net.jonh.aerobag.prototype.domain.preserveViewportForMap
 import net.jonh.aerobag.prototype.domain.renderTiles
 import net.jonh.aerobag.prototype.domain.scaleForZoom
 import net.jonh.aerobag.prototype.domain.screenToWorld
+import net.jonh.aerobag.prototype.domain.tileRelativePath
 import net.jonh.aerobag.prototype.domain.viewportCenterLatLon
 import net.jonh.aerobag.prototype.domain.zoomAroundPoint
 import net.jonh.aerobag.prototype.domain.zoomImageAroundPoint
@@ -1190,9 +1192,37 @@ private fun MapExplorerPage(
     val tileBitmaps = remember(tiles, selectedMap.id, installRevision) {
         tiles.associate { tile ->
             Triple(tile.zoom, tile.x, tile.yTms) to runCatching {
-                SectionalPackages.loadTileBytes(context, tile)
-                    ?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
+                val bytes = SectionalPackages.loadTileBytes(context, tile, familyPackageNames) ?: return@runCatching null
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bitmap == null) {
+                    Log.e(
+                        "AerobagTiles",
+                        "bitmap decode returned null package=${tile.mapView.packageName} path=${tileRelativePath(tile)} bytes=${bytes.size}",
+                    )
+                    null
+                } else {
+                    bitmap.asImageBitmap()
+                }
             }.getOrNull()
+        }
+    }
+    LaunchedEffect(selectedMap.id, selectedMap.mapView.chartFamily, tiles, tileBitmaps) {
+        if (selectedMap.mapView.chartFamily != MapChartFamily.Tac) {
+            return@LaunchedEffect
+        }
+        val z10Tiles = tiles.filter { it.zoom == 10 }
+        val targetRow = z10Tiles.filter { it.yTms == 663 }
+        Log.w(
+            "AerobagTiles",
+            "render-set map=${selectedMap.id} package=${selectedMap.mapView.packageName} z10=${z10Tiles.size} row663=${targetRow.size}",
+        )
+        targetRow.forEach { tile ->
+            val key = Triple(tile.zoom, tile.x, tile.yTms)
+            val hasBitmap = tileBitmaps[key] != null
+            Log.w(
+                "AerobagTiles",
+                "render-tile package=${tile.mapView.packageName} path=${tileRelativePath(tile)} hasBitmap=$hasBitmap left=${tile.leftPx} top=${tile.topPx} size=${tile.sizePx}",
+            )
         }
     }
     val tileLabelPaint = remember {

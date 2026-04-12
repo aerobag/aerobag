@@ -1,12 +1,14 @@
 package net.jonh.aerobag.prototype.domain
 
 import android.content.Context
+import android.util.Log
 import java.io.File
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipFile
 
 object SectionalPackages {
+    private const val TAG = "AerobagTiles"
     private const val ASSET_DIR = "sectional-packages"
     private const val INSTALL_DIR = "sectional-packages"
     private val packageStore = ZipPackageStore()
@@ -55,7 +57,11 @@ object SectionalPackages {
         return target
     }
 
-    fun loadTileBytes(context: Context, tile: RenderTile): ByteArray? {
+    fun loadTileBytes(
+        context: Context,
+        tile: RenderTile,
+        packageCandidates: List<String> = emptyList(),
+    ): ByteArray? {
         return when (tile.mapView.storageKind) {
             TileStorageKind.AssetTree ->
                 runCatching {
@@ -64,11 +70,30 @@ object SectionalPackages {
 
             TileStorageKind.SectionalPackage -> {
                 val packageName = tile.mapView.packageName ?: return null
-                val installed = existingInstalledFile(context, packageName) ?: return null
-                if (!installed.isFile) {
-                    return null
+                val candidateNames = buildList {
+                    add(packageName)
+                    packageCandidates.forEach { candidate ->
+                        if (candidate != packageName) {
+                            add(candidate)
+                        }
+                    }
                 }
-                packageStore.loadTileBytes(installed, tileRelativePath(tile))
+                val relativePath = tileRelativePath(tile)
+                candidateNames.forEach { candidateName ->
+                    val installed = existingInstalledFile(context, candidateName) ?: return@forEach
+                    if (!installed.isFile) {
+                        return@forEach
+                    }
+                    val bytes = packageStore.loadTileBytes(installed, relativePath)
+                    if (bytes != null) {
+                        if (candidateName != packageName) {
+                            Log.w(TAG, "fallback hit requested=$packageName served=$candidateName path=$relativePath")
+                        }
+                        return bytes
+                    }
+                }
+                Log.w(TAG, "tile unavailable across family package=$packageName path=$relativePath candidates=${candidateNames.joinToString(",")}")
+                null
             }
         }
     }
@@ -82,15 +107,24 @@ object SectionalPackages {
 }
 
 internal class ZipPackageStore {
+    companion object {
+        private const val TAG = "AerobagTiles"
+    }
+
     private val openPackages = ConcurrentHashMap<String, OpenZipPackage>()
 
     fun loadTileBytes(file: File, relativePath: String): ByteArray? {
         val packageRef = packageFor(file)
         if (!packageRef.entries.contains(relativePath)) {
+            Log.w(TAG, "zip missing entry file=${file.name} path=$relativePath entries=${packageRef.entries.size}")
             return null
         }
         val entry = packageRef.zipFile.getEntry(relativePath) ?: return null
-        return packageRef.zipFile.getInputStream(entry).use { it.readBytes() }
+        return runCatching {
+            packageRef.zipFile.getInputStream(entry).use { it.readBytes() }
+        }.onFailure { error ->
+            Log.e(TAG, "zip read failed file=${file.name} path=$relativePath", error)
+        }.getOrNull()
     }
 
     fun invalidate(file: File) {

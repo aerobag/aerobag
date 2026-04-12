@@ -184,7 +184,11 @@ fun renderTiles(
     val tiles = mapViews.flatMap { (mapViewId, mapView) ->
         renderTilesForMapView(mapViewId, mapView, viewport, widthPx, heightPx)
     }
-    return dedupeTiles(tiles)
+    return dedupeTiles(tiles).sortedWith(
+        compareBy<RenderTile> { it.zoom }
+            .thenBy { it.yTms }
+            .thenBy { it.x },
+    )
 }
 
 private fun renderTilesForMapView(

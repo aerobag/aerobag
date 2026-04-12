@@ -22,6 +22,8 @@ data class PointVectorRecord(
     val towered: Boolean? = null,
     @kotlinx.serialization.SerialName("fuel_available")
     val fuelAvailable: Boolean? = null,
+    @kotlinx.serialization.SerialName("longest_runway_length_ft")
+    val longestRunwayLengthFt: Double? = null,
     @kotlinx.serialization.SerialName("longest_runway_heading_true_deg")
     val longestRunwayHeadingTrueDeg: Double? = null,
 )
@@ -46,6 +48,7 @@ data class VisibleMapFeature(
     val screenY: Double,
     val towered: Boolean,
     val fuelAvailable: Boolean,
+    val runwayLengthRatio: Double,
     val longestRunwayHeadingTrueDeg: Double?,
 )
 
@@ -535,6 +538,7 @@ private fun WireVisibleMapFeature.toUi() = VisibleMapFeature(
     screenY = screen_y,
     towered = towered,
     fuelAvailable = fuel_available,
+    runwayLengthRatio = runway_length_ratio,
     longestRunwayHeadingTrueDeg = longest_runway_heading_true_deg,
 )
 

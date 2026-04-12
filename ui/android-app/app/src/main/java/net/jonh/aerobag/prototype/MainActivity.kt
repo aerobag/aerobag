@@ -1227,6 +1227,18 @@ private fun MapExplorerPage(
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
         }
     }
+    val airportLabelStrokePaint = remember {
+        Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.argb(179, 8, 18, 24)
+            style = Paint.Style.STROKE
+            strokeJoin = Paint.Join.ROUND
+            strokeWidth = 3f
+            textAlign = Paint.Align.LEFT
+            textSize = 14f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
+        }
+    }
     val vorLabelFillPaint = remember {
         Paint().apply {
             isAntiAlias = true
@@ -1566,6 +1578,8 @@ private fun MapExplorerPage(
                 val densityScale = density.density
                 fixLabelStrokePaint.textSize = 14f * densityScale
                 fixLabelStrokePaint.strokeWidth = 3f * densityScale
+                airportLabelStrokePaint.textSize = 14f * densityScale
+                airportLabelStrokePaint.strokeWidth = 3f * densityScale
                 fixLabelFillPaint.textSize = 14f * densityScale
                 airportToweredLabelFillPaint.textSize = 14f * densityScale
                 airportUntoweredLabelFillPaint.textSize = 14f * densityScale
@@ -1630,8 +1644,9 @@ private fun MapExplorerPage(
                         }
                         feature.longestRunwayHeadingTrueDeg?.let { headingDeg ->
                             val headingRad = Math.toRadians(headingDeg)
-                            val dx = kotlin.math.sin(headingRad).toFloat() * 8f * densityScale
-                            val dy = (-kotlin.math.cos(headingRad)).toFloat() * 8f * densityScale
+                            val runwayHalfLength = (8f * feature.runwayLengthRatio.toFloat().coerceIn(0f, 1f)).coerceAtLeast(1.6f) * densityScale
+                            val dx = kotlin.math.sin(headingRad).toFloat() * runwayHalfLength
+                            val dy = (-kotlin.math.cos(headingRad)).toFloat() * runwayHalfLength
                             drawLine(
                                 color = airportMarkerStrokeColor,
                                 start = Offset(center.x - dx, center.y - dy),
@@ -1650,7 +1665,7 @@ private fun MapExplorerPage(
                         drawContext.canvas.nativeCanvas.apply {
                             val textX = center.x + 18f * densityScale
                             val textY = center.y + 5f * densityScale
-                            drawText(feature.label, textX, textY, fixLabelStrokePaint)
+                            drawText(feature.label, textX, textY, airportLabelStrokePaint)
                             drawText(feature.label, textX, textY, airportLabelPaint)
                         }
                     } else if (isVor) {

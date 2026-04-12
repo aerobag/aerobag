@@ -1243,22 +1243,29 @@ function MapPage(props: {
                         {feature.fuel_available ? <path d={airportFuelTabsPath} className={airportClass} /> : null}
                         {feature.longest_runway_heading_true_deg != null ? (
                           <>
+                            {(() => {
+                              const halfLength = 8 * Math.max(feature.runway_length_ratio, 0.2);
+                              return (
+                                <>
                             <line
                               x1="0"
-                              y1="-8"
+                              y1={-halfLength}
                               x2="0"
-                              y2="8"
+                              y2={halfLength}
                               className="airportRunwayBarUnder"
                               transform={`rotate(${feature.longest_runway_heading_true_deg})`}
                             />
                             <line
                               x1="0"
-                              y1="-8"
+                              y1={-halfLength}
                               x2="0"
-                              y2="8"
+                              y2={halfLength}
                               className="airportRunwayBar"
                               transform={`rotate(${feature.longest_runway_heading_true_deg})`}
                             />
+                                </>
+                              );
+                            })()}
                           </>
                         ) : null}
                         <text x="18" y="5" textAnchor="start" className={airportLabelClass}>

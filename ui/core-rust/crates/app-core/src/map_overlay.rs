@@ -6,7 +6,9 @@ use crate::{geometry::LatLon, MapViewport};
 
 pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 1000;
 const POINT_TILE_ZOOM: u32 = 9;
-const POINT_MIN_DISPLAY_ZOOM: f64 = 9.0;
+const AIRPORT_MIN_DISPLAY_ZOOM: f64 = 8.0;
+const FIX_MIN_DISPLAY_ZOOM: f64 = 9.0;
+const NAV_MIN_DISPLAY_ZOOM: f64 = 9.0;
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.051_128_78;
 
@@ -31,6 +33,8 @@ pub struct PointVectorRecord {
     #[serde(default)]
     pub fuel_available: Option<bool>,
     #[serde(default)]
+    pub longest_runway_length_ft: Option<f64>,
+    #[serde(default)]
     pub longest_runway_heading_true_deg: Option<f64>,
 }
 
@@ -54,6 +58,7 @@ pub struct VisibleMapFeature {
     pub screen_y: f64,
     pub towered: bool,
     pub fuel_available: bool,
+    pub runway_length_ratio: f64,
     pub longest_runway_heading_true_deg: Option<f64>,
 }
 
@@ -75,13 +80,19 @@ pub fn visible_point_tile_window(
     width_px: f64,
     height_px: f64,
 ) -> Vec<VectorTileRequest> {
-    if viewport.zoom < POINT_MIN_DISPLAY_ZOOM || width_px <= 0.0 || height_px <= 0.0 {
+    if width_px <= 0.0 || height_px <= 0.0 {
         return Vec::new();
     }
     let mut tiles = Vec::new();
-    tiles.extend(visible_layer_tile_window("airport", POINT_TILE_ZOOM, viewport, width_px, height_px));
-    tiles.extend(visible_layer_tile_window("fix", POINT_TILE_ZOOM, viewport, width_px, height_px));
-    tiles.extend(visible_layer_tile_window("nav", POINT_TILE_ZOOM, viewport, width_px, height_px));
+    if viewport.zoom >= AIRPORT_MIN_DISPLAY_ZOOM {
+        tiles.extend(visible_layer_tile_window("airport", POINT_TILE_ZOOM, viewport, width_px, height_px));
+    }
+    if viewport.zoom >= FIX_MIN_DISPLAY_ZOOM {
+        tiles.extend(visible_layer_tile_window("fix", POINT_TILE_ZOOM, viewport, width_px, height_px));
+    }
+    if viewport.zoom >= NAV_MIN_DISPLAY_ZOOM {
+        tiles.extend(visible_layer_tile_window("nav", POINT_TILE_ZOOM, viewport, width_px, height_px));
+    }
     tiles
 }
 
@@ -154,6 +165,7 @@ pub fn query_map_overlay(
                 screen_y: point.y,
                 towered: record.towered.unwrap_or(false),
                 fuel_available: record.fuel_available.unwrap_or(false),
+                runway_length_ratio: runway_length_ratio(record.longest_runway_length_ft),
                 longest_runway_heading_true_deg: record.longest_runway_heading_true_deg,
             });
         }
@@ -219,6 +231,10 @@ fn is_vor_family_kind(kind: &str) -> bool {
     matches!(kind.to_ascii_lowercase().as_str(), "vor" | "vor/dme" | "vortac")
 }
 
+fn runway_length_ratio(longest_runway_length_ft: Option<f64>) -> f64 {
+    (longest_runway_length_ft.unwrap_or(0.0) / 5000.0).clamp(0.0, 1.0)
+}
+
 #[derive(Clone, Copy)]
 struct WorldPoint {
     x: f64,
@@ -256,14 +272,17 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     #[test]
-    fn suppresses_fix_tiles_below_threshold_zoom() {
+    fn suppresses_fix_and_nav_tiles_below_threshold_zoom_but_keeps_airports() {
         let viewport = MapViewport {
             center: LatLon { lat: 47.36, lon: -121.98 },
             zoom: 8.9,
             rotation_deg: 0.0,
             pitch_deg: 0.0,
         };
-        assert!(visible_point_tile_window(&viewport, 1200.0, 900.0).is_empty());
+        let tiles = visible_point_tile_window(&viewport, 1200.0, 900.0);
+        assert!(tiles.iter().any(|tile| tile.layer == "airport"));
+        assert!(!tiles.iter().any(|tile| tile.layer == "fix"));
+        assert!(!tiles.iter().any(|tile| tile.layer == "nav"));
     }
 
     #[test]
@@ -295,6 +314,7 @@ mod tests {
                         style_class: "fix".to_string(),
                         towered: None,
                         fuel_available: None,
+                        longest_runway_length_ft: None,
                         longest_runway_heading_true_deg: None,
                     })
                     .collect(),

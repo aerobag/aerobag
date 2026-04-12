@@ -1584,81 +1584,108 @@ function FlightPlanPage(props: {
       ];
     }
 
-    const actions: Array<{ id: string; label: string; enabled: boolean; onSelect: () => void }> = [];
-
-    if (selectedRow.legIndex !== null) {
-      actions.push({
-        id: "activate_leg",
-        label: "Activate Leg",
-        enabled: true,
-        onSelect: () => {
-          void props.onActivateLeg(selectedRow.legIndex!);
-          setReorderOpen(false);
-          setSelectedWaypointIndex(null);
-        },
-      });
+    if (selectedRow.rowKind !== "waypoint") {
+      return [] as Array<{ id: string; label: string; enabled: boolean; onSelect: () => void }>;
     }
 
-    if (
-      selectedRow.startComponentIndex !== null &&
-      selectedRow.endComponentIndex !== null &&
-      selectedRow.originAnchor &&
-      selectedRow.destinationAnchor
-    ) {
-      actions.push({
-        id: "add_airway",
-        label: "Add Airway",
-        enabled: true,
+    const closeTray = () => {
+      setReorderOpen(false);
+      setSelectedWaypointIndex(null);
+    };
+
+    const topLevelWaypoint = selectedRow.depth === 0;
+    const waypointActionDefs = topLevelWaypoint
+      ? [
+          { id: "activate_leg", label: "Activate Leg" },
+          { id: "remove", label: "Remove" },
+          { id: "insert", label: "Insert" },
+          { id: "reorder", label: "Reorder" },
+          { id: "waypoint_info", label: "Waypoint Info" },
+          { id: "add_airway", label: "Add Airway" },
+          { id: "select_procedure", label: "Select Procedure" },
+          { id: "charts", label: "Charts" },
+        ]
+      : [
+          { id: "activate_leg", label: "Activate Leg" },
+          { id: "waypoint_info", label: "Waypoint Info" },
+          { id: "charts", label: "Charts" },
+        ];
+
+    return waypointActionDefs.map((action) => {
+      const enabled =
+        action.id === "activate_leg"
+          ? selectedRow.legIndex !== null
+          : action.id === "remove"
+            ? selectedRow.removeLegIndex !== null
+          : action.id === "add_airway"
+            ? selectedRow.startComponentIndex !== null &&
+              selectedRow.endComponentIndex !== null &&
+              selectedRow.originAnchor !== null &&
+              selectedRow.destinationAnchor !== null &&
+              props.appCoreAdapter !== null
+            : action.id === "charts"
+              ? selectedRow.chartAirportId !== null
+              : false;
+
+      return {
+        id: action.id,
+        label: action.label,
+        enabled,
         onSelect: () => {
-          const adapter = props.appCoreAdapter;
-          if (!adapter) {
+          if (!enabled) {
             return;
           }
-          setAirwayPicker({
-            loading: true,
-            error: null,
-            startComponentIndex: selectedRow.startComponentIndex!,
-            endComponentIndex: selectedRow.endComponentIndex!,
-            originAnchor: selectedRow.originAnchor!,
-            destinationAnchor: selectedRow.destinationAnchor!,
-            suggestions: [],
-            selectedAirwayName: null,
-            presentation: null,
-            selectedEntryIndex: null,
-          });
-          window.requestAnimationFrame(() => {
-            void suggestAirwaysNearAnchor(adapter, selectedRow.originAnchor!).then((suggestions) => {
-              setAirwayPicker((current) => current ? {
-                ...current,
-                loading: false,
-                suggestions,
-              } : current);
-            }).catch((error) => {
-              setAirwayPicker((current) => current ? {
-                ...current,
-                loading: false,
-                error: error instanceof Error ? error.message : String(error),
-              } : current);
+          if (action.id === "activate_leg") {
+            void props.onActivateLeg(selectedRow.legIndex!);
+            closeTray();
+            return;
+          }
+          if (action.id === "remove") {
+            void props.onRemoveWaypoint(selectedRow.removeLegIndex!);
+            closeTray();
+            return;
+          }
+          if (action.id === "add_airway") {
+            const adapter = props.appCoreAdapter;
+            if (!adapter) {
+              return;
+            }
+            setAirwayPicker({
+              loading: true,
+              error: null,
+              startComponentIndex: selectedRow.startComponentIndex!,
+              endComponentIndex: selectedRow.endComponentIndex!,
+              originAnchor: selectedRow.originAnchor!,
+              destinationAnchor: selectedRow.destinationAnchor!,
+              suggestions: [],
+              selectedAirwayName: null,
+              presentation: null,
+              selectedEntryIndex: null,
             });
-          });
+            window.requestAnimationFrame(() => {
+              void suggestAirwaysNearAnchor(adapter, selectedRow.originAnchor!).then((suggestions) => {
+                setAirwayPicker((current) => current ? {
+                  ...current,
+                  loading: false,
+                  suggestions,
+                } : current);
+              }).catch((error) => {
+                setAirwayPicker((current) => current ? {
+                  ...current,
+                  loading: false,
+                  error: error instanceof Error ? error.message : String(error),
+                } : current);
+              });
+            });
+            return;
+          }
+          if (action.id === "charts") {
+            props.onOpenCharts(selectedRow.chartAirportId);
+            closeTray();
+          }
         },
-      });
-    }
-
-    if (selectedRow.chartAirportId !== null) {
-      actions.push({
-        id: "charts",
-        label: "Charts",
-        enabled: true,
-        onSelect: () => {
-          props.onOpenCharts(selectedRow.chartAirportId);
-          setReorderOpen(false);
-          setSelectedWaypointIndex(null);
-        },
-      });
-    }
-
-    return actions;
+      };
+    });
   }, [props, selectedRow]);
 
   useEffect(() => {

@@ -106,6 +106,8 @@ struct PointRecord {
     lon: f64,
     label: String,
     style_class: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    towered: Option<bool>,
 }
 
 pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<BuildVectorsResult> {
@@ -122,7 +124,7 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
     let stats_path = request.output_dir.join("stats.json");
     let manifest_path = request
         .output_dir
-        .join(format!("vectors_{}", request.version_label));
+        .join(format!("vectors_{}.manifest", request.version_label));
     let zip_path = request
         .output_dir
         .join(format!("vectors_{}.zip", request.version_label));
@@ -226,7 +228,7 @@ pub fn build_obstacle_dataset(
     let stats_path = request.output_dir.join("stats.json");
     let manifest_path = request
         .output_dir
-        .join(format!("obstacles_{}", request.version_label));
+        .join(format!("obstacles_{}.manifest", request.version_label));
     let zip_path = request
         .output_dir
         .join(format!("obstacles_{}.zip", request.version_label));
@@ -319,7 +321,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
     let point_sources = [
         (
             "airports",
-            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type FROM airports WHERE ARPLatitude != '' AND ARPLongitude != ''",
+            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, ATCT FROM airports WHERE ARPLatitude != '' AND ARPLongitude != ''",
             "airport",
         ),
         (
@@ -354,10 +356,16 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
             let lon: f64 = parse_f64_cell(row, 2)?;
             let label: String = row.get::<_, String>(3)?;
             let kind: String = row.get::<_, String>(4)?;
-            Ok((id, lat, lon, label, kind))
+            let towered = if table_name == "airports" {
+                let atct: String = row.get::<_, String>(5)?;
+                Some(!atct.trim().is_empty())
+            } else {
+                None
+            };
+            Ok((id, lat, lon, label, kind, towered))
         })?;
         for row in rows {
-            let (raw_id, lat, lon, label, kind) = row?;
+            let (raw_id, lat, lon, label, kind, towered) = row?;
             if !valid_lat_lon(lat, lon) {
                 continue;
             }
@@ -369,6 +377,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                 lon,
                 label,
                 style_class: style_class.to_string(),
+                towered,
             });
         }
     }
@@ -427,6 +436,7 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<PointRecord>> {
             lon,
             label: format!("Obstacle {:.0}ft", height_msl),
             style_class: "obstacle".to_string(),
+            towered: None,
         });
     }
     Ok(points)

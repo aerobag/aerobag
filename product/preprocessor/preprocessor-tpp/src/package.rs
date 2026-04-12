@@ -36,7 +36,8 @@ pub(crate) fn package_region_versioned(
     manifest_version: &str,
     artifact_version: &str,
 ) -> anyhow::Result<usize> {
-    let manifest_name = format!("{}_TPP_{}", region.code(), artifact_version);
+    let package_id = format!("{}_TPP_{}", region.code(), artifact_version);
+    let manifest_name = format!("{package_id}.manifest");
     let zip_name = format!("{}_TPP_{}.zip", region.code(), artifact_version);
     let manifest_path = work_dir.join(&manifest_name);
     let zip_path = work_dir.join(&zip_name);
@@ -49,7 +50,7 @@ pub(crate) fn package_region_versioned(
     let selected = with_thumbnail_members(work_dir, &selected)?;
     write_package_asset_manifest(
         &package_assets_path,
-        &manifest_name,
+        &package_id,
         &selected,
     )?;
     let mut manifest_text = String::new();

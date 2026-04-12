@@ -1182,7 +1182,7 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
         .artifact_stem
         .as_deref()
         .unwrap_or("databases");
-    let manifest_path = request.output_dir.join(artifact_stem);
+    let manifest_path = request.output_dir.join(format!("{artifact_stem}.manifest"));
     fs::write(
         &manifest_path,
         format!("{}\nmain.db\n", request.manifest_version),

@@ -791,7 +791,7 @@ fn collect_chart_collections(
                         ),
                         family_id: source.family_id.clone(),
                         region_id: record.region.to_ascii_lowercase(),
-                        package_id: record.manifest.clone(),
+                        package_id: package_id_from_manifest_name(&record.manifest),
                         chart_index: metadata.chart_index,
                         tile_path_template: format!(
                             "tiles/{}/{}/{{x}}/{{y}}.webp",
@@ -874,7 +874,7 @@ fn package_from_record(
         .with_context(|| format!("failed to stat {}", artifact_path.display()))?
         .len();
     Ok(ResourcePackage {
-        id: record.manifest.clone(),
+        id: package_id_from_manifest_name(&record.manifest),
         family_id: family_id.to_string(),
         region_id: record.region.to_ascii_lowercase(),
         artifact_path: relativize_to_product_builds_root(&artifact_path, product_builds_root),
@@ -1051,17 +1051,18 @@ fn packaged_asset_entries(
                 package_zip_path.display()
             );
         }
-        if manifest.package_id != record.manifest {
+        let package_id = package_id_from_manifest_name(&record.manifest);
+        if manifest.package_id != package_id {
             bail!(
                 "package asset manifest id {} != package output manifest {} in {}",
                 manifest.package_id,
-                record.manifest,
+                package_id,
                 package_zip_path.display()
             );
         }
         for asset in manifest.assets {
             entries.push(PackagedAssetEntry {
-                package_id: record.manifest.clone(),
+                package_id: package_id.clone(),
                 region_id: record.region.to_ascii_lowercase(),
                 package_zip_path: package_zip_path.clone(),
                 asset,
@@ -1287,6 +1288,13 @@ fn infer_cycle_from_manifest(manifest: &str) -> Option<String> {
         .split('_')
         .find(|part| part.len() == 4 && part.chars().all(|ch| ch.is_ascii_digit()))?;
     Some(cycle.to_string())
+}
+
+fn package_id_from_manifest_name(manifest: &str) -> String {
+    manifest
+        .strip_suffix(".manifest")
+        .unwrap_or(manifest)
+        .to_string()
 }
 
 fn build_temporal_summary(

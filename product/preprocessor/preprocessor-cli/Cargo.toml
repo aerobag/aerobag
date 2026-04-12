@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
+libc = "0.2"
 preprocessor-charts = { path = "../preprocessor-charts" }
 preprocessor-csup = { path = "../preprocessor-csup" }
 preprocessor-data = { path = "../preprocessor-data" }

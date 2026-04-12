@@ -1002,9 +1002,10 @@ fn published_unpacked_root(
 }
 
 fn unpacked_target_dir(config: &ProductBuildConfig, unpacked_root: &Path, zip_path: &Path) -> anyhow::Result<PathBuf> {
-    let artifact_root = artifact_root_from_build_root(&config.build_root);
-    let relative = zip_path
-        .strip_prefix(artifact_root)
+    let artifact_root = normalize_absolute_path(artifact_root_from_build_root(&config.build_root));
+    let normalized_zip_path = normalize_absolute_path(zip_path);
+    let relative = normalized_zip_path
+        .strip_prefix(&artifact_root)
         .with_context(|| format!("failed to relativize {}", zip_path.display()))?;
     let relative_dir = relative.with_extension("");
     Ok(unpacked_root.join(relative_dir))
@@ -1094,9 +1095,10 @@ fn copy_into_unpacked_root(
     source_path: &Path,
     unpacked_root: &Path,
 ) -> anyhow::Result<()> {
-    let artifact_root = artifact_root_from_build_root(&config.build_root);
-    let relative = source_path
-        .strip_prefix(artifact_root)
+    let artifact_root = normalize_absolute_path(artifact_root_from_build_root(&config.build_root));
+    let normalized_source_path = normalize_absolute_path(source_path);
+    let relative = normalized_source_path
+        .strip_prefix(&artifact_root)
         .with_context(|| format!("failed to relativize {}", source_path.display()))?;
     let dest_path = unpacked_root.join(relative);
     if let Some(parent) = dest_path.parent() {
@@ -1435,7 +1437,7 @@ fn build_chart_package_nodes(
             version_label
         ));
         let manifest_path = work_dir.join(format!(
-            "{}_{}_{}",
+            "{}_{}_{}.manifest",
             region.code(),
             manifest_chart_name(family),
             version_label
@@ -1454,7 +1456,7 @@ fn build_chart_package_nodes(
                             chart: Some(manifest_chart_name(family).to_string()),
                             region: region.code().to_string(),
                             manifest: format!(
-                                "{}_{}_{}",
+                                "{}_{}_{}.manifest",
                                 region.code(),
                                 manifest_chart_name(family),
                                 version_label
@@ -1507,7 +1509,7 @@ fn build_chart_package_nodes(
                 chart: Some(manifest_chart_name(family).to_string()),
                 region: region.code().to_string(),
                 manifest: format!(
-                    "{}_{}_{}",
+                    "{}_{}_{}.manifest",
                     region.code(),
                     manifest_chart_name(family),
                     version_label
@@ -1672,7 +1674,7 @@ fn build_csup_package_nodes(
         ]);
         let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
         let zip_path = work_dir.join(format!("{}_CSUP_{}.zip", region.code(), version_label));
-        let manifest_path = work_dir.join(format!("{}_CSUP_{}", region.code(), version_label));
+        let manifest_path = work_dir.join(format!("{}_CSUP_{}.manifest", region.code(), version_label));
         if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
             node_records.push(record);
         } else {
@@ -1686,7 +1688,7 @@ fn build_csup_package_nodes(
                             label: "csup".to_string(),
                             chart: None,
                             region: region.code().to_string(),
-                            manifest: format!("{}_CSUP_{}", region.code(), version_label),
+                            manifest: format!("{}_CSUP_{}.manifest", region.code(), version_label),
                             manifest_sha256: hash_file(&manifest_path)?,
                             zip: format!("{}_CSUP_{}.zip", region.code(), version_label),
                             zip_sha256: hash_file(&zip_path)?,
@@ -1724,7 +1726,7 @@ fn build_csup_package_nodes(
                 label: "csup".to_string(),
                 chart: None,
                 region: region.code().to_string(),
-                manifest: format!("{}_CSUP_{}", region.code(), version_label),
+                manifest: format!("{}_CSUP_{}.manifest", region.code(), version_label),
                 manifest_sha256: hash_file(&manifest_path)?,
                 zip: format!("{}_CSUP_{}.zip", region.code(), version_label),
                 zip_sha256: hash_file(&zip_path)?,
@@ -1842,7 +1844,7 @@ fn build_tpp_package_node(
     let package_outputs_path = run_root.join(format!("meta/provenance/tpp-{region_id}/package_outputs.jsonl"));
     let work_dir = run_root.join(format!("work/tpp-{region_id}"));
     let zip_path = work_dir.join(format!("{}_TPP_{}.zip", region.code(), version_label));
-    let manifest_path = work_dir.join(format!("{}_TPP_{}", region.code(), version_label));
+    let manifest_path = work_dir.join(format!("{}_TPP_{}.manifest", region.code(), version_label));
     let _build_lock = match claim_or_wait_for_node(
         &prepared,
         &[package_outputs_path.clone(), zip_path.clone(), manifest_path.clone()],
@@ -1919,15 +1921,6 @@ fn csup_stage_inputs(source_urls: &Path, fetch_jobs: usize) -> anyhow::Result<BT
                     .parent()
                     .expect("preprocessor-cli should live under workspace root")
                     .join("preprocessor-csup/src/lib.rs"),
-            )?,
-        ),
-        (
-            "csup_package".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-csup/src/package.rs"),
             )?,
         ),
         (
@@ -2036,10 +2029,13 @@ fn build_data_nodes(
         manifest_version: data_manifest_version.clone(),
         artifact_stem: Some(artifact_stem),
     };
+    let manifest_path = request
+        .output_dir
+        .join(format!("{}.manifest", request.artifact_stem.as_deref().unwrap_or("databases")));
     let zip_path = request
         .output_dir
         .join(format!("{}.zip", request.artifact_stem.as_deref().unwrap_or("databases")));
-    let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone()])? {
+    let _build_lock = match claim_or_wait_for_node(&prepared, &[manifest_path.clone(), zip_path.clone()])? {
         NodeCacheState::CacheHit(record) => return Ok(vec![staging_record, record]),
         NodeCacheState::Build(lock) => lock,
     };
@@ -2048,7 +2044,7 @@ fn build_data_nodes(
     let result = build_data_package(&request)?;
     let outputs = BTreeMap::from([
         ("main_db".to_string(), relative_artifact_path(&result.main_db, &config.build_root)),
-        ("manifest".to_string(), result.manifest_path.display().to_string()),
+        ("manifest".to_string(), relative_artifact_path(&result.manifest_path, &config.build_root)),
         ("zip".to_string(), relative_artifact_path(&result.zip_path, &config.build_root)),
     ]);
     let build_record = write_node_record(
@@ -2542,8 +2538,27 @@ fn artifact_root_from_build_root(build_root: &Path) -> &Path {
         .unwrap_or(build_root)
 }
 
+fn normalize_absolute_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
 fn relative_artifact_path(path: &Path, build_root: &Path) -> String {
-    path.strip_prefix(artifact_root_from_build_root(build_root))
+    let artifact_root = normalize_absolute_path(artifact_root_from_build_root(build_root));
+    let normalized_path = normalize_absolute_path(path);
+    normalized_path
+        .strip_prefix(&artifact_root)
         .map(|value| value.display().to_string())
         .unwrap_or_else(|_| path.display().to_string())
 }
@@ -2685,6 +2700,24 @@ fn utc_now_string() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
+#[cfg(unix)]
+fn current_nofile_limit() -> anyhow::Result<u64> {
+    let mut limits = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    let result = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) };
+    if result != 0 {
+        anyhow::bail!("failed to read RLIMIT_NOFILE: {}", std::io::Error::last_os_error());
+    }
+    Ok(limits.rlim_cur)
+}
+
+#[cfg(not(unix))]
+fn current_nofile_limit() -> anyhow::Result<u64> {
+    Ok(4096)
+}
+
 pub fn maybe_reexec_build_cycle_under_cgroup(args: &[String]) -> anyhow::Result<bool> {
     if env::var_os(PRODUCT_BUILD_CGROUP_ACTIVE_ENV).is_some() {
         return Ok(false);
@@ -2694,10 +2727,20 @@ pub fn maybe_reexec_build_cycle_under_cgroup(args: &[String]) -> anyhow::Result<
     }
     let memory_max = env::var("PRODUCT_BUILD_MEMORY_MAX")
         .unwrap_or_else(|_| DEFAULT_PRODUCT_BUILD_MEMORY_MAX.to_string());
+    let nofile_limit = env::var("PRODUCT_BUILD_NOFILE_LIMIT")
+        .ok()
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .with_context(|| format!("invalid PRODUCT_BUILD_NOFILE_LIMIT={value}"))
+        })
+        .transpose()?
+        .unwrap_or(current_nofile_limit()?);
     let current_exe = env::current_exe().context("failed to resolve current executable")?;
     let status = Command::new("systemd-run")
         .args(["--quiet", "--wait", "--collect"])
         .args(["-p", &format!("MemoryMax={memory_max}")])
+        .args(["-p", &format!("LimitNOFILE={nofile_limit}")])
         .args(["-p", "MemorySwapMax=0"])
         .args(["-p", "OOMPolicy=kill"])
         .arg("env")

@@ -23,6 +23,10 @@ COMPLETE_RE = re.compile(
     r"running_units=(?P<running>\d+)/(?P<budget>\d+)(?P<rest>.*)$"
 )
 
+FINAL_RE = re.compile(
+    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+complete\s+(?P<result>PASS|FAIL)(?P<rest>.*)$"
+)
+
 READY_RE = re.compile(
     r"^.*scheduler-ready\s+tasks=(?P<total>\d+)\s+work_unit_budget=(?P<budget>\d+).*$"
 )
@@ -53,6 +57,9 @@ class BuildState:
         self.running_units = 0
         self.header = ""
         self.pid: int | None = None
+        self.final_result: str | None = None
+        self.final_details = ""
+        self.final_at: str | None = None
         self.tasks: dict[str, TaskState] = {}
         self.completion_order: list[str] = []
         self.last_line = ""
@@ -116,6 +123,14 @@ class BuildState:
             task_state.details = match.group("rest").strip()
             if task not in self.completion_order:
                 self.completion_order.append(task)
+            return
+
+        match = FINAL_RE.match(line)
+        if match:
+            self.last_timestamp = match.group("ts")
+            self.final_result = match.group("result")
+            self.final_details = match.group("rest").strip()
+            self.final_at = match.group("ts")
             return
 
     def active_tasks(self) -> list[TaskState]:
@@ -188,6 +203,7 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
     curses.init_pair(2, curses.COLOR_CYAN, -1)
     curses.init_pair(3, curses.COLOR_WHITE, -1)
     curses.init_pair(4, curses.COLOR_YELLOW, -1)
+    curses.init_pair(5, curses.COLOR_RED, -1)
 
     while True:
         state = read_state(log_path)
@@ -219,6 +235,16 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
             f"pending={state.pending_count()}"
         )
         draw_line(stdscr, 3, 0, summary, curses.A_BOLD, max_x)
+        if state.final_result == "PASS":
+            status_text = f"result=PASS {state.final_at or ''} {state.final_details}".strip()
+            status_attr = curses.color_pair(1) | curses.A_BOLD
+        elif state.final_result == "FAIL":
+            status_text = f"result=FAIL {state.final_at or ''} {state.final_details}".strip()
+            status_attr = curses.color_pair(5) | curses.A_BOLD
+        else:
+            status_text = "result=in_progress"
+            status_attr = curses.color_pair(4) | curses.A_BOLD
+        draw_line(stdscr, 4, 0, status_text, status_attr, max_x)
         pid_alive = pid_is_alive(state.pid)
         if pid_alive is None:
             liveness = "pid=unknown"
@@ -229,9 +255,9 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
         else:
             liveness = f"pid={state.pid} dead"
             liveness_attr = curses.color_pair(4) | curses.A_BOLD
-        draw_line(stdscr, 4, 0, liveness, liveness_attr, max_x)
+        draw_line(stdscr, 5, 0, liveness, liveness_attr, max_x)
 
-        row = 6
+        row = 7
         draw_line(
             stdscr,
             row,

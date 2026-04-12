@@ -52,7 +52,8 @@ fn package_csup_region_records(
     let mut package_records = Vec::with_capacity(regions.len());
 
     for region in regions {
-        let manifest_name = format!("{}_CSUP_{}", region.code(), artifact_version);
+        let package_id = format!("{}_CSUP_{}", region.code(), artifact_version);
+        let manifest_name = format!("{package_id}.manifest");
         let zip_name = format!("{}_CSUP_{}.zip", region.code(), artifact_version);
         let manifest_path = work_dir.join(&manifest_name);
         let zip_path = work_dir.join(&zip_name);
@@ -65,7 +66,7 @@ fn package_csup_region_records(
         let selected = with_thumbnail_members(work_dir, &selected)?;
         write_package_asset_manifest(
             &package_assets_path,
-            &manifest_name,
+            &package_id,
             &selected,
         )?;
 

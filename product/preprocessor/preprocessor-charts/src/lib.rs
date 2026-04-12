@@ -871,7 +871,8 @@ fn package_region_records_from_spec(
     let mut package_records = Vec::with_capacity(regions.len());
 
     for region in regions {
-        let manifest_name = format!("{}_{}_{}", region.code(), spec.chart_name, artifact_version);
+        let manifest_name =
+            format!("{}_{}_{}.manifest", region.code(), spec.chart_name, artifact_version);
         let zip_name = format!("{}_{}_{}.zip", region.code(), spec.chart_name, artifact_version);
         let manifest_path = work_dir.join(&manifest_name);
         let zip_path = work_dir.join(&zip_name);

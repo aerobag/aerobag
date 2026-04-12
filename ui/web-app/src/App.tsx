@@ -1900,41 +1900,65 @@ function FlightPlanPage(props: {
       return;
     }
 
-    const surfaceRect = surface.getBoundingClientRect();
-    const tableRect = table.getBoundingClientRect();
-    const computedStyle = window.getComputedStyle(table);
-    const rowGap = Number.parseFloat(computedStyle.rowGap || computedStyle.gap || "0") || 0;
-    const columnGap = Number.parseFloat(computedStyle.columnGap || computedStyle.gap || "0") || 0;
-    const verticalInset = rowGap * 0.6;
-    const horizontalInset = columnGap * 0.6;
-    const orderedGroupKeys = hierarchicalRows
-      .filter((row) => row.kind === "group" && row.groupKey)
-      .map((row) => row.groupKey as string);
+    let animationFrame = 0;
+    let settleTimer = 0;
 
-    const nextBoxes = orderedGroupKeys.flatMap((groupKey) => {
-      const groupRows = hierarchicalRows.filter((row) => row.groupKey === groupKey);
-      const firstRow = groupRows[0];
-      const lastRow = groupRows[groupRows.length - 1];
-      if (!firstRow || !lastRow) {
-        return [];
-      }
-      const firstElement = structuredRowRefs.current.get(firstRow.id);
-      const lastElement = structuredRowRefs.current.get(lastRow.id);
-      if (!firstElement || !lastElement) {
-        return [];
-      }
-      const firstRect = firstElement.getBoundingClientRect();
-      const lastRect = lastElement.getBoundingClientRect();
-      return [{
-        key: groupKey,
-        left: tableRect.left - surfaceRect.left - horizontalInset,
-        width: tableRect.width + horizontalInset * 2,
-        top: firstRect.top - surfaceRect.top - verticalInset,
-        height: lastRect.bottom - firstRect.top + verticalInset * 2,
-      }];
-    });
-    setStructuredGroupBoxes(nextBoxes);
-  }, [hierarchicalRows, showComponentViews]);
+    const measureGroupBoxes = () => {
+      const surfaceRect = surface.getBoundingClientRect();
+      const tableRect = table.getBoundingClientRect();
+      const computedStyle = window.getComputedStyle(table);
+      const rowGap = Number.parseFloat(computedStyle.rowGap || computedStyle.gap || "0") || 0;
+      const columnGap = Number.parseFloat(computedStyle.columnGap || computedStyle.gap || "0") || 0;
+      const verticalInset = rowGap * 0.6;
+      const horizontalInset = columnGap * 0.6;
+      const orderedGroupKeys = hierarchicalRows
+        .filter((row) => row.kind === "group" && row.groupKey)
+        .map((row) => row.groupKey as string);
+
+      const nextBoxes = orderedGroupKeys.flatMap((groupKey) => {
+        const groupRows = hierarchicalRows.filter((row) => row.groupKey === groupKey);
+        const firstRow = groupRows[0];
+        const lastRow = groupRows[groupRows.length - 1];
+        if (!firstRow || !lastRow) {
+          return [];
+        }
+        const firstElement = structuredRowRefs.current.get(firstRow.id);
+        const lastElement = structuredRowRefs.current.get(lastRow.id);
+        if (!firstElement || !lastElement) {
+          return [];
+        }
+        const firstRect = firstElement.getBoundingClientRect();
+        const lastRect = lastElement.getBoundingClientRect();
+        return [{
+          key: groupKey,
+          left: tableRect.left - surfaceRect.left - horizontalInset,
+          width: tableRect.width + horizontalInset * 2,
+          top: firstRect.top - surfaceRect.top - verticalInset,
+          height: lastRect.bottom - firstRect.top + verticalInset * 2,
+        }];
+      });
+      setStructuredGroupBoxes(nextBoxes);
+    };
+
+    const scheduleMeasure = () => {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(measureGroupBoxes);
+    };
+
+    const handleTransitionEnd = () => {
+      scheduleMeasure();
+    };
+
+    scheduleMeasure();
+    settleTimer = window.setTimeout(measureGroupBoxes, 220);
+    table.addEventListener("transitionend", handleTransitionEnd);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      window.clearTimeout(settleTimer);
+      table.removeEventListener("transitionend", handleTransitionEnd);
+    };
+  }, [hierarchicalRows, reorderOpen, showComponentViews]);
 
   useEffect(() => {
     if (!showComponentViews || !guidance?.active_leg) {
@@ -2090,7 +2114,7 @@ function FlightPlanPage(props: {
       </div>
 
       <div className="planScrollSurface" ref={planScrollSurfaceRef}>
-        <div className={`planTableWrap${showComponentViews ? " isStructured" : ""}`} ref={structuredSurfaceRef}>
+        <div className={`planTableWrap${showComponentViews ? " isStructured" : ""}${reorderOpen ? " isReordering" : ""}`} ref={structuredSurfaceRef}>
           {showComponentViews ? (
             <div className="planStructuredGroupBoxLayer" aria-hidden="true">
               {structuredGroupBoxes.map((box) => (
@@ -2155,9 +2179,30 @@ function FlightPlanPage(props: {
                 >
                   <span className={`planStructuredLabel${showComponentViews && row.depth > 0 ? " isIndented" : ""}`}>{row.label}</span>
                 </button>
-                <div className="planCell">{row.distance}</div>
-                <div className="planCell">{row.ete}</div>
-                <div className="planCell">{row.course}</div>
+                <div
+                  className={[
+                    "planCell",
+                    showComponentViews && row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
+                  ].filter(Boolean).join(" ")}
+                >
+                  {row.distance}
+                </div>
+                <div
+                  className={[
+                    "planCell",
+                    showComponentViews && row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
+                  ].filter(Boolean).join(" ")}
+                >
+                  {row.ete}
+                </div>
+                <div
+                  className={[
+                    "planCell",
+                    showComponentViews && row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
+                  ].filter(Boolean).join(" ")}
+                >
+                  {row.course}
+                </div>
               </Fragment>
             ))}
           </div>

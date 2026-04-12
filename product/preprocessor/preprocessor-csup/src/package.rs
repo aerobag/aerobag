@@ -7,7 +7,7 @@ use anyhow::{bail, Context};
 use chrono::Utc;
 use preprocessor_core::{PackageAssetManifest, PackageAssetRecord, Region, PACKAGE_ASSET_MANIFEST_NAME};
 use preprocessor_fetch::{hash_file, write_package_outputs_jsonl, PackageOutputRecord};
-use preprocessor_tools::{write_thumbnail_from_png, ToolInvocation};
+use preprocessor_tools::ToolInvocation;
 
 use crate::{calculate_cycle, remove_if_exists};
 
@@ -159,17 +159,15 @@ fn collect_region_pngs(work_dir: &Path, region_code: &str) -> anyhow::Result<Vec
 
 fn with_thumbnail_members(work_dir: &Path, members: &[String]) -> anyhow::Result<Vec<String>> {
     let mut all = Vec::with_capacity(members.len() * 2);
-    let thumbnail_root = work_dir.join("thumbnails");
     for member in members {
         all.push(member.clone());
         let asset_path = Path::new(member);
-        let source = work_dir.join(asset_path);
         let thumbnail_path = Path::new("thumbnails")
             .join(asset_path)
             .to_string_lossy()
             .replace('\\', "/");
         if !work_dir.join(&thumbnail_path).is_file() {
-            write_thumbnail_from_png(&source, &thumbnail_root, asset_path)?;
+            bail!("missing pre-rendered CSUP thumbnail {thumbnail_path}");
         }
         all.push(thumbnail_path);
     }
@@ -252,8 +250,11 @@ mod tests {
         let temp = tempdir().unwrap();
         let work_dir = temp.path();
         let airport_dir = work_dir.join("afd/AK84");
+        let thumbnail_dir = work_dir.join("thumbnails/afd/AK84");
         fs::create_dir_all(&airport_dir).unwrap();
+        fs::create_dir_all(&thumbnail_dir).unwrap();
         fs::write(airport_dir.join("CSUP-AK_0.png"), ONE_BY_ONE_PNG).unwrap();
+        fs::write(thumbnail_dir.join("CSUP-AK_0.png"), ONE_BY_ONE_PNG).unwrap();
 
         let record = package_csup_region_versioned(work_dir, Region::Ak, "2603", "2603").unwrap();
         let zip_path = work_dir.join(record.zip);

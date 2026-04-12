@@ -13,7 +13,7 @@ use preprocessor_core::{Region, RunPaths};
 use preprocessor_fetch::{
     copy_source_urls_provenance, prefetch_archives_with_provenance, read_source_urls_jsonl,
 };
-use preprocessor_tools::{append_pngs_vertical, ToolInvocation};
+use preprocessor_tools::{append_pngs_vertical, write_thumbnail_from_png, ToolInvocation};
 
 mod package;
 
@@ -355,6 +355,7 @@ fn collapse_rendered_pdf_pages(work_dir: &Path, apt_dir: &Path, output_base: &st
                 )
             })?;
         }
+        write_thumbnail_for_asset(work_dir, &final_png)?;
         return Ok(());
     }
 
@@ -371,6 +372,16 @@ fn collapse_rendered_pdf_pages(work_dir: &Path, apt_dir: &Path, output_base: &st
     for rendered_page in rendered_pages {
         remove_if_exists(&rendered_page)?;
     }
+    write_thumbnail_for_asset(work_dir, &final_png)?;
+    Ok(())
+}
+
+fn write_thumbnail_for_asset(work_dir: &Path, asset_path: &Path) -> anyhow::Result<()> {
+    let relative_asset = asset_path
+        .strip_prefix(work_dir)
+        .with_context(|| format!("failed to relativize {}", asset_path.display()))?;
+    let thumbnail_root = work_dir.join("thumbnails");
+    write_thumbnail_from_png(asset_path, &thumbnail_root, relative_asset)?;
     Ok(())
 }
 

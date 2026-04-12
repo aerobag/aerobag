@@ -1087,29 +1087,15 @@ function MapPage(props: {
             warn={mapOverlay.warnings.length > 0}
             onToggle={() => setDebugOpen((open) => !open)}
           >
-            <div className="debugLine">page {pageLabel(page)}</div>
             <div className="debugLine">core {adapterBackend}</div>
-            <div className="debugLine">{adapterDetail}</div>
-            <div className="debugLine">session {uiSession ? "ready" : "null"} surf {Math.round(surfaceSize.width)}x{Math.round(surfaceSize.height)}</div>
             <div className="debugLine">up {uptimeLabel}</div>
-            <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: selectedMap.id, selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
-            <div className="debugLine">family {selectedFamily.launcherLabel}</div>
+            <div className="debugLine">session {uiSession ? "ready" : "null"} surf {Math.round(surfaceSize.width)}x{Math.round(surfaceSize.height)}</div>
             <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
-            <div className="debugLine">tiles {debugSummary.tileCount}</div>
             <div className="debugLine">vec fixes={mapOverlay.visible_features.length} need={mapOverlay.needed_fix_tiles.length} warn={mapOverlay.warnings.length}</div>
-            <div className="debugLine">fixes {mapOverlay.visible_features.length}</div>
-            <div className="debugLine">needFixTiles {mapOverlay.needed_fix_tiles.length}</div>
-            {mapOverlay.visible_features.slice(0, 3).map((feature) => (
-              <div key={feature.id} className="debugLine">fix {feature.label}</div>
-            ))}
             {mapOverlay.warnings.map((warning) => (
               <div key={warning.code} className="debugLine">warn {warning.code}</div>
             ))}
-            <div className="debugLine">src z {debugSummary.tileZooms.length > 0 ? debugSummary.tileZooms.join(", ") : "(none)"}</div>
-            <div className="debugLine">pkg {debugSummary.packages.length > 0 ? debugSummary.packages.join(", ") : "(none)"}</div>
-            <div className="debugLine">maps {debugSummary.mapIds.join(", ")}</div>
-            <div className="debugLine">search {locationSearch || "(empty)"}</div>
-            <div className="debugLine">{debugTileLabels ? "debugTiles=on" : "debugTiles=off"}</div>
+            <div className="debugLine">tiles {debugSummary.tileCount} src z {debugSummary.tileZooms.length > 0 ? debugSummary.tileZooms.join(", ") : "(none)"}</div>
           </DebugDock>
         </div>
       </div>

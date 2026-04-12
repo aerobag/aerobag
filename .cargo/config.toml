@@ -1,2 +1,2 @@
 [build]
-target-dir = "../aerobag-artifacts/target"
+target-dir = "../../aerobag-artifacts/target"

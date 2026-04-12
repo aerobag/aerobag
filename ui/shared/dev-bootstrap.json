@@ -2,16 +2,21 @@
   "content_policy": "PreferLocal",
   "flight_plan": {
     "id": "plan-1",
-    "name": "KRNT KUAO",
+    "name": "KRNT KUAO KRDD",
     "legs": [
       {
         "from": { "Airport": "KRNT" },
         "to": { "Airport": "KUAO" },
         "airway": null
+      },
+      {
+        "from": { "Airport": "KUAO" },
+        "to": { "Airport": "KRDD" },
+        "airway": null
       }
     ],
     "departure": "KRNT",
-    "destination": "KUAO",
+    "destination": "KRDD",
     "alternate": null,
     "cruise_altitude_ft": 3000,
     "notes": "Prototype bootstrap state",

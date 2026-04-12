@@ -149,6 +149,8 @@ pub struct GuidanceState {
     pub active_leg_index: usize,
     pub sequencing_mode: SequencingMode,
     pub direct_to: Option<DirectToState>,
+    #[serde(default)]
+    pub suspend_reason: Option<SuspendReason>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +159,15 @@ pub enum SequencingMode {
     FollowPlan,
     Suspended,
     DirectTo,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuspendReason {
+    Manual,
+    Boundary,
+    RouteEnd,
+    DirectToComplete,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -306,6 +317,7 @@ pub fn activate_direct_to(
                 target_leg_id,
                 resume_leg_id,
             }),
+            suspend_reason: None,
         }),
         ..plan
     })
@@ -338,6 +350,7 @@ pub fn activate_direct_to_leg(
                 target_leg_id: Some(target_leg.id.clone()),
                 resume_leg_id,
             }),
+            suspend_reason: None,
         }),
         ..plan
     })
@@ -357,6 +370,7 @@ pub fn activate_leg(plan: &FlightPlan, leg_index: usize) -> AppResult<FlightPlan
             active_leg_index: leg_index,
             sequencing_mode: SequencingMode::FollowPlan,
             direct_to: None,
+            suspend_reason: None,
         }),
         ..plan
     })
@@ -382,6 +396,7 @@ pub fn activate_next_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
             active_leg_index: next_leg_index,
             sequencing_mode: SequencingMode::FollowPlan,
             direct_to: None,
+            suspend_reason: None,
         }),
         ..plan
     })
@@ -399,6 +414,7 @@ pub fn suspend_sequencing(plan: &FlightPlan) -> AppResult<FlightPlan> {
             active_leg_index: guidance.active_leg_index,
             sequencing_mode: SequencingMode::Suspended,
             direct_to: None,
+            suspend_reason: Some(SuspendReason::Manual),
         }),
         ..plan
     })
@@ -427,6 +443,7 @@ pub fn unsuspend_sequencing(plan: &FlightPlan) -> AppResult<FlightPlan> {
             active_leg_index: guidance.active_leg_index,
             sequencing_mode: SequencingMode::FollowPlan,
             direct_to: None,
+            suspend_reason: None,
         }),
         ..plan
     })
@@ -455,6 +472,7 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                     active_leg_index: resume_leg_index,
                     sequencing_mode: SequencingMode::FollowPlan,
                     direct_to: None,
+                    suspend_reason: None,
                 },
                 None => GuidanceState {
                     active_leg_index: direct_to
@@ -464,6 +482,7 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                         .unwrap_or(guidance.active_leg_index),
                     sequencing_mode: SequencingMode::Suspended,
                     direct_to: None,
+                    suspend_reason: Some(SuspendReason::DirectToComplete),
                 },
             }
         }
@@ -480,18 +499,21 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                     active_leg_index: guidance.active_leg_index,
                     sequencing_mode: SequencingMode::Suspended,
                     direct_to: None,
+                    suspend_reason: Some(SuspendReason::Boundary),
                 }
             } else if guidance.active_leg_index + 1 < plan.resolved_legs.len() {
                 GuidanceState {
                     active_leg_index: guidance.active_leg_index + 1,
                     sequencing_mode: SequencingMode::FollowPlan,
                     direct_to: None,
+                    suspend_reason: None,
                 }
             } else {
                 GuidanceState {
                     active_leg_index: guidance.active_leg_index,
                     sequencing_mode: SequencingMode::Suspended,
                     direct_to: None,
+                    suspend_reason: Some(SuspendReason::RouteEnd),
                 }
             }
         }
@@ -506,7 +528,7 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
 
 pub fn active_guidance_leg(plan: &FlightPlan) -> Option<PlanLeg> {
     let plan = plan.clone().normalized();
-    let guidance = plan.guidance?;
+    let guidance = plan.guidance.clone()?;
 
     match guidance.sequencing_mode {
         SequencingMode::DirectTo => {
@@ -522,7 +544,26 @@ pub fn active_guidance_leg(plan: &FlightPlan) -> Option<PlanLeg> {
             to: leg.to.clone(),
             airway: None,
         }),
-        SequencingMode::Suspended => None,
+        SequencingMode::Suspended => {
+            let preserve_active_leg = match guidance.suspend_reason {
+                Some(SuspendReason::Manual) => true,
+                Some(SuspendReason::Boundary | SuspendReason::RouteEnd | SuspendReason::DirectToComplete) => false,
+                None => {
+                    guidance.direct_to.is_none()
+                        && !should_suspend_after_active_leg(&plan, guidance.active_leg_index)
+                        && guidance.active_leg_index + 1 < plan.resolved_legs.len()
+                }
+            };
+            if !preserve_active_leg {
+                None
+            } else {
+                plan.resolved_legs.get(guidance.active_leg_index).map(|leg| PlanLeg {
+                    from: leg.from.clone(),
+                    to: leg.to.clone(),
+                    airway: None,
+                })
+            }
+        }
     }
 }
 
@@ -1804,6 +1845,7 @@ mod tests {
                 active_leg_index: 0,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
+                suspend_reason: None,
             }),
             departure: Some(AirportId("KRNT".to_string())),
             destination: Some(AirportId("KUAO".to_string())),
@@ -1871,6 +1913,7 @@ mod tests {
                 active_leg_index: 0,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
+                suspend_reason: None,
             }),
             departure: Some(AirportId("KAAA".to_string())),
             destination: Some(AirportId("KBBB".to_string())),
@@ -2692,6 +2735,7 @@ mod tests {
                 active_leg_index: 3,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
+                suspend_reason: None,
             }),
             ..inserted
         };
@@ -2754,6 +2798,7 @@ mod tests {
                 active_leg_index: 1,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
+                suspend_reason: None,
             }),
             departure: Some(AirportId("KAAA".to_string())),
             destination: Some(AirportId("KBBB".to_string())),
@@ -2789,6 +2834,9 @@ mod tests {
         assert_eq!(guidance.active_leg_index, 1);
         assert_eq!(guidance.sequencing_mode, SequencingMode::Suspended);
         assert!(guidance.direct_to.is_none());
+        let active_leg = active_guidance_leg(&suspended).unwrap();
+        assert_eq!(active_leg.from, NavRef::Navaid("SEA".to_string()));
+        assert_eq!(active_leg.to, NavRef::Fix("OLM".to_string()));
     }
 
     #[test]
@@ -2817,6 +2865,7 @@ mod tests {
                 active_leg_index: 3,
                 sequencing_mode: SequencingMode::Suspended,
                 direct_to: None,
+                suspend_reason: Some(SuspendReason::Boundary),
             }),
             ..inserted
         };
@@ -2843,6 +2892,7 @@ mod tests {
                 active_leg_index: 3,
                 sequencing_mode: SequencingMode::Suspended,
                 direct_to: None,
+                suspend_reason: Some(SuspendReason::Boundary),
             }),
             ..inserted
         };
@@ -2867,6 +2917,7 @@ mod tests {
                 active_leg_index: 2,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
+                suspend_reason: None,
             }),
             ..sample_guided_waypoint_plan()
         };
@@ -2966,6 +3017,7 @@ mod tests {
                 active_leg_index: 2,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
+                suspend_reason: None,
             }),
             ..inserted
         };

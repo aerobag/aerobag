@@ -42,14 +42,19 @@ val defaultArtifactRoot =
     } else {
         repoRoot.resolve(configuredArtifactRoot)
     }
-val artifactManifestRelative = "product-builds/production/product-build.json"
 val artifactRoot = File(
     System.getenv("AEROBAG_ARTIFACT_ROOT")
         ?: defaultArtifactRoot.absolutePath,
 )
+fun latestBundleManifest(root: File): File? =
+    root.resolve("product-builds/production")
+        .listFiles()
+        ?.filter { it.isFile && it.name.startsWith("bundle_") && it.name.endsWith(".json") }
+        ?.maxByOrNull { it.name }
+
 val resolvedArtifactRoot = when {
-    artifactRoot.resolve(artifactManifestRelative).isFile -> artifactRoot
-    File("/root/aerobag-artifacts").resolve(artifactManifestRelative).isFile -> File("/root/aerobag-artifacts")
+    latestBundleManifest(artifactRoot)?.isFile == true -> artifactRoot
+    latestBundleManifest(File("/root/aerobag-artifacts"))?.isFile == true -> File("/root/aerobag-artifacts")
     else -> artifactRoot
 }
 

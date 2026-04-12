@@ -18,19 +18,19 @@ ARTIFACT_ROOT_CONFIG = ROOT / ".aerobag-artifact-root"
 
 
 def resolve_artifact_root() -> Path:
-    manifest_relative = Path("product-builds") / "production" / "product-build.json"
+    manifest_glob = Path("product-builds") / "production"
     env_value = os.environ.get("AEROBAG_ARTIFACT_ROOT")
     if env_value:
         candidate = Path(env_value).expanduser()
-        if candidate.joinpath(manifest_relative).exists():
+        if list(candidate.joinpath(manifest_glob).glob("bundle_*.json")):
             return candidate
     configured = ARTIFACT_ROOT_CONFIG.read_text().strip()
     path = Path(configured)
     candidate = path if path.is_absolute() else (ROOT / path).resolve()
-    if candidate.joinpath(manifest_relative).exists():
+    if list(candidate.joinpath(manifest_glob).glob("bundle_*.json")):
         return candidate
     fallback = Path("/root/aerobag-artifacts")
-    if fallback.joinpath(manifest_relative).exists():
+    if list(fallback.joinpath(manifest_glob).glob("bundle_*.json")):
         return fallback
     return candidate
 
@@ -43,7 +43,7 @@ UI_TARGET_ROOT = Path(
     ),
 ).expanduser()
 UI_DIR = ROOT / "ui"
-PRODUCT_BUILD = ARTIFACT_ROOT / "product-builds" / "production" / "product-build.json"
+PRODUCT_BUILD = sorted((ARTIFACT_ROOT / "product-builds" / "production").glob("bundle_*.json"))[-1]
 UI_THEME = UI_DIR / "shared-fixtures" / "ui-theme.json"
 SHARED_TARGET_ROOT = UI_TARGET_ROOT / "shared" / "content-prototype"
 WEB_TARGET_ROOT = UI_TARGET_ROOT / "web"
@@ -68,8 +68,6 @@ ANDROID_CHART_ASSET_ROOT = ANDROID_TARGET_ROOT / "generated-seed" / "chart-asset
 ANDROID_LEGACY_CHART_ASSET_ROOT = ANDROID_TARGET_ROOT / "assets" / "chart-assets"
 WEB_NAV_DB_ROOT = WEB_TARGET_ROOT / "generated-static" / "nav-db"
 ANDROID_NAV_DB_ROOT = ANDROID_TARGET_ROOT / "assets" / "nav-db"
-VECTOR_OUTPUT_ROOT = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "vectors-2604" / "output"
-FIX_VECTOR_TILE_ROOT = VECTOR_OUTPUT_ROOT / "points" / "fix" / "9"
 CHARTS_TAC_BUILD_RECORD = ARTIFACT_ROOT / "product-builds" / "shared" / "work" / "charts-tac-2603" / "build-record.json"
 
 REGION_ORDER = ["ne", "nc", "nw", "se", "sc", "sw", "ec", "ak", "pac"]
@@ -157,6 +155,8 @@ CHARTS_TAC_WORK_DIR = resolve_charts_tac_work_dir()
 BOSTON_TAC_GEOJSON = CHARTS_TAC_WORK_DIR / "TAC" / "Boston TAC.geojson"
 BOSTON_TAC_TILE_ROOT = CHARTS_TAC_WORK_DIR / "tiles" / "1"
 PRODUCT_MAIN_DB = resolve_product_build_output("data", "main_db")
+VECTOR_OUTPUT_ROOT = resolve_product_build_output("vectors", "manifest").parent
+FIX_VECTOR_TILE_ROOT = VECTOR_OUTPUT_ROOT / "points" / "fix" / "9"
 
 
 def load_resource_index() -> dict:

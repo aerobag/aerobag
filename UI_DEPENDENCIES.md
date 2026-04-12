@@ -17,6 +17,21 @@ Observed on this machine:
 Practical conclusion:
 - for Android-targeted Rust work here, use `rustup`, not the distro `rustc`/`cargo`
 
+## Artifact Discovery Contract
+
+UI-side discovery should no longer assume a fixed `product-build.json` path.
+
+Current contract:
+- cycle bundle manifests live at:
+  - `<source-root>/../aerobag-artifacts/product-builds/production/bundle_<cycle>.json`
+- obstacle snapshots live at:
+  - `<source-root>/../aerobag-artifacts/obstacles/<YYYY.MM.DD>/output/obstacles_<YYYY.MM.DD>.zip`
+- for "current" online discovery, select the lexicographically latest:
+  - `bundle_*.json`
+  - obstacle date directory / `obstacles_*.zip`
+
+The current UI-side scripts in this repo now follow that rule.
+
 Install used:
 
 ```bash

@@ -288,6 +288,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             })
             .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
         let data_version = data_version_label(&source_urls_dir)?;
+        let bundle_cycle = data_manifest_cycle(&source_urls_dir)?;
 
         let mut pending_jobs = VecDeque::new();
         for family in [
@@ -519,7 +520,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             fetch_cache_mode: config.fetch_cache_mode.clone(),
             nodes: node_records,
         };
-        let manifest_path = config.build_root.join("product-build.json");
+        let manifest_path = config
+            .build_root
+            .join(format!("bundle_{bundle_cycle}.json"));
         fs::write(
             &manifest_path,
             serde_json::to_vec_pretty(&manifest)

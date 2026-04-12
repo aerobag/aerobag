@@ -254,10 +254,12 @@ def run_build_once(
 
 
 def print_cache_summary(artifact_root: Path, label: str) -> None:
-    manifest_path = artifact_root / "product-builds" / "validation" / "product-build.json"
-    if not manifest_path.is_file():
-        print(f"{label} cache summary unavailable: missing {manifest_path}")
+    manifest_dir = artifact_root / "product-builds" / "validation"
+    manifests = sorted(manifest_dir.glob("bundle_*.json"))
+    if not manifests:
+        print(f"{label} cache summary unavailable: missing bundle_*.json under {manifest_dir}")
         return
+    manifest_path = manifests[-1]
     manifest = json.loads(manifest_path.read_text())
     nodes = manifest.get("nodes", [])
     cache_hits = sum(1 for node in nodes if node.get("cache_hit"))

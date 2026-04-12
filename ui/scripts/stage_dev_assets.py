@@ -5,7 +5,6 @@ import errno
 import json
 import os
 import shutil
-import zipfile
 from pathlib import Path
 
 
@@ -60,9 +59,8 @@ CURRENT_ARTIFACTS_FILE = latest_current_artifacts(ARTIFACT_ROOT)
 CURRENT_ARTIFACTS = json.loads(CURRENT_ARTIFACTS_FILE.read_text())
 bundle_filename = CURRENT_ARTIFACTS["bundles"][-1]["filename"]
 PRODUCT_BUILD_FILE = ARTIFACT_ROOT / PRODUCTION_MANIFEST_DIR / bundle_filename
-BUILD_MANIFEST_FILE = PRODUCT_BUILD_FILE.with_name(
-    f"build-manifest_{PRODUCT_BUILD_FILE.stem.split('_', 1)[1]}.json",
-)
+CYCLE = PRODUCT_BUILD_FILE.stem.split("_", 1)[1]
+PUBLISHED_ROOT = ARTIFACT_ROOT / "published-unpacked" / "production" / CYCLE
 
 
 def load_product_build() -> dict:
@@ -70,13 +68,6 @@ def load_product_build() -> dict:
 
 
 PRODUCT_BUILD = load_product_build()
-
-
-def load_build_manifest() -> dict:
-    return json.loads(BUILD_MANIFEST_FILE.read_text())
-
-
-BUILD_MANIFEST = load_build_manifest()
 
 
 def resolve_product_build_output(node_name: str, output_name: str) -> Path:
@@ -102,50 +93,6 @@ def resolve_product_build_output(node_name: str, output_name: str) -> Path:
             return resolved
         raise RuntimeError(f"missing product build output {node_name}.{output_name}: {resolved}")
     raise RuntimeError(f"missing product build output {node_name}.{output_name} in {PRODUCT_BUILD_FILE}")
-
-
-def resolve_product_build_node(node_name: str) -> dict:
-    for node in PRODUCT_BUILD.get("nodes", []):
-        if isinstance(node, dict) and node.get("name") == node_name:
-            return node
-    raise RuntimeError(f"missing product build node {node_name} in {PRODUCT_BUILD_FILE}")
-
-
-def resolve_build_manifest_node(node_name: str) -> dict:
-    for node in BUILD_MANIFEST.get("nodes", []):
-        if isinstance(node, dict) and node.get("name") == node_name:
-            return node
-    raise RuntimeError(f"missing build manifest node {node_name} in {BUILD_MANIFEST_FILE}")
-
-
-def resolve_package_artifact_path(path_value: str) -> Path:
-    path = Path(path_value)
-    if path.is_absolute():
-        if path.is_file():
-            return path
-        marker = f"{os.sep}product-builds{os.sep}"
-        raw = str(path).replace("\\", os.sep)
-        marker_index = raw.find(marker)
-        if marker_index >= 0:
-            relative = raw[marker_index + len(marker):]
-            rebased = ARTIFACT_ROOT / "product-builds" / relative
-            candidates = [rebased]
-            normalized = relative.replace("\\", "/")
-            if normalized.startswith("shared/"):
-                suffix = normalized.removeprefix("shared/")
-                candidates.append(ARTIFACT_ROOT / "product-builds" / "validation" / suffix)
-                candidates.append(ARTIFACT_ROOT / "product-builds" / "production" / suffix)
-            elif normalized.startswith("validation/"):
-                suffix = normalized.removeprefix("validation/")
-                candidates.append(ARTIFACT_ROOT / "product-builds" / "shared" / suffix)
-            elif normalized.startswith("production/"):
-                suffix = normalized.removeprefix("production/")
-                candidates.append(ARTIFACT_ROOT / "product-builds" / "shared" / suffix)
-            for candidate in candidates:
-                if candidate.is_file():
-                    return candidate
-        return path
-    return ARTIFACT_ROOT / "product-builds" / path
 
 
 RESOURCE_INDEX_PATH = resolve_product_build_output("resource_index", "resource_index")
@@ -206,92 +153,95 @@ def load_resource_index() -> dict:
 RESOURCE_INDEX = load_resource_index()
 
 
+def published_path_from_relative(relative_path: str) -> Path:
+    return PUBLISHED_ROOT / "product-builds" / relative_path
+
+
+def unpacked_dir_from_relative_zip(relative_zip_path: str) -> Path:
+    relative = Path(relative_zip_path)
+    if relative.suffix != ".zip":
+        raise RuntimeError(f"expected zip path, got {relative_zip_path}")
+    return published_path_from_relative(str(relative.with_suffix("")))
+
+
 def family_tiles_roots() -> dict[str, Path]:
     roots: dict[str, Path] = {}
-    for package in PRODUCT_BUILD.get("packages", []):
+    for package in RESOURCE_INDEX.get("packages", []):
         if not isinstance(package, dict):
             continue
         family_id = package.get("family_id")
-        relative_path = package.get("relative_path")
         if family_id not in {"sec", "tac", "enr-l", "enr-h"}:
             continue
-        if family_id in roots:
+        package_id = package.get("id")
+        if not isinstance(package_id, str) or package_id in roots:
             continue
-        region = package.get("region_id")
-        if not isinstance(region, str) or not region:
+        artifact_path = package.get("artifact_path")
+        if not isinstance(artifact_path, str) or not artifact_path:
             continue
-        node = resolve_build_manifest_node(f"charts-{family_id}-package-{region}")
-        outputs = node.get("outputs", {})
-        manifest_path = outputs.get("manifest") if isinstance(outputs, dict) else None
-        if not isinstance(manifest_path, str) or not manifest_path:
-            continue
-        tiles_root = (ARTIFACT_ROOT / manifest_path).parent / "tiles"
+        tiles_root = unpacked_dir_from_relative_zip(artifact_path) / "tiles"
         if tiles_root.is_dir():
-            roots[family_id] = tiles_root
-    missing = {"sec", "tac", "enr-l", "enr-h"} - set(roots)
+            roots[package_id] = tiles_root
+    expected = {
+        package["id"]
+        for package in RESOURCE_INDEX.get("packages", [])
+        if isinstance(package, dict) and package.get("family_id") in {"sec", "tac", "enr-l", "enr-h"}
+    }
+    missing = expected - set(roots)
     if missing:
-        raise RuntimeError(f"missing tiles roots for families {sorted(missing)} in {PRODUCT_BUILD_FILE}")
+        raise RuntimeError(f"missing tiles roots for packages {sorted(missing)} in {PUBLISHED_ROOT}")
     return roots
 
 
-def package_region(package_id: str) -> str:
-    return package_id.split("_", 1)[0].lower()
-
-
-def package_artifacts_by_id() -> dict[str, Path]:
-    artifacts: dict[str, Path] = {}
+def unpacked_package_dirs_by_id() -> dict[str, Path]:
+    directories: dict[str, Path] = {}
     for package in RESOURCE_INDEX.get("packages", []):
         package_id = package.get("id")
-        artifact_path = package.get("artifact_path")
+        artifact_path = package.get("artifact_path") or package.get("relative_path")
         if isinstance(package_id, str) and isinstance(artifact_path, str):
-            artifacts[package_id] = resolve_package_artifact_path(artifact_path)
-    return artifacts
-
-
-def extract_package_member(package_path: Path, member_path: str, target_root: Path) -> None:
-    target = target_root / member_path
-    if target.is_file():
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(package_path) as bundle:
-        try:
-            with bundle.open(member_path) as source, target.open("wb") as output:
-                shutil.copyfileobj(source, output)
-        except KeyError as exc:
-            raise RuntimeError(f"missing packaged member {member_path} in {package_path}") from exc
+            directories[package_id] = unpacked_dir_from_relative_zip(artifact_path)
+    return directories
 
 
 def stage_sectional_packages() -> None:
     package_root = WEB_STATIC_ROOT / "sectional-packages"
     reset_dir(package_root)
-    tiles_by_family = family_tiles_roots()
+    tiles_by_package = family_tiles_roots()
     for package in RESOURCE_INDEX["packages"]:
-        family_id = package["family_id"]
-        if family_id not in tiles_by_family:
+        package_id = package["id"]
+        if package_id not in tiles_by_package:
             continue
-        ensure_symlink(tiles_by_family[family_id], package_root / package["id"] / "tiles")
+        ensure_symlink(tiles_by_package[package_id], package_root / package_id / "tiles")
 
 
 def stage_chart_assets() -> None:
     for relative_root in ("plates", "afd", "thumbnails"):
         reset_dir(WEB_STATIC_ROOT / relative_root)
-    package_artifacts = package_artifacts_by_id()
+    package_dirs = unpacked_package_dirs_by_id()
     for kind, records in (("plate", RESOURCE_INDEX.get("plates", [])), ("csup", RESOURCE_INDEX.get("csups", []))):
         for record in records:
-            package_path = package_artifacts.get(record["package_id"])
-            if package_path is None or not package_path.is_file():
-                raise RuntimeError(f"missing package artifact for {record['package_id']}")
-            extract_package_member(package_path, record["asset_path"], WEB_STATIC_ROOT)
+            package_dir = package_dirs.get(record["package_id"])
+            if package_dir is None or not package_dir.is_dir():
+                raise RuntimeError(f"missing unpacked package dir for {record['package_id']}")
+            asset_source = package_dir / record["asset_path"]
+            if not asset_source.is_file():
+                raise RuntimeError(f"missing staged asset {asset_source}")
+            ensure_hard_link(asset_source, WEB_STATIC_ROOT / record["asset_path"])
             thumbnail_path = record.get("thumbnail_path")
             if thumbnail_path:
-                extract_package_member(package_path, thumbnail_path, WEB_STATIC_ROOT)
+                thumbnail_source = package_dir / thumbnail_path
+                if not thumbnail_source.is_file():
+                    raise RuntimeError(f"missing staged thumbnail {thumbnail_source}")
+                ensure_hard_link(thumbnail_source, WEB_STATIC_ROOT / thumbnail_path)
 
 
 def stage_vectors() -> None:
     target = WEB_STATIC_ROOT / "vectors"
     reset_dir(target)
-    with zipfile.ZipFile(VECTOR_ZIP_PATH) as bundle:
-        bundle.extractall(target)
+    vectors_relative_zip = str(VECTOR_ZIP_PATH.relative_to(ARTIFACT_ROOT / "product-builds"))
+    vectors_root = unpacked_dir_from_relative_zip(vectors_relative_zip) / "points"
+    if not vectors_root.is_dir():
+        raise RuntimeError(f"missing published vector points dir {vectors_root}")
+    ensure_symlink(vectors_root, target / "points")
 
 
 def stage_nav_db() -> None:
@@ -313,9 +263,9 @@ def current_stage_stamp() -> dict:
         "resource_index": file_stamp(RESOURCE_INDEX_PATH),
         "vectors_zip": file_stamp(VECTOR_ZIP_PATH),
         "nav_db": file_stamp(NAV_DB_PATH),
+        "current_artifacts": file_stamp(CURRENT_ARTIFACTS_FILE),
         "bundle_manifest": file_stamp(PRODUCT_BUILD_FILE),
-        "build_manifest": file_stamp(BUILD_MANIFEST_FILE),
-        "version": 1,
+        "version": 2,
     }
 
 

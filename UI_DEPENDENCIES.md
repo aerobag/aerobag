@@ -23,9 +23,9 @@ UI-side discovery should no longer assume a fixed `product-build.json` path.
 
 Current contract:
 - cycle bundle manifests live at:
-  - `<source-root>/../aerobag-artifacts/product-builds/production/bundle_<cycle>.json`
+  - `<source-root>/../../aerobag-artifacts/product-builds/production/bundle_<cycle>.json`
 - obstacle snapshots live at:
-  - `<source-root>/../aerobag-artifacts/obstacles/<YYYY.MM.DD>/output/obstacles_<YYYY.MM.DD>.zip`
+  - `<source-root>/../../aerobag-artifacts/obstacles/<YYYY.MM.DD>/output/obstacles_<YYYY.MM.DD>.zip`
 - for "current" online discovery, select the lexicographically latest:
   - `bundle_*.json`
   - obstacle date directory / `obstacles_*.zip`
@@ -92,7 +92,7 @@ Current web build behavior:
   - [ui/scripts/generate_content_fixture.py](/root/aerobag/ui/scripts/generate_content_fixture.py)
 - build artifacts are no longer expected under this repo's own `product-builds/`
   - current artifact root:
-    - `<source-root>/../aerobag-artifacts`
+    - `<source-root>/../../aerobag-artifacts`
   - override supported by the UI bridge:
     - `AEROBAG_ARTIFACT_ROOT`
 - that generator also extracts real `NW_SEC` / `SW_SEC` web tiles into:
@@ -218,7 +218,7 @@ Android build config note:
 - Android package staging now also needs the artifact-root rebasing logic
   - [ui/android-app/app/build.gradle.kts](/root/aerobag/ui/android-app/app/build.gradle.kts)
     resolves stale absolute `artifact_path` values from `resource-index` onto:
-    - `<source-root>/../aerobag-artifacts/product-builds/...`
+    - `<source-root>/../../aerobag-artifacts/product-builds/...`
   - override supported by Gradle staging too:
     - `AEROBAG_ARTIFACT_ROOT`
 

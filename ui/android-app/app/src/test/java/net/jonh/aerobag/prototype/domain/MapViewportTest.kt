@@ -86,7 +86,7 @@ class MapViewportTest {
     @Test
     fun familyRenderingCanStitchNeighboringPackagesIntoOneViewport() {
         val northwest = mapView.copy(
-            chartFamily = MapChartFamily.Sectional,
+            chartFamily = MapChartFamily.Sec,
             packageName = "NW_SEC",
             minZoom = 4.2,
             maxZoom = 10.8,
@@ -94,7 +94,7 @@ class MapViewportTest {
             levels = listOf(TileLevelAvailability(10, 156, 219, 636, 672)),
         )
         val southwest = mapView.copy(
-            chartFamily = MapChartFamily.Sectional,
+            chartFamily = MapChartFamily.Sec,
             packageName = "SW_SEC",
             minZoom = 4.2,
             maxZoom = 10.8,
@@ -106,7 +106,7 @@ class MapViewportTest {
         )
 
         val tiles = renderTiles(
-            listOf("sectional:nw" to northwest, "sectional:sw" to southwest),
+            listOf("sec:nw" to northwest, "sec:sw" to southwest),
             viewport,
             1200f,
             900f,

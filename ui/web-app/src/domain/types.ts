@@ -1,9 +1,9 @@
 export type ChartFamilyId =
-  | "sectional"
+  | "sec"
   | "tac"
   | "wac"
-  | "ifr_low"
-  | "ifr_high"
+  | "enr-l"
+  | "enr-h"
   | "ifr_area"
   | "flyway"
   | "heli"

@@ -44,7 +44,7 @@ type SurfaceSize = {
 
 type AppPage = "map" | "plan" | "charts";
 
-type ChartFamilyId = "sectional" | "tac" | "ifr_low" | "ifr_high";
+type ChartFamilyId = "sec" | "tac" | "enr-l" | "enr-h";
 
 type ChartAsset = NonNullable<ChartPageData["airports"][number]>["charts"][number];
 type TrayOption = {
@@ -76,10 +76,10 @@ type TrayDockStyle = "compact" | "plate_narrow" | "plate_wide";
 type PlateFolderCategory = ChartAsset["folder_category"];
 
 const chartFamilies: Array<{ id: ChartFamilyId; label: string; launcherLabel: string }> = [
-  { id: "sectional", label: "SECTIONAL", launcherLabel: "SEC" },
+  { id: "sec", label: "SECTIONAL", launcherLabel: "SEC" },
   { id: "tac", label: "TAC", launcherLabel: "TAC" },
-  { id: "ifr_low", label: "IFR-LOW", launcherLabel: "IFR L" },
-  { id: "ifr_high", label: "IFR-HIGH", launcherLabel: "IFR H" },
+  { id: "enr-l", label: "IFR-LOW", launcherLabel: "IFR L" },
+  { id: "enr-h", label: "IFR-HIGH", launcherLabel: "IFR H" },
 ];
 
 const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> = [

@@ -423,10 +423,10 @@ private fun WireNavRef.toUi(): NavRef = when (this) {
 private fun PackageId.toWire() = WirePackageId(
     region = region.toWireRegion(),
     family = when (family) {
-        "sectional" -> WireChartFamilyId.Sectional
+        "sec" -> WireChartFamilyId.Sec
         "tac" -> WireChartFamilyId.Tac
-        "ifr_low" -> WireChartFamilyId.IfrLow
-        "ifr_high" -> WireChartFamilyId.IfrHigh
+        "enr-l" -> WireChartFamilyId.EnrL
+        "enr-h" -> WireChartFamilyId.EnrH
         else -> error("Unsupported family: $family")
     },
     cycle = cycle,
@@ -435,10 +435,10 @@ private fun PackageId.toWire() = WirePackageId(
 private fun WirePackageId.toUi() = PackageId(
     region = region.toUiRegion(),
     family = when (family) {
-        WireChartFamilyId.Sectional -> "sectional"
+        WireChartFamilyId.Sec -> "sec"
         WireChartFamilyId.Tac -> "tac"
-        WireChartFamilyId.IfrLow -> "ifr_low"
-        WireChartFamilyId.IfrHigh -> "ifr_high"
+        WireChartFamilyId.EnrL -> "enr-l"
+        WireChartFamilyId.EnrH -> "enr-h"
     },
     cycle = cycle,
 )
@@ -521,10 +521,10 @@ internal fun Catalog.toWireForTesting() = WireCatalog(
     families = packages.map { it.id.family }.distinct().map { family ->
         WireCatalogFamily(
             id = when (family) {
-                "sectional" -> WireChartFamilyId.Sectional
+                "sec" -> WireChartFamilyId.Sec
                 "tac" -> WireChartFamilyId.Tac
-                "ifr_low" -> WireChartFamilyId.IfrLow
-                "ifr_high" -> WireChartFamilyId.IfrHigh
+                "enr-l" -> WireChartFamilyId.EnrL
+                "enr-h" -> WireChartFamilyId.EnrH
                 else -> error("Unsupported family: $family")
             },
             display_name = family,

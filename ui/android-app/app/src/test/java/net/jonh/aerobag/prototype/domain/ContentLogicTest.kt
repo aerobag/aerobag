@@ -214,7 +214,7 @@ private object SampleDataFixture {
             CatalogPackage(
                 id = PackageId(
                     region = "ne",
-                    family = "sectional",
+                    family = "sec",
                     cycle = "2026-04-16",
                 ),
                 packageName = "NE_SEC",
@@ -258,7 +258,7 @@ private object SampleDataFixture {
             InstalledPackage(
                 packageId = PackageId(
                     region = "ne",
-                    family = "sectional",
+                    family = "sec",
                     cycle = "2026-04-16",
                 ),
                 integrityOk = true,
@@ -276,7 +276,7 @@ private object SampleMapFixture {
           "catalog_revision": "2026-04-06T00:00:00Z",
           "families": [
             {
-              "id": "sectional",
+              "id": "sec",
               "display_name": "VFR Sectional Charts",
               "kind": "tiled_raster",
               "max_zoom": 10,
@@ -467,10 +467,10 @@ private class FakeNativeBridge(
         lon: Double,
     ): String {
         val family = when (json.decodeFromString<WireChartFamilyId>(familyJson)) {
-            WireChartFamilyId.Sectional -> MapChartFamily.Sectional
+            WireChartFamilyId.Sec -> MapChartFamily.Sec
             WireChartFamilyId.Tac -> MapChartFamily.Tac
-            WireChartFamilyId.IfrLow -> MapChartFamily.IfrLow
-            WireChartFamilyId.IfrHigh -> MapChartFamily.IfrHigh
+            WireChartFamilyId.EnrL -> MapChartFamily.EnrL
+            WireChartFamilyId.EnrH -> MapChartFamily.EnrH
         }
         val chart = MockMapLookupAdapter(json).chartForPosition(
             catalogJson = catalogJson,
@@ -528,13 +528,13 @@ private fun WirePackageId.toUiForTesting() = PackageId(
         WireRegionId.Ak -> "ak"
         WireRegionId.Pac -> "pac"
     },
-    family = "sectional",
+    family = "sec",
     cycle = cycle,
 )
 
 private fun MapChartFamily.toWireFamilyForTesting() = when (this) {
-    MapChartFamily.Sectional -> WireChartFamilyId.Sectional
+    MapChartFamily.Sec -> WireChartFamilyId.Sec
     MapChartFamily.Tac -> WireChartFamilyId.Tac
-    MapChartFamily.IfrLow -> WireChartFamilyId.IfrLow
-    MapChartFamily.IfrHigh -> WireChartFamilyId.IfrHigh
+    MapChartFamily.EnrL -> WireChartFamilyId.EnrL
+    MapChartFamily.EnrH -> WireChartFamilyId.EnrH
 }

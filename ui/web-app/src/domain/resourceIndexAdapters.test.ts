@@ -7,7 +7,7 @@ const resourceIndex: ResourceIndexJson = {
   cycle: "2604",
   generated_at_utc: "2026-04-07T00:00:00Z",
   families: [
-    { id: "sectional", display_name: "Sectional", kind: "tiled_raster" },
+    { id: "sec", display_name: "Sectional", kind: "tiled_raster" },
     { id: "tac", display_name: "TAC", kind: "tiled_raster" },
     { id: "tpp", display_name: "TPP", kind: "flat_image" },
     { id: "csup", display_name: "CSUP", kind: "flat_image" },
@@ -27,8 +27,8 @@ const resourceIndex: ResourceIndexJson = {
   ],
   chart_collections: [
     {
-      id: "sectional:nw",
-      family_id: "sectional",
+      id: "sec:nw",
+      family_id: "sec",
       region_id: "nw",
       package_id: "NW_SEC",
       chart_index: 0,
@@ -89,8 +89,8 @@ const samplePlan: FlightPlan = {
 
 describe("resourceIndexAdapters", () => {
   it("derives map views from preferred chart collection ids", () => {
-    const mapViews = deriveMapViews(resourceIndex, ["sectional:nw", "tac:nw"]);
-    expect(mapViews.map((entry) => entry.id)).toEqual(["sectional:nw", "tac:nw"]);
+    const mapViews = deriveMapViews(resourceIndex, ["sec:nw", "tac:nw"]);
+    expect(mapViews.map((entry) => entry.id)).toEqual(["sec:nw", "tac:nw"]);
     expect(mapViews[0].map_view.package_name).toBe("NW_SEC");
     expect(mapViews[1].map_view.chart_family).toBe("tac");
     expect(mapViews[0].map_view.tile_size).toBe(512);

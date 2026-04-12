@@ -128,19 +128,7 @@ def ensure_symlink(source: Path, target: Path) -> None:
 
 
 def load_resource_index() -> dict:
-    payload = json.loads(RESOURCE_INDEX_PATH.read_text())
-    family_map = {
-        "sec": "sectional",
-        "enr-l": "ifr_low",
-        "enr-h": "ifr_high",
-    }
-    for family in payload.get("families", []):
-        family["id"] = family_map.get(family["id"], family["id"])
-    for package in payload.get("packages", []):
-        package["family_id"] = family_map.get(package["family_id"], package["family_id"])
-    for collection in payload.get("chart_collections", []):
-        collection["family_id"] = family_map.get(collection["family_id"], collection["family_id"])
-    return payload
+    return json.loads(RESOURCE_INDEX_PATH.read_text())
 
 
 RESOURCE_INDEX = load_resource_index()
@@ -148,10 +136,10 @@ RESOURCE_INDEX = load_resource_index()
 
 def family_tiles_roots() -> dict[str, Path]:
     return {
-        "sectional": resolve_product_build_output("charts-sec-render", "tiles_root"),
+        "sec": resolve_product_build_output("charts-sec-render", "tiles_root"),
         "tac": resolve_product_build_output("charts-tac-render", "tiles_root"),
-        "ifr_low": resolve_product_build_output("charts-enr-l-render", "tiles_root"),
-        "ifr_high": resolve_product_build_output("charts-enr-h-render", "tiles_root"),
+        "enr-l": resolve_product_build_output("charts-enr-l-render", "tiles_root"),
+        "enr-h": resolve_product_build_output("charts-enr-h-render", "tiles_root"),
     }
 
 

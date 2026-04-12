@@ -14,7 +14,7 @@ class SectionalPackagesTest {
     @Test
     fun sectionalTilesUseZipEntryPathsWithoutAssetPrefix() {
         val mapView = MapView(
-            chartFamily = MapChartFamily.Sectional,
+            chartFamily = MapChartFamily.Sec,
             chartName = "NW Sectional",
             chartIndex = 0,
             tileRoot = "tiles",
@@ -46,7 +46,7 @@ class SectionalPackagesTest {
             topPx = 0f,
             sizePx = 256f,
             zoom = 10,
-            mapViewId = "sectional:nw",
+            mapViewId = "sec:nw",
             mapView = mapView,
         )
 

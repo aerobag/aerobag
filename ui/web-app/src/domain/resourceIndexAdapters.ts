@@ -3,11 +3,11 @@ import type { CatalogJson, ChartFamilyId, ChartPageData, FlightPlan, MapViewJson
 type MapView = MapViewJson;
 type MapViewOption = MapViewOptionJson;
 type ChartPage = ChartPageData;
-type SupportedChartFamily = Extract<ChartFamilyId, "sectional" | "tac" | "ifr_low" | "ifr_high">;
+type SupportedChartFamily = Extract<ChartFamilyId, "sec" | "tac" | "enr-l" | "enr-h">;
 type ChartAsset = ChartPage["airports"][number]["charts"][number];
 type FolderCategory = ChartAsset["folder_category"];
 
-const supportedChartFamilies = new Set<SupportedChartFamily>(["sectional", "tac", "ifr_low", "ifr_high"]);
+const supportedChartFamilies = new Set<SupportedChartFamily>(["sec", "tac", "enr-l", "enr-h"]);
 
 function isSupportedChartFamily(familyId: ChartFamilyId): familyId is SupportedChartFamily {
   return supportedChartFamilies.has(familyId as SupportedChartFamily);
@@ -15,13 +15,13 @@ function isSupportedChartFamily(familyId: ChartFamilyId): familyId is SupportedC
 
 function mapLauncherLabel(familyId: string): string {
   switch (familyId) {
-    case "sectional":
+    case "sec":
       return "SEC";
     case "tac":
       return "TAC";
-    case "ifr_low":
+    case "enr-l":
       return "IFR L";
-    case "ifr_high":
+    case "enr-h":
       return "IFR H";
     default:
       return familyId.toUpperCase();
@@ -115,11 +115,11 @@ export function deriveCatalog(resourceIndex: ResourceIndexJson): CatalogJson {
   const families = resourceIndex.families.flatMap((family) =>
     isSupportedChartFamily(family.id as ChartFamilyId)
       ? [{
-          id: family.id as Extract<ChartFamilyId, "sectional" | "tac" | "ifr_low" | "ifr_high">,
+          id: family.id as Extract<ChartFamilyId, "sec" | "tac" | "enr-l" | "enr-h">,
           display_name: family.display_name,
           kind: family.kind,
           max_zoom: null,
-          tile_size: tileSizeForFamily(resourceIndex, family.id as Extract<ChartFamilyId, "sectional" | "tac" | "ifr_low" | "ifr_high">),
+          tile_size: tileSizeForFamily(resourceIndex, family.id as Extract<ChartFamilyId, "sec" | "tac" | "enr-l" | "enr-h">),
         }]
       : [],
   );
@@ -128,11 +128,11 @@ export function deriveCatalog(resourceIndex: ResourceIndexJson): CatalogJson {
       ? [{
           id: {
             region: pkg.region_id,
-            family: pkg.family_id as Extract<ChartFamilyId, "sectional" | "tac" | "ifr_low" | "ifr_high">,
+            family: pkg.family_id as Extract<ChartFamilyId, "sec" | "tac" | "enr-l" | "enr-h">,
             cycle,
           },
           package_name: pkg.id,
-          family_id: pkg.family_id as Extract<ChartFamilyId, "sectional" | "tac" | "ifr_low" | "ifr_high">,
+          family_id: pkg.family_id as Extract<ChartFamilyId, "sec" | "tac" | "enr-l" | "enr-h">,
           region_id: pkg.region_id,
           cycle,
           artifact_kind: "zip",

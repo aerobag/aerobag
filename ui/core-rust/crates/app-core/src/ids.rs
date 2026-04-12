@@ -1,16 +1,24 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Ord, PartialOrd)]
-#[serde(rename_all = "snake_case")]
 pub enum ChartFamilyId {
+    #[serde(rename = "sec", alias = "sectional")]
     Sectional,
+    #[serde(rename = "tac")]
     Tac,
+    #[serde(rename = "wac")]
     Wac,
+    #[serde(rename = "enr-l", alias = "ifr_low")]
     IfrLow,
+    #[serde(rename = "enr-h", alias = "ifr_high")]
     IfrHigh,
+    #[serde(rename = "enr-a", alias = "ifr_area")]
     IfrArea,
+    #[serde(rename = "flyway")]
     Flyway,
+    #[serde(rename = "heli")]
     Heli,
+    #[serde(rename = "misc")]
     Misc,
 }
 

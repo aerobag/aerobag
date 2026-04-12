@@ -121,11 +121,11 @@ export type LoadedAdapter = {
 function packageName(region: string, family: string): string {
   const regionCode = region.toUpperCase();
   const familyCode =
-    family === "sectional"
+    family === "sec"
       ? "SEC"
-      : family === "ifr_low"
+      : family === "enr-l"
         ? "ENR_L"
-        : family === "ifr_high"
+        : family === "enr-h"
           ? "ENR_H"
           : family === "ifr_area"
             ? "ENR_A"

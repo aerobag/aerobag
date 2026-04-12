@@ -116,17 +116,17 @@ data class WireResourceCsup(
 )
 
 private fun WireChartFamilyId.toUiMapFamily() = when (this) {
-    WireChartFamilyId.Sectional -> MapChartFamily.Sectional
+    WireChartFamilyId.Sec -> MapChartFamily.Sec
     WireChartFamilyId.Tac -> MapChartFamily.Tac
-    WireChartFamilyId.IfrLow -> MapChartFamily.IfrLow
-    WireChartFamilyId.IfrHigh -> MapChartFamily.IfrHigh
+    WireChartFamilyId.EnrL -> MapChartFamily.EnrL
+    WireChartFamilyId.EnrH -> MapChartFamily.EnrH
 }
 
 private fun WireChartFamilyId.toResourceId() = when (this) {
-    WireChartFamilyId.Sectional -> "sectional"
+    WireChartFamilyId.Sec -> "sec"
     WireChartFamilyId.Tac -> "tac"
-    WireChartFamilyId.IfrLow -> "ifr_low"
-    WireChartFamilyId.IfrHigh -> "ifr_high"
+    WireChartFamilyId.EnrL -> "enr-l"
+    WireChartFamilyId.EnrH -> "enr-h"
 }
 
 private fun WireRegionId.toCode() = when (this) {
@@ -157,16 +157,16 @@ private fun tileSizeForFamily(): Int = 512
 
 fun deriveWireCatalog(resourceIndex: WireResourceIndex): WireCatalog {
     val cycle = resourceIndex.cycle ?: "unknown"
-    val supportedFamilies = setOf("sectional", "tac", "ifr_low", "ifr_high")
+    val supportedFamilies = setOf("sec", "tac", "enr-l", "enr-h")
     val familyById = resourceIndex.families.associateBy { it.id }
     val packageById = resourceIndex.packages.associateBy { it.id }
 
     val families = resourceIndex.families.mapNotNull { family ->
         val familyId = when (family.id) {
-            "sectional" -> WireChartFamilyId.Sectional
+            "sec" -> WireChartFamilyId.Sec
             "tac" -> WireChartFamilyId.Tac
-            "ifr_low" -> WireChartFamilyId.IfrLow
-            "ifr_high" -> WireChartFamilyId.IfrHigh
+            "enr-l" -> WireChartFamilyId.EnrL
+            "enr-h" -> WireChartFamilyId.EnrH
             else -> null
         } ?: return@mapNotNull null
         val maxZoom = resourceIndex.chart_collections
@@ -183,10 +183,10 @@ fun deriveWireCatalog(resourceIndex: WireResourceIndex): WireCatalog {
 
     val packages = resourceIndex.packages.mapNotNull { pkg ->
         val familyId = when (pkg.family_id) {
-            "sectional" -> WireChartFamilyId.Sectional
+            "sec" -> WireChartFamilyId.Sec
             "tac" -> WireChartFamilyId.Tac
-            "ifr_low" -> WireChartFamilyId.IfrLow
-            "ifr_high" -> WireChartFamilyId.IfrHigh
+            "enr-l" -> WireChartFamilyId.EnrL
+            "enr-h" -> WireChartFamilyId.EnrH
             else -> null
         } ?: return@mapNotNull null
         WireCatalogPackage(
@@ -285,10 +285,10 @@ fun deriveMapViews(
     preferredIds: List<String>,
 ): List<MapViewOption> {
     val supported = resourceIndex.chart_collections.filter {
-        it.family_id == WireChartFamilyId.Sectional ||
+        it.family_id == WireChartFamilyId.Sec ||
             it.family_id == WireChartFamilyId.Tac ||
-            it.family_id == WireChartFamilyId.IfrLow ||
-            it.family_id == WireChartFamilyId.IfrHigh
+            it.family_id == WireChartFamilyId.EnrL ||
+            it.family_id == WireChartFamilyId.EnrH
     }
     val selected = if (preferredIds.isNotEmpty()) {
         preferredIds.mapNotNull { id -> supported.firstOrNull { it.id == id } }

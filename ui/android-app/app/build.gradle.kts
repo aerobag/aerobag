@@ -180,7 +180,7 @@ val stagePrototypeSectionalPackages by tasks.registering {
             .filterIsInstance<Map<*, *>>()
             .filter {
                 val familyId = it["family_id"] as? String
-                familyId in setOf("sectional", "tac", "ifr_low", "ifr_high")
+                familyId in setOf("sec", "tac", "enr-l", "enr-h")
             }
             .map { resolveArtifactPath(it["artifact_path"] as String) }
         val outputDir = generatedPrototypeSeedPackagesDir.get().dir("sectional-packages").asFile

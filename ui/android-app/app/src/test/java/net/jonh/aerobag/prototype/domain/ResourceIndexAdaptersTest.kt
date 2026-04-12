@@ -9,7 +9,7 @@ class ResourceIndexAdaptersTest {
         cycle = "2604",
         generated_at_utc = "2026-04-07T00:00:00Z",
         families = listOf(
-            WireResourceFamily("sectional", "Sectional", "tiled_raster"),
+            WireResourceFamily("sec", "Sectional", "tiled_raster"),
             WireResourceFamily("tac", "TAC", "tiled_raster"),
             WireResourceFamily("tpp", "TPP", "flat_image"),
             WireResourceFamily("csup", "CSUP", "flat_image"),
@@ -21,8 +21,8 @@ class ResourceIndexAdaptersTest {
         packages = emptyList(),
         chart_collections = listOf(
             WireChartCollection(
-                id = "sectional:nw",
-                family_id = WireChartFamilyId.Sectional,
+                id = "sec:nw",
+                family_id = WireChartFamilyId.Sec,
                 region_id = WireRegionId.Nw,
                 package_id = "NW_SEC",
                 chart_index = 0,
@@ -91,8 +91,8 @@ class ResourceIndexAdaptersTest {
 
     @Test
     fun deriveMapViewsUsesPreferredCollectionIds() {
-        val mapViews = deriveMapViews(resourceIndex, listOf("sectional:nw", "tac:nw"))
-        assertEquals(listOf("sectional:nw", "tac:nw"), mapViews.map { it.id })
+        val mapViews = deriveMapViews(resourceIndex, listOf("sec:nw", "tac:nw"))
+        assertEquals(listOf("sec:nw", "tac:nw"), mapViews.map { it.id })
         assertEquals("NW_SEC", mapViews[0].mapView.packageName)
         assertEquals(MapChartFamily.Tac, mapViews[1].mapView.chartFamily)
         assertEquals(512, mapViews[0].mapView.tileSize)

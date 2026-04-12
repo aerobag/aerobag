@@ -20,9 +20,9 @@ data class PackageId(
 ) {
     fun packageName(): String {
         val familyCode = when (family) {
-            "sectional" -> "SEC"
-            "ifr_low" -> "ENR_L"
-            "ifr_high" -> "ENR_H"
+            "sec" -> "SEC"
+            "enr-l" -> "ENR_L"
+            "enr-h" -> "ENR_H"
             "ifr_area" -> "ENR_A"
             else -> family.uppercase()
         }
@@ -74,10 +74,10 @@ data class Catalog(
 )
 
 enum class MapChartFamily {
-    Sectional,
+    Sec,
     Tac,
-    IfrLow,
-    IfrHigh,
+    EnrL,
+    EnrH,
 }
 
 enum class TileStorageKind {

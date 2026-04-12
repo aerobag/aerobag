@@ -32,6 +32,14 @@ Current contract:
 
 The current UI-side scripts in this repo now follow that rule.
 
+Canonical chart family ids from preprocessing are:
+- `sec`
+- `tac`
+- `enr-l`
+- `enr-h`
+
+UI and app-core now use those ids directly on live paths. Legacy aliases like `sectional` / `ifr_low` / `ifr_high` are transitional compatibility only and should not be used for new code.
+
 Install used:
 
 ```bash

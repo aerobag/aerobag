@@ -187,20 +187,17 @@ enum class WireContentAvailability {
 
 @Serializable
 enum class WireChartFamilyId {
-    @SerialName("sectional")
-    @JsonNames("sec")
-    Sectional,
+    @SerialName("sec")
+    Sec,
 
     @SerialName("tac")
     Tac,
 
-    @SerialName("ifr_low")
-    @JsonNames("enr-l")
-    IfrLow,
+    @SerialName("enr-l")
+    EnrL,
 
-    @SerialName("ifr_high")
-    @JsonNames("enr-h")
-    IfrHigh,
+    @SerialName("enr-h")
+    EnrH,
 }
 
 @Serializable

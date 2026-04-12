@@ -62,18 +62,18 @@ class MockMapLookupAdapter(
 }
 
 private fun MapChartFamily.toWire() = when (this) {
-    MapChartFamily.Sectional -> WireChartFamilyId.Sectional
+    MapChartFamily.Sec -> WireChartFamilyId.Sec
     MapChartFamily.Tac -> WireChartFamilyId.Tac
-    MapChartFamily.IfrLow -> WireChartFamilyId.IfrLow
-    MapChartFamily.IfrHigh -> WireChartFamilyId.IfrHigh
+    MapChartFamily.EnrL -> WireChartFamilyId.EnrL
+    MapChartFamily.EnrH -> WireChartFamilyId.EnrH
 }
 
 private fun WireChartRecord.toUi() = ChartLookupResult(
     family = when (family_id) {
-        WireChartFamilyId.Sectional -> MapChartFamily.Sectional
+        WireChartFamilyId.Sec -> MapChartFamily.Sec
         WireChartFamilyId.Tac -> MapChartFamily.Tac
-        WireChartFamilyId.IfrLow -> MapChartFamily.IfrLow
-        WireChartFamilyId.IfrHigh -> MapChartFamily.IfrHigh
+        WireChartFamilyId.EnrL -> MapChartFamily.EnrL
+        WireChartFamilyId.EnrH -> MapChartFamily.EnrH
     },
     name = name,
     displayName = display_name,

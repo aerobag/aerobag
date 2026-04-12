@@ -895,23 +895,23 @@ private fun MapExplorerPage(
         }
     }
     val trayOptions = remember(selectedMap.id, fixture.mapViews) {
-        val sectionalTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.Sectional }
+        val secTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.Sec }
         val tacTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.Tac }
-        val ifrLowTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.IfrLow }
-        val ifrHighTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.IfrHigh }
+        val enrLTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.EnrL }
+        val enrHTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.EnrH }
         listOf(
-            ChartTrayOption("sectional", "SECTIONAL", "SEC", sectionalTarget != null) { sectionalTarget?.let { onSelectMapId(it.id) } },
+            ChartTrayOption("sec", "SECTIONAL", "SEC", secTarget != null) { secTarget?.let { onSelectMapId(it.id) } },
             ChartTrayOption("tac", "TAC", "TAC", tacTarget != null) { tacTarget?.let { onSelectMapId(it.id) } },
-            ChartTrayOption("ifr_low", "IFR-LOW", "IFR L", ifrLowTarget != null) { ifrLowTarget?.let { onSelectMapId(it.id) } },
-            ChartTrayOption("ifr_high", "IFR-HIGH", "IFR H", ifrHighTarget != null) { ifrHighTarget?.let { onSelectMapId(it.id) } },
+            ChartTrayOption("enr-l", "IFR-LOW", "IFR L", enrLTarget != null) { enrLTarget?.let { onSelectMapId(it.id) } },
+            ChartTrayOption("enr-h", "IFR-HIGH", "IFR H", enrHTarget != null) { enrHTarget?.let { onSelectMapId(it.id) } },
         )
     }
     val selectedLauncher = trayOptions.firstOrNull { option ->
         when (option.id) {
-            "sectional" -> selectedMap.mapView.chartFamily == MapChartFamily.Sectional
+            "sec" -> selectedMap.mapView.chartFamily == MapChartFamily.Sec
             "tac" -> selectedMap.mapView.chartFamily == MapChartFamily.Tac
-            "ifr_low" -> selectedMap.mapView.chartFamily == MapChartFamily.IfrLow
-            "ifr_high" -> selectedMap.mapView.chartFamily == MapChartFamily.IfrHigh
+            "enr-l" -> selectedMap.mapView.chartFamily == MapChartFamily.EnrL
+            "enr-h" -> selectedMap.mapView.chartFamily == MapChartFamily.EnrH
             else -> false
         }
     } ?: trayOptions.first()
@@ -2426,10 +2426,10 @@ private fun formatSnapshot(snapshot: AppViewSnapshot, chartLabelsById: Map<Strin
     val label = pageLabel(snapshot.page)
     if (snapshot.page == AppPage.Map) {
         val family = when (snapshot.selectedMapId.substringBefore(':')) {
-            "sectional" -> "SEC"
+            "sec" -> "SEC"
             "tac" -> "TAC"
-            "ifr_low" -> "IFR L"
-            "ifr_high" -> "IFR H"
+            "enr-l" -> "IFR L"
+            "enr-h" -> "IFR H"
             else -> ""
         }
         return if (family.isBlank()) label else "$label-$family"

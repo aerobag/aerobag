@@ -13,9 +13,9 @@ const catalog: CatalogJson = {
   ],
   packages: [
     {
-      id: { region: "ne", family: "sectional", cycle: "2026-04-16" },
+      id: { region: "ne", family: "sec", cycle: "2026-04-16" },
       package_name: "NE_SEC",
-      family_id: "sectional",
+      family_id: "sec",
       region_id: "ne",
       cycle: "2026-04-16",
       artifact_kind: "zip",
@@ -76,7 +76,7 @@ const remoteOnlyInventory: ContentInventory = {
 const installedInventory: ContentInventory = {
   installed_packages: [
     {
-      package_id: { region: "ne", family: "sectional", cycle: "2026-04-16" },
+      package_id: { region: "ne", family: "sec", cycle: "2026-04-16" },
       integrity_ok: true,
     },
   ],

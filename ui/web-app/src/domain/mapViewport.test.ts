@@ -60,8 +60,8 @@ describe("mapViewport", () => {
   it("family rendering can stitch neighboring packages into one viewport", () => {
     const northwest = {
       ...mapView,
-      id: "sectional:nw",
-      chart_family: "sectional" as const,
+      id: "sec:nw",
+      chart_family: "sec" as const,
       package_name: "NW_SEC",
       min_zoom: 4.2,
       max_zoom: 10.8,
@@ -70,8 +70,8 @@ describe("mapViewport", () => {
     };
     const southwest = {
       ...mapView,
-      id: "sectional:sw",
-      chart_family: "sectional" as const,
+      id: "sec:sw",
+      chart_family: "sec" as const,
       package_name: "SW_SEC",
       min_zoom: 4.2,
       max_zoom: 10.8,

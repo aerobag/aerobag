@@ -126,23 +126,25 @@ function folderCategoryForRecord(
   kind: "plate" | "csup",
   record: ResourceIndexJson["plates"][number] | ResourceIndexJson["csups"][number],
 ): FolderCategory {
-  if (kind === "csup") {
-    return "csup";
+  const documentType = kind === "csup" ? "csup" : record.document_type;
+  switch (documentType) {
+    case "airport_diagram":
+      return "airport-diagram";
+    case "takeoff_minimums":
+    case "alternate_minimums":
+    case "minimums":
+      return "takeoff-mins";
+    case "departure":
+      return "departure";
+    case "star":
+      return "star";
+    case "csup":
+      return "csup";
+    case "approach":
+    case "other":
+    default:
+      return "approach";
   }
-  const label = record.label.toUpperCase();
-  if (label.includes("AIRPORT DIAGRAM")) {
-    return "airport-diagram";
-  }
-  if (label.startsWith("MIN-") || label.includes("TAKEOFF MINIMUMS") || label.includes("ALTERNATE MINIMUMS")) {
-    return "takeoff-mins";
-  }
-  if (label.startsWith("DP-") || label.startsWith("ODP-") || label.includes("DEPARTURE")) {
-    return "departure";
-  }
-  if (label.startsWith("STAR-") || label.includes(" ARRIVAL")) {
-    return "star";
-  }
-  return "approach";
 }
 
 const folderCategoryRank: Record<FolderCategory, number> = {

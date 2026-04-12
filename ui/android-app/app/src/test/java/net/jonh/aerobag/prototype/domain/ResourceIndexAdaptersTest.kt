@@ -61,6 +61,7 @@ class ResourceIndexAdaptersTest {
                 asset_path = "plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png",
                 label = "IAP-MA-ILS OR LOC RWY 04R",
                 asset_kind = "png",
+                document_type = "approach",
             ),
         ),
         csups = listOf(
@@ -72,6 +73,7 @@ class ResourceIndexAdaptersTest {
                 asset_path = "afd/BOS/CSUP-NE_0-0.png",
                 label = "CSUP-NE_0-0",
                 asset_kind = "png",
+                document_type = "csup",
             ),
         ),
     )

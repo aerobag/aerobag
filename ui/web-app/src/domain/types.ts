@@ -504,6 +504,7 @@ export type ResourceIndexJson = {
     thumbnail_path?: string | null;
     label: string;
     asset_kind: string;
+    document_type: string;
   }>;
   csups: Array<{
     id: string;
@@ -514,5 +515,6 @@ export type ResourceIndexJson = {
     thumbnail_path?: string | null;
     label: string;
     asset_kind: string;
+    document_type: string;
   }>;
 };

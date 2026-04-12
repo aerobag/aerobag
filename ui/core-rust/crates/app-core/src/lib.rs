@@ -41,7 +41,7 @@ pub use navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
     AirwayExitSelection, AirwayFixPoint, AirwayPoint, AirwaySuggestion, MaterializedProcedure,
     ProcedureLegRecord, ProcedureOptions, ProcedureSpecChoice, ProcedureSummary,
-    ProcedureVariantKey,
+    ProcedureVariantKey, AirwayPresentationPlan, AirwayPresentationPoint,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use navdb::{
@@ -185,6 +185,95 @@ pub fn build_flight_plan(plan: FlightPlan) -> AppResult<FlightPlan> {
     Ok(plan)
 }
 
+pub fn prepare_airway_presentation(
+    airway_name: &str,
+    branches: Vec<AirwayBranch>,
+    origin_position: LatLon,
+    destination_position: Option<LatLon>,
+) -> AppResult<AirwayPresentationPlan> {
+    let mut best: Option<(f64, AirwayPresentationPlan)> = None;
+
+    for branch in branches
+        .into_iter()
+        .filter(|branch| branch.display_name.trim() == airway_name.trim())
+    {
+        if branch.points.is_empty() {
+            continue;
+        }
+        let mut entry_index = 0usize;
+        let mut exit_index = branch.points.len().saturating_sub(1);
+        let mut entry_distance = f64::MAX;
+        let mut exit_distance = 0.0;
+
+        for (index, point) in branch.points.iter().enumerate() {
+            let origin_distance = distance_nm(origin_position, point.position);
+            if origin_distance < entry_distance {
+                entry_distance = origin_distance;
+                entry_index = index;
+            }
+            if let Some(destination_position) = destination_position {
+                let destination_distance = distance_nm(destination_position, point.position);
+                if index == 0 || destination_distance < exit_distance {
+                    exit_distance = destination_distance;
+                    exit_index = index;
+                }
+            }
+        }
+
+        let mut points = branch
+            .points
+            .iter()
+            .enumerate()
+            .map(|(branch_point_index, point)| AirwayPresentationPoint {
+                branch_point_index,
+                sequence: point.sequence,
+                nav_ref: point.nav_ref.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        let mut suggested_entry_index = entry_index;
+        let mut suggested_exit_index = destination_position.map(|_| exit_index);
+        if destination_position.is_some() && entry_index > exit_index {
+            points.reverse();
+            suggested_entry_index = points.len() - 1 - entry_index;
+            suggested_exit_index = Some(points.len() - 1 - exit_index);
+        }
+
+        let score = entry_distance + exit_distance;
+        let presentation = AirwayPresentationPlan {
+            airway_name: branch.display_name,
+            branch_key: branch.branch_key,
+            points,
+            suggested_entry_index,
+            suggested_exit_index,
+        };
+
+        if best
+            .as_ref()
+            .is_none_or(|(current_score, _)| score < *current_score)
+        {
+            best = Some((score, presentation));
+        }
+    }
+
+    best.map(|(_, presentation)| presentation).ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: format!("no airway branches found for {}", airway_name.trim()),
+    })
+}
+
+pub fn sort_airway_suggestions_for_ui(mut suggestions: Vec<AirwaySuggestion>) -> Vec<AirwaySuggestion> {
+    suggestions.sort_by(|left, right| {
+        compare_airway_name_for_ui(&left.airway_name, &right.airway_name)
+            .then_with(|| {
+                left.distance_from_anchor_nm
+                    .partial_cmp(&right.distance_from_anchor_nm)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    suggestions
+}
+
 pub fn remove_flight_plan_leg(plan: &FlightPlan, index: usize) -> AppResult<FlightPlan> {
     if index >= plan.legs.len() {
         return Err(AppError {
@@ -287,6 +376,37 @@ pub fn move_flight_plan_waypoint(
     next.updated_at_epoch_ms += 1;
     next.version += 1;
     Ok(next)
+}
+
+fn distance_nm(first: LatLon, second: LatLon) -> f64 {
+    let lat_nm = (second.lat - first.lat) * 60.0;
+    let lon_nm = (second.lon - first.lon) * 60.0 * ((first.lat + second.lat).to_radians() / 2.0).cos();
+    (lat_nm.powi(2) + lon_nm.powi(2)).sqrt()
+}
+
+fn compare_airway_name_for_ui(left: &str, right: &str) -> std::cmp::Ordering {
+    let left_parsed = parse_airway_name_for_ui(left);
+    let right_parsed = parse_airway_name_for_ui(right);
+    left_parsed
+        .0
+        .cmp(&right_parsed.0)
+        .then_with(|| left_parsed.1.cmp(&right_parsed.1))
+        .then_with(|| left.cmp(right))
+}
+
+fn parse_airway_name_for_ui(name: &str) -> (String, i32) {
+    let trimmed = name.trim();
+    let split_at = trimmed
+        .find(|ch: char| ch.is_ascii_digit())
+        .unwrap_or(trimmed.len());
+    let prefix = trimmed[..split_at].to_ascii_uppercase();
+    let number = trimmed[split_at..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>()
+        .parse::<i32>()
+        .unwrap_or(i32::MAX);
+    (prefix, number)
 }
 
 pub fn build_flight_plan_ui(plan: FlightPlan) -> AppResult<FlightPlanUiState> {
@@ -1287,6 +1407,130 @@ mod tests {
             RouteComponent::Airway { .. }
         ));
         assert_eq!(mutation.ui_state.components[1].kind, RouteComponentViewKind::Airway);
+    }
+
+    #[test]
+    fn sorts_airway_suggestions_for_ui_by_prefix_then_number() {
+        let suggestions = vec![
+            AirwaySuggestion {
+                airway_name: "V120".to_string(),
+                nearest_branch_key: Some("A".to_string()),
+                nearest_nav_ref: NavRef::Navaid("SEA".to_string()),
+                nearest_sequence: 10,
+                distance_from_anchor_nm: 1.0,
+            },
+            AirwaySuggestion {
+                airway_name: "J1".to_string(),
+                nearest_branch_key: Some("A".to_string()),
+                nearest_nav_ref: NavRef::Navaid("SEA".to_string()),
+                nearest_sequence: 10,
+                distance_from_anchor_nm: 1.0,
+            },
+            AirwaySuggestion {
+                airway_name: "V2".to_string(),
+                nearest_branch_key: Some("A".to_string()),
+                nearest_nav_ref: NavRef::Navaid("SEA".to_string()),
+                nearest_sequence: 10,
+                distance_from_anchor_nm: 1.0,
+            },
+            AirwaySuggestion {
+                airway_name: "V17".to_string(),
+                nearest_branch_key: Some("A".to_string()),
+                nearest_nav_ref: NavRef::Navaid("SEA".to_string()),
+                nearest_sequence: 10,
+                distance_from_anchor_nm: 1.0,
+            },
+        ];
+
+        let sorted = sort_airway_suggestions_for_ui(suggestions);
+        let names = sorted
+            .into_iter()
+            .map(|suggestion| suggestion.airway_name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["J1", "V2", "V17", "V120"]);
+    }
+
+    #[test]
+    fn prepares_airway_presentation_oriented_between_origin_and_destination() {
+        let branches = vec![AirwayBranch {
+            display_name: "V2".to_string(),
+            branch_key: "A".to_string(),
+            points: vec![
+                AirwayFixPoint {
+                    airway_name: "V2".to_string(),
+                    sequence: 10,
+                    position: LatLon { lat: 0.0, lon: 0.0 },
+                    nav_ref: NavRef::Fix("A".to_string()),
+                },
+                AirwayFixPoint {
+                    airway_name: "V2".to_string(),
+                    sequence: 20,
+                    position: LatLon { lat: 0.0, lon: 1.0 },
+                    nav_ref: NavRef::Fix("B".to_string()),
+                },
+                AirwayFixPoint {
+                    airway_name: "V2".to_string(),
+                    sequence: 30,
+                    position: LatLon { lat: 0.0, lon: 2.0 },
+                    nav_ref: NavRef::Fix("C".to_string()),
+                },
+            ],
+        }];
+
+        let presentation = prepare_airway_presentation(
+            "V2",
+            branches,
+            LatLon { lat: 0.0, lon: 1.8 },
+            Some(LatLon { lat: 0.0, lon: 0.1 }),
+        )
+        .unwrap();
+
+        let labels = presentation
+            .points
+            .iter()
+            .map(|point| match &point.nav_ref {
+                NavRef::Fix(id) => id.clone(),
+                _ => unreachable!(),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["C", "B", "A"]);
+        assert_eq!(presentation.suggested_entry_index, 0);
+        assert_eq!(presentation.suggested_exit_index, Some(2));
+    }
+
+    #[test]
+    fn prepares_airway_presentation_without_destination_keeps_forward_order_and_no_exit_hint() {
+        let branches = vec![AirwayBranch {
+            display_name: "V2".to_string(),
+            branch_key: "A".to_string(),
+            points: vec![
+                AirwayFixPoint {
+                    airway_name: "V2".to_string(),
+                    sequence: 10,
+                    position: LatLon { lat: 0.0, lon: 0.0 },
+                    nav_ref: NavRef::Fix("A".to_string()),
+                },
+                AirwayFixPoint {
+                    airway_name: "V2".to_string(),
+                    sequence: 20,
+                    position: LatLon { lat: 0.0, lon: 1.0 },
+                    nav_ref: NavRef::Fix("B".to_string()),
+                },
+            ],
+        }];
+
+        let presentation = prepare_airway_presentation(
+            "V2",
+            branches,
+            LatLon { lat: 0.0, lon: 0.2 },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(presentation.suggested_entry_index, 0);
+        assert_eq!(presentation.suggested_exit_index, None);
     }
 
     #[test]

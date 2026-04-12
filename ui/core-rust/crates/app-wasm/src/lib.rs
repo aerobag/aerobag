@@ -165,6 +165,27 @@ pub fn insert_airway_materialized_ui(
 }
 
 #[wasm_bindgen]
+pub fn prepare_airway_presentation(
+    airway_name: &str,
+    branches_json: &str,
+    origin_position_json: &str,
+    destination_position_json: &str,
+) -> Result<String, JsValue> {
+    prepare_airway_presentation_json(
+        airway_name,
+        branches_json,
+        origin_position_json,
+        destination_position_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn sort_airway_suggestions_for_ui(suggestions_json: &str) -> Result<String, JsValue> {
+    sort_airway_suggestions_for_ui_json(suggestions_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn replace_airway_materialized_ui(
     plan_json: &str,
     component_index: usize,
@@ -636,6 +657,35 @@ fn replace_airway_materialized_ui_json(
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+fn prepare_airway_presentation_json(
+    airway_name: &str,
+    branches_json: &str,
+    origin_position_json: &str,
+    destination_position_json: &str,
+) -> Result<String, String> {
+    let branches: Vec<app_core::AirwayBranch> =
+        serde_json::from_str(branches_json).map_err(|err| err.to_string())?;
+    let origin_position: app_core::LatLon =
+        serde_json::from_str(origin_position_json).map_err(|err| err.to_string())?;
+    let destination_position: Option<app_core::LatLon> =
+        serde_json::from_str(destination_position_json).map_err(|err| err.to_string())?;
+    let presentation = app_core::prepare_airway_presentation(
+        airway_name,
+        branches,
+        origin_position,
+        destination_position,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&presentation).map_err(|err| err.to_string())
+}
+
+fn sort_airway_suggestions_for_ui_json(suggestions_json: &str) -> Result<String, String> {
+    let suggestions: Vec<app_core::AirwaySuggestion> =
+        serde_json::from_str(suggestions_json).map_err(|err| err.to_string())?;
+    let sorted = app_core::sort_airway_suggestions_for_ui(suggestions);
+    serde_json::to_string(&sorted).map_err(|err| err.to_string())
 }
 
 fn insert_procedure_materialized_ui_json(

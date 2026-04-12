@@ -601,6 +601,67 @@ button {
   box-shadow: var(--shadow);
 }
 
+.planComponentList {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--thumb) * 0.16);
+  margin-bottom: calc(var(--thumb) * 0.2);
+}
+
+.planComponentCard {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--thumb) * 0.08);
+  padding: calc(var(--thumb) * 0.14) calc(var(--thumb) * 0.18);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: calc(var(--thumb-radius) * 0.9);
+  background: var(--theme-panel-bg);
+  box-shadow: var(--shadow);
+}
+
+.planComponentCard.isActive {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 80%, white), var(--shadow);
+}
+
+.planComponentHeader {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--thumb) * 0.12);
+}
+
+.planComponentKind {
+  color: var(--theme-panel-muted);
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.planComponentSummary {
+  color: var(--theme-panel-fg);
+  font-size: calc(var(--thumb) * 0.24);
+  font-weight: 700;
+}
+
+.planComponentItems {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(var(--thumb) * 0.08);
+}
+
+.planComponentItem {
+  padding: calc(var(--thumb) * 0.06) calc(var(--thumb) * 0.12);
+  border-radius: calc(var(--thumb-radius) * 0.7);
+  background: color-mix(in srgb, var(--theme-button-bg) 20%, white);
+  color: var(--theme-panel-fg);
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 700;
+}
+
+.planComponentItem.isDiscontinuity {
+  background: color-mix(in srgb, #c97832 18%, white);
+  color: #8b3e00;
+}
+
 .planHeader,
 .planCell,
 .planWaypointCell {
@@ -655,7 +716,9 @@ button {
   position: absolute;
   top: calc(var(--thumb) * 1.25);
   left: calc(var(--thumb-gap) + var(--thumb) * 2.6);
-  right: var(--thumb-gap);
+  width: min(calc(var(--thumb) * 2.35), calc(100% - var(--thumb-gap) * 2 - var(--thumb) * 2.6));
+  max-height: calc(100vh - (var(--thumb) * 2.25));
+  overflow-y: auto;
 }
 
 .waypointModal {
@@ -687,6 +750,38 @@ button {
   justify-content: center;
   gap: var(--thumb-gap);
   width: 100%;
+}
+
+.waypointActionTray {
+  display: flex;
+  flex-direction: column;
+  gap: var(--thumb-gap);
+}
+
+.airwaySuggestionGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--thumb), var(--thumb)));
+  gap: var(--thumb-gap);
+  justify-content: start;
+}
+
+.airwaySuggestionButton {
+  width: var(--thumb);
+  min-width: var(--thumb);
+  max-width: var(--thumb);
+}
+
+.airwayChoiceButton {
+  position: relative;
+  width: calc(var(--thumb) * 2);
+  min-width: calc(var(--thumb) * 2);
+  max-width: calc(var(--thumb) * 2);
+  min-height: var(--thumb);
+}
+
+.airwayChoiceButton.isSuggested {
+  border-color: #d45a7a;
+  box-shadow: 0 0 0 2px rgba(212, 90, 122, 0.22);
 }
 
 .chartImage {

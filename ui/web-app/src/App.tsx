@@ -1,6 +1,15 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import { chartPage, mapViews, resourceIndex, sampleCatalog, samplePlan } from "./domain/sampleData";
-import type { AppState, ChartPageData, Situation } from "./domain/types";
+import type {
+  AirwayPresentationPlan,
+  AirwaySuggestion,
+  AppState,
+  ChartPageData,
+  FlightPlanUiMutation,
+  FlightPlanUiState,
+  NavRef,
+  Situation,
+} from "./domain/types";
 import uiTheme from "@shared-ui-theme";
 import planViewIcon from "./assets/plan-view-icon.svg";
 import {
@@ -36,7 +45,14 @@ import {
 } from "./domain/imageViewport";
 import { pointTileUrl, type PointTilePayload } from "./domain/vectorTiles";
 import type { MapOverlayQueryResult } from "./domain/appCoreAdapter";
-import { debugLog } from "./domain/debugLog";
+import {
+  airwayEntryCandidateFromPresentation,
+  airwayExitCandidatesFromPresentation,
+  materializeAirwaySelection,
+  prepareAirwayPresentationForAnchors,
+  suggestAirwaysNearAnchor,
+} from "./domain/airwayPlanner";
+import { getBrowserNavDb } from "./domain/webNavDb";
 
 type SurfaceSize = {
   width: number;
@@ -90,6 +106,7 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> 
 ];
 
 const waypointActions = [
+  { id: "activate_leg", label: "Activate Leg", enabled: true },
   { id: "remove", label: "Remove", enabled: true },
   { id: "insert", label: "Insert", enabled: false },
   { id: "reorder", label: "Reorder", enabled: false },
@@ -290,6 +307,7 @@ export default function App() {
     [chartAirportById, sessionSnapshot.chart_page_state.ordered_airport_ids],
   );
   const currentPlan = appState.active_plan ?? samplePlan;
+  const [planUiState, setPlanUiState] = useState<FlightPlanUiState | null>(null);
   const recentAirportIds = sessionSnapshot.chart_page_state.recent_airport_ids;
   const selectedAirportId = sessionSnapshot.chart_page_state.selected_airport_id;
   const selectedChartId = sessionSnapshot.chart_page_state.selected_chart_id;
@@ -358,12 +376,22 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    void getBrowserNavDb().catch((error) => {
+      if (!cancelled) {
+        console.error("failed to prewarm browser nav db", error);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     let nextSession: UiSession | null = null;
     if (!appCoreAdapter) {
       return;
     }
-    setSessionInitError(null);
-    debugLog("session_init_start", { backend: adapterBackend });
     appCoreAdapter.createUiSession(
       resourceIndex,
       samplePlan,
@@ -372,27 +400,15 @@ export default function App() {
       initialChartPageState.selected_chart_id,
     ).then(async (created) => {
       nextSession = created;
-      debugLog("session_init_created");
       if (!cancelled) {
-        setSessionInitError(null);
         setUiSession(created);
       }
       const snapshot = await created.setSituation(demoSituation());
-      debugLog("session_init_situation_set");
       if (!cancelled) {
         setSessionSnapshot(snapshot);
       }
     }).catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      debugLog("SESSION_INIT_FATAL", {
-        backend: adapterBackend,
-        message,
-      });
-      if (!cancelled) {
-        setSessionInitError(message);
-        setUiSession(null);
-      }
-      console.error("AEROBAG_SESSION_INIT_FATAL", message);
+      console.error("failed to initialize web ui session", error);
     });
     return () => {
       cancelled = true;
@@ -403,6 +419,23 @@ export default function App() {
   useEffect(() => {
     setMapViewport((current) => preserveViewportForMap(current, selectedMap.map_view));
   }, [selectedMap]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!appCoreAdapter) {
+      return;
+    }
+    appCoreAdapter.buildFlightPlanUi(currentPlan).then((next) => {
+      if (!cancelled) {
+        setPlanUiState(next);
+      }
+    }).catch((error) => {
+      console.error("failed to build flight plan ui state", error);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [appCoreAdapter, currentPlan]);
 
   useEffect(() => {
     writePersistedWebUiState({
@@ -537,7 +570,6 @@ export default function App() {
           page={page}
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
-          sessionInitError={sessionInitError}
           debugTileLabels={debugTileLabels}
           selectedMapId={selectedMapId}
           selectedMap={selectedMap}
@@ -565,12 +597,13 @@ export default function App() {
 
       <div className={`pageLayer${page === "plan" ? " isActive" : ""}`} aria-hidden={page !== "plan"}>
         <FlightPlanPage
+          appCoreAdapter={appCoreAdapter}
           page={page}
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
           legSummary={legSummary}
           plan={currentPlan}
-          sessionInitError={sessionInitError}
+          planUiState={planUiState}
           onSelectPage={navigateToPage}
           onOpenCharts={(airportId) => {
             if (!airportId) {
@@ -600,6 +633,52 @@ export default function App() {
             if (!uiSession) return;
             setSessionSnapshot(await uiSession.moveWaypoint(index, delta));
           }}
+          onActivateLeg={async (legIndex) => {
+            if (!appCoreAdapter) return;
+            const mutation = await appCoreAdapter.activateLegUi(currentPlan, legIndex);
+            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+          }}
+          onActivateNextLeg={async () => {
+            if (!appCoreAdapter) return;
+            const mutation = await appCoreAdapter.activateNextLegUi(currentPlan);
+            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+          }}
+          onSuspendSequencing={async () => {
+            if (!appCoreAdapter) return;
+            const mutation = await appCoreAdapter.suspendSequencingUi(currentPlan);
+            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+          }}
+          onUnsuspendSequencing={async () => {
+            if (!appCoreAdapter) return;
+            const mutation = await appCoreAdapter.unsuspendSequencingUi(currentPlan);
+            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+          }}
+          onSequenceActiveLeg={async () => {
+            if (!appCoreAdapter) return;
+            const mutation = await appCoreAdapter.sequenceActiveLegUi(currentPlan);
+            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+          }}
+          onInsertAirway={async (startComponentIndex, endComponentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
+            if (!appCoreAdapter) return;
+            const entry = airwayEntryCandidateFromPresentation(presentation, entryIndex);
+            const exit = airwayExitCandidatesFromPresentation(presentation, entryIndex)[exitIndex];
+            const materialized = await materializeAirwaySelection(
+              startComponentIndex,
+              entry,
+              exit,
+              originAnchor,
+              destinationAnchor,
+            );
+            const mutation = await appCoreAdapter.insertAirwayMaterializedUi(
+              currentPlan,
+              startComponentIndex,
+              endComponentIndex,
+              materialized.selection,
+              materialized.airway,
+              materialized.resolvedLegs,
+            );
+            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+          }}
         />
       </div>
 
@@ -608,7 +687,6 @@ export default function App() {
           page={page}
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
-          sessionInitError={sessionInitError}
           airports={orderedChartAirports}
           selectedAirport={selectedAirport}
           selectedChart={selectedChart}
@@ -665,7 +743,6 @@ function MapPage(props: {
   page: AppPage;
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
-  sessionInitError: string | null;
   debugTileLabels: boolean;
   selectedMapId: string;
   selectedMap: (typeof mapViews)[number];
@@ -689,7 +766,6 @@ function MapPage(props: {
     page,
     pageHistory,
     uptimeLabel,
-    sessionInitError,
     selectedMap,
     selectedFamilyMapViews,
     selectedFamily,
@@ -1240,19 +1316,26 @@ function MapPage(props: {
         <div className="debugDock">
           <DebugDock
             open={debugOpen}
-            warn={mapOverlay.warnings.length > 0 || !!sessionInitError}
+            warn={mapOverlay.warnings.length > 0}
             onToggle={() => setDebugOpen((open) => !open)}
           >
+            <div className="debugLine">page {pageLabel(page)}</div>
             <div className="debugLine">core {adapterBackend}</div>
-            <div className="debugLine">up {uptimeLabel}</div>
+            <div className="debugLine">{adapterDetail}</div>
             <div className="debugLine">session {uiSession ? "ready" : "null"} surf {Math.round(surfaceSize.width)}x{Math.round(surfaceSize.height)}</div>
-            {sessionInitError ? <div className="debugLine">fatal session init</div> : null}
+            <div className="debugLine">up {uptimeLabel}</div>
+            <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: selectedMap.id, selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
+            <div className="debugLine">family {selectedFamily.launcherLabel}</div>
             <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
             <div className="debugLine">vec pts={mapOverlay.visible_features.length} need={mapOverlay.needed_point_tiles.length} warn={mapOverlay.warnings.length}</div>
             {mapOverlay.warnings.map((warning) => (
               <div key={warning.code} className="debugLine">warn {warning.code}</div>
             ))}
-            <div className="debugLine">tiles {debugSummary.tileCount} src z {debugSummary.tileZooms.length > 0 ? debugSummary.tileZooms.join(", ") : "(none)"}</div>
+            <div className="debugLine">src z {debugSummary.tileZooms.length > 0 ? debugSummary.tileZooms.join(", ") : "(none)"}</div>
+            <div className="debugLine">pkg {debugSummary.packages.length > 0 ? debugSummary.packages.join(", ") : "(none)"}</div>
+            <div className="debugLine">maps {debugSummary.mapIds.join(", ")}</div>
+            <div className="debugLine">search {locationSearch || "(empty)"}</div>
+            <div className="debugLine">{debugTileLabels ? "debugTiles=on" : "debugTiles=off"}</div>
           </DebugDock>
         </div>
       </div>
@@ -1260,40 +1343,117 @@ function MapPage(props: {
   );
 }
 
-function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; uptimeLabel: string; legSummary: string; plan: typeof samplePlan; sessionInitError: string | null; onSelectPage: (page: AppPage) => void; onOpenCharts: (airportId: string | null) => void; onRemoveWaypoint: (index: number) => void | Promise<void>; onMoveWaypoint: (index: number, delta: number) => void | Promise<void> }) {
+function FlightPlanPage(props: {
+  appCoreAdapter: AppCoreAdapter | null;
+  page: AppPage;
+  pageHistory: AppViewSnapshot[];
+  uptimeLabel: string;
+  legSummary: string;
+  plan: typeof samplePlan;
+  planUiState: FlightPlanUiState | null;
+  onSelectPage: (page: AppPage) => void;
+  onOpenCharts: (airportId: string | null) => void;
+  onRemoveWaypoint: (index: number) => void | Promise<void>;
+  onMoveWaypoint: (index: number, delta: number) => void | Promise<void>;
+  onActivateLeg: (index: number) => void | Promise<void>;
+  onActivateNextLeg: () => void | Promise<void>;
+  onSuspendSequencing: () => void | Promise<void>;
+  onUnsuspendSequencing: () => void | Promise<void>;
+  onSequenceActiveLeg: () => void | Promise<void>;
+  onInsertAirway: (
+    startComponentIndex: number,
+    endComponentIndex: number,
+    entryIndex: number,
+    exitIndex: number,
+    presentation: AirwayPresentationPlan,
+    originAnchor: NavRef,
+    destinationAnchor: NavRef,
+  ) => void | Promise<void>;
+}) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
   const [reorderOpen, setReorderOpen] = useState(false);
+  const [airwayPicker, setAirwayPicker] = useState<{
+    loading: boolean;
+    error: string | null;
+    startComponentIndex: number;
+    endComponentIndex: number;
+    originAnchor: NavRef;
+    destinationAnchor: NavRef;
+    suggestions: AirwaySuggestion[];
+    selectedAirwayName: string | null;
+    presentation: AirwayPresentationPlan | null;
+    selectedEntryIndex: number | null;
+  } | null>(null);
   const trayGroup = useModalTrayGroup(["page"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
   const trayOpen = trayGroup.scrimOpen;
+  const guidance = props.planUiState?.guidance ?? null;
+  const componentViews = useMemo(
+    () => props.planUiState?.components ?? buildLegacyComponentViews(props.plan),
+    [props.plan, props.planUiState?.components],
+  );
+  const showComponentViews = useMemo(
+    () => componentViews.some((component) => component.kind !== "waypoint"),
+    [componentViews],
+  );
   const rows = useMemo(
     () => {
-      const firstLeg = props.plan.legs[0];
-      if (!firstLeg) {
-        return [];
+      if (props.planUiState?.resolved_legs.length) {
+        const firstLeg = props.planUiState.resolved_legs[0];
+        const startRow = firstLeg
+          ? [{
+              id: `start:${firstLeg.leg_id}`,
+              waypoint: navRefLabel(firstLeg.from),
+              distance: "—",
+              ete: "—",
+              course: "—",
+              chartAirportId: "Airport" in firstLeg.from ? firstLeg.from.Airport : null,
+              removeLegIndex: null as number | null,
+              legIndex: null as number | null,
+              startComponentIndex: componentViews.length > 1 ? 0 : null as number | null,
+              endComponentIndex: componentViews.length > 1 ? 1 : null as number | null,
+              originAnchor: firstLeg.from,
+              destinationAnchor: componentViews.length > 1 ? componentWaypointNavRef(componentViews[1]) : null as NavRef | null,
+              active: false,
+            }]
+          : [];
+        return [
+          ...startRow,
+          ...props.planUiState.resolved_legs.map((leg) => {
+            const componentSummary =
+              leg.component_index !== null
+                ? componentViews.find((component) => component.component_index === leg.component_index)?.summary ?? "ROUTE"
+                : "LEGACY";
+            return {
+              id: leg.leg_id,
+              waypoint: navRefLabel(leg.to),
+              distance: leg.leg_index === 0 ? "18.4" : "11.2",
+              ete: leg.leg_index === 0 ? "0:07" : "0:04",
+              course: leg.active ? "ACT" : leg.suspend_boundary_after ? "SUSP" : "161",
+              chartAirportId: "Airport" in leg.to ? leg.to.Airport : null,
+              removeLegIndex: null as number | null,
+              legIndex: leg.leg_index,
+              startComponentIndex: !showComponentViews && leg.component_index !== null && leg.component_index + 2 <= componentViews.length - 1
+                ? leg.component_index + 1
+                : null as number | null,
+              endComponentIndex: !showComponentViews && leg.component_index !== null && leg.component_index + 2 <= componentViews.length - 1
+                ? leg.component_index + 2
+                : null as number | null,
+              originAnchor: !showComponentViews && leg.component_index !== null && leg.component_index + 2 <= componentViews.length - 1
+                ? leg.to
+                : null as NavRef | null,
+              destinationAnchor: !showComponentViews && leg.component_index !== null && leg.component_index + 2 <= componentViews.length - 1
+                ? componentWaypointNavRef(componentViews[leg.component_index + 2])
+                : null as NavRef | null,
+              active: leg.active,
+            };
+          }),
+        ];
       }
-      return [
-        {
-          id: `start:${navRefLabel(firstLeg.from)}`,
-          waypoint: navRefLabel(firstLeg.from),
-          chartAirportId: "Airport" in firstLeg.from ? firstLeg.from.Airport : null,
-          removeLegIndex: 0 as number | null,
-          distance: "—",
-          ete: "—",
-          course: "—",
-        },
-        ...props.plan.legs.map((leg, index) => ({
-          id: `${index}:${navRefLabel(leg.from)}-${navRefLabel(leg.to)}`,
-          waypoint: navRefLabel(leg.to),
-          chartAirportId: "Airport" in leg.to ? leg.to.Airport : null,
-          removeLegIndex: index,
-          distance: index === 0 ? "18.4" : "11.2",
-          ete: index === 0 ? "0:07" : "0:04",
-          course: index === 0 ? "342" : "161",
-        })),
-      ];
+
+      return buildLegacyResolvedRows(props.plan, guidance?.active_leg_index ?? null);
     },
-    [props.plan],
+    [componentViews, guidance?.active_leg_index, props.plan, props.planUiState?.resolved_legs],
   );
 
   return (
@@ -1319,6 +1479,29 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
         />
       </div>
 
+      {showComponentViews ? (
+        <div className="planComponentList">
+          {componentViews.map((component) => (
+            <div
+              key={component.component_index}
+              className={`planComponentCard${component.active ? " isActive" : ""}`}
+            >
+              <div className="planComponentHeader">
+                <span className="planComponentKind">{component.kind.toUpperCase()}</span>
+                <span className="planComponentSummary">{component.summary}</span>
+              </div>
+              <div className="planComponentItems">
+                {component.items.map((item, index) => (
+                  <span key={`${component.component_index}:${index}`} className={`planComponentItem${item.kind === "discontinuity" ? " isDiscontinuity" : ""}`}>
+                    {concretizedNavItemLabel(item)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       <div className="planTable">
         <div className="planHeader planWaypointCell">Waypoint</div>
         <div className="planHeader">Dist (nm)</div>
@@ -1329,10 +1512,11 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
             <button
               key={`${row.id}:waypoint`}
               type="button"
-              className={`planWaypointCell planWaypointButton${selectedWaypointIndex === index ? " isSelected" : ""}`}
+              className={`planWaypointCell planWaypointButton${selectedWaypointIndex === index ? " isSelected" : ""}${row.active ? " isActiveLeg" : ""}`}
               onClick={() => {
                 setSelectedWaypointIndex(index);
                 setReorderOpen(false);
+                setAirwayPicker(null);
               }}
             >
               {row.waypoint}
@@ -1350,14 +1534,43 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
         ))}
       </div>
 
-      <div className="planFooter">{props.legSummary}</div>
+      <div className="planControls">
+        <button type="button" className="trayButton planControlButton" disabled={!guidance?.can_activate_next_leg} onClick={() => void props.onActivateNextLeg()}>
+          Next Leg
+        </button>
+        <button
+          type="button"
+          className="trayButton planControlButton"
+          disabled={!guidance?.can_sequence_active_leg}
+          onClick={() => void props.onSequenceActiveLeg()}
+        >
+          Sequence
+        </button>
+        <button type="button" className="trayButton planControlButton" disabled={!guidance?.can_suspend} onClick={() => void props.onSuspendSequencing()}>
+          Suspend
+        </button>
+        <button type="button" className="trayButton planControlButton" disabled={!guidance?.can_unsuspend} onClick={() => void props.onUnsuspendSequencing()}>
+          Unsusp
+        </button>
+      </div>
+
+      <div className="planFooter">
+        <div>{props.legSummary}</div>
+        {guidance ? (
+          <div className="planGuidanceSummary">
+            {guidance.sequencing_mode.toUpperCase()}
+            {guidance.active_leg ? ` · ${navRefLabel(guidance.active_leg.from)} -> ${navRefLabel(guidance.active_leg.to)}` : ""}
+          </div>
+        ) : null}
+      </div>
 
       <div className="debugDock">
-        <DebugDock open={debugOpen} warn={!!props.sessionInitError} onToggle={() => setDebugOpen((open) => !open)}>
+        <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>
           <div className="debugLine">page {pageLabel(props.page)}</div>
           <div className="debugLine">up {props.uptimeLabel}</div>
-          {props.sessionInitError ? <div className="debugLine">fatal session init</div> : null}
           <div className="debugLine">stack {formatPageStack(props.pageHistory, { page: props.page, selectedMapId: "", selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
+          <div className="debugLine">components {componentViews.length}</div>
+          <div className="debugLine">grouped {showComponentViews ? "yes" : "no"}</div>
           <div className="debugLine">rows {rows.length}</div>
         </DebugDock>
       </div>
@@ -1371,10 +1584,161 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
             onClick={() => {
               setSelectedWaypointIndex(null);
               setReorderOpen(false);
+              setAirwayPicker(null);
             }}
           />
           <section className={`waypointModal${reorderOpen ? " isReorder" : ""}`} aria-label="Waypoint actions">
-            {reorderOpen ? (
+            {airwayPicker ? (
+              <div className="waypointActionTray">
+                <div className="planGuidanceSummary">
+                  AIRWAY {navRefLabel(airwayPicker.originAnchor)} → {navRefLabel(airwayPicker.destinationAnchor)}
+                </div>
+                {airwayPicker.error ? <div className="planGuidanceSummary">{airwayPicker.error}</div> : null}
+                {airwayPicker.loading ? (
+                  <div className="planGuidanceSummary">Loading…</div>
+                ) : airwayPicker.selectedAirwayName === null ? (
+                  <div className="airwaySuggestionGrid">
+                    {airwayPicker.suggestions.map((suggestion) => (
+                        <button
+                          key={`${suggestion.airway_name}:${suggestion.nearest_branch_key ?? ""}`}
+                          type="button"
+                          className="trayButton trayButtonSquare airwaySuggestionButton"
+                          onPointerDown={stopPointer}
+                          onPointerUp={stopPointer}
+                          onClick={async () => {
+                            const adapter = props.appCoreAdapter;
+                            if (!adapter) {
+                              return;
+                            }
+                            setAirwayPicker((current) => current ? { ...current, loading: true, error: null } : current);
+                            try {
+                              const presentation = await prepareAirwayPresentationForAnchors(
+                                adapter,
+                                suggestion.airway_name,
+                                airwayPicker.originAnchor,
+                                airwayPicker.destinationAnchor,
+                              );
+                              setAirwayPicker((current) => current ? {
+                                ...current,
+                                loading: false,
+                                selectedAirwayName: suggestion.airway_name,
+                                presentation,
+                              } : current);
+                            } catch (error) {
+                              setAirwayPicker((current) => current ? {
+                                ...current,
+                                loading: false,
+                                error: error instanceof Error ? error.message : String(error),
+                              } : current);
+                            }
+                          }}
+                        >
+                          {suggestion.airway_name}
+                        </button>
+                      ))}
+                  </div>
+                ) : airwayPicker.selectedEntryIndex === null && airwayPicker.presentation ? (
+                  <>
+                    {airwayPicker.presentation.points.map((point, index) => (
+                      <button
+                        key={`${airwayPicker.presentation?.branch_key}:${point.branch_point_index}`}
+                        type="button"
+                        className={`trayButton airwayChoiceButton${index === airwayPicker.presentation?.suggested_entry_index ? " isSuggested" : ""}`}
+                        onPointerDown={stopPointer}
+                        onPointerUp={stopPointer}
+                        onClick={() => {
+                          setAirwayPicker((current) => current ? {
+                            ...current,
+                            selectedEntryIndex: index,
+                          } : current);
+                        }}
+                      >
+                        {index === airwayPicker.presentation?.suggested_entry_index ? "▸ " : ""}
+                        {navRefLabel(point.nav_ref)}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      className="trayButton airwayChoiceButton"
+                      onPointerDown={stopPointer}
+                      onPointerUp={stopPointer}
+                      onClick={() => setAirwayPicker((current) => current ? {
+                        ...current,
+                        selectedAirwayName: null,
+                        presentation: null,
+                      } : current)}
+                    >
+                      Back
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {airwayPicker.presentation ? airwayExitCandidatesFromPresentation(
+                      airwayPicker.presentation,
+                      airwayPicker.selectedEntryIndex ?? 0,
+                    ).map((exit, index) => (
+                      <button
+                        key={`${exit.airway_name}:${exit.branch_key}:${exit.branch_point_index}`}
+                        type="button"
+                        className={`trayButton airwayChoiceButton${index === airwayPicker.presentation?.suggested_exit_index ? " isSuggested" : ""}`}
+                        disabled={exit.is_entry}
+                        onPointerDown={stopPointer}
+                        onPointerUp={stopPointer}
+                        onClick={async () => {
+                          if (exit.is_entry) {
+                            return;
+                          }
+                          const presentation = airwayPicker.presentation;
+                          const selectedEntryIndex = airwayPicker.selectedEntryIndex;
+                          if (!presentation || selectedEntryIndex === null) {
+                            return;
+                          }
+                          const selectedEntry = airwayEntryCandidateFromPresentation(
+                            presentation,
+                            selectedEntryIndex,
+                          );
+                          setAirwayPicker((current) => current ? { ...current, loading: true, error: null } : current);
+                          try {
+                            await props.onInsertAirway(
+                              airwayPicker.startComponentIndex,
+                              airwayPicker.endComponentIndex,
+                              selectedEntryIndex,
+                              index,
+                              presentation,
+                              airwayPicker.originAnchor,
+                              airwayPicker.destinationAnchor,
+                            );
+                            setAirwayPicker(null);
+                            setSelectedWaypointIndex(null);
+                          } catch (error) {
+                            setAirwayPicker((current) => current ? {
+                              ...current,
+                              loading: false,
+                              error: error instanceof Error ? error.message : String(error),
+                            } : current);
+                          }
+                        }}
+                      >
+                        {index === airwayPicker.presentation?.suggested_exit_index ? "▸ " : ""}
+                        {navRefLabel(exit.nav_ref)}
+                      </button>
+                    )) : null}
+                    <button
+                      type="button"
+                      className="trayButton airwayChoiceButton"
+                      onPointerDown={stopPointer}
+                      onPointerUp={stopPointer}
+                      onClick={() => setAirwayPicker((current) => current ? {
+                        ...current,
+                        selectedEntryIndex: null,
+                      } : current)}
+                    >
+                      Back
+                    </button>
+                  </>
+                )}
+              </div>
+            ) : reorderOpen ? (
               <div className="waypointReorderTray">
                 <button
                   type="button"
@@ -1406,13 +1770,19 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
             ) : waypointActions.map((action) => {
               const selectedRow = rows[selectedWaypointIndex];
               const enabled =
-                action.id === "charts"
+                action.id === "activate_leg"
+                  ? selectedRow.legIndex !== null
+                  : action.id === "charts"
                   ? selectedRow.chartAirportId !== null
-                  : action.id === "reorder"
-                    ? rows.length > 1
-                  : action.id === "remove"
-                    ? selectedRow.removeLegIndex !== null
-                    : action.enabled;
+                  : action.id === "add_airway"
+                    ? !showComponentViews &&
+                      selectedRow.startComponentIndex !== null &&
+                      selectedRow.endComponentIndex !== null &&
+                      selectedRow.originAnchor !== null &&
+                      selectedRow.destinationAnchor !== null
+                  : action.id === "reorder" || action.id === "remove"
+                    ? false
+                  : action.enabled;
               return (
               <button
                 key={action.id}
@@ -1428,6 +1798,48 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
                   if (action.id === "remove") {
                     if (selectedRow.removeLegIndex !== null) {
                       props.onRemoveWaypoint(selectedRow.removeLegIndex);
+                    }
+                  } else if (action.id === "activate_leg") {
+                    if (selectedRow.legIndex !== null) {
+                      void props.onActivateLeg(selectedRow.legIndex);
+                    }
+                  } else if (action.id === "add_airway") {
+                    if (
+                      selectedRow.startComponentIndex !== null &&
+                      selectedRow.endComponentIndex !== null &&
+                      selectedRow.originAnchor &&
+                      selectedRow.destinationAnchor
+                    ) {
+                      const adapter = props.appCoreAdapter;
+                      if (!adapter) {
+                        return;
+                      }
+                      setAirwayPicker({
+                        loading: true,
+                        error: null,
+                        startComponentIndex: selectedRow.startComponentIndex,
+                        endComponentIndex: selectedRow.endComponentIndex,
+                        originAnchor: selectedRow.originAnchor,
+                        destinationAnchor: selectedRow.destinationAnchor,
+                        suggestions: [],
+                        selectedAirwayName: null,
+                        presentation: null,
+                        selectedEntryIndex: null,
+                      });
+                      void suggestAirwaysNearAnchor(adapter, selectedRow.originAnchor).then((suggestions) => {
+                        setAirwayPicker((current) => current ? {
+                          ...current,
+                          loading: false,
+                          suggestions,
+                        } : current);
+                      }).catch((error) => {
+                        setAirwayPicker((current) => current ? {
+                          ...current,
+                          loading: false,
+                          error: error instanceof Error ? error.message : String(error),
+                        } : current);
+                      });
+                      return;
                     }
                   } else if (action.id === "reorder") {
                     setReorderOpen(true);
@@ -1507,7 +1919,6 @@ function ChartsPage(props: {
   page: AppPage;
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
-  sessionInitError: string | null;
   airports: ChartPageData["airports"];
   selectedAirport: ChartPageData["airports"][number] | null;
   selectedChart: ChartAsset | null;
@@ -1949,10 +2360,9 @@ function ChartsPage(props: {
         </div>
 
         <div className="debugDock">
-          <DebugDock open={debugOpen} warn={!!props.sessionInitError} onToggle={() => setDebugOpen((open) => !open)}>
+          <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>
             <div className="debugLine">page {pageLabel(page)}</div>
             <div className="debugLine">up {uptimeLabel}</div>
-            {props.sessionInitError ? <div className="debugLine">fatal session init</div> : null}
             <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: "", selectedChartId: selectedChart?.id ?? "", selectedChartLabel: selectedChart?.label ?? "", chartFolderOpen: folderOpen })}</div>
             <div className="debugLine">apt {selectedAirport?.label ?? "---"}</div>
             <div className="debugLine">chart {selectedChart?.label ?? "---"}</div>
@@ -2305,10 +2715,96 @@ function formatRingDistance(radiusNm: number) {
   return `${Number.isInteger(radiusNm) ? radiusNm.toFixed(0) : radiusNm.toString()}nm`;
 }
 
-function navRefLabel(value: { Airport: string } | { Navaid: string } | { Fix: string }) {
+function applyFlightPlanMutation(
+  setSessionSnapshot: Dispatch<SetStateAction<UiSessionSnapshot>>,
+  setPlanUiState: Dispatch<SetStateAction<FlightPlanUiState | null>>,
+  mutation: FlightPlanUiMutation,
+) {
+  setSessionSnapshot((current) => ({
+    ...current,
+    app_state: {
+      ...current.app_state,
+      active_plan: mutation.plan,
+    },
+  }));
+  setPlanUiState(mutation.ui_state);
+}
+
+function buildLegacyComponentViews(plan: typeof samplePlan): FlightPlanUiState["components"] {
+  if (plan.legs.length === 0) {
+    return [];
+  }
+
+  const waypoints: NavRef[] = [plan.legs[0].from, ...plan.legs.map((leg) => leg.to)];
+  return waypoints.map((waypoint, index) => ({
+    component_index: index,
+    kind: "waypoint",
+    summary: navRefLabel(waypoint),
+    items: [{ kind: "waypoint", nav_ref: waypoint }],
+    active: false,
+  }));
+}
+
+function buildLegacyResolvedRows(plan: typeof samplePlan, activeLegIndex: number | null) {
+  const firstLeg = plan.legs[0];
+  const rows = firstLeg
+    ? [{
+        id: `start:${navRefLabel(firstLeg.from)}`,
+        waypoint: navRefLabel(firstLeg.from),
+        distance: "—",
+        ete: "—",
+        course: "—",
+        chartAirportId: "Airport" in firstLeg.from ? firstLeg.from.Airport : null,
+        removeLegIndex: null as number | null,
+        legIndex: null as number | null,
+        startComponentIndex: plan.legs.length > 0 ? 0 : null as number | null,
+        endComponentIndex: plan.legs.length > 0 ? 1 : null as number | null,
+        originAnchor: firstLeg.from,
+        destinationAnchor: firstLeg.to,
+        active: false,
+      }]
+    : [];
+
+  return [
+    ...rows,
+    ...plan.legs.map((leg, index) => ({
+      id: `${index}:${navRefLabel(leg.from)}-${navRefLabel(leg.to)}`,
+      waypoint: navRefLabel(leg.to),
+      distance: index === 0 ? "18.4" : "11.2",
+      ete: index === 0 ? "0:07" : "0:04",
+      course: activeLegIndex === index ? "ACT" : "161",
+      chartAirportId: "Airport" in leg.to ? leg.to.Airport : null,
+      removeLegIndex: index,
+      legIndex: index,
+      startComponentIndex: index + 1 < plan.legs.length ? index + 1 : null as number | null,
+      endComponentIndex: index + 2 < plan.legs.length + 1 ? index + 2 : null as number | null,
+      originAnchor: index + 1 < plan.legs.length ? leg.to : null as NavRef | null,
+      destinationAnchor: index + 1 < plan.legs.length ? plan.legs[index + 1].to : null as NavRef | null,
+      active: activeLegIndex === index,
+    })),
+  ];
+}
+
+function concretizedNavItemLabel(item: FlightPlanUiState["components"][number]["items"][number]) {
+  if (item.kind === "waypoint") {
+    return navRefLabel(item.nav_ref);
+  }
+  return item.label;
+}
+
+function componentWaypointNavRef(component: FlightPlanUiState["components"][number] | undefined): NavRef | null {
+  if (!component) {
+    return null;
+  }
+  const item = component.items[0];
+  return item && item.kind === "waypoint" ? item.nav_ref : null;
+}
+
+function navRefLabel(value: NavRef) {
   if ("Airport" in value) return value.Airport;
   if ("Navaid" in value) return value.Navaid;
-  return value.Fix;
+  if ("Fix" in value) return value.Fix;
+  return `${value.LatLon.lat.toFixed(3)}, ${value.LatLon.lon.toFixed(3)}`;
 }
 
 function resolveChartLabel(chartId: string) {

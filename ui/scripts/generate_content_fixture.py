@@ -547,7 +547,7 @@ def build_fixture() -> dict:
     supported_tiled_packages = load_supported_tiled_packages(resource_index)
     supported_chart_collections = load_supported_chart_collections(resource_index)
     packages_by_id = package_by_id(supported_tiled_packages)
-    sample_plan_airports = ["KRNT", "KSEA", "KPAE", "KAWO"]
+    sample_plan_airports = ["KRNT", "KUAO"]
     chart_airport_ids = select_chart_airports(resource_index, sample_plan_airports)
     clear_directory(WEB_CHART_ASSET_CACHE_ROOT)
     WEB_CHART_ASSET_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
@@ -741,26 +741,16 @@ def build_fixture() -> dict:
         },
         "flight_plan": {
             "id": "plan-1",
-            "name": "KRNT SEA PAE KAWO",
+            "name": "KRNT KUAO",
             "legs": [
                 {
                     "from": {"Airport": "KRNT"},
-                    "to": {"Navaid": "SEA"},
-                    "airway": None,
-                },
-                {
-                    "from": {"Navaid": "SEA"},
-                    "to": {"Navaid": "PAE"},
-                    "airway": None,
-                },
-                {
-                    "from": {"Navaid": "PAE"},
-                    "to": {"Airport": "KAWO"},
+                    "to": {"Airport": "KUAO"},
                     "airway": None,
                 }
             ],
             "departure": "KRNT",
-            "destination": "KAWO",
+            "destination": "KUAO",
             "alternate": None,
             "cruise_altitude_ft": 3000,
             "notes": "Generated from resource-index data",

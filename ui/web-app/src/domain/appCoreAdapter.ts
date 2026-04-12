@@ -1,11 +1,27 @@
 import type {
   AppState,
+  AirwayAutoSelection,
+  AirwayBranch,
+  AirwayPresentationPlan,
+  AirwaySuggestion,
+  AirwaySegment,
   CatalogJson,
   ChartPageData,
   ContentInventory,
   ContentPolicy,
   FlightPlan,
+  FlightPlanUiMutation,
+  FlightPlanUiState,
+  ChartFamilyId,
   ContentAvailability,
+  GuidanceState,
+  LatLon,
+  NavRef,
+  PlanLeg,
+  ResolvedLeg,
+  ResolvedLegUiView,
+  RouteComponentUiView,
+  SequencingMode,
   Situation,
 } from "./types";
 import { deriveChartPage as deriveChartCatalog } from "./resourceIndexAdapters";
@@ -106,6 +122,34 @@ export interface AppCoreAdapter {
   deriveChartPageState(resourceIndex: unknown, plan: FlightPlan, recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<DerivedChartPageState>;
   setContentPolicyState(state: AppState, catalog: CatalogJson, policy: ContentPolicy): Promise<AppState>;
   refreshContentState(state: AppState, catalog: CatalogJson, inventory: ContentInventory): Promise<AppState>;
+  buildFlightPlanUi(plan: FlightPlan): Promise<FlightPlanUiState>;
+  activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation>;
+  activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
+  suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
+  unsuspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
+  sequenceActiveLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
+  prepareAirwayPresentation(
+    airwayName: string,
+    branches: AirwayBranch[],
+    originPosition: LatLon,
+    destinationPosition: LatLon | null,
+  ): Promise<AirwayPresentationPlan>;
+  sortAirwaySuggestionsForUi(suggestions: AirwaySuggestion[]): Promise<AirwaySuggestion[]>;
+  insertAirwayMaterializedUi(
+    plan: FlightPlan,
+    startComponentIndex: number,
+    endComponentIndex: number,
+    selection: AirwayAutoSelection,
+    airway: AirwaySegment,
+    resolvedLegs: ResolvedLeg[],
+  ): Promise<FlightPlanUiMutation>;
+  chartForPosition(
+    catalog: CatalogJson,
+    geometry: { polygons: Array<{ id: string; points: number[][] }> },
+    family: ChartFamilyId,
+    lat: number,
+    lon: number,
+  ): Promise<CatalogJson["charts"][number] | null>;
 }
 
 export type AdapterBackendKind = "mock" | "wasm";
@@ -383,6 +427,107 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
       },
     };
   }
+
+  async buildFlightPlanUi(plan: FlightPlan): Promise<FlightPlanUiState> {
+    return buildMockFlightPlanUiState(plan);
+  }
+
+  async activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation> {
+    const uiState = buildMockFlightPlanUiState(plan, {
+      active_leg_index: legIndex,
+      sequencing_mode: "follow_plan",
+      direct_to: null,
+    });
+    return { plan, ui_state: uiState };
+  }
+
+  async activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
+    const current = buildMockFlightPlanUiState(plan).guidance?.active_leg_index ?? 0;
+    const nextIndex = Math.min(current + 1, Math.max(plan.legs.length - 1, 0));
+    return this.activateLegUi(plan, nextIndex);
+  }
+
+  async suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
+    const current = buildMockFlightPlanUiState(plan).guidance?.active_leg_index ?? 0;
+    const uiState = buildMockFlightPlanUiState(plan, {
+      active_leg_index: current,
+      sequencing_mode: "suspended",
+      direct_to: null,
+    });
+    return { plan, ui_state: uiState };
+  }
+
+  async unsuspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
+    const current = buildMockFlightPlanUiState(plan).guidance?.active_leg_index ?? 0;
+    const uiState = buildMockFlightPlanUiState(plan, {
+      active_leg_index: current,
+      sequencing_mode: "follow_plan",
+      direct_to: null,
+    });
+    return { plan, ui_state: uiState };
+  }
+
+  async sequenceActiveLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
+    return this.activateNextLegUi(plan);
+  }
+
+  async prepareAirwayPresentation(
+    airwayName: string,
+    branches: AirwayBranch[],
+    _originPosition: LatLon,
+    destinationPosition: LatLon | null,
+  ): Promise<AirwayPresentationPlan> {
+    const branch = branches.find((candidate) => candidate.display_name === airwayName) ?? branches[0];
+    if (!branch) {
+      throw new Error(`no airway branches found for ${airwayName}`);
+    }
+    return {
+      airway_name: branch.display_name,
+      branch_key: branch.branch_key,
+      points: branch.points.map((point, index) => ({
+        branch_point_index: index,
+        sequence: point.sequence,
+        nav_ref: point.nav_ref,
+      })),
+      suggested_entry_index: 0,
+      suggested_exit_index: destinationPosition ? Math.max(branch.points.length - 1, 0) : null,
+    };
+  }
+
+  async sortAirwaySuggestionsForUi(suggestions: AirwaySuggestion[]): Promise<AirwaySuggestion[]> {
+    return [...suggestions].sort((left, right) => left.airway_name.localeCompare(right.airway_name));
+  }
+
+  async insertAirwayMaterializedUi(): Promise<FlightPlanUiMutation> {
+    throw new Error("airway insertion requires wasm adapter");
+  }
+
+  async chartForPosition(
+    catalog: CatalogJson,
+    geometry: { polygons: Array<{ id: string; points: number[][] }> },
+    family: ChartFamilyId,
+    lat: number,
+    lon: number,
+  ): Promise<CatalogJson["charts"][number] | null> {
+    for (const chart of catalog.charts) {
+      if (chart.family_id !== family) {
+        continue;
+      }
+
+      const coverage = chart.coverage as { kind?: string; value?: { polygon_id?: string } };
+      const polygonId = coverage.value?.polygon_id;
+      if (coverage.kind !== "polygon_ref" || !polygonId) {
+        continue;
+      }
+
+      const polygon = geometry.polygons.find((entry) => entry.id === polygonId);
+      if (polygon && pointInPolygon(lat, lon, polygon.points)) {
+        return chart;
+      }
+    }
+
+    return null;
+  }
 }
 
 type WasmModule = {
@@ -404,6 +549,34 @@ type WasmModule = {
   replace_flight_plan_state(stateJson: string, catalogJson: string, planJson: string): Promise<string> | string;
   set_content_policy_state(stateJson: string, catalogJson: string, policyJson: string): Promise<string> | string;
   refresh_content_state(stateJson: string, catalogJson: string, inventoryJson: string): Promise<string> | string;
+  build_flight_plan_ui(planJson: string): Promise<string> | string;
+  activate_leg_ui(planJson: string, legIndex: number): Promise<string> | string;
+  activate_next_leg_ui(planJson: string): Promise<string> | string;
+  suspend_sequencing_ui(planJson: string): Promise<string> | string;
+  unsuspend_sequencing_ui(planJson: string): Promise<string> | string;
+  sequence_active_leg_ui(planJson: string): Promise<string> | string;
+  prepare_airway_presentation(
+    airwayName: string,
+    branchesJson: string,
+    originPositionJson: string,
+    destinationPositionJson: string,
+  ): Promise<string> | string;
+  sort_airway_suggestions_for_ui(suggestionsJson: string): Promise<string> | string;
+  insert_airway_materialized_ui(
+    planJson: string,
+    startComponentIndex: number,
+    endComponentIndex: number,
+    selectionJson: string,
+    airwayJson: string,
+    resolvedLegsJson: string,
+  ): Promise<string> | string;
+  chart_for_position(
+    catalogJson: string,
+    geometryJson: string,
+    familyJson: string,
+    lat: number,
+    lon: number,
+  ): Promise<string> | string;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
@@ -543,6 +716,105 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as AppState;
   }
 
+  async buildFlightPlanUi(plan: FlightPlan): Promise<FlightPlanUiState> {
+    return JSON.parse(
+      await this.module.build_flight_plan_ui(JSON.stringify(plan)),
+    ) as FlightPlanUiState;
+  }
+
+  async activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation> {
+    return JSON.parse(
+      await this.module.activate_leg_ui(JSON.stringify(plan), legIndex),
+    ) as FlightPlanUiMutation;
+  }
+
+  async activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
+    return JSON.parse(
+      await this.module.activate_next_leg_ui(JSON.stringify(plan)),
+    ) as FlightPlanUiMutation;
+  }
+
+  async suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
+    return JSON.parse(
+      await this.module.suspend_sequencing_ui(JSON.stringify(plan)),
+    ) as FlightPlanUiMutation;
+  }
+
+  async unsuspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
+    return JSON.parse(
+      await this.module.unsuspend_sequencing_ui(JSON.stringify(plan)),
+    ) as FlightPlanUiMutation;
+  }
+
+  async sequenceActiveLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
+    return JSON.parse(
+      await this.module.sequence_active_leg_ui(JSON.stringify(plan)),
+    ) as FlightPlanUiMutation;
+  }
+
+  async prepareAirwayPresentation(
+    airwayName: string,
+    branches: AirwayBranch[],
+    originPosition: LatLon,
+    destinationPosition: LatLon | null,
+  ): Promise<AirwayPresentationPlan> {
+    return JSON.parse(
+      await this.module.prepare_airway_presentation(
+        airwayName,
+        JSON.stringify(branches),
+        JSON.stringify(originPosition),
+        JSON.stringify(destinationPosition),
+      ),
+    ) as AirwayPresentationPlan;
+  }
+
+  async sortAirwaySuggestionsForUi(suggestions: AirwaySuggestion[]): Promise<AirwaySuggestion[]> {
+    return JSON.parse(
+      await this.module.sort_airway_suggestions_for_ui(JSON.stringify(suggestions)),
+    ) as AirwaySuggestion[];
+  }
+
+  async insertAirwayMaterializedUi(
+    plan: FlightPlan,
+    startComponentIndex: number,
+    endComponentIndex: number,
+    selection: AirwayAutoSelection,
+    airway: AirwaySegment,
+    resolvedLegs: ResolvedLeg[],
+  ): Promise<FlightPlanUiMutation> {
+    const result = JSON.parse(
+      await this.module.insert_airway_materialized_ui(
+        JSON.stringify(plan),
+        startComponentIndex,
+        endComponentIndex,
+        JSON.stringify(selection),
+        JSON.stringify(airway),
+        JSON.stringify(resolvedLegs),
+      ),
+    ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
+    return {
+      plan: result.mutation.plan,
+      ui_state: result.ui_state,
+    };
+  }
+
+  async chartForPosition(
+    catalog: CatalogJson,
+    geometry: { polygons: Array<{ id: string; points: number[][] }> },
+    family: ChartFamilyId,
+    lat: number,
+    lon: number,
+  ): Promise<CatalogJson["charts"][number] | null> {
+    return JSON.parse(
+      await this.module.chart_for_position(
+        JSON.stringify(catalog),
+        JSON.stringify(geometry),
+        JSON.stringify(family),
+        lat,
+        lon,
+      ),
+    ) as CatalogJson["charts"][number] | null;
+  }
 }
 
 export async function loadBestAvailableAdapter(
@@ -567,10 +839,20 @@ export async function loadBestAvailableAdapter(
       typeof mod.destroy_session !== "function" ||
       typeof mod.replace_flight_plan_state !== "function" ||
       typeof mod.remove_flight_plan_leg !== "function" ||
+      typeof mod.build_flight_plan_ui !== "function" ||
+      typeof mod.activate_leg_ui !== "function" ||
+      typeof mod.activate_next_leg_ui !== "function" ||
+      typeof mod.suspend_sequencing_ui !== "function" ||
+      typeof mod.unsuspend_sequencing_ui !== "function" ||
+      typeof mod.sequence_active_leg_ui !== "function" ||
+      typeof mod.prepare_airway_presentation !== "function" ||
+      typeof mod.sort_airway_suggestions_for_ui !== "function" ||
+      typeof mod.insert_airway_materialized_ui !== "function" ||
       typeof mod.derive_chart_page !== "function" ||
       typeof mod.derive_chart_page_state !== "function" ||
       typeof mod.set_content_policy_state !== "function" ||
-      typeof mod.refresh_content_state !== "function"
+      typeof mod.refresh_content_state !== "function" ||
+      typeof mod.chart_for_position !== "function"
     ) {
       throw new Error("generated wasm module is missing required exports");
     }
@@ -588,6 +870,62 @@ export async function loadBestAvailableAdapter(
       detail: `Falling back to mock adapter: ${message}`,
     };
   }
+}
+
+function navRefLabel(ref: NavRef): string {
+  if ("Airport" in ref) return ref.Airport;
+  if ("Navaid" in ref) return ref.Navaid;
+  if ("Fix" in ref) return ref.Fix;
+  return `${ref.LatLon.lat.toFixed(3)}, ${ref.LatLon.lon.toFixed(3)}`;
+}
+
+function buildMockFlightPlanUiState(
+  plan: FlightPlan,
+  guidance?: GuidanceState | null,
+): FlightPlanUiState {
+  const legs = plan.legs.map<ResolvedLegUiView>((leg, index) => ({
+    leg_index: index,
+    leg_id: `leg-${index}`,
+    component_index: index,
+    from: leg.from,
+    to: leg.to,
+    active: guidance?.active_leg_index === index,
+    suspend_boundary_after: false,
+  }));
+
+  const components = plan.legs.map<RouteComponentUiView>((leg, index) => ({
+    component_index: index,
+    kind: "waypoint",
+    summary: `${navRefLabel(leg.from)} -> ${navRefLabel(leg.to)}`,
+    items: [
+      { kind: "waypoint", nav_ref: leg.from },
+      { kind: "waypoint", nav_ref: leg.to },
+    ],
+    active: legs[index]?.active ?? false,
+  }));
+
+  const activeLeg = guidance && guidance.active_leg_index >= 0
+    ? plan.legs[guidance.active_leg_index] ?? null
+    : null;
+
+  return {
+    components,
+    resolved_legs: legs,
+    guidance: guidance
+      ? {
+          sequencing_mode: guidance.sequencing_mode as SequencingMode,
+          active_leg_index: guidance.active_leg_index,
+          active_component_index: guidance.active_leg_index,
+          active_leg: activeLeg as PlanLeg | null,
+          direct_to: null,
+          can_sequence_active_leg: guidance.sequencing_mode === "direct_to" || guidance.active_leg_index < Math.max(plan.legs.length - 1, 0),
+          can_activate_next_leg: guidance.active_leg_index < Math.max(plan.legs.length - 1, 0),
+          can_suspend: guidance.sequencing_mode !== "suspended",
+          can_unsuspend: guidance.sequencing_mode === "suspended",
+          suspend_boundary_after_active_leg: false,
+        }
+      : null,
+  };
 }
 
 function coreViewportForMap(viewport: MapViewportState) {
@@ -614,6 +952,29 @@ function sampleCatalogLike(_resourceIndex: unknown): CatalogJson {
       supplements: sampleCatalog.supplements,
     } as CatalogJson),
   };
+}
+
+function pointInPolygon(lat: number, lon: number, points: number[][]): boolean {
+  let inside = false;
+  let previousIndex = points.length - 1;
+
+  for (let currentIndex = 0; currentIndex < points.length; currentIndex += 1) {
+    const [currentLon, currentLat] = points[currentIndex];
+    const [previousLon, previousLat] = points[previousIndex];
+    const crossesLatitude = (currentLat > lat) !== (previousLat > lat);
+
+    if (crossesLatitude) {
+      const interpolatedLon =
+        previousLon + ((currentLon - previousLon) * (lat - previousLat)) / (currentLat - previousLat);
+      if (lon < interpolatedLon) {
+        inside = !inside;
+      }
+    }
+
+    previousIndex = currentIndex;
+  }
+
+  return inside;
 }
 
 function moveAirportToFront(

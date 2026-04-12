@@ -4,6 +4,7 @@ import sqlite3InitModule, {
   type SqlValue,
   type Sqlite3Static,
 } from "@sqlite.org/sqlite-wasm";
+import { debugLog } from "./debugLog";
 
 const DEFAULT_NAV_DB_URL = "/nav-db/main.db";
 const DEFAULT_DB_FILENAME = "/nav-main.db";
@@ -16,15 +17,29 @@ export class BrowserNavDb {
   ) {}
 
   static async open(sourceUrl = DEFAULT_NAV_DB_URL): Promise<BrowserNavDb> {
+    const startMs = performance.now();
+    debugLog("navdb.open.start", { sourceUrl });
     const sqlite3 = await sqlite3InitModule();
+    debugLog("navdb.open.sqlite_ready", { elapsed_ms: Math.round(performance.now() - startMs) });
     const response = await fetch(sourceUrl);
     if (!response.ok) {
+      debugLog("navdb.open.fetch_failed", {
+        sourceUrl,
+        status: response.status,
+        status_text: response.statusText,
+        elapsed_ms: Math.round(performance.now() - startMs),
+      });
       throw new Error(`failed to fetch nav db ${sourceUrl}: ${response.status} ${response.statusText}`);
     }
 
     const bytes = new Uint8Array(await response.arrayBuffer());
+    debugLog("navdb.open.fetched", {
+      bytes: bytes.byteLength,
+      elapsed_ms: Math.round(performance.now() - startMs),
+    });
     sqlite3.capi.sqlite3_js_posix_create_file(DEFAULT_DB_FILENAME, bytes);
     const db = new sqlite3.oo1.DB(DEFAULT_DB_FILENAME, "r");
+    debugLog("navdb.open.ready", { elapsed_ms: Math.round(performance.now() - startMs) });
     return new BrowserNavDb(sqlite3, db, sourceUrl);
   }
 

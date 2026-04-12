@@ -80,6 +80,22 @@ pub struct AirwayAutoSelection {
     pub total_anchor_distance_nm: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirwayPresentationPoint {
+    pub branch_point_index: usize,
+    pub sequence: i32,
+    pub nav_ref: NavRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirwayPresentationPlan {
+    pub airway_name: String,
+    pub branch_key: String,
+    pub points: Vec<AirwayPresentationPoint>,
+    pub suggested_entry_index: usize,
+    pub suggested_exit_index: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcedureVariantKey {
     pub airport_id: String,

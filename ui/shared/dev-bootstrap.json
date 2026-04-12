@@ -2,26 +2,16 @@
   "content_policy": "PreferLocal",
   "flight_plan": {
     "id": "plan-1",
-    "name": "KRNT SEA PAE KAWO",
+    "name": "KRNT KUAO",
     "legs": [
       {
         "from": { "Airport": "KRNT" },
-        "to": { "Navaid": "SEA" },
-        "airway": null
-      },
-      {
-        "from": { "Navaid": "SEA" },
-        "to": { "Navaid": "PAE" },
-        "airway": null
-      },
-      {
-        "from": { "Navaid": "PAE" },
-        "to": { "Airport": "KAWO" },
+        "to": { "Airport": "KUAO" },
         "airway": null
       }
     ],
     "departure": "KRNT",
-    "destination": "KAWO",
+    "destination": "KUAO",
     "alternate": null,
     "cruise_altitude_ft": 3000,
     "notes": "Prototype bootstrap state",

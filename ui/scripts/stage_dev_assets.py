@@ -71,15 +71,7 @@ PRODUCT_BUILD = load_product_build()
 
 
 def resolve_product_build_output(node_name: str, output_name: str) -> Path:
-    if isinstance(PRODUCT_BUILD.get(node_name), dict):
-        record = PRODUCT_BUILD[node_name]
-        raw_path = record.get("relative_path")
-        if isinstance(raw_path, str) and raw_path:
-            resolved = ARTIFACT_ROOT / raw_path
-            if resolved.exists():
-                return resolved
-            raise RuntimeError(f"missing product build output {node_name}: {resolved}")
-    for node in PRODUCT_BUILD.get("nodes", []):
+    for node in BUILD_MANIFEST.get("nodes", []):
         if not isinstance(node, dict) or node.get("name") != node_name:
             continue
         outputs = node.get("outputs")
@@ -92,6 +84,14 @@ def resolve_product_build_output(node_name: str, output_name: str) -> Path:
         if resolved.exists():
             return resolved
         raise RuntimeError(f"missing product build output {node_name}.{output_name}: {resolved}")
+    if isinstance(PRODUCT_BUILD.get(node_name), dict):
+        record = PRODUCT_BUILD[node_name]
+        raw_path = record.get("relative_path")
+        if isinstance(raw_path, str) and raw_path:
+            resolved = ARTIFACT_ROOT / raw_path
+            if resolved.exists():
+                return resolved
+            raise RuntimeError(f"missing product build output {node_name}: {resolved}")
     raise RuntimeError(f"missing product build output {node_name}.{output_name} in {PRODUCT_BUILD_FILE}")
 
 

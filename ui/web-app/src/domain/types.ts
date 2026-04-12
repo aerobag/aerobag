@@ -24,6 +24,9 @@ export type FlightPlan = {
     to: { Airport: string } | { Navaid: string } | { Fix: string };
     airway: string | null;
   }>;
+  route_components?: RouteComponent[];
+  resolved_legs?: ResolvedLeg[];
+  guidance?: GuidanceState | null;
   departure: string | null;
   destination: string | null;
   alternate: string | null;
@@ -31,6 +34,197 @@ export type FlightPlan = {
   notes: string | null;
   updated_at_epoch_ms: number;
   version: number;
+};
+
+export type NavRef =
+  | { Airport: string }
+  | { Navaid: string }
+  | { Fix: string }
+  | { LatLon: { lat: number; lon: number } };
+
+export type LatLon = {
+  lat: number;
+  lon: number;
+};
+
+export type PlanLeg = {
+  from: NavRef;
+  to: NavRef;
+  airway: string | null;
+};
+
+export type RouteComponent =
+  | { kind: "waypoint"; waypoint: NavRef }
+  | { kind: "airway"; airway: AirwaySegment }
+  | { kind: "procedure"; procedure: ProcedureSegment };
+
+export type AirwaySegment = {
+  name: string;
+  branch_key?: string | null;
+  entry: NavRef;
+  exit: NavRef;
+};
+
+export type AirwaySuggestion = {
+  airway_name: string;
+  nearest_branch_key: string | null;
+  nearest_nav_ref: NavRef;
+  nearest_sequence: number;
+  distance_from_anchor_nm: number;
+};
+
+export type AirwayEntryCandidate = {
+  airway_name: string;
+  branch_key: string;
+  branch_point_index: number;
+  sequence: number;
+  nav_ref: NavRef;
+  distance_from_anchor_nm: number;
+  previous_nav_ref: NavRef | null;
+  next_nav_ref: NavRef | null;
+};
+
+export type AirwayExitCandidate = {
+  airway_name: string;
+  branch_key: string;
+  branch_point_index: number;
+  sequence: number;
+  nav_ref: NavRef;
+  leg_offset_from_entry: number;
+  is_entry: boolean;
+  distance_from_target_nm: number | null;
+};
+
+export type AirwayAutoSelection = {
+  airway_name: string;
+  branch_key: string;
+  entry: AirwayEntryCandidate;
+  exit: AirwayExitCandidate;
+  origin_distance_nm: number;
+  destination_distance_nm: number;
+  total_anchor_distance_nm: number;
+};
+
+export type AirwayFixPoint = {
+  airway_name: string;
+  sequence: number;
+  position: LatLon;
+  nav_ref: NavRef;
+};
+
+export type AirwayBranch = {
+  display_name: string;
+  branch_key: string;
+  points: AirwayFixPoint[];
+};
+
+export type AirwayPresentationPoint = {
+  branch_point_index: number;
+  sequence: number;
+  nav_ref: NavRef;
+};
+
+export type AirwayPresentationPlan = {
+  airway_name: string;
+  branch_key: string;
+  points: AirwayPresentationPoint[];
+  suggested_entry_index: number;
+  suggested_exit_index: number | null;
+};
+
+export type ProcedureKind = "sid" | "star" | "approach";
+
+export type ProcedureDiscontinuity = "vectors" | "hold" | string;
+
+export type ProcedureSegment = {
+  airport_id: string;
+  procedure_id: string;
+  kind: ProcedureKind;
+  runway_transition: string | null;
+  enroute_transition: string | null;
+  terminal_discontinuity?: ProcedureDiscontinuity | null;
+};
+
+export type ResolvedLeg =
+  {
+    id: string;
+    from: NavRef;
+    to: NavRef;
+    procedure_provenance?: unknown;
+  } & (
+    | { source: { kind: "legacy_plan_leg"; leg_index: number } }
+    | { source: { kind: "route_component"; component_index: number } }
+  );
+
+export type SequencingMode = "follow_plan" | "suspended" | "direct_to";
+
+export type DirectToState = {
+  start: NavRef;
+  target: NavRef;
+  target_leg_id: string | null;
+  resume_leg_id: string | null;
+};
+
+export type GuidanceState = {
+  active_leg_index: number;
+  sequencing_mode: SequencingMode;
+  direct_to: DirectToState | null;
+};
+
+export type ConcretizedNavItem =
+  | { kind: "waypoint"; nav_ref: NavRef }
+  | { kind: "discontinuity"; discontinuity: ProcedureDiscontinuity; label: string };
+
+export type RouteComponentViewKind = "waypoint" | "airway" | "procedure";
+
+export type RouteComponentUiView = {
+  component_index: number;
+  kind: RouteComponentViewKind;
+  summary: string;
+  items: ConcretizedNavItem[];
+  active: boolean;
+};
+
+export type ResolvedLegUiView = {
+  leg_index: number;
+  leg_id: string;
+  component_index: number | null;
+  from: NavRef;
+  to: NavRef;
+  active: boolean;
+  suspend_boundary_after: boolean;
+};
+
+export type DirectToUiView = {
+  start: NavRef;
+  target: NavRef;
+  target_leg_id: string | null;
+  resume_leg_id: string | null;
+  on_plan_target: boolean;
+};
+
+export type GuidanceUiView = {
+  sequencing_mode: SequencingMode;
+  active_leg_index: number | null;
+  active_component_index: number | null;
+  active_leg: PlanLeg | null;
+  direct_to: DirectToUiView | null;
+  can_sequence_active_leg: boolean;
+  can_activate_next_leg: boolean;
+  can_suspend: boolean;
+  can_unsuspend: boolean;
+  suspend_boundary_after_active_leg: boolean;
+};
+
+export type FlightPlanUiState = {
+  components: RouteComponentUiView[];
+  resolved_legs: ResolvedLegUiView[];
+  guidance: GuidanceUiView | null;
+};
+
+export type FlightPlanUiMutation = {
+  plan: FlightPlan;
+  ui_state: FlightPlanUiState;
 };
 
 export type CatalogJson = {
@@ -78,6 +272,7 @@ export type CatalogJson = {
     region_ids: RegionId[];
     max_zoom: number;
     tile_path_template: string;
+    coverage: unknown;
   }>;
   plates: Array<{
     id: {

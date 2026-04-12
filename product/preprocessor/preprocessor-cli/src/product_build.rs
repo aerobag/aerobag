@@ -24,7 +24,9 @@ use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
     read_source_urls_jsonl, write_package_outputs_jsonl, PackageOutputRecord,
 };
-use preprocessor_resource_index::{write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource};
+use preprocessor_resource_index::{
+    write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, ResourceIndex,
+};
 use preprocessor_tpp::{
     package_native_tpp_versioned, render_native_tpp, NativeTppRunRequest,
 };
@@ -89,14 +91,50 @@ struct NodeRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ProductBuildManifest {
+struct BuildManifest {
     schema_version: u32,
     profile: String,
+    cycle: String,
     build_root: String,
     generated_at_utc: String,
     fetch_cache_root: String,
     fetch_cache_mode: String,
     nodes: Vec<NodeRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BundleManifest {
+    schema_version: u32,
+    cycle: String,
+    generated_at_utc: String,
+    start_valid: String,
+    end_valid: String,
+    catalog: BundleArtifact,
+    resource_index: BundleArtifact,
+    data: BundleArtifact,
+    vectors: BundleArtifact,
+    packages: Vec<BundlePackageArtifact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BundleArtifact {
+    filename: String,
+    relative_path: String,
+    checksum_sha256: String,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BundlePackageArtifact {
+    id: String,
+    family_id: String,
+    region_id: String,
+    filename: String,
+    relative_path: String,
+    checksum_sha256: String,
+    size_bytes: u64,
+    effective_date: Option<String>,
+    expiration_date: Option<String>,
 }
 
 #[derive(Debug)]
@@ -510,26 +548,39 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             resource_index_record.cache_hit
         ))?;
         node_records.push(normalize_node_record_paths(resource_index_record, &config.build_root));
+        node_records.sort_by(|left, right| left.name.cmp(&right.name));
 
-        let manifest = ProductBuildManifest {
+        let build_manifest = BuildManifest {
             schema_version: 1,
             profile: config.profile.as_str().to_string(),
+            cycle: bundle_cycle.clone(),
             build_root: relative_product_build_path(&config.build_root),
-            generated_at_utc: utc_now_string(),
+            generated_at_utc: manifest_generated_at(&node_records),
             fetch_cache_root: relative_artifact_path(&config.fetch_cache_root, &config.build_root),
             fetch_cache_mode: config.fetch_cache_mode.clone(),
             nodes: node_records,
         };
-        let manifest_path = config
+        let build_manifest_path = config
+            .build_root
+            .join(format!("build-manifest_{bundle_cycle}.json"));
+        fs::write(
+            &build_manifest_path,
+            serde_json::to_vec_pretty(&build_manifest)
+                .context("failed to encode product build manifest")?,
+        )
+        .with_context(|| format!("failed to write {}", build_manifest_path.display()))?;
+
+        let bundle_manifest = build_bundle_manifest(config, &build_manifest)?;
+        let bundle_manifest_path = config
             .build_root
             .join(format!("bundle_{bundle_cycle}.json"));
         fs::write(
-            &manifest_path,
-            serde_json::to_vec_pretty(&manifest)
-                .context("failed to encode product build manifest")?,
+            &bundle_manifest_path,
+            serde_json::to_vec_pretty(&bundle_manifest)
+                .context("failed to encode bundle manifest")?,
         )
-        .with_context(|| format!("failed to write {}", manifest_path.display()))?;
-        Ok(manifest_path)
+        .with_context(|| format!("failed to write {}", bundle_manifest_path.display()))?;
+        Ok(bundle_manifest_path)
     })();
 
     match result {
@@ -542,6 +593,136 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             Err(err)
         }
     }
+}
+
+fn build_bundle_manifest(
+    config: &ProductBuildConfig,
+    build_manifest: &BuildManifest,
+) -> anyhow::Result<BundleManifest> {
+    let resource_index_record = build_manifest
+        .nodes
+        .iter()
+        .find(|node| node.name == "resource-index")
+        .context("build manifest missing resource-index node")?;
+    let data_record = build_manifest
+        .nodes
+        .iter()
+        .find(|node| node.name == "data")
+        .context("build manifest missing data node")?;
+    let vectors_record = build_manifest
+        .nodes
+        .iter()
+        .find(|node| node.name == "vectors")
+        .context("build manifest missing vectors node")?;
+
+    let resource_index_path = resolve_artifact_path(config, output_path(resource_index_record, "resource_index")?);
+    let catalog_path = resolve_artifact_path(config, output_path(resource_index_record, "catalog")?);
+    let data_zip_path = resolve_artifact_path(config, output_path(data_record, "zip")?);
+    let vectors_zip_path = resolve_artifact_path(config, output_path(vectors_record, "zip")?);
+    let index: ResourceIndex = serde_json::from_slice(
+        &fs::read(&resource_index_path)
+            .with_context(|| format!("failed to read {}", resource_index_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", resource_index_path.display()))?;
+    let start_valid = index
+        .temporal_summary
+        .uniform_good_beyond_date
+        .clone()
+        .or_else(|| index.temporal_summary.uniform_effective_date.clone())
+        .context("resource-index missing start-valid date")?;
+    let end_valid = index
+        .temporal_summary
+        .uniform_expiration_date
+        .clone()
+        .context("resource-index missing end-valid date")?;
+
+    Ok(BundleManifest {
+        schema_version: 1,
+        cycle: build_manifest.cycle.clone(),
+        generated_at_utc: build_manifest.generated_at_utc.clone(),
+        start_valid,
+        end_valid,
+        catalog: bundle_artifact(config, output_path(resource_index_record, "catalog")?, &catalog_path)?,
+        resource_index: bundle_artifact(
+            config,
+            output_path(resource_index_record, "resource_index")?,
+            &resource_index_path,
+        )?,
+        data: bundle_artifact(config, output_path(data_record, "zip")?, &data_zip_path)?,
+        vectors: bundle_artifact(config, output_path(vectors_record, "zip")?, &vectors_zip_path)?,
+        packages: index
+            .packages
+            .iter()
+            .map(|package| {
+                let package_path = resolve_product_build_path(config, &package.artifact_path);
+                Ok(BundlePackageArtifact {
+                    id: package.id.clone(),
+                    family_id: package.family_id.clone(),
+                    region_id: package.region_id.clone(),
+                    filename: Path::new(&package.artifact_path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    relative_path: package.artifact_path.clone(),
+                    checksum_sha256: package.checksum_sha256.clone(),
+                    size_bytes: fs::metadata(&package_path)
+                        .with_context(|| format!("failed to stat {}", package_path.display()))?
+                        .len(),
+                    effective_date: package.effective_date.clone(),
+                    expiration_date: package.expiration_date.clone(),
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?,
+    })
+}
+
+fn output_path<'a>(record: &'a NodeRecord, key: &str) -> anyhow::Result<&'a str> {
+    record
+        .outputs
+        .get(key)
+        .map(String::as_str)
+        .ok_or_else(|| anyhow::anyhow!("node {} missing outputs.{key}", record.name))
+}
+
+fn resolve_artifact_path(config: &ProductBuildConfig, relative_path: &str) -> PathBuf {
+    artifact_root_from_build_root(&config.build_root).join(relative_path)
+}
+
+fn resolve_product_build_path(config: &ProductBuildConfig, relative_path: &str) -> PathBuf {
+    config
+        .build_root
+        .parent()
+        .expect("build root should live under <artifact-root>/product-builds/<profile>")
+        .join(relative_path)
+}
+
+fn manifest_generated_at(node_records: &[NodeRecord]) -> String {
+    node_records
+        .iter()
+        .map(|record| record.finished_at_utc.as_str())
+        .max()
+        .unwrap_or_else(|| panic!("build manifest should include at least one node"))
+        .to_string()
+}
+
+fn bundle_artifact(
+    _config: &ProductBuildConfig,
+    relative_path: &str,
+    absolute_path: &Path,
+) -> anyhow::Result<BundleArtifact> {
+    Ok(BundleArtifact {
+        filename: absolute_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string(),
+        relative_path: relative_path.to_string(),
+        checksum_sha256: hash_file(absolute_path)?,
+        size_bytes: fs::metadata(absolute_path)
+            .with_context(|| format!("failed to stat {}", absolute_path.display()))?
+            .len(),
+    })
 }
 
 impl ProductBuildConfig {

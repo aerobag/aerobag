@@ -285,31 +285,6 @@ fn publish_content_addressed_obstacle_zip(
     Ok((published_path, sha256, size_bytes))
 }
 
-fn read_resource_index_output_path(bundle_manifest_path: &Path) -> anyhow::Result<PathBuf> {
-    let payload: serde_json::Value = serde_json::from_slice(
-        &fs::read(bundle_manifest_path)
-            .with_context(|| format!("failed to read {}", bundle_manifest_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", bundle_manifest_path.display()))?;
-    let nodes = payload
-        .get("nodes")
-        .and_then(|value| value.as_array())
-        .ok_or_else(|| anyhow::anyhow!("bundle manifest missing nodes[]"))?;
-    let relative = nodes
-        .iter()
-        .find(|node| node.get("name").and_then(|value| value.as_str()) == Some("resource-index"))
-        .and_then(|node| node.get("outputs"))
-        .and_then(|outputs| outputs.get("resource_index"))
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| anyhow::anyhow!("bundle manifest missing resource-index outputs.resource_index"))?;
-    let artifact_root = bundle_manifest_path
-        .parent()
-        .and_then(|parent| parent.parent())
-        .and_then(|parent| parent.parent())
-        .context("failed to resolve artifact root from bundle manifest path")?;
-    Ok(artifact_root.join(relative))
-}
-
 fn build_current_bundle_entries(
     build_root: &Path,
     as_of_date: NaiveDate,
@@ -331,47 +306,64 @@ fn build_current_bundle_entries(
 
     let mut bundles = Vec::new();
     for bundle_path in bundle_paths {
-        let resource_index_path = read_resource_index_output_path(&bundle_path)?;
-        let index: serde_json::Value = serde_json::from_slice(
-            &fs::read(&resource_index_path)
-                .with_context(|| format!("failed to read {}", resource_index_path.display()))?,
+        let bundle_manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(&bundle_path)
+                .with_context(|| format!("failed to read {}", bundle_path.display()))?,
         )
-        .with_context(|| format!("failed to parse {}", resource_index_path.display()))?;
-        let temporal = index
-            .get("temporal_summary")
-            .ok_or_else(|| anyhow::anyhow!("resource-index missing temporal_summary"))?;
-        let start_valid = temporal
-            .get("uniform_good_beyond_date")
+        .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+        let bundle_cycle = bundle_manifest
+            .get("cycle")
             .and_then(|value| value.as_str())
-            .or_else(|| temporal.get("uniform_effective_date").and_then(|value| value.as_str()))
-            .ok_or_else(|| anyhow::anyhow!("resource-index missing start-valid date"))?;
-        let end_valid = temporal
-            .get("uniform_expiration_date")
+            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing top-level cycle"))?;
+        let file_cycle = bundle_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| stem.strip_prefix("bundle_"))
+            .unwrap_or("unknown");
+        if bundle_cycle != file_cycle {
+            anyhow::bail!(
+                "bundle cycle mismatch for {}: payload cycle {} != filename cycle {}",
+                bundle_path.display(),
+                bundle_cycle,
+                file_cycle
+            );
+        }
+
+        let start_valid = bundle_manifest
+            .get("start_valid")
             .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow::anyhow!("resource-index missing end-valid date"))?;
+            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing start_valid"))?;
+        let end_valid = bundle_manifest
+            .get("end_valid")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing end_valid"))?;
         let end_valid_date = NaiveDate::parse_from_str(end_valid, "%Y-%m-%d")
             .with_context(|| format!("failed to parse bundle end_valid {end_valid}"))?;
         if end_valid_date < as_of_date {
             continue;
         }
-        let cycle = bundle_path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .and_then(|stem| stem.strip_prefix("bundle_"))
-            .unwrap_or("unknown");
         bundles.push(CurrentBundleEntry {
             filename: bundle_path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or_default()
                 .to_string(),
-            cycle: cycle.to_string(),
+            cycle: bundle_cycle.to_string(),
             start_valid: start_valid.to_string(),
             end_valid: end_valid.to_string(),
-            checksum_sha256: hash_file(&bundle_path)?,
-            size_bytes: fs::metadata(&bundle_path)
-                .with_context(|| format!("failed to stat {}", bundle_path.display()))?
-                .len(),
+            checksum_sha256: bundle_manifest
+                .get("checksum_sha256")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+                .unwrap_or(hash_file(&bundle_path)?),
+            size_bytes: bundle_manifest
+                .get("size_bytes")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(
+                    fs::metadata(&bundle_path)
+                        .with_context(|| format!("failed to stat {}", bundle_path.display()))?
+                        .len(),
+                ),
         });
     }
     Ok(bundles)

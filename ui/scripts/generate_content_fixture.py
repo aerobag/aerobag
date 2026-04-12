@@ -22,15 +22,15 @@ def resolve_artifact_root() -> Path:
     env_value = os.environ.get("AEROBAG_ARTIFACT_ROOT")
     if env_value:
         candidate = Path(env_value).expanduser()
-        if list(candidate.joinpath(manifest_glob).glob("bundle_*.json")):
+        if list(candidate.joinpath(manifest_glob).glob("build-manifest_*.json")):
             return candidate
     configured = ARTIFACT_ROOT_CONFIG.read_text().strip()
     path = Path(configured)
     candidate = path if path.is_absolute() else (ROOT / path).resolve()
-    if list(candidate.joinpath(manifest_glob).glob("bundle_*.json")):
+    if list(candidate.joinpath(manifest_glob).glob("build-manifest_*.json")):
         return candidate
     fallback = Path("/root/aerobag-artifacts")
-    if list(fallback.joinpath(manifest_glob).glob("bundle_*.json")):
+    if list(fallback.joinpath(manifest_glob).glob("build-manifest_*.json")):
         return fallback
     return candidate
 
@@ -43,7 +43,7 @@ UI_TARGET_ROOT = Path(
     ),
 ).expanduser()
 UI_DIR = ROOT / "ui"
-PRODUCT_BUILD = sorted((ARTIFACT_ROOT / "product-builds" / "production").glob("bundle_*.json"))[-1]
+PRODUCT_BUILD = sorted((ARTIFACT_ROOT / "product-builds" / "production").glob("build-manifest_*.json"))[-1]
 UI_THEME = UI_DIR / "shared-fixtures" / "ui-theme.json"
 SHARED_TARGET_ROOT = UI_TARGET_ROOT / "shared" / "content-prototype"
 WEB_TARGET_ROOT = UI_TARGET_ROOT / "web"

@@ -46,15 +46,15 @@ val artifactRoot = File(
     System.getenv("AEROBAG_ARTIFACT_ROOT")
         ?: defaultArtifactRoot.absolutePath,
 )
-fun latestBundleManifest(root: File): File? =
+fun latestBuildManifest(root: File): File? =
     root.resolve("product-builds/production")
         .listFiles()
-        ?.filter { it.isFile && it.name.startsWith("bundle_") && it.name.endsWith(".json") }
+        ?.filter { it.isFile && it.name.startsWith("build-manifest_") && it.name.endsWith(".json") }
         ?.maxByOrNull { it.name }
 
 val resolvedArtifactRoot = when {
-    latestBundleManifest(artifactRoot)?.isFile == true -> artifactRoot
-    latestBundleManifest(File("/root/aerobag-artifacts"))?.isFile == true -> File("/root/aerobag-artifacts")
+    latestBuildManifest(artifactRoot)?.isFile == true -> artifactRoot
+    latestBuildManifest(File("/root/aerobag-artifacts"))?.isFile == true -> File("/root/aerobag-artifacts")
     else -> artifactRoot
 }
 

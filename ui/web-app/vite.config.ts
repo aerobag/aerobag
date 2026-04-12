@@ -41,11 +41,7 @@ function latestCurrentArtifacts(root: string): string | null {
     .sort();
   return manifests.length > 0 ? path.join(manifestDir, manifests[manifests.length - 1]) : null;
 }
-const artifactRoot = latestCurrentArtifacts(configuredArtifactPath)
-  ? configuredArtifactPath
-  : latestCurrentArtifacts("/root/aerobag-artifacts")
-    ? "/root/aerobag-artifacts"
-    : configuredArtifactPath;
+const artifactRoot = configuredArtifactPath;
 const currentArtifactsPath = latestCurrentArtifacts(artifactRoot) ?? path.join(artifactRoot, productionManifestDir, "current_artifacts_missing.json");
 const currentArtifacts = JSON.parse(fs.readFileSync(currentArtifactsPath, "utf8")) as { bundles?: Array<{ filename?: string }> };
 const productBuildPath = path.join(

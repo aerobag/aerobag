@@ -34,9 +34,6 @@ def resolve_artifact_root() -> Path:
         candidate = (ROOT / candidate).resolve()
     if any(candidate.joinpath(PRODUCTION_MANIFEST_DIR).glob("current_artifacts_*.json")):
         return candidate
-    fallback = Path("/root/aerobag-artifacts")
-    if any(fallback.joinpath(PRODUCTION_MANIFEST_DIR).glob("current_artifacts_*.json")):
-        return fallback
     return candidate
 
 

@@ -283,15 +283,15 @@ mod tests {
                     return path;
                 }
             }
-            for candidate in [
-                "/root/ui-target/web/generated-static/vectors/points/fix/9",
-                "/root/aerobag-three/ui-target-flightplan/web/generated-static/vectors/points/fix/9",
-                "/root/aerobag-three/ui-target/web/generated-static/vectors/points/fix/9",
-            ] {
-                let path = PathBuf::from(candidate);
-                if path.is_dir() {
-                    return path;
-                }
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let ui_dir = manifest_dir.join("../../..").canonicalize().expect("resolve ui dir");
+            let repo_root = ui_dir.parent().expect("ui dir parent");
+            let target_root_raw =
+                fs::read_to_string(ui_dir.join("target-root.txt")).expect("read ui/target-root.txt");
+            let target_root = repo_root.join(target_root_raw.trim()).canonicalize().expect("resolve ui target root");
+            let path = target_root.join("web/generated-static/vectors/points/fix/9");
+            if path.is_dir() {
+                return path;
             }
             panic!("unable to locate vector tile fixture root");
         })

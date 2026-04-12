@@ -50,11 +50,7 @@ fun latestCurrentArtifacts(root: File): File? =
         ?.filter { it.isFile && it.name.startsWith("current_artifacts_") && it.name.endsWith(".json") }
         ?.maxByOrNull { it.name }
 
-val resolvedArtifactRoot = when {
-    latestCurrentArtifacts(artifactRoot)?.isFile == true -> artifactRoot
-    latestCurrentArtifacts(File("/root/aerobag-artifacts"))?.isFile == true -> File("/root/aerobag-artifacts")
-    else -> artifactRoot
-}
+val resolvedArtifactRoot = artifactRoot
 val currentArtifactsFile = latestCurrentArtifacts(resolvedArtifactRoot)
     ?: throw GradleException("missing current_artifacts_*.json under ${resolvedArtifactRoot.resolve("product-builds/production").absolutePath}")
 val currentArtifactsPayload by lazy { JsonSlurper().parse(currentArtifactsFile) as Map<*, *> }

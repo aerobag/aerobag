@@ -191,6 +191,8 @@ fn world_to_screen(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+    use std::sync::OnceLock;
     use std::{fs, path::PathBuf};
 
     #[test]
@@ -252,8 +254,7 @@ mod tests {
             rotation_deg: 0.0,
             pitch_deg: 0.0,
         };
-        let tile_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../../../ui-target/web/generated-static/vectors/points/fix/9");
+        let tile_root = fixture_vector_tile_root();
         let mut cache = HashMap::new();
 
         for tile in visible_fix_tile_window(&viewport, 1200.0, 900.0) {
@@ -271,5 +272,29 @@ mod tests {
             !result.visible_features.is_empty(),
             "expected visible fix features for VAMPS viewport"
         );
+    }
+
+    fn fixture_vector_tile_root() -> &'static Path {
+        static ROOT: OnceLock<PathBuf> = OnceLock::new();
+        ROOT.get_or_init(|| {
+            if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_VECTOR_ROOT") {
+                let path = PathBuf::from(value);
+                if path.is_dir() {
+                    return path;
+                }
+            }
+            for candidate in [
+                "/root/ui-target/web/generated-static/vectors/points/fix/9",
+                "/root/aerobag-three/ui-target-flightplan/web/generated-static/vectors/points/fix/9",
+                "/root/aerobag-three/ui-target/web/generated-static/vectors/points/fix/9",
+            ] {
+                let path = PathBuf::from(candidate);
+                if path.is_dir() {
+                    return path;
+                }
+            }
+            panic!("unable to locate vector tile fixture root");
+        })
+        .as_path()
     }
 }

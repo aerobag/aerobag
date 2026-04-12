@@ -116,6 +116,44 @@ function mountStaticTree(sourceRoot: string) {
   };
 }
 
+function ensureLinkedFile(sourcePath: string, targetPath: string) {
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.rmSync(targetPath, { force: true, recursive: true });
+  try {
+    fs.linkSync(sourcePath, targetPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EXDEV") {
+      fs.copyFileSync(sourcePath, targetPath);
+      return;
+    }
+    throw error;
+  }
+}
+
+function ensureLinkedTree(sourceRoot: string, targetRoot: string) {
+  fs.rmSync(targetRoot, { recursive: true, force: true });
+  fs.mkdirSync(targetRoot, { recursive: true });
+  for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
+    const sourcePath = path.join(sourceRoot, entry.name);
+    const targetPath = path.join(targetRoot, entry.name);
+    const stats = fs.lstatSync(sourcePath);
+    if (stats.isSymbolicLink()) {
+      const linkTarget = fs.readlinkSync(sourcePath);
+      fs.symlinkSync(linkTarget, targetPath);
+      continue;
+    }
+    if (stats.isDirectory()) {
+      ensureLinkedTree(sourcePath, targetPath);
+      continue;
+    }
+    if (stats.isFile()) {
+      ensureLinkedFile(sourcePath, targetPath);
+      continue;
+    }
+  }
+}
+
 function aerobagStaticPlugin(): Plugin {
   return {
     name: "aerobag-static-assets",
@@ -180,9 +218,7 @@ function aerobagStaticPlugin(): Plugin {
           continue;
         }
         const targetRoot = path.join(outputDir, targetName);
-        fs.rmSync(targetRoot, { recursive: true, force: true });
-        fs.mkdirSync(targetRoot, { recursive: true });
-        fs.cpSync(sourceRoot, targetRoot, { recursive: true, dereference: true });
+        ensureLinkedTree(sourceRoot, targetRoot);
       }
     },
   };

@@ -35,6 +35,7 @@ use product_build::{
     build_cycle, default_artifact_root, explain_product_build, maybe_reexec_build_cycle_under_cgroup,
     ProductBuildConfig,
 };
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 fn load_manifest(run_root: &PathBuf) -> anyhow::Result<CaptureManifest> {
@@ -235,6 +236,181 @@ fn latest_bundle_manifest(build_root: &Path) -> anyhow::Result<PathBuf> {
     manifests
         .pop()
         .ok_or_else(|| anyhow::anyhow!("missing bundle_*.json under {}", build_root.display()))
+}
+
+#[derive(Debug, Serialize)]
+struct CurrentArtifactsManifest {
+    schema_version: u32,
+    as_of_date: String,
+    bundles: Vec<CurrentBundleEntry>,
+    obstacles: CurrentObstacleEntry,
+}
+
+#[derive(Debug, Serialize)]
+struct CurrentBundleEntry {
+    filename: String,
+    cycle: String,
+    start_valid: String,
+    end_valid: String,
+    checksum_sha256: String,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct CurrentObstacleEntry {
+    filename: String,
+    published_date: String,
+    checksum_sha256: String,
+    size_bytes: u64,
+}
+
+fn publish_content_addressed_obstacle_zip(
+    build_root: &Path,
+    obstacle_zip_path: &Path,
+) -> anyhow::Result<(PathBuf, String, u64)> {
+    let sha256 = hash_file(obstacle_zip_path)?;
+    let size_bytes = fs::metadata(obstacle_zip_path)
+        .with_context(|| format!("failed to stat {}", obstacle_zip_path.display()))?
+        .len();
+    let published_path = build_root.join(format!("obstacles_{sha256}.zip"));
+    if !published_path.is_file() {
+        fs::copy(obstacle_zip_path, &published_path).with_context(|| {
+            format!(
+                "failed to copy {} to {}",
+                obstacle_zip_path.display(),
+                published_path.display()
+            )
+        })?;
+    }
+    Ok((published_path, sha256, size_bytes))
+}
+
+fn read_resource_index_output_path(bundle_manifest_path: &Path) -> anyhow::Result<PathBuf> {
+    let payload: serde_json::Value = serde_json::from_slice(
+        &fs::read(bundle_manifest_path)
+            .with_context(|| format!("failed to read {}", bundle_manifest_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", bundle_manifest_path.display()))?;
+    let nodes = payload
+        .get("nodes")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| anyhow::anyhow!("bundle manifest missing nodes[]"))?;
+    let relative = nodes
+        .iter()
+        .find(|node| node.get("name").and_then(|value| value.as_str()) == Some("resource-index"))
+        .and_then(|node| node.get("outputs"))
+        .and_then(|outputs| outputs.get("resource_index"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow::anyhow!("bundle manifest missing resource-index outputs.resource_index"))?;
+    let artifact_root = bundle_manifest_path
+        .parent()
+        .and_then(|parent| parent.parent())
+        .and_then(|parent| parent.parent())
+        .context("failed to resolve artifact root from bundle manifest path")?;
+    Ok(artifact_root.join(relative))
+}
+
+fn build_current_bundle_entries(
+    build_root: &Path,
+    as_of_date: NaiveDate,
+) -> anyhow::Result<Vec<CurrentBundleEntry>> {
+    let mut bundle_paths = fs::read_dir(build_root)
+        .with_context(|| format!("failed to read {}", build_root.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to iterate {}", build_root.display()))?
+        .into_iter()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("bundle_") && name.ends_with(".json"))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    bundle_paths.sort();
+
+    let mut bundles = Vec::new();
+    for bundle_path in bundle_paths {
+        let resource_index_path = read_resource_index_output_path(&bundle_path)?;
+        let index: serde_json::Value = serde_json::from_slice(
+            &fs::read(&resource_index_path)
+                .with_context(|| format!("failed to read {}", resource_index_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", resource_index_path.display()))?;
+        let temporal = index
+            .get("temporal_summary")
+            .ok_or_else(|| anyhow::anyhow!("resource-index missing temporal_summary"))?;
+        let start_valid = temporal
+            .get("uniform_good_beyond_date")
+            .and_then(|value| value.as_str())
+            .or_else(|| temporal.get("uniform_effective_date").and_then(|value| value.as_str()))
+            .ok_or_else(|| anyhow::anyhow!("resource-index missing start-valid date"))?;
+        let end_valid = temporal
+            .get("uniform_expiration_date")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("resource-index missing end-valid date"))?;
+        let end_valid_date = NaiveDate::parse_from_str(end_valid, "%Y-%m-%d")
+            .with_context(|| format!("failed to parse bundle end_valid {end_valid}"))?;
+        if end_valid_date < as_of_date {
+            continue;
+        }
+        let cycle = bundle_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| stem.strip_prefix("bundle_"))
+            .unwrap_or("unknown");
+        bundles.push(CurrentBundleEntry {
+            filename: bundle_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            cycle: cycle.to_string(),
+            start_valid: start_valid.to_string(),
+            end_valid: end_valid.to_string(),
+            checksum_sha256: hash_file(&bundle_path)?,
+            size_bytes: fs::metadata(&bundle_path)
+                .with_context(|| format!("failed to stat {}", bundle_path.display()))?
+                .len(),
+        });
+    }
+    Ok(bundles)
+}
+
+fn write_current_artifacts_manifest(
+    build_root: &Path,
+    as_of_date: NaiveDate,
+    published_obstacle_zip: &Path,
+    obstacle_sha256: &str,
+    obstacle_size_bytes: u64,
+) -> anyhow::Result<PathBuf> {
+    let bundles = build_current_bundle_entries(build_root, as_of_date)?;
+    let published_date = as_of_date.format("%Y-%m-%d").to_string();
+    let manifest = CurrentArtifactsManifest {
+        schema_version: 1,
+        as_of_date: published_date.clone(),
+        bundles,
+        obstacles: CurrentObstacleEntry {
+            filename: published_obstacle_zip
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            published_date: published_date.clone(),
+            checksum_sha256: obstacle_sha256.to_string(),
+            size_bytes: obstacle_size_bytes,
+        },
+    };
+    let manifest_path = build_root.join(format!(
+        "current_artifacts_{}.json",
+        as_of_date.format("%Y%m%d")
+    ));
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).context("failed to encode current artifacts manifest")?,
+    )
+    .with_context(|| format!("failed to write {}", manifest_path.display()))?;
+    Ok(manifest_path)
 }
 
 fn read_zip_members(path: &Path) -> anyhow::Result<Vec<String>> {
@@ -1902,10 +2078,25 @@ fn main() -> anyhow::Result<()> {
             };
             let (obstacle_manifest_path, obstacle_stats_path, obstacle_zip_path) =
                 run_build_obstacles_command(&[])?;
+            let as_of_date = Utc::now().date_naive();
+            let (published_obstacle_zip, obstacle_sha256, obstacle_size_bytes) =
+                publish_content_addressed_obstacle_zip(
+                    &config.build_root,
+                    &obstacle_zip_path,
+                )?;
+            let current_artifacts_path = write_current_artifacts_manifest(
+                &config.build_root,
+                as_of_date,
+                &published_obstacle_zip,
+                &obstacle_sha256,
+                obstacle_size_bytes,
+            )?;
             println!("cycle_manifest {}", cycle_manifest_path.display());
+            println!("current_artifacts {}", current_artifacts_path.display());
             println!("obstacle_manifest {}", obstacle_manifest_path.display());
             println!("obstacle_stats {}", obstacle_stats_path.display());
             println!("obstacle_zip {}", obstacle_zip_path.display());
+            println!("published_obstacle_zip {}", published_obstacle_zip.display());
         }
         Some("explain-product-build") => {
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;

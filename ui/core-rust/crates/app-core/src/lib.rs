@@ -60,7 +60,7 @@ pub use planning::{
     flatten_component_to_waypoints, insert_airway_between_waypoints,
     insert_airway_after_waypoint,
     insert_procedure_between_waypoints, interpret_path_termination, project_ui_state,
-    replace_airway_component, replace_procedure_component, sequence_active_leg, suspend_sequencing,
+    move_component, replace_airway_component, replace_procedure_component, sequence_active_leg, suspend_sequencing,
     unsuspend_sequencing, AirwaySegment, ConcretizedNavItem, DirectToState, FlightPlan,
     FlightPlanUiState, GuidanceState, GuidanceUiView, NavRef, PathTermination, PlanLeg,
     ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegment,
@@ -814,6 +814,15 @@ pub fn unsuspend_sequencing_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutat
 
 pub fn delete_component_ui(plan: &FlightPlan, component_index: usize) -> AppResult<FlightPlanUiMutation> {
     let plan = delete_component(plan, component_index)?;
+    Ok(project_plan_mutation(plan))
+}
+
+pub fn move_component_ui(
+    plan: &FlightPlan,
+    component_index: usize,
+    delta: isize,
+) -> AppResult<FlightPlanUiMutation> {
+    let plan = move_component(plan, component_index, delta)?;
     Ok(project_plan_mutation(plan))
 }
 

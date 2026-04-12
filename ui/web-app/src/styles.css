@@ -746,8 +746,8 @@ button {
 .waypointModal {
   position: absolute;
   top: calc(var(--thumb) * 1.25);
-  left: calc(var(--thumb-gap) + var(--thumb) * 2.6);
-  width: min(calc(var(--thumb) * 2.35), calc(100% - var(--thumb-gap) * 2 - var(--thumb) * 2.6));
+  left: calc(var(--thumb-gap) + var(--thumb) * 3.15);
+  width: min(calc(var(--thumb) * 2.35), calc(100% - var(--thumb-gap) * 2 - var(--thumb) * 3.15));
   max-height: calc(100vh - (var(--thumb) * 2.25));
   overflow-y: auto;
   overflow-x: hidden;
@@ -768,12 +768,11 @@ button {
 }
 
 .waypointModal.isReorder {
-  width: min(calc(var(--thumb) * 4), calc(100% - var(--thumb-gap) * 2 - var(--thumb) * 2.6));
-  min-height: calc(100vh - (var(--thumb) * 1.25) - (var(--thumb) * 0.9) - var(--thumb-gap));
+  width: min(calc(var(--thumb) * 4), calc(100% - var(--thumb-gap) * 2 - var(--thumb) * 3.15));
   right: auto;
   bottom: auto;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
 }
 
 .waypointReorderTray {

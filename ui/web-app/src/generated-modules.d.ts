@@ -25,6 +25,7 @@ declare module "@generated/app_wasm.js" {
   export const activate_leg_ui: (...args: unknown[]) => string;
   export const activate_next_leg_ui: (...args: unknown[]) => string;
   export const delete_component_ui: (...args: unknown[]) => string;
+  export const move_component_ui: (...args: unknown[]) => string;
   export const suspend_sequencing_ui: (...args: unknown[]) => string;
   export const unsuspend_sequencing_ui: (...args: unknown[]) => string;
   export const sequence_active_leg_ui: (...args: unknown[]) => string;

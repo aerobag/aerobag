@@ -675,13 +675,10 @@ export default function App() {
               chartFolderOpen: true,
             });
           }}
-          onRemoveWaypoint={async (index) => {
-            if (!uiSession) return;
-            setSessionSnapshot(await uiSession.removeLeg(index));
-          }}
-          onMoveWaypoint={async (index, delta) => {
-            if (!uiSession) return;
-            setSessionSnapshot(await uiSession.moveWaypoint(index, delta));
+          onMoveComponent={async (componentIndex, delta) => {
+            if (!appCoreAdapter) return;
+            const mutation = await appCoreAdapter.moveComponentUi(currentPlan, componentIndex, delta);
+            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
           }}
           onActivateLeg={async (legIndex) => {
             if (!appCoreAdapter) return;
@@ -1509,8 +1506,7 @@ function FlightPlanPage(props: {
   planUiState: FlightPlanUiState | null;
   onSelectPage: (page: AppPage) => void;
   onOpenCharts: (airportId: string | null) => void;
-  onRemoveWaypoint: (index: number) => void | Promise<void>;
-  onMoveWaypoint: (index: number, delta: number) => void | Promise<void>;
+  onMoveComponent: (componentIndex: number, delta: number) => void | Promise<void>;
   onActivateLeg: (index: number) => void | Promise<void>;
   onDeleteComponent: (componentIndex: number) => void | Promise<void>;
   onActivateNextLeg: () => void | Promise<void>;
@@ -1536,6 +1532,7 @@ function FlightPlanPage(props: {
   ) => void | Promise<void>;
 }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
+  const [pendingSelectedComponentIndex, setPendingSelectedComponentIndex] = useState<number | null>(null);
   const [selectedWaypointAnchor, setSelectedWaypointAnchor] = useState<{ top: number; height: number } | null>(null);
   const [reorderOpen, setReorderOpen] = useState(false);
   const [airwayPicker, setAirwayPicker] = useState<{
@@ -1555,6 +1552,7 @@ function FlightPlanPage(props: {
   const trayGroup = useModalTrayGroup(["page"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
   const pageRef = useRef<HTMLElement | null>(null);
+  const planScrollSurfaceRef = useRef<HTMLDivElement | null>(null);
   const waypointModalRef = useRef<HTMLElement | null>(null);
   const trayOpen = trayGroup.scrimOpen;
   const guidance = props.planUiState?.guidance ?? null;
@@ -1564,6 +1562,7 @@ function FlightPlanPage(props: {
   const [structuredArrow, setStructuredArrow] = useState<{ path: string; head: string } | null>(null);
   const [structuredGroupBoxes, setStructuredGroupBoxes] = useState<Array<{ key: string; top: number; left: number; width: number; height: number }>>([]);
   const [waypointModalTop, setWaypointModalTop] = useState<number | null>(null);
+  const [waypointModalMaxHeight, setWaypointModalMaxHeight] = useState<number | null>(null);
   const componentViews = useMemo(
     () => props.planUiState?.components ?? buildLegacyComponentViews(props.plan),
     [props.plan, props.planUiState?.components],
@@ -1692,6 +1691,26 @@ function FlightPlanPage(props: {
     });
   }, [componentViews, hierarchicalRows, props.planUiState?.resolved_legs]);
   const selectedRow = selectedWaypointIndex !== null ? displayRows[selectedWaypointIndex] ?? null : null;
+
+  useEffect(() => {
+    if (pendingSelectedComponentIndex === null) {
+      return;
+    }
+    const nextIndex = displayRows.findIndex(
+      (row) =>
+        row.componentIndex === pendingSelectedComponentIndex &&
+        row.depth === 0 &&
+        (row.rowKind === "waypoint" || row.rowKind === "group"),
+    );
+    if (nextIndex >= 0) {
+      setSelectedWaypointIndex(nextIndex);
+    } else {
+      setSelectedWaypointIndex(null);
+      setReorderOpen(false);
+    }
+    setPendingSelectedComponentIndex(null);
+  }, [displayRows, pendingSelectedComponentIndex]);
+
   const rowActions = useMemo(() => {
     if (!selectedRow) {
       return [] as Array<{ id: string; label: string; enabled: boolean; onSelect: () => void }>;
@@ -1981,20 +2000,29 @@ function FlightPlanPage(props: {
   useEffect(() => {
     if (selectedWaypointIndex === null) {
       setWaypointModalTop(null);
+      setWaypointModalMaxHeight(null);
       return;
     }
     const page = pageRef.current;
+    const pane = planScrollSurfaceRef.current;
     const modal = waypointModalRef.current;
     const anchor = selectedWaypointAnchor;
-    if (!page || !modal || !anchor) {
+    if (!page || !pane || !modal || !anchor) {
       return;
     }
     const pageRect = page.getBoundingClientRect();
-    const topPadding = thumbPixels(1.25);
+    const paneRect = pane.getBoundingClientRect();
+    const paneTop = paneRect.top - pageRect.top;
+    const paneBottom = paneRect.bottom - pageRect.top;
+    const topPadding = thumbPixels(0.1);
     const bottomPadding = thumbPixels(0.1);
     const desiredTop = anchor.top;
-    const maxTop = Math.max(topPadding, pageRect.height - modal.offsetHeight - bottomPadding);
-    setWaypointModalTop(Math.max(topPadding, Math.min(desiredTop, maxTop)));
+    const minTop = paneTop + topPadding;
+    const maxTop = Math.max(minTop, paneBottom - modal.offsetHeight - bottomPadding);
+    const clampedTop = Math.max(minTop, Math.min(desiredTop, maxTop));
+    const maxHeight = Math.max(thumbPixels(1), paneBottom - clampedTop - bottomPadding);
+    setWaypointModalTop(clampedTop);
+    setWaypointModalMaxHeight(maxHeight);
   }, [airwayPicker, reorderOpen, selectedWaypointAnchor, selectedWaypointIndex, rowActions.length]);
 
   useEffect(() => {
@@ -2020,6 +2048,24 @@ function FlightPlanPage(props: {
     airwayPicker?.selectedEntryIndex,
   ]);
 
+  useEffect(() => {
+    if (!reorderOpen || selectedWaypointIndex === null) {
+      return;
+    }
+    const row = displayRows[selectedWaypointIndex];
+    if (!row?.refKey) {
+      return;
+    }
+    const element = structuredRowRefs.current.get(row.refKey);
+    if (!element) {
+      return;
+    }
+    const handle = window.requestAnimationFrame(() => {
+      element.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(handle);
+  }, [displayRows, reorderOpen, selectedWaypointIndex]);
+
   return (
     <section className="appPage planPage" ref={pageRef}>
       {trayOpen ? <TrayScrim ariaLabel="Close page tray" onClose={trayGroup.closeAll} /> : null}
@@ -2043,7 +2089,7 @@ function FlightPlanPage(props: {
         />
       </div>
 
-      <div className="planScrollSurface">
+      <div className="planScrollSurface" ref={planScrollSurfaceRef}>
         <div className={`planTableWrap${showComponentViews ? " isStructured" : ""}`} ref={structuredSurfaceRef}>
           {showComponentViews ? (
             <div className="planStructuredGroupBoxLayer" aria-hidden="true">
@@ -2176,7 +2222,10 @@ function FlightPlanPage(props: {
             ref={waypointModalRef}
             className={`waypointModal${reorderOpen ? " isReorder" : ""}`}
             aria-label="Waypoint actions"
-            style={waypointModalTop === null ? undefined : { top: `${waypointModalTop}px` }}
+            style={waypointModalTop === null ? undefined : {
+              top: `${waypointModalTop}px`,
+              maxHeight: waypointModalMaxHeight === null ? undefined : `${waypointModalMaxHeight}px`,
+            }}
           >
             {airwayPicker ? (
               <div className="waypointActionTray">
@@ -2350,12 +2399,15 @@ function FlightPlanPage(props: {
                 <button
                   type="button"
                   className="trayButton trayButtonSquare"
-                  disabled={selectedWaypointIndex <= 0}
+                  disabled={selectedRow?.componentIndex == null || selectedRow.componentIndex <= 0}
                   onPointerDown={stopPointer}
                   onPointerUp={stopPointer}
                   onClick={async () => {
-                    await props.onMoveWaypoint(selectedWaypointIndex, -1);
-                    setSelectedWaypointIndex((index) => (index === null ? null : index - 1));
+                    if (selectedRow?.componentIndex == null) {
+                      return;
+                    }
+                    await props.onMoveComponent(selectedRow.componentIndex, -1);
+                    setPendingSelectedComponentIndex(selectedRow.componentIndex - 1);
                   }}
                 >
                   Up
@@ -2363,12 +2415,18 @@ function FlightPlanPage(props: {
                 <button
                   type="button"
                   className="trayButton trayButtonSquare"
-                  disabled={selectedWaypointIndex >= displayRows.length - 1}
+                  disabled={
+                    selectedRow?.componentIndex == null ||
+                    selectedRow.componentIndex >= componentViews.length - 1
+                  }
                   onPointerDown={stopPointer}
                   onPointerUp={stopPointer}
                   onClick={async () => {
-                    await props.onMoveWaypoint(selectedWaypointIndex, 1);
-                    setSelectedWaypointIndex((index) => (index === null ? null : index + 1));
+                    if (selectedRow?.componentIndex == null) {
+                      return;
+                    }
+                    await props.onMoveComponent(selectedRow.componentIndex, 1);
+                    setPendingSelectedComponentIndex(selectedRow.componentIndex + 1);
                   }}
                 >
                   Down
@@ -3317,10 +3375,10 @@ function buildLegacyComponentViews(plan: typeof samplePlan): FlightPlanUiState["
     summary: navRefLabel(waypoint),
     items: [{ kind: "waypoint", nav_ref: waypoint }],
     active: false,
-    can_add_airway_after: index + 1 < waypoints.length,
+    can_add_airway_after: true,
     can_change_airway: false,
-    can_remove: waypoints.length > 2,
-    can_reorder: waypoints.length > 2,
+    can_remove: true,
+    can_reorder: waypoints.length > 1,
     preceding_waypoint: index > 0 ? waypoints[index - 1] : null,
     following_waypoint: index + 1 < waypoints.length ? waypoints[index + 1] : null,
   }));

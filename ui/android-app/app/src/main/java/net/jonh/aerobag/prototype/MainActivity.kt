@@ -104,6 +104,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import net.jonh.aerobag.prototype.domain.ChartAirport
@@ -1311,7 +1312,11 @@ private fun MapExplorerPage(
             committedOverlaySurfaceUnits = OverlaySurfaceUnits(surfaceWidthUnits, surfaceHeightUnits)
             mapOverlayError = null
         }.onFailure { error ->
-            mapOverlayError = error.message ?: error::class.java.simpleName
+            if (error is CancellationException) {
+                mapOverlayError = null
+            } else {
+                mapOverlayError = error.message ?: error::class.java.simpleName
+            }
         }
     }
     val displayedOverlayFeatures = remember(

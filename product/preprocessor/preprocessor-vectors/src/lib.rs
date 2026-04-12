@@ -111,6 +111,16 @@ struct PointRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     fuel_available: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    public_use: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    private_use: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    has_paved_runway: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    heliport: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    has_water_runway: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     longest_runway_length_ft: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     longest_runway_heading_true_deg: Option<f64>,
@@ -323,12 +333,12 @@ pub fn build_obstacle_dataset(
 fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
     let mut points = Vec::new();
     let mut seen = BTreeSet::new();
-    let longest_runways = load_longest_runways(conn)?;
+    let runway_info = load_airport_runway_info(conn)?;
 
     let point_sources = [
         (
             "airports",
-            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, ATCT, FuelTypes FROM airports WHERE ARPLatitude != '' AND ARPLongitude != ''",
+            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, ATCT, FuelTypes, Use FROM airports WHERE ARPLatitude != '' AND ARPLongitude != ''",
             "airport",
         ),
         (
@@ -363,23 +373,53 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
             let lon: f64 = parse_f64_cell(row, 2)?;
             let label: String = row.get::<_, String>(3)?;
             let kind: String = row.get::<_, String>(4)?;
-            let (towered, fuel_available) = if table_name == "airports" {
+            let (towered, fuel_available, public_use, private_use, heliport) = if table_name == "airports" {
                 let atct: String = row.get::<_, String>(5)?;
                 let fuel_types: String = row.get::<_, String>(6)?;
+                let use_code: String = row.get::<_, String>(7)?;
+                let type_upper = kind.trim().to_ascii_uppercase();
                 (
                     Some(atct.trim().eq_ignore_ascii_case("Y")),
                     Some(!fuel_types.trim().is_empty()),
+                    Some(use_code.trim().eq_ignore_ascii_case("PU")),
+                    Some(use_code.trim().eq_ignore_ascii_case("PR")),
+                    Some(type_upper.contains("HELIPORT")),
                 )
             } else {
-                (None, None)
+                (None, None, None, None, None)
             };
-            Ok((id, lat, lon, label, kind, towered, fuel_available))
+            Ok((
+                id,
+                lat,
+                lon,
+                label,
+                kind,
+                towered,
+                fuel_available,
+                public_use,
+                private_use,
+                heliport,
+            ))
         })?;
         for row in rows {
-            let (raw_id, lat, lon, label, kind, towered, fuel_available) = row?;
+            let (
+                raw_id,
+                lat,
+                lon,
+                label,
+                kind,
+                towered,
+                fuel_available,
+                public_use,
+                private_use,
+                heliport,
+            ) = row?;
             if !valid_lat_lon(lat, lon) {
                 continue;
             }
+            let airport_runway_info = (table_name == "airports")
+                .then(|| runway_info.get(&raw_id))
+                .flatten();
             let id = dedup_id(&mut seen, &format!("{table_name}:{raw_id}"), lat, lon);
             points.push(PointRecord {
                 id,
@@ -390,11 +430,21 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                 style_class: style_class.to_string(),
                 towered,
                 fuel_available,
+                public_use,
+                private_use,
+                has_paved_runway: airport_runway_info.map(|runway| runway.has_paved_runway),
+                heliport,
+                has_water_runway: (table_name == "airports").then_some(
+                    airport_runway_info
+                        .map(|runway| runway.has_water_runway)
+                        .unwrap_or(false)
+                        || kind.trim().eq_ignore_ascii_case("SEAPLANE BAS"),
+                ),
                 longest_runway_length_ft: (table_name == "airports")
-                    .then(|| longest_runways.get(&raw_id).map(|runway| runway.length_ft))
+                    .then(|| airport_runway_info.map(|runway| runway.length_ft))
                     .flatten(),
                 longest_runway_heading_true_deg: (table_name == "airports")
-                    .then(|| longest_runways.get(&raw_id).map(|runway| runway.heading_true_deg))
+                    .then(|| airport_runway_info.map(|runway| runway.heading_true_deg))
                     .flatten(),
             });
         }
@@ -456,6 +506,11 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<PointRecord>> {
             style_class: "obstacle".to_string(),
             towered: None,
             fuel_available: None,
+            public_use: None,
+            private_use: None,
+            has_paved_runway: None,
+            heliport: None,
+            has_water_runway: None,
             longest_runway_length_ft: None,
             longest_runway_heading_true_deg: None,
         });
@@ -467,11 +522,13 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<PointRecord>> {
 struct LongestRunwayInfo {
     length_ft: f64,
     heading_true_deg: f64,
+    has_paved_runway: bool,
+    has_water_runway: bool,
 }
 
-fn load_longest_runways(conn: &Connection) -> anyhow::Result<BTreeMap<String, LongestRunwayInfo>> {
+fn load_airport_runway_info(conn: &Connection) -> anyhow::Result<BTreeMap<String, LongestRunwayInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT LocationID, Length, LEHeadingT, LELatitude, LELongitude, HELatitude, HELongitude
+        "SELECT LocationID, Length, Surface, LEHeadingT, LELatitude, LELongitude, HELatitude, HELongitude
          FROM airportrunways",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -483,16 +540,29 @@ fn load_longest_runways(conn: &Connection) -> anyhow::Result<BTreeMap<String, Lo
             row.get::<_, String>(4)?,
             row.get::<_, String>(5)?,
             row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
         ))
     })?;
 
     let mut by_airport = BTreeMap::<String, LongestRunwayInfo>::new();
     for row in rows {
-        let (location_id, length_text, le_heading_text, le_lat_text, le_lon_text, he_lat_text, he_lon_text) = row?;
+        let (
+            location_id,
+            length_text,
+            surface_text,
+            le_heading_text,
+            le_lat_text,
+            le_lon_text,
+            he_lat_text,
+            he_lon_text,
+        ) = row?;
         let length = parse_float(&length_text);
         if length <= 0.0 {
             continue;
         }
+        let surface = surface_text.trim().to_ascii_uppercase();
+        let has_paved_runway = surface_is_paved(&surface);
+        let has_water_runway = surface.contains("WATER");
         let heading = parse_float(&le_heading_text);
         let heading = if heading > 0.0 {
             normalize_heading(heading)
@@ -507,13 +577,20 @@ fn load_longest_runways(conn: &Connection) -> anyhow::Result<BTreeMap<String, Lo
             bearing_true_deg(le_lat, le_lon, he_lat, he_lon)
         };
         match by_airport.get(&location_id) {
-            Some(best) if best.length_ft >= length => {}
+            Some(best) if best.length_ft >= length => {
+                if let Some(existing) = by_airport.get_mut(&location_id) {
+                    existing.has_paved_runway |= has_paved_runway;
+                    existing.has_water_runway |= has_water_runway;
+                }
+            }
             _ => {
                 by_airport.insert(
                     location_id,
                     LongestRunwayInfo {
                         length_ft: length,
                         heading_true_deg: heading,
+                        has_paved_runway,
+                        has_water_runway,
                     },
                 );
             }
@@ -521,6 +598,12 @@ fn load_longest_runways(conn: &Connection) -> anyhow::Result<BTreeMap<String, Lo
     }
 
     Ok(by_airport)
+}
+
+fn surface_is_paved(surface: &str) -> bool {
+    surface
+        .split('-')
+        .any(|part| matches!(part.trim(), "ASPH" | "CONC" | "BIT" | "PEM"))
 }
 
 fn bearing_true_deg(start_lat: f64, start_lon: f64, end_lat: f64, end_lon: f64) -> f64 {

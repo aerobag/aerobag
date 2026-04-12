@@ -211,11 +211,12 @@ fn write_package_asset_manifest(
                     .join(asset_path)
                     .to_string_lossy()
                     .replace('\\', "/"),
+                georef: None,
             }
         })
         .collect::<Vec<_>>();
     let manifest = PackageAssetManifest {
-        schema_version: 1,
+        schema_version: 2,
         family_id: "csup".to_string(),
         package_id: package_id.to_string(),
         assets,

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 pub const PACKAGE_ASSET_MANIFEST_NAME: &str = "package-assets.json";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PackageAssetManifest {
     pub schema_version: u32,
     pub family_id: String,
@@ -11,7 +11,7 @@ pub struct PackageAssetManifest {
     pub assets: Vec<PackageAssetRecord>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PackageAssetRecord {
     pub id: String,
     pub airport_id: String,
@@ -20,6 +20,27 @@ pub struct PackageAssetRecord {
     pub document_type: String,
     pub asset_path: String,
     pub thumbnail_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub georef: Option<PlateGeoref>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlateGeoref {
+    PlateTransformV1 {
+        pixels_per_longitude: f64,
+        pixels_per_latitude: f64,
+        top_left_lon: f64,
+        top_left_lat: f64,
+    },
+    AirportDiagramTransformV1 {
+        pixel_x_from_lon: f64,
+        pixel_x_from_lat: f64,
+        pixel_x_offset: f64,
+        pixel_y_from_lon: f64,
+        pixel_y_from_lat: f64,
+        pixel_y_offset: f64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

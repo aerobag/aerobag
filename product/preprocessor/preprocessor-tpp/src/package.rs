@@ -6,7 +6,9 @@ use std::{
 
 use anyhow::{bail, Context};
 use chrono::Utc;
-use preprocessor_core::{PackageAssetManifest, PackageAssetRecord, Region, PACKAGE_ASSET_MANIFEST_NAME};
+use preprocessor_core::{
+    PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region, PACKAGE_ASSET_MANIFEST_NAME,
+};
 use preprocessor_fetch::{
     hash_file, write_package_outputs_jsonl, PackageOutputRecord,
 };
@@ -49,6 +51,7 @@ pub(crate) fn package_region_versioned(
     remove_if_exists(&package_assets_path)?;
     let selected = with_thumbnail_members(work_dir, &selected)?;
     write_package_asset_manifest(
+        work_dir,
         &package_assets_path,
         &package_id,
         &selected,
@@ -157,6 +160,7 @@ fn with_thumbnail_members(work_dir: &Path, members: &[String]) -> anyhow::Result
 }
 
 fn write_package_asset_manifest(
+    work_dir: &Path,
     output_path: &Path,
     package_id: &str,
     members: &[String],
@@ -182,7 +186,7 @@ fn write_package_asset_manifest(
                 .and_then(|value| value.to_str())
                 .unwrap_or_default()
                 .to_string();
-            PackageAssetRecord {
+            Ok::<_, anyhow::Error>(PackageAssetRecord {
                 id: format!("plate:{airport_id}:{filename}"),
                 airport_id,
                 label: label.clone(),
@@ -193,11 +197,12 @@ fn write_package_asset_manifest(
                     .join(asset_path)
                     .to_string_lossy()
                     .replace('\\', "/"),
-            }
+                georef: read_plate_georef_from_png(&work_dir.join(member))?,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<anyhow::Result<Vec<_>>>()?;
     let manifest = PackageAssetManifest {
-        schema_version: 1,
+        schema_version: 2,
         family_id: "tpp".to_string(),
         package_id: package_id.to_string(),
         assets,
@@ -207,6 +212,52 @@ fn write_package_asset_manifest(
         serde_json::to_vec_pretty(&manifest).context("failed to encode tpp package asset manifest")?,
     )
     .with_context(|| format!("failed to write {}", output_path.display()))
+}
+
+fn read_plate_georef_from_png(png_path: &Path) -> anyhow::Result<Option<PlateGeoref>> {
+    let output = Command::new("exiftool")
+        .arg("-s3")
+        .arg("-UserComment")
+        .arg(png_path)
+        .output()
+        .with_context(|| format!("failed to run exiftool on {}", png_path.display()))?;
+    if !output.status.success() {
+        bail!("exiftool failed while reading {}", png_path.display());
+    }
+    let comment = String::from_utf8(output.stdout).context("exiftool output was not utf-8")?;
+    parse_plate_georef_comment(comment.trim())
+}
+
+fn parse_plate_georef_comment(comment: &str) -> anyhow::Result<Option<PlateGeoref>> {
+    if comment.is_empty() {
+        return Ok(None);
+    }
+    let values = comment
+        .split('|')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse::<f64>())
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("invalid plate georef comment: {comment}"))?;
+    match values.as_slice() {
+        [pixels_per_longitude, pixels_per_latitude, top_left_lon, top_left_lat] => {
+            Ok(Some(PlateGeoref::PlateTransformV1 {
+                pixels_per_longitude: *pixels_per_longitude,
+                pixels_per_latitude: *pixels_per_latitude,
+                top_left_lon: *top_left_lon,
+                top_left_lat: *top_left_lat,
+            }))
+        }
+        [a, b, c, d, e, f] => Ok(Some(PlateGeoref::AirportDiagramTransformV1 {
+            pixel_x_from_lon: *a / 2.0,
+            pixel_x_from_lat: *c / 2.0,
+            pixel_x_offset: *e / 2.0,
+            pixel_y_from_lon: *b / 2.0,
+            pixel_y_from_lat: *d / 2.0,
+            pixel_y_offset: *f / 2.0,
+        })),
+        _ => bail!("unsupported plate georef comment: {comment}"),
+    }
 }
 
 fn infer_plate_document_type(label: &str) -> &'static str {
@@ -279,5 +330,34 @@ mod tests {
             "thumbnails/plates/RNT/STAR-WA-GLASR THREE.png"
         );
         assert_eq!(manifest.assets[0].document_type, "star");
+        assert_eq!(manifest.assets[0].georef, None);
+    }
+
+    #[test]
+    fn parses_plate_georef_comment() {
+        assert_eq!(
+            parse_plate_georef_comment("2.5|-3.5|-122.3|47.5").unwrap(),
+            Some(PlateGeoref::PlateTransformV1 {
+                pixels_per_longitude: 2.5,
+                pixels_per_latitude: -3.5,
+                top_left_lon: -122.3,
+                top_left_lat: 47.5,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_airport_diagram_georef_comment() {
+        assert_eq!(
+            parse_plate_georef_comment("10|20|30|40|50|60").unwrap(),
+            Some(PlateGeoref::AirportDiagramTransformV1 {
+                pixel_x_from_lon: 5.0,
+                pixel_x_from_lat: 15.0,
+                pixel_x_offset: 25.0,
+                pixel_y_from_lon: 10.0,
+                pixel_y_from_lat: 20.0,
+                pixel_y_offset: 30.0,
+            })
+        );
     }
 }

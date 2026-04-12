@@ -1,6 +1,8 @@
 use anyhow::{bail, Context};
 use chrono::{Datelike, Duration, NaiveDate, Utc};
-use preprocessor_core::{PackageAssetManifest, PackageAssetRecord, Region, PACKAGE_ASSET_MANIFEST_NAME};
+use preprocessor_core::{
+    PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region, PACKAGE_ASSET_MANIFEST_NAME,
+};
 use preprocessor_fetch::PackageOutputRecord;
 use rayon::prelude::*;
 use rusqlite::Connection;
@@ -129,6 +131,8 @@ pub struct CatalogPlateRecord {
     pub georeferenced: bool,
     pub page_count: u32,
     pub asset_base_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub georef: Option<PlateGeoref>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -258,7 +262,7 @@ pub struct AirportResourcesRecord {
     pub package_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PlateRecord {
     pub id: String,
     pub airport_id: String,
@@ -269,6 +273,8 @@ pub struct PlateRecord {
     pub label: String,
     pub asset_kind: String,
     pub document_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub georef: Option<PlateGeoref>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -348,7 +354,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     log_progress(request, "collected regions")?;
 
     let index = ResourceIndex {
-        schema_version: 4,
+        schema_version: 5,
         cycle,
         generated_at_utc: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         temporal_summary,
@@ -541,13 +547,14 @@ pub fn build_catalog(index: &ResourceIndex) -> Catalog {
                 procedure_code: plate.id.clone(),
                 display_name: plate.label.clone(),
                 kind: plate.asset_kind.clone(),
-                georeferenced: true,
+                georeferenced: plate.georef.is_some(),
                 page_count: 1,
                 asset_base_path: format!(
                     "{}/{}",
                     package_record.id,
                     plate.asset_path.strip_suffix(".png").unwrap_or(&plate.asset_path)
                 ),
+                georef: plate.georef.clone(),
             })
         })
         .collect::<Vec<_>>();
@@ -1017,11 +1024,12 @@ fn collect_plate_records(
             label: packaged.asset.label.clone(),
             asset_kind: packaged.asset.asset_kind.clone(),
             document_type: packaged.asset.document_type.clone(),
+            georef: packaged.asset.georef.clone(),
             asset_path: packaged.asset.asset_path.clone(),
             thumbnail_path: packaged.asset.thumbnail_path.clone(),
         }
     })?;
-    records.sort();
+    records.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(records)
 }
 
@@ -1871,7 +1879,7 @@ mod tests {
             let file = fs::File::create(tpp_root.join("NE_TPP.zip")).expect("tpp zip");
             let mut zip = ZipWriter::new(file);
             let tpp_manifest = PackageAssetManifest {
-                schema_version: 1,
+                schema_version: 2,
                 family_id: "tpp".to_string(),
                 package_id: "NE_TPP".to_string(),
                 assets: vec![PackageAssetRecord {
@@ -1883,6 +1891,7 @@ mod tests {
                     asset_path: "plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png".to_string(),
                     thumbnail_path:
                         "thumbnails/plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png".to_string(),
+                    georef: None,
                 }],
             };
             zip.start_file(PACKAGE_ASSET_MANIFEST_NAME, SimpleFileOptions::default())
@@ -1937,7 +1946,7 @@ mod tests {
             let file = fs::File::create(csup_root.join("NE_CSUP.zip")).expect("csup zip");
             let mut zip = ZipWriter::new(file);
             let csup_manifest = PackageAssetManifest {
-                schema_version: 1,
+                schema_version: 2,
                 family_id: "csup".to_string(),
                 package_id: "NE_CSUP".to_string(),
                 assets: vec![PackageAssetRecord {
@@ -1948,6 +1957,7 @@ mod tests {
                     document_type: "csup".to_string(),
                     asset_path: "afd/BOS/CSUP-NE_0-0.png".to_string(),
                     thumbnail_path: "thumbnails/afd/BOS/CSUP-NE_0-0.png".to_string(),
+                    georef: None,
                 }],
             };
             zip.start_file(PACKAGE_ASSET_MANIFEST_NAME, SimpleFileOptions::default())

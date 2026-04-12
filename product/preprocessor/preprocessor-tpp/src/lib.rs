@@ -931,6 +931,10 @@ fn render_png_preserve_alpha(
 }
 
 fn write_user_comment(work_dir: &Path, png_path: &Path, comment: &str) -> anyhow::Result<()> {
+    // Avare's Android client reads plate georeference from PNG EXIF UserComment via
+    // ExifInterface. Aerobag should not depend on that legacy metadata path, but we
+    // still emit it so the Avare parity checks continue to pass while we migrate the
+    // real georeference contract into typed metadata.
     let temp_path = PathBuf::from(format!("{}_exiftool_tmp", png_path.display()));
     if temp_path.exists() {
         fs::remove_file(&temp_path)

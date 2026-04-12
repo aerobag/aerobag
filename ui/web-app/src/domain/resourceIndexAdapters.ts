@@ -158,7 +158,15 @@ export function deriveCatalog(resourceIndex: ResourceIndexJson): CatalogJson {
           region_ids: [collection.region_id],
           max_zoom: Math.max(...collection.levels.map((level) => level.zoom)),
           tile_path_template: `${collection.chart_index}/{z}/{x}/{y}.webp`,
-          coverage: null,
+          coverage: {
+            kind: "b_box",
+            value: {
+              south: collection.coverage_bounds.lat_min,
+              north: collection.coverage_bounds.lat_max,
+              west: collection.coverage_bounds.lon_min,
+              east: collection.coverage_bounds.lon_max,
+            },
+          },
         }]
       : [],
   );

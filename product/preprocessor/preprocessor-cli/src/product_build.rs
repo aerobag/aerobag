@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     env, fs,
     fs::File,
     io::Write,
@@ -171,97 +171,42 @@ enum NodeCacheState {
 }
 
 #[derive(Debug, Clone)]
-enum HeavyJobSpec {
-    ChartRender {
-        family: ChartFamily,
-        source_repo: PathBuf,
-        prefetch_source_urls: PathBuf,
-        fetch_jobs: usize,
-        cpu_jobs: usize,
-    },
-    CsupRender {
-        region: Region,
-        work_dir: PathBuf,
-        stage_fingerprint: String,
-        version_label: String,
-        render_jobs: usize,
-    },
-    Tpp {
-        region: Region,
-        source_repo: PathBuf,
-        run_root: PathBuf,
-        prefetch_source_urls: PathBuf,
-        fetch_jobs: usize,
-        render_jobs: usize,
-    },
-    Data {
-        source_urls_dir: PathBuf,
-    },
+enum ScheduledTaskKind {
+    ChartRender { family: ChartFamily },
+    CsupStage,
+    CsupRender { region: Region },
+    TppRender { region: Region, run_root: PathBuf },
+    Data,
+    ChartPackage { family: ChartFamily },
+    CsupPackage,
+    TppPackage { region: Region, run_root: PathBuf },
+    Vectors,
+    ResourceIndex,
 }
 
-impl HeavyJobSpec {
-    fn name(&self) -> String {
-        match self {
-            Self::ChartRender { family, .. } => format!("charts-{}-render", family_slug(*family)),
-            Self::CsupRender { region, .. } => {
-                format!("csup-render-{}", region.code().to_ascii_lowercase())
-            }
-            Self::Tpp { region, .. } => format!("tpp-{}", region.code().to_ascii_lowercase()),
-            Self::Data { .. } => "data".to_string(),
-        }
-    }
+#[derive(Debug, Clone)]
+struct ScheduledTask {
+    id: String,
+    deps: Vec<String>,
+    weight: usize,
+    kind: ScheduledTaskKind,
+}
 
-    fn run(self, config: &ProductBuildConfig) -> anyhow::Result<Vec<NodeRecord>> {
-        match self {
-            Self::ChartRender {
-                family,
-                source_repo,
-                prefetch_source_urls,
-                fetch_jobs,
-                cpu_jobs,
-            } => Ok(vec![build_chart_render_node(
-                config,
-                family,
-                &source_repo,
-                &prefetch_source_urls,
-                fetch_jobs,
-                cpu_jobs,
-            )?]),
-            Self::CsupRender {
-                region,
-                work_dir,
-                stage_fingerprint,
-                version_label,
-                render_jobs,
-            } => Ok(vec![build_csup_render_node(
-                config,
-                region,
-                &work_dir,
-                &stage_fingerprint,
-                &version_label,
-                render_jobs,
-            )?]),
-            Self::Tpp {
-                region,
-                source_repo,
-                run_root,
-                prefetch_source_urls,
-                fetch_jobs,
-                render_jobs,
-            } => {
-                let request = NativeTppRunRequest {
-                    region,
-                    source_repo,
-                    run_root,
-                    prefetch_source_urls: Some(prefetch_source_urls),
-                    fetch_jobs,
-                    render_jobs,
-                };
-                Ok(vec![build_tpp_render_node(config, &request)?])
-            }
-            Self::Data { source_urls_dir } => build_data_nodes(config, &source_urls_dir),
-        }
-    }
+#[derive(Debug, Clone)]
+enum TaskValue {
+    None,
+    CsupStage { record: NodeRecord, work_dir: PathBuf },
+    ChartSource(ChartSource),
+    CsupSource(AssetSource),
+    TppSource(AssetSource),
+    Data { main_db: PathBuf, zip: PathBuf },
+}
+
+#[derive(Debug, Clone)]
+struct TaskCompletion {
+    node_records: Vec<NodeRecord>,
+    value: TaskValue,
+    completion_log: String,
 }
 
 const PRODUCT_BUILD_CGROUP_ACTIVE_ENV: &str = "PRODUCT_BUILD_CGROUP_ACTIVE";
@@ -340,222 +285,404 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         let data_version = data_version_label(&source_urls_dir)?;
         let bundle_cycle = data_manifest_cycle(&source_urls_dir)?;
 
-        let mut pending_jobs = VecDeque::new();
-        for family in [
+        let chart_families = [
             ChartFamily::Sec,
             ChartFamily::Tac,
             ChartFamily::EnrL,
             ChartFamily::EnrH,
-        ] {
+        ];
+        let work_unit_budget = config.max_heavy_jobs.max(1) * 4;
+        let mut pending_tasks = Vec::new();
+        for family in chart_families {
             let family_id = family_slug(family).to_string();
-            let _version = chart_versions
-                .get(&family_id)
-                .expect("chart family version should exist");
-            pending_jobs.push_back(HeavyJobSpec::ChartRender {
-                family,
-                source_repo: config.chart_cutline_root.clone(),
-                prefetch_source_urls: source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl")),
-                fetch_jobs: config.fetch_jobs,
-                cpu_jobs: config.cpu_jobs.min(8).max(1),
+            pending_tasks.push(ScheduledTask {
+                id: format!("charts-{family_id}-render"),
+                deps: vec![],
+                weight: 4,
+                kind: ScheduledTaskKind::ChartRender { family },
+            });
+            pending_tasks.push(ScheduledTask {
+                id: format!("charts-{family_id}-package"),
+                deps: vec![format!("charts-{family_id}-render")],
+                weight: 1,
+                kind: ScheduledTaskKind::ChartPackage { family },
             });
         }
-
-        let csup_stage_record = build_csup_stage_node(
-            config,
-            Path::new(""),
-            &source_urls_dir.join("csup/source_urls.jsonl"),
-            config.fetch_jobs,
-        )?;
-        let csup_work_dir =
-            resolve_artifact_path(config, output_path(&csup_stage_record, "work_dir")?);
-        node_records.push(normalize_node_record_paths(
-            csup_stage_record.clone(),
-            &config.build_root,
-        ));
+        pending_tasks.push(ScheduledTask {
+            id: "csup-stage".to_string(),
+            deps: vec![],
+            weight: 1,
+            kind: ScheduledTaskKind::CsupStage,
+        });
+        let mut csup_render_ids = Vec::new();
         for region in Region::ALL {
-            pending_jobs.push_back(HeavyJobSpec::CsupRender {
-                region,
-                work_dir: csup_work_dir.clone(),
-                stage_fingerprint: csup_stage_record.fingerprint.clone(),
-                version_label: csup_version.clone(),
-                render_jobs: config.cpu_jobs.max(1),
+            let region_id = region.code().to_ascii_lowercase();
+            let task_id = format!("csup-render-{region_id}");
+            csup_render_ids.push(task_id.clone());
+            pending_tasks.push(ScheduledTask {
+                id: task_id,
+                deps: vec!["csup-stage".to_string()],
+                weight: 4,
+                kind: ScheduledTaskKind::CsupRender { region },
             });
         }
-
-        let mut tpp_package_requests = Vec::new();
+        pending_tasks.push(ScheduledTask {
+            id: "csup-package".to_string(),
+            deps: csup_render_ids.clone(),
+            weight: 1,
+            kind: ScheduledTaskKind::CsupPackage,
+        });
+        let mut tpp_package_ids = Vec::new();
         for region in config.profile.tpp_regions() {
             let region_id = region.code().to_ascii_lowercase();
             let version = tpp_versions
                 .get(&region_id)
                 .expect("tpp region version should exist");
             let run_root = build_shared_work_root(config, &format!("tpp-{region_id}-{version}"))?;
-            pending_jobs.push_back(HeavyJobSpec::Tpp {
-                region: *region,
-                source_repo: PathBuf::new(),
-                run_root: run_root.clone(),
-                prefetch_source_urls: source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
-                fetch_jobs: config.fetch_jobs,
-                render_jobs: config.cpu_jobs.max(1),
+            let render_id = format!("tpp-{region_id}");
+            let package_id = format!("tpp-{region_id}-package");
+            pending_tasks.push(ScheduledTask {
+                id: render_id.clone(),
+                deps: vec![],
+                weight: 4,
+                kind: ScheduledTaskKind::TppRender {
+                    region: *region,
+                    run_root: run_root.clone(),
+                },
             });
-            tpp_package_requests.push((*region, run_root));
+            pending_tasks.push(ScheduledTask {
+                id: package_id.clone(),
+                deps: vec![render_id],
+                weight: 1,
+                kind: ScheduledTaskKind::TppPackage {
+                    region: *region,
+                    run_root,
+                },
+            });
+            tpp_package_ids.push(package_id);
         }
-
-        pending_jobs.push_back(HeavyJobSpec::Data {
-            source_urls_dir: source_urls_dir.clone(),
+        pending_tasks.push(ScheduledTask {
+            id: "data".to_string(),
+            deps: vec![],
+            weight: 4,
+            kind: ScheduledTaskKind::Data,
+        });
+        pending_tasks.push(ScheduledTask {
+            id: "vectors".to_string(),
+            deps: vec!["data".to_string()],
+            weight: 1,
+            kind: ScheduledTaskKind::Vectors,
+        });
+        let mut resource_index_deps = chart_families
+            .iter()
+            .map(|family| format!("charts-{}-package", family_slug(*family)))
+            .collect::<Vec<_>>();
+        resource_index_deps.push("csup-package".to_string());
+        resource_index_deps.extend(tpp_package_ids.iter().cloned());
+        resource_index_deps.push("data".to_string());
+        pending_tasks.push(ScheduledTask {
+            id: "resource-index".to_string(),
+            deps: resource_index_deps,
+            weight: 2,
+            kind: ScheduledTaskKind::ResourceIndex,
         });
 
-        let total_heavy_jobs = pending_jobs.len();
-        let (tx, rx) = mpsc::channel();
+        let total_tasks = pending_tasks.len();
+        let (tx, rx) = mpsc::channel::<(String, usize, anyhow::Result<TaskCompletion>)>();
         let mut running_jobs = 0_usize;
-        let mut launched_jobs = 0_usize;
-        while running_jobs > 0 || !pending_jobs.is_empty() {
-            while running_jobs < config.max_heavy_jobs && !pending_jobs.is_empty() {
-                let spec = pending_jobs.pop_front().expect("queue should be non-empty");
-                let name = spec.name();
-                launched_jobs += 1;
+        let mut running_units = 0_usize;
+        let mut launched_tasks = 0_usize;
+        let mut completed_tasks = 0_usize;
+        let mut completed_ids = std::collections::BTreeSet::<String>::new();
+        let mut task_values = BTreeMap::<String, TaskValue>::new();
+
+        while running_jobs > 0 || !pending_tasks.is_empty() {
+            let mut launched_any = false;
+            let mut index = 0_usize;
+            while index < pending_tasks.len() {
+                let task = &pending_tasks[index];
+                let deps_ready = task.deps.iter().all(|dep| completed_ids.contains(dep));
+                let fits_budget = running_units + task.weight <= work_unit_budget;
+                if !deps_ready || !fits_budget {
+                    index += 1;
+                    continue;
+                }
+
+                let task = pending_tasks.remove(index);
+                let task_id = task.id.clone();
+                let task_weight = task.weight;
+                launched_tasks += 1;
                 master_log.log(format!(
-                    "launch {name} progress={}/{}",
-                    launched_jobs, total_heavy_jobs
+                    "launch {} progress={}/{} weight={} running_units={}/{}",
+                    task_id,
+                    launched_tasks,
+                    total_tasks,
+                    task_weight,
+                    running_units + task_weight,
+                    work_unit_budget,
                 ))?;
                 let tx = tx.clone();
                 let config = config.clone();
-                thread::spawn(move || {
-                    let result = spec.run(&config);
-                    let _ = tx.send((name, result));
+                let source_urls_dir = source_urls_dir.clone();
+                let chart_versions = chart_versions.clone();
+                let csup_version = csup_version.clone();
+                let tpp_versions = tpp_versions.clone();
+                let data_version = data_version.clone();
+                let task_values_snapshot = task_values.clone();
+                thread::spawn(move || -> anyhow::Result<()> {
+                    let result = match task.kind {
+                        ScheduledTaskKind::ChartRender { family } => {
+                            let family_id = family_slug(family).to_string();
+                            let record = build_chart_render_node(
+                                &config,
+                                family,
+                                &config.chart_cutline_root,
+                                &source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl")),
+                                config.fetch_jobs,
+                                config.cpu_jobs.min(8).max(1),
+                            )
+                            .map(|record| TaskCompletion {
+                                node_records: vec![record],
+                                value: TaskValue::None,
+                                completion_log: format!("complete {} progress={{}}/{}", task_id, total_tasks),
+                            });
+                            record
+                        }
+                        ScheduledTaskKind::CsupStage => {
+                            let record = build_csup_stage_node(
+                                &config,
+                                Path::new(""),
+                                &source_urls_dir.join("csup/source_urls.jsonl"),
+                                config.fetch_jobs,
+                            )
+                            .and_then(|record| {
+                                let work_dir = resolve_artifact_path(&config, output_path(&record, "work_dir")?);
+                                Ok(TaskCompletion {
+                                    node_records: vec![record.clone()],
+                                    value: TaskValue::CsupStage { record, work_dir },
+                                    completion_log: format!("complete {} progress={{}}/{}", task_id, total_tasks),
+                                })
+                            });
+                            record
+                        }
+                        ScheduledTaskKind::CsupRender { region } => {
+                            let stage = match task_values_snapshot.get("csup-stage") {
+                                Some(TaskValue::CsupStage { record, work_dir }) => (record, work_dir),
+                                _ => unreachable!("csup-stage dependency should have completed"),
+                            };
+                            build_csup_render_node(
+                                &config,
+                                region,
+                                stage.1,
+                                &stage.0.fingerprint,
+                                &csup_version,
+                                config.cpu_jobs.max(1),
+                            )
+                            .map(|record| TaskCompletion {
+                                node_records: vec![record],
+                                value: TaskValue::None,
+                                completion_log: format!("complete {} progress={{}}/{}", task_id, total_tasks),
+                            })
+                        }
+                        ScheduledTaskKind::TppRender { region, run_root } => {
+                            let region_id = region.code().to_ascii_lowercase();
+                            let request = NativeTppRunRequest {
+                                region,
+                                source_repo: PathBuf::new(),
+                                run_root,
+                                prefetch_source_urls: Some(
+                                    source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
+                                ),
+                                fetch_jobs: config.fetch_jobs,
+                                render_jobs: config.cpu_jobs.max(1),
+                            };
+                            build_tpp_render_node(&config, &request).map(|record| TaskCompletion {
+                                node_records: vec![record],
+                                value: TaskValue::None,
+                                completion_log: format!("complete {} progress={{}}/{}", task_id, total_tasks),
+                            })
+                        }
+                        ScheduledTaskKind::Data => build_data_nodes(&config, &source_urls_dir).and_then(|records| {
+                            let data_record = records
+                                .iter()
+                                .find(|record| record.name == "data")
+                                .cloned()
+                                .context("data task missing data node record")?;
+                            let zip = resolve_artifact_path(&config, output_path(&data_record, "zip")?);
+                            let main_db = resolve_artifact_path(&config, output_path(&data_record, "main_db")?);
+                            Ok(TaskCompletion {
+                                node_records: records,
+                                value: TaskValue::Data { main_db, zip },
+                                completion_log: format!("complete {} progress={{}}/{}", task_id, total_tasks),
+                            })
+                        }),
+                        ScheduledTaskKind::ChartPackage { family } => {
+                            let family_id = family_slug(family).to_string();
+                            let started = Instant::now();
+                            let (records, source) = build_chart_package_nodes(
+                                &config,
+                                family,
+                                &source_urls_dir,
+                                chart_versions
+                                    .get(&family_id)
+                                    .expect("chart family version should exist"),
+                            )?;
+                            let summary = summarize_package_records(&records);
+                            Ok(TaskCompletion {
+                                node_records: records,
+                                value: TaskValue::ChartSource(source),
+                                completion_log: format!(
+                                    "complete {} elapsed_ms={} regions={} cache_hits={} rebuilt={}",
+                                    task_id,
+                                    started.elapsed().as_millis(),
+                                    summary.total,
+                                    summary.cache_hits,
+                                    summary.rebuilt,
+                                ),
+                            })
+                        }
+                        ScheduledTaskKind::CsupPackage => {
+                            let started = Instant::now();
+                            let (records, source) =
+                                build_csup_package_nodes(&config, &source_urls_dir, &csup_version)?;
+                            let summary = summarize_package_records(&records);
+                            Ok(TaskCompletion {
+                                node_records: records,
+                                value: TaskValue::CsupSource(source),
+                                completion_log: format!(
+                                    "complete {} elapsed_ms={} regions={} cache_hits={} rebuilt={}",
+                                    task_id,
+                                    started.elapsed().as_millis(),
+                                    summary.total,
+                                    summary.cache_hits,
+                                    summary.rebuilt,
+                                ),
+                            })
+                        }
+                        ScheduledTaskKind::TppPackage { region, run_root } => {
+                            let region_id = region.code().to_ascii_lowercase();
+                            let started = Instant::now();
+                            let (record, source) = build_tpp_package_node(
+                                &config,
+                                region,
+                                &run_root,
+                                &source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
+                                tpp_versions
+                                    .get(&region_id)
+                                    .expect("tpp region version should exist"),
+                            )?;
+                            let cache_hit = record.cache_hit;
+                            Ok(TaskCompletion {
+                                node_records: vec![record],
+                                value: TaskValue::TppSource(source),
+                                completion_log: format!(
+                                    "complete {} elapsed_ms={} cache_hit={}",
+                                    task_id,
+                                    started.elapsed().as_millis(),
+                                    cache_hit,
+                                ),
+                            })
+                        }
+                        ScheduledTaskKind::Vectors => {
+                            let data = match task_values_snapshot.get("data") {
+                                Some(TaskValue::Data { main_db, zip: _ }) => main_db,
+                                _ => unreachable!("data dependency should have completed"),
+                            };
+                            let record = build_vectors_node(&config, data, &data_version)?;
+                            let cache_hit = record.cache_hit;
+                            Ok(TaskCompletion {
+                                node_records: vec![record],
+                                value: TaskValue::None,
+                                completion_log: format!("complete {} cache_hit={}", task_id, cache_hit),
+                            })
+                        }
+                        ScheduledTaskKind::ResourceIndex => {
+                            let data_zip = match task_values_snapshot.get("data") {
+                                Some(TaskValue::Data { main_db: _, zip }) => zip.clone(),
+                                _ => unreachable!("data dependency should have completed"),
+                            };
+                            let chart_sources = ["sec", "tac", "enr-l", "enr-h"]
+                                .iter()
+                                .map(|family_id| {
+                                    let key = format!("charts-{family_id}-package");
+                                    match task_values_snapshot.get(&key) {
+                                        Some(TaskValue::ChartSource(source)) => Ok(source.clone()),
+                                        _ => bail!("missing chart source for {family_id}"),
+                                    }
+                                })
+                                .collect::<anyhow::Result<Vec<_>>>()?;
+                            let csup_sources = vec![match task_values_snapshot.get("csup-package") {
+                                Some(TaskValue::CsupSource(source)) => source.clone(),
+                                _ => bail!("missing csup package source"),
+                            }];
+                            let tpp_sources = config
+                                .profile
+                                .tpp_regions()
+                                .iter()
+                                .map(|region| {
+                                    let region_id = region.code().to_ascii_lowercase();
+                                    let key = format!("tpp-{region_id}-package");
+                                    match task_values_snapshot.get(&key) {
+                                        Some(TaskValue::TppSource(source)) => Ok(source.clone()),
+                                        _ => bail!("missing tpp package source for {region_id}"),
+                                    }
+                                })
+                                .collect::<anyhow::Result<Vec<_>>>()?;
+                            let record =
+                                build_resource_index_node(&config, &data_zip, chart_sources, tpp_sources, csup_sources)?;
+                            let cache_hit = record.cache_hit;
+                            Ok(TaskCompletion {
+                                node_records: vec![record],
+                                value: TaskValue::None,
+                                completion_log: format!("complete {} cache_hit={}", task_id, cache_hit),
+                            })
+                        }
+                    };
+                    let _ = tx.send((task_id, task_weight, result));
+                    Ok(())
                 });
                 running_jobs += 1;
+                running_units += task_weight;
+                launched_any = true;
             }
 
             if running_jobs == 0 {
-                break;
+                if pending_tasks.is_empty() {
+                    break;
+                }
+                bail!("scheduler deadlock: no runnable tasks remain");
+            }
+            if !launched_any {
+                // wait for a running task to free capacity or satisfy dependencies
             }
 
-            let (name, result) = rx
+            let (task_id, task_weight, result) = rx
                 .recv()
-                .context("heavy-job scheduler channel closed unexpectedly")?;
+                .context("scheduler channel closed unexpectedly")?;
             running_jobs -= 1;
+            running_units = running_units.saturating_sub(task_weight);
             match result {
-                Ok(records) => {
-                    for record in records {
+                Ok(completion) => {
+                    completed_tasks += 1;
+                    for record in completion.node_records {
                         node_records.push(normalize_node_record_paths(record, &config.build_root));
                     }
-                    master_log.log(format!(
-                        "complete {name} progress={}/{}",
-                        launched_jobs, total_heavy_jobs
-                    ))?;
+                    completed_ids.insert(task_id.clone());
+                    task_values.insert(task_id, completion.value);
+                    let completion_log = completion
+                        .completion_log
+                        .replace("{}", &completed_tasks.to_string());
+                    master_log.log(completion_log)?;
                 }
                 Err(err) => {
-                    master_log.log(format!("complete {name} FAIL error={}", err))?;
+                    completed_ids.insert(task_id.clone());
+                    master_log.log(format!("complete {task_id} FAIL error={err}"))?;
                     return Err(err);
                 }
             }
         }
 
-        let mut chart_sources = Vec::new();
-        for family in [
-            ChartFamily::Sec,
-            ChartFamily::Tac,
-            ChartFamily::EnrL,
-            ChartFamily::EnrH,
-        ] {
-            let started = Instant::now();
-            master_log.log(format!(
-                "launch charts-{}-package",
-                family_slug(family)
-            ))?;
-            let (records, source) = build_chart_package_nodes(
-                config,
-                family,
-                &source_urls_dir,
-                chart_versions
-                    .get(family_slug(family))
-                    .expect("chart family version should exist"),
-            )?;
-            let summary = summarize_package_records(&records);
-            for record in records {
-                node_records.push(normalize_node_record_paths(record, &config.build_root));
-            }
-            master_log.log(format!(
-                "complete charts-{}-package elapsed_ms={} regions={} cache_hits={} rebuilt={}",
-                family_slug(family),
-                started.elapsed().as_millis(),
-                summary.total,
-                summary.cache_hits,
-                summary.rebuilt,
-            ))?;
-            chart_sources.push(source);
-        }
-
-        let started = Instant::now();
-        master_log.log("launch csup-package")?;
-        let (csup_records, csup_source) =
-            build_csup_package_nodes(config, &source_urls_dir, &csup_version)?;
-        let summary = summarize_package_records(&csup_records);
-        for record in csup_records {
-            node_records.push(normalize_node_record_paths(record, &config.build_root));
-        }
-        master_log.log(format!(
-            "complete csup-package elapsed_ms={} regions={} cache_hits={} rebuilt={}",
-            started.elapsed().as_millis(),
-            summary.total,
-            summary.cache_hits,
-            summary.rebuilt,
-        ))?;
-        let csup_sources = vec![csup_source];
-
-        let mut tpp_sources = Vec::new();
-        for (region, run_root) in tpp_package_requests {
-            let region_id = region.code().to_ascii_lowercase();
-            let started = Instant::now();
-            master_log.log(format!("launch tpp-{}-package", region_id))?;
-            let (record, source) = build_tpp_package_node(
-                config,
-                region,
-                &run_root,
-                &source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
-                tpp_versions
-                    .get(&region_id)
-                    .expect("tpp region version should exist"),
-            )?;
-            let cache_hit = record.cache_hit;
-            node_records.push(normalize_node_record_paths(record, &config.build_root));
-            master_log.log(format!(
-                "complete tpp-{}-package elapsed_ms={} cache_hit={}",
-                region_id,
-                started.elapsed().as_millis(),
-                cache_hit,
-            ))?;
-            tpp_sources.push(source);
-        }
-
-        let data_root = build_shared_work_root(config, &format!("data-{data_version}"))?;
-        let data_zip = data_root
-            .join("output")
-            .join(format!("{data_version}.zip"));
-        if !data_zip.is_file() {
-            bail!("missing data zip at {}", data_zip.display());
-        }
-        let data_main_db = data_root.join("output").join("main.db");
-        if !data_main_db.is_file() {
-            bail!("missing data main.db at {}", data_main_db.display());
-        }
-
-        master_log.log("launch vectors")?;
-        let vectors_record = build_vectors_node(config, &data_main_db, &data_version)?;
-        master_log.log(format!(
-            "complete vectors cache_hit={}",
-            vectors_record.cache_hit
-        ))?;
-        node_records.push(normalize_node_record_paths(vectors_record, &config.build_root));
-
-        master_log.log("launch resource-index")?;
-        let resource_index_record =
-            build_resource_index_node(config, &data_zip, chart_sources, tpp_sources, csup_sources)?;
-        master_log.log(format!(
-            "complete resource-index cache_hit={}",
-            resource_index_record.cache_hit
-        ))?;
-        node_records.push(normalize_node_record_paths(resource_index_record, &config.build_root));
+        node_records.sort_by(|left, right| left.name.cmp(&right.name));
         node_records.sort_by(|left, right| left.name.cmp(&right.name));
 
         let build_manifest = BuildManifest {

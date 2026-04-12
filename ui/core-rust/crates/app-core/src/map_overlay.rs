@@ -8,7 +8,7 @@ pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 1000;
 const POINT_TILE_ZOOM: u32 = 9;
 const AIRPORT_MIN_DISPLAY_ZOOM: f64 = 8.0;
 const FIX_MIN_DISPLAY_ZOOM: f64 = 9.0;
-const NAV_MIN_DISPLAY_ZOOM: f64 = 9.0;
+const NAV_MIN_DISPLAY_ZOOM: f64 = 7.0;
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.051_128_78;
 
@@ -32,6 +32,16 @@ pub struct PointVectorRecord {
     pub towered: Option<bool>,
     #[serde(default)]
     pub fuel_available: Option<bool>,
+    #[serde(default)]
+    pub public_use: Option<bool>,
+    #[serde(default)]
+    pub private_use: Option<bool>,
+    #[serde(default)]
+    pub has_paved_runway: Option<bool>,
+    #[serde(default)]
+    pub heliport: Option<bool>,
+    #[serde(default)]
+    pub has_water_runway: Option<bool>,
     #[serde(default)]
     pub longest_runway_length_ft: Option<f64>,
     #[serde(default)]
@@ -155,6 +165,9 @@ pub fn query_map_overlay(
                 limit_hit = true;
                 break;
             }
+            if !should_display_record(record) {
+                continue;
+            }
             let point = world_to_screen(center_world, scale, width_px, height_px, LatLon { lat: record.lat, lon: record.lon });
             visible_features.push(VisibleMapFeature {
                 id: record.id.clone(),
@@ -231,6 +244,21 @@ fn is_vor_family_kind(kind: &str) -> bool {
     matches!(kind.to_ascii_lowercase().as_str(), "vor" | "vor/dme" | "vortac")
 }
 
+fn should_display_record(record: &PointVectorRecord) -> bool {
+    if record.style_class == "airport" || record.kind.eq_ignore_ascii_case("airport") || record.id.starts_with("airports:") {
+        if record.private_use.unwrap_or(false) {
+            return false;
+        }
+        if record.heliport.unwrap_or(false) || record.kind.eq_ignore_ascii_case("heliport") {
+            return false;
+        }
+        if record.has_water_runway.unwrap_or(false) {
+            return false;
+        }
+    }
+    true
+}
+
 fn runway_length_ratio(longest_runway_length_ft: Option<f64>) -> f64 {
     (longest_runway_length_ft.unwrap_or(0.0) / 5000.0).clamp(0.0, 1.0)
 }
@@ -272,7 +300,7 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     #[test]
-    fn suppresses_fix_and_nav_tiles_below_threshold_zoom_but_keeps_airports() {
+    fn suppresses_fix_tiles_below_threshold_zoom_but_keeps_airports_and_nav() {
         let viewport = MapViewport {
             center: LatLon { lat: 47.36, lon: -121.98 },
             zoom: 8.9,
@@ -282,7 +310,7 @@ mod tests {
         let tiles = visible_point_tile_window(&viewport, 1200.0, 900.0);
         assert!(tiles.iter().any(|tile| tile.layer == "airport"));
         assert!(!tiles.iter().any(|tile| tile.layer == "fix"));
-        assert!(!tiles.iter().any(|tile| tile.layer == "nav"));
+        assert!(tiles.iter().any(|tile| tile.layer == "nav"));
     }
 
     #[test]
@@ -314,6 +342,11 @@ mod tests {
                         style_class: "fix".to_string(),
                         towered: None,
                         fuel_available: None,
+                        public_use: None,
+                        private_use: None,
+                        has_paved_runway: None,
+                        heliport: None,
+                        has_water_runway: None,
                         longest_runway_length_ft: None,
                         longest_runway_heading_true_deg: None,
                     })
@@ -358,6 +391,105 @@ mod tests {
             !result.visible_features.is_empty(),
             "expected visible fix features for VAMPS viewport"
         );
+    }
+
+    #[test]
+    fn filters_private_water_and_heliport_airports_in_core() {
+        let viewport = MapViewport {
+            center: LatLon { lat: 47.36, lon: -121.98 },
+            zoom: 9.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let airport_tile = visible_point_tile_window(&viewport, 1200.0, 900.0)
+            .into_iter()
+            .find(|tile| tile.layer == "airport")
+            .expect("expected airport tile");
+        let mut cache = HashMap::new();
+        cache.insert(
+            tile_key(&airport_tile.layer, airport_tile.z, airport_tile.x, airport_tile.y),
+            PointTilePayload {
+                schema_version: 1,
+                layer: airport_tile.layer.clone(),
+                z: airport_tile.z,
+                x: airport_tile.x,
+                y: airport_tile.y,
+                records: vec![
+                    PointVectorRecord {
+                        id: "airports:KSEA".to_string(),
+                        kind: "airport".to_string(),
+                        lat: 47.36,
+                        lon: -121.98,
+                        label: "SEATTLE".to_string(),
+                        style_class: "airport".to_string(),
+                        towered: Some(true),
+                        fuel_available: Some(true),
+                        public_use: Some(true),
+                        private_use: Some(false),
+                        has_paved_runway: Some(true),
+                        heliport: Some(false),
+                        has_water_runway: Some(false),
+                        longest_runway_length_ft: Some(10000.0),
+                        longest_runway_heading_true_deg: Some(160.0),
+                    },
+                    PointVectorRecord {
+                        id: "airports:WN50".to_string(),
+                        kind: "airport".to_string(),
+                        lat: 47.3605,
+                        lon: -121.9805,
+                        label: "PRIVATE".to_string(),
+                        style_class: "airport".to_string(),
+                        towered: Some(false),
+                        fuel_available: Some(false),
+                        public_use: Some(false),
+                        private_use: Some(true),
+                        has_paved_runway: Some(true),
+                        heliport: Some(false),
+                        has_water_runway: Some(false),
+                        longest_runway_length_ft: Some(2500.0),
+                        longest_runway_heading_true_deg: Some(90.0),
+                    },
+                    PointVectorRecord {
+                        id: "airports:W57".to_string(),
+                        kind: "airport".to_string(),
+                        lat: 47.361,
+                        lon: -121.981,
+                        label: "WATER".to_string(),
+                        style_class: "airport".to_string(),
+                        towered: Some(false),
+                        fuel_available: Some(false),
+                        public_use: Some(true),
+                        private_use: Some(false),
+                        has_paved_runway: Some(false),
+                        heliport: Some(false),
+                        has_water_runway: Some(true),
+                        longest_runway_length_ft: Some(3000.0),
+                        longest_runway_heading_true_deg: Some(45.0),
+                    },
+                    PointVectorRecord {
+                        id: "airports:H1".to_string(),
+                        kind: "heliport".to_string(),
+                        lat: 47.362,
+                        lon: -121.982,
+                        label: "HELI".to_string(),
+                        style_class: "airport".to_string(),
+                        towered: Some(false),
+                        fuel_available: Some(false),
+                        public_use: Some(true),
+                        private_use: Some(false),
+                        has_paved_runway: Some(false),
+                        heliport: Some(true),
+                        has_water_runway: Some(false),
+                        longest_runway_length_ft: Some(80.0),
+                        longest_runway_heading_true_deg: Some(0.0),
+                    },
+                ],
+            },
+        );
+
+        let result = query_map_overlay(&viewport, 1200.0, 900.0, &cache);
+        assert_eq!(result.visible_features.len(), 1);
+        assert_eq!(result.visible_features[0].id, "airports:KSEA");
     }
 
     fn fixture_vector_tile_root() -> &'static Path {

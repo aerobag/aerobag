@@ -246,7 +246,7 @@ def run_build_once(
         "--manifest-path",
         "product/preprocessor/Cargo.toml",
         "--",
-        "build-product",
+        "build-cycle",
         "--profile",
         "validation",
     ]

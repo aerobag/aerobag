@@ -32,7 +32,7 @@ use preprocessor_vectors::{
     build_obstacle_dataset, build_vectors_dataset, BuildObstacleDatasetRequest, BuildVectorsRequest,
 };
 use product_build::{
-    build_product, default_artifact_root, explain_product_build, maybe_reexec_build_product_under_cgroup,
+    build_cycle, default_artifact_root, explain_product_build, maybe_reexec_build_cycle_under_cgroup,
     ProductBuildConfig,
 };
 use sha2::{Digest, Sha256};
@@ -82,6 +82,7 @@ fn usage() -> &'static str {
   preprocessor-cli build-vectors --main-db <path> --output-dir <path> --version-label <label>
   preprocessor-cli build-obstacles [--build-root <path>] [--fetch-jobs <count>] [--snapshot-date <YYYY-MM-DD>]
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
+  preprocessor-cli build-cycle [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli build-product [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli run-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
@@ -107,6 +108,133 @@ fn obstacle_snapshot_label(value: &str) -> anyhow::Result<String> {
             .format("%Y.%m.%d")
             .to_string(),
     )
+}
+
+fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, PathBuf, PathBuf)> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("preprocessor-cli crate should live under the workspace root")
+        .to_path_buf();
+    let repo_root = workspace_root
+        .parent()
+        .expect("workspace root should live under product/")
+        .parent()
+        .expect("product should live under the repo root")
+        .to_path_buf();
+    let artifact_root = default_artifact_root(&repo_root);
+
+    let mut build_root = None;
+    let mut fetch_jobs = 4_usize;
+    let mut snapshot_date = env::var("AEROBAG_OBSTACLE_SNAPSHOT_DATE").ok();
+    let mut index = 0;
+    while index < args.len() {
+        match args.get(index).map(String::as_str) {
+            Some("--build-root") => {
+                build_root = Some(PathBuf::from(
+                    args.get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                ));
+                index += 2;
+            }
+            Some("--fetch-jobs") => {
+                fetch_jobs = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                    .parse()
+                    .context("failed to parse fetch jobs")?;
+                index += 2;
+            }
+            Some("--snapshot-date") => {
+                snapshot_date = Some(
+                    args.get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                );
+                index += 2;
+            }
+            _ => anyhow::bail!("{}", usage()),
+        }
+    }
+
+    let snapshot_label = obstacle_snapshot_label(
+        snapshot_date
+            .as_deref()
+            .unwrap_or(&Utc::now().format("%Y-%m-%d").to_string()),
+    )?;
+    let build_root =
+        build_root.unwrap_or_else(|| artifact_root.join("obstacles").join(&snapshot_label));
+    let output_dir = build_root.join("output");
+    let manifest_path = output_dir.join(format!("obstacles_{snapshot_label}"));
+    let stats_path = output_dir.join("stats.json");
+    let zip_path = output_dir.join(format!("obstacles_{snapshot_label}.zip"));
+    if manifest_path.is_file() && stats_path.is_file() && zip_path.is_file() {
+        return Ok((manifest_path, stats_path, zip_path));
+    }
+
+    let fetch_cache_root = env::var("FETCH_CACHE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| artifact_root.join("cache").join("fetch"));
+    env::set_var("FETCH_CACHE_ROOT", &fetch_cache_root);
+    if env::var("FETCH_CACHE_MODE").is_err() {
+        env::set_var("FETCH_CACHE_MODE", "fill");
+    }
+
+    let work_dir = build_root.join("work");
+    fs::create_dir_all(&work_dir)
+        .with_context(|| format!("failed to create {}", work_dir.display()))?;
+    let provenance_dir = build_root.join("meta").join("provenance").join("obstacles");
+    fs::create_dir_all(&provenance_dir)
+        .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
+    let logical_url = format!(
+        "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_{snapshot_label}.zip"
+    );
+    fs::write(
+        provenance_dir.join("source_urls.jsonl"),
+        format!(
+            "{{\"event\":\"source_url\",\"label\":\"obstacles\",\"url\":\"{}\"}}\n",
+            logical_url
+        ),
+    )
+    .with_context(|| {
+        format!(
+            "failed to write {}",
+            provenance_dir.join("source_urls.jsonl").display()
+        )
+    })?;
+    prefetch_archives_with_provenance(
+        &[logical_url],
+        &work_dir,
+        fetch_jobs,
+        &provenance_dir,
+        "obstacles",
+    )?;
+    let result = build_obstacle_dataset(&BuildObstacleDatasetRequest {
+        input_dir: work_dir,
+        output_dir,
+        version_label: snapshot_label,
+    })?;
+    Ok((result.manifest_path, result.stats_path, result.zip_path))
+}
+
+fn latest_bundle_manifest(build_root: &Path) -> anyhow::Result<PathBuf> {
+    let mut manifests = fs::read_dir(build_root)
+        .with_context(|| format!("failed to read {}", build_root.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to iterate {}", build_root.display()))?
+        .into_iter()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("bundle_") && name.ends_with(".json"))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    manifests.sort();
+    manifests
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("missing bundle_*.json under {}", build_root.display()))
 }
 
 fn read_zip_members(path: &Path) -> anyhow::Result<Vec<String>> {
@@ -1752,121 +1880,32 @@ fn main() -> anyhow::Result<()> {
             println!("zip {}", result.zip_path.display());
         }
         Some("build-obstacles") => {
-            let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("preprocessor-cli crate should live under the workspace root")
-                .to_path_buf();
-            let repo_root = workspace_root
-                .parent()
-                .expect("workspace root should live under product/")
-                .parent()
-                .expect("product should live under the repo root")
-                .to_path_buf();
-            let artifact_root = default_artifact_root(&repo_root);
-
-            let mut build_root = None;
-            let mut fetch_jobs = 4_usize;
-            let mut snapshot_date = env::var("AEROBAG_OBSTACLE_SNAPSHOT_DATE").ok();
-            let mut index = 2;
-            while index < args.len() {
-                match args.get(index).map(String::as_str) {
-                    Some("--build-root") => {
-                        build_root = Some(PathBuf::from(
-                            args.get(index + 1)
-                                .cloned()
-                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-                        ));
-                        index += 2;
-                    }
-                    Some("--fetch-jobs") => {
-                        fetch_jobs = args
-                            .get(index + 1)
-                            .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
-                            .parse()
-                            .context("failed to parse fetch jobs")?;
-                        index += 2;
-                    }
-                    Some("--snapshot-date") => {
-                        snapshot_date = Some(
-                            args.get(index + 1)
-                                .cloned()
-                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
-                        );
-                        index += 2;
-                    }
-                    _ => anyhow::bail!("{}", usage()),
-                }
-            }
-
-            let snapshot_label = obstacle_snapshot_label(
-                snapshot_date.as_deref().unwrap_or(&Utc::now().format("%Y-%m-%d").to_string()),
-            )?;
-            let build_root =
-                build_root.unwrap_or_else(|| artifact_root.join("obstacles").join(&snapshot_label));
-            let output_dir = build_root.join("output");
-            let manifest_path = output_dir.join(format!("obstacles_{snapshot_label}"));
-            let stats_path = output_dir.join("stats.json");
-            let zip_path = output_dir.join(format!("obstacles_{snapshot_label}.zip"));
-            if manifest_path.is_file() && stats_path.is_file() && zip_path.is_file() {
-                println!("manifest {}", manifest_path.display());
-                println!("stats {}", stats_path.display());
-                println!("zip {}", zip_path.display());
-                return Ok(());
-            }
-
-            let fetch_cache_root = env::var("FETCH_CACHE_ROOT")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| artifact_root.join("cache").join("fetch"));
-            env::set_var("FETCH_CACHE_ROOT", &fetch_cache_root);
-            if env::var("FETCH_CACHE_MODE").is_err() {
-                env::set_var("FETCH_CACHE_MODE", "fill");
-            }
-
-            let work_dir = build_root.join("work");
-            fs::create_dir_all(&work_dir)
-                .with_context(|| format!("failed to create {}", work_dir.display()))?;
-            let provenance_dir = build_root.join("meta").join("provenance").join("obstacles");
-            fs::create_dir_all(&provenance_dir)
-                .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
-            let logical_url = format!(
-                "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_{snapshot_label}.zip"
-            );
-            fs::write(
-                provenance_dir.join("source_urls.jsonl"),
-                format!(
-                    "{{\"event\":\"source_url\",\"label\":\"obstacles\",\"url\":\"{}\"}}\n",
-                    logical_url
-                ),
-            )
-            .with_context(|| {
-                format!(
-                    "failed to write {}",
-                    provenance_dir.join("source_urls.jsonl").display()
-                )
-            })?;
-            prefetch_archives_with_provenance(
-                &[logical_url],
-                &work_dir,
-                fetch_jobs,
-                &provenance_dir,
-                "obstacles",
-            )?;
-            let result = build_obstacle_dataset(&BuildObstacleDatasetRequest {
-                input_dir: work_dir,
-                output_dir,
-                version_label: snapshot_label,
-            })?;
-            println!("manifest {}", result.manifest_path.display());
-            println!("stats {}", result.stats_path.display());
-            println!("zip {}", result.zip_path.display());
+            let (manifest_path, stats_path, zip_path) = run_build_obstacles_command(&args[2..])?;
+            println!("manifest {}", manifest_path.display());
+            println!("stats {}", stats_path.display());
+            println!("zip {}", zip_path.display());
         }
-        Some("build-product") => {
-            if maybe_reexec_build_product_under_cgroup(&args[2..])? {
+        Some("build-cycle") => {
+            if maybe_reexec_build_cycle_under_cgroup(&args[2..])? {
                 return Ok(());
             }
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;
-            let manifest_path = build_product(&config)?;
+            let manifest_path = build_cycle(&config)?;
             println!("{}", manifest_path.display());
+        }
+        Some("build-product") => {
+            let config = ProductBuildConfig::from_env_and_args(&args[2..])?;
+            let cycle_manifest_path = if maybe_reexec_build_cycle_under_cgroup(&args[2..])? {
+                latest_bundle_manifest(&config.build_root)?
+            } else {
+                build_cycle(&config)?
+            };
+            let (obstacle_manifest_path, obstacle_stats_path, obstacle_zip_path) =
+                run_build_obstacles_command(&[])?;
+            println!("cycle_manifest {}", cycle_manifest_path.display());
+            println!("obstacle_manifest {}", obstacle_manifest_path.display());
+            println!("obstacle_stats {}", obstacle_stats_path.display());
+            println!("obstacle_zip {}", obstacle_zip_path.display());
         }
         Some("explain-product-build") => {
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;

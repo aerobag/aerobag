@@ -241,7 +241,7 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
     Ok(lines.join("\n") + "\n")
 }
 
-pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
+pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(&config.build_root)
         .with_context(|| format!("failed to create {}", config.build_root.display()))?;
     let log_root = config.build_root.join("orchestrator-logs");
@@ -611,7 +611,7 @@ impl ProductBuildConfig {
                     max_heavy_jobs = max_heavy_jobs.max(1);
                     index += 2;
                 }
-                other => bail!("unknown build-product argument: {other}"),
+                other => bail!("unknown cycle-build argument: {other}"),
             }
         }
 
@@ -1888,7 +1888,7 @@ fn utc_now_string() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
-pub fn maybe_reexec_build_product_under_cgroup(args: &[String]) -> anyhow::Result<bool> {
+pub fn maybe_reexec_build_cycle_under_cgroup(args: &[String]) -> anyhow::Result<bool> {
     if env::var_os(PRODUCT_BUILD_CGROUP_ACTIVE_ENV).is_some() {
         return Ok(false);
     }
@@ -1906,7 +1906,7 @@ pub fn maybe_reexec_build_product_under_cgroup(args: &[String]) -> anyhow::Resul
         .arg("env")
         .arg(format!("{PRODUCT_BUILD_CGROUP_ACTIVE_ENV}=1"))
         .arg(current_exe)
-        .arg("build-product")
+        .arg("build-cycle")
         .args(args)
         .status()
         .context("failed to re-exec product build under systemd-run")?;
@@ -1914,7 +1914,7 @@ pub fn maybe_reexec_build_product_under_cgroup(args: &[String]) -> anyhow::Resul
     if exit_code == 0 {
         return Ok(true);
     }
-    bail!("product build cgroup wrapper exited with code {exit_code}");
+    bail!("cycle build cgroup wrapper exited with code {exit_code}");
 }
 
 fn command_exists(name: &str) -> bool {

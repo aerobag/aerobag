@@ -45,13 +45,10 @@ const geometry = {
 };
 
 describe("loadBestAvailableAdapter", () => {
-  it("falls back to the mock adapter when the generated wasm module is missing", async () => {
-    const loaded = await loadBestAvailableAdapter(async () => {
+  it("fails loudly when the generated wasm module is missing", async () => {
+    await expect(loadBestAvailableAdapter(async () => {
       throw new Error("module not found");
-    });
-
-    expect(loaded.backend).toBe("mock");
-    expect(loaded.detail).toContain("module not found");
+    })).rejects.toThrow("module not found");
   });
 
   it("uses the wasm adapter when the generated module exports the expected API", async () => {

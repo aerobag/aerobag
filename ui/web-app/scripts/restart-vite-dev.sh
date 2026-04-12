@@ -3,6 +3,7 @@ set -euo pipefail
 
 PORT="${1:-8090}"
 HOST="${HOST:-0.0.0.0}"
+DEV_SCRIPT="${AEROBAG_DEV_SCRIPT:-inner:dev}"
 
 REPO_ROOT="${AEROBAG_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 TARGET_ROOT_FILE="$REPO_ROOT/ui/target-root.txt"
@@ -20,7 +21,7 @@ WORKSPACE_DIR="$UI_TARGET_ROOT/web/workspace"
 
 list_dev_roots() {
   ps -eo pid=,args= | awk -v port="$PORT" '
-    index($0, "run-target-workspace.sh inner:dev") && index($0, "--port " port) { print $1 }
+    index($0, "run-target-workspace.sh") && index($0, "--port " port) && index($0, "vite") { print $1 }
   '
 }
 
@@ -81,7 +82,7 @@ exec env \
   AEROBAG_REPO_ROOT="$REPO_ROOT" \
   AEROBAG_UI_TARGET_ROOT="$UI_TARGET_ROOT" \
   "$WEB_SOURCE_DIR/scripts/run-target-workspace.sh" \
-  inner:dev \
+  "$DEV_SCRIPT" \
   --host "$HOST" \
   --port "$PORT" \
   --strictPort

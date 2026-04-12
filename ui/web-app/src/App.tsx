@@ -255,7 +255,7 @@ export default function App() {
   const [page, setPage] = useState<AppPage>(persistedUiState.page ?? "map");
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
   const [appCoreAdapter, setAppCoreAdapter] = useState<AppCoreAdapter | null>(null);
-  const [adapterBackend, setAdapterBackend] = useState<AdapterBackendKind>("mock");
+  const [adapterBackend, setAdapterBackend] = useState<AdapterBackendKind>("wasm");
   const [adapterDetail, setAdapterDetail] = useState<string>("loading");
   const [sessionInitError, setSessionInitError] = useState<string | null>(null);
   const [selectedMapId, setSelectedMapId] = useState<string>(initialMapId());
@@ -306,7 +306,7 @@ export default function App() {
     }),
     [chartAirportById, sessionSnapshot.chart_page_state.ordered_airport_ids],
   );
-  const currentPlan = appState.active_plan ?? samplePlan;
+  const currentPlan = appState.active_plan;
   const [planUiState, setPlanUiState] = useState<FlightPlanUiState | null>(null);
   const recentAirportIds = sessionSnapshot.chart_page_state.recent_airport_ids;
   const selectedAirportId = sessionSnapshot.chart_page_state.selected_airport_id;
@@ -351,7 +351,7 @@ export default function App() {
     [selectedAirport, selectedChartId],
   );
   const legSummary = useMemo(() => {
-    const firstLeg = currentPlan.legs[0];
+    const firstLeg = currentPlan?.legs[0];
     if (!firstLeg) {
       return "NO LEG";
     }
@@ -367,8 +367,15 @@ export default function App() {
         setAppCoreAdapter(loaded.adapter);
         setAdapterBackend(loaded.backend);
         setAdapterDetail(loaded.detail);
+        setSessionInitError(null);
       }
-    }).catch(() => {});
+    }).catch((error) => {
+      if (!cancelled) {
+        const message = error instanceof Error ? error.message : String(error);
+        setSessionInitError(`WASM adapter init failed: ${message}`);
+        setAdapterDetail(`adapter init failed: ${message}`);
+      }
+    });
     return () => {
       cancelled = true;
     };
@@ -423,6 +430,11 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     if (!appCoreAdapter) {
+      setPlanUiState(null);
+      return;
+    }
+    if (!currentPlan) {
+      setPlanUiState(null);
       return;
     }
     appCoreAdapter.buildFlightPlanUi(currentPlan).then((next) => {
@@ -436,6 +448,32 @@ export default function App() {
       cancelled = true;
     };
   }, [appCoreAdapter, currentPlan]);
+
+  const appReady =
+    appCoreAdapter !== null &&
+    uiSession !== null &&
+    currentPlan !== null &&
+    planUiState !== null;
+
+  if (sessionInitError) {
+    return (
+      <main className="appFrame">
+        <section className="appPage planPage">
+          <div className="planGuidanceSummary">{sessionInitError}</div>
+        </section>
+      </main>
+    );
+  }
+
+  if (!appReady || !currentPlan || !planUiState) {
+    return (
+      <main className="appFrame">
+        <section className="appPage planPage">
+          <div className="planGuidanceSummary">INITIALIZING CORE…</div>
+        </section>
+      </main>
+    );
+  }
 
   useEffect(() => {
     writePersistedWebUiState({
@@ -1392,6 +1430,9 @@ function FlightPlanPage(props: {
     () => props.planUiState?.components ?? buildLegacyComponentViews(props.plan),
     [props.plan, props.planUiState?.components],
   );
+  if (props.planUiState && props.planUiState.resolved_legs.length > 0 && componentViews.length === 0) {
+    throw new Error("FlightPlanUiState invariant failed: resolved legs present but components are empty");
+  }
   const showComponentViews = useMemo(
     () => componentViews.some((component) => component.kind !== "waypoint"),
     [componentViews],

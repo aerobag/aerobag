@@ -7,6 +7,7 @@
     "prepare:dev-assets": "./scripts/stage-dev-assets.sh",
     "build:wasm": "./scripts/build-wasm.sh",
     "inner:dev": "npm run prepare:dev-assets && npm run build:wasm && vite",
+    "inner:dev:fast": "npm run build:wasm && vite",
     "inner:build": "npm run prepare:dev-assets && npm run build:wasm && tsc --noEmit && vite build",
     "inner:test": "vitest run",
     "dev": "./scripts/run-target-workspace.sh inner:dev",

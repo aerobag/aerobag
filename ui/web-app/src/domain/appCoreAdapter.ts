@@ -152,7 +152,7 @@ export interface AppCoreAdapter {
   ): Promise<CatalogJson["charts"][number] | null>;
 }
 
-export type AdapterBackendKind = "mock" | "wasm";
+export type AdapterBackendKind = "wasm";
 
 export type LoadedAdapter = {
   adapter: AppCoreAdapter;
@@ -570,7 +570,7 @@ type WasmModule = {
     airwayJson: string,
     resolvedLegsJson: string,
   ): Promise<string> | string;
-  chart_for_position(
+  chart_for_position?(
     catalogJson: string,
     geometryJson: string,
     familyJson: string,
@@ -805,6 +805,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     lat: number,
     lon: number,
   ): Promise<CatalogJson["charts"][number] | null> {
+    if (typeof this.module.chart_for_position !== "function") {
+      throw new Error("generated wasm module is missing chart_for_position");
+    }
     return JSON.parse(
       await this.module.chart_for_position(
         JSON.stringify(catalog),
@@ -820,56 +823,46 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
 export async function loadBestAvailableAdapter(
   importer: () => Promise<unknown> = () => import("@generated/app_wasm.js"),
 ): Promise<LoadedAdapter> {
-  try {
-    const mod = (await importer()) as Partial<WasmModule>;
-    if (typeof mod.default === "function") {
-      await mod.default();
-    }
-    if (
-      typeof mod.create_ui_session !== "function" ||
-      typeof mod.remove_leg_in_session !== "function" ||
-      typeof mod.move_waypoint_in_session !== "function" ||
-      typeof mod.set_situation_in_session !== "function" ||
-      typeof mod.select_airport_in_session !== "function" ||
-      typeof mod.select_chart_in_session !== "function" ||
-      typeof mod.ingest_point_tiles_in_session !== "function" ||
-      typeof mod.get_map_overlay_in_session !== "function" ||
-      typeof mod.get_session_snapshot !== "function" ||
-      typeof mod.restore_chart_page_state_in_session !== "function" ||
-      typeof mod.destroy_session !== "function" ||
-      typeof mod.replace_flight_plan_state !== "function" ||
-      typeof mod.remove_flight_plan_leg !== "function" ||
-      typeof mod.build_flight_plan_ui !== "function" ||
-      typeof mod.activate_leg_ui !== "function" ||
-      typeof mod.activate_next_leg_ui !== "function" ||
-      typeof mod.suspend_sequencing_ui !== "function" ||
-      typeof mod.unsuspend_sequencing_ui !== "function" ||
-      typeof mod.sequence_active_leg_ui !== "function" ||
-      typeof mod.prepare_airway_presentation !== "function" ||
-      typeof mod.sort_airway_suggestions_for_ui !== "function" ||
-      typeof mod.insert_airway_materialized_ui !== "function" ||
-      typeof mod.derive_chart_page !== "function" ||
-      typeof mod.derive_chart_page_state !== "function" ||
-      typeof mod.set_content_policy_state !== "function" ||
-      typeof mod.refresh_content_state !== "function" ||
-      typeof mod.chart_for_position !== "function"
-    ) {
-      throw new Error("generated wasm module is missing required exports");
-    }
-
-    return {
-      adapter: new WasmAppCoreAdapter(mod as WasmModule),
-      backend: "wasm",
-      detail: "Using generated Rust WASM bindings.",
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      adapter: new MockAppCoreAdapter(),
-      backend: "mock",
-      detail: `Falling back to mock adapter: ${message}`,
-    };
+  const mod = (await importer()) as Partial<WasmModule>;
+  if (typeof mod.default === "function") {
+    await mod.default();
   }
+  if (
+    typeof mod.create_ui_session !== "function" ||
+    typeof mod.remove_leg_in_session !== "function" ||
+    typeof mod.move_waypoint_in_session !== "function" ||
+    typeof mod.set_situation_in_session !== "function" ||
+    typeof mod.select_airport_in_session !== "function" ||
+    typeof mod.select_chart_in_session !== "function" ||
+    typeof mod.ingest_point_tiles_in_session !== "function" ||
+    typeof mod.get_map_overlay_in_session !== "function" ||
+    typeof mod.get_session_snapshot !== "function" ||
+    typeof mod.restore_chart_page_state_in_session !== "function" ||
+    typeof mod.destroy_session !== "function" ||
+    typeof mod.replace_flight_plan_state !== "function" ||
+    typeof mod.remove_flight_plan_leg !== "function" ||
+    typeof mod.build_flight_plan_ui !== "function" ||
+    typeof mod.activate_leg_ui !== "function" ||
+    typeof mod.activate_next_leg_ui !== "function" ||
+    typeof mod.suspend_sequencing_ui !== "function" ||
+    typeof mod.unsuspend_sequencing_ui !== "function" ||
+    typeof mod.sequence_active_leg_ui !== "function" ||
+    typeof mod.prepare_airway_presentation !== "function" ||
+    typeof mod.sort_airway_suggestions_for_ui !== "function" ||
+    typeof mod.insert_airway_materialized_ui !== "function" ||
+    typeof mod.derive_chart_page !== "function" ||
+    typeof mod.derive_chart_page_state !== "function" ||
+    typeof mod.set_content_policy_state !== "function" ||
+    typeof mod.refresh_content_state !== "function"
+  ) {
+    throw new Error("generated wasm module is missing required exports");
+  }
+
+  return {
+    adapter: new WasmAppCoreAdapter(mod as WasmModule),
+    backend: "wasm",
+    detail: "Using generated Rust WASM bindings.",
+  };
 }
 
 function navRefLabel(ref: NavRef): string {

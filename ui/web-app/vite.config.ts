@@ -78,7 +78,6 @@ function resolveProductBuildOutput(nodeName: string, outputName: string): string
   throw new Error(`missing product build output ${nodeName}.${outputName}`);
 }
 
-const resourceIndexPath = resolveProductBuildOutput("resource_index", "resource_index");
 const productBuildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf8")) as { nodes?: Array<Record<string, unknown>> };
 function resolveBuildManifestOutput(nodeName: string, outputName: string): string {
   for (const node of productBuildManifest.nodes ?? []) {
@@ -97,7 +96,17 @@ function resolveBuildManifestOutput(nodeName: string, outputName: string): strin
   }
   throw new Error(`missing build manifest output ${nodeName}.${outputName}`);
 }
-const catalogPath = resolveBuildManifestOutput("resource-index", "catalog");
+const resourceIndexPath = resolveProductBuildOutput("resource_index", "resource_index");
+const catalogPath = resolveProductBuildOutput("catalog", "catalog");
+
+for (const [label, resolvedPath] of [
+  ["catalog", catalogPath],
+  ["resource index", resourceIndexPath],
+] as const) {
+  if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isFile()) {
+    throw new Error(`missing ${label} artifact at ${resolvedPath}`);
+  }
+}
 
 function mountStaticTree(sourceRoot: string) {
   return (req: { url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
@@ -251,6 +260,7 @@ function aerobagStaticPlugin(): Plugin {
 export default defineConfig({
   plugins: [react(), aerobagStaticPlugin()],
   resolve: {
+    preserveSymlinks: true,
     alias: {
       "@generated": generatedRoot,
       "@product-catalog": catalogPath,

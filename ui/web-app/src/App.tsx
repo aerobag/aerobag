@@ -2012,13 +2012,20 @@ function FlightPlanPage(props: {
       x: toRect.left - surfaceRect.left,
       y: toRect.top - surfaceRect.top + toRect.height / 2,
     };
-    const marginX = Math.max(8, Math.min(fromPoint.x, toPoint.x) / 2);
-    const shaftEnd = { x: Math.max(marginX, toPoint.x - 14), y: toPoint.y };
+    const elbowX = thumbPixels(0.12);
+    const headLength = 20;
+    const shaftEnd = { x: Math.max(elbowX, toPoint.x - headLength + 5), y: toPoint.y };
 
     setStructuredArrow({
-      path: `M ${fromPoint.x} ${fromPoint.y} H ${marginX} V ${toPoint.y} H ${shaftEnd.x}`,
+      path: `M ${fromPoint.x} ${fromPoint.y} H ${elbowX} V ${toPoint.y} H ${shaftEnd.x}`,
       head: arrowHeadPoints(shaftEnd, toPoint),
     });
+
+    const handle = window.requestAnimationFrame(() => {
+      fromElement.scrollIntoView({ block: "nearest", inline: "nearest" });
+      toElement.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(handle);
   }, [displayRows, guidance?.active_leg, showComponentViews]);
 
   useEffect(() => {

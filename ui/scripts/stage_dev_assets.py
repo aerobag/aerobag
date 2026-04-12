@@ -159,7 +159,7 @@ def reset_dir(path: Path) -> None:
 
 def ensure_hard_link(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
+    if target.exists() or target.is_symlink():
         try:
             if source.stat().st_ino == target.stat().st_ino and source.stat().st_dev == target.stat().st_dev:
                 return
@@ -169,6 +169,15 @@ def ensure_hard_link(source: Path, target: Path) -> None:
     try:
         os.link(source, target)
     except OSError as exc:
+        if exc.errno == errno.EEXIST:
+            try:
+                if source.stat().st_ino == target.stat().st_ino and source.stat().st_dev == target.stat().st_dev:
+                    return
+            except FileNotFoundError:
+                pass
+            target.unlink(missing_ok=True)
+            os.link(source, target)
+            return
         if exc.errno == errno.EXDEV:
             shutil.copy2(source, target)
             return

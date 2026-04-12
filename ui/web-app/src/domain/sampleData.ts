@@ -1,8 +1,10 @@
 import bootstrapJson from "@shared-bootstrap";
+import catalogJson from "@product-catalog";
 import resourceIndexJson from "@product-resource-index";
-import { deriveCatalog, deriveChartPage, deriveMapViews } from "./resourceIndexAdapters";
+import { deriveChartPage, deriveMapViews } from "./resourceIndexAdapters";
 import type {
   AppState,
+  CatalogJson,
   ContentInventory,
   DevBootstrapJson,
   GeometryJson,
@@ -13,7 +15,7 @@ import type {
 export const resourceIndex = resourceIndexJson as ResourceIndexJson;
 export const bootstrap = bootstrapJson as DevBootstrapJson;
 
-export const sampleCatalog = deriveCatalog(resourceIndex);
+export const sampleCatalog = catalogJson as CatalogJson;
 export const sampleGeometry: GeometryJson = {
   schema_version: 1,
   polygons: [],

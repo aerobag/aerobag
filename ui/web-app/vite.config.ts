@@ -50,6 +50,7 @@ const productBuildPath = path.join(
   productionManifestDir,
   currentArtifacts.bundles?.[currentArtifacts.bundles.length - 1]?.filename ?? "bundle_missing.json",
 );
+const buildManifestPath = productBuildPath.replace(/bundle_(.+)\.json$/, "build-manifest_$1.json");
 
 function resolveProductBuildOutput(nodeName: string, outputName: string): string {
   const payload = JSON.parse(fs.readFileSync(productBuildPath, "utf8")) as Record<string, unknown> & { nodes?: Array<Record<string, unknown>> };
@@ -78,6 +79,25 @@ function resolveProductBuildOutput(nodeName: string, outputName: string): string
 }
 
 const resourceIndexPath = resolveProductBuildOutput("resource_index", "resource_index");
+const productBuildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf8")) as { nodes?: Array<Record<string, unknown>> };
+function resolveBuildManifestOutput(nodeName: string, outputName: string): string {
+  for (const node of productBuildManifest.nodes ?? []) {
+    if (node.name !== nodeName) {
+      continue;
+    }
+    const outputs = node.outputs;
+    if (!outputs || typeof outputs !== "object") {
+      break;
+    }
+    const rawPath = (outputs as Record<string, unknown>)[outputName];
+    if (typeof rawPath !== "string" || rawPath.length === 0) {
+      break;
+    }
+    return path.join(artifactRoot, rawPath);
+  }
+  throw new Error(`missing build manifest output ${nodeName}.${outputName}`);
+}
+const catalogPath = resolveBuildManifestOutput("resource-index", "catalog");
 
 function mountStaticTree(sourceRoot: string) {
   return (req: { url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
@@ -228,6 +248,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@generated": generatedRoot,
+      "@product-catalog": catalogPath,
       "@product-resource-index": resourceIndexPath,
       "@shared-bootstrap": path.join(sharedRoot, "dev-bootstrap.json"),
       "@shared-ui-theme": path.join(sharedFixturesRoot, "ui-theme.json"),
@@ -238,7 +259,7 @@ export default defineConfig({
     host: "0.0.0.0",
     allowedHosts: ["aerobag-dev.iac.jonh.net"],
     fs: {
-      allow: [workspaceRoot, webSourceRoot, sharedRoot, sharedFixturesRoot, generatedRoot, staticRoot, path.dirname(resourceIndexPath), artifactRoot],
+      allow: [workspaceRoot, webSourceRoot, sharedRoot, sharedFixturesRoot, generatedRoot, staticRoot, path.dirname(resourceIndexPath), path.dirname(catalogPath), artifactRoot],
     },
   },
   build: {

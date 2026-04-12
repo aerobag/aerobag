@@ -3,6 +3,11 @@ declare module "@product-resource-index" {
   export default value;
 }
 
+declare module "@product-catalog" {
+  const value: unknown;
+  export default value;
+}
+
 declare module "@shared-ui-theme" {
   const value: unknown;
   export default value;

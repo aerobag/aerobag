@@ -265,38 +265,288 @@ x but back to the first plate. That's wierd.
 x Clicking FLDR in the FDLR view shouldn't do anything -- it shouldn't be a toggle, it should just idempotently
 x "take us to the folder view".
 
-Buttons and flight plan cells look different on web vs android. Let's define a common appearance.
-I like the rounded rects; each flight plan waypoint should be a rounded rect.
-The colors should be in the theme. Let's say for now buttoncolor is a dark blue.
+x Buttons and flight plan cells look different on web vs android. Let's define a common appearance.
+x I like the rounded rects; each flight plan waypoint should be a rounded rect.
+x The colors should be in the theme. Let's say for now buttoncolor is a dark blue.
 
-Probably should bound the depth of the back-button stack.
+x (android) disabled buttons (fake scrim) are transparent. They're supposed to be opaque
+x but covered with transparent gray (alpha defined to match web side).
+
+x (both) Probably should bound the depth of the back-button stack so it doesn't become a memory leak.
+
+x (android) Buttons in the menu trays on web continue the theme colors, dark blue and a lighter blue
+x for the currently-active item. Not so on android.
+
+x (both) flight plan header row should be 0.5 thumb tall. (It's not clickable)
+
+x (web) on flight plan page, PLN menu tray doesn't scrim -- no dimming, and clicking outside it doesn't
+x stow the tray. (Is there a valid reason it doesn't work the same way as every other page? Why isn't this
+x behavior factored out so the bugs don't keep popping up?)
+
+x (web) scroll wheel on plate is janky. I can scroll "in", and the view hops in and out.
+x Is there a way to capture a trace you can inspect? Or do you already know what it is,
+x something about the zoom bounds thing racing with subsequent inputs?
+
+(web) dragging plates has a little jank in it.
+x (web) dragging charts has a lot of jank in it.
+
+Airport selector list:
+- flight plan airports
+- we'll maintain an LRU-cache list of "recently touched airports"
+- maybe a list of "first 5 towered airports by distance from airplane."
+
+obstacles -- what do we do with them?
+
+terrain clearance red/yellow -- using terrain tiles? (Can we do the pixel-level subtraction on android?
+on web? Quickly enough? Maybe wasm? In the rust code? Be nice if it were common)
+
+x PLN:remove isn't enabled for first waypoint.
+
+x (web) After the app restarts, the first visit to the Plate page (which might be the first thing
+x we see after restart), the page is blank, even though it has an airport & chart selected.
+
+
+-------------------------------------------------------------------------------
+
+Preprocessor:
+
+x main.db (and various other generated bits) makes me realize that we're mixing source code with generated output,
+x and that's generally a stupid idea. Can we restructure both build systems so
+x that the source tree stays pristine (no .gitignores needed to mask outputs),
+x and everything ends up in a ~/ui-target/{web,android} directory?
+x (local.properties, node_modules is one such bit of crap)
+
+x Some STARs (EG STAR-WA-GLASR THREE) are really landscape -- they want to be rotated 90° before
+x being displayed. (The FAA assumed we'd print the book out and turn it.)
+x Can we detect landscapiness by parsing the PDFs and seeing the dominant angle of the text?
+
+x split cycles for artifacts with different expiration times to reduce download
+x costs. Enumerate them.
+
+x Let's address the "daily" problem. I think we should define the "daily" data as having a date
+x code of the date we fetched the data. (And if we're trying to fetch today's data again,
+x we should use the cache.) This will require enlightening the fetcher to understand that we're
+x trying to get "obstacle_2026.04.10", but the backing URL isn't that, but the saved name should
+x include that date. (In all other cases, the backing URL and the cache save path match).
+x Then, I think the database is going to need a longer name: the 28-day cycle code
+x concatenated with the obstacle single-date: data_2604_obs2026.04.10. Does this
+x scheme accurately represent our understanding of the validity dates of the inputs?
+
+one top-level build (scons?) with options to:
+- build all the artifacts for current cycle(s)
+- build the web app / cloud side
+- launch the web server locally for interactive UI testing
+- build the android app
+- launch the x11fb-vnc+emulator+android app for interactive UI testing
+
 
 ------------------------------------------------------------------------------
 
 Flight plans
 
-- clicking on a flight plan item brings up a menu tray. That menu should cover the
-non-waypoint columns, but not the waypoints, so we can see the waypoint we clicked
-highlighted.
+x - clicking on a flight plan item brings up a menu tray. That menu should cover the
+x non-waypoint columns, but not the waypoints, so we can see the waypoint we clicked
+x highlighted.
 
-- disable all the placeholder menu items we haven't implemented.
+x disable all the placeholder menu items we haven't implemented.
 
-- remove is easy to implement
+x remove is easy to implement
 
-- Charts should take us to the plate (and it does) but it should also (a) set the
-airport to match the waypoint, (b) put it into FLDR mode. Also, the charts menu
-item should only be enabled if the waypoint is an airport.
+x - PLN:waypoint:Charts button should take us to the plate (and it does) but it should also (a) set the
+x airport to match the waypoint, (b) put it into FLDR mode. Also, the charts menu
+x item should only be enabled if the waypoint is an airport. Make the default plan
+x be KRNT SEA PAE KAWO (note that the absent K means VOR not airport).
 
-- Reorder should replace the menu with a single 1x1 (up) and (down) button;
-clicking on them moves the waypoint in the list. Clickout outside the reorder
-tray commits the change.
+
+x I think the "resolver" question is pretty easy. We already have a common concept that every
+x airway/procedure ends up turning into a concrete list of waypoints in the flight plan (both for
+x the UI inside the procedure container, and because that's what gets concetated to make the
+x physical waypoint list to draw on the screen). So "resolving" an entry is just taking the first
+x item in the list, and resolving the exit is just the last. I think you may have overthought
+x "resolving" in the airway case, and specialized it to airways.
+x 
+x "clean geometric “exit point” for downstream bridging. ... vectors" Yeah, I think this
+x represents a "gap" in the flight plan. I think we might represent this as a concrete waypoint
+x called "vectors"; that's the last waypoint in the concretized procedure. When the UI sees that,
+x it knows there's a discontinuity here that affects drawing and sequencing.
+x "  - A procedure may need a notion of unresolved or suspended continuation." Yep!
+x 
+x "Not every enroute transition works with every runway transition." -- so that affects
+x what things we allow the pilot to select, rejecting invalid combinations?
+x 
+x "  - The UI should not ask for “entry fix” on a STAR.  - It should ask for “transition.”" Agreed.
+x 
+x What is an example of "extra derived provenance" you're worried about?
+
+x "- For procedures, IF/TF/CF/DF/FM/VA/... are the procedure.
+x - You cannot really fake this for long with fix-to-fix lines." I don't understand this.
+
+
+x - Reorder should replace the menu tray with a tray containing two 1x1 buttons:
+x (up) and (down);
+x clicking on them moves the waypoint in the list (via the core, obvs!).
+x Clickout outside the reorder tray commits the change. (although I guess it just closes
+x the tray; each click is a commit to the core)
+
+Back when you rebased, you had conflicts with the preprocessor code. Tell me
+about them. Is he gonna need to rebuild anything? Are the resolutions likely to
+break the legacy-parity check and require a re-run?
+
+
+If you havn't already, write tests for removing and reordering interacting
+sensibly with airways & procedures.  Last remove inside a procedure should
+delete it.  Reorder of top-level waypoints should skip over procedures.  I'm
+thinking we shouldn't allow reordoring inside procedure/airway blocks.
+
+"- guidance geometry - the flight-plan core now knows more semantics, but it still mostly resolves to fix-to-fix pathing plus discontinuities"
+
+I think you're talking about two things here.
+One is, given a current position ("situation"), what should we display on the CDI?
+
+The second is, given the current leg (and perhaps an understanding of the next leg / discontinuity),
+how do we determine when we've completed the leg and should either advance to the next leg or
+suspend guidance? I think I have a good intuition here:
+- If the current leg is a straight segment and is the last (or before a
+  discontinuity), then we're "done" when we pass the line normal to the leg
+that intercepts the end waypoint.
+- If the current leg is a straight segment and so is the next, then we're "done"
+when we pass the line that bisects the angle between the two segments.
+- If either leg is an arc, we can model it as a segment that meets at the common waypoint
+and leaves tangent to the arc.
+Did I miss anything else?
+
+I'd love it if we had a test suite of different leg-completion-detection cases.
+A matrix of interesting combinations -- different leg types, different join angles.
+And for each cell, a selection of points in space on and near the lines, and some quite
+off the intended track, and the intended match.
+And then (this is the hooman part) a way to draw a sample chart, laid over sectional
+tiles (HTML is fine!), with the two legs drawn in magenta & grey, and then draw the boundary
+of the half-plane (or whatever) that defines "still in the leg" vs "passed into next leg".
+And the test case dots plotted in their respective locations in red or white depending
+on whether they're "in" or "out."
+And then I can flip through a bunch of these "screenshots" (or HTML pages) and
+see if they look about right.
+
 
 ------------------------------------------------------------------------------
 
 Current position and georeferencing
 
 Validate approach plates by drawing the approaches over them from db with crosshairs at the intersections
+(Special attention to the rotated arrivals like GLASR-THREE).
+
+x Introduce into the core a model of our "current position." Our position can be:
+x - a LatLon (being fed in live),
+x - a flightplan location
+x 	If we're playing around with flight planning offline, we want to make
+x 	a leg active and have our "current position" be at the beginning of the
+x 	activated leg. We should paint "Simulated Position" in orange letters
+x 	in the upper-right corner of the chart/plate surface so the user knows
+x 	this isn't a live representation of their aircraft in space.
+x - unknown
+x 	The UI should *not* draw a little airplane on the chart/plate, and should paint
+x 	"Location Unknown" in red letters in the upper-right corner, so the user knows
+x 	they're not getting an expected feed.
+x The "situation" record contains a position plus optional orientation and optional speed.
+x 
+x Planning ahead, there will be some common path by which situation information flows
+x into the core (from the GPS sensor, from a live or replayed ADSB feed, from Web location?).
+x There will be another path by which situation info flows from the core back to the UI,
+x which will use it to update textual status boxes, the CDI guidance "needle", and a
+x graphical representation.
+x 
+x Let's begin with the graphical. Let's iterate on the web (because it's fast) until I like
+x the look, then you can reproduce that look on the android when I'm happy.
+x 
+x Paint a little white airplane on the map, rotated to the situation.orientation (or north, if
+x not available). Paint a light gray arrow pointing one minute ahead of the little airplane (omit
+x it if situation.speed is not available).
+
+x Paint a white ring around the little airplane, with ticks at 30° increments, and a label
+x at the 45° point (rotated baseline to be tangent to the circle) that indicates the radius
+x of the ring in nautical miles (eg "8nm"). Select a ring size that makes the ring diameter be
+x 50-80% of the smaller dimension of the map surface. Select the ring radii from a fixed list
+x of available sizes: [0.25, 0.5, 0.8, 1, 1.5, 2, 3, 5, 8, 10, 15, 20, 30, 50, 100, 150, 200].
+x (Maybe we'll tweak that list later, but the user isn't going to find a 4.23nm ring useful.)
 
 ------------------------------------------------------------------------------
 
 Database plotting
+
+x Okay, let's talk about preparing to draw points (airports, intersections) and nonpoint
+x features (airspace boundaries, TFRs) on the chart in the UI. You're not gonna do the UI
+x work, but you need to prepare the preprocessing to make the UI run fast.
+x The big concern here is that we don't want to have the UI need to iterate over the
+x entire database.
+x 
+x Points seem easy: Put them in tiles at a single zoom level where the points-per-tile is
+x neither too big nor too small. The app will iterate over all tiles that intersect the viewport,
+x unless it's zoomed out far enough that the list is too big, in which case we won't draw that
+x layer anyway.
+x 
+x What about non-point features, like airspace boundaries? They should also get segmented
+x spatially, but cutting lines and curves at tile boundaries sucks. Maybe instead we have a
+x list of bounding boxes and pointers into a table of boundary shapes. Then we tile the
+x (bounding box,ptr) records, and put the records into every tile they overlap. We'll choose
+x a zoom level where we're not ridiculously duplicating them. The UI will enumerate the tiles,
+x gather all the bboxes that intersect its viewport, discarding duplicates (by some identifier),
+x and that's the list of features to draw.
+x 
+x Anything else we need to think about to prepare vector data for realtime plotting in the UI?
+
+x Preproc: We discovered on the UI side that the "tiled" vector (point) data is one big-ass json
+x file. That ... kind of defeats the purpose of tiles. What I expected was a zip file with files
+x named in quadtrees just like the tiled charts, but instead of a PNG, each file in a json with
+x the records for just that region.
+
+  On FAA boundary sources: I found official FAA indications that boundary-ish data is available as services, but not yet a clean
+  static polygon product I’d build against.
+
+  - FAA’s aeronautical data/products page explicitly lists Special Use Airspace and Temporary Flight Restrictions (TFR) under Servi
+    ces: https://www.faa.gov/data/aero_data (https://www.faa.gov/data/aero_data)
+  - FAA’s aeronautical data page points to the AIS data ecosystem generally:
+    https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data (https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data)
+  - The AIM/AIP material confirms SUA is authoritative FAA airspace content, but that’s descriptive text, not a geometry download:
+      - https://www.faa.gov/air_traffic/publications/atpubs/aip_html/part2_enr_section_5.1.html
+        (https://www.faa.gov/air_traffic/publications/atpubs/aip_html/part2_enr_section_5.1.html)
+      - https://www.faa.gov/air_traffic/publications/atpubs/aim_html/chap3_section_4.html
+        (https://www.faa.gov/air_traffic/publications/atpubs/aim_html/chap3_section_4.html)
+
+
+Database plotting
+
+Okay, let's talk about drawing points (airports, intersections) (and eventually, but not
+now, nonpoint features like airspace boundaries, TFRs) on the chart in the UI.
+
+  Point vectors are now available as a first-cut side artifact under <source-root>/../aerobag-artifacts/product-builds/shared/work/
+  vectors-2604/output/ . The current zip is vectors_2604.zip and contains separate tiled point files by layer:
+  point_tiles_airport_z9.json, point_tiles_fix_z10.json, point_tiles_nav_z9.json, point_tiles_awos_z9.json, and
+  point_tiles_obstacle_z12.json, plus stats.json and a small vectors manifest. Each tile file is a simple JSON object with
+  schema_version, zoom, and a tiles[] array; each tile has z/x/y and records[], and each record has id, kind, lat, lon, label, and
+  style_class. Current measured maxima are airport 107, fix 128, nav 9, awos 10, obstacle 286. This is also wired into the product
+  build graph, so the next successful build-product run will materialize the same vectors node in the normal shared outputs.
+
+Let's start on the web side and get that how we want it first.
+Let's start drawing intersections. Cyan solid triangle, name in all caps.
+
+Let's draw airports. For now, a magenta circle with the airport code adjacent. Clip off the ICAO K prefix.
+(but don't clip it off of a 3-letter airport code that happens to start with K!)
+Now variations for types of airports:
+	With control tower? It's blue.
+	With fuel? It gets dashes.
+	Draw the biggest runway orientation as a white bar.
+
+Let's draw airspace boundaries.
+
+Let's draw TFRs! We need a data source.
+
+VORs & rings? NDBs? Probably not.
+
+------------------------------------------------------------------------------
+
+Look through the source tree to find leftover development fixtures and cruft.
+What can we clean out?
+
+Look through the source tree with an eye towards cleanup. Are there things
+we're doing k times that might be candidates for factoring into a common
+place?

@@ -2,6 +2,7 @@ use anyhow::{bail, Context};
 use chrono::{Datelike, Duration, NaiveDate, Utc};
 use preprocessor_core::{PackageAssetManifest, PackageAssetRecord, Region, PACKAGE_ASSET_MANIFEST_NAME};
 use preprocessor_fetch::PackageOutputRecord;
+use rayon::prelude::*;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -307,8 +308,11 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     )?;
     let temporal_summary = build_temporal_summary(&packages, &nav_temporal);
     let chart_collections = collect_chart_collections(&request.chart_sources)?;
-    let airports = load_airports_from_nav_db(&request.nav_db_zip)?;
-    let airport_aliases = load_airport_aliases_from_nav_db(&request.nav_db_zip)?;
+    let sqlite_path = extract_sqlite_entry(&request.nav_db_zip, "main.db")?;
+    let connection =
+        Connection::open(sqlite_path.path()).context("failed to open extracted main.db")?;
+    let airports = load_airports_from_nav_db(&connection)?;
+    let airport_aliases = load_airport_aliases_from_nav_db(&connection)?;
     let thumbnail_root = request
         .output_path
         .parent()
@@ -740,43 +744,30 @@ fn collect_packages(
     csup_sources: &[AssetSource],
     product_builds_root: &Path,
 ) -> anyhow::Result<Vec<ResourcePackage>> {
-    let mut packages = Vec::new();
-    for source in chart_sources {
-        let temporal = infer_temporal_from_source_urls(source.source_urls_path.as_deref())?;
-        for record in read_package_outputs(&source.package_outputs_path)? {
-            packages.push(package_from_record(
-                &source.family_id,
-                &source.package_root,
-                &record,
-                temporal.as_ref(),
-                product_builds_root,
-            )?);
-        }
-    }
-    for source in tpp_sources {
-        let temporal = infer_temporal_from_source_urls(source.source_urls_path.as_deref())?;
-        for record in read_package_outputs(&source.package_outputs_path)? {
-            packages.push(package_from_record(
-                "tpp",
-                &source.package_root,
-                &record,
-                temporal.as_ref(),
-                product_builds_root,
-            )?);
-        }
-    }
-    for source in csup_sources {
-        let temporal = infer_temporal_from_source_urls(source.source_urls_path.as_deref())?;
-        for record in read_package_outputs(&source.package_outputs_path)? {
-            packages.push(package_from_record(
-                "csup",
-                &source.package_root,
-                &record,
-                temporal.as_ref(),
-                product_builds_root,
-            )?);
-        }
-    }
+    let chart_packages = chart_sources
+        .par_iter()
+        .map(|source| collect_packages_for_source(&source.family_id, &source.package_root, source.source_urls_path.as_deref(), &source.package_outputs_path, product_builds_root))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let tpp_packages = tpp_sources
+        .par_iter()
+        .map(|source| collect_packages_for_source("tpp", &source.package_root, source.source_urls_path.as_deref(), &source.package_outputs_path, product_builds_root))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let csup_packages = csup_sources
+        .par_iter()
+        .map(|source| collect_packages_for_source("csup", &source.package_root, source.source_urls_path.as_deref(), &source.package_outputs_path, product_builds_root))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut packages = chart_packages
+        .into_iter()
+        .chain(tpp_packages)
+        .chain(csup_packages)
+        .flatten()
+        .collect::<Vec<_>>();
     packages.sort();
     Ok(packages)
 }
@@ -784,33 +775,67 @@ fn collect_packages(
 fn collect_chart_collections(
     chart_sources: &[ChartSource],
 ) -> anyhow::Result<Vec<ChartCollectionRecord>> {
-    let mut collections = Vec::new();
-    for source in chart_sources {
-        for record in read_package_outputs(&source.package_outputs_path)? {
-            let artifact_path = source.package_root.join(&record.zip);
-            let metadata = read_chart_zip_metadata(&artifact_path)?;
-            collections.push(ChartCollectionRecord {
-                id: format!(
-                    "{}:{}",
-                    source.family_id,
-                    record.region.to_ascii_lowercase()
-                ),
-                family_id: source.family_id.clone(),
-                region_id: record.region.to_ascii_lowercase(),
-                package_id: record.manifest.clone(),
-                chart_index: metadata.chart_index,
-                tile_path_template: format!(
-                    "tiles/{}/{}/{{x}}/{{y}}.webp",
-                    metadata.chart_index, "{z}"
-                ),
-                levels: metadata.levels,
-                coverage_bounds: metadata.coverage_bounds,
-                default_view: metadata.default_view,
-            });
-        }
-    }
+    let mut collections = chart_sources
+        .par_iter()
+        .map(|source| {
+            read_package_outputs(&source.package_outputs_path)?
+                .into_par_iter()
+                .map(|record| {
+                    let artifact_path = source.package_root.join(&record.zip);
+                    let metadata = read_chart_zip_metadata(&artifact_path)?;
+                    Ok::<_, anyhow::Error>(ChartCollectionRecord {
+                        id: format!(
+                            "{}:{}",
+                            source.family_id,
+                            record.region.to_ascii_lowercase()
+                        ),
+                        family_id: source.family_id.clone(),
+                        region_id: record.region.to_ascii_lowercase(),
+                        package_id: record.manifest.clone(),
+                        chart_index: metadata.chart_index,
+                        tile_path_template: format!(
+                            "tiles/{}/{}/{{x}}/{{y}}.webp",
+                            metadata.chart_index, "{z}"
+                        ),
+                        levels: metadata.levels,
+                        coverage_bounds: metadata.coverage_bounds,
+                        default_view: metadata.default_view,
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .collect::<anyhow::Result<Vec<_>>>()
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     collections.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(collections)
+}
+
+fn collect_packages_for_source(
+    family_id: &str,
+    package_root: &Path,
+    source_urls_path: Option<&Path>,
+    package_outputs_path: &Path,
+    product_builds_root: &Path,
+) -> anyhow::Result<Vec<ResourcePackage>> {
+    let temporal = infer_temporal_from_source_urls(source_urls_path)?;
+    read_package_outputs(package_outputs_path)?
+        .into_iter()
+        .map(|record| {
+            package_from_record(
+                family_id,
+                package_root,
+                &record,
+                temporal.as_ref(),
+                product_builds_root,
+            )
+        })
+        .collect()
 }
 
 fn collect_families(
@@ -876,9 +901,7 @@ fn relativize_to_product_builds_root(path: &Path, product_builds_root: &Path) ->
         .unwrap_or_else(|_| path.display().to_string())
 }
 
-fn load_airports_from_nav_db(nav_db_zip: &Path) -> anyhow::Result<Vec<AirportRecord>> {
-    let sqlite_path = extract_sqlite_entry(nav_db_zip, "main.db")?;
-    let connection = Connection::open(sqlite_path.path()).context("failed to open main.db")?;
+fn load_airports_from_nav_db(connection: &Connection) -> anyhow::Result<Vec<AirportRecord>> {
     let mut statement = connection.prepare(
         "select LocationID, FacilityName, ARPLatitude, ARPLongitude, Type
          from airports
@@ -902,9 +925,7 @@ fn load_airports_from_nav_db(nav_db_zip: &Path) -> anyhow::Result<Vec<AirportRec
     Ok(airports)
 }
 
-fn load_airport_aliases_from_nav_db(nav_db_zip: &Path) -> anyhow::Result<BTreeMap<String, String>> {
-    let sqlite_path = extract_sqlite_entry(nav_db_zip, "main.db")?;
-    let connection = Connection::open(sqlite_path.path()).context("failed to open main.db")?;
+fn load_airport_aliases_from_nav_db(connection: &Connection) -> anyhow::Result<BTreeMap<String, String>> {
     let mut statement = connection.prepare(
         "select alias_id, airport_id
          from airport_aliases
@@ -931,28 +952,20 @@ fn collect_plate_records(
     airport_aliases: &BTreeMap<String, String>,
     thumbnail_root: &Path,
 ) -> anyhow::Result<Vec<PlateRecord>> {
-    let mut records = Vec::new();
-    for source in sources {
-        for packaged in packaged_asset_entries(source, "tpp")? {
-            mirror_thumbnail_from_package(
-                &packaged.package_zip_path,
-                thumbnail_root,
-                &packaged.asset.thumbnail_path,
-            )?;
-            let airport_id = canonicalize_airport_id(&packaged.asset.airport_id, airport_aliases);
-            records.push(PlateRecord {
-                id: packaged.asset.id.clone(),
-                airport_id,
-                region_id: packaged.region_id.clone(),
-                package_id: packaged.package_id.clone(),
-                label: packaged.asset.label.clone(),
-                asset_kind: packaged.asset.asset_kind.clone(),
-                document_type: packaged.asset.document_type.clone(),
-                asset_path: packaged.asset.asset_path.clone(),
-                thumbnail_path: packaged.asset.thumbnail_path.clone(),
-            });
+    let mut records = collect_asset_records_parallel(sources, "tpp", thumbnail_root, |packaged| {
+        let airport_id = canonicalize_airport_id(&packaged.asset.airport_id, airport_aliases);
+        PlateRecord {
+            id: packaged.asset.id.clone(),
+            airport_id,
+            region_id: packaged.region_id.clone(),
+            package_id: packaged.package_id.clone(),
+            label: packaged.asset.label.clone(),
+            asset_kind: packaged.asset.asset_kind.clone(),
+            document_type: packaged.asset.document_type.clone(),
+            asset_path: packaged.asset.asset_path.clone(),
+            thumbnail_path: packaged.asset.thumbnail_path.clone(),
         }
-    }
+    })?;
     records.sort();
     Ok(records)
 }
@@ -962,30 +975,57 @@ fn collect_csup_records(
     airport_aliases: &BTreeMap<String, String>,
     thumbnail_root: &Path,
 ) -> anyhow::Result<Vec<CsupRecord>> {
-    let mut records = Vec::new();
-    for source in sources {
-        for packaged in packaged_asset_entries(source, "csup")? {
+    let mut records = collect_asset_records_parallel(sources, "csup", thumbnail_root, |packaged| {
+        let airport_id = canonicalize_airport_id(&packaged.asset.airport_id, airport_aliases);
+        CsupRecord {
+            id: packaged.asset.id.clone(),
+            airport_id,
+            region_id: packaged.region_id.clone(),
+            package_id: packaged.package_id.clone(),
+            label: packaged.asset.label.clone(),
+            thumbnail_path: packaged.asset.thumbnail_path.clone(),
+            asset_kind: packaged.asset.asset_kind.clone(),
+            document_type: packaged.asset.document_type.clone(),
+            asset_path: packaged.asset.asset_path.clone(),
+        }
+    })?;
+    records.sort();
+    Ok(records)
+}
+
+fn collect_asset_records_parallel<T, F>(
+    sources: &[AssetSource],
+    expected_family_id: &str,
+    thumbnail_root: &Path,
+    build_record: F,
+) -> anyhow::Result<Vec<T>>
+where
+    T: Send,
+    F: Fn(&PackagedAssetEntry) -> T + Sync,
+{
+    let packaged_entries = sources
+        .par_iter()
+        .map(|source| packaged_asset_entries(source, expected_family_id))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+    packaged_entries
+        .par_iter()
+        .map(|packaged| {
             mirror_thumbnail_from_package(
                 &packaged.package_zip_path,
                 thumbnail_root,
                 &packaged.asset.thumbnail_path,
             )?;
-            let airport_id = canonicalize_airport_id(&packaged.asset.airport_id, airport_aliases);
-            records.push(CsupRecord {
-                id: packaged.asset.id.clone(),
-                airport_id,
-                region_id: packaged.region_id.clone(),
-                package_id: packaged.package_id.clone(),
-                label: packaged.asset.label.clone(),
-                thumbnail_path: packaged.asset.thumbnail_path.clone(),
-                asset_kind: packaged.asset.asset_kind.clone(),
-                document_type: packaged.asset.document_type.clone(),
-                asset_path: packaged.asset.asset_path.clone(),
-            });
-        }
-    }
-    records.sort();
-    Ok(records)
+            Ok::<T, anyhow::Error>(build_record(packaged))
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -1677,6 +1717,18 @@ mod tests {
         image.save(path).expect("write test png");
     }
 
+    fn test_png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let image = RgbaImage::from_pixel(width, height, Rgba([255, 255, 255, 255]));
+        let mut bytes = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("encode test png");
+        bytes
+    }
+
     #[test]
     fn builds_index_from_realistic_inputs() {
         let temp = tempdir().expect("temp dir");
@@ -1755,6 +1807,29 @@ mod tests {
         {
             let file = fs::File::create(tpp_root.join("NE_TPP.zip")).expect("tpp zip");
             let mut zip = ZipWriter::new(file);
+            let tpp_manifest = PackageAssetManifest {
+                schema_version: 1,
+                family_id: "tpp".to_string(),
+                package_id: "NE_TPP".to_string(),
+                assets: vec![PackageAssetRecord {
+                    id: "plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png".to_string(),
+                    airport_id: "BOS".to_string(),
+                    label: "IAP-MA-ILS OR LOC RWY 04R".to_string(),
+                    asset_kind: "plate".to_string(),
+                    document_type: "approach".to_string(),
+                    asset_path: "plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png".to_string(),
+                    thumbnail_path:
+                        "thumbnails/plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png".to_string(),
+                }],
+            };
+            zip.start_file(PACKAGE_ASSET_MANIFEST_NAME, SimpleFileOptions::default())
+                .expect("start tpp asset manifest");
+            zip.write_all(
+                serde_json::to_vec_pretty(&tpp_manifest)
+                    .expect("serialize tpp asset manifest")
+                    .as_slice(),
+            )
+            .expect("write tpp asset manifest");
             zip.start_file(
                 "plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png",
                 SimpleFileOptions::default(),
@@ -1766,7 +1841,8 @@ mod tests {
                 SimpleFileOptions::default(),
             )
             .expect("start tpp thumb");
-            zip.write_all(b"thumb").expect("write tpp thumb");
+            zip.write_all(&test_png_bytes(100, 150))
+                .expect("write tpp thumb");
             zip.finish().expect("finish tpp zip");
         }
         write_test_png(
@@ -1797,6 +1873,28 @@ mod tests {
         {
             let file = fs::File::create(csup_root.join("NE_CSUP.zip")).expect("csup zip");
             let mut zip = ZipWriter::new(file);
+            let csup_manifest = PackageAssetManifest {
+                schema_version: 1,
+                family_id: "csup".to_string(),
+                package_id: "NE_CSUP".to_string(),
+                assets: vec![PackageAssetRecord {
+                    id: "csup:KBOS:CSUP-NE_0-0.png".to_string(),
+                    airport_id: "BOS".to_string(),
+                    label: "CSUP-NE_0-0".to_string(),
+                    asset_kind: "csup_page".to_string(),
+                    document_type: "csup".to_string(),
+                    asset_path: "afd/BOS/CSUP-NE_0-0.png".to_string(),
+                    thumbnail_path: "thumbnails/afd/BOS/CSUP-NE_0-0.png".to_string(),
+                }],
+            };
+            zip.start_file(PACKAGE_ASSET_MANIFEST_NAME, SimpleFileOptions::default())
+                .expect("start csup asset manifest");
+            zip.write_all(
+                serde_json::to_vec_pretty(&csup_manifest)
+                    .expect("serialize csup asset manifest")
+                    .as_slice(),
+            )
+            .expect("write csup asset manifest");
             zip.start_file("afd/BOS/CSUP-NE_0-0.png", SimpleFileOptions::default())
                 .expect("start csup png");
             zip.write_all(b"png").expect("write csup png");
@@ -1805,7 +1903,8 @@ mod tests {
                 SimpleFileOptions::default(),
             )
             .expect("start csup thumb");
-            zip.write_all(b"thumb").expect("write csup thumb");
+            zip.write_all(&test_png_bytes(100, 150))
+                .expect("write csup thumb");
             zip.finish().expect("finish csup zip");
         }
         write_test_png(csup_root.join("afd/BOS/CSUP-NE_0-0.png"), 300, 200);
@@ -1837,11 +1936,13 @@ mod tests {
             tpp_sources: vec![AssetSource {
                 package_outputs_path: tpp_outputs,
                 asset_root: tpp_root,
+                package_root: temp.path().join("tpp-ne"),
                 source_urls_path: Some(tpp_source_urls),
             }],
             csup_sources: vec![AssetSource {
                 package_outputs_path: csup_outputs,
                 asset_root: csup_root,
+                package_root: temp.path().join("csup"),
                 source_urls_path: Some(csup_source_urls),
             }],
         };

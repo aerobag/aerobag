@@ -147,6 +147,8 @@ pub struct ProcedureLegProvenance {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GuidanceState {
     pub active_leg_index: usize,
+    #[serde(default)]
+    pub display_split_leg_id: Option<String>,
     pub sequencing_mode: SequencingMode,
     pub direct_to: Option<DirectToState>,
     #[serde(default)]
@@ -222,6 +224,7 @@ pub struct ResolvedLegUiView {
 pub struct GuidanceUiView {
     pub sequencing_mode: SequencingMode,
     pub active_leg_index: Option<usize>,
+    pub display_split_leg_index: Option<usize>,
     pub active_component_index: Option<usize>,
     pub active_leg: Option<PlanLeg>,
     pub direct_to: Option<DirectToUiView>,
@@ -315,6 +318,9 @@ pub fn activate_direct_to(
     Ok(FlightPlan {
         guidance: Some(GuidanceState {
             active_leg_index,
+            display_split_leg_id: target_leg_index
+                .and_then(|index| plan.resolved_legs.get(index))
+                .map(|leg| leg.id.clone()),
             sequencing_mode: SequencingMode::DirectTo,
             direct_to: Some(DirectToState {
                 start: NavRef::LatLon(from_position),
@@ -348,6 +354,7 @@ pub fn activate_direct_to_leg(
     Ok(FlightPlan {
         guidance: Some(GuidanceState {
             active_leg_index: target_leg_index,
+            display_split_leg_id: Some(target_leg.id.clone()),
             sequencing_mode: SequencingMode::DirectTo,
             direct_to: Some(DirectToState {
                 start: NavRef::LatLon(from_position),
@@ -373,6 +380,7 @@ pub fn activate_leg(plan: &FlightPlan, leg_index: usize) -> AppResult<FlightPlan
     Ok(FlightPlan {
         guidance: Some(GuidanceState {
             active_leg_index: leg_index,
+            display_split_leg_id: plan.resolved_legs.get(leg_index).map(|leg| leg.id.clone()),
             sequencing_mode: SequencingMode::FollowPlan,
             direct_to: None,
             suspend_reason: None,
@@ -399,6 +407,7 @@ pub fn activate_next_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
     Ok(FlightPlan {
         guidance: Some(GuidanceState {
             active_leg_index: next_leg_index,
+            display_split_leg_id: plan.resolved_legs.get(next_leg_index).map(|leg| leg.id.clone()),
             sequencing_mode: SequencingMode::FollowPlan,
             direct_to: None,
             suspend_reason: None,
@@ -417,6 +426,7 @@ pub fn suspend_sequencing(plan: &FlightPlan) -> AppResult<FlightPlan> {
     Ok(FlightPlan {
         guidance: Some(GuidanceState {
             active_leg_index: guidance.active_leg_index,
+            display_split_leg_id: guidance.display_split_leg_id.clone(),
             sequencing_mode: SequencingMode::Suspended,
             direct_to: None,
             suspend_reason: Some(SuspendReason::Manual),
@@ -446,6 +456,7 @@ pub fn unsuspend_sequencing(plan: &FlightPlan) -> AppResult<FlightPlan> {
     Ok(FlightPlan {
         guidance: Some(GuidanceState {
             active_leg_index: guidance.active_leg_index,
+            display_split_leg_id: guidance.display_split_leg_id.clone(),
             sequencing_mode: SequencingMode::FollowPlan,
             direct_to: None,
             suspend_reason: None,
@@ -475,6 +486,7 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
             {
                 Some(resume_leg_index) => GuidanceState {
                     active_leg_index: resume_leg_index,
+                    display_split_leg_id: plan.resolved_legs.get(resume_leg_index).map(|leg| leg.id.clone()),
                     sequencing_mode: SequencingMode::FollowPlan,
                     direct_to: None,
                     suspend_reason: None,
@@ -485,6 +497,10 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                         .as_deref()
                         .and_then(|target_leg_id| leg_index_by_id(&plan.resolved_legs, target_leg_id))
                         .unwrap_or(guidance.active_leg_index),
+                    display_split_leg_id: direct_to
+                        .target_leg_id
+                        .clone()
+                        .or_else(|| guidance.display_split_leg_id.clone()),
                     sequencing_mode: SequencingMode::Suspended,
                     direct_to: None,
                     suspend_reason: Some(SuspendReason::DirectToComplete),
@@ -502,6 +518,7 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
             if should_suspend_after_active_leg(&plan, guidance.active_leg_index) {
                 GuidanceState {
                     active_leg_index: guidance.active_leg_index,
+                    display_split_leg_id: guidance.display_split_leg_id.clone(),
                     sequencing_mode: SequencingMode::Suspended,
                     direct_to: None,
                     suspend_reason: Some(SuspendReason::Boundary),
@@ -509,6 +526,10 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
             } else if guidance.active_leg_index + 1 < plan.resolved_legs.len() {
                 GuidanceState {
                     active_leg_index: guidance.active_leg_index + 1,
+                    display_split_leg_id: plan
+                        .resolved_legs
+                        .get(guidance.active_leg_index + 1)
+                        .map(|leg| leg.id.clone()),
                     sequencing_mode: SequencingMode::FollowPlan,
                     direct_to: None,
                     suspend_reason: None,
@@ -516,6 +537,7 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
             } else {
                 GuidanceState {
                     active_leg_index: guidance.active_leg_index,
+                    display_split_leg_id: guidance.display_split_leg_id.clone(),
                     sequencing_mode: SequencingMode::Suspended,
                     direct_to: None,
                     suspend_reason: Some(SuspendReason::RouteEnd),
@@ -640,6 +662,17 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
             None
         } else {
             Some(guidance.active_leg_index)
+        },
+        display_split_leg_index: if plan.resolved_legs.is_empty() {
+            None
+        } else if active_guidance_leg(&plan).is_some() {
+            Some(guidance.active_leg_index)
+        } else {
+            guidance
+                .display_split_leg_id
+                .as_deref()
+                .and_then(|leg_id| leg_index_by_id(&plan.resolved_legs, leg_id))
+                .or(Some(0))
         },
         active_component_index,
         active_leg: active_guidance_leg(&plan),
@@ -1703,6 +1736,15 @@ fn revalidate_guidance_after_plan_edit(
         guidance.active_leg_index = resolved_legs.len().saturating_sub(1);
     }
 
+    if guidance
+        .display_split_leg_id
+        .as_deref()
+        .and_then(|leg_id| leg_index_by_id(resolved_legs, leg_id))
+        .is_none()
+    {
+        guidance.display_split_leg_id = None;
+    }
+
     if let Some(direct_to) = guidance.direct_to.as_mut() {
         let target_leg_index = direct_to
             .target_leg_id
@@ -1943,6 +1985,7 @@ mod tests {
             ],
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -2011,6 +2054,7 @@ mod tests {
             ],
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -2833,6 +2877,7 @@ mod tests {
         let plan = FlightPlan {
             guidance: Some(GuidanceState {
                 active_leg_index: 3,
+                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -2896,6 +2941,7 @@ mod tests {
             ],
             guidance: Some(GuidanceState {
                 active_leg_index: 1,
+                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -2963,6 +3009,7 @@ mod tests {
         let suspended = FlightPlan {
             guidance: Some(GuidanceState {
                 active_leg_index: 3,
+                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::Suspended,
                 direct_to: None,
                 suspend_reason: Some(SuspendReason::Boundary),
@@ -2990,6 +3037,7 @@ mod tests {
         let suspended = FlightPlan {
             guidance: Some(GuidanceState {
                 active_leg_index: 3,
+                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::Suspended,
                 direct_to: None,
                 suspend_reason: Some(SuspendReason::Boundary),
@@ -3015,6 +3063,7 @@ mod tests {
         let plan = FlightPlan {
             guidance: Some(GuidanceState {
                 active_leg_index: 2,
+                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -3159,6 +3208,7 @@ mod tests {
         let guided = FlightPlan {
             guidance: Some(GuidanceState {
                 active_leg_index: 2,
+                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,

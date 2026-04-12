@@ -929,7 +929,7 @@ function buildMockFlightPlanUiState(
     components,
     resolved_legs: legs,
     guidance: guidance
-      ? {
+        ? {
           sequencing_mode: guidance.sequencing_mode as SequencingMode,
           active_leg_index: guidance.active_leg_index,
           display_split_leg_index: guidance.active_leg_index,

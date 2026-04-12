@@ -7,6 +7,7 @@ import type {
   ChartPageData,
   FlightPlanUiMutation,
   FlightPlanUiState,
+  LatLon,
   NavRef,
   Situation,
 } from "./domain/types";
@@ -30,6 +31,7 @@ import {
   renderTiles,
   scaleForZoom,
   viewportCenterLatLon,
+  worldToScreen,
   zoomAroundPoint,
   type MapViewportState,
   type ScreenPoint,
@@ -50,6 +52,7 @@ import {
   airwayExitCandidatesFromPresentation,
   materializeAirwaySelection,
   prepareAirwayPresentationForAnchors,
+  resolveNavRefPosition,
   suggestAirwaysNearAnchor,
 } from "./domain/airwayPlanner";
 import { getBrowserNavDb } from "./domain/webNavDb";
@@ -57,6 +60,13 @@ import { getBrowserNavDb } from "./domain/webNavDb";
 type SurfaceSize = {
   width: number;
   height: number;
+};
+
+type FlightPlanRouteSegment = {
+  id: string;
+  from: LatLon;
+  to: LatLon;
+  status: "completed" | "active" | "remaining";
 };
 
 type AppPage = "map" | "plan" | "charts";
@@ -628,6 +638,7 @@ export default function App() {
           legSummary={legSummary}
           locationSearch={locationSearch}
           situation={appState.situation}
+          planUiState={planUiState}
           uiSession={uiSession}
           adapterBackend={adapterBackend}
           adapterDetail={adapterDetail}
@@ -821,6 +832,7 @@ function MapPage(props: {
   legSummary: string;
   locationSearch: string;
   situation: Situation;
+  planUiState: FlightPlanUiState | null;
   uiSession: UiSession | null;
   adapterBackend: AdapterBackendKind;
   adapterDetail: string;
@@ -842,6 +854,7 @@ function MapPage(props: {
     legSummary,
     locationSearch,
     situation,
+    planUiState,
     uiSession,
     adapterBackend,
     adapterDetail,
@@ -854,6 +867,7 @@ function MapPage(props: {
     visible_features: [],
     warnings: [],
   });
+  const [flightPlanRoute, setFlightPlanRoute] = useState<FlightPlanRouteSegment[]>([]);
   const [mapOverlayViewport, setMapOverlayViewport] = useState<MapViewportState | null>(null);
   const viewportRef = useRef<MapViewportState>(viewport);
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
@@ -908,6 +922,58 @@ function MapPage(props: {
     () => resolveSituationOverlay(situation, viewport, surfaceSize.width, surfaceSize.height),
     [situation, viewport, surfaceSize.height, surfaceSize.width],
   );
+  const routeScreenSegments = useMemo(() => {
+    if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      return [];
+    }
+    return flightPlanRoute.map((segment) => ({
+      ...segment,
+      from: worldToScreen(viewport, latLonToWorld(segment.from.lat, segment.from.lon), surfaceSize.width, surfaceSize.height),
+      to: worldToScreen(viewport, latLonToWorld(segment.to.lat, segment.to.lon), surfaceSize.width, surfaceSize.height),
+    }));
+  }, [flightPlanRoute, surfaceSize.height, surfaceSize.width, viewport]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function resolveFlightPlanRoute() {
+      const legs = planUiState?.resolved_legs ?? [];
+      if (legs.length === 0) {
+        setFlightPlanRoute([]);
+        return;
+      }
+      const resolvedPositions = new Map<string, Promise<LatLon>>();
+      const resolveCachedPosition = (navRef: NavRef) => {
+        const key = navRefKey(navRef);
+        let promise = resolvedPositions.get(key);
+        if (!promise) {
+          promise = resolveNavRefPosition(navRef);
+          resolvedPositions.set(key, promise);
+        }
+        return promise;
+      };
+      const segments = await Promise.all(legs.map(async (leg) => ({
+        id: leg.leg_id,
+        from: await resolveCachedPosition(leg.from),
+        to: await resolveCachedPosition(leg.to),
+        status: routeStatusForLeg(planUiState, leg.leg_index),
+      })));
+      if (!cancelled) {
+        setFlightPlanRoute(segments);
+      }
+    }
+
+    resolveFlightPlanRoute().catch((error: unknown) => {
+      console.error("failed to resolve flight plan route", error);
+      if (!cancelled) {
+        setFlightPlanRoute([]);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [planUiState]);
 
   useEffect(() => {
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -1133,6 +1199,32 @@ function MapPage(props: {
             ) : null}
           </div>
         ))}
+        {routeScreenSegments.length > 0 ? (
+          <svg className="vectorOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
+            {routeScreenSegments.map((segment) => (
+              <Fragment key={segment.id}>
+                <line
+                  x1={segment.from.x}
+                  y1={segment.from.y}
+                  x2={segment.to.x}
+                  y2={segment.to.y}
+                  stroke="rgba(0, 0, 0, 0.55)"
+                  strokeWidth="7"
+                  strokeLinecap="round"
+                />
+                <line
+                  x1={segment.from.x}
+                  y1={segment.from.y}
+                  x2={segment.to.x}
+                  y2={segment.to.y}
+                  stroke={routeSegmentColor(segment.status)}
+                  strokeWidth="3.5"
+                  strokeLinecap="round"
+                />
+              </Fragment>
+            ))}
+          </svg>
+        ) : null}
         {mapOverlay.visible_features.length > 0 ? (
           <svg
             className="vectorOverlay"
@@ -3261,11 +3353,44 @@ function navRefsEqual(left: NavRef | null, right: NavRef | null) {
   return false;
 }
 
+function navRefKey(value: NavRef) {
+  if ("Airport" in value) return `airport:${value.Airport}`;
+  if ("Navaid" in value) return `navaid:${value.Navaid}`;
+  if ("Fix" in value) return `fix:${value.Fix}`;
+  return `latlon:${value.LatLon.lat}:${value.LatLon.lon}`;
+}
+
 function navRefLabel(value: NavRef) {
   if ("Airport" in value) return value.Airport;
   if ("Navaid" in value) return value.Navaid;
   if ("Fix" in value) return value.Fix;
   return `${value.LatLon.lat.toFixed(3)}, ${value.LatLon.lon.toFixed(3)}`;
+}
+
+function routeStatusForLeg(planUiState: FlightPlanUiState | null, legIndex: number): FlightPlanRouteSegment["status"] {
+  const guidance = planUiState?.guidance ?? null;
+  const activeLegIndex = guidance?.active_leg != null ? guidance.active_leg_index : null;
+  if (activeLegIndex != null) {
+    if (legIndex < activeLegIndex) {
+      return "completed";
+    }
+    if (legIndex === activeLegIndex) {
+      return "active";
+    }
+    return "remaining";
+  }
+  const splitIndex = guidance?.display_split_leg_index ?? 0;
+  return legIndex < splitIndex ? "completed" : "remaining";
+}
+
+function routeSegmentColor(status: FlightPlanRouteSegment["status"]) {
+  if (status === "completed") {
+    return "#8c9dad";
+  }
+  if (status === "active") {
+    return "#ff4fcf";
+  }
+  return "#ffffff";
 }
 
 function resolveChartLabel(chartId: string) {

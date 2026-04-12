@@ -1239,6 +1239,7 @@ mod tests {
             resolved_legs: Vec::new(),
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -1279,6 +1280,7 @@ mod tests {
             resolved_legs: Vec::new(),
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -1330,6 +1332,7 @@ mod tests {
             resolved_legs: Vec::new(),
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -1383,6 +1386,7 @@ mod tests {
             resolved_legs: Vec::new(),
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -1570,6 +1574,7 @@ mod tests {
             resolved_legs: Vec::new(),
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,

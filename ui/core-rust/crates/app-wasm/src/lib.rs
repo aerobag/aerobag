@@ -26,6 +26,11 @@ pub fn activate_next_leg_ui(plan_json: &str) -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
+pub fn delete_component_ui(plan_json: &str, component_index: usize) -> Result<String, JsValue> {
+    delete_component_ui_json(plan_json, component_index).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn suspend_sequencing_ui(plan_json: &str) -> Result<String, JsValue> {
     suspend_sequencing_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
 }
@@ -148,7 +153,7 @@ pub fn remove_flight_plan_leg(plan_json: &str, index: usize) -> Result<String, J
 pub fn insert_airway_materialized_ui(
     plan_json: &str,
     start_component_index: usize,
-    end_component_index: usize,
+    end_component_index_json: &str,
     selection_json: &str,
     airway_json: &str,
     resolved_legs_json: &str,
@@ -156,7 +161,7 @@ pub fn insert_airway_materialized_ui(
     insert_airway_materialized_ui_json(
         plan_json,
         start_component_index,
-        end_component_index,
+        end_component_index_json,
         selection_json,
         airway_json,
         resolved_legs_json,
@@ -445,6 +450,14 @@ fn activate_next_leg_ui_json(plan_json: &str) -> Result<String, String> {
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
+fn delete_component_ui_json(plan_json: &str, component_index: usize) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let mutation =
+        app_core::delete_component_ui(&plan, component_index).map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
 fn suspend_sequencing_ui_json(plan_json: &str) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
@@ -608,7 +621,7 @@ fn replace_procedure_from_selection_ui_json(
 fn insert_airway_materialized_ui_json(
     plan_json: &str,
     start_component_index: usize,
-    end_component_index: usize,
+    end_component_index_json: &str,
     selection_json: &str,
     airway_json: &str,
     resolved_legs_json: &str,
@@ -621,6 +634,8 @@ fn insert_airway_materialized_ui_json(
         serde_json::from_str(airway_json).map_err(|err| err.to_string())?;
     let resolved_legs: Vec<app_core::ResolvedLeg> =
         serde_json::from_str(resolved_legs_json).map_err(|err| err.to_string())?;
+    let end_component_index: Option<usize> =
+        serde_json::from_str(end_component_index_json).map_err(|err| err.to_string())?;
     let mutation = app_core::insert_airway_materialized_ui(
         &plan,
         start_component_index,

@@ -1427,12 +1427,12 @@ function FlightPlanPage(props: {
   onSequenceActiveLeg: () => void | Promise<void>;
   onInsertAirway: (
     startComponentIndex: number,
-    endComponentIndex: number,
+    endComponentIndex: number | null,
     entryIndex: number,
     exitIndex: number,
     presentation: AirwayPresentationPlan,
     originAnchor: NavRef,
-    destinationAnchor: NavRef,
+    destinationAnchor: NavRef | null,
   ) => void | Promise<void>;
   onReplaceAirway: (
     componentIndex: number,
@@ -1440,7 +1440,7 @@ function FlightPlanPage(props: {
     exitIndex: number,
     presentation: AirwayPresentationPlan,
     originAnchor: NavRef,
-    destinationAnchor: NavRef,
+    destinationAnchor: NavRef | null,
   ) => void | Promise<void>;
 }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
@@ -1454,7 +1454,7 @@ function FlightPlanPage(props: {
     startComponentIndex: number | null;
     endComponentIndex: number | null;
     originAnchor: NavRef;
-    destinationAnchor: NavRef;
+    destinationAnchor: NavRef | null;
     suggestions: AirwaySuggestion[];
     selectedAirwayName: string | null;
     presentation: AirwayPresentationPlan | null;
@@ -1571,7 +1571,7 @@ function FlightPlanPage(props: {
         legIndex: row.kind === "waypoint" ? matchingLeg?.leg_index ?? null : null,
         removeLegIndex: null as number | null,
         startComponentIndex:
-          row.depth === 0 && row.kind === "waypoint" && row.componentIndex !== null && nextTopLevelWaypoint && nextTopLevelWaypoint.componentIndex !== null
+          row.depth === 0 && row.kind === "waypoint" && row.componentIndex !== null
             ? row.componentIndex
             : null as number | null,
         endComponentIndex:
@@ -1579,7 +1579,7 @@ function FlightPlanPage(props: {
             ? nextTopLevelWaypoint.componentIndex
             : null as number | null,
         originAnchor:
-          row.depth === 0 && row.kind === "waypoint" && row.navRef && nextTopLevelWaypoint?.navRef
+          row.depth === 0 && row.kind === "waypoint" && row.navRef
             ? row.navRef
             : null as NavRef | null,
         destinationAnchor:
@@ -1609,16 +1609,9 @@ function FlightPlanPage(props: {
         {
           id: "change_airway",
           label: "Change Airway",
-          enabled:
-            selectedRow.canChangeAirway &&
-            selectedRow.precedingWaypoint !== null &&
-            selectedRow.followingWaypoint !== null,
+          enabled: selectedRow.canChangeAirway,
           onSelect: () => {
-            if (
-              !selectedRow.canChangeAirway ||
-              selectedRow.precedingWaypoint === null ||
-              selectedRow.followingWaypoint === null
-            ) {
+            if (!selectedRow.canChangeAirway) {
               return;
             }
             const adapter = props.appCoreAdapter;
@@ -1632,8 +1625,8 @@ function FlightPlanPage(props: {
               componentIndex: selectedRow.componentIndex,
               startComponentIndex: null,
               endComponentIndex: null,
-              originAnchor: selectedRow.precedingWaypoint,
-              destinationAnchor: selectedRow.followingWaypoint,
+              originAnchor: selectedRow.precedingWaypoint!,
+              destinationAnchor: selectedRow.followingWaypoint!,
               suggestions: [],
               selectedAirwayName: null,
               presentation: null,
@@ -1708,9 +1701,7 @@ function FlightPlanPage(props: {
           : action.id === "add_airway"
             ? selectedRow.canAddAirwayAfter &&
               selectedRow.startComponentIndex !== null &&
-              selectedRow.endComponentIndex !== null &&
               selectedRow.originAnchor !== null &&
-              selectedRow.destinationAnchor !== null &&
               props.appCoreAdapter !== null
             : action.id === "charts"
               ? selectedRow.chartAirportId !== null
@@ -2067,7 +2058,8 @@ function FlightPlanPage(props: {
             {airwayPicker ? (
               <div className="waypointActionTray">
                 <div className="planGuidanceSummary">
-                  AIRWAY {navRefLabel(airwayPicker.originAnchor)} → {navRefLabel(airwayPicker.destinationAnchor)}
+                  AIRWAY {navRefLabel(airwayPicker.originAnchor)}
+                  {airwayPicker.destinationAnchor ? ` → ${navRefLabel(airwayPicker.destinationAnchor)}` : ""}
                 </div>
                 {airwayPicker.error ? <div className="planGuidanceSummary">{airwayPicker.error}</div> : null}
                 {airwayPicker.loading ? (
@@ -2187,10 +2179,7 @@ function FlightPlanPage(props: {
                                 airwayPicker.originAnchor,
                                 airwayPicker.destinationAnchor,
                               );
-                            } else if (
-                              airwayPicker.startComponentIndex !== null &&
-                              airwayPicker.endComponentIndex !== null
-                            ) {
+                            } else if (airwayPicker.startComponentIndex !== null) {
                               await props.onInsertAirway(
                                 airwayPicker.startComponentIndex,
                                 airwayPicker.endComponentIndex,

@@ -58,6 +58,7 @@ pub use planning::{
     change_procedure_enroute_transition, change_procedure_runway_transition, delete_component,
     delete_waypoint_component,
     flatten_component_to_waypoints, insert_airway_between_waypoints,
+    insert_airway_after_waypoint,
     insert_procedure_between_waypoints, interpret_path_termination, project_ui_state,
     replace_airway_component, replace_procedure_component, sequence_active_leg, suspend_sequencing,
     unsuspend_sequencing, AirwaySegment, ConcretizedNavItem, DirectToState, FlightPlan,
@@ -692,20 +693,30 @@ pub fn replace_procedure_from_selection_ui(
 pub fn insert_airway_materialized_ui(
     plan: &FlightPlan,
     start_component_index: usize,
-    end_component_index: usize,
+    end_component_index: Option<usize>,
     selection: AirwayAutoSelection,
     airway: AirwaySegment,
     resolved_legs: Vec<ResolvedLeg>,
 ) -> AppResult<AirwayPlanUiMutation> {
-    let mutation_legs = with_component_index_source(&resolved_legs, start_component_index + 1);
-    let inserted = insert_airway_between_waypoints(
-        plan,
-        start_component_index,
-        end_component_index,
-        airway,
-        resolved_legs,
-    )?;
-    let component_index = start_component_index + 1;
+    let (inserted, component_index) = match end_component_index {
+        Some(end_component_index) => (
+            insert_airway_between_waypoints(
+                plan,
+                start_component_index,
+                end_component_index,
+                airway,
+                resolved_legs.clone(),
+            )?,
+            start_component_index + 1,
+        ),
+        None => {
+            let inserted =
+                insert_airway_after_waypoint(plan, start_component_index, airway, resolved_legs.clone())?;
+            let component_index = inserted.route_components.len() - 1;
+            (inserted, component_index)
+        }
+    };
+    let mutation_legs = with_component_index_source(&resolved_legs, component_index);
     Ok(project_airway_mutation(AirwayPlanMutation {
         airway: component_airway(&inserted, component_index)?,
         resolved_legs: mutation_legs,
@@ -798,6 +809,11 @@ pub fn suspend_sequencing_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutatio
 
 pub fn unsuspend_sequencing_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutation> {
     let plan = unsuspend_sequencing(plan)?;
+    Ok(project_plan_mutation(plan))
+}
+
+pub fn delete_component_ui(plan: &FlightPlan, component_index: usize) -> AppResult<FlightPlanUiMutation> {
+    let plan = delete_component(plan, component_index)?;
     Ok(project_plan_mutation(plan))
 }
 
@@ -1398,7 +1414,7 @@ mod tests {
         let mutation = insert_airway_materialized_ui(
             &plan,
             0,
-            1,
+            Some(1),
             selection,
             airway,
             resolved_legs,

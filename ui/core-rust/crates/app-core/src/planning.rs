@@ -584,24 +584,32 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         .route_components
         .iter()
         .enumerate()
-        .map(|(component_index, component)| RouteComponentUiView {
-            component_index,
-            kind: component_view_kind(component),
-            summary: component_summary(component),
-            items: component_ui_items(
-                component,
-                intrinsic_component_legs(&plan, &grouped_legs, component_index),
-            ),
-            active: active_component_index == Some(component_index),
-            can_add_airway_after: matches!(component, RouteComponent::Waypoint { .. })
-                && matches!(
-                    plan.route_components.get(component_index + 1),
-                    Some(RouteComponent::Waypoint { .. })
+        .map(|(component_index, component)| {
+            let preceding_waypoint =
+                adjacent_waypoint_component(&plan.route_components, component_index, -1);
+            let following_waypoint =
+                adjacent_waypoint_component(&plan.route_components, component_index, 1);
+            RouteComponentUiView {
+                component_index,
+                kind: component_view_kind(component),
+                summary: component_summary(component),
+                items: component_ui_items(
+                    component,
+                    intrinsic_component_legs(&plan, &grouped_legs, component_index),
                 ),
-            can_change_airway: matches!(component, RouteComponent::Airway { .. }),
-            can_remove: !matches!(component, RouteComponent::Waypoint { .. }),
-            preceding_waypoint: adjacent_waypoint_component(&plan.route_components, component_index, -1),
-            following_waypoint: adjacent_waypoint_component(&plan.route_components, component_index, 1),
+                active: active_component_index == Some(component_index),
+                can_add_airway_after: matches!(component, RouteComponent::Waypoint { .. })
+                    && matches!(
+                        plan.route_components.get(component_index + 1),
+                        Some(RouteComponent::Waypoint { .. }) | None
+                    ),
+                can_change_airway: matches!(component, RouteComponent::Airway { .. })
+                    && preceding_waypoint.is_some()
+                    && following_waypoint.is_some(),
+                can_remove: !matches!(component, RouteComponent::Waypoint { .. }),
+                preceding_waypoint,
+                following_waypoint,
+            }
         })
         .collect();
 
@@ -832,6 +840,68 @@ pub fn insert_airway_between_waypoints(
         &preserved_grouped_legs,
     );
 
+    if resolved_legs.is_empty() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "flight plan must contain at least one flyable leg after airway insertion"
+                .to_string(),
+        });
+    }
+
+    Ok(FlightPlan {
+        route_components: new_components,
+        resolved_legs: resolved_legs.clone(),
+        legs: legacy_legs_from_resolved_legs(&resolved_legs),
+        guidance: None,
+        ..plan
+    })
+}
+
+pub fn insert_airway_after_waypoint(
+    plan: &FlightPlan,
+    start_component_index: usize,
+    airway: AirwaySegment,
+    airway_legs: Vec<ResolvedLeg>,
+) -> AppResult<FlightPlan> {
+    let plan = plan.clone().normalized();
+    match plan.route_components.get(start_component_index) {
+        Some(RouteComponent::Waypoint { .. }) => {}
+        Some(_) => {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: "airway tail insertion start must be a waypoint component".to_string(),
+            })
+        }
+        None => {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: format!("component index out of bounds: {start_component_index}"),
+            })
+        }
+    }
+
+    if start_component_index + 1 != plan.route_components.len() {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "airway tail insertion requires the selected waypoint to be the end of the route".to_string(),
+        });
+    }
+
+    let mut new_components = plan.route_components.clone();
+    let airway_component_index = new_components.len();
+    new_components.push(RouteComponent::Airway {
+        airway: airway.clone(),
+    });
+
+    let mut grouped_legs = grouped_component_legs(&plan)
+        .into_iter()
+        .collect::<BTreeMap<usize, Vec<ResolvedLeg>>>();
+    grouped_legs.insert(
+        airway_component_index,
+        rewrite_grouped_legs_source(&airway_legs, airway_component_index),
+    );
+
+    let resolved_legs = rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_legs);
     if resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
@@ -3054,6 +3124,26 @@ mod tests {
         assert!(ui.components[1].can_remove);
         assert_eq!(ui.components[1].preceding_waypoint, Some(NavRef::Airport("KRNT".to_string())));
         assert_eq!(ui.components[1].following_waypoint, Some(NavRef::Airport("KUAO".to_string())));
+    }
+
+    #[test]
+    fn insert_airway_after_waypoint_appends_atomic_airway_at_route_end() {
+        let inserted = insert_airway_after_waypoint(
+            &sample_waypoint_only_plan(),
+            2,
+            sample_inserted_airway().0,
+            sample_inserted_airway().1,
+        )
+        .unwrap();
+
+        assert_eq!(inserted.route_components.len(), 4);
+        assert!(matches!(
+            inserted.route_components.last(),
+            Some(RouteComponent::Airway { .. })
+        ));
+        let last_leg = inserted.resolved_legs.last().unwrap();
+        assert_eq!(last_leg.from, NavRef::Fix("SUMMA".to_string()));
+        assert_eq!(last_leg.to, NavRef::Fix("VAMPS".to_string()));
     }
 
     #[test]

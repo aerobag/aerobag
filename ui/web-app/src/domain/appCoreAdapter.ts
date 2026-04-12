@@ -139,7 +139,7 @@ export interface AppCoreAdapter {
   insertAirwayMaterializedUi(
     plan: FlightPlan,
     startComponentIndex: number,
-    endComponentIndex: number,
+    endComponentIndex: number | null,
     selection: AirwayAutoSelection,
     airway: AirwaySegment,
     resolvedLegs: ResolvedLeg[],
@@ -582,7 +582,7 @@ type WasmModule = {
   insert_airway_materialized_ui(
     planJson: string,
     startComponentIndex: number,
-    endComponentIndex: number,
+    endComponentIndexJson: string,
     selectionJson: string,
     airwayJson: string,
     resolvedLegsJson: string,
@@ -807,7 +807,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   async insertAirwayMaterializedUi(
     plan: FlightPlan,
     startComponentIndex: number,
-    endComponentIndex: number,
+    endComponentIndex: number | null,
     selection: AirwayAutoSelection,
     airway: AirwaySegment,
     resolvedLegs: ResolvedLeg[],
@@ -816,7 +816,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       await this.module.insert_airway_materialized_ui(
         JSON.stringify(plan),
         startComponentIndex,
-        endComponentIndex,
+        JSON.stringify(endComponentIndex),
         JSON.stringify(selection),
         JSON.stringify(airway),
         JSON.stringify(resolvedLegs),

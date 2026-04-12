@@ -163,7 +163,7 @@ export async function materializeAirwaySelection(
   entry: AirwayEntryCandidate,
   exit: AirwayExitCandidate,
   originAnchor: NavRef,
-  destinationAnchor: NavRef,
+  destinationAnchor: NavRef | null,
 ): Promise<{
   selection: AirwayAutoSelection;
   airway: AirwaySegment;
@@ -212,11 +212,12 @@ export async function materializeAirwaySelection(
   }
 
   const originPos = await resolveNavRefPosition(originAnchor);
-  const destinationPos = await resolveNavRefPosition(destinationAnchor);
   const entryPos = await resolveNavRefPosition(entry.nav_ref);
   const exitPos = await resolveNavRefPosition(exit.nav_ref);
   const originDistanceNm = distanceNmBetween(originPos, entryPos);
-  const destinationDistanceNm = distanceNmBetween(destinationPos, exitPos);
+  const destinationDistanceNm = destinationAnchor
+    ? distanceNmBetween(await resolveNavRefPosition(destinationAnchor), exitPos)
+    : 0;
 
   const materialized = {
     selection: {

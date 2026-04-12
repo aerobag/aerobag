@@ -7,6 +7,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 use zip::ZipArchive;
@@ -284,8 +285,11 @@ pub struct CsupRecord {
 }
 
 pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Result<ResourceIndex> {
-    let product_builds_root = product_builds_root(&request.output_path)?;
+    log_progress(request, "begin build_resource_index")?;
+    let artifact_root = artifact_root(&request.output_path)?;
+    log_progress(request, "located artifact_root")?;
     let nav_cycle_code = read_nav_cycle_code(&request.nav_db_zip)?;
+    log_progress(request, "read nav cycle code")?;
     let nav_temporal = nav_cycle_code
         .as_deref()
         .and_then(temporal_from_cycle_code)
@@ -304,24 +308,34 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         &request.chart_sources,
         &request.tpp_sources,
         &request.csup_sources,
-        &product_builds_root,
+        &artifact_root,
     )?;
+    log_progress(request, "collected packages")?;
     let temporal_summary = build_temporal_summary(&packages, &nav_temporal);
     let chart_collections = collect_chart_collections(&request.chart_sources)?;
+    log_progress(request, "collected chart collections")?;
     let sqlite_path = extract_sqlite_entry(&request.nav_db_zip, "main.db")?;
+    log_progress(request, "extracted nav sqlite")?;
     let connection =
         Connection::open(sqlite_path.path()).context("failed to open extracted main.db")?;
+    log_progress(request, "opened nav sqlite")?;
     let airports = load_airports_from_nav_db(&connection)?;
+    log_progress(request, "loaded airports")?;
     let airport_aliases = load_airport_aliases_from_nav_db(&connection)?;
+    log_progress(request, "loaded airport aliases")?;
     let thumbnail_root = request
         .output_path
         .parent()
         .context("resource-index output path must have a parent directory")?
         .join("thumbnails");
     let plates = collect_plate_records(&request.tpp_sources, &airport_aliases, &thumbnail_root)?;
+    log_progress(request, "collected plate records")?;
     let csups = collect_csup_records(&request.csup_sources, &airport_aliases, &thumbnail_root)?;
+    log_progress(request, "collected csup records")?;
     let airport_resources = collect_airport_resources(&plates, &csups);
+    log_progress(request, "collected airport resources")?;
     let families = collect_families(&packages, !plates.is_empty(), !csups.is_empty());
+    log_progress(request, "collected families")?;
     let regions = Region::ALL
         .iter()
         .enumerate()
@@ -331,6 +345,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
             sort_order: index as u32,
         })
         .collect();
+    log_progress(request, "collected regions")?;
 
     let index = ResourceIndex {
         schema_version: 4,
@@ -338,7 +353,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         generated_at_utc: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         temporal_summary,
         nav_db: NavDbRef {
-            artifact_path: relativize_to_product_builds_root(&request.nav_db_zip, &product_builds_root),
+            artifact_path: relativize_to_artifact_root(&request.nav_db_zip, &artifact_root),
             sqlite_entry: "main.db".to_string(),
             cycle_code: nav_cycle_code,
             version_label: nav_db_version_label(&request.nav_db_zip, &nav_temporal),
@@ -354,8 +369,11 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         plates,
         csups,
     };
+    log_progress(request, "built index structure")?;
     validate_thumbnail_paths(&index, &thumbnail_root)?;
-    validate_packaged_assets(&index, &index.packages, &product_builds_root)?;
+    log_progress(request, "validated thumbnails")?;
+    validate_packaged_assets(&index, &index.packages, &artifact_root)?;
+    log_progress(request, "validated packaged assets")?;
     Ok(index)
 }
 
@@ -365,15 +383,19 @@ pub fn write_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         .parent()
         .context("output path must have a parent directory")?;
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    log_progress(request, "write_resource_index parent ready")?;
     let thumbnail_root = parent.join("thumbnails");
     if thumbnail_root.exists() {
         fs::remove_dir_all(&thumbnail_root)
             .with_context(|| format!("failed to clear {}", thumbnail_root.display()))?;
     }
+    log_progress(request, "thumbnail root cleared")?;
     let index = build_resource_index(request)?;
+    log_progress(request, "build_resource_index returned")?;
     let json = serde_json::to_vec_pretty(&index).context("failed to serialize resource index")?;
     fs::write(&request.output_path, json)
         .with_context(|| format!("failed to write {}", request.output_path.display()))?;
+    log_progress(request, "wrote resource-index.json")?;
     let catalog_output_path = request
         .catalog_output_path
         .clone()
@@ -382,7 +404,35 @@ pub fn write_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     let catalog_json = serde_json::to_vec_pretty(&catalog).context("failed to serialize catalog")?;
     fs::write(&catalog_output_path, catalog_json)
         .with_context(|| format!("failed to write {}", catalog_output_path.display()))?;
+    log_progress(request, "wrote catalog.json")?;
     Ok(index)
+}
+
+fn log_progress(request: &BuildResourceIndexRequest, message: &str) -> anyhow::Result<()> {
+    eprintln!(
+        "resource-index-progress {} {}",
+        Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
+        message
+    );
+    let parent = request
+        .output_path
+        .parent()
+        .context("resource-index output path must have a parent directory")?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    let path = parent.join("resource-index.progress.log");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    writeln!(
+        file,
+        "{} {}",
+        Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
+        message
+    )
+    .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
 }
 
 pub fn build_catalog(index: &ResourceIndex) -> Catalog {
@@ -573,11 +623,11 @@ fn validate_thumbnail_paths(index: &ResourceIndex, thumbnail_root: &Path) -> any
 fn validate_packaged_assets(
     index: &ResourceIndex,
     packages: &[ResourcePackage],
-    product_builds_root: &Path,
+    artifact_root: &Path,
 ) -> anyhow::Result<()> {
     let package_map = packages
         .iter()
-        .map(|package| (package.id.clone(), product_builds_root.join(&package.artifact_path)))
+        .map(|package| (package.id.clone(), artifact_root.join(&package.artifact_path)))
         .collect::<BTreeMap<_, _>>();
     let package_members = package_map
         .iter()
@@ -742,23 +792,23 @@ fn collect_packages(
     chart_sources: &[ChartSource],
     tpp_sources: &[AssetSource],
     csup_sources: &[AssetSource],
-    product_builds_root: &Path,
+    artifact_root: &Path,
 ) -> anyhow::Result<Vec<ResourcePackage>> {
     let chart_packages = chart_sources
         .par_iter()
-        .map(|source| collect_packages_for_source(&source.family_id, &source.package_root, source.source_urls_path.as_deref(), &source.package_outputs_path, product_builds_root))
+        .map(|source| collect_packages_for_source(&source.family_id, &source.package_root, source.source_urls_path.as_deref(), &source.package_outputs_path, artifact_root))
         .collect::<Vec<_>>()
         .into_iter()
         .collect::<anyhow::Result<Vec<_>>>()?;
     let tpp_packages = tpp_sources
         .par_iter()
-        .map(|source| collect_packages_for_source("tpp", &source.package_root, source.source_urls_path.as_deref(), &source.package_outputs_path, product_builds_root))
+        .map(|source| collect_packages_for_source("tpp", &source.package_root, source.source_urls_path.as_deref(), &source.package_outputs_path, artifact_root))
         .collect::<Vec<_>>()
         .into_iter()
         .collect::<anyhow::Result<Vec<_>>>()?;
     let csup_packages = csup_sources
         .par_iter()
-        .map(|source| collect_packages_for_source("csup", &source.package_root, source.source_urls_path.as_deref(), &source.package_outputs_path, product_builds_root))
+        .map(|source| collect_packages_for_source("csup", &source.package_root, source.source_urls_path.as_deref(), &source.package_outputs_path, artifact_root))
         .collect::<Vec<_>>()
         .into_iter()
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -821,7 +871,7 @@ fn collect_packages_for_source(
     package_root: &Path,
     source_urls_path: Option<&Path>,
     package_outputs_path: &Path,
-    product_builds_root: &Path,
+    artifact_root: &Path,
 ) -> anyhow::Result<Vec<ResourcePackage>> {
     let temporal = infer_temporal_from_source_urls(source_urls_path)?;
     read_package_outputs(package_outputs_path)?
@@ -832,7 +882,7 @@ fn collect_packages_for_source(
                 package_root,
                 &record,
                 temporal.as_ref(),
-                product_builds_root,
+                artifact_root,
             )
         })
         .collect()
@@ -867,7 +917,7 @@ fn package_from_record(
     package_root: &Path,
     record: &PackageOutputRecord,
     temporal: Option<&FaaTemporalMetadata>,
-    product_builds_root: &Path,
+    artifact_root: &Path,
 ) -> anyhow::Result<ResourcePackage> {
     let artifact_path = package_root.join(&record.zip);
     let size_bytes = fs::metadata(&artifact_path)
@@ -877,7 +927,7 @@ fn package_from_record(
         id: package_id_from_manifest_name(&record.manifest),
         family_id: family_id.to_string(),
         region_id: record.region.to_ascii_lowercase(),
-        artifact_path: relativize_to_product_builds_root(&artifact_path, product_builds_root),
+        artifact_path: relativize_to_artifact_root(&artifact_path, artifact_root),
         size_bytes,
         checksum_sha256: record.zip_sha256.clone(),
         cycle_code: temporal.and_then(|value| value.cycle_code.clone()),
@@ -887,16 +937,21 @@ fn package_from_record(
     })
 }
 
-fn product_builds_root(output_path: &Path) -> anyhow::Result<PathBuf> {
+fn artifact_root(output_path: &Path) -> anyhow::Result<PathBuf> {
     output_path
         .ancestors()
-        .find(|path| path.file_name().and_then(|v| v.to_str()) == Some("product-builds"))
-        .map(Path::to_path_buf)
-        .ok_or_else(|| anyhow::anyhow!("failed to locate product-builds root from {}", output_path.display()))
+        .find_map(|path| {
+            let name = path.file_name().and_then(|v| v.to_str())?;
+            match name {
+                "published-packaged" | "product-builds" => path.parent().map(Path::to_path_buf),
+                _ => None,
+            }
+        })
+        .ok_or_else(|| anyhow::anyhow!("failed to locate artifact root from {}", output_path.display()))
 }
 
-fn relativize_to_product_builds_root(path: &Path, product_builds_root: &Path) -> String {
-    path.strip_prefix(product_builds_root)
+fn relativize_to_artifact_root(path: &Path, artifact_root: &Path) -> String {
+    path.strip_prefix(artifact_root)
         .map(|value| value.display().to_string())
         .unwrap_or_else(|_| path.display().to_string())
 }

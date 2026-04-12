@@ -117,6 +117,7 @@ pub fn render_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<Native
     fs::create_dir_all(&paths.meta).context("failed to create meta dir")?;
 
     let work_dir = stage_work_dir(&request.source_repo, &request.run_root, request.region)?;
+    clean_tpp_transient_work_files(&work_dir)?;
     let provenance_dir = paths.meta.join("provenance").join(format!(
         "tpp-{}",
         request.region.code().to_ascii_lowercase()
@@ -189,6 +190,34 @@ fn stage_work_dir(_source_repo: &Path, run_root: &Path, region: Region) -> anyho
     fs::create_dir_all(&work_dir)
         .with_context(|| format!("failed to create {}", work_dir.display()))?;
     Ok(work_dir)
+}
+
+fn clean_tpp_transient_work_files(work_dir: &Path) -> anyhow::Result<()> {
+    let imagemagick_tmp = work_dir.join(".tmp-imagemagick");
+    if imagemagick_tmp.exists() {
+        fs::remove_dir_all(&imagemagick_tmp)
+            .with_context(|| format!("failed to remove {}", imagemagick_tmp.display()))?;
+    }
+    clean_tpp_transient_tree(work_dir)
+}
+
+fn clean_tpp_transient_tree(dir: &Path) -> anyhow::Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            clean_tpp_transient_tree(&path)?;
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with("_exiftool_tmp") || name.ends_with('~') {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn render_tpp_region(work_dir: &Path, region: Region, render_jobs: usize) -> anyhow::Result<()> {
@@ -902,6 +931,11 @@ fn render_png_preserve_alpha(
 }
 
 fn write_user_comment(work_dir: &Path, png_path: &Path, comment: &str) -> anyhow::Result<()> {
+    let temp_path = PathBuf::from(format!("{}_exiftool_tmp", png_path.display()));
+    if temp_path.exists() {
+        fs::remove_file(&temp_path)
+            .with_context(|| format!("failed to remove stale {}", temp_path.display()))?;
+    }
     let invocation = ToolInvocation {
         program: "exiftool".to_string(),
         args: vec![

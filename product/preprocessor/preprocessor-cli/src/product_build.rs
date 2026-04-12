@@ -218,6 +218,8 @@ struct TaskCompletion {
 
 const PRODUCT_BUILD_CGROUP_ACTIVE_ENV: &str = "PRODUCT_BUILD_CGROUP_ACTIVE";
 const DEFAULT_PRODUCT_BUILD_MEMORY_MAX: &str = "80G";
+const TPP_RENDER_JOBS_PER_RUN: usize = 8;
+const TPP_RENDER_WEIGHT: usize = 4;
 
 pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<String> {
     let mut lines = Vec::new();
@@ -299,7 +301,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             ChartFamily::EnrL,
             ChartFamily::EnrH,
         ];
-        let work_unit_budget = config.max_heavy_jobs.max(1) * 4;
+        let work_unit_budget = config.max_heavy_jobs.max(1) * 4 + 2;
         let mut pending_tasks = Vec::new();
         for family in chart_families {
             let family_id = family_slug(family).to_string();
@@ -372,7 +374,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             pending_tasks.push(ScheduledTask {
                 id: render_id.clone(),
                 deps: vec![],
-                weight: 1,
+                weight: TPP_RENDER_WEIGHT,
                 kind: ScheduledTaskKind::TppRender {
                     region: *region,
                     run_root: run_root.clone(),
@@ -435,8 +437,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
 
         let total_tasks = pending_tasks.len();
         master_log.log(format!(
-            "scheduler-ready tasks={} work_unit_budget={} chart_and_data_weight=4 csup_weight=2 tpp_weight=1 light_weight=1 resource_index_weight=2",
-            total_tasks, work_unit_budget
+            "scheduler-ready tasks={} work_unit_budget={} chart_and_data_weight=4 csup_weight=2 tpp_weight={} tpp_render_jobs_per_run={} light_weight=1 resource_index_weight=2",
+            total_tasks, work_unit_budget, TPP_RENDER_WEIGHT, TPP_RENDER_JOBS_PER_RUN
         ))?;
         let (tx, rx) = mpsc::channel::<(String, usize, anyhow::Result<TaskCompletion>)>();
         let mut running_jobs = 0_usize;
@@ -547,7 +549,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                     source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
                                 ),
                                 fetch_jobs: config.fetch_jobs,
-                                render_jobs: config.cpu_jobs.max(1),
+                                render_jobs: TPP_RENDER_JOBS_PER_RUN,
                             };
                             build_tpp_render_node(&config, &request).map(|record| TaskCompletion {
                                 node_records: vec![record],
@@ -680,7 +682,13 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
                             let record =
-                                build_resource_index_node(&config, &data_zip, chart_sources, tpp_sources, csup_sources)?;
+                                build_resource_index_node(
+                                    &config,
+                                    &data_zip,
+                                    chart_sources,
+                                    tpp_sources,
+                                    csup_sources,
+                                )?;
                             let cache_hit = record.cache_hit;
                             Ok(TaskCompletion {
                                 node_records: vec![record],
@@ -926,6 +934,7 @@ fn build_bundle_manifest(
         .temporal_summary
         .uniform_expiration_date
         .clone()
+        .or_else(|| index.temporal_summary.expiration_dates.first().cloned())
         .context("resource-index missing end-valid date")?;
 
     Ok(BundleManifest {
@@ -1015,7 +1024,13 @@ fn sync_unpacked_zip(
     let unpack_dir = unpacked_target_dir(config, unpacked_root, zip_path)?;
     let marker_path = unpack_dir.join(".source-zip-sha256");
     let zip_sha256 = hash_file(zip_path)?;
-    if unpack_dir.is_dir() && fs::read_to_string(&marker_path).ok().as_deref() == Some(zip_sha256.as_str()) {
+    if unpack_dir.is_dir()
+        && fs::read_to_string(&marker_path)
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            == Some(zip_sha256.as_str())
+    {
         return Ok((true, unpack_dir));
     }
     if unpack_dir.exists() {
@@ -1802,7 +1817,7 @@ fn build_tpp_package_node(
         run_root: run_root.to_path_buf(),
         prefetch_source_urls: Some(source_urls_path.to_path_buf()),
         fetch_jobs: config.fetch_jobs,
-        render_jobs: config.cpu_jobs.max(1),
+        render_jobs: TPP_RENDER_JOBS_PER_RUN,
     };
     let render_node_name = format!("tpp-{region_id}-render");
     let render_inputs = tpp_render_inputs(&render_request, source_urls_path, &region_id)?;
@@ -2882,6 +2897,10 @@ fn csup_version_label(source_urls_dir: &Path) -> anyhow::Result<String> {
 fn tpp_region_version_label(source_urls_dir: &Path, region: Region) -> anyhow::Result<String> {
     let region_id = region.code().to_ascii_lowercase();
     let source_urls = source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl"));
+    // FAA d-TPP is a 28-day digital product. That differs from the printed TPP
+    // books and from our chart/CSUP 56-day windows, so TPP artifacts are labeled
+    // from the DDTPP effective date in the source URLs rather than from the
+    // surrounding 56-day bundle window.
     let effective =
         find_effective_date_from_urls(&read_source_urls_jsonl(&source_urls)?)
             .with_context(|| format!("missing tpp effective date in {}", source_urls.display()))?;

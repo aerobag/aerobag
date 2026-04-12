@@ -6,9 +6,10 @@ use std::{
 };
 
 use anyhow::Context;
-use chrono::{NaiveDate, Utc};
+use chrono::{Duration, NaiveDate, Utc};
 mod emit_source_urls;
 mod product_build;
+use crate::emit_source_urls::{cycle_effective_date, discover_published_cycles};
 use preprocessor_charts::{
     build_family_tiles, build_family_vrts, likely_current_bottleneck, package_family_regions,
     phase_plan, run_family, run_native_family, ChartRunRequest, NativeChartRunRequest,
@@ -83,8 +84,8 @@ fn usage() -> &'static str {
   preprocessor-cli build-vectors --main-db <path> --output-dir <path> --version-label <label>
   preprocessor-cli build-obstacles [--build-root <path>] [--fetch-jobs <count>] [--snapshot-date <YYYY-MM-DD>]
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>]...
-  preprocessor-cli build-cycle [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
-  preprocessor-cli build-product [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli run-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
 }
@@ -218,24 +219,24 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
     Ok((result.manifest_path, result.stats_path, result.zip_path))
 }
 
-fn latest_bundle_manifest(build_root: &Path) -> anyhow::Result<PathBuf> {
-    let mut manifests = fs::read_dir(build_root)
-        .with_context(|| format!("failed to read {}", build_root.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("failed to iterate {}", build_root.display()))?
+fn product_cycles_to_build(config: &product_build::ProductBuildConfig) -> anyhow::Result<Vec<String>> {
+    if let Some(cycle) = &config.target_cycle {
+        return Ok(vec![cycle.clone()]);
+    }
+    let as_of_date = Utc::now().date_naive();
+    let mut cycles = discover_published_cycles()?
         .into_iter()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("bundle_") && name.ends_with(".json"))
-                .unwrap_or(false)
+        .filter(|cycle| match cycle_effective_date(cycle) {
+            Ok(effective) => effective + Duration::days(28) >= as_of_date,
+            Err(_) => false,
         })
         .collect::<Vec<_>>();
-    manifests.sort();
-    manifests
-        .pop()
-        .ok_or_else(|| anyhow::anyhow!("missing bundle_*.json under {}", build_root.display()))
+    cycles.sort();
+    cycles.dedup();
+    if cycles.is_empty() {
+        anyhow::bail!("no published FAA cycles are currently buildable");
+    }
+    Ok(cycles)
 }
 
 #[derive(Debug, Serialize)]
@@ -2063,11 +2064,12 @@ fn main() -> anyhow::Result<()> {
         }
         Some("build-product") => {
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;
-            let cycle_manifest_path = if maybe_reexec_build_cycle_under_cgroup(&args[2..])? {
-                latest_bundle_manifest(&config.build_root)?
-            } else {
-                build_cycle(&config)?
-            };
+            let mut cycle_manifest_paths = Vec::new();
+            for cycle in product_cycles_to_build(&config)? {
+                let mut cycle_config = config.clone();
+                cycle_config.target_cycle = Some(cycle);
+                cycle_manifest_paths.push(build_cycle(&cycle_config)?);
+            }
             let (obstacle_manifest_path, obstacle_stats_path, obstacle_zip_path) =
                 run_build_obstacles_command(&[])?;
             let as_of_date = Utc::now().date_naive();
@@ -2083,7 +2085,9 @@ fn main() -> anyhow::Result<()> {
                 &obstacle_sha256,
                 obstacle_size_bytes,
             )?;
-            println!("cycle_manifest {}", cycle_manifest_path.display());
+            for cycle_manifest_path in cycle_manifest_paths {
+                println!("cycle_manifest {}", cycle_manifest_path.display());
+            }
             println!("current_artifacts {}", current_artifacts_path.display());
             println!("obstacle_manifest {}", obstacle_manifest_path.display());
             println!("obstacle_stats {}", obstacle_stats_path.display());

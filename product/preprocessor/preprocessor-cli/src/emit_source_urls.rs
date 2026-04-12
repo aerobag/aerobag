@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
+use chrono::{Datelike, Duration, NaiveDate};
 use preprocessor_fetch::CacheLayout;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -22,16 +22,10 @@ enum CycleFormat {
     Iso,
 }
 
-#[derive(Clone, Copy)]
-enum DownloadCycleKind {
-    Legacy56,
-    Current28,
-}
-
-pub fn emit_source_urls(output_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+pub fn emit_source_urls(output_dir: &Path, target_cycle: Option<&str>) -> anyhow::Result<Vec<PathBuf>> {
     fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
-    let records_by_label = build_records()?;
+    let records_by_label = build_records(target_cycle)?;
     let mut results = Vec::new();
     for (label, records) in records_by_label {
         let path = write_source_urls(output_dir, &label, &records)?;
@@ -40,20 +34,44 @@ pub fn emit_source_urls(output_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(results)
 }
 
-fn build_records() -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>> {
-    let now = source_url_now()?;
-    let charts_start = version_start(
-        cycle_download(now, DownloadCycleKind::Legacy56),
-        CycleFormat::Charts,
-    )?;
-    let iso_start = version_start(
-        cycle_download(now, DownloadCycleKind::Legacy56),
-        CycleFormat::Iso,
-    )?;
-    let current_start = version_start(
-        cycle_download(now, DownloadCycleKind::Current28),
-        CycleFormat::Iso,
-    )?;
+pub fn discover_published_cycles() -> anyhow::Result<Vec<String>> {
+    let published_chart_effective_dates = discover_published_chart_effective_dates()?;
+    let mut cycles = discover_published_tpp_cycles()?
+        .into_iter()
+        .filter(|cycle| chart_effective_date_for_cycle(cycle, &published_chart_effective_dates).is_ok())
+        .collect::<Vec<_>>();
+    cycles.sort();
+    cycles.dedup();
+    Ok(cycles)
+}
+
+pub fn cycle_effective_date(cycle_code: &str) -> anyhow::Result<NaiveDate> {
+    let cycle_name: i32 = cycle_code
+        .parse()
+        .with_context(|| format!("failed to parse cycle code {cycle_code}"))?;
+    let cycle_upper = cycle_name / 100;
+    let cycle_lower = cycle_name - (cycle_upper * 100);
+    let year = 2000 + cycle_upper;
+    let first_date =
+        first_cycle_day(year).ok_or_else(|| anyhow::anyhow!("unsupported cycle year {year}"))?;
+    let first = NaiveDate::from_ymd_opt(year, 1, first_date)
+        .ok_or_else(|| anyhow::anyhow!("invalid first cycle day for {year}"))?;
+    Ok(first + Duration::days(28 * i64::from(cycle_lower - 1)))
+}
+
+fn build_records(target_cycle: Option<&str>) -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>> {
+    let cycle = match target_cycle {
+        Some(cycle) => cycle.to_string(),
+        None => discover_published_cycles()?
+            .into_iter()
+            .last()
+            .context("no published FAA cycles discovered")?,
+    };
+    let published_chart_effective_dates = discover_published_chart_effective_dates()?;
+    let charts_effective = chart_effective_date_for_cycle(&cycle, &published_chart_effective_dates)?;
+    let charts_start = format_effective_date(charts_effective, CycleFormat::Charts);
+    let iso_start = format_effective_date(charts_effective, CycleFormat::Iso);
+    let current_start = format_effective_date(cycle_effective_date(&cycle)?, CycleFormat::Iso);
     let current_compact = current_start.replace('-', "");
 
     let mut records = vec![
@@ -212,15 +230,6 @@ fn build_records() -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>
     }
 
     Ok(records)
-}
-
-fn source_url_now() -> anyhow::Result<DateTime<Utc>> {
-    match env::var("AEROBAG_SOURCE_URL_NOW") {
-        Ok(value) => DateTime::parse_from_rfc3339(&value)
-            .map(|value| value.with_timezone(&Utc))
-            .with_context(|| format!("failed to parse AEROBAG_SOURCE_URL_NOW={value} as RFC3339")),
-        Err(_) => Ok(Utc::now()),
-    }
 }
 
 fn list_crawl_record(
@@ -425,55 +434,111 @@ fn extract_href_links(html: &[u8]) -> anyhow::Result<Vec<String>> {
     Ok(links)
 }
 
-fn cycle_download(now: DateTime<Utc>, kind: DownloadCycleKind) -> i32 {
-    let (te, fs) = calculate_cycle(now, 1);
-    match kind {
-        DownloadCycleKind::Legacy56 => fs,
-        DownloadCycleKind::Current28 => te,
-    }
-}
-
-fn calculate_cycle(now: DateTime<Utc>, future: i64) -> (i32, i32) {
-    let mut start_utc = Utc.with_ymd_and_hms(2020, 1, 2, 9, 0, 0).unwrap();
-    let mut cycle = 1_i32;
-    let mut last_year = 2019_i32;
-    let mut combined = 2001_i32;
-    let mut is56 = true;
-    let now_utc = now + Duration::days(28 * future);
-
-    while start_utc < now_utc {
-        if last_year != start_utc.year() {
-            cycle = 1;
-            last_year = start_utc.year();
-        } else {
-            cycle += 1;
+fn discover_published_tpp_cycles() -> anyhow::Result<BTreeSet<String>> {
+    let hrefs = extract_href_links(&fetch_url_bytes(DTPP_URL)?)?;
+    let mut cycles = BTreeSet::new();
+    for href in hrefs {
+        if !href.starts_with("http") || !href.ends_with(".zip") || !href.contains("DDTPP") {
+            continue;
         }
-        combined = (start_utc.year() % 2000) * 100 + cycle;
-        is56 = !is56;
-        start_utc += Duration::days(28);
+        let Some(compact) = extract_suffix_date_token(&href, "DDTPP", ".zip") else {
+            continue;
+        };
+        let effective = parse_compact_yy_mm_dd(&compact)?;
+        cycles.insert(cycle_code_from_effective_date(effective)?);
     }
+    Ok(cycles)
+}
 
-    if is56 {
-        (combined, combined)
-    } else {
-        let (previous, _) = calculate_cycle(now, future - 1);
-        (combined, previous)
+fn discover_published_chart_effective_dates() -> anyhow::Result<BTreeSet<NaiveDate>> {
+    let mut dates = BTreeSet::new();
+    for url in [VFR_URL, IFR_URL] {
+        let hrefs = extract_href_links(&fetch_url_bytes(url)?)?;
+        for href in hrefs {
+            for segment in href.split('/') {
+                if let Ok(date) = NaiveDate::parse_from_str(segment, "%m-%d-%Y") {
+                    dates.insert(date);
+                }
+            }
+        }
+    }
+    let hrefs = extract_href_links(&fetch_url_bytes(DAFD_URL)?)?;
+    for href in hrefs {
+        if let Some(compact) = extract_prefix_date_token(&href, "DCS_", ".zip") {
+            if let Ok(date) = NaiveDate::parse_from_str(&compact, "%Y%m%d") {
+                dates.insert(date);
+            }
+        }
+    }
+    Ok(dates)
+}
+
+fn chart_effective_date_for_cycle(
+    cycle: &str,
+    published_chart_effective_dates: &BTreeSet<NaiveDate>,
+) -> anyhow::Result<NaiveDate> {
+    let cycle_effective = cycle_effective_date(cycle)?;
+    if published_chart_effective_dates.contains(&cycle_effective) {
+        return Ok(cycle_effective);
+    }
+    let previous = cycle_effective - Duration::days(28);
+    if published_chart_effective_dates.contains(&previous) {
+        return Ok(previous);
+    }
+    bail!("no published chart/csup window found for cycle {cycle}")
+}
+
+fn format_effective_date(effective: NaiveDate, format: CycleFormat) -> String {
+    match format {
+        CycleFormat::Charts => effective.format("%m-%d-%Y").to_string(),
+        CycleFormat::Iso => effective.format("%Y-%m-%d").to_string(),
     }
 }
 
-fn version_start(cycle_name: i32, format: CycleFormat) -> anyhow::Result<String> {
-    let cycle_upper = cycle_name / 100;
-    let cycle_lower = cycle_name - (cycle_upper * 100);
-    let year = 2000 + cycle_upper;
+fn extract_suffix_date_token(href: &str, marker: &str, suffix: &str) -> Option<String> {
+    let marker_index = href.find(marker)?;
+    let suffix_index = href[marker_index..].find(suffix)? + marker_index;
+    let between = &href[marker_index..suffix_index];
+    let underscore = between.rfind('_')?;
+    let token = &between[underscore + 1..];
+    if token.len() == 6 && token.chars().all(|ch| ch.is_ascii_digit()) {
+        Some(token.to_string())
+    } else {
+        None
+    }
+}
+
+fn extract_prefix_date_token(href: &str, prefix: &str, suffix: &str) -> Option<String> {
+    let start = href.find(prefix)? + prefix.len();
+    let end = href[start..].find(suffix)? + start;
+    let token = &href[start..end];
+    if token.len() == 8 && token.chars().all(|ch| ch.is_ascii_digit()) {
+        Some(token.to_string())
+    } else {
+        None
+    }
+}
+
+fn parse_compact_yy_mm_dd(value: &str) -> anyhow::Result<NaiveDate> {
+    let year: i32 = format!("20{}", &value[0..2]).parse()?;
+    let month: u32 = value[2..4].parse()?;
+    let day: u32 = value[4..6].parse()?;
+    NaiveDate::from_ymd_opt(year, month, day)
+        .ok_or_else(|| anyhow::anyhow!("invalid compact date {value}"))
+}
+
+fn cycle_code_from_effective_date(effective: NaiveDate) -> anyhow::Result<String> {
+    let year = effective.year();
     let first_date =
         first_cycle_day(year).ok_or_else(|| anyhow::anyhow!("unsupported cycle year {year}"))?;
-    let mut epoch = Utc.with_ymd_and_hms(year, 1, first_date, 9, 0, 0).unwrap();
-    epoch += Duration::days(28 * i64::from(cycle_lower - 1));
-    let formatted = match format {
-        CycleFormat::Charts => epoch.format("%m-%d-%Y").to_string(),
-        CycleFormat::Iso => epoch.format("%Y-%m-%d").to_string(),
-    };
-    Ok(formatted)
+    let first = NaiveDate::from_ymd_opt(year, 1, first_date)
+        .ok_or_else(|| anyhow::anyhow!("invalid first cycle day for {year}"))?;
+    let delta_days = effective.signed_duration_since(first).num_days();
+    if delta_days < 0 || delta_days % 28 != 0 {
+        bail!("effective date {effective} does not align to a 28-day FAA cycle");
+    }
+    let cycle = (delta_days / 28) + 1;
+    Ok(format!("{:02}{:02}", year % 100, cycle))
 }
 
 fn first_cycle_day(year: i32) -> Option<u32> {
@@ -489,5 +554,37 @@ fn first_cycle_day(year: i32) -> Option<u32> {
         2028 => Some(20),
         2029 => Some(18),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_tpp_compact_suffix_date() {
+        let href = "https://aeronav.faa.gov/upload_313-d/terminal/DDTPPA_260416.zip";
+        assert_eq!(
+            extract_suffix_date_token(href, "DDTPP", ".zip").as_deref(),
+            Some("260416")
+        );
+        assert_eq!(parse_compact_yy_mm_dd("260416").unwrap(), NaiveDate::from_ymd_opt(2026, 4, 16).unwrap());
+        assert_eq!(cycle_code_from_effective_date(NaiveDate::from_ymd_opt(2026, 4, 16).unwrap()).unwrap(), "2604");
+    }
+
+    #[test]
+    fn resolves_chart_window_from_current_or_previous_cycle_start() {
+        let published = BTreeSet::from([
+            NaiveDate::from_ymd_opt(2026, 3, 19).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 5, 14).unwrap(),
+        ]);
+        assert_eq!(
+            chart_effective_date_for_cycle("2604", &published).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 3, 19).unwrap()
+        );
+        assert_eq!(
+            chart_effective_date_for_cycle("2605", &published).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 5, 14).unwrap()
+        );
     }
 }

@@ -34,7 +34,7 @@ use preprocessor_vectors::{build_vectors_dataset, BuildVectorsRequest};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::emit_source_urls::emit_source_urls;
+use crate::emit_source_urls::{discover_published_cycles, emit_source_urls};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProductBuildProfile {
@@ -71,6 +71,7 @@ pub struct ProductBuildConfig {
     pub chart_cutline_root: PathBuf,
     pub build_root: PathBuf,
     pub profile: ProductBuildProfile,
+    pub target_cycle: Option<String>,
     pub fetch_jobs: usize,
     pub cpu_jobs: usize,
     pub max_heavy_jobs: usize,
@@ -742,6 +743,7 @@ impl ProductBuildConfig {
         let mut profile = ProductBuildProfile::Production;
         let mut chart_cutline_root = repo_root.join("avare-assets").join("chart-cutlines");
         let mut build_root = artifact_root.join("product-builds").join(profile.as_str());
+        let mut target_cycle = None;
         let mut fetch_jobs = env_usize("FETCH_JOBS").unwrap_or(4);
         let mut cpu_jobs = env_usize("CPU_JOBS").unwrap_or_else(default_cpu_jobs);
         let mut max_heavy_jobs = env_usize("MAX_HEAVY_JOBS").unwrap_or(4).max(1);
@@ -765,6 +767,14 @@ impl ProductBuildConfig {
                 }
                 "--build-root" => {
                     build_root = PathBuf::from(args.get(index + 1).context("missing value for --build-root")?);
+                    index += 2;
+                }
+                "--cycle" => {
+                    target_cycle = Some(
+                        args.get(index + 1)
+                            .context("missing value for --cycle")?
+                            .to_string(),
+                    );
                     index += 2;
                 }
                 "--fetch-jobs" => {
@@ -800,6 +810,7 @@ impl ProductBuildConfig {
             chart_cutline_root,
             build_root,
             profile,
+            target_cycle,
             fetch_jobs,
             cpu_jobs,
             max_heavy_jobs,
@@ -815,8 +826,16 @@ fn build_source_urls_node(
     if let Some(override_root) = env_path("AEROBAG_SOURCE_URLS_ROOT") {
         return build_overridden_source_urls_node(config, &override_root);
     }
+    let resolved_cycle = match &config.target_cycle {
+        Some(cycle) => cycle.clone(),
+        None => discover_published_cycles()?
+            .into_iter()
+            .last()
+            .context("no published FAA cycles discovered")?,
+    };
     let emit_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/emit_source_urls.rs");
-    let inputs = BTreeMap::from([("emit_source".to_string(), hash_file(&emit_source)?)]);
+    let mut inputs = BTreeMap::from([("emit_source".to_string(), hash_file(&emit_source)?)]);
+    inputs.insert("target_cycle".to_string(), hash_text(&resolved_cycle));
     let shared_root = build_shared_node_dir(config, "source-urls")?;
     let prepared = prepare_node_at(&shared_root, "source-urls", &inputs)?;
     let output_dir = prepared.dir.join("out");
@@ -845,7 +864,7 @@ fn build_source_urls_node(
     fs::create_dir_all(&output_dir)?;
     env::set_var("FETCH_CACHE_ROOT", &config.fetch_cache_root);
     env::set_var("FETCH_CACHE_MODE", &config.fetch_cache_mode);
-    emit_source_urls(&output_dir)?;
+    emit_source_urls(&output_dir, Some(&resolved_cycle))?;
     let outputs = BTreeMap::from([("output_dir".to_string(), relative_artifact_path(&output_dir, &config.build_root))]);
     let record = write_node_record(
         prepared,
@@ -2433,6 +2452,7 @@ mod tests {
             chart_cutline_root: temp.path().join("cutlines"),
             build_root: temp.path().join("product-builds/validation"),
             profile: ProductBuildProfile::Validation,
+            target_cycle: None,
             fetch_jobs: 1,
             cpu_jobs: 1,
             max_heavy_jobs: 1,

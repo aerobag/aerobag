@@ -151,13 +151,6 @@ export interface AppCoreAdapter {
     airway: AirwaySegment,
     resolvedLegs: ResolvedLeg[],
   ): Promise<FlightPlanUiMutation>;
-  chartForPosition(
-    catalog: CatalogJson,
-    geometry: { polygons: Array<{ id: string; points: number[][] }> },
-    family: ChartFamilyId,
-    lat: number,
-    lon: number,
-  ): Promise<CatalogJson["charts"][number] | null>;
 }
 
 export type AdapterBackendKind = "wasm";
@@ -594,13 +587,6 @@ type WasmModule = {
     airwayJson: string,
     resolvedLegsJson: string,
   ): Promise<string> | string;
-  chart_for_position?(
-    catalogJson: string,
-    geometryJson: string,
-    familyJson: string,
-    lat: number,
-    lon: number,
-  ): Promise<string> | string;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
@@ -849,27 +835,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       ui_state: result.ui_state,
     };
   }
-
-  async chartForPosition(
-    catalog: CatalogJson,
-    geometry: { polygons: Array<{ id: string; points: number[][] }> },
-    family: ChartFamilyId,
-    lat: number,
-    lon: number,
-  ): Promise<CatalogJson["charts"][number] | null> {
-    if (typeof this.module.chart_for_position !== "function") {
-      throw new Error("generated wasm module is missing chart_for_position");
-    }
-    return JSON.parse(
-      await this.module.chart_for_position(
-        JSON.stringify(catalog),
-        JSON.stringify(geometry),
-        JSON.stringify(family),
-        lat,
-        lon,
-      ),
-    ) as CatalogJson["charts"][number] | null;
-  }
 }
 
 export async function loadBestAvailableAdapter(
@@ -949,6 +914,11 @@ function buildMockFlightPlanUiState(
       { kind: "waypoint", nav_ref: leg.to },
     ],
     active: legs[index]?.active ?? false,
+    can_add_airway_after: false,
+    can_change_airway: false,
+    can_remove: true,
+    preceding_waypoint: null,
+    following_waypoint: null,
   }));
 
   const activeLeg = guidance && guidance.active_leg_index >= 0
@@ -962,6 +932,7 @@ function buildMockFlightPlanUiState(
       ? {
           sequencing_mode: guidance.sequencing_mode as SequencingMode,
           active_leg_index: guidance.active_leg_index,
+          display_split_leg_index: guidance.active_leg_index,
           active_component_index: guidance.active_leg_index,
           active_leg: activeLeg as PlanLeg | null,
           direct_to: null,

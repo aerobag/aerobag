@@ -1823,13 +1823,14 @@ function FlightPlanPage(props: {
       setStructuredArrow(null);
       return;
     }
+    const activeLeg = guidance.active_leg;
     const surface = structuredSurfaceRef.current;
     if (!surface) {
       setStructuredArrow(null);
       return;
     }
 
-    const fromIndex = displayRows.findIndex((row) => row.rowKind === "waypoint" && navRefsEqual(row.navRef, guidance.active_leg?.from ?? null));
+    const fromIndex = displayRows.findIndex((row) => row.rowKind === "waypoint" && navRefsEqual(row.navRef, activeLeg.from));
     if (fromIndex < 0) {
       setStructuredArrow(null);
       return;
@@ -1838,13 +1839,13 @@ function FlightPlanPage(props: {
     let toIndex = -1;
     for (let index = fromIndex + 1; index < displayRows.length; index += 1) {
       const row = displayRows[index];
-      if (row.rowKind === "waypoint" && navRefsEqual(row.navRef, guidance.active_leg.to)) {
+      if (row.rowKind === "waypoint" && navRefsEqual(row.navRef, activeLeg.to)) {
         toIndex = index;
         break;
       }
     }
     if (toIndex < 0) {
-      toIndex = displayRows.findIndex((row) => row.rowKind === "waypoint" && navRefsEqual(row.navRef, guidance.active_leg.to));
+      toIndex = displayRows.findIndex((row) => row.rowKind === "waypoint" && navRefsEqual(row.navRef, activeLeg.to));
     }
     if (toIndex < 0) {
       setStructuredArrow(null);

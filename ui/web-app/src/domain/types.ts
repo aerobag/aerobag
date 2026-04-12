@@ -211,6 +211,7 @@ export type DirectToUiView = {
 export type GuidanceUiView = {
   sequencing_mode: SequencingMode;
   active_leg_index: number | null;
+  display_split_leg_index: number | null;
   active_component_index: number | null;
   active_leg: PlanLeg | null;
   direct_to: DirectToUiView | null;

@@ -768,6 +768,24 @@ button {
   gap: var(--thumb-gap);
 }
 
+.airwayLoadingPanel {
+  display: flex;
+  min-height: calc(var(--thumb) * 3);
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--thumb) * 0.18);
+}
+
+.spinner {
+  width: calc(var(--thumb) * 0.42);
+  height: calc(var(--thumb) * 0.42);
+  border-radius: 50%;
+  border: calc(var(--thumb) * 0.06) solid color-mix(in srgb, var(--theme-panel-border) 80%, white);
+  border-top-color: #d45a7a;
+  animation: spin 0.9s linear infinite;
+}
+
 .airwaySuggestionGrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--thumb), var(--thumb)));
@@ -792,6 +810,16 @@ button {
 .airwayChoiceButton.isSuggested {
   border-color: #d45a7a;
   box-shadow: 0 0 0 2px rgba(212, 90, 122, 0.22);
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .chartImage {

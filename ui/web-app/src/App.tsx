@@ -1638,7 +1638,10 @@ function FlightPlanPage(props: {
                 </div>
                 {airwayPicker.error ? <div className="planGuidanceSummary">{airwayPicker.error}</div> : null}
                 {airwayPicker.loading ? (
-                  <div className="planGuidanceSummary">Loading…</div>
+                  <div className="airwayLoadingPanel" aria-live="polite">
+                    <div className="spinner" aria-hidden="true" />
+                    <div className="planGuidanceSummary">Loading…</div>
+                  </div>
                 ) : airwayPicker.selectedAirwayName === null ? (
                   <div className="airwaySuggestionGrid">
                     {airwayPicker.suggestions.map((suggestion) => (
@@ -1869,18 +1872,20 @@ function FlightPlanPage(props: {
                         presentation: null,
                         selectedEntryIndex: null,
                       });
-                      void suggestAirwaysNearAnchor(adapter, selectedRow.originAnchor).then((suggestions) => {
-                        setAirwayPicker((current) => current ? {
-                          ...current,
-                          loading: false,
-                          suggestions,
-                        } : current);
-                      }).catch((error) => {
-                        setAirwayPicker((current) => current ? {
-                          ...current,
-                          loading: false,
-                          error: error instanceof Error ? error.message : String(error),
-                        } : current);
+                      window.requestAnimationFrame(() => {
+                        void suggestAirwaysNearAnchor(adapter, selectedRow.originAnchor).then((suggestions) => {
+                          setAirwayPicker((current) => current ? {
+                            ...current,
+                            loading: false,
+                            suggestions,
+                          } : current);
+                        }).catch((error) => {
+                          setAirwayPicker((current) => current ? {
+                            ...current,
+                            loading: false,
+                            error: error instanceof Error ? error.message : String(error),
+                          } : current);
+                        });
                       });
                       return;
                     }

@@ -26,20 +26,28 @@ def resolve_artifact_root() -> Path:
     env_value = os.environ.get("AEROBAG_ARTIFACT_ROOT")
     if env_value:
         candidate = Path(env_value).expanduser()
-        if any(candidate.joinpath(PRODUCTION_MANIFEST_DIR).glob("current_artifacts_*.json")):
-            return candidate
+        if not any(candidate.joinpath(PRODUCTION_MANIFEST_DIR).glob("current_artifacts_*.json")):
+            raise RuntimeError(
+                f"AEROBAG_ARTIFACT_ROOT does not contain current_artifacts_*.json under "
+                f"{candidate.joinpath(PRODUCTION_MANIFEST_DIR)}"
+            )
+        return candidate
     configured = ARTIFACT_ROOT_CONFIG.read_text().strip()
     candidate = Path(configured)
     if not candidate.is_absolute():
         candidate = (ROOT / candidate).resolve()
-    if any(candidate.joinpath(PRODUCTION_MANIFEST_DIR).glob("current_artifacts_*.json")):
-        return candidate
+    if not any(candidate.joinpath(PRODUCTION_MANIFEST_DIR).glob("current_artifacts_*.json")):
+        raise RuntimeError(
+            f"configured artifact root does not contain current_artifacts_*.json under "
+            f"{candidate.joinpath(PRODUCTION_MANIFEST_DIR)}"
+        )
     return candidate
 
 
 ARTIFACT_ROOT = resolve_artifact_root()
 UI_TARGET_ROOT = resolve_ui_target_root()
 WEB_STATIC_ROOT = UI_TARGET_ROOT / "web" / "generated-static"
+STAGE_STAMP_PATH = WEB_STATIC_ROOT / ".stage-stamp.json"
 
 
 def latest_current_artifacts(root: Path) -> Path:
@@ -292,12 +300,48 @@ def stage_nav_db() -> None:
     ensure_hard_link(NAV_DB_PATH, nav_root / "main.db")
 
 
+def current_stage_stamp() -> dict:
+    def file_stamp(path: Path) -> dict:
+        stat = path.stat()
+        return {
+            "path": str(path),
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        }
+
+    return {
+        "resource_index": file_stamp(RESOURCE_INDEX_PATH),
+        "vectors_zip": file_stamp(VECTOR_ZIP_PATH),
+        "nav_db": file_stamp(NAV_DB_PATH),
+        "bundle_manifest": file_stamp(PRODUCT_BUILD_FILE),
+        "build_manifest": file_stamp(BUILD_MANIFEST_FILE),
+        "version": 1,
+    }
+
+
+def stage_is_current() -> bool:
+    if not STAGE_STAMP_PATH.is_file():
+        return False
+    try:
+        existing = json.loads(STAGE_STAMP_PATH.read_text())
+    except Exception:
+        return False
+    return existing == current_stage_stamp()
+
+
+def write_stage_stamp() -> None:
+    STAGE_STAMP_PATH.write_text(json.dumps(current_stage_stamp(), indent=2, sort_keys=True) + "\n")
+
+
 def main() -> None:
     WEB_STATIC_ROOT.mkdir(parents=True, exist_ok=True)
+    if stage_is_current():
+        return
     stage_sectional_packages()
     stage_chart_assets()
     stage_vectors()
     stage_nav_db()
+    write_stage_stamp()
 
 
 if __name__ == "__main__":

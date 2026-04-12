@@ -85,12 +85,6 @@ enum class TileStorageKind {
     SectionalPackage,
 }
 
-data class MapProbe(
-    val family: MapChartFamily,
-    val lat: Double,
-    val lon: Double,
-)
-
 data class MapViewportSeed(
     val lat: Double,
     val lon: Double,
@@ -164,12 +158,6 @@ data class MapTileView(
     val centerYTms: Int,
     val probeOffsetX: Double,
     val probeOffsetY: Double,
-)
-
-data class ChartLookupResult(
-    val family: MapChartFamily,
-    val name: String,
-    val displayName: String,
 )
 
 data class InstalledPackage(

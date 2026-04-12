@@ -1,9 +1,6 @@
 package net.jonh.aerobag.prototype.domain
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonObject
 
 @Serializable
 data class WireResourceIndex(
@@ -223,15 +220,6 @@ fun deriveWireCatalog(resourceIndex: WireResourceIndex): WireCatalog {
             region_ids = listOf(collection.region_id),
             max_zoom = collection.levels.maxOfOrNull { it.zoom } ?: 0,
             tile_path_template = collection.tile_path_template,
-            coverage = buildJsonObject {
-                put("kind", "b_box")
-                putJsonObject("value") {
-                    put("south", collection.coverage_bounds.lat_min)
-                    put("north", collection.coverage_bounds.lat_max)
-                    put("west", collection.coverage_bounds.lon_min)
-                    put("east", collection.coverage_bounds.lon_max)
-                }
-            },
         )
     }
 

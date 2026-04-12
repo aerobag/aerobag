@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::geometry::GeoBounds;
 use crate::ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -54,13 +53,6 @@ pub struct CatalogPackage {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum ChartCoverage {
-    PolygonRef { polygon_id: String },
-    BBox(GeoBounds),
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChartRecord {
     pub id: ChartId,
     pub family_id: ChartFamilyId,
@@ -70,7 +62,6 @@ pub struct ChartRecord {
     pub region_ids: Vec<RegionId>,
     pub max_zoom: u8,
     pub tile_path_template: String,
-    pub coverage: ChartCoverage,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

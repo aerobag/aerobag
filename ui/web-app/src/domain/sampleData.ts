@@ -38,12 +38,6 @@ export const mapTileView: MapTileViewJson = {
   probe_offset_y: 0,
 };
 
-export const initialProbe = {
-  family: mapView.chart_family,
-  lat: mapView.initial_viewport.lat,
-  lon: mapView.initial_viewport.lon,
-};
-
 export const samplePlan = bootstrap.flight_plan;
 export const chartPage = deriveChartPage(resourceIndex, samplePlan);
 

@@ -5,7 +5,6 @@ import type {
   ContentInventory,
   ContentPolicy,
   FlightPlan,
-  ChartFamilyId,
   ContentAvailability,
   Situation,
 } from "./types";
@@ -101,13 +100,6 @@ export interface AppCoreAdapter {
   deriveChartPageState(resourceIndex: unknown, plan: FlightPlan, recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<DerivedChartPageState>;
   setContentPolicyState(state: AppState, catalog: CatalogJson, policy: ContentPolicy): Promise<AppState>;
   refreshContentState(state: AppState, catalog: CatalogJson, inventory: ContentInventory): Promise<AppState>;
-  chartForPosition(
-    catalog: CatalogJson,
-    geometry: { polygons: Array<{ id: string; points: number[][] }> },
-    family: ChartFamilyId,
-    lat: number,
-    lon: number,
-  ): Promise<CatalogJson["charts"][number] | null>;
 }
 
 export type AdapterBackendKind = "mock" | "wasm";
@@ -385,33 +377,6 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
       },
     };
   }
-
-  async chartForPosition(
-    catalog: CatalogJson,
-    geometry: { polygons: Array<{ id: string; points: number[][] }> },
-    family: ChartFamilyId,
-    lat: number,
-    lon: number,
-  ): Promise<CatalogJson["charts"][number] | null> {
-    for (const chart of catalog.charts) {
-      if (chart.family_id !== family) {
-        continue;
-      }
-
-      const coverage = chart.coverage as { kind?: string; value?: { polygon_id?: string } };
-      const polygonId = coverage.value?.polygon_id;
-      if (coverage.kind !== "polygon_ref" || !polygonId) {
-        continue;
-      }
-
-      const polygon = geometry.polygons.find((entry) => entry.id === polygonId);
-      if (polygon && pointInPolygon(lat, lon, polygon.points)) {
-        return chart;
-      }
-    }
-
-    return null;
-  }
 }
 
 type WasmModule = {
@@ -433,13 +398,6 @@ type WasmModule = {
   replace_flight_plan_state(stateJson: string, catalogJson: string, planJson: string): Promise<string> | string;
   set_content_policy_state(stateJson: string, catalogJson: string, policyJson: string): Promise<string> | string;
   refresh_content_state(stateJson: string, catalogJson: string, inventoryJson: string): Promise<string> | string;
-  chart_for_position(
-    catalogJson: string,
-    geometryJson: string,
-    familyJson: string,
-    lat: number,
-    lon: number,
-  ): Promise<string> | string;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
@@ -579,23 +537,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as AppState;
   }
 
-  async chartForPosition(
-    catalog: CatalogJson,
-    geometry: { polygons: Array<{ id: string; points: number[][] }> },
-    family: ChartFamilyId,
-    lat: number,
-    lon: number,
-  ): Promise<CatalogJson["charts"][number] | null> {
-    return JSON.parse(
-      await this.module.chart_for_position(
-        JSON.stringify(catalog),
-        JSON.stringify(geometry),
-        JSON.stringify(family),
-        lat,
-        lon,
-      ),
-    ) as CatalogJson["charts"][number] | null;
-  }
 }
 
 export async function loadBestAvailableAdapter(
@@ -623,8 +564,7 @@ export async function loadBestAvailableAdapter(
       typeof mod.derive_chart_page !== "function" ||
       typeof mod.derive_chart_page_state !== "function" ||
       typeof mod.set_content_policy_state !== "function" ||
-      typeof mod.refresh_content_state !== "function" ||
-      typeof mod.chart_for_position !== "function"
+      typeof mod.refresh_content_state !== "function"
     ) {
       throw new Error("generated wasm module is missing required exports");
     }
@@ -668,29 +608,6 @@ function sampleCatalogLike(_resourceIndex: unknown): CatalogJson {
       supplements: sampleCatalog.supplements,
     } as CatalogJson),
   };
-}
-
-function pointInPolygon(lat: number, lon: number, points: number[][]): boolean {
-  let inside = false;
-  let previousIndex = points.length - 1;
-
-  for (let currentIndex = 0; currentIndex < points.length; currentIndex += 1) {
-    const [currentLon, currentLat] = points[currentIndex];
-    const [previousLon, previousLat] = points[previousIndex];
-    const crossesLatitude = (currentLat > lat) !== (previousLat > lat);
-
-    if (crossesLatitude) {
-      const interpolatedLon =
-        previousLon + ((currentLon - previousLon) * (lat - previousLat)) / (currentLat - previousLat);
-      if (lon < interpolatedLon) {
-        inside = !inside;
-      }
-    }
-
-    previousIndex = currentIndex;
-  }
-
-  return inside;
 }
 
 function moveAirportToFront(

@@ -10,7 +10,6 @@ import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonEncoder
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNames
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -352,7 +351,6 @@ data class WireChartRecord(
     val region_ids: List<WireRegionId>,
     val max_zoom: Int,
     val tile_path_template: String,
-    val coverage: JsonElement,
 )
 
 @Serializable

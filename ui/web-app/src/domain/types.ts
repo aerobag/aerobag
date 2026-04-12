@@ -78,7 +78,6 @@ export type CatalogJson = {
     region_ids: RegionId[];
     max_zoom: number;
     tile_path_template: string;
-    coverage: unknown;
   }>;
   plates: Array<{
     id: {

@@ -1,4 +1,4 @@
-import type { CatalogJson, ChartFamilyId, ChartPageData, FlightPlan, MapViewJson, MapViewOptionJson, RegionId, ResourceIndexJson, TileStorageKind } from "./types";
+import type { ChartFamilyId, ChartPageData, FlightPlan, MapViewJson, MapViewOptionJson, RegionId, ResourceIndexJson, TileStorageKind } from "./types";
 
 type MapView = MapViewJson;
 type MapViewOption = MapViewOptionJson;
@@ -108,96 +108,6 @@ export function deriveMapViews(
     region_id: collection.region_id,
     map_view: deriveMapView(resourceIndex, collection),
   }));
-}
-
-export function deriveCatalog(resourceIndex: ResourceIndexJson): CatalogJson {
-  const cycle = resourceIndex.cycle ?? "unknown";
-  const families = resourceIndex.families.flatMap((family) =>
-    isSupportedChartFamily(family.id as ChartFamilyId)
-      ? [{
-          id: family.id as Extract<ChartFamilyId, "sec" | "tac" | "enr-l" | "enr-h">,
-          display_name: family.display_name,
-          kind: family.kind,
-          max_zoom: null,
-          tile_size: tileSizeForFamily(resourceIndex, family.id as Extract<ChartFamilyId, "sec" | "tac" | "enr-l" | "enr-h">),
-        }]
-      : [],
-  );
-  const packages = resourceIndex.packages.flatMap((pkg) =>
-    isSupportedChartFamily(pkg.family_id as ChartFamilyId)
-      ? [{
-          id: {
-            region: pkg.region_id,
-            family: pkg.family_id as Extract<ChartFamilyId, "sec" | "tac" | "enr-l" | "enr-h">,
-            cycle,
-          },
-          package_name: pkg.id,
-          family_id: pkg.family_id as Extract<ChartFamilyId, "sec" | "tac" | "enr-l" | "enr-h">,
-          region_id: pkg.region_id,
-          cycle,
-          artifact_kind: "zip",
-          relative_url: `/${cycle}/${pkg.id}.zip`,
-          manifest_name: pkg.id,
-          size_bytes: pkg.size_bytes,
-          checksum_sha256: pkg.checksum_sha256,
-        }]
-      : [],
-  );
-  const charts = resourceIndex.chart_collections.flatMap((collection) =>
-    isSupportedChartFamily(collection.family_id)
-      ? [{
-          id: {
-            family: collection.family_id,
-            name: collection.id,
-            cycle,
-          },
-          family_id: collection.family_id,
-          name: collection.id,
-          display_name: `${regionDisplayName(resourceIndex, collection.region_id)} ${familyDisplayName(resourceIndex, collection.family_id)}`,
-          cycle,
-          region_ids: [collection.region_id],
-          max_zoom: Math.max(...collection.levels.map((level) => level.zoom)),
-          tile_path_template: `${collection.chart_index}/{z}/{x}/{y}.webp`,
-          coverage: {
-            kind: "b_box",
-            value: {
-              south: collection.coverage_bounds.lat_min,
-              north: collection.coverage_bounds.lat_max,
-              west: collection.coverage_bounds.lon_min,
-              east: collection.coverage_bounds.lon_max,
-            },
-          },
-        }]
-      : [],
-  );
-  const plates = resourceIndex.plates.map((plate) => ({
-    id: {
-      airport_id: plate.airport_id,
-      procedure_code: plate.label,
-      page: 1,
-      cycle,
-    },
-    airport_id: plate.airport_id,
-    region_id: plate.region_id,
-    cycle,
-    procedure_code: plate.label,
-    display_name: plate.label,
-    kind: plate.asset_kind,
-    georeferenced: true,
-    page_count: 1,
-    asset_base_path: plate.asset_path.replace(/\.[^.]+$/, ""),
-  }));
-  return {
-    schema_version: 1,
-    cycle,
-    catalog_revision: resourceIndex.generated_at_utc,
-    families,
-    regions: resourceIndex.regions,
-    packages,
-    charts,
-    plates,
-    supplements: [],
-  };
 }
 
 function airportIdsFromPlan(plan: FlightPlan): string[] {

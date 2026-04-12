@@ -127,36 +127,6 @@ class ContentLogicTest {
     }
 
     @Test
-    fun mockMapLookupFindsBostonTacAtInitialProbe() {
-        val adapter = MockMapLookupAdapter(json)
-
-        val chart = adapter.chartForPosition(
-            catalogJson = SampleMapFixture.catalogJson,
-            geometryJson = SampleMapFixture.geometryJson,
-            family = SampleMapFixture.initialProbe.family,
-            lat = SampleMapFixture.initialProbe.lat,
-            lon = SampleMapFixture.initialProbe.lon,
-        )
-
-        assertEquals("Boston TAC", chart?.displayName)
-    }
-
-    @Test
-    fun mockMapLookupReturnsNullOutsideCoverage() {
-        val adapter = MockMapLookupAdapter(json)
-
-        val chart = adapter.chartForPosition(
-            catalogJson = SampleMapFixture.catalogJson,
-            geometryJson = SampleMapFixture.geometryJson,
-            family = SampleMapFixture.initialProbe.family,
-            lat = SampleMapFixture.initialProbe.lat + 4.0,
-            lon = SampleMapFixture.initialProbe.lon + 4.0,
-        )
-
-        assertNull(chart)
-    }
-
-    @Test
     fun tileViewportBuildsCenteredTmsGrid() {
         val cells = tileCells(
             MapTileView(
@@ -311,44 +281,13 @@ private object SampleMapFixture {
               "cycle": "2026-04-16",
               "region_ids": ["ne"],
               "max_zoom": 11,
-              "tile_path_template": "tiles/charts-tac/boston/{z}/{x}/{y}",
-              "coverage": {
-                "kind": "polygon_ref",
-                "value": {
-                  "polygon_id": "tac:boston"
-                }
-              }
+              "tile_path_template": "tiles/charts-tac/boston/{z}/{x}/{y}"
             }
           ],
           "plates": [],
           "supplements": []
         }
         """.trimIndent()
-
-    val geometryJson =
-        """
-        {
-          "schema_version": 1,
-          "polygons": [
-            {
-              "id": "tac:boston",
-              "points": [
-                [-72.0, 41.0],
-                [-70.0, 41.0],
-                [-70.0, 43.0],
-                [-72.0, 43.0],
-                [-72.0, 41.0]
-              ]
-            }
-          ]
-        }
-        """.trimIndent()
-
-    val initialProbe = MapProbe(
-        family = MapChartFamily.Tac,
-        lat = 42.0,
-        lon = -71.0,
-    )
 }
 
 private class FakeNativeBridge(
@@ -459,46 +398,6 @@ private class FakeNativeBridge(
         return json.encodeToString(mock.refreshContent(state, inventory).toWireForTesting())
     }
 
-    override fun chartForPositionJson(
-        catalogJson: String,
-        geometryJson: String,
-        familyJson: String,
-        lat: Double,
-        lon: Double,
-    ): String {
-        val family = when (json.decodeFromString<WireChartFamilyId>(familyJson)) {
-            WireChartFamilyId.Sec -> MapChartFamily.Sec
-            WireChartFamilyId.Tac -> MapChartFamily.Tac
-            WireChartFamilyId.EnrL -> MapChartFamily.EnrL
-            WireChartFamilyId.EnrH -> MapChartFamily.EnrH
-        }
-        val chart = MockMapLookupAdapter(json).chartForPosition(
-            catalogJson = catalogJson,
-            geometryJson = geometryJson,
-            family = family,
-            lat = lat,
-            lon = lon,
-        )
-        return chart?.let {
-            json.encodeToString(
-                WireChartRecord(
-                    id = WireChartId(
-                        family = family.toWireFamilyForTesting(),
-                        name = it.name,
-                        cycle = "2026-04-16",
-                    ),
-                    family_id = family.toWireFamilyForTesting(),
-                    name = it.name,
-                    display_name = it.displayName,
-                    cycle = "2026-04-16",
-                    region_ids = listOf(WireRegionId.Ne),
-                    max_zoom = 11,
-                    tile_path_template = "tiles/charts-tac/boston/{z}/{x}/{y}",
-                    coverage = json.parseToJsonElement("""{"kind":"polygon_ref","value":{"polygon_id":"tac:boston"}}"""),
-                ),
-            )
-        } ?: "null"
-    }
 }
 
 private fun WireContentPolicy.toUi() = when (this) {

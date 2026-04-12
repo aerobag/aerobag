@@ -16,7 +16,7 @@ pub mod session;
 pub mod state;
 
 pub use catalog::{
-    CatalogBundle, CatalogFamily, CatalogHandle, CatalogPackage, CatalogRegion, ChartCoverage,
+    CatalogBundle, CatalogFamily, CatalogHandle, CatalogPackage, CatalogRegion,
     ChartRecord, PlateRecord, SupplementRecord,
 };
 pub use chart_page::{
@@ -163,25 +163,6 @@ pub fn load_resource_index_chart_page_input(
         .expect("resource index cache poisoned")
         .insert(key, parsed.clone());
     Ok(parsed)
-}
-
-pub fn chart_for_position(
-    catalog: &CatalogHandle,
-    geometry: &GeometryBundle,
-    family: ChartFamilyId,
-    lat: f64,
-    lon: f64,
-) -> AppResult<Option<ChartRecord>> {
-    let point = LatLon { lat, lon };
-    for chart in &catalog.bundle.charts {
-        if chart.family_id != family {
-            continue;
-        }
-        if geometry.chart_contains(chart, point) {
-            return Ok(Some(chart.clone()));
-        }
-    }
-    Ok(None)
 }
 
 pub fn build_flight_plan(plan: FlightPlan) -> AppResult<FlightPlan> {
@@ -948,13 +929,7 @@ mod tests {
                     "cycle": "2026-04-16",
                     "region_ids": ["ne"],
                     "max_zoom": 10,
-                    "tile_path_template": "tiles/{chart_index}/{z}/{x}/{y}",
-                    "coverage": {
-                        "kind": "polygon_ref",
-                        "value": {
-                            "polygon_id": "sectional:boston"
-                        }
-                    }
+                    "tile_path_template": "tiles/{chart_index}/{z}/{x}/{y}"
                 }
             ],
             "plates": [
@@ -977,24 +952,6 @@ mod tests {
                 }
             ],
             "supplements": []
-        })
-        .to_string()
-    }
-
-    fn sample_geometry_json() -> String {
-        serde_json::json!({
-            "schema_version": 1,
-            "polygons": [
-                {
-                    "id": "sectional:boston",
-                    "points": [
-                        [-72.0, 43.0],
-                        [-72.0, 41.0],
-                        [-69.0, 41.0],
-                        [-69.0, 43.0]
-                    ]
-                }
-            ]
         })
         .to_string()
     }
@@ -1089,26 +1046,6 @@ mod tests {
         assert_eq!(handle.bundle.schema_version, 1);
         assert_eq!(handle.bundle.families[0].id, ChartFamilyId::Sectional);
         assert_eq!(handle.bundle.regions[0].id, RegionId::Ne);
-    }
-
-    #[test]
-    fn finds_chart_for_point_inside_polygon() {
-        let catalog = load_catalog(&sample_catalog_json()).unwrap();
-        let geometry = load_geometry(&sample_geometry_json()).unwrap();
-        let chart =
-            chart_for_position(&catalog, &geometry, ChartFamilyId::Sectional, 42.0, -71.0)
-                .unwrap();
-        assert_eq!(chart.unwrap().name, "Boston");
-    }
-
-    #[test]
-    fn does_not_find_chart_for_point_outside_polygon() {
-        let catalog = load_catalog(&sample_catalog_json()).unwrap();
-        let geometry = load_geometry(&sample_geometry_json()).unwrap();
-        let chart =
-            chart_for_position(&catalog, &geometry, ChartFamilyId::Sectional, 35.0, -71.0)
-                .unwrap();
-        assert!(chart.is_none());
     }
 
     #[test]

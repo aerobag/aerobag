@@ -24,7 +24,6 @@ declare module "@generated/app_wasm.js" {
   export const replace_flight_plan_state: (...args: unknown[]) => string;
   export const set_content_policy_state: (...args: unknown[]) => string;
   export const refresh_content_state: (...args: unknown[]) => string;
-  export const chart_for_position: (...args: unknown[]) => Promise<string>;
 }
 
 declare module "*.svg" {

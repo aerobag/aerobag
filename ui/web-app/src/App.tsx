@@ -36,6 +36,7 @@ import {
 } from "./domain/imageViewport";
 import { pointTileUrl, type PointTilePayload } from "./domain/vectorTiles";
 import type { MapOverlayQueryResult } from "./domain/appCoreAdapter";
+import { debugLog } from "./domain/debugLog";
 
 type SurfaceSize = {
   width: number;
@@ -154,6 +155,7 @@ export default function App() {
   const [appCoreAdapter, setAppCoreAdapter] = useState<AppCoreAdapter | null>(null);
   const [adapterBackend, setAdapterBackend] = useState<AdapterBackendKind>("mock");
   const [adapterDetail, setAdapterDetail] = useState<string>("loading");
+  const [sessionInitError, setSessionInitError] = useState<string | null>(null);
   const [selectedMapId, setSelectedMapId] = useState<string>(mapViews[0].id);
   const initialRecentAirportIds = useMemo(
     () => mergeRecentAirportIds(chartPage.airports, persistedUiState.recentAirportIds ?? []),
@@ -275,6 +277,8 @@ export default function App() {
     if (!appCoreAdapter) {
       return;
     }
+    setSessionInitError(null);
+    debugLog("session_init_start", { backend: adapterBackend });
     appCoreAdapter.createUiSession(
       resourceIndex,
       samplePlan,
@@ -283,15 +287,27 @@ export default function App() {
       initialChartPageState.selected_chart_id,
     ).then(async (created) => {
       nextSession = created;
+      debugLog("session_init_created");
       if (!cancelled) {
+        setSessionInitError(null);
         setUiSession(created);
       }
       const snapshot = await created.setSituation(demoSituation());
+      debugLog("session_init_situation_set");
       if (!cancelled) {
         setSessionSnapshot(snapshot);
       }
     }).catch((error) => {
-      console.error("failed to initialize web ui session", error);
+      const message = error instanceof Error ? error.message : String(error);
+      debugLog("SESSION_INIT_FATAL", {
+        backend: adapterBackend,
+        message,
+      });
+      if (!cancelled) {
+        setSessionInitError(message);
+        setUiSession(null);
+      }
+      console.error("AEROBAG_SESSION_INIT_FATAL", message);
     });
     return () => {
       cancelled = true;
@@ -436,6 +452,7 @@ export default function App() {
           page={page}
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
+          sessionInitError={sessionInitError}
           debugTileLabels={debugTileLabels}
           selectedMapId={selectedMapId}
           selectedMap={selectedMap}
@@ -468,6 +485,7 @@ export default function App() {
           uptimeLabel={uptimeLabel}
           legSummary={legSummary}
           plan={currentPlan}
+          sessionInitError={sessionInitError}
           onSelectPage={navigateToPage}
           onOpenCharts={(airportId) => {
             if (!airportId) {
@@ -505,6 +523,7 @@ export default function App() {
           page={page}
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
+          sessionInitError={sessionInitError}
           airports={orderedChartAirports}
           selectedAirport={selectedAirport}
           selectedChart={selectedChart}
@@ -561,6 +580,7 @@ function MapPage(props: {
   page: AppPage;
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
+  sessionInitError: string | null;
   debugTileLabels: boolean;
   selectedMapId: string;
   selectedMap: (typeof mapViews)[number];
@@ -584,6 +604,7 @@ function MapPage(props: {
     page,
     pageHistory,
     uptimeLabel,
+    sessionInitError,
     selectedMap,
     selectedFamilyMapViews,
     selectedFamily,
@@ -1084,12 +1105,13 @@ function MapPage(props: {
         <div className="debugDock">
           <DebugDock
             open={debugOpen}
-            warn={mapOverlay.warnings.length > 0}
+            warn={mapOverlay.warnings.length > 0 || !!sessionInitError}
             onToggle={() => setDebugOpen((open) => !open)}
           >
             <div className="debugLine">core {adapterBackend}</div>
             <div className="debugLine">up {uptimeLabel}</div>
             <div className="debugLine">session {uiSession ? "ready" : "null"} surf {Math.round(surfaceSize.width)}x{Math.round(surfaceSize.height)}</div>
+            {sessionInitError ? <div className="debugLine">fatal session init</div> : null}
             <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
             <div className="debugLine">vec fixes={mapOverlay.visible_features.length} need={mapOverlay.needed_fix_tiles.length} warn={mapOverlay.warnings.length}</div>
             {mapOverlay.warnings.map((warning) => (
@@ -1103,7 +1125,7 @@ function MapPage(props: {
   );
 }
 
-function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; uptimeLabel: string; legSummary: string; plan: typeof samplePlan; onSelectPage: (page: AppPage) => void; onOpenCharts: (airportId: string | null) => void; onRemoveWaypoint: (index: number) => void | Promise<void>; onMoveWaypoint: (index: number, delta: number) => void | Promise<void> }) {
+function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; uptimeLabel: string; legSummary: string; plan: typeof samplePlan; sessionInitError: string | null; onSelectPage: (page: AppPage) => void; onOpenCharts: (airportId: string | null) => void; onRemoveWaypoint: (index: number) => void | Promise<void>; onMoveWaypoint: (index: number, delta: number) => void | Promise<void> }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
   const [reorderOpen, setReorderOpen] = useState(false);
   const trayGroup = useModalTrayGroup(["page"] as const);
@@ -1196,9 +1218,10 @@ function FlightPlanPage(props: { page: AppPage; pageHistory: AppViewSnapshot[]; 
       <div className="planFooter">{props.legSummary}</div>
 
       <div className="debugDock">
-        <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>
+        <DebugDock open={debugOpen} warn={!!props.sessionInitError} onToggle={() => setDebugOpen((open) => !open)}>
           <div className="debugLine">page {pageLabel(props.page)}</div>
           <div className="debugLine">up {props.uptimeLabel}</div>
+          {props.sessionInitError ? <div className="debugLine">fatal session init</div> : null}
           <div className="debugLine">stack {formatPageStack(props.pageHistory, { page: props.page, selectedMapId: "", selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
           <div className="debugLine">rows {rows.length}</div>
         </DebugDock>
@@ -1349,6 +1372,7 @@ function ChartsPage(props: {
   page: AppPage;
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
+  sessionInitError: string | null;
   airports: ChartPageData["airports"];
   selectedAirport: ChartPageData["airports"][number] | null;
   selectedChart: ChartAsset | null;
@@ -1790,9 +1814,10 @@ function ChartsPage(props: {
         </div>
 
         <div className="debugDock">
-          <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>
+          <DebugDock open={debugOpen} warn={!!props.sessionInitError} onToggle={() => setDebugOpen((open) => !open)}>
             <div className="debugLine">page {pageLabel(page)}</div>
             <div className="debugLine">up {uptimeLabel}</div>
+            {props.sessionInitError ? <div className="debugLine">fatal session init</div> : null}
             <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: "", selectedChartId: selectedChart?.id ?? "", selectedChartLabel: selectedChart?.label ?? "", chartFolderOpen: folderOpen })}</div>
             <div className="debugLine">apt {selectedAirport?.label ?? "---"}</div>
             <div className="debugLine">chart {selectedChart?.label ?? "---"}</div>

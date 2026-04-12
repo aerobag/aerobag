@@ -8,12 +8,10 @@ import kotlinx.serialization.json.Json
 data class ContentFixture(
     val catalogJson: String,
     val chartCatalogJson: String,
-    val geometryJson: String,
     val resourceIndexJson: String,
     val mapView: MapView,
     val mapViews: List<MapViewOption>,
     val chartPage: ChartPageFixture,
-    val initialProbe: MapProbe,
     val mapTileView: MapTileView,
     val samplePlan: FlightPlan,
     val remoteOnlyInventory: ContentInventory,
@@ -51,16 +49,10 @@ object SampleData {
         return ContentFixture(
             catalogJson = json.encodeToString(deriveWireCatalog(resourceIndex)),
             chartCatalogJson = json.encodeToString(chartPage.toWire()),
-            geometryJson = json.encodeToString(WireGeometryBundle(schema_version = 1, polygons = emptyList())),
             resourceIndexJson = resourceIndexPayload,
             mapView = mapView,
             mapViews = mapViews,
             chartPage = chartPage,
-            initialProbe = MapProbe(
-                family = mapView.chartFamily,
-                lat = mapView.initialViewport.lat,
-                lon = mapView.initialViewport.lon,
-            ),
             mapTileView = MapTileView(
                 chartFamily = mapView.chartFamily,
                 chartName = mapView.chartName,

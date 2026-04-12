@@ -1,7 +1,7 @@
 use app_core::{
-    AirportId, CatalogBundle, CatalogFamily, CatalogPackage, CatalogRegion, ChartCoverage,
-    ChartFamilyId, ChartId, ChartRecord, GeometryBundle, PackageId, PlateId, PlateRecord,
-    PolygonRecord, RegionId,
+    AirportId, CatalogBundle, CatalogFamily, CatalogPackage, CatalogRegion, ChartFamilyId,
+    ChartId, ChartRecord, GeometryBundle, PackageId, PlateId, PlateRecord, PolygonRecord,
+    RegionId,
 };
 use serde::Serialize;
 
@@ -51,9 +51,6 @@ pub fn sample_catalog() -> CatalogBundle {
             region_ids: vec![RegionId::Ne],
             max_zoom: 10,
             tile_path_template: "tiles/{chart_index}/{z}/{x}/{y}".to_string(),
-            coverage: ChartCoverage::PolygonRef {
-                polygon_id: "sectional:boston".to_string(),
-            },
         }],
         plates: vec![PlateRecord {
             id: PlateId {

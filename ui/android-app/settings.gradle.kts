@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "avare-android-prototype"
+rootProject.name = "aerobag-android"
 include(":app")

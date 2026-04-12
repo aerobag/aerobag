@@ -3,9 +3,9 @@
 
     <application
         android:allowBackup="true"
-        android:label="Avare Prototype"
+        android:label="Aerobag"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AvarePrototype">
+        android:theme="@style/Theme.Aerobag">
         <activity
             android:name=".MainActivity"
             android:exported="true">

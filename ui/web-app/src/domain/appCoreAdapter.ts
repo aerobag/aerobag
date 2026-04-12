@@ -125,6 +125,7 @@ export interface AppCoreAdapter {
   buildFlightPlanUi(plan: FlightPlan): Promise<FlightPlanUiState>;
   activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation>;
   activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
+  deleteComponentUi(plan: FlightPlan, componentIndex: number): Promise<FlightPlanUiMutation>;
   suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   unsuspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   sequenceActiveLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
@@ -447,6 +448,10 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
     return this.activateLegUi(plan, nextIndex);
   }
 
+  async deleteComponentUi(): Promise<FlightPlanUiMutation> {
+    throw new Error("delete component requires wasm adapter");
+  }
+
   async suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
     const current = buildMockFlightPlanUiState(plan).guidance?.active_leg_index ?? 0;
     const uiState = buildMockFlightPlanUiState(plan, {
@@ -552,6 +557,7 @@ type WasmModule = {
   build_flight_plan_ui(planJson: string): Promise<string> | string;
   activate_leg_ui(planJson: string, legIndex: number): Promise<string> | string;
   activate_next_leg_ui(planJson: string): Promise<string> | string;
+  delete_component_ui(planJson: string, componentIndex: number): Promise<string> | string;
   suspend_sequencing_ui(planJson: string): Promise<string> | string;
   unsuspend_sequencing_ui(planJson: string): Promise<string> | string;
   sequence_active_leg_ui(planJson: string): Promise<string> | string;
@@ -734,6 +740,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as FlightPlanUiMutation;
   }
 
+  async deleteComponentUi(plan: FlightPlan, componentIndex: number): Promise<FlightPlanUiMutation> {
+    return JSON.parse(
+      await this.module.delete_component_ui(JSON.stringify(plan), componentIndex),
+    ) as FlightPlanUiMutation;
+  }
+
   async suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
     return JSON.parse(
       await this.module.suspend_sequencing_ui(JSON.stringify(plan)),
@@ -844,6 +856,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.build_flight_plan_ui !== "function" ||
     typeof mod.activate_leg_ui !== "function" ||
     typeof mod.activate_next_leg_ui !== "function" ||
+    typeof mod.delete_component_ui !== "function" ||
     typeof mod.suspend_sequencing_ui !== "function" ||
     typeof mod.unsuspend_sequencing_ui !== "function" ||
     typeof mod.sequence_active_leg_ui !== "function" ||

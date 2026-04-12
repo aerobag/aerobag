@@ -105,16 +105,6 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> 
   { id: "plan", label: "PLAN", launcherLabel: "PLN" },
 ];
 
-const waypointActions = [
-  { id: "activate_leg", label: "Activate Leg", enabled: true },
-  { id: "remove", label: "Remove", enabled: true },
-  { id: "insert", label: "Insert", enabled: false },
-  { id: "reorder", label: "Reorder", enabled: false },
-  { id: "waypoint_info", label: "Waypoint Info", enabled: false },
-  { id: "add_airway", label: "Add Airway", enabled: false },
-  { id: "select_procedure", label: "Select Procedure", enabled: false },
-  { id: "charts", label: "Charts", enabled: true },
-] as const;
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
 const maxViewHistoryDepth = 64;
 const loadedUiTheme = uiTheme as UiThemeJson;
@@ -171,6 +161,15 @@ function polygonSignedArea(points: readonly VorPoint[]) {
     area += current.x * next.y - next.x * current.y;
   }
   return area / 2;
+}
+
+function thumbPixels(multiplier: number) {
+  if (typeof window === "undefined") {
+    return 0;
+  }
+  const raw = getComputedStyle(document.documentElement).getPropertyValue("--thumb").trim();
+  const parsed = Number.parseFloat(raw.replace("px", ""));
+  return (Number.isFinite(parsed) ? parsed : 0) * multiplier;
 }
 
 function intersectLines(originA: VorPoint, directionA: VorPoint, originB: VorPoint, directionB: VorPoint): VorPoint {
@@ -676,6 +675,11 @@ export default function App() {
           onActivateLeg={async (legIndex) => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.activateLegUi(currentPlan, legIndex);
+            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+          }}
+          onDeleteComponent={async (componentIndex) => {
+            if (!appCoreAdapter) return;
+            const mutation = await appCoreAdapter.deleteComponentUi(currentPlan, componentIndex);
             applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
           }}
           onActivateNextLeg={async () => {
@@ -1396,6 +1400,7 @@ function FlightPlanPage(props: {
   onRemoveWaypoint: (index: number) => void | Promise<void>;
   onMoveWaypoint: (index: number, delta: number) => void | Promise<void>;
   onActivateLeg: (index: number) => void | Promise<void>;
+  onDeleteComponent: (componentIndex: number) => void | Promise<void>;
   onActivateNextLeg: () => void | Promise<void>;
   onSuspendSequencing: () => void | Promise<void>;
   onUnsuspendSequencing: () => void | Promise<void>;
@@ -1411,6 +1416,7 @@ function FlightPlanPage(props: {
   ) => void | Promise<void>;
 }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
+  const [selectedWaypointAnchor, setSelectedWaypointAnchor] = useState<{ top: number; height: number } | null>(null);
   const [reorderOpen, setReorderOpen] = useState(false);
   const [airwayPicker, setAirwayPicker] = useState<{
     loading: boolean;
@@ -1426,6 +1432,8 @@ function FlightPlanPage(props: {
   } | null>(null);
   const trayGroup = useModalTrayGroup(["page"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
+  const pageRef = useRef<HTMLElement | null>(null);
+  const waypointModalRef = useRef<HTMLElement | null>(null);
   const trayOpen = trayGroup.scrimOpen;
   const guidance = props.planUiState?.guidance ?? null;
   const structuredSurfaceRef = useRef<HTMLDivElement | null>(null);
@@ -1433,6 +1441,7 @@ function FlightPlanPage(props: {
   const structuredRowRefs = useRef(new Map<string, HTMLElement>());
   const [structuredArrow, setStructuredArrow] = useState<{ path: string; head: string } | null>(null);
   const [structuredGroupBoxes, setStructuredGroupBoxes] = useState<Array<{ key: string; top: number; left: number; width: number; height: number }>>([]);
+  const [waypointModalTop, setWaypointModalTop] = useState<number | null>(null);
   const componentViews = useMemo(
     () => props.planUiState?.components ?? buildLegacyComponentViews(props.plan),
     [props.plan, props.planUiState?.components],
@@ -1498,6 +1507,7 @@ function FlightPlanPage(props: {
   }, [componentViews]);
   const displayRows = useMemo(() => {
     const resolvedLegs = props.planUiState?.resolved_legs ?? [];
+    const componentKindByIndex = new Map(componentViews.map((component) => [component.component_index, component.kind]));
     let nextLegCursor = 0;
     return hierarchicalRows.map((row) => {
       let matchingLeg = null as (typeof resolvedLegs)[number] | null;
@@ -1548,9 +1558,108 @@ function FlightPlanPage(props: {
             : null as NavRef | null,
         navRef: row.navRef,
         groupKey: row.groupKey,
+        componentIndex: row.componentIndex,
+        componentKind: row.componentIndex !== null ? componentKindByIndex.get(row.componentIndex) ?? null : null,
       };
     });
-  }, [hierarchicalRows, props.planUiState?.resolved_legs]);
+  }, [componentViews, hierarchicalRows, props.planUiState?.resolved_legs]);
+  const selectedRow = selectedWaypointIndex !== null ? displayRows[selectedWaypointIndex] ?? null : null;
+  const rowActions = useMemo(() => {
+    if (!selectedRow) {
+      return [] as Array<{ id: string; label: string; enabled: boolean; onSelect: () => void }>;
+    }
+
+    if (selectedRow.rowKind === "group" && selectedRow.componentKind === "airway" && selectedRow.componentIndex !== null) {
+      return [
+        {
+          id: "remove_airway",
+          label: "Remove Airway",
+          enabled: true,
+          onSelect: () => {
+            void props.onDeleteComponent(selectedRow.componentIndex!);
+            setReorderOpen(false);
+            setSelectedWaypointIndex(null);
+          },
+        },
+      ];
+    }
+
+    const actions: Array<{ id: string; label: string; enabled: boolean; onSelect: () => void }> = [];
+
+    if (selectedRow.legIndex !== null) {
+      actions.push({
+        id: "activate_leg",
+        label: "Activate Leg",
+        enabled: true,
+        onSelect: () => {
+          void props.onActivateLeg(selectedRow.legIndex!);
+          setReorderOpen(false);
+          setSelectedWaypointIndex(null);
+        },
+      });
+    }
+
+    if (
+      selectedRow.startComponentIndex !== null &&
+      selectedRow.endComponentIndex !== null &&
+      selectedRow.originAnchor &&
+      selectedRow.destinationAnchor
+    ) {
+      actions.push({
+        id: "add_airway",
+        label: "Add Airway",
+        enabled: true,
+        onSelect: () => {
+          const adapter = props.appCoreAdapter;
+          if (!adapter) {
+            return;
+          }
+          setAirwayPicker({
+            loading: true,
+            error: null,
+            startComponentIndex: selectedRow.startComponentIndex!,
+            endComponentIndex: selectedRow.endComponentIndex!,
+            originAnchor: selectedRow.originAnchor!,
+            destinationAnchor: selectedRow.destinationAnchor!,
+            suggestions: [],
+            selectedAirwayName: null,
+            presentation: null,
+            selectedEntryIndex: null,
+          });
+          window.requestAnimationFrame(() => {
+            void suggestAirwaysNearAnchor(adapter, selectedRow.originAnchor!).then((suggestions) => {
+              setAirwayPicker((current) => current ? {
+                ...current,
+                loading: false,
+                suggestions,
+              } : current);
+            }).catch((error) => {
+              setAirwayPicker((current) => current ? {
+                ...current,
+                loading: false,
+                error: error instanceof Error ? error.message : String(error),
+              } : current);
+            });
+          });
+        },
+      });
+    }
+
+    if (selectedRow.chartAirportId !== null) {
+      actions.push({
+        id: "charts",
+        label: "Charts",
+        enabled: true,
+        onSelect: () => {
+          props.onOpenCharts(selectedRow.chartAirportId);
+          setReorderOpen(false);
+          setSelectedWaypointIndex(null);
+        },
+      });
+    }
+
+    return actions;
+  }, [props, selectedRow]);
 
   useEffect(() => {
     if (!showComponentViews) {
@@ -1660,8 +1769,27 @@ function FlightPlanPage(props: {
     });
   }, [displayRows, guidance?.active_leg, showComponentViews]);
 
+  useEffect(() => {
+    if (selectedWaypointIndex === null) {
+      setWaypointModalTop(null);
+      return;
+    }
+    const page = pageRef.current;
+    const modal = waypointModalRef.current;
+    const anchor = selectedWaypointAnchor;
+    if (!page || !modal || !anchor) {
+      return;
+    }
+    const pageRect = page.getBoundingClientRect();
+    const topPadding = thumbPixels(1.25);
+    const bottomPadding = thumbPixels(0.1);
+    const desiredTop = anchor.top;
+    const maxTop = Math.max(topPadding, pageRect.height - modal.offsetHeight - bottomPadding);
+    setWaypointModalTop(Math.max(topPadding, Math.min(desiredTop, maxTop)));
+  }, [airwayPicker, reorderOpen, selectedWaypointAnchor, selectedWaypointIndex, rowActions.length]);
+
   return (
-    <section className="appPage planPage">
+    <section className="appPage planPage" ref={pageRef}>
       {trayOpen ? <TrayScrim ariaLabel="Close page tray" onClose={trayGroup.closeAll} /> : null}
 
       <div className="chartDock">
@@ -1732,7 +1860,16 @@ function FlightPlanPage(props: {
                     showComponentViews && row.depth > 0 ? "isChildRow" : "",
                     showComponentViews && row.rowKind === "discontinuity" ? "isDiscontinuityItem" : "",
                   ].filter(Boolean).join(" ")}
-                  onClick={() => {
+                  onClick={(event) => {
+                    const page = pageRef.current;
+                    if (page) {
+                      const pageRect = page.getBoundingClientRect();
+                      const rowRect = event.currentTarget.getBoundingClientRect();
+                      setSelectedWaypointAnchor({
+                        top: rowRect.top - pageRect.top,
+                        height: rowRect.height,
+                      });
+                    }
                     setSelectedWaypointIndex(index);
                     setReorderOpen(false);
                     setAirwayPicker(null);
@@ -1798,11 +1935,17 @@ function FlightPlanPage(props: {
             aria-label="Close waypoint actions"
             onClick={() => {
               setSelectedWaypointIndex(null);
+              setSelectedWaypointAnchor(null);
               setReorderOpen(false);
               setAirwayPicker(null);
             }}
           />
-          <section className={`waypointModal${reorderOpen ? " isReorder" : ""}`} aria-label="Waypoint actions">
+          <section
+            ref={waypointModalRef}
+            className={`waypointModal${reorderOpen ? " isReorder" : ""}`}
+            aria-label="Waypoint actions"
+            style={waypointModalTop === null ? undefined : { top: `${waypointModalTop}px` }}
+          >
             {airwayPicker ? (
               <div className="waypointActionTray">
                 <div className="planGuidanceSummary">
@@ -1985,90 +2128,16 @@ function FlightPlanPage(props: {
                   Down
                 </button>
               </div>
-            ) : waypointActions.map((action) => {
-              const selectedRow = displayRows[selectedWaypointIndex];
-              const enabled =
-                action.id === "activate_leg"
-                  ? selectedRow.legIndex !== null
-                  : action.id === "charts"
-                  ? selectedRow.chartAirportId !== null
-                  : action.id === "add_airway"
-                    ? selectedRow.startComponentIndex !== null &&
-                      selectedRow.endComponentIndex !== null &&
-                      selectedRow.originAnchor !== null &&
-                      selectedRow.destinationAnchor !== null
-                  : action.id === "reorder" || action.id === "remove"
-                    ? false
-                  : action.enabled;
+            ) : rowActions.map((action) => {
               return (
               <button
                 key={action.id}
                 type="button"
                 className="trayButton"
-                disabled={!enabled}
+                disabled={!action.enabled}
                 onPointerDown={stopPointer}
                 onPointerUp={stopPointer}
-                onClick={() => {
-                  if (!enabled) {
-                    return;
-                  }
-                  if (action.id === "remove") {
-                    if (selectedRow.removeLegIndex !== null) {
-                      props.onRemoveWaypoint(selectedRow.removeLegIndex);
-                    }
-                  } else if (action.id === "activate_leg") {
-                    if (selectedRow.legIndex !== null) {
-                      void props.onActivateLeg(selectedRow.legIndex);
-                    }
-                  } else if (action.id === "add_airway") {
-                    if (
-                      selectedRow.startComponentIndex !== null &&
-                      selectedRow.endComponentIndex !== null &&
-                      selectedRow.originAnchor &&
-                      selectedRow.destinationAnchor
-                    ) {
-                      const adapter = props.appCoreAdapter;
-                      if (!adapter) {
-                        return;
-                      }
-                      setAirwayPicker({
-                        loading: true,
-                        error: null,
-                        startComponentIndex: selectedRow.startComponentIndex,
-                        endComponentIndex: selectedRow.endComponentIndex,
-                        originAnchor: selectedRow.originAnchor,
-                        destinationAnchor: selectedRow.destinationAnchor,
-                        suggestions: [],
-                        selectedAirwayName: null,
-                        presentation: null,
-                        selectedEntryIndex: null,
-                      });
-                      window.requestAnimationFrame(() => {
-                        void suggestAirwaysNearAnchor(adapter, selectedRow.originAnchor).then((suggestions) => {
-                          setAirwayPicker((current) => current ? {
-                            ...current,
-                            loading: false,
-                            suggestions,
-                          } : current);
-                        }).catch((error) => {
-                          setAirwayPicker((current) => current ? {
-                            ...current,
-                            loading: false,
-                            error: error instanceof Error ? error.message : String(error),
-                          } : current);
-                        });
-                      });
-                      return;
-                    }
-                  } else if (action.id === "reorder") {
-                    setReorderOpen(true);
-                    return;
-                  } else if (action.id === "charts") {
-                    props.onOpenCharts(selectedRow.chartAirportId);
-                  }
-                  setReorderOpen(false);
-                  setSelectedWaypointIndex(null);
-                }}
+                onClick={action.onSelect}
               >
                 {action.label}
               </button>

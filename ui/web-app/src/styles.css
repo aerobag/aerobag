@@ -750,6 +750,8 @@ button {
   width: min(calc(var(--thumb) * 2.35), calc(100% - var(--thumb-gap) * 2 - var(--thumb) * 2.6));
   max-height: calc(100vh - (var(--thumb) * 2.25));
   overflow-y: auto;
+  overflow-x: hidden;
+  box-sizing: border-box;
 }
 
 .waypointModal {

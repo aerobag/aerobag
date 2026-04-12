@@ -62,6 +62,7 @@ class ContentLogicTest {
     fun nativeAdapterMatchesMockContractForRemoteOnlyStreaming() {
         val nativeAdapter = NativeAppCoreAdapter(
             catalogJson = SampleDataFixture.catalogJson,
+            chartCatalogJson = """{"airports":[]}""",
             bridge = FakeNativeBridge(json),
             json = json,
         )
@@ -81,6 +82,7 @@ class ContentLogicTest {
     fun nativeAdapterMatchesMockContractForInstalledOffline() {
         val nativeAdapter = NativeAppCoreAdapter(
             catalogJson = SampleDataFixture.catalogJson,
+            chartCatalogJson = """{"airports":[]}""",
             bridge = FakeNativeBridge(json),
             json = json,
         )
@@ -492,6 +494,7 @@ private class FakeNativeBridge(
                     region_ids = listOf(WireRegionId.Ne),
                     max_zoom = 11,
                     tile_path_template = "tiles/charts-tac/boston/{z}/{x}/{y}",
+                    coverage = json.parseToJsonElement("""{"kind":"polygon_ref","value":{"polygon_id":"tac:boston"}}"""),
                 ),
             )
         } ?: "null"

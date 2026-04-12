@@ -2015,6 +2015,7 @@ fn claim_or_wait_for_node(
                 }));
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                remove_stale_lock_if_needed(&prepared.lock_path)?;
                 thread::sleep(std::time::Duration::from_millis(250));
             }
             Err(err) => {
@@ -2042,6 +2043,38 @@ fn reset_node_dir_for_rebuild(prepared: &PreparedNode) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn remove_stale_lock_if_needed(lock_path: &Path) -> anyhow::Result<()> {
+    if !lock_path.is_file() {
+        return Ok(());
+    }
+    let Some(pid) = read_lock_pid(lock_path)? else {
+        return Ok(());
+    };
+    if process_is_alive(pid) {
+        return Ok(());
+    }
+    match fs::remove_file(lock_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("failed to remove stale {}", lock_path.display())),
+    }
+}
+
+fn read_lock_pid(lock_path: &Path) -> anyhow::Result<Option<u32>> {
+    let text = fs::read_to_string(lock_path)
+        .with_context(|| format!("failed to read {}", lock_path.display()))?;
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("pid=") {
+            return Ok(value.trim().parse::<u32>().ok());
+        }
+    }
+    Ok(None)
+}
+
+fn process_is_alive(pid: u32) -> bool {
+    Path::new("/proc").join(pid.to_string()).exists()
 }
 
 fn normalize_node_record_paths(mut record: NodeRecord, build_root: &Path) -> NodeRecord {

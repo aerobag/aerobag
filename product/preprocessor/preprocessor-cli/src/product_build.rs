@@ -1075,54 +1075,12 @@ fn extract_zip_to_dir(zip_path: &Path, output_dir: &Path) -> anyhow::Result<()> 
 fn sync_unpacked_metadata(
     config: &ProductBuildConfig,
     build_manifest: &BuildManifest,
-    build_manifest_path: &Path,
-    bundle_manifest_path: &Path,
+    _build_manifest_path: &Path,
+    _bundle_manifest_path: &Path,
 ) -> anyhow::Result<()> {
     let unpacked_root = published_unpacked_root(config, &build_manifest.cycle)?;
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
-    copy_into_unpacked_root(config, build_manifest_path, &unpacked_root)?;
-    copy_into_unpacked_root(config, bundle_manifest_path, &unpacked_root)?;
-    for node in &build_manifest.nodes {
-        for output in node.outputs.values() {
-            let candidate = if Path::new(output).is_absolute() {
-                PathBuf::from(output)
-            } else {
-                resolve_artifact_path(config, output)
-            };
-            if candidate.extension().and_then(|value| value.to_str()) == Some("zip") {
-                continue;
-            }
-            if candidate.is_file() {
-                copy_into_unpacked_root(config, &candidate, &unpacked_root)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn copy_into_unpacked_root(
-    config: &ProductBuildConfig,
-    source_path: &Path,
-    unpacked_root: &Path,
-) -> anyhow::Result<()> {
-    let artifact_root = normalize_absolute_path(artifact_root_from_build_root(&config.build_root));
-    let normalized_source_path = normalize_absolute_path(source_path);
-    let relative = normalized_source_path
-        .strip_prefix(&artifact_root)
-        .with_context(|| format!("failed to relativize {}", source_path.display()))?;
-    let dest_path = unpacked_root.join(relative);
-    if let Some(parent) = dest_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    fs::copy(source_path, &dest_path).with_context(|| {
-        format!(
-            "failed to copy {} to {}",
-            source_path.display(),
-            dest_path.display()
-        )
-    })?;
     Ok(())
 }
 

@@ -206,6 +206,12 @@ function polygonPathData(points: readonly VorPoint[]) {
 const vorInnerHexPoints = offsetPolygonByEdgeDistances(vorOuterHexPoints, vorEdgeInsetDistances);
 const vorOuterHexPath = polygonPathData(vorOuterHexPoints);
 const vorBandPath = `${vorOuterHexPath} ${polygonPathData(vorInnerHexPoints)}`;
+const airportFuelTabsPath = [
+  "M -4 -17 H 4 V -11 H -4 Z",
+  "M 11 -4 H 17 V 4 H 11 Z",
+  "M -4 11 H 4 V 17 H -4 Z",
+  "M -17 -4 H -11 V 4 H -17 Z",
+].join(" ");
 
 function demoSituation(): Situation {
   return {
@@ -217,6 +223,10 @@ function demoSituation(): Situation {
     orientation_deg: 135,
     speed_kt: 105,
   };
+}
+
+function initialMapId() {
+  return mapViews.find((view) => view.map_view.chart_family === "tac")?.id ?? mapViews[0].id;
 }
 
 export default function App() {
@@ -231,7 +241,7 @@ export default function App() {
   const [adapterBackend, setAdapterBackend] = useState<AdapterBackendKind>("mock");
   const [adapterDetail, setAdapterDetail] = useState<string>("loading");
   const [sessionInitError, setSessionInitError] = useState<string | null>(null);
-  const [selectedMapId, setSelectedMapId] = useState<string>(mapViews[0].id);
+  const [selectedMapId, setSelectedMapId] = useState<string>(initialMapId());
   const initialRecentAirportIds = useMemo(
     () => mergeRecentAirportIds(chartPage.airports, persistedUiState.recentAirportIds ?? []),
     [persistedUiState],
@@ -293,7 +303,7 @@ export default function App() {
     return {
       centerWorldX: center.x,
       centerWorldY: center.y,
-      zoom: selectedMap.map_view.initial_viewport.zoom,
+      zoom: 10.0,
     };
   });
   const [chartViewport, setChartViewport] = useState<ImageViewportState | null>(null);
@@ -990,28 +1000,64 @@ function MapPage(props: {
             preserveAspectRatio="none"
             style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
           >
-            {mapOverlay.visible_features.map((feature) => (
-              <g key={feature.id} transform={`translate(${feature.screen_x} ${feature.screen_y})`}>
-                {feature.kind.toLowerCase().includes("vor") || feature.style_class === "nav"
-                  ? (
-                    <>
-                      <path d={vorBandPath} className="vorBand" fillRule="evenodd" />
-                      <path d={vorOuterHexPath} className="vorBorder" />
-                      <text x="0" y="20" textAnchor="middle" className="vorLabel">
-                        {feature.label}
-                      </text>
-                    </>
-                    )
-                  : (
-                    <>
-                      <path d="M 0 -8 L 7 6 L -7 6 Z" className="fixMarker" />
-                      <text x="0" y="20" textAnchor="middle" className="fixLabel">
-                        {feature.label}
-                      </text>
-                    </>
-                    )}
-              </g>
-            ))}
+            {mapOverlay.visible_features.map((feature) => {
+              const isAirport = feature.style_class === "airport" || feature.kind.toLowerCase() === "airport";
+              const isVor = feature.kind.toLowerCase().includes("vor") || feature.style_class === "nav";
+              const airportClass = feature.towered ? "airportMarker airportTowered" : "airportMarker airportUntowered";
+              const airportLabelClass = feature.towered ? "airportLabel airportToweredLabel" : "airportLabel airportUntoweredLabel";
+              return (
+                <g key={feature.id} transform={`translate(${feature.screen_x} ${feature.screen_y})`}>
+                  {isAirport
+                    ? (
+                      <>
+                        <circle r="12" className={airportClass} />
+                        {feature.fuel_available ? <path d={airportFuelTabsPath} className={airportClass} /> : null}
+                        {feature.longest_runway_heading_true_deg != null ? (
+                          <>
+                            <line
+                              x1="0"
+                              y1="-8"
+                              x2="0"
+                              y2="8"
+                              className="airportRunwayBarUnder"
+                              transform={`rotate(${feature.longest_runway_heading_true_deg})`}
+                            />
+                            <line
+                              x1="0"
+                              y1="-8"
+                              x2="0"
+                              y2="8"
+                              className="airportRunwayBar"
+                              transform={`rotate(${feature.longest_runway_heading_true_deg})`}
+                            />
+                          </>
+                        ) : null}
+                        <text x="18" y="5" textAnchor="start" className={airportLabelClass}>
+                          {feature.label}
+                        </text>
+                      </>
+                      )
+                    : isVor
+                      ? (
+                        <>
+                          <path d={vorBandPath} className="vorBand" fillRule="evenodd" />
+                          <path d={vorOuterHexPath} className="vorBorder" />
+                          <text x="0" y="20" textAnchor="middle" className="vorLabel">
+                            {feature.label}
+                          </text>
+                        </>
+                        )
+                      : (
+                        <>
+                          <path d="M 0 -8 L 7 6 L -7 6 Z" className="fixMarker" />
+                          <text x="0" y="20" textAnchor="middle" className="fixLabel">
+                            {feature.label}
+                          </text>
+                        </>
+                        )}
+                </g>
+              );
+            })}
           </svg>
         ) : null}
         <SituationStatusBadge situation={situation} />

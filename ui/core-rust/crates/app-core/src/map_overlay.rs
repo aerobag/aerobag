@@ -26,6 +26,12 @@ pub struct PointVectorRecord {
     pub lon: f64,
     pub label: String,
     pub style_class: String,
+    #[serde(default)]
+    pub towered: Option<bool>,
+    #[serde(default)]
+    pub fuel_available: Option<bool>,
+    #[serde(default)]
+    pub longest_runway_heading_true_deg: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,6 +52,9 @@ pub struct VisibleMapFeature {
     pub style_class: String,
     pub screen_x: f64,
     pub screen_y: f64,
+    pub towered: bool,
+    pub fuel_available: bool,
+    pub longest_runway_heading_true_deg: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,6 +79,7 @@ pub fn visible_point_tile_window(
         return Vec::new();
     }
     let mut tiles = Vec::new();
+    tiles.extend(visible_layer_tile_window("airport", POINT_TILE_ZOOM, viewport, width_px, height_px));
     tiles.extend(visible_layer_tile_window("fix", POINT_TILE_ZOOM, viewport, width_px, height_px));
     tiles.extend(visible_layer_tile_window("nav", POINT_TILE_ZOOM, viewport, width_px, height_px));
     tiles
@@ -142,6 +152,9 @@ pub fn query_map_overlay(
                 style_class: record.style_class.clone(),
                 screen_x: point.x,
                 screen_y: point.y,
+                towered: record.towered.unwrap_or(false),
+                fuel_available: record.fuel_available.unwrap_or(false),
+                longest_runway_heading_true_deg: record.longest_runway_heading_true_deg,
             });
         }
         if limit_hit {
@@ -173,6 +186,21 @@ pub fn tile_key(layer: &str, z: u32, x: u32, y: u32) -> String {
 }
 
 fn display_label(record: &PointVectorRecord) -> String {
+    if record.style_class == "airport" || record.kind.eq_ignore_ascii_case("airport") {
+        if let Some(ident) = record
+            .id
+            .strip_prefix("airports:")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let trimmed = if ident.len() == 4 && ident.starts_with('K') {
+                &ident[1..]
+            } else {
+                ident
+            };
+            return trimmed.to_uppercase();
+        }
+    }
     if record.style_class == "nav" && is_vor_family_kind(&record.kind) {
         let ident = record
             .id
@@ -265,6 +293,9 @@ mod tests {
                         lon: -121.98,
                         label: format!("FIX{index}"),
                         style_class: "fix".to_string(),
+                        towered: None,
+                        fuel_available: None,
+                        longest_runway_heading_true_deg: None,
                     })
                     .collect(),
             },

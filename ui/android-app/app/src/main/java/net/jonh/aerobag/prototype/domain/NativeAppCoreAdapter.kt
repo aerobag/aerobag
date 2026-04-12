@@ -19,6 +19,11 @@ data class PointVectorRecord(
     val label: String,
     @kotlinx.serialization.SerialName("style_class")
     val styleClass: String,
+    val towered: Boolean? = null,
+    @kotlinx.serialization.SerialName("fuel_available")
+    val fuelAvailable: Boolean? = null,
+    @kotlinx.serialization.SerialName("longest_runway_heading_true_deg")
+    val longestRunwayHeadingTrueDeg: Double? = null,
 )
 
 @kotlinx.serialization.Serializable
@@ -39,6 +44,9 @@ data class VisibleMapFeature(
     val styleClass: String,
     val screenX: Double,
     val screenY: Double,
+    val towered: Boolean,
+    val fuelAvailable: Boolean,
+    val longestRunwayHeadingTrueDeg: Double?,
 )
 
 data class MapOverlayWarning(
@@ -500,6 +508,9 @@ private fun PointVectorRecord.toWire() = WirePointVectorRecord(
     lon = lon,
     label = label,
     style_class = styleClass,
+    towered = towered,
+    fuel_available = fuelAvailable,
+    longest_runway_heading_true_deg = longestRunwayHeadingTrueDeg,
 )
 
 private fun WireMapOverlayQueryResult.toUi() = MapOverlayQueryResult(
@@ -522,6 +533,9 @@ private fun WireVisibleMapFeature.toUi() = VisibleMapFeature(
     styleClass = style_class,
     screenX = screen_x,
     screenY = screen_y,
+    towered = towered,
+    fuelAvailable = fuel_available,
+    longestRunwayHeadingTrueDeg = longest_runway_heading_true_deg,
 )
 
 private fun WireMapOverlayWarning.toUi() = MapOverlayWarning(

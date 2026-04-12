@@ -267,6 +267,9 @@ data class WirePointVectorRecord(
     val lon: Double,
     val label: String,
     val style_class: String,
+    val towered: Boolean? = null,
+    val fuel_available: Boolean? = null,
+    val longest_runway_heading_true_deg: Double? = null,
 )
 
 @Serializable
@@ -287,6 +290,9 @@ data class WireVisibleMapFeature(
     val style_class: String,
     val screen_x: Double,
     val screen_y: Double,
+    val towered: Boolean,
+    val fuel_available: Boolean,
+    val longest_runway_heading_true_deg: Double? = null,
 )
 
 @Serializable

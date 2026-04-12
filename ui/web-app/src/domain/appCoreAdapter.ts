@@ -44,6 +44,9 @@ export type PointTilePayload = {
     lon: number;
     label: string;
     style_class: string;
+    towered?: boolean;
+    fuel_available?: boolean;
+    longest_runway_heading_true_deg?: number | null;
   }>;
 };
 
@@ -61,6 +64,9 @@ export type VisibleMapFeature = {
   style_class: string;
   screen_x: number;
   screen_y: number;
+  towered: boolean;
+  fuel_available: boolean;
+  longest_runway_heading_true_deg: number | null;
 };
 
 export type MapOverlayQueryResult = {

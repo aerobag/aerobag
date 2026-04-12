@@ -7,6 +7,9 @@ export type PointVectorRecord = {
   lon: number;
   label: string;
   style_class: string;
+  towered?: boolean;
+  fuel_available?: boolean;
+  longest_runway_heading_true_deg?: number | null;
 };
 
 export type PointTilePayload = {

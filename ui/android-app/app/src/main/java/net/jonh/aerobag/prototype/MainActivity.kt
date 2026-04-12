@@ -77,6 +77,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.lerp
@@ -198,11 +199,12 @@ private object VectorTileAssets {
             }
             val missing = synchronized(cache) { entryNames.filter { !cache.containsKey(it) }.toSet() }
             if (missing.isNotEmpty()) {
+                val unresolved = missing.toMutableSet()
                 context.assets.open(VECTOR_ZIP_ASSET_PATH).use { assetStream ->
                     ZipInputStream(BufferedInputStream(assetStream)).use { zipStream ->
                         while (true) {
                             val entry = zipStream.nextEntry ?: break
-                            if (entry.isDirectory || entry.name !in missing) {
+                            if (entry.isDirectory || entry.name !in unresolved) {
                                 continue
                             }
                             val payload = runCatching {
@@ -211,6 +213,22 @@ private object VectorTileAssets {
                             synchronized(cache) {
                                 cache[entry.name] = payload
                             }
+                            unresolved.remove(entry.name)
+                        }
+                    }
+                }
+                synchronized(cache) {
+                    unresolved.forEach { entryName ->
+                        val parts = entryName.removePrefix("points/").removeSuffix(".json").split("/")
+                        if (parts.size == 4) {
+                            cache[entryName] = PointTilePayload(
+                                schemaVersion = 1,
+                                layer = parts[0],
+                                z = parts[1].toIntOrNull() ?: 0,
+                                x = parts[2].toIntOrNull() ?: 0,
+                                y = parts[3].toIntOrNull() ?: 0,
+                                records = emptyList(),
+                            )
                         }
                     }
                 }
@@ -314,10 +332,8 @@ private data class OverlaySurfaceUnits(
 )
 
 private fun initialMapId(fixture: net.jonh.aerobag.prototype.domain.ContentFixture): String {
-    val targetFamily = fixture.mapView.chartFamily
-    val targetPackage = fixture.mapView.packageName
     return fixture.mapViews.firstOrNull {
-        it.mapView.chartFamily == targetFamily && it.mapView.packageName == targetPackage
+        it.mapView.chartFamily == MapChartFamily.Tac
     }?.id ?: fixture.mapViews.first().id
 }
 
@@ -405,7 +421,7 @@ private fun createInitialSituationViewport(mapView: MapView): MapViewportState {
     return MapViewportState(
         centerWorldX = center.x,
         centerWorldY = center.y,
-        zoom = mapView.initialViewport.zoom,
+        zoom = 10.0,
     )
 }
 
@@ -1194,6 +1210,9 @@ private fun MapExplorerPage(
     }
     val fixMarkerStrokeColor = Color(0xB3081218)
     val fixMarkerFillColor = Color(0xFF39D9FF)
+    val airportMarkerStrokeColor = Color(0xB3081218)
+    val airportToweredFillColor = Color(0xFF4AA3FF)
+    val airportUntoweredFillColor = Color(0xFFFF4FD8)
     val vorMarkerColor = Color(0xFF4AA3FF)
     val vorMarkerStrokeColor = Color(0xD1081218)
     val fixLabelStrokePaint = remember {
@@ -1224,6 +1243,26 @@ private fun MapExplorerPage(
             color = android.graphics.Color.rgb(57, 217, 255)
             style = Paint.Style.FILL
             textAlign = Paint.Align.CENTER
+            textSize = 14f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
+        }
+    }
+    val airportToweredLabelFillPaint = remember {
+        Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.rgb(74, 163, 255)
+            style = Paint.Style.FILL
+            textAlign = Paint.Align.LEFT
+            textSize = 14f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
+        }
+    }
+    val airportUntoweredLabelFillPaint = remember {
+        Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.rgb(255, 79, 216)
+            style = Paint.Style.FILL
+            textAlign = Paint.Align.LEFT
             textSize = 14f
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
         }
@@ -1528,11 +1567,93 @@ private fun MapExplorerPage(
                 fixLabelStrokePaint.textSize = 14f * densityScale
                 fixLabelStrokePaint.strokeWidth = 3f * densityScale
                 fixLabelFillPaint.textSize = 14f * densityScale
+                airportToweredLabelFillPaint.textSize = 14f * densityScale
+                airportUntoweredLabelFillPaint.textSize = 14f * densityScale
                 vorLabelFillPaint.textSize = 14f * densityScale
                 displayedOverlayFeatures.forEach { feature ->
                     val center = Offset(feature.screenX.toFloat() * densityScale, feature.screenY.toFloat() * densityScale)
+                    val isAirport = feature.styleClass == "airport" || feature.kind.equals("airport", ignoreCase = true)
                     val isVor = feature.styleClass == "nav" || feature.kind.lowercase().contains("vor")
-                    if (isVor) {
+                    if (isAirport) {
+                        val airportFillColor = if (feature.towered) airportToweredFillColor else airportUntoweredFillColor
+                        val airportLabelPaint = if (feature.towered) airportToweredLabelFillPaint else airportUntoweredLabelFillPaint
+                        val airportRadius = 12f * densityScale
+                        drawCircle(airportFillColor, radius = airportRadius, center = center)
+                        drawCircle(airportMarkerStrokeColor, radius = airportRadius, center = center, style = Stroke(width = 2f * densityScale))
+                        if (feature.fuelAvailable) {
+                            val tabHalf = 4f * densityScale
+                            val tabInset = 11f * densityScale
+                            drawRect(
+                                color = airportFillColor,
+                                topLeft = Offset(center.x - tabHalf, center.y - 17f * densityScale),
+                                size = Size(tabHalf * 2f, 6f * densityScale),
+                            )
+                            drawRect(
+                                color = airportFillColor,
+                                topLeft = Offset(center.x + tabInset, center.y - tabHalf),
+                                size = Size(6f * densityScale, tabHalf * 2f),
+                            )
+                            drawRect(
+                                color = airportFillColor,
+                                topLeft = Offset(center.x - tabHalf, center.y + tabInset),
+                                size = Size(tabHalf * 2f, 6f * densityScale),
+                            )
+                            drawRect(
+                                color = airportFillColor,
+                                topLeft = Offset(center.x - 17f * densityScale, center.y - tabHalf),
+                                size = Size(6f * densityScale, tabHalf * 2f),
+                            )
+                            drawRect(
+                                color = airportMarkerStrokeColor,
+                                topLeft = Offset(center.x - tabHalf, center.y - 17f * densityScale),
+                                size = Size(tabHalf * 2f, 6f * densityScale),
+                                style = Stroke(width = 2f * densityScale),
+                            )
+                            drawRect(
+                                color = airportMarkerStrokeColor,
+                                topLeft = Offset(center.x + tabInset, center.y - tabHalf),
+                                size = Size(6f * densityScale, tabHalf * 2f),
+                                style = Stroke(width = 2f * densityScale),
+                            )
+                            drawRect(
+                                color = airportMarkerStrokeColor,
+                                topLeft = Offset(center.x - tabHalf, center.y + tabInset),
+                                size = Size(tabHalf * 2f, 6f * densityScale),
+                                style = Stroke(width = 2f * densityScale),
+                            )
+                            drawRect(
+                                color = airportMarkerStrokeColor,
+                                topLeft = Offset(center.x - 17f * densityScale, center.y - tabHalf),
+                                size = Size(6f * densityScale, tabHalf * 2f),
+                                style = Stroke(width = 2f * densityScale),
+                            )
+                        }
+                        feature.longestRunwayHeadingTrueDeg?.let { headingDeg ->
+                            val headingRad = Math.toRadians(headingDeg)
+                            val dx = kotlin.math.sin(headingRad).toFloat() * 8f * densityScale
+                            val dy = (-kotlin.math.cos(headingRad)).toFloat() * 8f * densityScale
+                            drawLine(
+                                color = airportMarkerStrokeColor,
+                                start = Offset(center.x - dx, center.y - dy),
+                                end = Offset(center.x + dx, center.y + dy),
+                                strokeWidth = 5f * densityScale,
+                                cap = StrokeCap.Round,
+                            )
+                            drawLine(
+                                color = Color.White,
+                                start = Offset(center.x - dx, center.y - dy),
+                                end = Offset(center.x + dx, center.y + dy),
+                                strokeWidth = 3f * densityScale,
+                                cap = StrokeCap.Round,
+                            )
+                        }
+                        drawContext.canvas.nativeCanvas.apply {
+                            val textX = center.x + 18f * densityScale
+                            val textY = center.y + 5f * densityScale
+                            drawText(feature.label, textX, textY, fixLabelStrokePaint)
+                            drawText(feature.label, textX, textY, airportLabelPaint)
+                        }
+                    } else if (isVor) {
                         val radius = 8f * densityScale
                         val outerHex = polygonPath(vorHexPoints(center, radius))
                         val band = vorBandPath(center, radius)

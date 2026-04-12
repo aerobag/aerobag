@@ -153,6 +153,49 @@ button {
   stroke-linejoin: round;
 }
 
+.airportMarker {
+  stroke: rgba(8, 18, 24, 0.7);
+  stroke-width: 2px;
+}
+
+.airportTowered {
+  fill: #4aa3ff;
+}
+
+.airportUntowered {
+  fill: #ff4fd8;
+}
+
+.airportLabel {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  paint-order: stroke;
+  stroke: rgba(8, 18, 24, 0.7);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.airportToweredLabel {
+  fill: #4aa3ff;
+}
+
+.airportUntoweredLabel {
+  fill: #ff4fd8;
+}
+
+.airportRunwayBarUnder {
+  stroke: rgba(8, 18, 24, 0.7);
+  stroke-width: 5px;
+  stroke-linecap: round;
+}
+
+.airportRunwayBar {
+  stroke: white;
+  stroke-width: 3px;
+  stroke-linecap: round;
+}
+
 .situationAircraft {
   position: absolute;
   z-index: 2;

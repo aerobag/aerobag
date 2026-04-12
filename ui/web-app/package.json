@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "prepare:fixture": "./scripts/prepare-fixture.sh",
+    "prepare:dev-assets": "./scripts/stage-dev-assets.sh",
     "build:wasm": "./scripts/build-wasm.sh",
-    "inner:dev": "npm run prepare:fixture && npm run build:wasm && vite",
-    "inner:build": "npm run prepare:fixture && npm run build:wasm && tsc --noEmit && vite build",
+    "inner:dev": "npm run prepare:dev-assets && npm run build:wasm && vite",
+    "inner:build": "npm run prepare:dev-assets && npm run build:wasm && tsc --noEmit && vite build",
     "inner:test": "vitest run",
     "dev": "./scripts/run-target-workspace.sh inner:dev",
     "build": "./scripts/run-target-workspace.sh inner:build",

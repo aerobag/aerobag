@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ContentFixtureBundle, ResourceIndexJson } from "./types";
+import type { FlightPlan, ResourceIndexJson } from "./types";
 import { deriveChartPage, deriveMapViews } from "./resourceIndexAdapters";
 
 const resourceIndex: ResourceIndexJson = {
@@ -74,7 +74,7 @@ const resourceIndex: ResourceIndexJson = {
   ],
 };
 
-const samplePlan: ContentFixtureBundle["flight_plan"] = {
+const samplePlan: FlightPlan = {
   id: "plan-1",
   name: "test",
   legs: [{ from: { Airport: "BOS" }, to: { Airport: "BOS" }, airway: null }],

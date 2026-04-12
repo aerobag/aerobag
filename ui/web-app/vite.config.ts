@@ -15,34 +15,62 @@ const webSourceRoot = path.join(repoRoot, "ui", "web-app");
 const webTargetRoot = path.join(uiTargetRoot, "web");
 const workspaceRoot = path.join(webTargetRoot, "workspace");
 const generatedRoot = path.join(webTargetRoot, "generated");
-const sectionalRoot = path.join(webTargetRoot, "generated-static", "sectional-packages");
-const chartAssetRoot = path.join(webTargetRoot, "generated-static", "chart-assets");
-const navDbRoot = path.join(webTargetRoot, "generated-static", "nav-db");
-const chartAssetManifestPath = path.join(webTargetRoot, "generated-static", "chart-assets-manifest.json");
-const vectorRoot = path.join(webTargetRoot, "generated-static", "vectors");
+const staticRoot = path.join(webTargetRoot, "generated-static");
+const sectionalRoot = path.join(staticRoot, "sectional-packages");
+const chartAssetRoot = path.join(staticRoot, "chart-assets");
+const chartThumbnailRoot = path.join(staticRoot, "chart-thumbnails");
+const navDbRoot = path.join(staticRoot, "nav-db");
+const vectorRoot = path.join(staticRoot, "vectors");
+const sharedRoot = path.join(repoRoot, "ui", "shared");
+const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
 const debugLogPath = path.join("/tmp", "aerobag-web-debug.log");
-
-function lookupChartAsset(requestPath: string) {
-  if (!fs.existsSync(chartAssetManifestPath)) {
+const artifactRootConfigFile = path.join(repoRoot, ".aerobag-artifact-root");
+const configuredArtifactRoot = fs.readFileSync(artifactRootConfigFile, "utf8").trim();
+const configuredArtifactPath = path.isAbsolute(configuredArtifactRoot)
+  ? configuredArtifactRoot
+  : path.resolve(repoRoot, configuredArtifactRoot);
+const bundleManifestDir = path.join("product-builds", "production");
+function latestBundleManifest(root: string): string | null {
+  const manifestDir = path.join(root, bundleManifestDir);
+  if (!fs.existsSync(manifestDir) || !fs.statSync(manifestDir).isDirectory()) {
     return null;
   }
-  const manifest = JSON.parse(fs.readFileSync(chartAssetManifestPath, "utf8")) as Record<string, string>;
-  const filePath = manifest[requestPath] ?? manifest[`/chart-assets${requestPath}`];
-  if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-    return null;
-  }
-  return filePath;
+  const manifests = fs.readdirSync(manifestDir)
+    .filter((name) => name.startsWith("bundle_") && name.endsWith(".json"))
+    .sort();
+  return manifests.length > 0 ? path.join(manifestDir, manifests[manifests.length - 1]) : null;
 }
+const artifactRoot = latestBundleManifest(configuredArtifactPath)
+  ? configuredArtifactPath
+  : latestBundleManifest("/root/aerobag-artifacts")
+    ? "/root/aerobag-artifacts"
+    : configuredArtifactPath;
+const productBuildPath = latestBundleManifest(artifactRoot) ?? path.join(artifactRoot, bundleManifestDir, "bundle_missing.json");
+
+function resolveProductBuildOutput(nodeName: string, outputName: string): string {
+  const payload = JSON.parse(fs.readFileSync(productBuildPath, "utf8")) as { nodes?: Array<Record<string, unknown>> };
+  for (const node of payload.nodes ?? []) {
+    if (node.name !== nodeName) {
+      continue;
+    }
+    const outputs = node.outputs;
+    if (!outputs || typeof outputs !== "object") {
+      break;
+    }
+    const rawPath = (outputs as Record<string, unknown>)[outputName];
+    if (typeof rawPath !== "string" || rawPath.length === 0) {
+      break;
+    }
+    return path.join(artifactRoot, rawPath);
+  }
+  throw new Error(`missing product build output ${nodeName}.${outputName}`);
+}
+
+const resourceIndexPath = resolveProductBuildOutput("resource-index", "resource_index");
 
 function mountStaticTree(sourceRoot: string) {
   return (req: { url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
     const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
-    const manifestFilePath = sourceRoot === chartAssetRoot ? lookupChartAsset(requestPath) : null;
-    if (manifestFilePath) {
-      res.setHeader("Content-Type", "image/png");
-      fs.createReadStream(manifestFilePath).pipe(res);
-      return;
-    }
     const relativePath = requestPath.replace(/^\/+/, "");
     const filePath = path.resolve(sourceRoot, relativePath);
     if (!filePath.startsWith(sourceRoot)) {
@@ -98,7 +126,7 @@ function aerobagStaticPlugin(): Plugin {
       });
       server.middlewares.use("/sectional-packages", mountStaticTree(sectionalRoot));
       server.middlewares.use("/chart-assets", mountStaticTree(chartAssetRoot));
-      server.middlewares.use("/chart-thumbnails", mountStaticTree(chartAssetRoot));
+      server.middlewares.use("/chart-thumbnails", mountStaticTree(chartThumbnailRoot));
       server.middlewares.use("/nav-db", mountStaticTree(navDbRoot));
       server.middlewares.use("/vectors", mountStaticTree(vectorRoot));
     },
@@ -110,7 +138,7 @@ function aerobagStaticPlugin(): Plugin {
       for (const [sourceRoot, targetName] of [
         [sectionalRoot, "sectional-packages"],
         [chartAssetRoot, "chart-assets"],
-        [chartAssetRoot, "chart-thumbnails"],
+        [chartThumbnailRoot, "chart-thumbnails"],
         [navDbRoot, "nav-db"],
         [vectorRoot, "vectors"],
       ] as const) {
@@ -120,7 +148,7 @@ function aerobagStaticPlugin(): Plugin {
         const targetRoot = path.join(outputDir, targetName);
         fs.rmSync(targetRoot, { recursive: true, force: true });
         fs.mkdirSync(targetRoot, { recursive: true });
-        fs.cpSync(sourceRoot, targetRoot, { recursive: true });
+        fs.cpSync(sourceRoot, targetRoot, { recursive: true, dereference: true });
       }
     },
   };
@@ -131,6 +159,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@generated": generatedRoot,
+      "@product-resource-index": resourceIndexPath,
+      "@shared-bootstrap": path.join(sharedRoot, "dev-bootstrap.json"),
+      "@shared-ui-theme": path.join(sharedFixturesRoot, "ui-theme.json"),
     },
   },
   server: {
@@ -138,7 +169,7 @@ export default defineConfig({
     host: "0.0.0.0",
     allowedHosts: ["aerobag-dev.iac.jonh.net"],
     fs: {
-      allow: [workspaceRoot, webSourceRoot, generatedRoot, sectionalRoot, chartAssetRoot, navDbRoot, vectorRoot],
+      allow: [workspaceRoot, webSourceRoot, sharedRoot, sharedFixturesRoot, generatedRoot, staticRoot, path.dirname(resourceIndexPath), artifactRoot],
     },
   },
   build: {

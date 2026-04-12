@@ -10,6 +10,8 @@ import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonEncoder
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNames
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -186,15 +188,18 @@ enum class WireContentAvailability {
 @Serializable
 enum class WireChartFamilyId {
     @SerialName("sectional")
+    @JsonNames("sec")
     Sectional,
 
     @SerialName("tac")
     Tac,
 
     @SerialName("ifr_low")
+    @JsonNames("enr-l")
     IfrLow,
 
     @SerialName("ifr_high")
+    @JsonNames("enr-h")
     IfrHigh,
 }
 
@@ -350,6 +355,7 @@ data class WireChartRecord(
     val region_ids: List<WireRegionId>,
     val max_zoom: Int,
     val tile_path_template: String,
+    val coverage: JsonElement,
 )
 
 @Serializable
@@ -358,6 +364,7 @@ data class WireChartId(
     val name: String,
     val cycle: String,
 )
+
 
 @Serializable
 data class WireGeometryBundle(

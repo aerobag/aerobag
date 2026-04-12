@@ -1,6 +1,6 @@
-import type { ContentFixtureBundle } from "./types";
+import type { MapViewJson } from "./types";
 
-type MapView = ContentFixtureBundle["map_view"];
+type MapView = MapViewJson;
 
 export type MapViewportState = {
   centerWorldX: number;

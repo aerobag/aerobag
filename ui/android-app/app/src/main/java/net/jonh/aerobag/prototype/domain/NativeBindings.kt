@@ -3,7 +3,7 @@ package net.jonh.aerobag.prototype.domain
 interface NativeBridge {
     fun createUiSessionJson(
         catalogJson: String,
-        resourceIndexJson: String,
+        chartCatalogJson: String,
         planJson: String,
         recentAirportIdsJson: String,
         selectedAirportIdJson: String,
@@ -99,7 +99,7 @@ object NativeBindings : NativeBridge {
 
     external override fun createUiSessionJson(
         catalogJson: String,
-        resourceIndexJson: String,
+        chartCatalogJson: String,
         planJson: String,
         recentAirportIdsJson: String,
         selectedAirportIdJson: String,

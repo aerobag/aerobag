@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { chartPage, mapViews, resourceIndex, sampleCatalog, samplePlan } from "./domain/sampleData";
 import type { AppState, ChartPageData, Situation } from "./domain/types";
-import uiTheme from "@generated/uiTheme.json";
+import uiTheme from "@shared-ui-theme";
 import planViewIcon from "./assets/plan-view-icon.svg";
 import {
   loadBestAvailableAdapter,
@@ -176,7 +176,7 @@ export default function App() {
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
     app_state: {
       active_plan: null,
-      situation: { position: { kind: "unknown" }, orientation_deg: null, speed_kt: null },
+      situation: demoSituation(),
       content_policy: "PreferLocal",
       last_content_requirements: [],
       last_content_report: null,
@@ -290,7 +290,9 @@ export default function App() {
       if (!cancelled) {
         setSessionSnapshot(snapshot);
       }
-    }).catch(() => {});
+    }).catch((error) => {
+      console.error("failed to initialize web ui session", error);
+    });
     return () => {
       cancelled = true;
       void nextSession?.destroy();

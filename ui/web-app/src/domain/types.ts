@@ -152,66 +152,66 @@ export type SituationPosition =
   | { kind: "lat_lon"; lat: number; lon: number }
   | { kind: "flight_plan_location"; leg_index: number; lat: number; lon: number };
 
-export type ContentFixtureBundle = {
-  catalog: CatalogJson;
-  geometry: {
-    schema_version: number;
-    polygons: Array<{
-      id: string;
-      points: number[][];
-    }>;
-  };
-  initial_probe: {
-    family: ChartFamilyId;
+export type MapViewJson = {
+  chart_family: ChartFamilyId;
+  chart_name: string;
+  chart_index: number;
+  tile_root: string;
+  tile_url_root: string;
+  tile_size: number;
+  min_zoom: number;
+  max_zoom: number;
+  storage_kind: TileStorageKind;
+  package_name: string | null;
+  initial_viewport: {
     lat: number;
     lon: number;
-  };
-  map_view: {
-    chart_family: ChartFamilyId;
-    chart_name: string;
-    chart_index: number;
-    tile_root: string;
-    tile_url_root: string;
-    tile_size: number;
-    min_zoom: number;
-    max_zoom: number;
-    storage_kind: TileStorageKind;
-    package_name: string | null;
-    initial_viewport: {
-      lat: number;
-      lon: number;
-      zoom: number;
-    };
-    levels: Array<{
-      zoom: number;
-      x_min: number;
-      x_max: number;
-      y_tms_min: number;
-      y_tms_max: number;
-    }>;
-  };
-  map_views?: Array<{
-    id: string;
-    label: string;
-    region_id: RegionId;
-    map_view: ContentFixtureBundle["map_view"];
-  }>;
-  map_tile_view: {
-    chart_family: ChartFamilyId;
-    chart_name: string;
-    chart_index: number;
-    tile_root: string;
     zoom: number;
-    tile_size: number;
-    radius: number;
-    center_x: number;
-    center_y_tms: number;
-    probe_offset_x: number;
-    probe_offset_y: number;
   };
+  levels: Array<{
+    zoom: number;
+    x_min: number;
+    x_max: number;
+    y_tms_min: number;
+    y_tms_max: number;
+  }>;
+};
+
+export type MapViewOptionJson = {
+  id: string;
+  label: string;
+  region_id: RegionId;
+  map_view: MapViewJson;
+};
+
+export type MapTileViewJson = {
+  chart_family: ChartFamilyId;
+  chart_name: string;
+  chart_index: number;
+  tile_root: string;
+  zoom: number;
+  tile_size: number;
+  radius: number;
+  center_x: number;
+  center_y_tms: number;
+  probe_offset_x: number;
+  probe_offset_y: number;
+};
+
+export type GeometryJson = {
+  schema_version: number;
+  polygons: Array<{
+    id: string;
+    points: number[][];
+  }>;
+};
+
+export type DevBootstrapJson = {
+  content_policy: ContentPolicy;
   flight_plan: FlightPlan;
-  remote_only_inventory: ContentInventory;
-  installed_inventory: ContentInventory;
+  recent_airport_ids: string[];
+  selected_airport_id: string | null;
+  selected_chart_id: string | null;
 };
 
 export type ChartPageData = {

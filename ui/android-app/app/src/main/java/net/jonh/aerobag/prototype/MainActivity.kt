@@ -587,7 +587,7 @@ private fun AerobagApp() {
     val context = LocalContext.current
     val fixture = remember(context) { SampleData.load(context.applicationContext) }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
-    val appCore = remember(fixture.catalog) { NativeAppCoreAdapter(fixture.catalog) }
+    val appCore = remember(fixture.catalogJson, fixture.chartCatalogJson) { NativeAppCoreAdapter(fixture.catalogJson, fixture.chartCatalogJson) }
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
     val sessionStartElapsedMs = remember { SystemClock.elapsedRealtime() }
     val uptimeLabel = rememberUptimeLabel(sessionStartElapsedMs)
@@ -604,7 +604,6 @@ private fun AerobagApp() {
     var selectedMapId by remember { mutableStateOf(initialMapId(fixture)) }
     val uiSession = remember(appCore, fixture.resourceIndexJson) {
         appCore.createUiSession(
-            fixture.resourceIndexJson,
             fixture.samplePlan,
             storedRecentAirportIds,
             storedSelectedAirportId.ifBlank { null },

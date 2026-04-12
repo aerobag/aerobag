@@ -1,14 +1,14 @@
-declare module "@generated/contentFixture.json" {
+declare module "@product-resource-index" {
   const value: unknown;
   export default value;
 }
 
-declare module "@generated/resourceIndex.json" {
+declare module "@shared-ui-theme" {
   const value: unknown;
   export default value;
 }
 
-declare module "@generated/uiTheme.json" {
+declare module "@shared-bootstrap" {
   const value: unknown;
   export default value;
 }

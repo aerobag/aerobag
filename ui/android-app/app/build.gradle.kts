@@ -31,8 +31,6 @@ val rustOutputAbiDir = layout.buildDirectory.dir("generated/rustJniLibs/x86_64")
 val generatedPrototypeAssetsDir = project.objects.directoryProperty().convention(layout.dir(project.provider { uiTargetRoot.resolve("android/assets") }))
 val generatedPrototypeSeedPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedPackages")
 val generatedPrototypeSeedChartPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedChartPackages")
-val uiFixtureGenerator = file("../../scripts/generate_content_fixture.py")
-val resourceIndexFile = uiTargetRoot.resolve("shared/content-prototype/resource-index.json")
 val repoRoot = rootDir.parentFile.parentFile
 val artifactRootConfigFile = repoRoot.resolve(".aerobag-artifact-root")
 val configuredArtifactRoot = artifactRootConfigFile.readText().trim()
@@ -57,6 +55,30 @@ val resolvedArtifactRoot = when {
     latestBuildManifest(File("/root/aerobag-artifacts"))?.isFile == true -> File("/root/aerobag-artifacts")
     else -> artifactRoot
 }
+val productBuildFile = latestBundleManifest(resolvedArtifactRoot)
+    ?: throw GradleException("missing bundle_*.json under ${resolvedArtifactRoot.resolve("product-builds/production").absolutePath}")
+val productBuildPayload by lazy { JsonSlurper().parse(productBuildFile) as Map<*, *> }
+
+fun resolveProductBuildOutput(nodeName: String, outputName: String): File {
+    val nodes = productBuildPayload["nodes"] as? List<*> ?: error("invalid product build manifest ${productBuildFile.absolutePath}")
+    for (node in nodes) {
+        val nodeMap = node as? Map<*, *> ?: continue
+        if (nodeMap["name"] != nodeName) continue
+        val outputs = nodeMap["outputs"] as? Map<*, *> ?: break
+        val rawPath = outputs[outputName] as? String ?: break
+        val resolved = resolvedArtifactRoot.resolve(rawPath)
+        if (resolved.isFile) {
+            return resolved
+        }
+        throw GradleException("missing product build output ${nodeName}.${outputName} at ${resolved.absolutePath}")
+    }
+    throw GradleException("missing product build output ${nodeName}.${outputName} in ${productBuildFile.absolutePath}")
+}
+
+val resourceIndexFile = resolveProductBuildOutput("resource-index", "resource_index")
+val mainDbFile = resolveProductBuildOutput("data", "main_db")
+val uiThemeFile = file("../../shared-fixtures/ui-theme.json")
+val devBootstrapFile = file("../../shared/dev-bootstrap.json")
 
 fun resolveArtifactPath(rawPath: String): File {
     val source = file(rawPath)
@@ -130,16 +152,26 @@ val copyRustX86_64Library by tasks.registering(Copy::class) {
     rename { "libapp_ffi.so" }
 }
 
-val generatePrototypeFixture by tasks.registering(Exec::class) {
-    workingDir = rootDir.parentFile.parentFile
+val stageCanonicalAndroidAssets by tasks.registering {
+    outputs.dir(generatedPrototypeAssetsDir)
+    outputs.upToDateWhen { false }
     doFirst {
-        delete(generatedPrototypeAssetsDir.get().dir("sectional-packages").asFile)
+        delete(generatedPrototypeAssetsDir.get().asFile)
     }
-    commandLine("python3", uiFixtureGenerator.absolutePath)
+    doLast {
+        val assetRoot = generatedPrototypeAssetsDir.get().asFile
+        val fixturesDir = assetRoot.resolve("fixtures")
+        val navDbDir = assetRoot.resolve("nav-db")
+        fixturesDir.mkdirs()
+        navDbDir.mkdirs()
+        Files.copy(resourceIndexFile.toPath(), fixturesDir.resolve("resource-index.json").toPath(), StandardCopyOption.REPLACE_EXISTING)
+        Files.copy(uiThemeFile.toPath(), fixturesDir.resolve("ui-theme.json").toPath(), StandardCopyOption.REPLACE_EXISTING)
+        Files.copy(devBootstrapFile.toPath(), fixturesDir.resolve("dev-bootstrap.json").toPath(), StandardCopyOption.REPLACE_EXISTING)
+        Files.copy(mainDbFile.toPath(), navDbDir.resolve("main.db").toPath(), StandardCopyOption.REPLACE_EXISTING)
+    }
 }
 
 val stagePrototypeSectionalPackages by tasks.registering {
-    dependsOn(generatePrototypeFixture)
     outputs.dir(generatedPrototypeSeedPackagesDir.map { it.dir("sectional-packages") })
     outputs.upToDateWhen { false }
     doLast {
@@ -203,14 +235,16 @@ val seedPrototypeSectionalPackages by tasks.registering {
 }
 
 val stagePrototypeChartPackages by tasks.registering {
-    dependsOn(generatePrototypeFixture)
     outputs.dir(generatedPrototypeSeedChartPackagesDir.map { it.dir("chart-packages") })
     outputs.upToDateWhen { false }
     doLast {
         val payload = JsonSlurper().parse(resourceIndexFile) as Map<*, *>
         val packages = (payload["packages"] as List<*>)
             .filterIsInstance<Map<*, *>>()
-            .filter { (it["id"] as? String) in setOf("NW_TPP", "NW_CSUP") }
+            .filter {
+                val packageId = it["id"] as? String ?: return@filter false
+                packageId.startsWith("NW_TPP") || packageId.startsWith("NW_CSUP")
+            }
             .map { resolveArtifactPath(it["artifact_path"] as String) }
         val outputDir = generatedPrototypeSeedChartPackagesDir.get().dir("chart-packages").asFile
         delete(outputDir)
@@ -320,7 +354,7 @@ android {
 
 tasks.named("preBuild") {
     dependsOn(copyRustX86_64Library)
-    dependsOn(generatePrototypeFixture)
+    dependsOn(stageCanonicalAndroidAssets)
 }
 
 dependencies {

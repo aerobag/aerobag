@@ -61,7 +61,7 @@ class ContentLogicTest {
     @Test
     fun nativeAdapterMatchesMockContractForRemoteOnlyStreaming() {
         val nativeAdapter = NativeAppCoreAdapter(
-            catalog = SampleDataFixture.catalog,
+            catalogJson = SampleDataFixture.catalogJson,
             bridge = FakeNativeBridge(json),
             json = json,
         )
@@ -80,7 +80,7 @@ class ContentLogicTest {
     @Test
     fun nativeAdapterMatchesMockContractForInstalledOffline() {
         val nativeAdapter = NativeAppCoreAdapter(
-            catalog = SampleDataFixture.catalog,
+            catalogJson = SampleDataFixture.catalogJson,
             bridge = FakeNativeBridge(json),
             json = json,
         )
@@ -201,6 +201,11 @@ class ContentLogicTest {
 }
 
 private object SampleDataFixture {
+    private val json = Json {
+        encodeDefaults = true
+        ignoreUnknownKeys = true
+    }
+
     val catalog = Catalog(
         cycle = "2026-04-16",
         packages = listOf(
@@ -221,6 +226,8 @@ private object SampleDataFixture {
             ),
         ),
     )
+
+    val catalogJson = json.encodeToString(catalog.toWireForTesting())
 
     val samplePlan = FlightPlan(
         id = "plan-1",

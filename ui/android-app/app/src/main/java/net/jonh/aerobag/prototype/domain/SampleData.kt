@@ -4,11 +4,10 @@ import android.content.Context
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
 
 data class ContentFixture(
-    val catalog: Catalog,
     val catalogJson: String,
+    val chartCatalogJson: String,
     val geometryJson: String,
     val resourceIndexJson: String,
     val mapView: MapView,
@@ -22,20 +21,16 @@ data class ContentFixture(
 )
 
 @Serializable
-private data class WireContentFixture(
-    val catalog: WireCatalog,
-    val geometry: WireGeometryBundle,
-    val map_view: WireMapView,
-    val map_views: List<WireMapViewOption> = emptyList(),
-    val initial_probe: WireInitialProbe,
-    val map_tile_view: WireMapTileView,
+private data class WireDevBootstrap(
+    val content_policy: String,
     val flight_plan: WireFlightPlan,
-    val remote_only_inventory: WireContentInventory,
-    val installed_inventory: WireContentInventory,
+    val recent_airport_ids: List<String> = emptyList(),
+    val selected_airport_id: String? = null,
+    val selected_chart_id: String? = null,
 )
 
 object SampleData {
-    private const val ASSET_PATH = "fixtures/contentFixture.json"
+    private const val BOOTSTRAP_ASSET_PATH = "fixtures/dev-bootstrap.json"
     private const val RESOURCE_INDEX_ASSET_PATH = "fixtures/resource-index.json"
 
     private val json = Json {
@@ -44,142 +39,69 @@ object SampleData {
     }
 
     fun load(context: Context): ContentFixture {
-        val payload = context.assets.open(ASSET_PATH).bufferedReader().use { it.readText() }
+        val bootstrapPayload = context.assets.open(BOOTSTRAP_ASSET_PATH).bufferedReader().use { it.readText() }
         val resourceIndexPayload = context.assets.open(RESOURCE_INDEX_ASSET_PATH).bufferedReader().use { it.readText() }
-        val fixtureElement = json.parseToJsonElement(payload).jsonObject
-        val fixture = json.decodeFromString<WireContentFixture>(payload)
+        val bootstrap = json.decodeFromString<WireDevBootstrap>(bootstrapPayload)
         val resourceIndex = json.decodeFromString<WireResourceIndex>(resourceIndexPayload)
-        val derivedMapViews = deriveMapViews(resourceIndex, fixture.map_views.map { it.id })
-        val derivedChartPage = deriveChartPage(
-            resourceIndex = resourceIndex,
-            samplePlan = fixture.flight_plan.toUiFlightPlan(),
-            allowedPackageIds = setOf("NW_TPP", "NW_CSUP"),
-        )
+        val mapViews = deriveMapViews(resourceIndex, emptyList())
+        val mapView = mapViews.first().mapView
+        val samplePlan = bootstrap.flight_plan.toUiFlightPlan()
+        val chartPage = deriveChartPage(resourceIndex = resourceIndex, samplePlan = samplePlan)
+        val defaultLevel = mapView.levels.maxBy { it.zoom }
         return ContentFixture(
-            catalog = fixture.catalog.toUiCatalog(),
-            catalogJson = fixtureElement.getValue("catalog").toString(),
-            geometryJson = fixtureElement.getValue("geometry").toString(),
+            catalogJson = json.encodeToString(deriveWireCatalog(resourceIndex)),
+            chartCatalogJson = json.encodeToString(chartPage.toWire()),
+            geometryJson = json.encodeToString(WireGeometryBundle(schema_version = 1, polygons = emptyList())),
             resourceIndexJson = resourceIndexPayload,
-            mapView = fixture.map_view.toUi(),
-            mapViews = derivedMapViews.ifEmpty {
-                listOf(
-                    MapViewOption(
-                        id = "default",
-                        label = fixture.map_view.chart_name,
-                        regionId = "nw",
-                        mapView = fixture.map_view.toUi(),
-                    ),
-                )
-            },
-            chartPage = derivedChartPage,
-            initialProbe = fixture.initial_probe.toUi(),
-            mapTileView = fixture.map_tile_view.toUi(),
-            samplePlan = fixture.flight_plan.toUiFlightPlan(),
-            remoteOnlyInventory = fixture.remote_only_inventory.toUiInventory(),
-            installedInventory = fixture.installed_inventory.toUiInventory(),
+            mapView = mapView,
+            mapViews = mapViews,
+            chartPage = chartPage,
+            initialProbe = MapProbe(
+                family = mapView.chartFamily,
+                lat = mapView.initialViewport.lat,
+                lon = mapView.initialViewport.lon,
+            ),
+            mapTileView = MapTileView(
+                chartFamily = mapView.chartFamily,
+                chartName = mapView.chartName,
+                chartIndex = mapView.chartIndex,
+                tileRoot = mapView.tileRoot,
+                zoom = defaultLevel.zoom,
+                tileSize = mapView.tileSize,
+                radius = 0,
+                centerX = (defaultLevel.xMin + defaultLevel.xMax) / 2,
+                centerYTms = (defaultLevel.yTmsMin + defaultLevel.yTmsMax) / 2,
+                probeOffsetX = 0.0,
+                probeOffsetY = 0.0,
+            ),
+            samplePlan = samplePlan,
+            remoteOnlyInventory = ContentInventory(installedPackages = emptyList()),
+            installedInventory = ContentInventory(installedPackages = emptyList()),
         )
     }
 }
 
-private fun WireMapView.toUi() = MapView(
-    chartFamily = when (chart_family) {
-        WireChartFamilyId.Sectional -> MapChartFamily.Sectional
-        WireChartFamilyId.Tac -> MapChartFamily.Tac
-        WireChartFamilyId.IfrLow -> MapChartFamily.IfrLow
-        WireChartFamilyId.IfrHigh -> MapChartFamily.IfrHigh
-    },
-    chartName = chart_name,
-    chartIndex = chart_index,
-    tileRoot = tile_root,
-    tileUrlRoot = tile_url_root,
-    tileSize = tile_size,
-    minZoom = min_zoom,
-    maxZoom = max_zoom,
-    storageKind = when (storage_kind) {
-        WireTileStorageKind.AssetTree -> TileStorageKind.AssetTree
-        WireTileStorageKind.SectionalPackage -> TileStorageKind.SectionalPackage
-    },
-    packageName = package_name,
-    initialViewport = MapViewportSeed(
-        lat = initial_viewport.lat,
-        lon = initial_viewport.lon,
-        zoom = initial_viewport.zoom,
-    ),
-    levels = levels.map {
-        TileLevelAvailability(
-            zoom = it.zoom,
-            xMin = it.x_min,
-            xMax = it.x_max,
-            yTmsMin = it.y_tms_min,
-            yTmsMax = it.y_tms_max,
+private fun ChartPageFixture.toWire() = WireDerivedChartPage(
+    airports = airports.map { airport ->
+        WireDerivedChartAirport(
+            id = airport.id,
+            label = airport.label,
+            charts = airport.charts.map { chart ->
+                WireDerivedChartAsset(
+                    id = chart.id,
+                    airport_id = chart.airportId,
+                    package_id = chart.packageId,
+                    label = chart.label,
+                    kind = chart.kind,
+                    folder_category = chart.folderCategory,
+                    source_asset_path = chart.sourceAssetPath,
+                    asset_path = chart.assetPath,
+                    asset_url = chart.assetUrl,
+                    thumbnail_source_path = chart.thumbnailSourceAssetPath,
+                    thumbnail_path = chart.thumbnailAssetPath,
+                    thumbnail_url = chart.thumbnailUrl,
+                )
+            },
         )
     },
-)
-
-private fun WireMapViewOption.toUi() = MapViewOption(
-    id = id,
-    label = label,
-    regionId = when (region_id) {
-        WireRegionId.Ne -> "ne"
-        WireRegionId.Nc -> "nc"
-        WireRegionId.Nw -> "nw"
-        WireRegionId.Se -> "se"
-        WireRegionId.Sc -> "sc"
-        WireRegionId.Sw -> "sw"
-        WireRegionId.Ec -> "ec"
-        WireRegionId.Ak -> "ak"
-        WireRegionId.Pac -> "pac"
-    },
-    mapView = map_view.toUi(),
-)
-
-private fun WireChartAirport.toUi() = ChartAirport(
-    id = id,
-    label = label,
-    charts = charts.map { it.toUi() },
-)
-
-private fun WireChartAsset.toUi() = ChartAsset(
-    id = id,
-    airportId = airport_id,
-    packageId = "",
-    label = label,
-    kind = kind,
-    folderCategory = "approach",
-    sourceAssetPath = asset_path,
-    assetPath = asset_path,
-    assetUrl = asset_url,
-    thumbnailSourceAssetPath = null,
-    thumbnailAssetPath = null,
-    thumbnailUrl = null,
-)
-
-private fun WireInitialProbe.toUi() = MapProbe(
-    family = when (family) {
-        WireChartFamilyId.Sectional -> MapChartFamily.Sectional
-        WireChartFamilyId.Tac -> MapChartFamily.Tac
-        WireChartFamilyId.IfrLow -> MapChartFamily.IfrLow
-        WireChartFamilyId.IfrHigh -> MapChartFamily.IfrHigh
-    },
-    lat = lat,
-    lon = lon,
-)
-
-private fun WireMapTileView.toUi() = MapTileView(
-    chartFamily = when (chart_family) {
-        WireChartFamilyId.Sectional -> MapChartFamily.Sectional
-        WireChartFamilyId.Tac -> MapChartFamily.Tac
-        WireChartFamilyId.IfrLow -> MapChartFamily.IfrLow
-        WireChartFamilyId.IfrHigh -> MapChartFamily.IfrHigh
-    },
-    chartName = chart_name,
-    chartIndex = chart_index,
-    tileRoot = tile_root,
-    zoom = zoom,
-    tileSize = tile_size,
-    radius = radius,
-    centerX = center_x,
-    centerYTms = center_y_tms,
-    probeOffsetX = probe_offset_x,
-    probeOffsetY = probe_offset_y,
 )

@@ -1,6 +1,9 @@
 package net.jonh.aerobag.prototype.domain
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 
 @Serializable
 data class WireResourceIndex(
@@ -152,6 +155,131 @@ private fun maxZoomForLevels(levels: List<TileLevelAvailability>): Double =
 
 private fun tileSizeForFamily(): Int = 512
 
+fun deriveWireCatalog(resourceIndex: WireResourceIndex): WireCatalog {
+    val cycle = resourceIndex.cycle ?: "unknown"
+    val supportedFamilies = setOf("sectional", "tac", "ifr_low", "ifr_high")
+    val familyById = resourceIndex.families.associateBy { it.id }
+    val packageById = resourceIndex.packages.associateBy { it.id }
+
+    val families = resourceIndex.families.mapNotNull { family ->
+        val familyId = when (family.id) {
+            "sectional" -> WireChartFamilyId.Sectional
+            "tac" -> WireChartFamilyId.Tac
+            "ifr_low" -> WireChartFamilyId.IfrLow
+            "ifr_high" -> WireChartFamilyId.IfrHigh
+            else -> null
+        } ?: return@mapNotNull null
+        val maxZoom = resourceIndex.chart_collections
+            .filter { it.family_id == familyId }
+            .maxOfOrNull { collection -> collection.levels.maxOfOrNull { level -> level.zoom } ?: 0 }
+        WireCatalogFamily(
+            id = familyId,
+            display_name = family.display_name,
+            kind = family.kind,
+            max_zoom = maxZoom,
+            tile_size = if (family.kind == "tiled_raster") tileSizeForFamily() else null,
+        )
+    }
+
+    val packages = resourceIndex.packages.mapNotNull { pkg ->
+        val familyId = when (pkg.family_id) {
+            "sectional" -> WireChartFamilyId.Sectional
+            "tac" -> WireChartFamilyId.Tac
+            "ifr_low" -> WireChartFamilyId.IfrLow
+            "ifr_high" -> WireChartFamilyId.IfrHigh
+            else -> null
+        } ?: return@mapNotNull null
+        WireCatalogPackage(
+            id = WirePackageId(
+                region = pkg.region_id,
+                family = familyId,
+                cycle = cycle,
+            ),
+            package_name = pkg.id,
+            family_id = familyId,
+            region_id = pkg.region_id,
+            cycle = cycle,
+            artifact_kind = "zip",
+            relative_url = pkg.id,
+            manifest_name = pkg.id,
+            size_bytes = pkg.size_bytes,
+            checksum_sha256 = pkg.checksum_sha256,
+        )
+    }
+
+    val charts = resourceIndex.chart_collections.filter { it.family_id.toResourceId() in supportedFamilies }.map { collection ->
+        val familyDisplay = familyById[collection.family_id.toResourceId()]?.display_name ?: collection.family_id.toResourceId()
+        val regionDisplay = regionDisplayName(resourceIndex.regions, collection.region_id)
+        WireChartRecord(
+            id = WireChartId(
+                family = collection.family_id,
+                name = collection.id,
+                cycle = cycle,
+            ),
+            family_id = collection.family_id,
+            name = collection.id,
+            display_name = "$regionDisplay $familyDisplay",
+            cycle = cycle,
+            region_ids = listOf(collection.region_id),
+            max_zoom = collection.levels.maxOfOrNull { it.zoom } ?: 0,
+            tile_path_template = collection.tile_path_template,
+            coverage = buildJsonObject {
+                put("kind", "b_box")
+                putJsonObject("value") {
+                    put("south", collection.coverage_bounds.lat_min)
+                    put("north", collection.coverage_bounds.lat_max)
+                    put("west", collection.coverage_bounds.lon_min)
+                    put("east", collection.coverage_bounds.lon_max)
+                }
+            },
+        )
+    }
+
+    val plates = resourceIndex.plates.mapNotNull { plate ->
+        val packageRecord = packageById[plate.package_id] ?: return@mapNotNull null
+        WirePlateRecord(
+            id = WirePlateId(
+                airport_id = plate.airport_id,
+                procedure_code = plate.id,
+                page = 1,
+                cycle = cycle,
+            ),
+            airport_id = plate.airport_id,
+            region_id = plate.region_id,
+            cycle = cycle,
+            procedure_code = plate.id,
+            display_name = plate.label,
+            kind = plate.asset_kind,
+            georeferenced = true,
+            page_count = 1,
+            asset_base_path = "${packageRecord.id}/${plate.asset_path.removeSuffix(".png")}",
+        )
+    }
+
+    val supplements = resourceIndex.csups.mapNotNull { csup ->
+        val packageRecord = packageById[csup.package_id] ?: return@mapNotNull null
+        WireSupplementRecord(
+            airport_id = csup.airport_id,
+            region_id = csup.region_id,
+            cycle = cycle,
+            page_count = 1,
+            asset_base_path = "${packageRecord.id}/${csup.asset_path.removeSuffix(".png")}",
+        )
+    }
+
+    return WireCatalog(
+        schema_version = resourceIndex.schema_version,
+        cycle = cycle,
+        catalog_revision = resourceIndex.generated_at_utc,
+        families = families,
+        regions = resourceIndex.regions,
+        packages = packages,
+        charts = charts,
+        plates = plates,
+        supplements = supplements,
+    )
+}
+
 fun deriveMapViews(
     resourceIndex: WireResourceIndex,
     preferredIds: List<String>,
@@ -278,7 +406,6 @@ fun deriveChartPage(
     val airportResourcesByAirportId = resourceIndex.airport_resources.associateBy { it.airport_id }
     val airportIds = linkedSetOf<String>()
     airportIdsFromPlan(samplePlan).forEach(airportIds::add)
-    resourceIndex.airport_resources.forEach { airportIds.add(it.airport_id) }
     val airports = airportIds.mapNotNull { airportId ->
         val airportResources = airportResourcesByAirportId[airportId] ?: return@mapNotNull null
         val charts = buildList {

@@ -144,6 +144,7 @@ struct PreparedNode {
     fingerprint: String,
     dir: PathBuf,
     record_path: PathBuf,
+    lock_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -153,12 +154,27 @@ struct PackageSummary {
     rebuilt: usize,
 }
 
+#[derive(Debug)]
+struct BuildLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for BuildLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+enum NodeCacheState {
+    CacheHit(NodeRecord),
+    Build(BuildLockGuard),
+}
+
 #[derive(Debug, Clone)]
 enum HeavyJobSpec {
     ChartRender {
         family: ChartFamily,
         source_repo: PathBuf,
-        run_root: PathBuf,
         prefetch_source_urls: PathBuf,
         fetch_jobs: usize,
         cpu_jobs: usize,
@@ -200,7 +216,6 @@ impl HeavyJobSpec {
             Self::ChartRender {
                 family,
                 source_repo,
-                run_root,
                 prefetch_source_urls,
                 fetch_jobs,
                 cpu_jobs,
@@ -208,7 +223,6 @@ impl HeavyJobSpec {
                 config,
                 family,
                 &source_repo,
-                &run_root,
                 &prefetch_source_urls,
                 fetch_jobs,
                 cpu_jobs,
@@ -334,15 +348,12 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             ChartFamily::EnrH,
         ] {
             let family_id = family_slug(family).to_string();
-            let version = chart_versions
+            let _version = chart_versions
                 .get(&family_id)
                 .expect("chart family version should exist");
-            let run_root =
-                build_shared_work_root(config, &format!("charts-{family_id}-{version}"))?;
             pending_jobs.push_back(HeavyJobSpec::ChartRender {
                 family,
                 source_repo: config.chart_cutline_root.clone(),
-                run_root: run_root.clone(),
                 prefetch_source_urls: source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl")),
                 fetch_jobs: config.fetch_jobs,
                 cpu_jobs: config.cpu_jobs.min(8).max(1),
@@ -852,9 +863,10 @@ fn build_source_urls_node(
         output_dir.join("tpp-se/source_urls.jsonl"),
         output_dir.join("data/source_urls.jsonl"),
     ];
-    if let Some(record) = try_load_node_record(&prepared, &expected)? {
-        return Ok((output_dir, record));
-    }
+    let _build_lock = match claim_or_wait_for_node(&prepared, &expected)? {
+        NodeCacheState::CacheHit(record) => return Ok((output_dir, record)),
+        NodeCacheState::Build(lock) => lock,
+    };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     fs::create_dir_all(&output_dir)?;
@@ -899,9 +911,10 @@ fn build_overridden_source_urls_node(
         output_dir.join("tpp-se/source_urls.jsonl"),
         output_dir.join("data/source_urls.jsonl"),
     ];
-    if let Some(record) = try_load_node_record(&prepared, &expected)? {
-        return Ok((output_dir, record));
-    }
+    let _build_lock = match claim_or_wait_for_node(&prepared, &expected)? {
+        NodeCacheState::CacheHit(record) => return Ok((output_dir, record)),
+        NodeCacheState::Build(lock) => lock,
+    };
     if output_dir.exists() {
         fs::remove_dir_all(&output_dir)
             .with_context(|| format!("failed to remove {}", output_dir.display()))?;
@@ -927,31 +940,27 @@ fn build_chart_render_node(
     config: &ProductBuildConfig,
     family: ChartFamily,
     source_repo: &Path,
-    run_root: &Path,
     source_urls: &Path,
     fetch_jobs: usize,
     cpu_jobs: usize,
 ) -> anyhow::Result<NodeRecord> {
     let family_id = family_slug(family).to_string();
-    let inputs = BTreeMap::from([
-        ("family".to_string(), family_id.clone()),
-        ("source_repo".to_string(), hash_tree(source_repo)?),
-        ("source_urls".to_string(), hash_file(source_urls)?),
-        ("cpu_jobs".to_string(), cpu_jobs.to_string()),
-        ("fetch_jobs".to_string(), fetch_jobs.to_string()),
-    ]);
-    let prepared = prepare_existing_node_root(&format!("charts-{family_id}-render"), run_root, &inputs)?;
-    let tiles_root = run_root
-        .join("work")
-        .join(format!("charts-{family_id}"))
-        .join("tiles");
-    if let Some(record) = try_load_node_record(&prepared, &[tiles_root.clone()])? {
-        return Ok(record);
-    }
+    let node_name = format!("charts-{family_id}-render");
+    let inputs = chart_render_inputs(family, source_repo, source_urls, fetch_jobs, cpu_jobs)?;
+    let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
+    let work_dir = stage_work_dir(family, source_repo, &prepared.dir)?;
+    let tiles_root = work_dir.join("tiles");
+    let _build_lock = match claim_or_wait_for_node(&prepared, &[tiles_root.clone()])? {
+        NodeCacheState::CacheHit(record) => return Ok(record),
+        NodeCacheState::Build(lock) => lock,
+    };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
-    let work_dir = stage_work_dir(family, source_repo, run_root)?;
-    let provenance_dir = run_root.join("meta").join("provenance").join(format!("charts-{family_id}"));
+    let provenance_dir = prepared
+        .dir
+        .join("meta")
+        .join("provenance")
+        .join(format!("charts-{family_id}"));
     fs::create_dir_all(&provenance_dir)?;
     copy_source_urls_provenance(source_urls, &provenance_dir)?;
     let urls = read_source_urls_jsonl(source_urls)?;
@@ -976,26 +985,29 @@ fn build_chart_render_node(
 fn build_chart_package_nodes(
     config: &ProductBuildConfig,
     family: ChartFamily,
-    _source_urls_dir: &Path,
+    source_urls_dir: &Path,
     version_label: &str,
 ) -> anyhow::Result<(Vec<NodeRecord>, ChartSource)> {
     let family_id = family_slug(family).to_string();
-    let run_root = build_shared_work_root(config, &format!("charts-{family_id}-{version_label}"))?;
-    let work_dir = run_root.join("work").join(format!("charts-{family_id}"));
-    let aggregate_path = run_root
-        .join("meta")
-        .join("provenance")
-        .join(format!("charts-{family_id}"))
-        .join("package_outputs.jsonl");
-    let source_urls_path = run_root
-        .join("meta")
-        .join("provenance")
-        .join(format!("charts-{family_id}"))
-        .join("source_urls.jsonl");
-    let render_record = load_existing_node_record(
-        &run_root.join("build-record.json"),
-        &format!("charts-{family_id}-render"),
+    let source_urls_path = source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl"));
+    let render_node_name = format!("charts-{family_id}-render");
+    let render_inputs = chart_render_inputs(
+        family,
+        &config.chart_cutline_root,
+        &source_urls_path,
+        config.fetch_jobs,
+        config.cpu_jobs.min(8).max(1),
     )?;
+    let render_prepared =
+        prepare_node_at(&build_shared_node_dir(config, &render_node_name)?, &render_node_name, &render_inputs)?;
+    let render_record = load_existing_node_record(&render_prepared.record_path, &render_node_name)?;
+    let work_dir = resolve_artifact_path(config, output_path(&render_record, "work_dir")?);
+    let provenance_dir = render_prepared
+        .dir
+        .join("meta")
+        .join("provenance")
+        .join(format!("charts-{family_id}"));
+    let aggregate_path = provenance_dir.join("package_outputs.jsonl");
     let existing_package_records = read_package_outputs_by_region(&aggregate_path)?;
     let mut node_records = Vec::new();
     let mut package_records = Vec::new();
@@ -1022,6 +1034,36 @@ fn build_chart_package_nodes(
         if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
             node_records.push(record);
         } else {
+            let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
+                NodeCacheState::CacheHit(record) => {
+                    node_records.push(record);
+                    if let Some(existing) = existing_package_records.get(region.code()) {
+                        package_records.push(existing.clone());
+                    } else {
+                        package_records.push(PackageOutputRecord {
+                            label: family.capture_label().to_string(),
+                            chart: Some(manifest_chart_name(family).to_string()),
+                            region: region.code().to_string(),
+                            manifest: format!(
+                                "{}_{}_{}",
+                                region.code(),
+                                manifest_chart_name(family),
+                                version_label
+                            ),
+                            manifest_sha256: hash_file(&manifest_path)?,
+                            zip: format!(
+                                "{}_{}_{}.zip",
+                                region.code(),
+                                manifest_chart_name(family),
+                                version_label
+                            ),
+                            zip_sha256: hash_file(&zip_path)?,
+                        });
+                    }
+                    continue;
+                }
+                NodeCacheState::Build(lock) => lock,
+            };
             let started_at_utc = utc_now_string();
             let started = Instant::now();
             let package_record = package_family_region_versioned(
@@ -1104,9 +1146,10 @@ fn build_csup_render_node(
     let inputs = csup_render_inputs(stage_fingerprint, region, render_jobs, version_label)?;
     let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
     let marker = work_dir.join(format!(".render-complete-{}", region.code().to_ascii_lowercase()));
-    if let Some(record) = try_load_node_record(&prepared, std::slice::from_ref(&marker))? {
-        return Ok(record);
-    }
+    let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&marker))? {
+        NodeCacheState::CacheHit(record) => return Ok(record),
+        NodeCacheState::Build(lock) => lock,
+    };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     render_csup_region(work_dir, region, render_jobs)?;
@@ -1137,9 +1180,10 @@ fn build_csup_stage_node(
     let prepared = prepare_node_at(&build_shared_node_dir(config, "csup-stage")?, "csup-stage", &inputs)?;
     let work_root = prepared.dir.clone();
     let marker = work_root.join(".stage-complete");
-    if let Some(record) = try_load_node_record(&prepared, std::slice::from_ref(&marker))? {
-        return Ok(record);
-    }
+    let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&marker))? {
+        NodeCacheState::CacheHit(record) => return Ok(record),
+        NodeCacheState::Build(lock) => lock,
+    };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     let work_dir = stage_work_dir_for_product(source_repo, &work_root)?;
@@ -1223,6 +1267,26 @@ fn build_csup_package_nodes(
         if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
             node_records.push(record);
         } else {
+            let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
+                NodeCacheState::CacheHit(record) => {
+                    node_records.push(record);
+                    if let Some(existing) = existing_package_records.get(region.code()) {
+                        package_records.push(existing.clone());
+                    } else {
+                        package_records.push(PackageOutputRecord {
+                            label: "csup".to_string(),
+                            chart: None,
+                            region: region.code().to_string(),
+                            manifest: format!("{}_CSUP_{}", region.code(), version_label),
+                            manifest_sha256: hash_file(&manifest_path)?,
+                            zip: format!("{}_CSUP_{}.zip", region.code(), version_label),
+                            zip_sha256: hash_file(&zip_path)?,
+                        });
+                    }
+                    continue;
+                }
+                NodeCacheState::Build(lock) => lock,
+            };
             let started_at_utc = utc_now_string();
             let started = Instant::now();
             let package_record =
@@ -1291,9 +1355,10 @@ fn build_tpp_render_node(
     let inputs = tpp_render_inputs(request, source_urls, &region_id)?;
     let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
     let plates_root = request.run_root.join(format!("work/tpp-{region_id}/plates"));
-    if let Some(record) = try_load_node_record(&prepared, std::slice::from_ref(&plates_root))? {
-        return Ok(record);
-    }
+    let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&plates_root))? {
+        NodeCacheState::CacheHit(record) => return Ok(record),
+        NodeCacheState::Build(lock) => lock,
+    };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     let result = render_native_tpp(request)?;
@@ -1369,20 +1434,23 @@ fn build_tpp_package_node(
     let work_dir = run_root.join(format!("work/tpp-{region_id}"));
     let zip_path = work_dir.join(format!("{}_TPP_{}.zip", region.code(), version_label));
     let manifest_path = work_dir.join(format!("{}_TPP_{}", region.code(), version_label));
-    if let Some(record) = try_load_node_record(
+    let _build_lock = match claim_or_wait_for_node(
         &prepared,
         &[package_outputs_path.clone(), zip_path.clone(), manifest_path.clone()],
     )? {
-        return Ok((
-            record,
-            AssetSource {
-                package_outputs_path,
-                asset_root: work_dir.clone(),
-                package_root: work_dir.clone(),
-                source_urls_path: Some(source_urls_path.to_path_buf()),
-            },
-        ));
-    }
+        NodeCacheState::CacheHit(record) => {
+            return Ok((
+                record,
+                AssetSource {
+                    package_outputs_path,
+                    asset_root: work_dir.clone(),
+                    package_root: work_dir.clone(),
+                    source_urls_path: Some(source_urls_path.to_path_buf()),
+                },
+            ));
+        }
+        NodeCacheState::Build(lock) => lock,
+    };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     let provenance_dir = run_root.join(format!("meta/provenance/tpp-{region_id}"));
@@ -1413,6 +1481,22 @@ fn build_tpp_package_node(
             source_urls_path: Some(source_urls_path.to_path_buf()),
         },
     ))
+}
+
+fn chart_render_inputs(
+    family: ChartFamily,
+    source_repo: &Path,
+    source_urls: &Path,
+    fetch_jobs: usize,
+    cpu_jobs: usize,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    Ok(BTreeMap::from([
+        ("family".to_string(), family_slug(family).to_string()),
+        ("source_repo".to_string(), hash_tree(source_repo)?),
+        ("source_urls".to_string(), hash_file(source_urls)?),
+        ("cpu_jobs".to_string(), cpu_jobs.to_string()),
+        ("fetch_jobs".to_string(), fetch_jobs.to_string()),
+    ]))
 }
 
 fn csup_stage_inputs(source_urls: &Path, fetch_jobs: usize) -> anyhow::Result<BTreeMap<String, String>> {
@@ -1520,18 +1604,7 @@ fn build_data_nodes(
     let data_manifest_version = data_manifest_cycle(source_urls_dir)?;
     let (staged_input_dir, staging_record) = build_data_input_node(config, &source_urls)?;
 
-    let node_root = build_shared_work_root(config, &format!("data-{data_version}"))?;
-    let provenance_dir = node_root.join("meta/provenance/data");
-    fs::create_dir_all(&provenance_dir)?;
-    copy_source_urls_provenance(&source_urls, &provenance_dir)?;
-
-    let request = DataBuildRequest {
-        input_dir: staged_input_dir.clone(),
-        output_dir: node_root.join("output"),
-        mode: DataBuildMode::Production,
-        manifest_version: data_manifest_version.clone(),
-        artifact_stem: Some(data_version.clone()),
-    };
+    let artifact_stem = data_version.clone();
     let inputs = BTreeMap::from([
         ("staged_input_dir".to_string(), relative_artifact_path(&staged_input_dir, &config.build_root)),
         (
@@ -1539,16 +1612,28 @@ fn build_data_nodes(
             staging_record.fingerprint.clone(),
         ),
         ("source_urls".to_string(), hash_file(&source_urls)?),
-        ("manifest_version".to_string(), request.manifest_version.clone()),
-        ("artifact_stem".to_string(), request.artifact_stem.clone().unwrap_or_default()),
+        ("manifest_version".to_string(), data_manifest_version.clone()),
+        ("artifact_stem".to_string(), artifact_stem.clone()),
     ]);
-    let prepared = prepare_existing_node_root("data", &node_root, &inputs)?;
+    let prepared = prepare_node_at(&build_shared_node_dir(config, "data")?, "data", &inputs)?;
+    let provenance_dir = prepared.dir.join("meta/provenance/data");
+    fs::create_dir_all(&provenance_dir)?;
+    copy_source_urls_provenance(&source_urls, &provenance_dir)?;
+
+    let request = DataBuildRequest {
+        input_dir: staged_input_dir.clone(),
+        output_dir: prepared.dir.join("output"),
+        mode: DataBuildMode::Production,
+        manifest_version: data_manifest_version.clone(),
+        artifact_stem: Some(artifact_stem),
+    };
     let zip_path = request
         .output_dir
         .join(format!("{}.zip", request.artifact_stem.as_deref().unwrap_or("databases")));
-    if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone()])? {
-        return Ok(vec![staging_record, record]);
-    }
+    let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone()])? {
+        NodeCacheState::CacheHit(record) => return Ok(vec![staging_record, record]),
+        NodeCacheState::Build(lock) => lock,
+    };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     let result = build_data_package(&request)?;
@@ -1574,13 +1659,6 @@ fn build_vectors_node(
     main_db: &Path,
     version_label: &str,
 ) -> anyhow::Result<NodeRecord> {
-    let node_root = build_shared_work_root(config, &format!("vectors-{version_label}"))?;
-    let output_dir = node_root.join("output");
-    let request = BuildVectorsRequest {
-        main_db: main_db.to_path_buf(),
-        output_dir: output_dir.clone(),
-        version_label: version_label.to_string(),
-    };
     let inputs = BTreeMap::from([
         ("main_db".to_string(), hash_file(main_db)?),
         ("version_label".to_string(), version_label.to_string()),
@@ -1594,12 +1672,19 @@ fn build_vectors_node(
             )?,
         ),
     ]);
-    let prepared = prepare_existing_node_root("vectors", &node_root, &inputs)?;
+    let prepared = prepare_node_at(&build_shared_node_dir(config, "vectors")?, "vectors", &inputs)?;
+    let output_dir = prepared.dir.join("output");
+    let request = BuildVectorsRequest {
+        main_db: main_db.to_path_buf(),
+        output_dir: output_dir.clone(),
+        version_label: version_label.to_string(),
+    };
     let zip_path = output_dir.join(format!("vectors_{version_label}.zip"));
     let stats_path = output_dir.join("stats.json");
-    if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), stats_path.clone()])? {
-        return Ok(record);
-    }
+    let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone(), stats_path.clone()])? {
+        NodeCacheState::CacheHit(record) => return Ok(record),
+        NodeCacheState::Build(lock) => lock,
+    };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     let result = build_vectors_dataset(&request)?;
@@ -1641,9 +1726,10 @@ fn build_data_input_node(
     let prepared = prepare_node_at(&build_shared_node_dir(config, "data-input-staging")?, "data-input-staging", &inputs)?;
     let staged_root = prepared.dir.join("out");
     let marker = staged_root.join(".staged-complete");
-    if let Some(record) = try_load_node_record(&prepared, std::slice::from_ref(&marker))? {
-        return Ok((staged_root, record));
-    }
+    let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&marker))? {
+        NodeCacheState::CacheHit(record) => return Ok((staged_root, record)),
+        NodeCacheState::Build(lock) => lock,
+    };
 
     if staged_root.exists() {
         fs::remove_dir_all(&staged_root)
@@ -1817,6 +1903,7 @@ fn prepare_node_at(
         name: name.to_string(),
         fingerprint,
         record_path: dir.join("build-record.json"),
+        lock_path: dir.join(".build-lock"),
         dir,
     })
 }
@@ -1881,32 +1968,6 @@ fn read_package_outputs_by_region(path: &Path) -> anyhow::Result<BTreeMap<String
     Ok(records)
 }
 
-fn prepare_existing_node_root(
-    name: &str,
-    root: &Path,
-    inputs: &BTreeMap<String, String>,
-) -> anyhow::Result<PreparedNode> {
-    let fingerprint = fingerprint_for_node(name, inputs)?;
-    let record_path = root.join("build-record.json");
-    if record_path.is_file() {
-        let existing = load_existing_node_record(&record_path, name)?;
-        if existing.fingerprint != fingerprint {
-            bail!(
-                "immutable output collision for node {name} at {}: existing fingerprint {} != new fingerprint {}; rename/version this output root instead of reusing it",
-                root.display(),
-                existing.fingerprint,
-                fingerprint
-            );
-        }
-    }
-    Ok(PreparedNode {
-        name: name.to_string(),
-        fingerprint,
-        record_path,
-        dir: root.to_path_buf(),
-    })
-}
-
 fn try_load_node_record(
     prepared: &PreparedNode,
     expected_outputs: &[PathBuf],
@@ -1926,6 +1987,61 @@ fn try_load_node_record(
         return Ok(Some(cached));
     }
     Ok(None)
+}
+
+fn claim_or_wait_for_node(
+    prepared: &PreparedNode,
+    expected_outputs: &[PathBuf],
+) -> anyhow::Result<NodeCacheState> {
+    loop {
+        if let Some(record) = try_load_node_record(prepared, expected_outputs)? {
+            return Ok(NodeCacheState::CacheHit(record));
+        }
+
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&prepared.lock_path)
+        {
+            Ok(mut file) => {
+                let pid = std::process::id();
+                let now = utc_now_string();
+                use std::io::Write as _;
+                writeln!(file, "pid={pid}").ok();
+                writeln!(file, "started_at_utc={now}").ok();
+                reset_node_dir_for_rebuild(prepared)?;
+                return Ok(NodeCacheState::Build(BuildLockGuard {
+                    path: prepared.lock_path.clone(),
+                }));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                thread::sleep(std::time::Duration::from_millis(250));
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to acquire {}", prepared.lock_path.display()));
+            }
+        }
+    }
+}
+
+fn reset_node_dir_for_rebuild(prepared: &PreparedNode) -> anyhow::Result<()> {
+    for entry in fs::read_dir(&prepared.dir)
+        .with_context(|| format!("failed to read {}", prepared.dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path == prepared.lock_path {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            fs::remove_dir_all(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+        } else {
+            fs::remove_file(&path).with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn normalize_node_record_paths(mut record: NodeRecord, build_root: &Path) -> NodeRecord {

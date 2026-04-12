@@ -1897,6 +1897,29 @@ function FlightPlanPage(props: {
     setWaypointModalTop(Math.max(topPadding, Math.min(desiredTop, maxTop)));
   }, [airwayPicker, reorderOpen, selectedWaypointAnchor, selectedWaypointIndex, rowActions.length]);
 
+  useEffect(() => {
+    if (!airwayPicker || airwayPicker.loading) {
+      return;
+    }
+    if (!airwayPicker.presentation || airwayPicker.selectedAirwayName === null) {
+      return;
+    }
+    const modal = waypointModalRef.current;
+    if (!modal) {
+      return;
+    }
+    const handle = window.requestAnimationFrame(() => {
+      const suggested = modal.querySelector<HTMLButtonElement>(".airwayChoiceButton.isSuggested");
+      suggested?.scrollIntoView({ block: "center", inline: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(handle);
+  }, [
+    airwayPicker?.loading,
+    airwayPicker?.presentation,
+    airwayPicker?.selectedAirwayName,
+    airwayPicker?.selectedEntryIndex,
+  ]);
+
   return (
     <section className="appPage planPage" ref={pageRef}>
       {trayOpen ? <TrayScrim ariaLabel="Close page tray" onClose={trayGroup.closeAll} /> : null}

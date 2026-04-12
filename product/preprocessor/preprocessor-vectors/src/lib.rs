@@ -108,6 +108,10 @@ struct PointRecord {
     style_class: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     towered: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fuel_available: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    longest_runway_heading_true_deg: Option<f64>,
 }
 
 pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<BuildVectorsResult> {
@@ -317,11 +321,12 @@ pub fn build_obstacle_dataset(
 fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
     let mut points = Vec::new();
     let mut seen = BTreeSet::new();
+    let longest_runway_headings = load_longest_runway_headings(conn)?;
 
     let point_sources = [
         (
             "airports",
-            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, ATCT FROM airports WHERE ARPLatitude != '' AND ARPLongitude != ''",
+            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, ATCT, FuelTypes FROM airports WHERE ARPLatitude != '' AND ARPLongitude != ''",
             "airport",
         ),
         (
@@ -356,16 +361,20 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
             let lon: f64 = parse_f64_cell(row, 2)?;
             let label: String = row.get::<_, String>(3)?;
             let kind: String = row.get::<_, String>(4)?;
-            let towered = if table_name == "airports" {
+            let (towered, fuel_available) = if table_name == "airports" {
                 let atct: String = row.get::<_, String>(5)?;
-                Some(!atct.trim().is_empty())
+                let fuel_types: String = row.get::<_, String>(6)?;
+                (
+                    Some(!atct.trim().is_empty()),
+                    Some(!fuel_types.trim().is_empty()),
+                )
             } else {
-                None
+                (None, None)
             };
-            Ok((id, lat, lon, label, kind, towered))
+            Ok((id, lat, lon, label, kind, towered, fuel_available))
         })?;
         for row in rows {
-            let (raw_id, lat, lon, label, kind, towered) = row?;
+            let (raw_id, lat, lon, label, kind, towered, fuel_available) = row?;
             if !valid_lat_lon(lat, lon) {
                 continue;
             }
@@ -378,6 +387,10 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                 label,
                 style_class: style_class.to_string(),
                 towered,
+                fuel_available,
+                longest_runway_heading_true_deg: (table_name == "airports")
+                    .then(|| longest_runway_headings.get(&raw_id).copied())
+                    .flatten(),
             });
         }
     }
@@ -437,9 +450,77 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<PointRecord>> {
             label: format!("Obstacle {:.0}ft", height_msl),
             style_class: "obstacle".to_string(),
             towered: None,
+            fuel_available: None,
+            longest_runway_heading_true_deg: None,
         });
     }
     Ok(points)
+}
+
+fn load_longest_runway_headings(conn: &Connection) -> anyhow::Result<BTreeMap<String, f64>> {
+    let mut stmt = conn.prepare(
+        "SELECT LocationID, Length, LEHeadingT, LELatitude, LELongitude, HELatitude, HELongitude
+         FROM airportrunways",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+        ))
+    })?;
+
+    let mut by_airport = BTreeMap::<String, (f64, f64)>::new();
+    for row in rows {
+        let (location_id, length_text, le_heading_text, le_lat_text, le_lon_text, he_lat_text, he_lon_text) = row?;
+        let length = parse_float(&length_text);
+        if length <= 0.0 {
+            continue;
+        }
+        let heading = parse_float(&le_heading_text);
+        let heading = if heading > 0.0 {
+            normalize_heading(heading)
+        } else {
+            let le_lat = parse_float(&le_lat_text);
+            let le_lon = parse_float(&le_lon_text);
+            let he_lat = parse_float(&he_lat_text);
+            let he_lon = parse_float(&he_lon_text);
+            if !valid_lat_lon(le_lat, le_lon) || !valid_lat_lon(he_lat, he_lon) {
+                continue;
+            }
+            bearing_true_deg(le_lat, le_lon, he_lat, he_lon)
+        };
+        match by_airport.get(&location_id) {
+            Some((best_length, _)) if *best_length >= length => {}
+            _ => {
+                by_airport.insert(location_id, (length, heading));
+            }
+        }
+    }
+
+    Ok(by_airport
+        .into_iter()
+        .map(|(location_id, (_, heading))| (location_id, heading))
+        .collect())
+}
+
+fn bearing_true_deg(start_lat: f64, start_lon: f64, end_lat: f64, end_lon: f64) -> f64 {
+    let start_lat_rad = start_lat.to_radians();
+    let end_lat_rad = end_lat.to_radians();
+    let delta_lon_rad = (end_lon - start_lon).to_radians();
+    let y = delta_lon_rad.sin() * end_lat_rad.cos();
+    let x = start_lat_rad.cos() * end_lat_rad.sin()
+        - start_lat_rad.sin() * end_lat_rad.cos() * delta_lon_rad.cos();
+    normalize_heading(y.atan2(x).to_degrees())
+}
+
+fn normalize_heading(heading: f64) -> f64 {
+    let normalized = heading.rem_euclid(360.0);
+    (normalized * 10.0).round() / 10.0
 }
 
 fn field(line: &str, start: usize, len: usize) -> &str {

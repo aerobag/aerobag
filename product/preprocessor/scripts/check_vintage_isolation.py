@@ -231,7 +231,7 @@ def run_build_once(
     obstacle_snapshot: str,
 ) -> None:
     env = os.environ.copy()
-    env["AEROBAG_ARTIFACT_ROOT"] = str(artifact_root)
+    env["AEROBAG_ARTIFACT_WRITE_PATH"] = str(artifact_root)
     env["AEROBAG_SOURCE_URLS_ROOT"] = str(source_urls_root)
     env["AEROBAG_OBSTACLE_SNAPSHOT_DATE"] = obstacle_snapshot
     env["PRODUCT_BUILD_CGROUP_ACTIVE"] = "1"

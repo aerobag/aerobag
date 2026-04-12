@@ -186,18 +186,18 @@ fn env_path(name: &str) -> Option<PathBuf> {
 }
 
 fn default_artifact_root(repo_root: &Path) -> PathBuf {
-    env_path("AEROBAG_ARTIFACT_ROOT").unwrap_or_else(|| {
-        let config_path = repo_root.join(".aerobag-artifact-root");
+    env_path("AEROBAG_ARTIFACT_WRITE_PATH").unwrap_or_else(|| {
+        let config_path = repo_root.join(".aerobag-artifact-write-path");
         let raw = fs::read_to_string(&config_path).unwrap_or_else(|error| {
             panic!(
-                "artifact root config missing at {} and AEROBAG_ARTIFACT_ROOT is unset: {error}",
+                "artifact write-path config missing at {} and AEROBAG_ARTIFACT_WRITE_PATH is unset: {error}",
                 config_path.display()
             )
         });
         let configured = raw.trim();
         assert!(
             !configured.is_empty(),
-            "artifact root config at {} is empty",
+            "artifact write-path config at {} is empty",
             config_path.display()
         );
         let path = PathBuf::from(configured);

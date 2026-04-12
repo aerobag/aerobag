@@ -32,8 +32,8 @@ val generatedPrototypeAssetsDir = project.objects.directoryProperty().convention
 val generatedPrototypeSeedPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedPackages")
 val generatedPrototypeSeedChartPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedChartPackages")
 val repoRoot = rootDir.parentFile.parentFile
-val artifactRootConfigFile = repoRoot.resolve(".aerobag-artifact-root")
-val configuredArtifactRoot = artifactRootConfigFile.readText().trim()
+val artifactReadPathConfigFile = repoRoot.resolve(".aerobag-artifact-read-path")
+val configuredArtifactRoot = artifactReadPathConfigFile.readText().trim()
 val defaultArtifactRoot =
     if (File(configuredArtifactRoot).isAbsolute) {
         File(configuredArtifactRoot)
@@ -41,7 +41,7 @@ val defaultArtifactRoot =
         repoRoot.resolve(configuredArtifactRoot)
     }
 val artifactRoot = File(
-    System.getenv("AEROBAG_ARTIFACT_ROOT")
+    System.getenv("AEROBAG_ARTIFACT_READ_PATH")
         ?: defaultArtifactRoot.absolutePath,
 )
 fun latestCurrentArtifacts(root: File): File? =

@@ -33,6 +33,7 @@ use preprocessor_tpp::{
 use preprocessor_vectors::{build_vectors_dataset, BuildVectorsRequest};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zip::ZipArchive;
 
 use crate::emit_source_urls::{discover_published_cycles, emit_source_urls};
 
@@ -182,6 +183,11 @@ enum ScheduledTaskKind {
     TppPackage { region: Region, run_root: PathBuf },
     Vectors,
     ResourceIndex,
+    ChartUnpack { family: ChartFamily, region: Region },
+    CsupUnpack { region: Region },
+    TppUnpack { region: Region },
+    DataUnpack,
+    VectorsUnpack,
 }
 
 #[derive(Debug, Clone)]
@@ -200,6 +206,7 @@ enum TaskValue {
     CsupSource(AssetSource),
     TppSource(AssetSource),
     Data { main_db: PathBuf, zip: PathBuf },
+    ZipArtifact { zip: PathBuf },
 }
 
 #[derive(Debug, Clone)]
@@ -244,7 +251,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         .with_context(|| format!("failed to create {}", log_root.display()))?;
     let mut master_log = MasterLog::create(&log_root.join("master.log"))?;
     master_log.log(format!(
-        "begin profile={} build_root={} scheduler=weighted_dag scheduler_version=2 max_heavy_jobs={} cpu_jobs={} fetch_jobs={} fetch_cache_mode={}",
+        "begin pid={} profile={} build_root={} scheduler=weighted_dag scheduler_version=2 max_heavy_jobs={} cpu_jobs={} fetch_jobs={} fetch_cache_mode={}",
+        std::process::id(),
         config.profile.as_str(),
         config.build_root.display(),
         config.max_heavy_jobs,
@@ -307,6 +315,18 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 weight: 1,
                 kind: ScheduledTaskKind::ChartPackage { family },
             });
+            for region in Region::ALL {
+                pending_tasks.push(ScheduledTask {
+                    id: format!(
+                        "charts-{}-unpack-{}",
+                        family_id,
+                        region.code().to_ascii_lowercase()
+                    ),
+                    deps: vec![format!("charts-{family_id}-package")],
+                    weight: 1,
+                    kind: ScheduledTaskKind::ChartUnpack { family, region },
+                });
+            }
         }
         pending_tasks.push(ScheduledTask {
             id: "csup-stage".to_string(),
@@ -322,7 +342,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             pending_tasks.push(ScheduledTask {
                 id: task_id,
                 deps: vec!["csup-stage".to_string()],
-                weight: 4,
+                weight: 2,
                 kind: ScheduledTaskKind::CsupRender { region },
             });
         }
@@ -332,6 +352,14 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             weight: 1,
             kind: ScheduledTaskKind::CsupPackage,
         });
+        for region in Region::ALL {
+            pending_tasks.push(ScheduledTask {
+                id: format!("csup-unpack-{}", region.code().to_ascii_lowercase()),
+                deps: vec!["csup-package".to_string()],
+                weight: 1,
+                kind: ScheduledTaskKind::CsupUnpack { region },
+            });
+        }
         let mut tpp_package_ids = Vec::new();
         for region in config.profile.tpp_regions() {
             let region_id = region.code().to_ascii_lowercase();
@@ -344,7 +372,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             pending_tasks.push(ScheduledTask {
                 id: render_id.clone(),
                 deps: vec![],
-                weight: 4,
+                weight: 2,
                 kind: ScheduledTaskKind::TppRender {
                     region: *region,
                     run_root: run_root.clone(),
@@ -359,6 +387,12 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                     run_root,
                 },
             });
+            pending_tasks.push(ScheduledTask {
+                id: format!("tpp-{region_id}-unpack"),
+                deps: vec![package_id.clone()],
+                weight: 1,
+                kind: ScheduledTaskKind::TppUnpack { region: *region },
+            });
             tpp_package_ids.push(package_id);
         }
         pending_tasks.push(ScheduledTask {
@@ -372,6 +406,18 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             deps: vec!["data".to_string()],
             weight: 1,
             kind: ScheduledTaskKind::Vectors,
+        });
+        pending_tasks.push(ScheduledTask {
+            id: "data-unpack".to_string(),
+            deps: vec!["data".to_string()],
+            weight: 1,
+            kind: ScheduledTaskKind::DataUnpack,
+        });
+        pending_tasks.push(ScheduledTask {
+            id: "vectors-unpack".to_string(),
+            deps: vec!["vectors".to_string()],
+            weight: 1,
+            kind: ScheduledTaskKind::VectorsUnpack,
         });
         let mut resource_index_deps = chart_families
             .iter()
@@ -434,6 +480,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 let csup_version = csup_version.clone();
                 let tpp_versions = tpp_versions.clone();
                 let data_version = data_version.clone();
+                let bundle_cycle = bundle_cycle.clone();
                 let task_values_snapshot = task_values.clone();
                 thread::spawn(move || -> anyhow::Result<()> {
                     let result = match task.kind {
@@ -593,9 +640,10 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             };
                             let record = build_vectors_node(&config, data, &data_version)?;
                             let cache_hit = record.cache_hit;
+                            let zip = resolve_artifact_path(&config, output_path(&record, "zip")?);
                             Ok(TaskCompletion {
                                 node_records: vec![record],
-                                value: TaskValue::None,
+                                value: TaskValue::ZipArtifact { zip },
                                 completion_detail: format!("cache_hit={}", cache_hit),
                             })
                         }
@@ -638,6 +686,106 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 node_records: vec![record],
                                 value: TaskValue::None,
                                 completion_detail: format!("cache_hit={}", cache_hit),
+                            })
+                        }
+                        ScheduledTaskKind::ChartUnpack { family, region } => {
+                            let family_id = family_slug(family).to_string();
+                            let key = format!("charts-{family_id}-package");
+                            let source = match task_values_snapshot.get(&key) {
+                                Some(TaskValue::ChartSource(source)) => source.clone(),
+                                _ => bail!("missing chart source for {family_id}"),
+                            };
+                            let package = package_record_for_region(&source.package_outputs_path, region)?;
+                            let zip_path = source.package_root.join(&package.zip);
+                            let unpacked_root = published_unpacked_root(&config, &bundle_cycle)?;
+                            let (cache_hit, unpack_dir) =
+                                sync_unpacked_zip(&config, &zip_path, &unpacked_root)?;
+                            Ok(TaskCompletion {
+                                node_records: vec![],
+                                value: TaskValue::None,
+                                completion_detail: format!(
+                                    "cache_hit={} unpack_dir={}",
+                                    cache_hit,
+                                    unpack_dir.display()
+                                ),
+                            })
+                        }
+                        ScheduledTaskKind::CsupUnpack { region } => {
+                            let source = match task_values_snapshot.get("csup-package") {
+                                Some(TaskValue::CsupSource(source)) => source.clone(),
+                                _ => bail!("missing csup package source"),
+                            };
+                            let package = package_record_for_region(&source.package_outputs_path, region)?;
+                            let zip_path = source.package_root.join(&package.zip);
+                            let unpacked_root = published_unpacked_root(&config, &bundle_cycle)?;
+                            let (cache_hit, unpack_dir) =
+                                sync_unpacked_zip(&config, &zip_path, &unpacked_root)?;
+                            Ok(TaskCompletion {
+                                node_records: vec![],
+                                value: TaskValue::None,
+                                completion_detail: format!(
+                                    "cache_hit={} unpack_dir={}",
+                                    cache_hit,
+                                    unpack_dir.display()
+                                ),
+                            })
+                        }
+                        ScheduledTaskKind::TppUnpack { region } => {
+                            let region_id = region.code().to_ascii_lowercase();
+                            let key = format!("tpp-{region_id}-package");
+                            let source = match task_values_snapshot.get(&key) {
+                                Some(TaskValue::TppSource(source)) => source.clone(),
+                                _ => bail!("missing tpp package source for {region_id}"),
+                            };
+                            let package = package_record_for_region(&source.package_outputs_path, region)?;
+                            let zip_path = source.package_root.join(&package.zip);
+                            let unpacked_root = published_unpacked_root(&config, &bundle_cycle)?;
+                            let (cache_hit, unpack_dir) =
+                                sync_unpacked_zip(&config, &zip_path, &unpacked_root)?;
+                            Ok(TaskCompletion {
+                                node_records: vec![],
+                                value: TaskValue::None,
+                                completion_detail: format!(
+                                    "cache_hit={} unpack_dir={}",
+                                    cache_hit,
+                                    unpack_dir.display()
+                                ),
+                            })
+                        }
+                        ScheduledTaskKind::DataUnpack => {
+                            let zip = match task_values_snapshot.get("data") {
+                                Some(TaskValue::Data { main_db: _, zip }) => zip.clone(),
+                                _ => bail!("missing data zip"),
+                            };
+                            let unpacked_root = published_unpacked_root(&config, &bundle_cycle)?;
+                            let (cache_hit, unpack_dir) =
+                                sync_unpacked_zip(&config, &zip, &unpacked_root)?;
+                            Ok(TaskCompletion {
+                                node_records: vec![],
+                                value: TaskValue::None,
+                                completion_detail: format!(
+                                    "cache_hit={} unpack_dir={}",
+                                    cache_hit,
+                                    unpack_dir.display()
+                                ),
+                            })
+                        }
+                        ScheduledTaskKind::VectorsUnpack => {
+                            let zip = match task_values_snapshot.get("vectors") {
+                                Some(TaskValue::ZipArtifact { zip }) => zip.clone(),
+                                _ => bail!("missing vectors zip"),
+                            };
+                            let unpacked_root = published_unpacked_root(&config, &bundle_cycle)?;
+                            let (cache_hit, unpack_dir) =
+                                sync_unpacked_zip(&config, &zip, &unpacked_root)?;
+                            Ok(TaskCompletion {
+                                node_records: vec![],
+                                value: TaskValue::None,
+                                completion_detail: format!(
+                                    "cache_hit={} unpack_dir={}",
+                                    cache_hit,
+                                    unpack_dir.display()
+                                ),
                             })
                         }
                     };
@@ -723,6 +871,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 .context("failed to encode bundle manifest")?,
         )
         .with_context(|| format!("failed to write {}", bundle_manifest_path.display()))?;
+        sync_unpacked_metadata(config, &build_manifest, &build_manifest_path, &bundle_manifest_path)?;
         Ok(bundle_manifest_path)
     })();
 
@@ -840,6 +989,130 @@ fn resolve_product_build_path(config: &ProductBuildConfig, relative_path: &str) 
         .join(relative_path)
 }
 
+fn published_unpacked_root(
+    config: &ProductBuildConfig,
+    cycle: &str,
+) -> anyhow::Result<PathBuf> {
+    Ok(
+        artifact_root_from_build_root(&config.build_root)
+            .join("published-unpacked")
+            .join(config.profile.as_str())
+            .join(cycle),
+    )
+}
+
+fn unpacked_target_dir(config: &ProductBuildConfig, unpacked_root: &Path, zip_path: &Path) -> anyhow::Result<PathBuf> {
+    let artifact_root = artifact_root_from_build_root(&config.build_root);
+    let relative = zip_path
+        .strip_prefix(artifact_root)
+        .with_context(|| format!("failed to relativize {}", zip_path.display()))?;
+    let relative_dir = relative.with_extension("");
+    Ok(unpacked_root.join(relative_dir))
+}
+
+fn sync_unpacked_zip(
+    config: &ProductBuildConfig,
+    zip_path: &Path,
+    unpacked_root: &Path,
+) -> anyhow::Result<(bool, PathBuf)> {
+    let unpack_dir = unpacked_target_dir(config, unpacked_root, zip_path)?;
+    let marker_path = unpack_dir.join(".source-zip-sha256");
+    let zip_sha256 = hash_file(zip_path)?;
+    if unpack_dir.is_dir() && fs::read_to_string(&marker_path).ok().as_deref() == Some(zip_sha256.as_str()) {
+        return Ok((true, unpack_dir));
+    }
+    if unpack_dir.exists() {
+        fs::remove_dir_all(&unpack_dir)
+            .with_context(|| format!("failed to remove {}", unpack_dir.display()))?;
+    }
+    fs::create_dir_all(&unpack_dir)
+        .with_context(|| format!("failed to create {}", unpack_dir.display()))?;
+    extract_zip_to_dir(zip_path, &unpack_dir)?;
+    fs::write(&marker_path, format!("{zip_sha256}\n"))
+        .with_context(|| format!("failed to write {}", marker_path.display()))?;
+    Ok((false, unpack_dir))
+}
+
+fn extract_zip_to_dir(zip_path: &Path, output_dir: &Path) -> anyhow::Result<()> {
+    let file = File::open(zip_path).with_context(|| format!("failed to open {}", zip_path.display()))?;
+    let mut archive = ZipArchive::new(file)
+        .with_context(|| format!("failed to open zip {}", zip_path.display()))?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).with_context(|| {
+            format!("failed to read zip member #{index} from {}", zip_path.display())
+        })?;
+        let member = entry.name().to_string();
+        let outpath = output_dir.join(&member);
+        if member.ends_with('/') || entry.is_dir() {
+            fs::create_dir_all(&outpath)
+                .with_context(|| format!("failed to create {}", outpath.display()))?;
+            continue;
+        }
+        if let Some(parent) = outpath.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let mut output =
+            File::create(&outpath).with_context(|| format!("failed to create {}", outpath.display()))?;
+        std::io::copy(&mut entry, &mut output)
+            .with_context(|| format!("failed to extract {} from {}", member, zip_path.display()))?;
+    }
+    Ok(())
+}
+
+fn sync_unpacked_metadata(
+    config: &ProductBuildConfig,
+    build_manifest: &BuildManifest,
+    build_manifest_path: &Path,
+    bundle_manifest_path: &Path,
+) -> anyhow::Result<()> {
+    let unpacked_root = published_unpacked_root(config, &build_manifest.cycle)?;
+    fs::create_dir_all(&unpacked_root)
+        .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
+    copy_into_unpacked_root(config, build_manifest_path, &unpacked_root)?;
+    copy_into_unpacked_root(config, bundle_manifest_path, &unpacked_root)?;
+    for node in &build_manifest.nodes {
+        for output in node.outputs.values() {
+            let candidate = if Path::new(output).is_absolute() {
+                PathBuf::from(output)
+            } else {
+                resolve_artifact_path(config, output)
+            };
+            if candidate.extension().and_then(|value| value.to_str()) == Some("zip") {
+                continue;
+            }
+            if candidate.is_file() {
+                copy_into_unpacked_root(config, &candidate, &unpacked_root)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn copy_into_unpacked_root(
+    config: &ProductBuildConfig,
+    source_path: &Path,
+    unpacked_root: &Path,
+) -> anyhow::Result<()> {
+    let artifact_root = artifact_root_from_build_root(&config.build_root);
+    let relative = source_path
+        .strip_prefix(artifact_root)
+        .with_context(|| format!("failed to relativize {}", source_path.display()))?;
+    let dest_path = unpacked_root.join(relative);
+    if let Some(parent) = dest_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::copy(source_path, &dest_path).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            source_path.display(),
+            dest_path.display()
+        )
+    })?;
+    Ok(())
+}
+
 fn manifest_generated_at(node_records: &[NodeRecord]) -> String {
     node_records
         .iter()
@@ -880,7 +1153,7 @@ impl ProductBuildConfig {
             .parent()
             .expect("product should live under the repo root")
             .to_path_buf();
-        let artifact_root = default_artifact_root(&repo_root);
+        let artifact_root = default_artifact_write_path(&repo_root);
 
         let mut profile = ProductBuildProfile::Production;
         let mut chart_cutline_root = repo_root.join("avare-assets").join("chart-cutlines");
@@ -2104,6 +2377,12 @@ fn read_package_outputs_by_region(path: &Path) -> anyhow::Result<BTreeMap<String
     Ok(records)
 }
 
+fn package_record_for_region(path: &Path, region: Region) -> anyhow::Result<PackageOutputRecord> {
+    read_package_outputs_by_region(path)?
+        .remove(region.code())
+        .ok_or_else(|| anyhow::anyhow!("missing package output for region {}", region.code()))
+}
+
 fn try_load_node_record(
     prepared: &PreparedNode,
     expected_outputs: &[PathBuf],
@@ -2423,6 +2702,12 @@ pub fn maybe_reexec_build_cycle_under_cgroup(args: &[String]) -> anyhow::Result<
         .args(["-p", "OOMPolicy=kill"])
         .arg("env")
         .arg(format!("{PRODUCT_BUILD_CGROUP_ACTIVE_ENV}=1"))
+        .args(
+            env::var("AEROBAG_ARTIFACT_WRITE_PATH")
+                .ok()
+                .into_iter()
+                .map(|value| format!("AEROBAG_ARTIFACT_WRITE_PATH={value}")),
+        )
         .arg(current_exe)
         .arg("build-cycle")
         .args(args)
@@ -2460,9 +2745,11 @@ impl MasterLog {
     }
 
     fn log(&mut self, message: impl AsRef<str>) -> anyhow::Result<()> {
+        let now = Utc::now().to_rfc3339();
         writeln!(
             self.file,
-            "{} {}",
+            "{} {} {}",
+            now,
             format_elapsed(self.start.elapsed().as_secs()),
             message.as_ref()
         )
@@ -2487,8 +2774,8 @@ fn env_path(name: &str) -> Option<PathBuf> {
     env::var(name).ok().map(PathBuf::from)
 }
 
-pub(crate) fn default_artifact_root(repo_root: &Path) -> PathBuf {
-    if let Some(path) = env_path("AEROBAG_ARTIFACT_ROOT") {
+pub(crate) fn default_artifact_write_path(repo_root: &Path) -> PathBuf {
+    if let Some(path) = env_path("AEROBAG_ARTIFACT_WRITE_PATH") {
         return if path.is_absolute() {
             path
         } else {
@@ -2496,17 +2783,17 @@ pub(crate) fn default_artifact_root(repo_root: &Path) -> PathBuf {
         };
     }
     {
-        let config_path = repo_root.join(".aerobag-artifact-root");
+        let config_path = repo_root.join(".aerobag-artifact-write-path");
         let raw = fs::read_to_string(&config_path).unwrap_or_else(|error| {
             panic!(
-                "artifact root config missing at {} and AEROBAG_ARTIFACT_ROOT is unset: {error}",
+                "artifact write-path config missing at {} and AEROBAG_ARTIFACT_WRITE_PATH is unset: {error}",
                 config_path.display()
             )
         });
         let configured = raw.trim();
         assert!(
             !configured.is_empty(),
-            "artifact root config at {} is empty",
+            "artifact write-path config at {} is empty",
             config_path.display()
         );
         let path = PathBuf::from(configured);

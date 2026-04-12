@@ -14,17 +14,17 @@ from osgeo import osr
 
 ROOT = Path(__file__).resolve().parents[2]
 UI_TARGET_ROOT_FILE = ROOT / "ui" / "target-root.txt"
-ARTIFACT_ROOT_CONFIG = ROOT / ".aerobag-artifact-root"
+ARTIFACT_READ_PATH_CONFIG = ROOT / ".aerobag-artifact-read-path"
 
 
 def resolve_artifact_root() -> Path:
     manifest_glob = Path("product-builds") / "production"
-    env_value = os.environ.get("AEROBAG_ARTIFACT_ROOT")
+    env_value = os.environ.get("AEROBAG_ARTIFACT_READ_PATH")
     if env_value:
         candidate = Path(env_value).expanduser()
         if list(candidate.joinpath(manifest_glob).glob("build-manifest_*.json")):
             return candidate
-    configured = ARTIFACT_ROOT_CONFIG.read_text().strip()
+    configured = ARTIFACT_READ_PATH_CONFIG.read_text().strip()
     path = Path(configured)
     candidate = path if path.is_absolute() else (ROOT / path).resolve()
     if list(candidate.joinpath(manifest_glob).glob("build-manifest_*.json")):

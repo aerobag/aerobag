@@ -33,7 +33,7 @@ use preprocessor_vectors::{
     build_obstacle_dataset, build_vectors_dataset, BuildObstacleDatasetRequest, BuildVectorsRequest,
 };
 use product_build::{
-    build_cycle, default_artifact_root, explain_product_build, maybe_reexec_build_cycle_under_cgroup,
+    build_cycle, default_artifact_write_path, explain_product_build, maybe_reexec_build_cycle_under_cgroup,
     ProductBuildConfig,
 };
 use serde::Serialize;
@@ -123,7 +123,7 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
         .parent()
         .expect("product should live under the repo root")
         .to_path_buf();
-    let artifact_root = default_artifact_root(&repo_root);
+    let artifact_root = default_artifact_write_path(&repo_root);
 
     let mut build_root = None;
     let mut fetch_jobs = 4_usize;

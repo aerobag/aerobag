@@ -26,8 +26,8 @@ const sharedRoot = path.join(repoRoot, "ui", "shared");
 const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
 const debugLogPath = path.join("/tmp", "aerobag-web-debug.log");
 const requestLogPath = path.join("/tmp", "aerobag-web-requests.log");
-const artifactRootConfigFile = path.join(repoRoot, ".aerobag-artifact-root");
-const configuredArtifactRoot = fs.readFileSync(artifactRootConfigFile, "utf8").trim();
+const artifactReadPathConfigFile = path.join(repoRoot, ".aerobag-artifact-read-path");
+const configuredArtifactRoot = fs.readFileSync(artifactReadPathConfigFile, "utf8").trim();
 const configuredArtifactPath = path.isAbsolute(configuredArtifactRoot)
   ? configuredArtifactRoot
   : path.resolve(repoRoot, configuredArtifactRoot);

@@ -3,17 +3,17 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ARTIFACT_ROOT_CONFIG_FILE="${ROOT_DIR}/.aerobag-artifact-root"
-if [[ -z "${AEROBAG_ARTIFACT_ROOT:-}" && -f "${ARTIFACT_ROOT_CONFIG_FILE}" ]]; then
+ARTIFACT_ROOT_CONFIG_FILE="${ROOT_DIR}/.aerobag-artifact-write-path"
+if [[ -z "${AEROBAG_ARTIFACT_WRITE_PATH:-}" && -f "${ARTIFACT_ROOT_CONFIG_FILE}" ]]; then
     ARTIFACT_ROOT="$(<"${ARTIFACT_ROOT_CONFIG_FILE}")"
     if [[ "${ARTIFACT_ROOT}" != /* ]]; then
         ARTIFACT_ROOT="${ROOT_DIR}/${ARTIFACT_ROOT}"
     fi
 else
-    ARTIFACT_ROOT="${AEROBAG_ARTIFACT_ROOT:-}"
+    ARTIFACT_ROOT="${AEROBAG_ARTIFACT_WRITE_PATH:-}"
 fi
 if [[ -z "${ARTIFACT_ROOT}" ]]; then
-    echo "artifact root unset: set AEROBAG_ARTIFACT_ROOT or create ${ARTIFACT_ROOT_CONFIG_FILE}" >&2
+    echo "artifact write path unset: set AEROBAG_ARTIFACT_WRITE_PATH or create ${ARTIFACT_ROOT_CONFIG_FILE}" >&2
     exit 1
 fi
 LEGACY_DIR="${ROOT_DIR}/legacy-capture"

@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 TARGET_ROOT_FILE = ROOT / "ui" / "target-root.txt"
-ARTIFACT_ROOT_CONFIG = ROOT / ".aerobag-artifact-root"
+ARTIFACT_READ_PATH_CONFIG = ROOT / ".aerobag-artifact-read-path"
 PRODUCTION_MANIFEST_DIR = Path("product-builds") / "production"
 
 
@@ -23,16 +23,16 @@ def resolve_ui_target_root() -> Path:
 
 
 def resolve_artifact_root() -> Path:
-    env_value = os.environ.get("AEROBAG_ARTIFACT_ROOT")
+    env_value = os.environ.get("AEROBAG_ARTIFACT_READ_PATH")
     if env_value:
         candidate = Path(env_value).expanduser()
         if not any(candidate.joinpath(PRODUCTION_MANIFEST_DIR).glob("current_artifacts_*.json")):
             raise RuntimeError(
-                f"AEROBAG_ARTIFACT_ROOT does not contain current_artifacts_*.json under "
+                f"AEROBAG_ARTIFACT_READ_PATH does not contain current_artifacts_*.json under "
                 f"{candidate.joinpath(PRODUCTION_MANIFEST_DIR)}"
             )
         return candidate
-    configured = ARTIFACT_ROOT_CONFIG.read_text().strip()
+    configured = ARTIFACT_READ_PATH_CONFIG.read_text().strip()
     candidate = Path(configured)
     if not candidate.is_absolute():
         candidate = (ROOT / candidate).resolve()

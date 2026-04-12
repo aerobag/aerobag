@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Error as IoError, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -77,6 +77,7 @@ impl ToolInvocation {
         if self.stdin_text.is_some() {
             command.stdin(Stdio::piped());
         }
+        configure_subprocess_containment(&mut command);
 
         let mut stdout_file =
             fs::File::create(&logs.stdout).context("failed to create stdout log")?;
@@ -156,6 +157,29 @@ impl ToolInvocation {
         })
     }
 }
+
+#[cfg(unix)]
+fn configure_subprocess_containment(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) != 0 {
+                return Err(IoError::last_os_error());
+            }
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(IoError::last_os_error());
+            }
+            if libc::getppid() == 1 {
+                libc::raise(libc::SIGKILL);
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn configure_subprocess_containment(_command: &mut Command) {}
 
 pub fn append_pngs_vertical(
     work_dir: &Path,

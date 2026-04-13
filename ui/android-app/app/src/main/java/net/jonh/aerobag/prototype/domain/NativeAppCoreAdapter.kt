@@ -146,6 +146,249 @@ class NativeAppCoreAdapter(
         val nextJson = bridge.refreshContentStateJson(stateJson, catalogJson, inventoryJson)
         return json.decodeFromString<WireAppState>(nextJson).toUi()
     }
+
+    fun suggestAirwaysNear(dbPath: String, anchor: NavRef, limit: Int = 5): List<AirwaySuggestion> {
+        val nextJson = bridge.suggestAirwaysNearJson(dbPath, json.encodeToString(anchor.toWire()), limit)
+        return json.decodeFromString<List<WireAirwaySuggestion>>(nextJson).map { it.toUi() }
+    }
+
+    fun resolveNavRefPosition(dbPath: String, navRef: NavRef): LatLonPoint {
+        val nextJson = bridge.resolveNavRefPositionJson(dbPath, json.encodeToString(navRef.toWire()))
+        return json.decodeFromString<WireLatLon>(nextJson).toUi()
+    }
+
+    fun loadAirwayBranches(dbPath: String, airwayName: String): List<AirwayBranch> {
+        val nextJson = bridge.loadAirwayBranchesJson(dbPath, airwayName)
+        return json.decodeFromString<List<WireAirwayBranch>>(nextJson).map { it.toUi() }
+    }
+
+    fun listAirwayEntryCandidates(dbPath: String, airwayName: String, originAnchor: NavRef): List<AirwayEntryCandidate> {
+        val nextJson = bridge.listAirwayEntryCandidatesJson(dbPath, airwayName, json.encodeToString(originAnchor.toWire()))
+        return json.decodeFromString<List<WireAirwayEntryCandidate>>(nextJson).map { it.toUi() }
+    }
+
+    fun listAirwayExitCandidates(
+        dbPath: String,
+        airwayName: String,
+        entry: AirwayEntryCandidate,
+        destinationAnchor: NavRef,
+    ): List<AirwayExitCandidate> {
+        val nextJson =
+            bridge.listAirwayExitCandidatesJson(
+                dbPath,
+                airwayName,
+                json.encodeToString(entry.toWire()),
+                json.encodeToString(destinationAnchor.toWire()),
+            )
+        return json.decodeFromString<List<WireAirwayExitCandidate>>(nextJson).map { it.toUi() }
+    }
+
+    fun listProcedures(dbPath: String, airportId: String, kind: ProcedureKind): List<ProcedureSummary> {
+        val nextJson = bridge.listProceduresJson(dbPath, airportId, json.encodeToString(kind.toWire()))
+        return json.decodeFromString<List<WireProcedureSummary>>(nextJson).map { it.toUi() }
+    }
+
+    fun describeProcedureOptions(dbPath: String, airportId: String, procedureId: String, kind: ProcedureKind): ProcedureOptions {
+        val nextJson = bridge.describeProcedureOptionsJson(dbPath, airportId, procedureId, json.encodeToString(kind.toWire()))
+        return json.decodeFromString<WireProcedureOptions>(nextJson).toUi()
+    }
+
+    fun materializeProcedureSelection(
+        dbPath: String,
+        airportId: String,
+        procedureId: String,
+        kind: ProcedureKind,
+        runwayTransition: String?,
+        enrouteTransition: String?,
+        componentIndex: Int,
+    ): MaterializedProcedure {
+        val nextJson =
+            bridge.materializeProcedureSelectionJson(
+                dbPath,
+                airportId,
+                procedureId,
+                json.encodeToString(kind.toWire()),
+                json.encodeToString(runwayTransition),
+                json.encodeToString(enrouteTransition),
+                componentIndex,
+            )
+        return json.decodeFromString<WireMaterializedProcedure>(nextJson).toUi()
+    }
+
+    fun buildFlightPlanUi(plan: FlightPlan): FlightPlanUiState {
+        val nextJson = bridge.buildFlightPlanUiJson(json.encodeToString(plan.toWire()))
+        return json.decodeFromString<WireFlightPlanUiState>(nextJson).toUi()
+    }
+
+    fun activateLegUi(plan: FlightPlan, legIndex: Int): FlightPlanUiMutation {
+        val nextJson = bridge.activateLegUiJson(json.encodeToString(plan.toWire()), legIndex)
+        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
+    }
+
+    fun activateNextLegUi(plan: FlightPlan): FlightPlanUiMutation {
+        val nextJson = bridge.activateNextLegUiJson(json.encodeToString(plan.toWire()))
+        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
+    }
+
+    fun deleteComponentUi(plan: FlightPlan, componentIndex: Int): FlightPlanUiMutation {
+        val nextJson = bridge.deleteComponentUiJson(json.encodeToString(plan.toWire()), componentIndex)
+        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
+    }
+
+    fun moveComponentUi(plan: FlightPlan, componentIndex: Int, delta: Int): FlightPlanUiMutation {
+        val nextJson = bridge.moveComponentUiJson(json.encodeToString(plan.toWire()), componentIndex, delta)
+        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
+    }
+
+    fun suspendSequencingUi(plan: FlightPlan): FlightPlanUiMutation {
+        val nextJson = bridge.suspendSequencingUiJson(json.encodeToString(plan.toWire()))
+        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
+    }
+
+    fun unsuspendSequencingUi(plan: FlightPlan): FlightPlanUiMutation {
+        val nextJson = bridge.unsuspendSequencingUiJson(json.encodeToString(plan.toWire()))
+        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
+    }
+
+    fun sequenceActiveLegUi(plan: FlightPlan): FlightPlanUiMutation {
+        val nextJson = bridge.sequenceActiveLegUiJson(json.encodeToString(plan.toWire()))
+        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
+    }
+
+    fun prepareAirwayPresentation(
+        airwayName: String,
+        branches: List<AirwayBranch>,
+        originPosition: LatLonPoint,
+        destinationPosition: LatLonPoint?,
+    ): AirwayPresentationPlan {
+        val nextJson =
+            bridge.prepareAirwayPresentationJson(
+                airwayName,
+                json.encodeToString(branches.map { it.toWire() }),
+                json.encodeToString(originPosition.toWire()),
+                json.encodeToString(destinationPosition?.toWire()),
+            )
+        return json.decodeFromString<WireAirwayPresentationPlan>(nextJson).toUi()
+    }
+
+    fun insertAirwayFromSelectionUi(
+        dbPath: String,
+        plan: FlightPlan,
+        startComponentIndex: Int,
+        endComponentIndex: Int,
+        entry: AirwayEntryCandidate,
+        exit: AirwayExitCandidate,
+    ): FlightPlanUiMutation {
+        val nextJson =
+            bridge.insertAirwayFromSelectionUiJson(
+                dbPath,
+                json.encodeToString(plan.toWire()),
+                startComponentIndex,
+                endComponentIndex,
+                json.encodeToString(entry.toWire()),
+                json.encodeToString(exit.toWire()),
+            )
+        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
+    }
+
+    fun replaceAirwayFromSelectionUi(
+        dbPath: String,
+        plan: FlightPlan,
+        componentIndex: Int,
+        entry: AirwayEntryCandidate,
+        exit: AirwayExitCandidate,
+    ): FlightPlanUiMutation {
+        val nextJson =
+            bridge.replaceAirwayFromSelectionUiJson(
+                dbPath,
+                json.encodeToString(plan.toWire()),
+                componentIndex,
+                json.encodeToString(entry.toWire()),
+                json.encodeToString(exit.toWire()),
+            )
+        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
+    }
+
+    fun sortAirwaySuggestionsForUi(suggestions: List<AirwaySuggestion>): List<AirwaySuggestion> {
+        val nextJson = bridge.sortAirwaySuggestionsForUiJson(json.encodeToString(suggestions.map { it.toWire() }))
+        return json.decodeFromString<List<WireAirwaySuggestion>>(nextJson).map { it.toUi() }
+    }
+
+    fun insertAirwayMaterializedUi(
+        plan: FlightPlan,
+        startComponentIndex: Int,
+        endComponentIndex: Int?,
+        selection: AirwayAutoSelection,
+        airway: AirwaySegment,
+        resolvedLegs: List<ResolvedLeg>,
+    ): FlightPlanUiMutation {
+        val nextJson =
+            bridge.insertAirwayMaterializedUiJson(
+                json.encodeToString(plan.toWire()),
+                startComponentIndex,
+                json.encodeToString(endComponentIndex),
+                json.encodeToString(selection.toWire()),
+                json.encodeToString(airway.toWire()),
+                json.encodeToString(resolvedLegs.map { it.toWire() }),
+            )
+        return json.decodeFromString<WireAirwayPlanUiMutation>(nextJson).toUi()
+    }
+
+    fun replaceAirwayMaterializedUi(
+        plan: FlightPlan,
+        componentIndex: Int,
+        selection: AirwayAutoSelection,
+        airway: AirwaySegment,
+        resolvedLegs: List<ResolvedLeg>,
+    ): FlightPlanUiMutation {
+        val nextJson =
+            bridge.replaceAirwayMaterializedUiJson(
+                json.encodeToString(plan.toWire()),
+                componentIndex,
+                json.encodeToString(selection.toWire()),
+                json.encodeToString(airway.toWire()),
+                json.encodeToString(resolvedLegs.map { it.toWire() }),
+            )
+        return json.decodeFromString<WireAirwayPlanUiMutation>(nextJson).toUi()
+    }
+
+    fun insertProcedureMaterializedUi(
+        plan: FlightPlan,
+        startComponentIndex: Int,
+        endComponentIndex: Int,
+        built: MaterializedProcedure,
+    ): FlightPlanUiMutation {
+        val nextJson =
+            bridge.insertProcedureMaterializedUiJson(
+                json.encodeToString(plan.toWire()),
+                startComponentIndex,
+                endComponentIndex,
+                json.encodeToString(built.toWire()),
+            )
+        val mutation = json.decodeFromString<WireProcedurePlanUiMutation>(nextJson)
+        return FlightPlanUiMutation(
+            plan = mutation.mutation.plan.toUiForTesting(),
+            uiState = mutation.ui_state.toUi(),
+        )
+    }
+
+    fun replaceProcedureMaterializedUi(
+        plan: FlightPlan,
+        componentIndex: Int,
+        built: MaterializedProcedure,
+    ): FlightPlanUiMutation {
+        val nextJson =
+            bridge.replaceProcedureMaterializedUiJson(
+                json.encodeToString(plan.toWire()),
+                componentIndex,
+                json.encodeToString(built.toWire()),
+            )
+        val mutation = json.decodeFromString<WireProcedurePlanUiMutation>(nextJson)
+        return FlightPlanUiMutation(
+            plan = mutation.mutation.plan.toUiForTesting(),
+            uiState = mutation.ui_state.toUi(),
+        )
+    }
 }
 
 class NativeUiSession internal constructor(
@@ -185,6 +428,11 @@ class NativeUiSession internal constructor(
 
     fun refreshSnapshot(): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.getSessionSnapshotJson(handle))
+        return snapshot
+    }
+
+    fun replaceFlightPlan(plan: FlightPlan): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.replaceFlightPlanInSessionJson(handle, json.encodeToString(plan.toWire())))
         return snapshot
     }
 
@@ -237,6 +485,9 @@ private fun FlightPlan.toWire() = WireFlightPlan(
     id = id,
     name = name,
     legs = legs.map { it.toWire() },
+    route_components = routeComponents.map { it.toWire() },
+    resolved_legs = resolvedLegs.map { it.toWire() },
+    guidance = guidance?.toWire(),
     departure = departure,
     destination = destination,
     alternate = alternate,
@@ -358,6 +609,9 @@ internal fun WireFlightPlan.toUiFlightPlan() = FlightPlan(
     id = id,
     name = name,
     legs = legs.map { it.toUi() },
+    routeComponents = route_components.map { it.toUi() },
+    resolvedLegs = resolved_legs.map { it.toUi() },
+    guidance = guidance?.toUi(),
     departure = departure,
     destination = destination,
     alternate = alternate,
@@ -545,6 +799,420 @@ private fun WireVisibleMapFeature.toUi() = VisibleMapFeature(
 private fun WireMapOverlayWarning.toUi() = MapOverlayWarning(
     code = code,
     message = message,
+)
+
+private fun WireAirwaySuggestion.toUi() = AirwaySuggestion(
+    airwayName = airway_name,
+    nearestBranchKey = nearest_branch_key,
+    nearestNavRef = nearest_nav_ref.toUi(),
+    nearestSequence = nearest_sequence,
+    distanceFromAnchorNm = distance_from_anchor_nm,
+)
+
+private fun AirwaySuggestion.toWire() = WireAirwaySuggestion(
+    airway_name = airwayName,
+    nearest_branch_key = nearestBranchKey,
+    nearest_nav_ref = nearestNavRef.toWire(),
+    nearest_sequence = nearestSequence,
+    distance_from_anchor_nm = distanceFromAnchorNm,
+)
+
+private fun WireAirwayEntryCandidate.toUi() = AirwayEntryCandidate(
+    airwayName = airway_name,
+    branchKey = branch_key,
+    branchPointIndex = branch_point_index,
+    sequence = sequence,
+    navRef = nav_ref.toUi(),
+    distanceFromAnchorNm = distance_from_anchor_nm,
+    previousNavRef = previous_nav_ref?.toUi(),
+    nextNavRef = next_nav_ref?.toUi(),
+)
+
+private fun AirwayEntryCandidate.toWire() = WireAirwayEntryCandidate(
+    airway_name = airwayName,
+    branch_key = branchKey,
+    branch_point_index = branchPointIndex,
+    sequence = sequence,
+    nav_ref = navRef.toWire(),
+    distance_from_anchor_nm = distanceFromAnchorNm,
+    previous_nav_ref = previousNavRef?.toWire(),
+    next_nav_ref = nextNavRef?.toWire(),
+)
+
+private fun WireAirwayExitCandidate.toUi() = AirwayExitCandidate(
+    airwayName = airway_name,
+    branchKey = branch_key,
+    branchPointIndex = branch_point_index,
+    sequence = sequence,
+    navRef = nav_ref.toUi(),
+    legOffsetFromEntry = leg_offset_from_entry,
+    isEntry = is_entry,
+    distanceFromTargetNm = distance_from_target_nm,
+)
+
+private fun AirwayExitCandidate.toWire() = WireAirwayExitCandidate(
+    airway_name = airwayName,
+    branch_key = branchKey,
+    branch_point_index = branchPointIndex,
+    sequence = sequence,
+    nav_ref = navRef.toWire(),
+    leg_offset_from_entry = legOffsetFromEntry,
+    is_entry = isEntry,
+    distance_from_target_nm = distanceFromTargetNm,
+)
+
+private fun AirwayAutoSelection.toWire() = WireAirwayAutoSelection(
+    airway_name = airwayName,
+    branch_key = branchKey,
+    entry = entry.toWire(),
+    exit = exit.toWire(),
+    origin_distance_nm = originDistanceNm,
+    destination_distance_nm = destinationDistanceNm,
+    total_anchor_distance_nm = totalAnchorDistanceNm,
+)
+
+private fun AirwaySegment.toWire() = WireAirwaySegment(
+    name = name,
+    branch_key = branchKey,
+    entry = entry.toWire(),
+    exit = exit.toWire(),
+)
+
+private fun WireAirwaySegment.toUi() = AirwaySegment(
+    name = name,
+    branchKey = branch_key,
+    entry = entry.toUi(),
+    exit = exit.toUi(),
+)
+
+private fun WireAirwayFixPoint.toUi() = AirwayFixPoint(
+    airwayName = airway_name,
+    sequence = sequence,
+    position = position.toUi(),
+    navRef = nav_ref.toUi(),
+)
+
+private fun AirwayFixPoint.toWire() = WireAirwayFixPoint(
+    airway_name = airwayName,
+    sequence = sequence,
+    position = position.toWire(),
+    nav_ref = navRef.toWire(),
+)
+
+private fun WireAirwayBranch.toUi() = AirwayBranch(
+    displayName = display_name,
+    branchKey = branch_key,
+    points = points.map { it.toUi() },
+)
+
+private fun AirwayBranch.toWire() = WireAirwayBranch(
+    display_name = displayName,
+    branch_key = branchKey,
+    points = points.map { it.toWire() },
+)
+
+private fun WireAirwayPresentationPlan.toUi() = AirwayPresentationPlan(
+    airwayName = airway_name,
+    branchKey = branch_key,
+    points = points.map { it.toUi() },
+    suggestedEntryIndex = suggested_entry_index,
+    suggestedExitIndex = suggested_exit_index,
+)
+
+private fun WireAirwayPresentationPoint.toUi() = AirwayPresentationPoint(
+    branchPointIndex = branch_point_index,
+    sequence = sequence,
+    navRef = nav_ref.toUi(),
+)
+
+private fun LatLonPoint.toWire() = WireLatLon(lat = lat, lon = lon)
+
+private fun WireLatLon.toUi() = LatLonPoint(lat = lat, lon = lon)
+
+private fun ProcedureKind.toWire() = when (this) {
+    ProcedureKind.Sid -> WireProcedureKind.Sid
+    ProcedureKind.Star -> WireProcedureKind.Star
+    ProcedureKind.Approach -> WireProcedureKind.Approach
+}
+
+private fun WireProcedureKind.toUi() = when (this) {
+    WireProcedureKind.Sid -> ProcedureKind.Sid
+    WireProcedureKind.Star -> ProcedureKind.Star
+    WireProcedureKind.Approach -> ProcedureKind.Approach
+}
+
+private fun WireProcedureSummary.toUi() = ProcedureSummary(
+    airportId = airport_id,
+    procedureId = procedure_id,
+    kind = kind.toUi(),
+)
+
+private fun WireProcedureSpecChoice.toUi() = ProcedureSpecChoice(
+    runwayTransition = runway_transition,
+    enrouteTransition = enroute_transition,
+)
+
+private fun WireProcedureOptions.toUi() = ProcedureOptions(
+    airportId = airport_id,
+    procedureId = procedure_id,
+    kind = kind.toUi(),
+    runwayTransitions = runway_transitions,
+    enrouteTransitions = enroute_transitions,
+    hasCommonSegment = has_common_segment,
+    validChoices = valid_choices.map { it.toUi() },
+)
+
+private fun ProcedureSegment.toWire() = WireProcedureSegment(
+    airport_id = airportId,
+    procedure_id = procedureId,
+    kind = kind.toWire(),
+    runway_transition = runwayTransition,
+    enroute_transition = enrouteTransition,
+    terminal_discontinuity = terminalDiscontinuity?.toWire(),
+)
+
+private fun WireProcedureSegment.toUi() = ProcedureSegment(
+    airportId = airport_id,
+    procedureId = procedure_id,
+    kind = kind.toUi(),
+    runwayTransition = runway_transition,
+    enrouteTransition = enroute_transition,
+    terminalDiscontinuity = terminal_discontinuity?.toUi(),
+)
+
+private fun ProcedureDiscontinuity.toWire(): WireProcedureDiscontinuity = when (this) {
+    ProcedureDiscontinuity.Vectors -> WireProcedureDiscontinuity.Vectors
+    ProcedureDiscontinuity.Hold -> WireProcedureDiscontinuity.Hold
+    is ProcedureDiscontinuity.Other -> WireProcedureDiscontinuity.Other(value)
+}
+
+private fun WireProcedureDiscontinuity.toUi(): ProcedureDiscontinuity = when (this) {
+    WireProcedureDiscontinuity.Vectors -> ProcedureDiscontinuity.Vectors
+    WireProcedureDiscontinuity.Hold -> ProcedureDiscontinuity.Hold
+    is WireProcedureDiscontinuity.Other -> ProcedureDiscontinuity.Other(value)
+}
+
+private fun ResolvedLeg.toWire() = WireResolvedLeg(
+    id = id,
+    from = from.toWire(),
+    to = to.toWire(),
+    source = source.toWire(),
+    procedure_provenance = procedureProvenance?.toWire(),
+)
+
+private fun WireResolvedLeg.toUi() = ResolvedLeg(
+    id = id,
+    from = from.toUi(),
+    to = to.toUi(),
+    source = source.toUi(),
+    procedureProvenance = procedure_provenance?.toUi(),
+)
+
+private fun RouteComponent.toWire(): WireRouteComponent = when (this) {
+    is RouteComponent.Waypoint -> WireRouteComponent.Waypoint(waypoint = waypoint.toWire())
+    is RouteComponent.Airway -> WireRouteComponent.Airway(airway = airway.toWire())
+    is RouteComponent.Procedure -> WireRouteComponent.Procedure(procedure = procedure.toWire())
+}
+
+private fun WireRouteComponent.toUi(): RouteComponent = when (this) {
+    is WireRouteComponent.Waypoint -> RouteComponent.Waypoint(waypoint = waypoint.toUi())
+    is WireRouteComponent.Airway -> RouteComponent.Airway(airway = airway.toUi())
+    is WireRouteComponent.Procedure -> RouteComponent.Procedure(procedure = procedure.toUi())
+}
+
+private fun GuidanceState.toWire() = WireGuidanceState(
+    active_leg_index = activeLegIndex,
+    display_split_leg_id = displaySplitLegId,
+    sequencing_mode = sequencingMode.toWire(),
+    direct_to = directTo?.toWire(),
+    suspend_reason = suspendReason?.toWire(),
+)
+
+private fun WireGuidanceState.toUi() = GuidanceState(
+    activeLegIndex = active_leg_index,
+    displaySplitLegId = display_split_leg_id,
+    sequencingMode = sequencing_mode.toUi(),
+    directTo = direct_to?.toUi(),
+    suspendReason = suspend_reason?.toUi(),
+)
+
+private fun DirectToState.toWire() = WireDirectToState(
+    start = start.toWire(),
+    target = target.toWire(),
+    target_leg_id = targetLegId,
+    resume_leg_id = resumeLegId,
+)
+
+private fun WireDirectToState.toUi() = DirectToState(
+    start = start.toUi(),
+    target = target.toUi(),
+    targetLegId = target_leg_id,
+    resumeLegId = resume_leg_id,
+)
+
+private fun WirePlanLeg.toUiPlanLeg() = PlanLeg(
+    from = from.toUi(),
+    to = to.toUi(),
+    airway = airway,
+)
+
+private fun ResolvedLegSource.toWire(): WireResolvedLegSource = when (this) {
+    is ResolvedLegSource.LegacyPlanLeg -> WireResolvedLegSource.LegacyPlanLeg(leg_index = legIndex)
+    is ResolvedLegSource.RouteComponent -> WireResolvedLegSource.RouteComponent(component_index = componentIndex)
+    is ResolvedLegSource.SyntheticBridge -> WireResolvedLegSource.SyntheticBridge(
+        from_component_index = fromComponentIndex,
+        to_component_index = toComponentIndex,
+    )
+}
+
+private fun WireResolvedLegSource.toUi(): ResolvedLegSource = when (this) {
+    is WireResolvedLegSource.LegacyPlanLeg -> ResolvedLegSource.LegacyPlanLeg(legIndex = leg_index)
+    is WireResolvedLegSource.RouteComponent -> ResolvedLegSource.RouteComponent(componentIndex = component_index)
+    is WireResolvedLegSource.SyntheticBridge -> ResolvedLegSource.SyntheticBridge(
+        fromComponentIndex = from_component_index,
+        toComponentIndex = to_component_index,
+    )
+}
+
+private fun ProcedureLegProvenance.toWire() = WireProcedureLegProvenance(
+    airport_id = airportId,
+    procedure_id = procedureId,
+    kind = kind.toWire(),
+    role = role,
+    path_termination = pathTermination,
+    leg_sequence = legSequence,
+)
+
+private fun WireProcedureLegProvenance.toUi() = ProcedureLegProvenance(
+    airportId = airport_id,
+    procedureId = procedure_id,
+    kind = kind.toUi(),
+    role = role,
+    pathTermination = path_termination,
+    legSequence = leg_sequence,
+)
+
+private fun WireRouteComponentUiView.toUi() = RouteComponentUiView(
+    componentIndex = component_index,
+    kind = kind.toUi(),
+    summary = summary,
+    items = items.map { it.toUi() },
+    active = active,
+    canAddAirwayAfter = can_add_airway_after,
+    canAddProcedureBefore = can_add_procedure_before,
+    canChangeAirway = can_change_airway,
+    canRemove = can_remove,
+    canReorder = can_reorder,
+    precedingWaypoint = preceding_waypoint?.toUi(),
+    followingWaypoint = following_waypoint?.toUi(),
+)
+
+private fun WireRouteComponentViewKind.toUi() = when (this) {
+    WireRouteComponentViewKind.Waypoint -> RouteComponentViewKind.Waypoint
+    WireRouteComponentViewKind.Airway -> RouteComponentViewKind.Airway
+    WireRouteComponentViewKind.Procedure -> RouteComponentViewKind.Procedure
+}
+
+private fun WireConcretizedNavItem.toUi(): ConcretizedNavItem = when (this) {
+    is WireConcretizedNavItem.Waypoint -> ConcretizedNavItem.Waypoint(navRef = nav_ref.toUi())
+    is WireConcretizedNavItem.Discontinuity -> ConcretizedNavItem.Discontinuity(
+        discontinuity = discontinuity.toUi(),
+        label = label,
+    )
+}
+
+private fun ConcretizedNavItem.toWire(): WireConcretizedNavItem = when (this) {
+    is ConcretizedNavItem.Waypoint -> WireConcretizedNavItem.Waypoint(nav_ref = navRef.toWire())
+    is ConcretizedNavItem.Discontinuity -> WireConcretizedNavItem.Discontinuity(
+        discontinuity = discontinuity.toWire(),
+        label = label,
+    )
+}
+
+private fun WireResolvedLegUiView.toUi() = ResolvedLegUiView(
+    legIndex = leg_index,
+    legId = leg_id,
+    componentIndex = component_index,
+    from = from.toUi(),
+    to = to.toUi(),
+    active = active,
+    suspendBoundaryAfter = suspend_boundary_after,
+)
+
+private fun WireDirectToUiView.toUi() = DirectToUiView(
+    start = start.toUi(),
+    target = target.toUi(),
+    targetLegId = target_leg_id,
+    resumeLegId = resume_leg_id,
+    onPlanTarget = on_plan_target,
+)
+
+private fun WireGuidanceUiView.toUi() = GuidanceUiView(
+    sequencingMode = sequencing_mode.toUi(),
+    activeLegIndex = active_leg_index,
+    displaySplitLegIndex = display_split_leg_index,
+    activeComponentIndex = active_component_index,
+    activeLeg = active_leg?.toUiPlanLeg(),
+    directTo = direct_to?.toUi(),
+    canSequenceActiveLeg = can_sequence_active_leg,
+    canActivateNextLeg = can_activate_next_leg,
+    canSuspend = can_suspend,
+    canUnsuspend = can_unsuspend,
+    suspendBoundaryAfterActiveLeg = suspend_boundary_after_active_leg,
+)
+
+private fun WireSequencingMode.toUi() = when (this) {
+    WireSequencingMode.FollowPlan -> SequencingMode.FollowPlan
+    WireSequencingMode.Suspended -> SequencingMode.Suspended
+    WireSequencingMode.DirectTo -> SequencingMode.DirectTo
+}
+
+private fun SequencingMode.toWire() = when (this) {
+    SequencingMode.FollowPlan -> WireSequencingMode.FollowPlan
+    SequencingMode.Suspended -> WireSequencingMode.Suspended
+    SequencingMode.DirectTo -> WireSequencingMode.DirectTo
+}
+
+private fun WireSuspendReason.toUi() = when (this) {
+    WireSuspendReason.Manual -> SuspendReason.Manual
+    WireSuspendReason.Boundary -> SuspendReason.Boundary
+    WireSuspendReason.RouteEnd -> SuspendReason.RouteEnd
+    WireSuspendReason.DirectToComplete -> SuspendReason.DirectToComplete
+}
+
+private fun SuspendReason.toWire() = when (this) {
+    SuspendReason.Manual -> WireSuspendReason.Manual
+    SuspendReason.Boundary -> WireSuspendReason.Boundary
+    SuspendReason.RouteEnd -> WireSuspendReason.RouteEnd
+    SuspendReason.DirectToComplete -> WireSuspendReason.DirectToComplete
+}
+
+private fun WireFlightPlanUiState.toUi() = FlightPlanUiState(
+    components = components.map { it.toUi() },
+    resolvedLegs = resolved_legs.map { it.toUi() },
+    guidance = guidance?.toUi(),
+)
+
+private fun WireFlightPlanUiMutation.toUi() = FlightPlanUiMutation(
+    plan = plan.toUiFlightPlan(),
+    uiState = ui_state.toUi(),
+)
+
+private fun WireAirwayPlanUiMutation.toUi() = FlightPlanUiMutation(
+    plan = mutation.plan.toUiFlightPlan(),
+    uiState = ui_state.toUi(),
+)
+
+private fun MaterializedProcedure.toWire() = WireMaterializedProcedure(
+    procedure = procedure.toWire(),
+    concretized_items = concretizedItems.map { it.toWire() },
+    resolved_legs = resolvedLegs.map { it.toWire() },
+)
+
+private fun WireMaterializedProcedure.toUi() = MaterializedProcedure(
+    procedure = procedure.toUi(),
+    concretizedItems = concretized_items.map { it.toUi() },
+    resolvedLegs = resolved_legs.map { it.toUi() },
 )
 
 private fun WirePlanLeg.toUi() = FlightPlanLeg(

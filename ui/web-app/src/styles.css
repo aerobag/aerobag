@@ -709,8 +709,8 @@ button {
 }
 
 .planWaypointButton.isSelected {
-  background: color-mix(in srgb, var(--theme-button-bg) 82%, white);
-  border-color: color-mix(in srgb, var(--theme-button-bg) 60%, white);
+  background: color-mix(in srgb, var(--theme-button-bg) 84%, black);
+  border-color: color-mix(in srgb, var(--theme-button-bg) 68%, black);
 }
 
 .planStructuredWaypointCell {
@@ -718,8 +718,8 @@ button {
 }
 
 .planStructuredWaypointCell.isGroupHeader {
-  background: color-mix(in srgb, var(--theme-button-bg) 74%, white);
-  border-color: color-mix(in srgb, var(--theme-button-bg) 55%, white);
+  background: var(--theme-header-button);
+  border-color: color-mix(in srgb, var(--theme-header-button) 72%, black);
   font-weight: 800;
 }
 

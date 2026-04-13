@@ -112,6 +112,13 @@ import net.jonh.aerobag.prototype.domain.ChartAirport
 import net.jonh.aerobag.prototype.domain.ChartAsset
 import net.jonh.aerobag.prototype.domain.ChartPackages
 import net.jonh.aerobag.prototype.domain.AppState
+import net.jonh.aerobag.prototype.domain.AirwayEntryCandidate
+import net.jonh.aerobag.prototype.domain.AirwayExitCandidate
+import net.jonh.aerobag.prototype.domain.AirwaySuggestion
+import net.jonh.aerobag.prototype.domain.ConcretizedNavItem
+import net.jonh.aerobag.prototype.domain.FlightPlanUiMutation
+import net.jonh.aerobag.prototype.domain.FlightPlanUiState
+import net.jonh.aerobag.prototype.domain.LatLonPoint
 import net.jonh.aerobag.prototype.domain.MapChartFamily
 import net.jonh.aerobag.prototype.domain.MapOverlayQueryResult
 import net.jonh.aerobag.prototype.domain.MapView
@@ -120,6 +127,11 @@ import net.jonh.aerobag.prototype.domain.NativeAppCoreAdapter
 import net.jonh.aerobag.prototype.domain.NativeUiSession
 import net.jonh.aerobag.prototype.domain.NavRef
 import net.jonh.aerobag.prototype.domain.PointTilePayload
+import net.jonh.aerobag.prototype.domain.ProcedureKind
+import net.jonh.aerobag.prototype.domain.ProcedureOptions
+import net.jonh.aerobag.prototype.domain.ProcedureSummary
+import net.jonh.aerobag.prototype.domain.RouteComponentUiView
+import net.jonh.aerobag.prototype.domain.RouteComponentViewKind
 import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
 import net.jonh.aerobag.prototype.domain.SampleData
@@ -271,6 +283,68 @@ private data class AppViewSnapshot(
     val chartFolderOpen: Boolean,
 )
 
+private data class FlightPlanDisplayRow(
+    val id: String,
+    val label: String,
+    val rowKind: String,
+    val componentKind: RouteComponentViewKind? = null,
+    val componentIndex: Int? = null,
+    val legIndex: Int? = null,
+    val chartAirportId: String? = null,
+    val navRef: NavRef? = null,
+    val depth: Int = 0,
+    val active: Boolean = false,
+    val canAddAirwayAfter: Boolean = false,
+    val canAddProcedureBefore: Boolean = false,
+    val canChangeAirway: Boolean = false,
+    val canRemoveComponent: Boolean = false,
+    val canReorderComponent: Boolean = false,
+    val startComponentIndex: Int? = null,
+    val endComponentIndex: Int? = null,
+    val originAnchor: NavRef? = null,
+    val destinationAnchor: NavRef? = null,
+)
+
+private sealed interface FlightPlanDisplayBlock {
+    data class Single(
+        val index: Int,
+        val row: FlightPlanDisplayRow,
+    ) : FlightPlanDisplayBlock
+
+    data class Group(
+        val headerIndex: Int,
+        val header: FlightPlanDisplayRow,
+        val children: List<Pair<Int, FlightPlanDisplayRow>>,
+    ) : FlightPlanDisplayBlock
+}
+
+private data class AndroidAirwayPickerState(
+    val loading: Boolean,
+    val error: String?,
+    val mode: String,
+    val componentIndex: Int?,
+    val startComponentIndex: Int?,
+    val endComponentIndex: Int?,
+    val originAnchor: NavRef,
+    val destinationAnchor: NavRef?,
+    val suggestions: List<AirwaySuggestion>,
+    val selectedAirwayName: String?,
+    val entries: List<AirwayEntryCandidate>,
+    val selectedEntryIndex: Int?,
+    val exits: List<AirwayExitCandidate>,
+)
+
+private data class AndroidProcedurePickerState(
+    val loading: Boolean,
+    val error: String?,
+    val airportId: String,
+    val startComponentIndex: Int,
+    val endComponentIndex: Int,
+    val procedures: List<ProcedureSummary>,
+    val selectedProcedureId: String?,
+    val options: ProcedureOptions?,
+)
+
 private data class PageTrayOption(
     val page: AppPage,
     val label: String,
@@ -418,6 +492,114 @@ private fun demoSituation(): Situation =
         orientationDeg = 135.0,
         speedKt = 105.0,
     )
+
+private fun ensureNavDbPath(context: Context): String {
+    val target = java.io.File(context.filesDir, "nav-db/main.db")
+    val needsRefresh =
+        !target.isFile ||
+            runCatching {
+                target.inputStream().use { input ->
+                    input.readNBytes(16).decodeToString() != "SQLite format 3\u0000"
+                }
+            }.getOrDefault(true)
+    if (needsRefresh) {
+        target.parentFile?.mkdirs()
+        context.assets.open("nav-db/main.db").use { input ->
+            target.outputStream().use { output -> input.copyTo(output) }
+        }
+    }
+    return target.absolutePath
+}
+
+private fun buildSeededDevPlan(
+    adapter: NativeAppCoreAdapter,
+    dbPath: String,
+    plan: net.jonh.aerobag.prototype.domain.FlightPlan,
+): FlightPlanUiMutation {
+    return runCatching {
+        val originAnchor = NavRef.Airport("KRNT")
+        val destinationAnchor = NavRef.Airport("KUAO")
+        val airwayName = "V23"
+        val branches = adapter.loadAirwayBranches(dbPath, airwayName)
+        val presentation =
+            adapter.prepareAirwayPresentation(
+                airwayName,
+                branches,
+                adapter.resolveNavRefPosition(dbPath, originAnchor),
+                adapter.resolveNavRefPosition(dbPath, destinationAnchor),
+            )
+        val entryIndex = presentation.points.indexOfFirst { navRefLabel(it.navRef) == "SEA" }
+        require(entryIndex >= 0) { "failed to seed V23 airway: SEA not found in presentation" }
+        val exitIndex = presentation.points.indexOfFirst { navRefLabel(it.navRef) == "RAWER" }
+        require(exitIndex > entryIndex) { "failed to seed V23 airway: RAWER not found in presentation" }
+        val entry = AirwayEntryCandidate(
+            airwayName = presentation.airwayName,
+            branchKey = presentation.branchKey,
+            branchPointIndex = presentation.points[entryIndex].branchPointIndex,
+            sequence = presentation.points[entryIndex].sequence,
+            navRef = presentation.points[entryIndex].navRef,
+            distanceFromAnchorNm = 0.0,
+            previousNavRef = presentation.points.getOrNull(entryIndex - 1)?.navRef,
+            nextNavRef = presentation.points.getOrNull(entryIndex + 1)?.navRef,
+        )
+        val exit = AirwayExitCandidate(
+            airwayName = presentation.airwayName,
+            branchKey = presentation.branchKey,
+            branchPointIndex = presentation.points[exitIndex].branchPointIndex,
+            sequence = presentation.points[exitIndex].sequence,
+            navRef = presentation.points[exitIndex].navRef,
+            legOffsetFromEntry = exitIndex - entryIndex,
+            isEntry = false,
+            distanceFromTargetNm = null,
+        )
+        val selection =
+            net.jonh.aerobag.prototype.domain.AirwayAutoSelection(
+                airwayName = presentation.airwayName,
+                branchKey = presentation.branchKey,
+                entry = entry,
+                exit = exit,
+                originDistanceNm = 0.0,
+                destinationDistanceNm = 0.0,
+                totalAnchorDistanceNm = 0.0,
+            )
+        val airway =
+            net.jonh.aerobag.prototype.domain.AirwaySegment(
+                name = presentation.airwayName,
+                branchKey = presentation.branchKey,
+                entry = entry.navRef,
+                exit = exit.navRef,
+            )
+        val resolvedLegs =
+            presentation.points
+                .subList(entryIndex, exitIndex + 1)
+                .zipWithNext()
+                .mapIndexed { index, (fromPoint, toPoint) ->
+                    net.jonh.aerobag.prototype.domain.ResolvedLeg(
+                        id = "airway:${presentation.airwayName}:${presentation.branchKey}:$index",
+                        from = fromPoint.navRef,
+                        to = toPoint.navRef,
+                        source =
+                            net.jonh.aerobag.prototype.domain.ResolvedLegSource.RouteComponent(
+                                componentIndex = 1,
+                            ),
+                    )
+                }
+        adapter.insertAirwayMaterializedUi(
+            plan = plan,
+            startComponentIndex = 0,
+            endComponentIndex = 1,
+            selection = selection,
+            airway = airway,
+            resolvedLegs = resolvedLegs,
+        )
+    }.getOrElse {
+        Log.e("AerobagSeed", "buildSeededDevPlan fell back to sample plan", it)
+        FlightPlanUiMutation(
+            plan = plan,
+            uiState = adapter.buildFlightPlanUi(plan),
+        )
+    }
+}
 
 private fun createInitialSituationViewport(mapView: MapView): MapViewportState {
     val center = latLonToWorld(VampsPosition.lat, VampsPosition.lon)
@@ -774,6 +956,10 @@ private fun AerobagApp() {
     val fixture = remember(context) { SampleData.load(context.applicationContext) }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
     val appCore = remember(fixture.catalogJson, fixture.chartCatalogJson) { NativeAppCoreAdapter(fixture.catalogJson, fixture.chartCatalogJson) }
+    val navDbPath = remember(context) { ensureNavDbPath(context.applicationContext) }
+    val initialPlanMutation = remember(appCore, navDbPath, fixture.samplePlan) {
+        buildSeededDevPlan(appCore, navDbPath, fixture.samplePlan)
+    }
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
     val sessionStartElapsedMs = remember { SystemClock.elapsedRealtime() }
     val uptimeLabel = rememberUptimeLabel(sessionStartElapsedMs)
@@ -790,7 +976,7 @@ private fun AerobagApp() {
     var selectedMapId by remember { mutableStateOf(initialMapId(fixture)) }
     val uiSession = remember(appCore, fixture.resourceIndexJson) {
         appCore.createUiSession(
-            fixture.samplePlan,
+            initialPlanMutation.plan,
             storedRecentAirportIds,
             storedSelectedAirportId.ifBlank { null },
             storedSelectedChartId.ifBlank { null },
@@ -800,8 +986,9 @@ private fun AerobagApp() {
         onDispose { uiSession.destroy() }
     }
     var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
+    var planUiState by remember(uiSession) { mutableStateOf(initialPlanMutation.uiState) }
     val appState = sessionSnapshot.appState
-    val currentPlan = appState.activePlan ?: fixture.samplePlan
+    val currentPlan = appState.activePlan ?: initialPlanMutation.plan
     val chartCatalog = uiSession.chartCatalog
     val derivedChartPageState = sessionSnapshot.chartPageState
     val selectedMap = remember(selectedMapId, fixture.mapViews) {
@@ -829,6 +1016,9 @@ private fun AerobagApp() {
     }
     LaunchedEffect(uiSession) {
         sessionSnapshot = uiSession.setSituation(demoSituation())
+    }
+    LaunchedEffect(appCore, currentPlan) {
+        planUiState = appCore.buildFlightPlanUi(currentPlan)
     }
     val legSummary = remember(currentPlan) {
         currentPlan.legs.firstOrNull()?.let { "${navRefLabel(it.from)} -> ${navRefLabel(it.to)} CRS 342" } ?: "NO LEG"
@@ -928,19 +1118,20 @@ private fun AerobagApp() {
             }
             AppPage.Plan -> {
                 FlightPlanPage(
+                    appCore = appCore,
+                    navDbPath = navDbPath,
                     page = page,
                     pageHistory = pageHistory,
                     uptimeLabel = uptimeLabel,
                     legSummary = legSummary,
                     samplePlan = currentPlan,
+                    planUiState = planUiState,
                     uiTheme = uiTheme,
                     onSelectPage = ::navigateToPage,
                     onOpenCharts = { airportId -> if (airportId != null) openChartsForAirport(airportId) },
-                    onRemoveWaypoint = { index ->
-                        sessionSnapshot = uiSession.removeLeg(index)
-                    },
-                    onMoveWaypoint = { index, delta ->
-                        sessionSnapshot = uiSession.moveWaypoint(index, delta)
+                    onApplyMutation = { mutation ->
+                        sessionSnapshot = uiSession.replaceFlightPlan(mutation.plan)
+                        planUiState = mutation.uiState
                     },
                 )
             }
@@ -1833,50 +2024,43 @@ private fun MapExplorerPage(
 
 @Composable
 private fun FlightPlanPage(
+    appCore: NativeAppCoreAdapter,
+    navDbPath: String,
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
     legSummary: String,
     samplePlan: net.jonh.aerobag.prototype.domain.FlightPlan,
+    planUiState: FlightPlanUiState?,
     uiTheme: UiTheme,
     onSelectPage: (AppPage) -> Unit,
     onOpenCharts: (String?) -> Unit,
-    onRemoveWaypoint: (Int) -> Unit,
-    onMoveWaypoint: (Int, Int) -> Unit,
+    onApplyMutation: (FlightPlanUiMutation) -> Unit,
 ) {
     val planWaypointTrayStart = ThumbSize * 2.6f + ThumbGap * 2
     var selectedWaypointIndex by remember { mutableStateOf<Int?>(null) }
     var reorderOpen by remember { mutableStateOf(false) }
     var pageTrayOpen by remember { mutableStateOf(false) }
     var debugPanelOpen by remember { mutableStateOf(false) }
-    val rows = remember(samplePlan) {
-        val firstLeg = samplePlan.legs.firstOrNull()
-        if (firstLeg == null) {
-            emptyList()
-        } else {
-            buildList {
-                add(
-                    FlightPlanRow(
-                        waypoint = navRefLabel(firstLeg.from),
-                        chartAirportId = (firstLeg.from as? NavRef.Airport)?.code,
-                        removeLegIndex = 0,
-                        distance = "—",
-                        ete = "—",
-                        course = "—",
-                    ),
-                )
-                samplePlan.legs.mapIndexedTo(this) { index, leg ->
-                    FlightPlanRow(
-                        waypoint = navRefLabel(leg.to),
-                        chartAirportId = (leg.to as? NavRef.Airport)?.code,
-                        removeLegIndex = index,
-                        distance = if (index == 0) "18.4" else "11.2",
-                        ete = if (index == 0) "0:07" else "0:04",
-                        course = if (index == 0) "342" else "161",
-                    )
-                }
-            }
-        }
+    var airwayPicker by remember { mutableStateOf<AndroidAirwayPickerState?>(null) }
+    var procedurePicker by remember { mutableStateOf<AndroidProcedurePickerState?>(null) }
+    val guidance = planUiState?.guidance
+    val componentViews = remember(samplePlan, planUiState?.components) {
+        planUiState?.components ?: buildLegacyComponentViews(samplePlan)
+    }
+    val rows = remember(samplePlan, planUiState, componentViews) {
+        buildFlightPlanDisplayRows(samplePlan, planUiState, componentViews)
+    }
+    val blocks = remember(rows) {
+        buildFlightPlanDisplayBlocks(rows)
+    }
+    val selectedRow = selectedWaypointIndex?.let(rows::getOrNull)
+
+    fun closePanels() {
+        selectedWaypointIndex = null
+        reorderOpen = false
+        airwayPicker = null
+        procedurePicker = null
     }
 
     Box(
@@ -1914,27 +2098,100 @@ private fun FlightPlanPage(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = ThumbSize + ThumbGap * 2, start = ThumbGap, end = ThumbGap, bottom = ThumbSize),
-            verticalArrangement = Arrangement.spacedBy(1.dp),
+            verticalArrangement = Arrangement.spacedBy(1.5.dp),
         ) {
             PlanHeaderRow()
-            rows.forEachIndexed { index, row ->
-                FlightPlanDataRow(
-                    row = row,
-                    selected = selectedWaypointIndex == index,
-                    onWaypointClick = {
-                        selectedWaypointIndex = index
-                        reorderOpen = false
-                    },
-                )
-            }
-        }
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(1.5.dp),
+            ) {
+                items(blocks.size) { blockIndex ->
+                    when (val block = blocks[blockIndex]) {
+                        is FlightPlanDisplayBlock.Single -> {
+                            FlightPlanDataRow(
+                                row = block.row,
+                                selected = selectedWaypointIndex == block.index,
+                                onWaypointClick = {
+                                    selectedWaypointIndex = block.index
+                                    reorderOpen = false
+                                    airwayPicker = null
+                                    procedurePicker = null
+                                },
+                            )
+                        }
 
-        Text(
-            text = legSummary,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = ThumbGap),
-            style = MaterialTheme.typography.labelMedium,
-            color = Color(0xFF52656D),
-        )
+                        is FlightPlanDisplayBlock.Group -> {
+                            FlightPlanGroupBlock(
+                                header = block.header,
+                                headerSelected = selectedWaypointIndex == block.headerIndex,
+                                onHeaderClick = {
+                                    selectedWaypointIndex = block.headerIndex
+                                    reorderOpen = false
+                                    airwayPicker = null
+                                    procedurePicker = null
+                                },
+                                children = block.children,
+                                selectedWaypointIndex = selectedWaypointIndex,
+                                onChildClick = { childIndex ->
+                                    selectedWaypointIndex = childIndex
+                                    reorderOpen = false
+                                    airwayPicker = null
+                                    procedurePicker = null
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap)) {
+                    CompactSquareButton(
+                        label = "Next Leg",
+                        modifier = Modifier.width(ThumbSize * 1.8f),
+                        enabled = guidance?.canActivateNextLeg == true,
+                        onClick = { onApplyMutation(appCore.activateNextLegUi(samplePlan)) },
+                    )
+                    CompactSquareButton(
+                        label = "Sequence",
+                        modifier = Modifier.width(ThumbSize * 1.8f),
+                        enabled = guidance?.canSequenceActiveLeg == true,
+                        onClick = { onApplyMutation(appCore.sequenceActiveLegUi(samplePlan)) },
+                    )
+                    CompactSquareButton(
+                        label = "Suspend",
+                        modifier = Modifier.width(ThumbSize * 1.8f),
+                        enabled = guidance?.canSuspend == true,
+                        onClick = { onApplyMutation(appCore.suspendSequencingUi(samplePlan)) },
+                    )
+                    CompactSquareButton(
+                        label = "Unsusp",
+                        modifier = Modifier.width(ThumbSize * 1.8f),
+                        enabled = guidance?.canUnsuspend == true,
+                        onClick = { onApplyMutation(appCore.unsuspendSequencingUi(samplePlan)) },
+                    )
+                }
+            }
+            Text(
+                text =
+                    guidance?.let {
+                        buildString {
+                            append(it.sequencingMode.name.uppercase())
+                            it.activeLeg?.let { leg ->
+                                append(" · ")
+                                append(navRefLabel(leg.from))
+                                append(" -> ")
+                                append(navRefLabel(leg.to))
+                            }
+                        }
+                    } ?: legSummary,
+                modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = ThumbGap, bottom = ThumbGap),
+                style = MaterialTheme.typography.labelMedium,
+                color = Color(0xFF52656D),
+            )
+        }
 
         DebugDock(
             open = debugPanelOpen,
@@ -1944,15 +2201,221 @@ private fun FlightPlanPage(
             Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("stack ${formatPageStack(pageHistory, page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("components ${componentViews.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("rows ${rows.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
         }
 
-        if (selectedWaypointIndex != null) {
+        if (selectedWaypointIndex != null && selectedRow != null) {
             Scrim {
-                selectedWaypointIndex = null
-                reorderOpen = false
+                closePanels()
             }
-            if (reorderOpen) {
+            if (procedurePicker != null) {
+                val picker = procedurePicker!!
+                MenuPanel(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(top = ThumbSize + ThumbGap * 2, start = planWaypointTrayStart, end = ThumbGap)
+                        .zIndex(5f),
+                    width = Dp.Unspecified,
+                ) {
+                    MenuPanelRow(label = "APPROACH ${picker.airportId}", active = false, enabled = false, onSelect = {})
+                    if (picker.error != null) {
+                        MenuPanelRow(label = picker.error, active = false, enabled = false, onSelect = {})
+                    }
+                    if (picker.loading) {
+                        MenuPanelRow(label = "Loading…", active = false, enabled = false, onSelect = {})
+                    } else if (picker.selectedProcedureId == null) {
+                        picker.procedures.forEach { procedure ->
+                            MenuPanelRow(
+                                label = procedure.procedureId,
+                                active = false,
+                                enabled = true,
+                                onSelect = {
+                                    procedurePicker = picker.copy(loading = true, error = null)
+                                    runCatching {
+                                        appCore.describeProcedureOptions(
+                                            navDbPath,
+                                            picker.airportId,
+                                            procedure.procedureId,
+                                            ProcedureKind.Approach,
+                                        )
+                                    }.onSuccess { options ->
+                                        procedurePicker =
+                                            picker.copy(
+                                                loading = false,
+                                                selectedProcedureId = procedure.procedureId,
+                                                options = options,
+                                            )
+                                    }.onFailure { error ->
+                                        procedurePicker = picker.copy(loading = false, error = error.message ?: error.toString())
+                                    }
+                                },
+                            )
+                        }
+                    } else {
+                        picker.options?.validChoices?.forEach { choice ->
+                            MenuPanelRow(
+                                label = choice.enrouteTransition ?: "No Transition",
+                                active = false,
+                                enabled = true,
+                                onSelect = {
+                                    procedurePicker = picker.copy(loading = true, error = null)
+                                    runCatching {
+                                        appCore.materializeProcedureSelection(
+                                            navDbPath,
+                                            picker.airportId,
+                                            picker.selectedProcedureId,
+                                            ProcedureKind.Approach,
+                                            null,
+                                            choice.enrouteTransition,
+                                            picker.startComponentIndex + 1,
+                                        )
+                                    }.map { built ->
+                                        appCore.insertProcedureMaterializedUi(
+                                            samplePlan,
+                                            picker.startComponentIndex,
+                                            picker.endComponentIndex,
+                                            built,
+                                        )
+                                    }.onSuccess { mutation ->
+                                        onApplyMutation(mutation)
+                                        closePanels()
+                                    }.onFailure { error ->
+                                        procedurePicker = picker.copy(loading = false, error = error.message ?: error.toString())
+                                    }
+                                },
+                            )
+                        }
+                        MenuPanelRow(
+                            label = "Back",
+                            active = false,
+                            enabled = true,
+                            onSelect = { procedurePicker = picker.copy(selectedProcedureId = null, options = null) },
+                        )
+                    }
+                }
+            } else if (airwayPicker != null) {
+                val picker = airwayPicker!!
+                MenuPanel(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(top = ThumbSize + ThumbGap * 2, start = planWaypointTrayStart, end = ThumbGap)
+                        .zIndex(5f),
+                    width = Dp.Unspecified,
+                ) {
+                    MenuPanelRow(
+                        label = buildString {
+                            append("AIRWAY ")
+                            append(navRefLabel(picker.originAnchor))
+                            picker.destinationAnchor?.let {
+                                append(" -> ")
+                                append(navRefLabel(it))
+                            }
+                        },
+                        active = false,
+                        enabled = false,
+                        onSelect = {},
+                    )
+                    if (picker.error != null) {
+                        MenuPanelRow(label = picker.error, active = false, enabled = false, onSelect = {})
+                    }
+                    if (picker.loading) {
+                        MenuPanelRow(label = "Loading…", active = false, enabled = false, onSelect = {})
+                    } else if (picker.selectedAirwayName == null) {
+                        picker.suggestions.forEach { suggestion ->
+                            MenuPanelRow(
+                                label = suggestion.airwayName,
+                                active = false,
+                                enabled = true,
+                                onSelect = {
+                                    airwayPicker = picker.copy(loading = true, error = null)
+                                    runCatching {
+                                        appCore.listAirwayEntryCandidates(navDbPath, suggestion.airwayName, picker.originAnchor)
+                                    }.onSuccess { entries ->
+                                        airwayPicker =
+                                            picker.copy(
+                                                loading = false,
+                                                selectedAirwayName = suggestion.airwayName,
+                                                entries = entries,
+                                                selectedEntryIndex = null,
+                                                exits = emptyList(),
+                                            )
+                                    }.onFailure { error ->
+                                        airwayPicker = picker.copy(loading = false, error = error.message ?: error.toString())
+                                    }
+                                },
+                            )
+                        }
+                    } else if (picker.selectedEntryIndex == null) {
+                        picker.entries.forEachIndexed { index, entry ->
+                            MenuPanelRow(
+                                label = navRefLabel(entry.navRef),
+                                active = index == picker.entries.indexOfFirst { it.branchPointIndex == entry.branchPointIndex && it.sequence == entry.sequence },
+                                enabled = true,
+                                onSelect = {
+                                    val destination = picker.destinationAnchor
+                                    if (destination == null) {
+                                        airwayPicker = picker.copy(error = "airway insertion needs a following waypoint")
+                                        return@MenuPanelRow
+                                    }
+                                    airwayPicker = picker.copy(loading = true, error = null)
+                                    runCatching {
+                                        appCore.listAirwayExitCandidates(navDbPath, picker.selectedAirwayName, entry, destination)
+                                    }.onSuccess { exits ->
+                                        airwayPicker =
+                                            picker.copy(
+                                                loading = false,
+                                                selectedEntryIndex = index,
+                                                exits = exits,
+                                            )
+                                    }.onFailure { error ->
+                                        airwayPicker = picker.copy(loading = false, error = error.message ?: error.toString())
+                                    }
+                                },
+                            )
+                        }
+                        MenuPanelRow(label = "Back", active = false, enabled = true, onSelect = { airwayPicker = picker.copy(selectedAirwayName = null, entries = emptyList()) })
+                    } else {
+                        val entry = picker.entries[picker.selectedEntryIndex]
+                        picker.exits.forEach { exit ->
+                            MenuPanelRow(
+                                label = navRefLabel(exit.navRef),
+                                active = false,
+                                enabled = !exit.isEntry,
+                                onSelect = {
+                                    if (exit.isEntry) return@MenuPanelRow
+                                    runCatching {
+                                        if (picker.mode == "replace" && picker.componentIndex != null) {
+                                            appCore.replaceAirwayFromSelectionUi(
+                                                navDbPath,
+                                                samplePlan,
+                                                picker.componentIndex,
+                                                entry,
+                                                exit,
+                                            )
+                                        } else {
+                                            appCore.insertAirwayFromSelectionUi(
+                                                navDbPath,
+                                                samplePlan,
+                                                picker.startComponentIndex ?: error("missing insertion start"),
+                                                picker.endComponentIndex ?: error("missing insertion end"),
+                                                entry,
+                                                exit,
+                                            )
+                                        }
+                                    }.onSuccess { mutation ->
+                                        onApplyMutation(mutation)
+                                        closePanels()
+                                    }.onFailure { error ->
+                                        airwayPicker = picker.copy(error = error.message ?: error.toString())
+                                    }
+                                },
+                            )
+                        }
+                        MenuPanelRow(label = "Back", active = false, enabled = true, onSelect = { airwayPicker = picker.copy(selectedEntryIndex = null, exits = emptyList()) })
+                    }
+                }
+            } else if (reorderOpen) {
                 BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxSize()
@@ -1976,19 +2439,23 @@ private fun FlightPlanPage(
                                 CompactSquareButton(
                                     label = "Up",
                                     modifier = Modifier.size(ThumbSize),
-                                    enabled = selectedWaypointIndex!! > 0,
+                                    enabled = selectedRow.componentIndex != null && selectedRow.canReorderComponent,
                                     onClick = {
-                                        onMoveWaypoint(selectedWaypointIndex!!, -1)
-                                        selectedWaypointIndex = selectedWaypointIndex!! - 1
+                                        selectedRow.componentIndex?.let {
+                                            onApplyMutation(appCore.moveComponentUi(samplePlan, it, -1))
+                                        }
+                                        closePanels()
                                     },
                                 )
                                 CompactSquareButton(
                                     label = "Down",
                                     modifier = Modifier.size(ThumbSize),
-                                    enabled = selectedWaypointIndex!! < rows.lastIndex,
+                                    enabled = selectedRow.componentIndex != null && selectedRow.canReorderComponent,
                                     onClick = {
-                                        onMoveWaypoint(selectedWaypointIndex!!, 1)
-                                        selectedWaypointIndex = selectedWaypointIndex!! + 1
+                                        selectedRow.componentIndex?.let {
+                                            onApplyMutation(appCore.moveComponentUi(samplePlan, it, 1))
+                                        }
+                                        closePanels()
                                     },
                                 )
                             }
@@ -2003,15 +2470,33 @@ private fun FlightPlanPage(
                         .zIndex(5f),
                     width = Dp.Unspecified,
                 ) {
-                    listOf(
-                        "Remove" to (rows[selectedWaypointIndex!!].removeLegIndex != null),
-                        "Insert" to false,
-                        "Reorder" to (rows.size > 1),
-                        "Waypoint Info" to false,
-                        "Add Airway" to false,
-                        "Select Procedure" to false,
-                        "Charts" to (rows[selectedWaypointIndex!!].chartAirportId != null),
-                    ).forEach { (action, enabled) ->
+                    val actions = when {
+                        selectedRow.rowKind == "group" &&
+                            selectedRow.componentKind == RouteComponentViewKind.Airway &&
+                            selectedRow.componentIndex != null -> listOf(
+                            "Change Airway" to selectedRow.canChangeAirway,
+                            "Remove Airway" to selectedRow.canRemoveComponent,
+                        )
+                        selectedRow.rowKind == "group" &&
+                            selectedRow.componentKind == RouteComponentViewKind.Procedure &&
+                            selectedRow.componentIndex != null -> listOf(
+                            "Remove Procedure" to selectedRow.canRemoveComponent,
+                        )
+                        selectedRow.rowKind != "waypoint" -> emptyList()
+                        selectedRow.depth == 0 -> listOf(
+                            "Activate Leg" to (selectedRow.legIndex != null),
+                            "Remove" to (selectedRow.componentIndex != null && selectedRow.canRemoveComponent),
+                            "Reorder" to (selectedRow.componentIndex != null && selectedRow.canReorderComponent),
+                            "Add Airway" to (selectedRow.canAddAirwayAfter && selectedRow.originAnchor != null && selectedRow.destinationAnchor != null),
+                            "Select Procedure" to (selectedRow.canAddProcedureBefore && selectedRow.componentIndex != null && selectedRow.chartAirportId != null),
+                            "Charts" to (selectedRow.chartAirportId != null),
+                        )
+                        else -> listOf(
+                            "Activate Leg" to (selectedRow.legIndex != null),
+                            "Charts" to (selectedRow.chartAirportId != null),
+                        )
+                    }
+                    actions.forEach { (action, enabled) ->
                         MenuPanelRow(
                             label = action,
                             active = false,
@@ -2020,16 +2505,100 @@ private fun FlightPlanPage(
                                 if (!enabled) {
                                     return@MenuPanelRow
                                 }
-                                if (action == "Remove") {
-                                    rows[selectedWaypointIndex!!].removeLegIndex?.let(onRemoveWaypoint)
-                                } else if (action == "Reorder") {
-                                    reorderOpen = true
-                                    return@MenuPanelRow
-                                } else if (action == "Charts") {
-                                    onOpenCharts(rows[selectedWaypointIndex!!].chartAirportId)
+                                when (action) {
+                                    "Activate Leg" -> {
+                                        selectedRow.legIndex?.let {
+                                            onApplyMutation(appCore.activateLegUi(samplePlan, it))
+                                        }
+                                        closePanels()
+                                    }
+                                    "Remove", "Remove Airway", "Remove Procedure" -> {
+                                        selectedRow.componentIndex?.let {
+                                            onApplyMutation(appCore.deleteComponentUi(samplePlan, it))
+                                        }
+                                        closePanels()
+                                    }
+                                    "Reorder" -> {
+                                        reorderOpen = true
+                                    }
+                                    "Add Airway" -> {
+                                        airwayPicker =
+                                            AndroidAirwayPickerState(
+                                                loading = true,
+                                                error = null,
+                                                mode = "insert",
+                                                componentIndex = null,
+                                                startComponentIndex = selectedRow.startComponentIndex,
+                                                endComponentIndex = selectedRow.endComponentIndex,
+                                                originAnchor = selectedRow.originAnchor!!,
+                                                destinationAnchor = selectedRow.destinationAnchor,
+                                                suggestions = emptyList(),
+                                                selectedAirwayName = null,
+                                                entries = emptyList(),
+                                                selectedEntryIndex = null,
+                                                exits = emptyList(),
+                                            )
+                                        runCatching {
+                                            appCore.suggestAirwaysNear(navDbPath, selectedRow.originAnchor!!)
+                                        }.onSuccess { suggestions ->
+                                            airwayPicker = airwayPicker?.copy(loading = false, suggestions = suggestions)
+                                        }.onFailure { error ->
+                                            airwayPicker = airwayPicker?.copy(loading = false, error = error.message ?: error.toString())
+                                        }
+                                    }
+                                    "Change Airway" -> {
+                                        val componentIndex = selectedRow.componentIndex ?: return@MenuPanelRow
+                                        airwayPicker =
+                                            AndroidAirwayPickerState(
+                                                loading = true,
+                                                error = null,
+                                                mode = "replace",
+                                                componentIndex = componentIndex,
+                                                startComponentIndex = null,
+                                                endComponentIndex = null,
+                                                originAnchor = selectedRow.originAnchor ?: return@MenuPanelRow,
+                                                destinationAnchor = selectedRow.destinationAnchor,
+                                                suggestions = emptyList(),
+                                                selectedAirwayName = null,
+                                                entries = emptyList(),
+                                                selectedEntryIndex = null,
+                                                exits = emptyList(),
+                                            )
+                                        runCatching {
+                                            appCore.suggestAirwaysNear(navDbPath, selectedRow.originAnchor!!)
+                                        }.onSuccess { suggestions ->
+                                            airwayPicker = airwayPicker?.copy(loading = false, suggestions = suggestions)
+                                        }.onFailure { error ->
+                                            airwayPicker = airwayPicker?.copy(loading = false, error = error.message ?: error.toString())
+                                        }
+                                    }
+                                    "Select Procedure" -> {
+                                        val airportId = selectedRow.chartAirportId ?: return@MenuPanelRow
+                                        val componentIndex = selectedRow.componentIndex ?: return@MenuPanelRow
+                                        procedurePicker =
+                                            AndroidProcedurePickerState(
+                                                loading = true,
+                                                error = null,
+                                                airportId = airportId,
+                                                startComponentIndex = componentIndex - 1,
+                                                endComponentIndex = componentIndex,
+                                                procedures = emptyList(),
+                                                selectedProcedureId = null,
+                                                options = null,
+                                            )
+                                        runCatching {
+                                            appCore.listProcedures(navDbPath, airportId, ProcedureKind.Approach)
+                                        }.onSuccess { procedures ->
+                                            procedurePicker = procedurePicker?.copy(loading = false, procedures = procedures)
+                                        }.onFailure { error ->
+                                            procedurePicker = procedurePicker?.copy(loading = false, error = error.message ?: error.toString())
+                                        }
+                                    }
+                                    "Charts" -> {
+                                        onOpenCharts(selectedRow.chartAirportId)
+                                        closePanels()
+                                    }
                                 }
-                                reorderOpen = false
-                                selectedWaypointIndex = null
                             }
                         )
                     }
@@ -2722,7 +3291,7 @@ private fun MenuPanelRow(
 
 @Composable
 private fun PlanHeaderRow() {
-    Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
         PlanCell("Waypoint", Modifier.width(ThumbSize * 2.5f), isHeader = true)
         PlanCell("Dist (nm)", Modifier.weight(1f), isHeader = true)
         PlanCell("ETE (h:m)", Modifier.weight(1f), isHeader = true)
@@ -2730,14 +3299,192 @@ private fun PlanHeaderRow() {
     }
 }
 
-private data class FlightPlanRow(
-    val waypoint: String,
-    val chartAirportId: String?,
-    val removeLegIndex: Int?,
-    val distance: String,
-    val ete: String,
-    val course: String,
-)
+private fun buildLegacyComponentViews(plan: net.jonh.aerobag.prototype.domain.FlightPlan): List<RouteComponentUiView> {
+    if (plan.legs.isEmpty()) {
+        return emptyList()
+    }
+    val waypoints = listOf(plan.legs.first().from) + plan.legs.map { it.to }
+    return waypoints.mapIndexed { index, waypoint ->
+        RouteComponentUiView(
+            componentIndex = index,
+            kind = RouteComponentViewKind.Waypoint,
+            summary = navRefLabel(waypoint),
+            items = listOf(ConcretizedNavItem.Waypoint(waypoint)),
+            active = false,
+            canAddAirwayAfter = true,
+            canAddProcedureBefore = index > 0 && waypoint is NavRef.Airport,
+            canChangeAirway = false,
+            canRemove = true,
+            canReorder = waypoints.size > 1,
+            precedingWaypoint = waypoints.getOrNull(index - 1),
+            followingWaypoint = waypoints.getOrNull(index + 1),
+        )
+    }
+}
+
+private fun concretizedNavItemLabel(item: ConcretizedNavItem): String = when (item) {
+    is ConcretizedNavItem.Waypoint -> navRefLabel(item.navRef)
+    is ConcretizedNavItem.Discontinuity -> item.label
+}
+
+private fun structuredComponentLabel(component: RouteComponentUiView): String =
+    if (component.kind == RouteComponentViewKind.Airway) {
+        component.summary.substringBefore("(").trim()
+    } else {
+        component.summary
+    }
+
+private fun componentWaypointNavRef(component: RouteComponentUiView?): NavRef? {
+    val item = component?.items?.firstOrNull()
+    return if (item is ConcretizedNavItem.Waypoint) item.navRef else null
+}
+
+private fun navRefsEqual(left: NavRef?, right: NavRef?): Boolean = when {
+    left == null || right == null -> false
+    left is NavRef.Airport && right is NavRef.Airport -> left.code == right.code
+    left is NavRef.Navaid && right is NavRef.Navaid -> left.code == right.code
+    left is NavRef.Fix && right is NavRef.Fix -> left.code == right.code
+    left is NavRef.LatLon && right is NavRef.LatLon -> left.lat == right.lat && left.lon == right.lon
+    else -> false
+}
+
+private fun buildFlightPlanDisplayRows(
+    plan: net.jonh.aerobag.prototype.domain.FlightPlan,
+    planUiState: FlightPlanUiState?,
+    componentViews: List<RouteComponentUiView>,
+): List<FlightPlanDisplayRow> {
+    return buildList {
+        componentViews.forEachIndexed { index, component ->
+            val chartAirportId =
+                when (val navRef = componentWaypointNavRef(component)) {
+                    is NavRef.Airport -> navRef.code
+                    else -> null
+                }
+            if (component.kind == RouteComponentViewKind.Waypoint) {
+                val navRef = componentWaypointNavRef(component)
+                add(
+                    FlightPlanDisplayRow(
+                        id = "component:${component.componentIndex}",
+                        label = navRef?.let(::navRefLabel) ?: component.summary,
+                        rowKind = "waypoint",
+                        componentKind = component.kind,
+                        componentIndex = component.componentIndex,
+                        legIndex = planUiState?.resolvedLegs?.firstOrNull { navRefsEqual(it.from, navRef) }?.legIndex,
+                        chartAirportId = chartAirportId,
+                        navRef = navRef,
+                        active = component.active,
+                        canAddAirwayAfter = component.canAddAirwayAfter,
+                        canAddProcedureBefore = component.canAddProcedureBefore,
+                        canChangeAirway = component.canChangeAirway,
+                        canRemoveComponent = component.canRemove,
+                        canReorderComponent = component.canReorder,
+                        startComponentIndex = component.componentIndex,
+                        endComponentIndex = component.componentIndex + 1,
+                        originAnchor = component.precedingWaypoint ?: navRef,
+                        destinationAnchor = component.followingWaypoint,
+                    ),
+                )
+            } else {
+                val originAnchor = component.precedingWaypoint
+                val destinationAnchor = component.followingWaypoint
+                add(
+                    FlightPlanDisplayRow(
+                        id = "group:${component.componentIndex}",
+                        label = structuredComponentLabel(component),
+                        rowKind = "group",
+                        componentKind = component.kind,
+                        componentIndex = component.componentIndex,
+                        chartAirportId = chartAirportId,
+                        active = component.active,
+                        canAddAirwayAfter = component.canAddAirwayAfter,
+                        canAddProcedureBefore = component.canAddProcedureBefore,
+                        canChangeAirway = component.canChangeAirway,
+                        canRemoveComponent = component.canRemove,
+                        canReorderComponent = component.canReorder,
+                        originAnchor = originAnchor,
+                        destinationAnchor = destinationAnchor,
+                    ),
+                )
+                component.items.forEach { item ->
+                    when (item) {
+                        is ConcretizedNavItem.Waypoint ->
+                            add(
+                                FlightPlanDisplayRow(
+                                    id = "item:${component.componentIndex}:${navRefLabel(item.navRef)}:${size}",
+                                    label = navRefLabel(item.navRef),
+                                    rowKind = "waypoint",
+                                    componentKind = component.kind,
+                                    componentIndex = component.componentIndex,
+                                    chartAirportId = (item.navRef as? NavRef.Airport)?.code,
+                                    navRef = item.navRef,
+                                    depth = 1,
+                                    active = component.active,
+                                ),
+                            )
+
+                        is ConcretizedNavItem.Discontinuity ->
+                            add(
+                                FlightPlanDisplayRow(
+                                    id = "disc:${component.componentIndex}:${size}",
+                                    label = item.label,
+                                    rowKind = "discontinuity",
+                                    componentKind = component.kind,
+                                    componentIndex = component.componentIndex,
+                                    depth = 1,
+                                ),
+                            )
+                    }
+                }
+            }
+        }
+
+        val firstLeg = plan.legs.firstOrNull()
+        if (firstLeg != null && none { it.navRef == firstLeg.from }) {
+            add(
+                0,
+                FlightPlanDisplayRow(
+                    id = "legacy:start",
+                    label = navRefLabel(firstLeg.from),
+                    rowKind = "waypoint",
+                    chartAirportId = (firstLeg.from as? NavRef.Airport)?.code,
+                    navRef = firstLeg.from,
+                    componentIndex = 0,
+                    legIndex = planUiState?.resolvedLegs?.firstOrNull { navRefsEqual(it.from, firstLeg.from) }?.legIndex,
+                    startComponentIndex = 0,
+                    endComponentIndex = 1,
+                    originAnchor = firstLeg.from,
+                    destinationAnchor = firstLeg.to,
+                ),
+            )
+        }
+    }
+}
+
+private fun buildFlightPlanDisplayBlocks(rows: List<FlightPlanDisplayRow>): List<FlightPlanDisplayBlock> {
+    val blocks = mutableListOf<FlightPlanDisplayBlock>()
+    var index = 0
+    while (index < rows.size) {
+        val row = rows[index]
+        if (row.rowKind == "group") {
+            val children = mutableListOf<Pair<Int, FlightPlanDisplayRow>>()
+            var childIndex = index + 1
+            while (childIndex < rows.size && rows[childIndex].depth > 0) {
+                children += childIndex to rows[childIndex]
+                childIndex += 1
+            }
+            blocks += FlightPlanDisplayBlock.Group(
+                headerIndex = index,
+                header = row,
+                children = children,
+            )
+            index = childIndex
+        } else {
+            blocks += FlightPlanDisplayBlock.Single(index = index, row = row)
+            index += 1
+        }
+    }
+    return blocks
+}
 
 private fun navRefLabel(ref: NavRef): String = when (ref) {
     is NavRef.Airport -> ref.code
@@ -2747,24 +3494,79 @@ private fun navRefLabel(ref: NavRef): String = when (ref) {
 }
 
 @Composable
-private fun FlightPlanDataRow(row: FlightPlanRow, selected: Boolean, onWaypointClick: () -> Unit) {
+private fun FlightPlanDataRow(row: FlightPlanDisplayRow, selected: Boolean, onWaypointClick: () -> Unit) {
     val uiTheme = LocalAerobagUiTheme.current
-    Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-        CompactSquareButton(
-            label = row.waypoint,
-            modifier = Modifier.width(ThumbSize * 2.5f).height(ThumbSize),
-            selected = selected,
-            selectedColor = uiTheme.controls.buttonBg.copy(
-                red = (uiTheme.controls.buttonBg.red * 0.82f) + 0.18f,
-                green = (uiTheme.controls.buttonBg.green * 0.82f) + 0.18f,
-                blue = (uiTheme.controls.buttonBg.blue * 0.82f) + 0.18f,
+    val indent = (row.depth * 18).dp
+    val defaultButtonColor =
+        when {
+            row.rowKind == "group" -> uiTheme.controls.headerButton
+            else -> uiTheme.controls.buttonBg
+        }
+    val selectedButtonColor =
+        when {
+            row.active -> Color(0xFF9B3A88)
+            else -> Color(
+                red = uiTheme.controls.buttonBg.red * 0.74f,
+                green = uiTheme.controls.buttonBg.green * 0.74f,
+                blue = uiTheme.controls.buttonBg.blue * 0.74f,
                 alpha = uiTheme.controls.buttonBg.alpha,
-            ),
-            onClick = onWaypointClick,
+            )
+        }
+    Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
+        Box(modifier = Modifier.width(ThumbSize * 2.5f).height(ThumbSize)) {
+            CompactSquareButton(
+                label = row.label,
+                modifier = Modifier.fillMaxSize().padding(start = indent),
+                centered = false,
+                textStartPadding = 10.dp,
+                backgroundColor = defaultButtonColor,
+                selected = selected,
+                selectedColor = selectedButtonColor,
+                onClick = onWaypointClick,
+            )
+        }
+        PlanCell("—", Modifier.weight(1f))
+        PlanCell("—", Modifier.weight(1f))
+        PlanCell("—", Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun FlightPlanGroupBlock(
+    header: FlightPlanDisplayRow,
+    headerSelected: Boolean,
+    onHeaderClick: () -> Unit,
+    children: List<Pair<Int, FlightPlanDisplayRow>>,
+    selectedWaypointIndex: Int?,
+    onChildClick: (Int) -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Column(
+        verticalArrangement = Arrangement.spacedBy(1.5.dp),
+        modifier = Modifier
+            .background(
+                color = uiTheme.controls.panelBg.copy(alpha = 0.82f),
+                shape = RoundedCornerShape(ThumbRadius + 2.dp),
+            )
+            .border(
+                width = 2.dp,
+                color = uiTheme.controls.panelBorder.copy(alpha = 0.95f),
+                shape = RoundedCornerShape(ThumbRadius + 2.dp),
+            )
+            .padding(6.dp),
+    ) {
+        FlightPlanDataRow(
+            row = header,
+            selected = headerSelected,
+            onWaypointClick = onHeaderClick,
         )
-        PlanCell(row.distance, Modifier.weight(1f))
-        PlanCell(row.ete, Modifier.weight(1f))
-        PlanCell(row.course, Modifier.weight(1f))
+        children.forEach { (childIndex, childRow) ->
+            FlightPlanDataRow(
+                row = childRow,
+                selected = selectedWaypointIndex == childIndex,
+                onWaypointClick = { onChildClick(childIndex) },
+            )
+        }
     }
 }
 
@@ -2920,7 +3722,10 @@ private fun CompactSquareButton(
     maxLines: Int = 1,
     enabled: Boolean = true,
     selected: Boolean = false,
+    backgroundColor: Color? = null,
     selectedColor: Color? = null,
+    centered: Boolean = true,
+    textStartPadding: Dp = 0.dp,
     onDisabledClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
@@ -2987,13 +3792,17 @@ private fun CompactSquareButton(
             }
         ),
         shape = RoundedCornerShape(ThumbRadius),
-        color = if (selected) selectedColor ?: uiTheme.controls.buttonBg.copy(alpha = 0.9f) else uiTheme.controls.buttonBg,
+        color = if (selected) selectedColor ?: uiTheme.controls.buttonBg.copy(alpha = 0.9f) else backgroundColor ?: uiTheme.controls.buttonBg,
         contentColor = uiTheme.controls.buttonFg,
         shadowElevation = 2.dp,
     ) {
-        Box(contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = if (centered) Alignment.Center else Alignment.CenterStart,
+        ) {
             Text(
                 text = label,
+                modifier = if (centered) Modifier else Modifier.padding(start = textStartPadding, end = 8.dp),
                 style = MaterialTheme.typography.labelSmall,
                 maxLines = maxLines,
                 overflow = TextOverflow.Clip,
@@ -3019,5 +3828,5 @@ private fun Scrim(onDismiss: () -> Unit) {
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() },
             ) { onDismiss() },
-    )
+    ) {}
 }

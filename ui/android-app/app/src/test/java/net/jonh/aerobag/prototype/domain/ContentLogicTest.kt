@@ -295,9 +295,135 @@ private class FakeNativeBridge(
 ) : NativeBridge {
     private val mock = MockAppCoreAdapter()
 
+    override fun suggestAirwaysNearJson(dbPath: String, anchorJson: String, limit: Int): String = "[]"
+
+    override fun resolveNavRefPositionJson(dbPath: String, navRefJson: String): String = """{"lat":0.0,"lon":0.0}"""
+
+    override fun loadAirwayBranchesJson(dbPath: String, airwayName: String): String = "[]"
+
+    override fun listAirwayEntryCandidatesJson(dbPath: String, airwayName: String, originAnchorJson: String): String = "[]"
+
+    override fun listAirwayExitCandidatesJson(
+        dbPath: String,
+        airwayName: String,
+        entryJson: String,
+        destinationAnchorJson: String,
+    ): String = "[]"
+
+    override fun listProceduresJson(dbPath: String, airportId: String, kindJson: String): String = "[]"
+
+    override fun describeProcedureOptionsJson(
+        dbPath: String,
+        airportId: String,
+        procedureId: String,
+        kindJson: String,
+    ): String = """{"valid_choices":[],"invalid_reason":null}"""
+
+    override fun materializeProcedureSelectionJson(
+        dbPath: String,
+        airportId: String,
+        procedureId: String,
+        kindJson: String,
+        runwayTransitionJson: String,
+        enrouteTransitionJson: String,
+        componentIndex: Int,
+    ): String = """{"procedure_id":"","summary":"","legs":[]}"""
+
+    override fun buildFlightPlanUiJson(planJson: String): String =
+        """{"components":[],"resolved_legs":[],"guidance":null,"display_split_leg_index":null}"""
+
+    override fun activateLegUiJson(planJson: String, legIndex: Int): String =
+        """{"plan":$planJson,"ui_state":{"components":[],"resolved_legs":[],"guidance":null,"display_split_leg_index":null}}"""
+
+    override fun activateNextLegUiJson(planJson: String): String = activateLegUiJson(planJson, 0)
+
+    override fun deleteComponentUiJson(planJson: String, componentIndex: Int): String = activateLegUiJson(planJson, 0)
+
+    override fun moveComponentUiJson(planJson: String, componentIndex: Int, delta: Int): String = activateLegUiJson(planJson, 0)
+
+    override fun suspendSequencingUiJson(planJson: String): String = activateLegUiJson(planJson, 0)
+
+    override fun unsuspendSequencingUiJson(planJson: String): String = activateLegUiJson(planJson, 0)
+
+    override fun sequenceActiveLegUiJson(planJson: String): String = activateLegUiJson(planJson, 0)
+
+    override fun prepareAirwayPresentationJson(
+        airwayName: String,
+        branchesJson: String,
+        originPositionJson: String,
+        destinationPositionJson: String,
+    ): String = """{"airway_name":"","branch_key":"","points":[]}"""
+
+    override fun insertAirwayFromSelectionUiJson(
+        dbPath: String,
+        planJson: String,
+        startComponentIndex: Int,
+        endComponentIndex: Int,
+        entryJson: String,
+        exitJson: String,
+    ): String = activateLegUiJson(planJson, 0)
+
+    override fun replaceAirwayFromSelectionUiJson(
+        dbPath: String,
+        planJson: String,
+        componentIndex: Int,
+        entryJson: String,
+        exitJson: String,
+    ): String = activateLegUiJson(planJson, 0)
+
+    override fun sortAirwaySuggestionsForUiJson(suggestionsJson: String): String = suggestionsJson
+
+    override fun insertAirwayMaterializedUiJson(
+        planJson: String,
+        startComponentIndex: Int,
+        endComponentIndexJson: String,
+        selectionJson: String,
+        airwayJson: String,
+        resolvedLegsJson: String,
+    ): String = activateLegUiJson(planJson, 0)
+
+    override fun replaceAirwayMaterializedUiJson(
+        planJson: String,
+        componentIndex: Int,
+        selectionJson: String,
+        airwayJson: String,
+        resolvedLegsJson: String,
+    ): String = activateLegUiJson(planJson, 0)
+
+    override fun insertProcedureMaterializedUiJson(
+        planJson: String,
+        startComponentIndex: Int,
+        endComponentIndex: Int,
+        builtJson: String,
+    ): String = activateLegUiJson(planJson, 0)
+
+    override fun replaceProcedureMaterializedUiJson(
+        planJson: String,
+        componentIndex: Int,
+        builtJson: String,
+    ): String = activateLegUiJson(planJson, 0)
+
+    override fun describeProcedureOptionsFromRowsJson(
+        airportId: String,
+        procedureId: String,
+        kindJson: String,
+        rowsJson: String,
+    ): String = """{"valid_choices":[],"invalid_reason":null}"""
+
+    override fun materializeProcedureFromRecordsJson(
+        airportId: String,
+        procedureId: String,
+        kindJson: String,
+        runwayTransitionJson: String,
+        enrouteTransitionJson: String,
+        componentIndex: Int,
+        rowsJson: String,
+        legsJson: String,
+    ): String = """{"procedure_id":"","summary":"","legs":[]}"""
+
     override fun createUiSessionJson(
         catalogJson: String,
-        resourceIndexJson: String,
+        chartCatalogJson: String,
         planJson: String,
         recentAirportIdsJson: String,
         selectedAirportIdJson: String,
@@ -321,6 +447,8 @@ private class FakeNativeBridge(
     override fun getSessionSnapshotJson(handle: Long): String {
         return """{"app_state":{"active_plan":null,"content_policy":"PreferLocal","last_content_requirements":[],"last_content_report":null},"chart_page_state":{"ordered_airport_ids":[],"recent_airport_ids":[],"selected_airport_id":"","selected_chart_id":""}}"""
     }
+
+    override fun replaceFlightPlanInSessionJson(handle: Long, planJson: String): String = getSessionSnapshotJson(handle)
 
     override fun restoreChartPageStateInSessionJson(
         handle: Long,

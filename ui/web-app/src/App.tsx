@@ -90,6 +90,7 @@ type TrayOption = {
 type UiThemeJson = {
   controls: {
     button_bg: string;
+    header_button: string;
     button_fg: string;
     panel_bg: string;
     panel_border: string;
@@ -589,6 +590,7 @@ export default function App() {
     () =>
       ({
         "--theme-button-bg": controlTheme.button_bg,
+        "--theme-header-button": controlTheme.header_button,
         "--theme-button-fg": controlTheme.button_fg,
         "--theme-panel-bg": controlTheme.panel_bg,
         "--theme-panel-border": controlTheme.panel_border,

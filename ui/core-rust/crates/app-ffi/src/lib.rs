@@ -2,6 +2,7 @@ pub use app_core::*;
 use jni::objects::{JClass, JString};
 use jni::sys::jstring;
 use jni::JNIEnv;
+use std::path::Path;
 
 pub fn load_catalog_json(catalog_json: &str) -> Result<String, String> {
     let handle =
@@ -21,6 +22,26 @@ pub fn remove_flight_plan_leg_json(plan_json: &str, index: usize) -> Result<Stri
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let plan = app_core::remove_flight_plan_leg(&plan, index).map_err(|err| err.to_string())?;
     serde_json::to_string(&plan).map_err(|err| err.to_string())
+}
+
+pub fn delete_component_ui_json(plan_json: &str, component_index: usize) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let mutation =
+        app_core::delete_component_ui(&plan, component_index).map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+pub fn move_component_ui_json(
+    plan_json: &str,
+    component_index: usize,
+    delta: isize,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let mutation =
+        app_core::move_component_ui(&plan, component_index, delta).map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
 pub fn build_flight_plan_ui_json(plan_json: &str) -> Result<String, String> {
@@ -65,6 +86,122 @@ pub fn sequence_active_leg_ui_json(plan_json: &str) -> Result<String, String> {
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
+pub fn suggest_airways_near_json(
+    db_path: &str,
+    anchor_json: &str,
+    limit: usize,
+) -> Result<String, String> {
+    let anchor: app_core::NavRef =
+        serde_json::from_str(anchor_json).map_err(|err| err.to_string())?;
+    let suggestions = app_core::suggest_airways_near(std::path::Path::new(db_path), &anchor, limit)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&suggestions).map_err(|err| err.to_string())
+}
+
+pub fn resolve_nav_ref_position_json(db_path: &str, nav_ref_json: &str) -> Result<String, String> {
+    let nav_ref: app_core::NavRef = serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
+    let position = app_core::resolve_nav_ref_position(Path::new(db_path), &nav_ref).map_err(|err| err.to_string())?;
+    serde_json::to_string(&position).map_err(|err| err.to_string())
+}
+
+pub fn load_airway_branches_json(db_path: &str, airway_name: &str) -> Result<String, String> {
+    let branches = app_core::load_airway_branches(std::path::Path::new(db_path), airway_name)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&branches).map_err(|err| err.to_string())
+}
+
+pub fn list_airway_entry_candidates_json(
+    db_path: &str,
+    airway_name: &str,
+    origin_anchor_json: &str,
+) -> Result<String, String> {
+    let origin_anchor: app_core::NavRef =
+        serde_json::from_str(origin_anchor_json).map_err(|err| err.to_string())?;
+    let candidates = app_core::list_airway_entry_candidates(
+        std::path::Path::new(db_path),
+        airway_name,
+        &origin_anchor,
+        24,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&candidates).map_err(|err| err.to_string())
+}
+
+pub fn list_airway_exit_candidates_json(
+    db_path: &str,
+    airway_name: &str,
+    entry_json: &str,
+    destination_anchor_json: &str,
+) -> Result<String, String> {
+    let entry: app_core::AirwayEntryCandidate =
+        serde_json::from_str(entry_json).map_err(|err| err.to_string())?;
+    let destination_anchor: Option<app_core::NavRef> =
+        serde_json::from_str(destination_anchor_json).map_err(|err| err.to_string())?;
+    let selection = app_core::list_airway_exit_candidates(
+        std::path::Path::new(db_path),
+        airway_name,
+        &entry.branch_key,
+        entry.branch_point_index,
+        destination_anchor.as_ref(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&selection.candidates).map_err(|err| err.to_string())
+}
+
+pub fn list_procedures_json(
+    db_path: &str,
+    airport_id: &str,
+    kind_json: &str,
+) -> Result<String, String> {
+    let kind: app_core::ProcedureKind =
+        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
+    let procedures = app_core::list_procedures(std::path::Path::new(db_path), airport_id, kind)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&procedures).map_err(|err| err.to_string())
+}
+
+pub fn describe_procedure_options_json(
+    db_path: &str,
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+) -> Result<String, String> {
+    let kind: app_core::ProcedureKind =
+        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
+    let options =
+        app_core::describe_procedure_options(std::path::Path::new(db_path), airport_id, procedure_id, kind)
+            .map_err(|err| err.to_string())?;
+    serde_json::to_string(&options).map_err(|err| err.to_string())
+}
+
+pub fn materialize_procedure_selection_json(
+    db_path: &str,
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    runway_transition_json: &str,
+    enroute_transition_json: &str,
+    component_index: usize,
+) -> Result<String, String> {
+    let kind: app_core::ProcedureKind =
+        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
+    let runway_transition: Option<String> =
+        serde_json::from_str(runway_transition_json).map_err(|err| err.to_string())?;
+    let enroute_transition: Option<String> =
+        serde_json::from_str(enroute_transition_json).map_err(|err| err.to_string())?;
+    let built = app_core::materialize_procedure_selection(
+        std::path::Path::new(db_path),
+        airport_id,
+        procedure_id,
+        kind,
+        runway_transition.as_deref(),
+        enroute_transition.as_deref(),
+        component_index,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&built).map_err(|err| err.to_string())
+}
+
 pub fn activate_direct_to_leg_ui_json(
     plan_json: &str,
     lat: f64,
@@ -105,6 +242,33 @@ pub fn insert_airway_from_anchors_ui_json(
         airway_name,
         &origin_anchor,
         &destination_anchor,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+pub fn insert_airway_from_selection_ui_json(
+    db_path: &str,
+    plan_json: &str,
+    start_component_index: usize,
+    end_component_index: usize,
+    entry_json: &str,
+    exit_json: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let entry: app_core::AirwayEntryCandidate =
+        serde_json::from_str(entry_json).map_err(|err| err.to_string())?;
+    let exit: app_core::AirwayExitCandidate =
+        serde_json::from_str(exit_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::insert_airway_from_selection_ui(
+        std::path::Path::new(db_path),
+        &plan,
+        start_component_index,
+        end_component_index,
+        &entry,
+        &exit,
+        None,
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
@@ -353,6 +517,174 @@ pub fn derive_chart_page_state_json(
     serde_json::to_string(&state).map_err(|err| err.to_string())
 }
 
+pub fn prepare_airway_presentation_json(
+    airway_name: &str,
+    branches_json: &str,
+    origin_position_json: &str,
+    destination_position_json: &str,
+) -> Result<String, String> {
+    let branches: Vec<app_core::AirwayBranch> =
+        serde_json::from_str(branches_json).map_err(|err| err.to_string())?;
+    let origin_position: app_core::LatLon =
+        serde_json::from_str(origin_position_json).map_err(|err| err.to_string())?;
+    let destination_position: Option<app_core::LatLon> =
+        serde_json::from_str(destination_position_json).map_err(|err| err.to_string())?;
+    let presentation = app_core::prepare_airway_presentation(
+        airway_name,
+        branches,
+        origin_position,
+        destination_position,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&presentation).map_err(|err| err.to_string())
+}
+
+pub fn sort_airway_suggestions_for_ui_json(suggestions_json: &str) -> Result<String, String> {
+    let suggestions: Vec<app_core::AirwaySuggestion> =
+        serde_json::from_str(suggestions_json).map_err(|err| err.to_string())?;
+    let sorted = app_core::sort_airway_suggestions_for_ui(suggestions);
+    serde_json::to_string(&sorted).map_err(|err| err.to_string())
+}
+
+pub fn insert_airway_materialized_ui_json(
+    plan_json: &str,
+    start_component_index: usize,
+    end_component_index_json: &str,
+    selection_json: &str,
+    airway_json: &str,
+    resolved_legs_json: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let end_component_index: Option<usize> =
+        serde_json::from_str(end_component_index_json).map_err(|err| err.to_string())?;
+    let selection: app_core::AirwayAutoSelection =
+        serde_json::from_str(selection_json).map_err(|err| err.to_string())?;
+    let airway: app_core::AirwaySegment =
+        serde_json::from_str(airway_json).map_err(|err| err.to_string())?;
+    let resolved_legs: Vec<app_core::ResolvedLeg> =
+        serde_json::from_str(resolved_legs_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::insert_airway_materialized_ui(
+        &plan,
+        start_component_index,
+        end_component_index,
+        selection,
+        airway,
+        resolved_legs,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+pub fn replace_airway_materialized_ui_json(
+    plan_json: &str,
+    component_index: usize,
+    selection_json: &str,
+    airway_json: &str,
+    resolved_legs_json: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let selection: app_core::AirwayAutoSelection =
+        serde_json::from_str(selection_json).map_err(|err| err.to_string())?;
+    let airway: app_core::AirwaySegment =
+        serde_json::from_str(airway_json).map_err(|err| err.to_string())?;
+    let resolved_legs: Vec<app_core::ResolvedLeg> =
+        serde_json::from_str(resolved_legs_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::replace_airway_materialized_ui(
+        &plan,
+        component_index,
+        selection,
+        airway,
+        resolved_legs,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+pub fn insert_procedure_materialized_ui_json(
+    plan_json: &str,
+    start_component_index: usize,
+    end_component_index: usize,
+    built_json: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let built: app_core::MaterializedProcedure =
+        serde_json::from_str(built_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::insert_procedure_materialized_ui(
+        &plan,
+        start_component_index,
+        end_component_index,
+        built,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+pub fn replace_procedure_materialized_ui_json(
+    plan_json: &str,
+    component_index: usize,
+    built_json: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let built: app_core::MaterializedProcedure =
+        serde_json::from_str(built_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::replace_procedure_materialized_ui(&plan, component_index, built)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+pub fn describe_procedure_options_from_rows_json(
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    rows_json: &str,
+) -> Result<String, String> {
+    let kind: app_core::ProcedureKind =
+        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
+    let rows: Vec<app_core::ProcedureDistinctRow> =
+        serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
+    let options = app_core::describe_procedure_options_from_rows(airport_id, procedure_id, kind, rows)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&options).map_err(|err| err.to_string())
+}
+
+pub fn materialize_procedure_from_records_json(
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    runway_transition_json: &str,
+    enroute_transition_json: &str,
+    component_index: usize,
+    rows_json: &str,
+    legs_json: &str,
+) -> Result<String, String> {
+    let kind: app_core::ProcedureKind =
+        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
+    let runway_transition: Option<String> =
+        serde_json::from_str(runway_transition_json).map_err(|err| err.to_string())?;
+    let enroute_transition: Option<String> =
+        serde_json::from_str(enroute_transition_json).map_err(|err| err.to_string())?;
+    let rows: Vec<app_core::ProcedureDistinctRow> =
+        serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
+    let legs: Vec<app_core::ProcedureLegMaterializationRecord> =
+        serde_json::from_str(legs_json).map_err(|err| err.to_string())?;
+    let built = app_core::materialize_procedure_from_records(
+        airport_id,
+        procedure_id,
+        kind,
+        runway_transition,
+        enroute_transition,
+        component_index,
+        rows,
+        legs,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&built).map_err(|err| err.to_string())
+}
+
 pub fn create_ui_session_json(
     catalog_json: &str,
     resource_index_json: &str,
@@ -383,6 +715,14 @@ pub fn create_ui_session_json(
 
 pub fn remove_leg_in_session_json(handle: u64, index: usize) -> Result<String, String> {
     let snapshot = app_core::remove_leg_in_session(handle as u32, index).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn replace_flight_plan_in_session_json(handle: u64, plan_json: &str) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::replace_flight_plan_in_session(handle as u32, plan).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -605,6 +945,502 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ref
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_suggestAirwaysNearJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    anchor_json: JString,
+    limit: i32,
+) -> jstring {
+    let result = (|| {
+        let db_path = get_java_string(&mut env, db_path)?;
+        let anchor_json = get_java_string(&mut env, anchor_json)?;
+        suggest_airways_near_json(&db_path, &anchor_json, limit as usize)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_resolveNavRefPositionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    nav_ref_json: JString,
+) -> jstring {
+    let result = (|| {
+        let db_path = get_java_string(&mut env, db_path)?;
+        let nav_ref_json = get_java_string(&mut env, nav_ref_json)?;
+        resolve_nav_ref_position_json(&db_path, &nav_ref_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_loadAirwayBranchesJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    airway_name: JString,
+) -> jstring {
+    let result = (|| {
+        let db_path = get_java_string(&mut env, db_path)?;
+        let airway_name = get_java_string(&mut env, airway_name)?;
+        load_airway_branches_json(&db_path, &airway_name)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_listAirwayEntryCandidatesJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    airway_name: JString,
+    origin_anchor_json: JString,
+) -> jstring {
+    let result = (|| {
+        let db_path = get_java_string(&mut env, db_path)?;
+        let airway_name = get_java_string(&mut env, airway_name)?;
+        let origin_anchor_json = get_java_string(&mut env, origin_anchor_json)?;
+        list_airway_entry_candidates_json(&db_path, &airway_name, &origin_anchor_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_listAirwayExitCandidatesJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    airway_name: JString,
+    entry_json: JString,
+    destination_anchor_json: JString,
+) -> jstring {
+    let result = (|| {
+        let db_path = get_java_string(&mut env, db_path)?;
+        let airway_name = get_java_string(&mut env, airway_name)?;
+        let entry_json = get_java_string(&mut env, entry_json)?;
+        let destination_anchor_json = get_java_string(&mut env, destination_anchor_json)?;
+        list_airway_exit_candidates_json(&db_path, &airway_name, &entry_json, &destination_anchor_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_listProceduresJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    airport_id: JString,
+    kind_json: JString,
+) -> jstring {
+    let result = (|| {
+        let db_path = get_java_string(&mut env, db_path)?;
+        let airport_id = get_java_string(&mut env, airport_id)?;
+        let kind_json = get_java_string(&mut env, kind_json)?;
+        list_procedures_json(&db_path, &airport_id, &kind_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_describeProcedureOptionsJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    airport_id: JString,
+    procedure_id: JString,
+    kind_json: JString,
+) -> jstring {
+    let result = (|| {
+        let db_path = get_java_string(&mut env, db_path)?;
+        let airport_id = get_java_string(&mut env, airport_id)?;
+        let procedure_id = get_java_string(&mut env, procedure_id)?;
+        let kind_json = get_java_string(&mut env, kind_json)?;
+        describe_procedure_options_json(&db_path, &airport_id, &procedure_id, &kind_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_materializeProcedureSelectionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    airport_id: JString,
+    procedure_id: JString,
+    kind_json: JString,
+    runway_transition_json: JString,
+    enroute_transition_json: JString,
+    component_index: i32,
+) -> jstring {
+    let result = (|| {
+        let db_path = get_java_string(&mut env, db_path)?;
+        let airport_id = get_java_string(&mut env, airport_id)?;
+        let procedure_id = get_java_string(&mut env, procedure_id)?;
+        let kind_json = get_java_string(&mut env, kind_json)?;
+        let runway_transition_json = get_java_string(&mut env, runway_transition_json)?;
+        let enroute_transition_json = get_java_string(&mut env, enroute_transition_json)?;
+        materialize_procedure_selection_json(
+            &db_path,
+            &airport_id,
+            &procedure_id,
+            &kind_json,
+            &runway_transition_json,
+            &enroute_transition_json,
+            component_index as usize,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_buildFlightPlanUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    plan_json: JString,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        build_flight_plan_ui_json(&plan_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_activateLegUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    plan_json: JString,
+    leg_index: i32,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        activate_leg_ui_json(&plan_json, leg_index as usize)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_activateNextLegUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    plan_json: JString,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        activate_next_leg_ui_json(&plan_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_deleteComponentUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    plan_json: JString,
+    component_index: i32,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        delete_component_ui_json(&plan_json, component_index as usize)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_moveComponentUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    plan_json: JString,
+    component_index: i32,
+    delta: i32,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        move_component_ui_json(&plan_json, component_index as usize, delta as isize)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_suspendSequencingUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    plan_json: JString,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        suspend_sequencing_ui_json(&plan_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_unsuspendSequencingUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    plan_json: JString,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        unsuspend_sequencing_ui_json(&plan_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sequenceActiveLegUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    plan_json: JString,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        sequence_active_leg_ui_json(&plan_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_prepareAirwayPresentationJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    airway_name: JString,
+    branches_json: JString,
+    origin_position_json: JString,
+    destination_position_json: JString,
+) -> jstring {
+    let result = (|| {
+        let airway_name = get_java_string(&mut env, airway_name)?;
+        let branches_json = get_java_string(&mut env, branches_json)?;
+        let origin_position_json = get_java_string(&mut env, origin_position_json)?;
+        let destination_position_json = get_java_string(&mut env, destination_position_json)?;
+        prepare_airway_presentation_json(
+            &airway_name,
+            &branches_json,
+            &origin_position_json,
+            &destination_position_json,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_insertAirwayFromSelectionUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    plan_json: JString,
+    start_component_index: i32,
+    end_component_index: i32,
+    entry_json: JString,
+    exit_json: JString,
+) -> jstring {
+    let result = (|| {
+        let db_path = get_java_string(&mut env, db_path)?;
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        let entry_json = get_java_string(&mut env, entry_json)?;
+        let exit_json = get_java_string(&mut env, exit_json)?;
+        insert_airway_from_selection_ui_json(
+            &db_path,
+            &plan_json,
+            start_component_index as usize,
+            end_component_index as usize,
+            &entry_json,
+            &exit_json,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_replaceAirwayFromSelectionUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    plan_json: JString,
+    component_index: i32,
+    entry_json: JString,
+    exit_json: JString,
+) -> jstring {
+    let result = (|| {
+        let db_path = get_java_string(&mut env, db_path)?;
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        let entry_json = get_java_string(&mut env, entry_json)?;
+        let exit_json = get_java_string(&mut env, exit_json)?;
+        replace_airway_from_selection_ui_json(
+            &db_path,
+            &plan_json,
+            component_index as usize,
+            &entry_json,
+            &exit_json,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sortAirwaySuggestionsForUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    suggestions_json: JString,
+) -> jstring {
+    let result = (|| {
+        let suggestions_json = get_java_string(&mut env, suggestions_json)?;
+        sort_airway_suggestions_for_ui_json(&suggestions_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_insertAirwayMaterializedUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    plan_json: JString,
+    start_component_index: i32,
+    end_component_index_json: JString,
+    selection_json: JString,
+    airway_json: JString,
+    resolved_legs_json: JString,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        let end_component_index_json = get_java_string(&mut env, end_component_index_json)?;
+        let selection_json = get_java_string(&mut env, selection_json)?;
+        let airway_json = get_java_string(&mut env, airway_json)?;
+        let resolved_legs_json = get_java_string(&mut env, resolved_legs_json)?;
+        insert_airway_materialized_ui_json(
+            &plan_json,
+            start_component_index as usize,
+            &end_component_index_json,
+            &selection_json,
+            &airway_json,
+            &resolved_legs_json,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_replaceAirwayMaterializedUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    plan_json: JString,
+    component_index: i32,
+    selection_json: JString,
+    airway_json: JString,
+    resolved_legs_json: JString,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        let selection_json = get_java_string(&mut env, selection_json)?;
+        let airway_json = get_java_string(&mut env, airway_json)?;
+        let resolved_legs_json = get_java_string(&mut env, resolved_legs_json)?;
+        replace_airway_materialized_ui_json(
+            &plan_json,
+            component_index as usize,
+            &selection_json,
+            &airway_json,
+            &resolved_legs_json,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_insertProcedureMaterializedUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    plan_json: JString,
+    start_component_index: i32,
+    end_component_index: i32,
+    built_json: JString,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        let built_json = get_java_string(&mut env, built_json)?;
+        insert_procedure_materialized_ui_json(
+            &plan_json,
+            start_component_index as usize,
+            end_component_index as usize,
+            &built_json,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_replaceProcedureMaterializedUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    plan_json: JString,
+    component_index: i32,
+    built_json: JString,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        let built_json = get_java_string(&mut env, built_json)?;
+        replace_procedure_materialized_ui_json(&plan_json, component_index as usize, &built_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_describeProcedureOptionsFromRowsJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    airport_id: JString,
+    procedure_id: JString,
+    kind_json: JString,
+    rows_json: JString,
+) -> jstring {
+    let result = (|| {
+        let airport_id = get_java_string(&mut env, airport_id)?;
+        let procedure_id = get_java_string(&mut env, procedure_id)?;
+        let kind_json = get_java_string(&mut env, kind_json)?;
+        let rows_json = get_java_string(&mut env, rows_json)?;
+        describe_procedure_options_from_rows_json(&airport_id, &procedure_id, &kind_json, &rows_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_materializeProcedureFromRecordsJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    airport_id: JString,
+    procedure_id: JString,
+    kind_json: JString,
+    runway_transition_json: JString,
+    enroute_transition_json: JString,
+    component_index: i32,
+    rows_json: JString,
+    legs_json: JString,
+) -> jstring {
+    let result = (|| {
+        let airport_id = get_java_string(&mut env, airport_id)?;
+        let procedure_id = get_java_string(&mut env, procedure_id)?;
+        let kind_json = get_java_string(&mut env, kind_json)?;
+        let runway_transition_json = get_java_string(&mut env, runway_transition_json)?;
+        let enroute_transition_json = get_java_string(&mut env, enroute_transition_json)?;
+        let rows_json = get_java_string(&mut env, rows_json)?;
+        let legs_json = get_java_string(&mut env, legs_json)?;
+        materialize_procedure_from_records_json(
+            &airport_id,
+            &procedure_id,
+            &kind_json,
+            &runway_transition_json,
+            &enroute_transition_json,
+            component_index as usize,
+            &rows_json,
+            &legs_json,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_deriveChartPageJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -684,6 +1520,20 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_rem
     index: i32,
 ) -> jstring {
     return_string(&mut env, remove_leg_in_session_json(handle as u64, index as usize))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_replaceFlightPlanInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    plan_json: JString,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        replace_flight_plan_in_session_json(handle as u64, &plan_json)
+    })();
+    return_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]

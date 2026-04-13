@@ -12,6 +12,7 @@ data class UiTheme(
 
 data class ControlsTheme(
     val buttonBg: Color,
+    val headerButton: Color,
     val buttonFg: Color,
     val panelBg: Color,
     val panelBorder: Color,
@@ -34,6 +35,7 @@ private data class WireUiTheme(
 @Serializable
 private data class WireControlsTheme(
     val button_bg: String,
+    val header_button: String,
     val button_fg: String,
     val panel_bg: String,
     val panel_border: String,
@@ -61,6 +63,7 @@ object UiThemeLoader {
         return UiTheme(
             controls = ControlsTheme(
                 buttonBg = wire.controls.button_bg.toColor(),
+                headerButton = wire.controls.header_button.toColor(),
                 buttonFg = wire.controls.button_fg.toColor(),
                 panelBg = wire.controls.panel_bg.toColor(),
                 panelBorder = wire.controls.panel_border.toColor(),

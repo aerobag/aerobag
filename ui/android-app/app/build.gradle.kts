@@ -58,6 +58,8 @@ val bundleFilename = ((currentArtifactsPayload["bundles"] as? List<*>)?.lastOrNu
     ?: throw GradleException("missing bundles[-1].filename in ${currentArtifactsFile.absolutePath}")
 val productBuildFile = resolvedArtifactRoot.resolve("published-packaged/production").resolve(bundleFilename)
 val productBuildPayload by lazy { JsonSlurper().parse(productBuildFile) as Map<*, *> }
+val productCycle = productBuildPayload["cycle"] as? String
+    ?: throw GradleException("missing cycle in ${productBuildFile.absolutePath}")
 
 fun resolveProductBuildOutput(nodeName: String, outputName: String): File {
     val topLevel = productBuildPayload[nodeName] as? Map<*, *>
@@ -97,9 +99,29 @@ fun resolveProductBuildOutput(nodeName: String, outputName: String): File {
     throw GradleException("missing product build output ${nodeName}.${outputName} in ${productBuildFile.absolutePath}")
 }
 
+fun resolvePublishedUnpackedSibling(relativePath: String, vararg candidateSuffixes: String): File {
+    val unpackedRoot = resolvedArtifactRoot.resolve("published-unpacked/production").resolve(productCycle)
+    val baseRelative = relativePath.removeSuffix(".zip")
+    candidateSuffixes.forEach { suffix ->
+        val candidate = unpackedRoot.resolve(baseRelative).resolve(suffix)
+        if (candidate.isFile) {
+            return candidate
+        }
+    }
+    throw GradleException(
+        "missing unpacked artifact sibling for $relativePath (checked ${candidateSuffixes.joinToString()}) under ${unpackedRoot.absolutePath}",
+    )
+}
+
 val resourceIndexFile = resolveProductBuildOutput("resource_index", "resource_index")
 val vectorsZipFile = resolveProductBuildOutput("vectors", "zip")
-val mainDbFile = resolveProductBuildOutput("data", "main_db")
+val mainDbRelativePath = ((productBuildPayload["data"] as? Map<*, *>)?.get("relative_path") as? String)
+    ?: throw GradleException("missing data.relative_path in ${productBuildFile.absolutePath}")
+val mainDbFile = resolvePublishedUnpackedSibling(
+    mainDbRelativePath,
+    "main.db",
+    "data_$productCycle/main.db",
+)
 val uiThemeFile = file("../../shared-fixtures/ui-theme.json")
 val devBootstrapFile = file("../../shared/dev-bootstrap.json")
 

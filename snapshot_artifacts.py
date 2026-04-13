@@ -39,12 +39,12 @@ def collect_packed_artifacts(source_root: pathlib.Path) -> set[pathlib.Path]:
             files_to_copy.add(build_manifest_path)
 
         bundle = json.loads(bundle_path.read_text())
-        files_to_copy.add(source_root / bundle["catalog"]["relative_path"])
-        files_to_copy.add(source_root / bundle["resource_index"]["relative_path"])
-        files_to_copy.add(source_root / bundle["data"]["relative_path"])
-        files_to_copy.add(source_root / bundle["vectors"]["relative_path"])
+        files_to_copy.add(packaged_root / bundle["catalog"]["relative_path"])
+        files_to_copy.add(packaged_root / bundle["resource_index"]["relative_path"])
+        files_to_copy.add(packaged_root / bundle["data"]["relative_path"])
+        files_to_copy.add(packaged_root / bundle["vectors"]["relative_path"])
         for package in bundle["packages"]:
-            files_to_copy.add(source_root / package["relative_path"])
+            files_to_copy.add(packaged_root / package["relative_path"])
 
     obstacle_path = packaged_root / current["obstacles"]["filename"]
     if obstacle_path.exists():

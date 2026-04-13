@@ -63,6 +63,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -72,6 +73,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -172,6 +174,7 @@ private val LocalAerobagUiTheme = staticCompositionLocalOf<UiTheme> {
 
 private val ThumbSize = 56.dp
 private val ThumbGap = 5.6.dp
+private val PlanGridGap = 2.dp
 private val VampsPosition = LatLon(47.3648944444444, -121.980275)
 private val SituationRingSizesNm = listOf(0.25, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 150.0, 200.0)
 
@@ -258,6 +261,8 @@ private val FolderThumbGutter = ThumbSize * 0.3f
 private val PlateFolderTileWidth = ThumbSize * 2f
 private val PlateFolderTileHeight = ThumbSize * 3f
 private val PlatePageTrayWidth = ThumbSize * 4f
+private val PlanArrowLane = ThumbSize * 0.5f
+private val PlanArrowButtonInset = 5.dp
 private const val UiPrefsName = "aerobag_ui"
 private const val UiPrefsPageKey = "page"
 private const val UiPrefsSelectedAirportKey = "selected_airport_id"
@@ -316,6 +321,38 @@ private sealed interface FlightPlanDisplayBlock {
         val header: FlightPlanDisplayRow,
         val children: List<Pair<Int, FlightPlanDisplayRow>>,
     ) : FlightPlanDisplayBlock
+}
+
+private data class StructuredArrowSpec(
+    val fromPoint: Offset,
+    val toPoint: Offset,
+    val toClipped: Boolean,
+    val fromClippedAbove: Boolean,
+    val elbowX: Float,
+    val shaftEndX: Float,
+    val headLength: Float,
+)
+
+private data class StructuredArrowEndpoint(
+    val point: Offset,
+    val clipped: Boolean,
+    val clippedAbove: Boolean,
+    val clippedBelow: Boolean,
+)
+
+@Composable
+private fun rememberStructuredRowBounds(
+    rowId: String,
+    structuredRowBounds: MutableMap<String, Rect>,
+): Modifier {
+    DisposableEffect(rowId, structuredRowBounds) {
+        onDispose {
+            structuredRowBounds.remove(rowId)
+        }
+    }
+    return Modifier.onGloballyPositioned { coordinates ->
+        structuredRowBounds[rowId] = coordinates.boundsInWindow()
+    }
 }
 
 private data class AndroidAirwayPickerState(
@@ -2038,6 +2075,7 @@ private fun FlightPlanPage(
     onApplyMutation: (FlightPlanUiMutation) -> Unit,
 ) {
     val planWaypointTrayStart = ThumbSize * 2.6f + ThumbGap * 2
+    val density = LocalDensity.current
     var selectedWaypointIndex by remember { mutableStateOf<Int?>(null) }
     var reorderOpen by remember { mutableStateOf(false) }
     var pageTrayOpen by remember { mutableStateOf(false) }
@@ -2054,7 +2092,113 @@ private fun FlightPlanPage(
     val blocks = remember(rows) {
         buildFlightPlanDisplayBlocks(rows)
     }
+    var structuredSurfaceBounds by remember { mutableStateOf<Rect?>(null) }
+    val structuredRowBounds = remember { mutableStateMapOf<String, Rect>() }
     val selectedRow = selectedWaypointIndex?.let(rows::getOrNull)
+    val structuredArrow =
+        remember(rows, guidance?.activeLeg, structuredSurfaceBounds, structuredRowBounds.toMap(), density) {
+            val surfaceBounds = structuredSurfaceBounds ?: return@remember null
+            val activeLeg = guidance?.activeLeg ?: return@remember null
+            val visibleIndices =
+                rows.mapIndexedNotNull { index, row ->
+                    if (structuredRowBounds.containsKey(row.id)) index else null
+                }
+            val firstVisibleIndex = visibleIndices.minOrNull()
+            val lastVisibleIndex = visibleIndices.maxOrNull()
+            val fromIndex =
+                rows.indexOfFirst { row ->
+                    row.rowKind == "waypoint" && navRefsEqual(row.navRef, activeLeg.from)
+                }
+            if (fromIndex < 0) {
+                return@remember null
+            }
+            var toIndex = -1
+            for (index in (fromIndex + 1) until rows.size) {
+                val row = rows[index]
+                if (row.rowKind == "waypoint" && navRefsEqual(row.navRef, activeLeg.to)) {
+                    toIndex = index
+                    break
+                }
+            }
+            val lanePx = with(density) { PlanArrowLane.toPx() }
+            val headLength = with(density) { 12.dp.toPx() }
+            val textInsetPx = with(density) { PlanArrowButtonInset.toPx() }
+            val surfaceHeight = surfaceBounds.height
+            fun rowPoint(index: Int, preferBelow: Boolean): StructuredArrowEndpoint? {
+                val row = rows[index]
+                val indentPx = with(density) { (row.depth * 18).dp.toPx() }
+                val x = lanePx + indentPx + textInsetPx
+                val bounds = structuredRowBounds[row.id]
+                if (bounds != null) {
+                    val centerY = bounds.top - surfaceBounds.top + bounds.height / 2f
+                    val clippedAbove = bounds.bottom < surfaceBounds.top
+                    val clippedBelow = bounds.top > surfaceBounds.bottom
+                    val clampedY =
+                        when {
+                            clippedAbove -> if (preferBelow) surfaceHeight else 0f
+                            clippedBelow -> if (preferBelow) surfaceHeight else 0f
+                            else -> centerY.coerceIn(0f, surfaceHeight)
+                        }
+                    return StructuredArrowEndpoint(
+                        point =
+                            Offset(
+                                x = x,
+                                y = clampedY,
+                            ),
+                        clipped = clampedY != centerY,
+                        clippedAbove = clippedAbove || (clampedY == 0f && centerY < 0f),
+                        clippedBelow = clippedBelow || (clampedY == surfaceHeight && centerY > surfaceHeight),
+                    )
+                }
+                return when {
+                    firstVisibleIndex != null && index < firstVisibleIndex ->
+                        StructuredArrowEndpoint(
+                            point = Offset(x = x, y = 0f),
+                            clipped = true,
+                            clippedAbove = true,
+                            clippedBelow = false,
+                        )
+                    lastVisibleIndex != null && index > lastVisibleIndex ->
+                        StructuredArrowEndpoint(
+                            point = Offset(x = x, y = surfaceHeight),
+                            clipped = true,
+                            clippedAbove = false,
+                            clippedBelow = true,
+                        )
+                    else -> null
+                }
+            }
+            val fromEndpoint = rowPoint(fromIndex, preferBelow = false) ?: return@remember null
+            val toEndpoint =
+                if (toIndex >= 0) {
+                    rowPoint(toIndex, preferBelow = toIndex > fromIndex)
+                } else {
+                    StructuredArrowEndpoint(
+                        point = Offset(x = fromEndpoint.point.x, y = surfaceHeight),
+                        clipped = true,
+                        clippedAbove = false,
+                        clippedBelow = true,
+                    )
+                } ?: return@remember null
+            if (fromEndpoint.clipped && toEndpoint.clipped) {
+                return@remember null
+            }
+            if (toEndpoint.clippedAbove) {
+                return@remember null
+            }
+            val fromPoint = fromEndpoint.point
+            val toPoint = toEndpoint.point
+            val elbowX = lanePx * 0.25f
+            StructuredArrowSpec(
+                fromPoint = fromPoint,
+                toPoint = toPoint,
+                toClipped = toEndpoint.clipped,
+                fromClippedAbove = fromEndpoint.clippedAbove,
+                elbowX = elbowX,
+                shaftEndX = maxOf(elbowX, toPoint.x - headLength + with(density) { 1.5.dp.toPx() }),
+                headLength = headLength,
+            )
+        }
 
     fun closePanels() {
         selectedWaypointIndex = null
@@ -2097,82 +2241,156 @@ private fun FlightPlanPage(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = ThumbSize + ThumbGap * 2, start = ThumbGap, end = ThumbGap, bottom = ThumbSize),
-            verticalArrangement = Arrangement.spacedBy(1.5.dp),
+                .padding(top = ThumbSize + ThumbGap * 2, start = ThumbGap, end = ThumbGap, bottom = ThumbSize * 1.35f),
+            verticalArrangement = Arrangement.spacedBy(PlanGridGap),
         ) {
-            PlanHeaderRow()
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(1.5.dp),
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .onGloballyPositioned { coordinates ->
+                        structuredSurfaceBounds = coordinates.boundsInWindow()
+                    },
             ) {
-                items(blocks.size) { blockIndex ->
-                    when (val block = blocks[blockIndex]) {
-                        is FlightPlanDisplayBlock.Single -> {
-                            FlightPlanDataRow(
-                                row = block.row,
-                                selected = selectedWaypointIndex == block.index,
-                                onWaypointClick = {
-                                    selectedWaypointIndex = block.index
-                                    reorderOpen = false
-                                    airwayPicker = null
-                                    procedurePicker = null
-                                },
-                            )
-                        }
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(start = PlanArrowLane),
+                    verticalArrangement = Arrangement.spacedBy(PlanGridGap),
+                ) {
+                    PlanHeaderRow()
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(PlanGridGap),
+                    ) {
+                        items(blocks.size) { blockIndex ->
+                            when (val block = blocks[blockIndex]) {
+                                is FlightPlanDisplayBlock.Single -> {
+                                    FlightPlanDataRow(
+                                        row = block.row,
+                                        selected = selectedWaypointIndex == block.index,
+                                        structuredRowBounds = structuredRowBounds,
+                                        onWaypointClick = {
+                                            selectedWaypointIndex = block.index
+                                            reorderOpen = false
+                                            airwayPicker = null
+                                            procedurePicker = null
+                                        },
+                                    )
+                                }
 
-                        is FlightPlanDisplayBlock.Group -> {
-                            FlightPlanGroupBlock(
-                                header = block.header,
-                                headerSelected = selectedWaypointIndex == block.headerIndex,
-                                onHeaderClick = {
-                                    selectedWaypointIndex = block.headerIndex
-                                    reorderOpen = false
-                                    airwayPicker = null
-                                    procedurePicker = null
-                                },
-                                children = block.children,
-                                selectedWaypointIndex = selectedWaypointIndex,
-                                onChildClick = { childIndex ->
-                                    selectedWaypointIndex = childIndex
-                                    reorderOpen = false
-                                    airwayPicker = null
-                                    procedurePicker = null
-                                },
-                            )
+                                is FlightPlanDisplayBlock.Group -> {
+                                    FlightPlanGroupBlock(
+                                        header = block.header,
+                                        headerSelected = selectedWaypointIndex == block.headerIndex,
+                                        structuredRowBounds = structuredRowBounds,
+                                        onHeaderClick = {
+                                            selectedWaypointIndex = block.headerIndex
+                                            reorderOpen = false
+                                            airwayPicker = null
+                                            procedurePicker = null
+                                        },
+                                        children = block.children,
+                                        selectedWaypointIndex = selectedWaypointIndex,
+                                        onChildClick = { childIndex ->
+                                            selectedWaypointIndex = childIndex
+                                            reorderOpen = false
+                                            airwayPicker = null
+                                            procedurePicker = null
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (structuredArrow != null) {
+                    Canvas(
+                        modifier =
+                            Modifier
+                                .matchParentSize()
+                                .zIndex(2f),
+                    ) {
+                        val path =
+                            Path().apply {
+                                moveTo(
+                                    if (structuredArrow.fromClippedAbove) structuredArrow.elbowX else structuredArrow.fromPoint.x,
+                                    structuredArrow.fromPoint.y,
+                                )
+                                if (!structuredArrow.fromClippedAbove) {
+                                    lineTo(structuredArrow.elbowX, structuredArrow.fromPoint.y)
+                                }
+                                lineTo(structuredArrow.elbowX, structuredArrow.toPoint.y)
+                                if (!structuredArrow.toClipped) {
+                                    lineTo(structuredArrow.shaftEndX, structuredArrow.toPoint.y)
+                                }
+                            }
+                        drawPath(
+                            path = path,
+                            color = Color(0xFFD45A7A),
+                            style =
+                                Stroke(
+                                    width = with(density) { 3.dp.toPx() },
+                                    cap = StrokeCap.Round,
+                                ),
+                        )
+                        if (!structuredArrow.toClipped) {
+                            val head =
+                                Path().apply {
+                                    moveTo(structuredArrow.toPoint.x, structuredArrow.toPoint.y)
+                                    lineTo(
+                                        structuredArrow.toPoint.x - structuredArrow.headLength,
+                                        structuredArrow.toPoint.y - structuredArrow.headLength * 0.55f,
+                                    )
+                                    lineTo(
+                                        structuredArrow.toPoint.x - structuredArrow.headLength,
+                                        structuredArrow.toPoint.y + structuredArrow.headLength * 0.55f,
+                                    )
+                                    close()
+                                }
+                            drawPath(head, color = Color(0xFFD45A7A))
                         }
                     }
                 }
             }
+        }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(ThumbSize * 1.2f)
+                .padding(start = ThumbGap, end = ThumbGap, bottom = ThumbGap),
+        ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
+                modifier = Modifier.align(Alignment.Center),
+                horizontalArrangement = Arrangement.spacedBy(ThumbGap),
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap)) {
-                    CompactSquareButton(
-                        label = "Next Leg",
-                        modifier = Modifier.width(ThumbSize * 1.8f),
-                        enabled = guidance?.canActivateNextLeg == true,
-                        onClick = { onApplyMutation(appCore.activateNextLegUi(samplePlan)) },
-                    )
-                    CompactSquareButton(
-                        label = "Sequence",
-                        modifier = Modifier.width(ThumbSize * 1.8f),
-                        enabled = guidance?.canSequenceActiveLeg == true,
-                        onClick = { onApplyMutation(appCore.sequenceActiveLegUi(samplePlan)) },
-                    )
-                    CompactSquareButton(
-                        label = "Suspend",
-                        modifier = Modifier.width(ThumbSize * 1.8f),
-                        enabled = guidance?.canSuspend == true,
-                        onClick = { onApplyMutation(appCore.suspendSequencingUi(samplePlan)) },
-                    )
-                    CompactSquareButton(
-                        label = "Unsusp",
-                        modifier = Modifier.width(ThumbSize * 1.8f),
-                        enabled = guidance?.canUnsuspend == true,
-                        onClick = { onApplyMutation(appCore.unsuspendSequencingUi(samplePlan)) },
-                    )
-                }
+                CompactSquareButton(
+                    label = "Next Leg",
+                    modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
+                    enabled = guidance?.canActivateNextLeg == true,
+                    onClick = { onApplyMutation(appCore.activateNextLegUi(samplePlan)) },
+                )
+                CompactSquareButton(
+                    label = "Sequence",
+                    modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
+                    enabled = guidance?.canSequenceActiveLeg == true,
+                    onClick = { onApplyMutation(appCore.sequenceActiveLegUi(samplePlan)) },
+                )
+                CompactSquareButton(
+                    label = "Suspend",
+                    modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
+                    enabled = guidance?.canSuspend == true,
+                    onClick = { onApplyMutation(appCore.suspendSequencingUi(samplePlan)) },
+                )
+                CompactSquareButton(
+                    label = "Unsusp",
+                    modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
+                    enabled = guidance?.canUnsuspend == true,
+                    onClick = { onApplyMutation(appCore.unsuspendSequencingUi(samplePlan)) },
+                )
             }
             Text(
                 text =
@@ -2187,7 +2405,7 @@ private fun FlightPlanPage(
                             }
                         }
                     } ?: legSummary,
-                modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = ThumbGap, bottom = ThumbGap),
+                modifier = Modifier.align(Alignment.BottomCenter),
                 style = MaterialTheme.typography.labelMedium,
                 color = Color(0xFF52656D),
             )
@@ -3291,7 +3509,7 @@ private fun MenuPanelRow(
 
 @Composable
 private fun PlanHeaderRow() {
-    Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(PlanGridGap)) {
         PlanCell("Waypoint", Modifier.width(ThumbSize * 2.5f), isHeader = true)
         PlanCell("Dist (nm)", Modifier.weight(1f), isHeader = true)
         PlanCell("ETE (h:m)", Modifier.weight(1f), isHeader = true)
@@ -3494,9 +3712,21 @@ private fun navRefLabel(ref: NavRef): String = when (ref) {
 }
 
 @Composable
-private fun FlightPlanDataRow(row: FlightPlanDisplayRow, selected: Boolean, onWaypointClick: () -> Unit) {
+private fun FlightPlanDataRow(
+    row: FlightPlanDisplayRow,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    structuredRowBounds: MutableMap<String, Rect>? = null,
+    onWaypointClick: () -> Unit,
+) {
     val uiTheme = LocalAerobagUiTheme.current
     val indent = (row.depth * 18).dp
+    val rowBoundsModifier =
+        if (structuredRowBounds != null) {
+            rememberStructuredRowBounds(row.id, structuredRowBounds)
+        } else {
+            Modifier
+        }
     val defaultButtonColor =
         when {
             row.rowKind == "group" -> uiTheme.controls.headerButton
@@ -3512,7 +3742,7 @@ private fun FlightPlanDataRow(row: FlightPlanDisplayRow, selected: Boolean, onWa
                 alpha = uiTheme.controls.buttonBg.alpha,
             )
         }
-    Row(horizontalArrangement = Arrangement.spacedBy(1.5.dp)) {
+    Row(modifier = modifier.then(rowBoundsModifier), horizontalArrangement = Arrangement.spacedBy(PlanGridGap)) {
         Box(modifier = Modifier.width(ThumbSize * 2.5f).height(ThumbSize)) {
             CompactSquareButton(
                 label = row.label,
@@ -3535,6 +3765,7 @@ private fun FlightPlanDataRow(row: FlightPlanDisplayRow, selected: Boolean, onWa
 private fun FlightPlanGroupBlock(
     header: FlightPlanDisplayRow,
     headerSelected: Boolean,
+    structuredRowBounds: MutableMap<String, Rect>? = null,
     onHeaderClick: () -> Unit,
     children: List<Pair<Int, FlightPlanDisplayRow>>,
     selectedWaypointIndex: Int?,
@@ -3542,8 +3773,9 @@ private fun FlightPlanGroupBlock(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     Column(
-        verticalArrangement = Arrangement.spacedBy(1.5.dp),
+        verticalArrangement = Arrangement.spacedBy(PlanGridGap),
         modifier = Modifier
+            .padding(PlanGridGap / 2)
             .background(
                 color = uiTheme.controls.panelBg.copy(alpha = 0.82f),
                 shape = RoundedCornerShape(ThumbRadius + 2.dp),
@@ -3553,17 +3785,19 @@ private fun FlightPlanGroupBlock(
                 color = uiTheme.controls.panelBorder.copy(alpha = 0.95f),
                 shape = RoundedCornerShape(ThumbRadius + 2.dp),
             )
-            .padding(6.dp),
+            .padding(8.dp),
     ) {
         FlightPlanDataRow(
             row = header,
             selected = headerSelected,
+            structuredRowBounds = structuredRowBounds,
             onWaypointClick = onHeaderClick,
         )
         children.forEach { (childIndex, childRow) ->
             FlightPlanDataRow(
                 row = childRow,
                 selected = selectedWaypointIndex == childIndex,
+                structuredRowBounds = structuredRowBounds,
                 onWaypointClick = { onChildClick(childIndex) },
             )
         }

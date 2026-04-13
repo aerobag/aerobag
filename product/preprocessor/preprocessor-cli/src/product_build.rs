@@ -299,7 +299,14 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
 pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(&config.build_root)
         .with_context(|| format!("failed to create {}", config.build_root.display()))?;
-    let log_root = config.build_root.join("orchestrator-logs");
+    let log_root = artifact_root_from_build_root(&config.build_root)
+        .join("private-work")
+        .join("orchestrator-logs")
+        .join(if config.profile == ProductBuildProfile::Production {
+            "published-packaged"
+        } else {
+            "published-packaged-validation"
+        });
     fs::create_dir_all(&log_root)
         .with_context(|| format!("failed to create {}", log_root.display()))?;
     let mut master_log = MasterLog::create(&log_root.join("master.log"))?;
@@ -1162,36 +1169,50 @@ fn build_bundle_manifest(
         .clone()
         .or_else(|| index.temporal_summary.expiration_dates.first().cloned())
         .context("resource-index missing end-valid date")?;
+    let cycle = build_manifest.cycle.clone();
 
     Ok(BundleManifest {
         schema_version: 1,
-        cycle: build_manifest.cycle.clone(),
+        cycle: cycle.clone(),
         generated_at_utc: build_manifest.generated_at_utc.clone(),
         start_valid,
         end_valid,
-        catalog: bundle_artifact(config, output_path(resource_index_record, "catalog")?, &catalog_path)?,
-        resource_index: bundle_artifact(
+        catalog: publish_bundle_artifact(
             config,
-            output_path(resource_index_record, "resource_index")?,
-            &resource_index_path,
+            &catalog_path,
+            &format!("catalog_{cycle}.json"),
         )?,
-        data: bundle_artifact(config, output_path(data_record, "zip")?, &data_zip_path)?,
-        vectors: bundle_artifact(config, output_path(vectors_record, "zip")?, &vectors_zip_path)?,
+        resource_index: publish_bundle_artifact(
+            config,
+            &resource_index_path,
+            &format!("resource_index_{cycle}.json"),
+        )?,
+        data: publish_bundle_artifact(config, &data_zip_path, &format!("data_{cycle}.zip"))?,
+        vectors: publish_bundle_artifact(
+            config,
+            &vectors_zip_path,
+            &format!("vectors_data_{cycle}.zip"),
+        )?,
         packages: index
             .packages
             .iter()
             .map(|package| {
                 let package_path = resolve_product_build_path(config, &package.artifact_path);
+                let filename = canonical_package_filename(
+                    &package.family_id,
+                    &package.region_id,
+                    Path::new(&package.artifact_path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default(),
+                )?;
+                publish_flat_artifact(&package_path, &config.build_root.join(&filename))?;
                 Ok(BundlePackageArtifact {
                     id: package.id.clone(),
                     family_id: package.family_id.clone(),
                     region_id: package.region_id.clone(),
-                    filename: Path::new(&package.artifact_path)
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                    relative_path: package.artifact_path.clone(),
+                    filename: filename.clone(),
+                    relative_path: filename,
                     checksum_sha256: package.checksum_sha256.clone(),
                     size_bytes: fs::metadata(&package_path)
                         .with_context(|| format!("failed to stat {}", package_path.display()))?
@@ -1320,22 +1341,74 @@ fn manifest_generated_at(node_records: &[NodeRecord]) -> String {
 }
 
 fn bundle_artifact(
-    _config: &ProductBuildConfig,
-    relative_path: &str,
     absolute_path: &Path,
+    published_filename: &str,
 ) -> anyhow::Result<BundleArtifact> {
     Ok(BundleArtifact {
-        filename: absolute_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_string(),
-        relative_path: relative_path.to_string(),
+        filename: published_filename.to_string(),
+        relative_path: published_filename.to_string(),
         checksum_sha256: hash_file(absolute_path)?,
         size_bytes: fs::metadata(absolute_path)
             .with_context(|| format!("failed to stat {}", absolute_path.display()))?
             .len(),
     })
+}
+
+fn publish_bundle_artifact(
+    config: &ProductBuildConfig,
+    absolute_path: &Path,
+    published_filename: &str,
+) -> anyhow::Result<BundleArtifact> {
+    let published_path = config.build_root.join(published_filename);
+    publish_flat_artifact(absolute_path, &published_path)?;
+    bundle_artifact(absolute_path, published_filename)
+}
+
+fn publish_flat_artifact(source_path: &Path, published_path: &Path) -> anyhow::Result<()> {
+    if published_path.exists() {
+        let existing_same = fs::metadata(published_path)
+            .and_then(|meta| fs::metadata(source_path).map(|src| (meta, src)))
+            .map(|(left, right)| left.len() == right.len())
+            .unwrap_or(false)
+            && hash_file(published_path)? == hash_file(source_path)?;
+        if existing_same {
+            return Ok(());
+        }
+        fs::remove_file(published_path)
+            .with_context(|| format!("failed to remove {}", published_path.display()))?;
+    }
+    match fs::hard_link(source_path, published_path) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            fs::copy(source_path, published_path).with_context(|| {
+                format!(
+                    "failed to copy {} to {}",
+                    source_path.display(),
+                    published_path.display()
+                )
+            })?;
+            Ok(())
+        }
+    }
+}
+
+fn canonical_package_filename(
+    family_id: &str,
+    region_id: &str,
+    original_filename: &str,
+) -> anyhow::Result<String> {
+    let cycle = Path::new(original_filename)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.rsplit('_').next())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("failed to derive cycle from package filename {original_filename}"))?;
+    Ok(format!(
+        "{}_{}_{}.zip",
+        family_id.replace('-', "_"),
+        region_id.to_ascii_lowercase(),
+        cycle
+    ))
 }
 
 impl ProductBuildConfig {
@@ -1354,7 +1427,10 @@ impl ProductBuildConfig {
 
         let mut profile = ProductBuildProfile::Production;
         let mut chart_cutline_root = repo_root.join("avare-assets").join("chart-cutlines");
-        let mut build_root = artifact_root.join("published-packaged").join(profile.as_str());
+        let mut build_root = match profile {
+            ProductBuildProfile::Production => artifact_root.join("published-packaged"),
+            ProductBuildProfile::Validation => artifact_root.join("published-packaged-validation"),
+        };
         let mut target_cycle = None;
         let mut fetch_jobs = env_usize("FETCH_JOBS").unwrap_or(4);
         let mut cpu_jobs = env_usize("CPU_JOBS").unwrap_or_else(default_cpu_jobs);
@@ -1370,7 +1446,10 @@ impl ProductBuildConfig {
                     let value = args.get(index + 1).context("missing value for --profile")?;
                     profile = ProductBuildProfile::parse(value)
                         .ok_or_else(|| anyhow::anyhow!("unsupported profile: {value}"))?;
-                    build_root = artifact_root.join("published-packaged").join(profile.as_str());
+                    build_root = match profile {
+                        ProductBuildProfile::Production => artifact_root.join("published-packaged"),
+                        ProductBuildProfile::Validation => artifact_root.join("published-packaged-validation"),
+                    };
                     index += 2;
                 }
                 "--chart-cutline-root" => {
@@ -2860,10 +2939,29 @@ fn write_node_record(
 }
 
 fn artifact_root_from_build_root(build_root: &Path) -> &Path {
-    build_root
+    if build_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name == "published-packaged" || name == "published-packaged-validation"
+        })
+    {
+        return build_root.parent().unwrap_or(build_root);
+    }
+    if build_root
         .parent()
-        .and_then(|value| value.parent())
-        .unwrap_or(build_root)
+        .and_then(|value| value.file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name == "published-packaged" || name == "published-packaged-validation"
+        })
+    {
+        return build_root
+            .parent()
+            .and_then(|value| value.parent())
+            .unwrap_or(build_root);
+    }
+    build_root.parent().unwrap_or(build_root)
 }
 
 fn normalize_absolute_path(path: &Path) -> PathBuf {
@@ -2892,15 +2990,18 @@ fn relative_artifact_path(path: &Path, build_root: &Path) -> String {
 }
 
 fn relative_product_build_path(path: &Path) -> String {
-    path.parent()
-        .and_then(|value| value.parent())
-        .and_then(|artifact_root| path.strip_prefix(artifact_root).ok())
+    let artifact_root = artifact_root_from_build_root(path);
+    path.strip_prefix(artifact_root)
         .map(|value| value.display().to_string())
-        .unwrap_or_else(|| path.display().to_string())
+        .unwrap_or_else(|_| path.display().to_string())
 }
 
 fn build_node_root(config: &ProductBuildConfig, name: &str) -> anyhow::Result<PathBuf> {
-    let root = config.build_root.join("work").join(name);
+    let root = artifact_root_from_build_root(&config.build_root)
+        .join("private-work")
+        .join("publish-nodes")
+        .join(config.profile.as_str())
+        .join(name);
     fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
     Ok(root)
 }

@@ -266,7 +266,7 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
     )?;
     let build_root = build_root.unwrap_or_else(|| {
         artifact_root
-            .join("published-packaged")
+            .join("private-work")
             .join("obstacles")
             .join(&snapshot_label)
     });

@@ -19,20 +19,20 @@ def timed_copytree(src: pathlib.Path, dst: pathlib.Path) -> None:
     print(f"copied {src} -> {dst} in {elapsed:.3f}s")
 
 
-def load_current_artifacts(production_root: pathlib.Path) -> tuple[pathlib.Path, dict]:
-    current_artifacts = max(production_root.glob("current_artifacts_*.json"))
+def load_current_artifacts(packaged_root: pathlib.Path) -> tuple[pathlib.Path, dict]:
+    current_artifacts = max(packaged_root.glob("current_artifacts_*.json"))
     return current_artifacts, json.loads(current_artifacts.read_text())
 
 
 def collect_packed_artifacts(source_root: pathlib.Path) -> set[pathlib.Path]:
-    production_root = source_root / "published-packaged" / "production"
-    current_artifacts_path, current = load_current_artifacts(production_root)
+    packaged_root = source_root / "published-packaged"
+    current_artifacts_path, current = load_current_artifacts(packaged_root)
     files_to_copy: set[pathlib.Path] = {current_artifacts_path}
 
     for bundle_entry in current["bundles"]:
-        bundle_path = production_root / bundle_entry["filename"]
+        bundle_path = packaged_root / bundle_entry["filename"]
         files_to_copy.add(bundle_path)
-        build_manifest_path = production_root / bundle_entry["filename"].replace(
+        build_manifest_path = packaged_root / bundle_entry["filename"].replace(
             "bundle_", "build-manifest_"
         )
         if build_manifest_path.exists():
@@ -46,7 +46,7 @@ def collect_packed_artifacts(source_root: pathlib.Path) -> set[pathlib.Path]:
         for package in bundle["packages"]:
             files_to_copy.add(source_root / package["relative_path"])
 
-    obstacle_path = production_root / current["obstacles"]["filename"]
+    obstacle_path = packaged_root / current["obstacles"]["filename"]
     if obstacle_path.exists():
         files_to_copy.add(obstacle_path)
 
@@ -71,12 +71,6 @@ def main() -> int:
         shutil.move(DEST, BACKUP_DEST)
     print(f"Snapshotting {SOURCE_ROOT} -> {DEST}")
     (DEST / "published-packaged").mkdir(parents=True, exist_ok=True)
-
-    timed_copytree(
-        SOURCE_ROOT / "published-packaged" / "production",
-        DEST / "published-packaged" / "production",
-    )
-    shutil.rmtree(DEST / "published-packaged" / "production" / "work", ignore_errors=True)
     link_packed_artifacts(SOURCE_ROOT, DEST)
     timed_copytree(SOURCE_ROOT / "published-unpacked", DEST / "published-unpacked")
     return 0

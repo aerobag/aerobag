@@ -1732,6 +1732,53 @@ function FlightPlanPage(props: {
     return nextRows;
   }, [componentViews]);
   const displayRows = useMemo(() => {
+    const projectedRows = props.planUiState?.display_rows;
+    if (projectedRows && projectedRows.length > 0) {
+      return projectedRows.map((row, index) => ({
+        id:
+          row.row_kind === "group"
+            ? `group:${row.component_index ?? index}`
+            : row.row_kind === "discontinuity"
+              ? `disc:${row.component_index ?? "x"}:${index}`
+              : row.depth === 0
+                ? `component:${row.component_index ?? index}`
+                : `item:${row.component_index ?? "x"}:${row.label}:${index}`,
+        label: row.label,
+        distance: row.row_kind === "group" ? "" : row.leg_index !== null ? "11.2" : "—",
+        ete: row.row_kind === "group" ? "" : row.leg_index !== null ? "0:04" : "—",
+        course: row.row_kind === "group" ? "" : row.active ? "ACT" : row.leg_index !== null ? "161" : "—",
+        active: row.active,
+        depth: row.depth,
+        rowKind: row.row_kind,
+        refKey:
+          row.row_kind === "group"
+            ? `group:${row.component_kind ?? "group"}:${row.label}:${row.origin_anchor ? navRefKey(row.origin_anchor) : "none"}:${row.destination_anchor ? navRefKey(row.destination_anchor) : "none"}`
+            : row.row_kind === "discontinuity"
+              ? `disc:${row.component_kind ?? "row"}:${index}`
+              : row.depth === 0
+                ? `waypoint:${row.nav_ref ? navRefKey(row.nav_ref) : "none"}`
+                : `child:${row.component_kind ?? "row"}:${row.nav_ref ? navRefKey(row.nav_ref) : "none"}:${index}`,
+        chartAirportId: row.chart_airport_id,
+        legIndex: row.leg_index,
+        removeLegIndex: null as number | null,
+        startComponentIndex: row.start_component_index,
+        endComponentIndex: row.end_component_index,
+        originAnchor: row.origin_anchor,
+        destinationAnchor: row.destination_anchor,
+        navRef: row.nav_ref,
+        groupKey: row.row_kind === "group" || row.depth > 0 ? `group:${row.component_index ?? index}` : null,
+        componentIndex: row.component_index,
+        componentKind: row.component_kind,
+        canAddAirwayAfter: row.can_add_airway_after,
+        canAddProcedureBefore: row.can_add_procedure_before,
+        canChangeAirway: row.can_change_airway,
+        canRemoveComponent: row.can_remove_component,
+        canReorderComponent: row.can_reorder_component,
+        precedingWaypoint: row.preceding_waypoint,
+        followingWaypoint: row.following_waypoint,
+        actions: row.actions,
+      }));
+    }
     const resolvedLegs = props.planUiState?.resolved_legs ?? [];
     const componentByIndex = new Map(componentViews.map((component) => [component.component_index, component]));
     let nextLegCursor = 0;
@@ -1793,9 +1840,10 @@ function FlightPlanPage(props: {
         canReorderComponent: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_reorder ?? false : false,
         precedingWaypoint: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.preceding_waypoint ?? null : null,
         followingWaypoint: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.following_waypoint ?? null : null,
+        actions: [] as Array<{ id: string; enabled: boolean }>,
       };
     });
-  }, [componentViews, hierarchicalRows, props.planUiState?.resolved_legs]);
+  }, [componentViews, hierarchicalRows, props.planUiState?.display_rows, props.planUiState?.resolved_legs]);
   const selectedRow = selectedWaypointIndex !== null ? displayRows[selectedWaypointIndex] ?? null : null;
 
   useEffect(() => {
@@ -1822,89 +1870,6 @@ function FlightPlanPage(props: {
       return [] as Array<{ id: string; label: string; enabled: boolean; onSelect: () => void }>;
     }
 
-    if (selectedRow.rowKind === "group" && selectedRow.componentKind === "airway" && selectedRow.componentIndex !== null) {
-      return [
-        {
-          id: "change_airway",
-          label: "Change Airway",
-          enabled: selectedRow.canChangeAirway,
-          onSelect: () => {
-            if (!selectedRow.canChangeAirway) {
-              return;
-            }
-            const adapter = props.appCoreAdapter;
-            if (!adapter) {
-              return;
-            }
-            setAirwayPicker({
-              loading: true,
-              error: null,
-              mode: "replace",
-              componentIndex: selectedRow.componentIndex,
-              startComponentIndex: null,
-              endComponentIndex: null,
-              originAnchor: selectedRow.precedingWaypoint!,
-              destinationAnchor: selectedRow.followingWaypoint!,
-              suggestions: [],
-              selectedAirwayName: null,
-              presentation: null,
-              selectedEntryIndex: null,
-            });
-            window.requestAnimationFrame(() => {
-              void suggestAirwaysNearAnchor(adapter, selectedRow.precedingWaypoint!).then((suggestions) => {
-                setAirwayPicker((current) => current ? {
-                  ...current,
-                  loading: false,
-                  suggestions,
-                } : current);
-              }).catch((error) => {
-                setAirwayPicker((current) => current ? {
-                  ...current,
-                  loading: false,
-                  error: error instanceof Error ? error.message : String(error),
-                } : current);
-              });
-            });
-          },
-        },
-        {
-          id: "remove_airway",
-          label: "Remove Airway",
-          enabled: selectedRow.canRemoveComponent,
-          onSelect: () => {
-            if (!selectedRow.canRemoveComponent) {
-              return;
-            }
-            void props.onDeleteComponent(selectedRow.componentIndex!);
-            setReorderOpen(false);
-            setSelectedWaypointIndex(null);
-          },
-        },
-      ];
-    }
-
-    if (selectedRow.rowKind === "group" && selectedRow.componentKind === "procedure" && selectedRow.componentIndex !== null) {
-      return [
-        {
-          id: "remove_procedure",
-          label: "Remove Procedure",
-          enabled: selectedRow.canRemoveComponent,
-          onSelect: () => {
-            if (!selectedRow.canRemoveComponent) {
-              return;
-            }
-            void props.onDeleteComponent(selectedRow.componentIndex!);
-            setReorderOpen(false);
-            setSelectedWaypointIndex(null);
-          },
-        },
-      ];
-    }
-
-    if (selectedRow.rowKind !== "waypoint") {
-      return [] as Array<{ id: string; label: string; enabled: boolean; onSelect: () => void }>;
-    }
-
     const closeTray = () => {
       setReorderOpen(false);
       setSelectedWaypointIndex(null);
@@ -1912,52 +1877,13 @@ function FlightPlanPage(props: {
       setProcedurePicker(null);
     };
 
-    const topLevelWaypoint = selectedRow.depth === 0;
-    const waypointActionDefs = topLevelWaypoint
-      ? [
-          { id: "activate_leg", label: "Activate Leg" },
-          { id: "remove", label: "Remove" },
-          { id: "insert", label: "Insert" },
-          { id: "reorder", label: "Reorder" },
-          { id: "waypoint_info", label: "Waypoint Info" },
-          { id: "add_airway", label: "Add Airway" },
-          { id: "select_procedure", label: "Select Procedure" },
-          { id: "charts", label: "Plates" },
-        ]
-      : [
-          { id: "activate_leg", label: "Activate Leg" },
-          { id: "waypoint_info", label: "Waypoint Info" },
-          { id: "charts", label: "Plates" },
-        ];
-
-    return waypointActionDefs.map((action) => {
-      const enabled =
-        action.id === "activate_leg"
-          ? selectedRow.legIndex !== null
-          : action.id === "remove"
-            ? selectedRow.canRemoveComponent && selectedRow.componentIndex !== null
-          : action.id === "reorder"
-            ? selectedRow.canReorderComponent && selectedRow.componentIndex !== null
-          : action.id === "add_airway"
-            ? selectedRow.canAddAirwayAfter &&
-              selectedRow.startComponentIndex !== null &&
-              selectedRow.originAnchor !== null &&
-              props.appCoreAdapter !== null
-            : action.id === "select_procedure"
-              ? selectedRow.canAddProcedureBefore &&
-                selectedRow.componentIndex !== null &&
-                selectedRow.chartAirportId !== null &&
-                props.appCoreAdapter !== null
-            : action.id === "charts"
-              ? selectedRow.chartAirportId !== null
-              : false;
-
+    return (selectedRow.actions as Array<{ id: string; enabled: boolean }>).map((action) => {
       return {
         id: action.id,
-        label: action.label,
-        enabled,
+        label: flightPlanActionLabel(action.id),
+        enabled: action.enabled,
         onSelect: () => {
-          if (!enabled) {
+          if (!action.enabled) {
             return;
           }
           if (action.id === "activate_leg") {
@@ -1965,7 +1891,7 @@ function FlightPlanPage(props: {
             closeTray();
             return;
           }
-          if (action.id === "remove") {
+          if (action.id === "remove" || action.id === "remove_airway" || action.id === "remove_procedure") {
             void props.onDeleteComponent(selectedRow.componentIndex!);
             closeTray();
             return;
@@ -2043,7 +1969,7 @@ function FlightPlanPage(props: {
             });
             return;
           }
-          if (action.id === "charts") {
+          if (action.id === "charts" || action.id === "plates") {
             props.onOpenCharts(selectedRow.chartAirportId);
             closeTray();
           }
@@ -3424,6 +3350,36 @@ function sortChartsForFolder(charts: ChartAsset[]) {
   });
 }
 
+function flightPlanActionLabel(actionId: string): string {
+  switch (actionId) {
+    case "activate_leg":
+      return "Activate Leg";
+    case "remove":
+      return "Remove";
+    case "insert":
+      return "Insert";
+    case "reorder":
+      return "Reorder";
+    case "waypoint_info":
+      return "Waypoint Info";
+    case "add_airway":
+      return "Add Airway";
+    case "select_procedure":
+      return "Select Procedure";
+    case "charts":
+    case "plates":
+      return "Plates";
+    case "change_airway":
+      return "Change Airway";
+    case "remove_airway":
+      return "Remove Airway";
+    case "remove_procedure":
+      return "Remove Procedure";
+    default:
+      return actionId;
+  }
+}
+
 function resolveChartId(
   airports: ChartPageData["airports"],
   airportId: string,
@@ -3707,6 +3663,8 @@ function buildLegacyComponentViews(plan: typeof samplePlan): FlightPlanUiState["
     can_change_airway: false,
     can_remove: true,
     can_reorder: waypoints.length > 1,
+    can_reorder_up: index > 0,
+    can_reorder_down: index < waypoints.length - 1,
     preceding_waypoint: index > 0 ? waypoints[index - 1] : null,
     following_waypoint: index + 1 < waypoints.length ? waypoints[index + 1] : null,
   }));

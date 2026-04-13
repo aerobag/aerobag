@@ -291,7 +291,54 @@ export type GuidanceUiView = {
 export type FlightPlanUiState = {
   components: RouteComponentUiView[];
   resolved_legs: ResolvedLegUiView[];
+  display_rows: FlightPlanDisplayRowUiView[];
   guidance: GuidanceUiView | null;
+};
+
+export type FlightPlanDisplayRowKind = "waypoint" | "group" | "discontinuity";
+
+export type FlightPlanRowActionId =
+  | "activate_leg"
+  | "remove"
+  | "insert"
+  | "reorder"
+  | "waypoint_info"
+  | "add_airway"
+  | "select_procedure"
+  | "plates"
+  | "change_airway"
+  | "remove_airway"
+  | "remove_procedure";
+
+export type FlightPlanRowActionUiView = {
+  id: FlightPlanRowActionId;
+  enabled: boolean;
+};
+
+export type FlightPlanDisplayRowUiView = {
+  label: string;
+  row_kind: FlightPlanDisplayRowKind;
+  component_kind: RouteComponentViewKind | null;
+  component_index: number | null;
+  leg_index: number | null;
+  chart_airport_id: string | null;
+  nav_ref: NavRef | null;
+  depth: number;
+  active: boolean;
+  can_add_airway_after: boolean;
+  can_add_procedure_before: boolean;
+  can_change_airway: boolean;
+  can_remove_component: boolean;
+  can_reorder_component: boolean;
+  can_reorder_up: boolean;
+  can_reorder_down: boolean;
+  start_component_index: number | null;
+  end_component_index: number | null;
+  origin_anchor: NavRef | null;
+  destination_anchor: NavRef | null;
+  preceding_waypoint: NavRef | null;
+  following_waypoint: NavRef | null;
+  actions: FlightPlanRowActionUiView[];
 };
 
 export type FlightPlanUiMutation = {

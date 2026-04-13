@@ -125,6 +125,10 @@ import net.jonh.aerobag.prototype.domain.AirwayExitCandidate
 import net.jonh.aerobag.prototype.domain.AirwaySuggestion
 import net.jonh.aerobag.prototype.domain.ConcretizedNavItem
 import net.jonh.aerobag.prototype.domain.FlightPlanUiMutation
+import net.jonh.aerobag.prototype.domain.FlightPlanDisplayRowKind
+import net.jonh.aerobag.prototype.domain.FlightPlanDisplayRowUiView
+import net.jonh.aerobag.prototype.domain.FlightPlanRowActionId
+import net.jonh.aerobag.prototype.domain.FlightPlanRowActionUiView
 import net.jonh.aerobag.prototype.domain.FlightPlanUiState
 import net.jonh.aerobag.prototype.domain.LatLonPoint
 import net.jonh.aerobag.prototype.domain.MapChartFamily
@@ -313,6 +317,7 @@ private data class FlightPlanDisplayRow(
     val canReorderComponent: Boolean = false,
     val canReorderUp: Boolean = false,
     val canReorderDown: Boolean = false,
+    val actions: List<FlightPlanRowActionUiView> = emptyList(),
     val startComponentIndex: Int? = null,
     val endComponentIndex: Int? = null,
     val originAnchor: NavRef? = null,
@@ -2750,58 +2755,35 @@ private fun FlightPlanPage(
                         .zIndex(5f),
                     width = Dp.Unspecified,
                 ) {
-                    val actions = when {
-                        selectedRow.rowKind == "group" &&
-                            selectedRow.componentKind == RouteComponentViewKind.Airway &&
-                            selectedRow.componentIndex != null -> listOf(
-                            "Change Airway" to selectedRow.canChangeAirway,
-                            "Remove Airway" to selectedRow.canRemoveComponent,
-                        )
-                        selectedRow.rowKind == "group" &&
-                            selectedRow.componentKind == RouteComponentViewKind.Procedure &&
-                            selectedRow.componentIndex != null -> listOf(
-                            "Remove Procedure" to selectedRow.canRemoveComponent,
-                        )
-                        selectedRow.rowKind != "waypoint" -> emptyList()
-                        selectedRow.depth == 0 -> listOf(
-                            "Activate Leg" to (selectedRow.legIndex != null),
-                            "Remove" to (selectedRow.componentIndex != null && selectedRow.canRemoveComponent),
-                            "Reorder" to (selectedRow.componentIndex != null && selectedRow.canReorderComponent),
-                            "Add Airway" to (selectedRow.canAddAirwayAfter && selectedRow.originAnchor != null && selectedRow.destinationAnchor != null),
-                            "Select Procedure" to (selectedRow.canAddProcedureBefore && selectedRow.componentIndex != null && selectedRow.chartAirportId != null),
-                            "Plates" to (selectedRow.chartAirportId != null),
-                        )
-                        else -> listOf(
-                            "Activate Leg" to (selectedRow.legIndex != null),
-                            "Plates" to (selectedRow.chartAirportId != null),
-                        )
-                    }
-                    actions.forEach { (action, enabled) ->
+                    selectedRow.actions.forEach { action ->
                         MenuPanelRow(
-                            label = action,
+                            label = flightPlanActionLabel(action.id),
                             active = false,
-                            enabled = enabled,
+                            enabled = action.enabled,
                             onSelect = {
-                                if (!enabled) {
+                                if (!action.enabled) {
                                     return@MenuPanelRow
                                 }
-                                when (action) {
-                                    "Activate Leg" -> {
+                                when (action.id) {
+                                    FlightPlanRowActionId.ActivateLeg -> {
                                         selectedRow.legIndex?.let {
                                             onApplyMutation(appCore.activateLegUi(samplePlan, it))
                                         }
                                         closePanels()
                                     }
-                                    "Remove", "Remove Airway", "Remove Procedure" -> {
+                                    FlightPlanRowActionId.Remove,
+                                    FlightPlanRowActionId.RemoveAirway,
+                                    FlightPlanRowActionId.RemoveProcedure,
+                                    -> {
                                         selectedRow.componentIndex?.let {
                                             onApplyMutation(appCore.deleteComponentUi(samplePlan, it))
                                         }
                                         closePanels()
                                     }
-                                    "Reorder" -> {
+                                    FlightPlanRowActionId.Reorder -> {
                                         reorderOpen = true
                                     }
-                                    "Add Airway" -> {
+                                    FlightPlanRowActionId.AddAirway -> {
                                         airwayPicker =
                                             AndroidAirwayPickerState(
                                                 loading = true,
@@ -2826,7 +2808,7 @@ private fun FlightPlanPage(
                                             airwayPicker = airwayPicker?.copy(loading = false, error = error.message ?: error.toString())
                                         }
                                     }
-                                    "Change Airway" -> {
+                                    FlightPlanRowActionId.ChangeAirway -> {
                                         val componentIndex = selectedRow.componentIndex ?: return@MenuPanelRow
                                         airwayPicker =
                                             AndroidAirwayPickerState(
@@ -2852,7 +2834,7 @@ private fun FlightPlanPage(
                                             airwayPicker = airwayPicker?.copy(loading = false, error = error.message ?: error.toString())
                                         }
                                     }
-                                    "Select Procedure" -> {
+                                    FlightPlanRowActionId.SelectProcedure -> {
                                         val airportId = selectedRow.chartAirportId ?: return@MenuPanelRow
                                         val componentIndex = selectedRow.componentIndex ?: return@MenuPanelRow
                                         procedurePicker =
@@ -2874,10 +2856,13 @@ private fun FlightPlanPage(
                                             procedurePicker = procedurePicker?.copy(loading = false, error = error.message ?: error.toString())
                                         }
                                     }
-                                    "Plates" -> {
+                                    FlightPlanRowActionId.Plates -> {
                                         onOpenCharts(selectedRow.chartAirportId)
                                         closePanels()
                                     }
+                                    FlightPlanRowActionId.Insert,
+                                    FlightPlanRowActionId.WaypointInfo,
+                                    -> {}
                                 }
                             }
                         )
@@ -3643,6 +3628,44 @@ private fun buildFlightPlanDisplayRows(
     planUiState: FlightPlanUiState?,
     componentViews: List<RouteComponentUiView>,
 ): List<FlightPlanDisplayRow> {
+    planUiState?.displayRows?.takeIf { it.isNotEmpty() }?.let { displayRows ->
+        return displayRows.mapIndexed { index, row ->
+            FlightPlanDisplayRow(
+                id = when (row.rowKind) {
+                    FlightPlanDisplayRowKind.Waypoint -> if (row.depth == 0) "component:${row.componentIndex ?: index}" else "item:${row.componentIndex ?: "x"}:${row.label}:$index"
+                    FlightPlanDisplayRowKind.Group -> "group:${row.componentIndex ?: index}"
+                    FlightPlanDisplayRowKind.Discontinuity -> "disc:${row.componentIndex ?: "x"}:$index"
+                },
+                selectionKey = selectionKeyForDisplayRow(row, index),
+                label = row.label,
+                rowKind =
+                    when (row.rowKind) {
+                        FlightPlanDisplayRowKind.Waypoint -> "waypoint"
+                        FlightPlanDisplayRowKind.Group -> "group"
+                        FlightPlanDisplayRowKind.Discontinuity -> "discontinuity"
+                    },
+                componentKind = row.componentKind,
+                componentIndex = row.componentIndex,
+                legIndex = row.legIndex,
+                chartAirportId = row.chartAirportId,
+                navRef = row.navRef,
+                depth = row.depth,
+                active = row.active,
+                canAddAirwayAfter = row.canAddAirwayAfter,
+                canAddProcedureBefore = row.canAddProcedureBefore,
+                canChangeAirway = row.canChangeAirway,
+                canRemoveComponent = row.canRemoveComponent,
+                canReorderComponent = row.canReorderComponent,
+                canReorderUp = row.canReorderUp,
+                canReorderDown = row.canReorderDown,
+                actions = row.actions,
+                startComponentIndex = row.startComponentIndex,
+                endComponentIndex = row.endComponentIndex,
+                originAnchor = row.originAnchor,
+                destinationAnchor = row.destinationAnchor,
+            )
+        }
+    }
     val baseRows =
         buildList {
         componentViews.forEachIndexed { index, component ->
@@ -3671,6 +3694,7 @@ private fun buildFlightPlanDisplayRows(
                         canReorderComponent = component.canReorder,
                         canReorderUp = component.canReorderUp,
                         canReorderDown = component.canReorderDown,
+                        actions = emptyList(),
                         startComponentIndex = component.componentIndex,
                         endComponentIndex = component.componentIndex + 1,
                         originAnchor = component.precedingWaypoint ?: navRef,
@@ -3698,6 +3722,7 @@ private fun buildFlightPlanDisplayRows(
                         canReorderComponent = component.canReorder,
                         canReorderUp = component.canReorderUp,
                         canReorderDown = component.canReorderDown,
+                        actions = emptyList(),
                         originAnchor = originAnchor,
                         destinationAnchor = destinationAnchor,
                     ),
@@ -3717,6 +3742,7 @@ private fun buildFlightPlanDisplayRows(
                                     navRef = item.navRef,
                                     depth = 1,
                                     active = component.active,
+                                    actions = emptyList(),
                                 ),
                             )
 
@@ -3730,6 +3756,7 @@ private fun buildFlightPlanDisplayRows(
                                     componentKind = component.kind,
                                     componentIndex = component.componentIndex,
                                     depth = 1,
+                                    actions = emptyList(),
                                 ),
                             )
                     }
@@ -3753,6 +3780,7 @@ private fun buildFlightPlanDisplayRows(
                     endComponentIndex = 1,
                     originAnchor = firstLeg.from,
                     destinationAnchor = firstLeg.to,
+                    actions = emptyList(),
                 ),
             )
         }
@@ -3777,6 +3805,34 @@ private fun buildFlightPlanDisplayRows(
             }
         row.copy(legIndex = matchingLeg?.legIndex)
     }
+}
+
+private fun selectionKeyForDisplayRow(row: FlightPlanDisplayRowUiView, index: Int): String =
+    when (row.rowKind) {
+        FlightPlanDisplayRowKind.Waypoint ->
+            if (row.depth == 0) {
+                "waypoint:${navRefSelectionKey(row.navRef)}"
+            } else {
+                "child:${row.componentKind?.name ?: "row"}:${navRefSelectionKey(row.navRef)}:$index"
+            }
+        FlightPlanDisplayRowKind.Group ->
+            "group:${row.componentKind?.name ?: "group"}:${row.label}:${navRefSelectionKey(row.originAnchor)}:${navRefSelectionKey(row.destinationAnchor)}"
+        FlightPlanDisplayRowKind.Discontinuity ->
+            "disc:${row.componentKind?.name ?: "row"}:$index"
+    }
+
+private fun flightPlanActionLabel(actionId: FlightPlanRowActionId): String = when (actionId) {
+    FlightPlanRowActionId.ActivateLeg -> "Activate Leg"
+    FlightPlanRowActionId.Remove -> "Remove"
+    FlightPlanRowActionId.Insert -> "Insert"
+    FlightPlanRowActionId.Reorder -> "Reorder"
+    FlightPlanRowActionId.WaypointInfo -> "Waypoint Info"
+    FlightPlanRowActionId.AddAirway -> "Add Airway"
+    FlightPlanRowActionId.SelectProcedure -> "Select Procedure"
+    FlightPlanRowActionId.Plates -> "Plates"
+    FlightPlanRowActionId.ChangeAirway -> "Change Airway"
+    FlightPlanRowActionId.RemoveAirway -> "Remove Airway"
+    FlightPlanRowActionId.RemoveProcedure -> "Remove Procedure"
 }
 
 private fun buildFlightPlanDisplayBlocks(rows: List<FlightPlanDisplayRow>): List<FlightPlanDisplayBlock> {

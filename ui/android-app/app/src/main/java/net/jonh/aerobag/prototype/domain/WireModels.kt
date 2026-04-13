@@ -821,7 +821,89 @@ data class WireGuidanceUiView(
 data class WireFlightPlanUiState(
     val components: List<WireRouteComponentUiView>,
     val resolved_legs: List<WireResolvedLegUiView>,
+    val display_rows: List<WireFlightPlanDisplayRowUiView>,
     val guidance: WireGuidanceUiView? = null,
+)
+
+@Serializable
+enum class WireFlightPlanDisplayRowKind {
+    @SerialName("waypoint")
+    Waypoint,
+
+    @SerialName("group")
+    Group,
+
+    @SerialName("discontinuity")
+    Discontinuity,
+}
+
+@Serializable
+enum class WireFlightPlanRowActionId {
+    @SerialName("activate_leg")
+    ActivateLeg,
+
+    @SerialName("remove")
+    Remove,
+
+    @SerialName("insert")
+    Insert,
+
+    @SerialName("reorder")
+    Reorder,
+
+    @SerialName("waypoint_info")
+    WaypointInfo,
+
+    @SerialName("add_airway")
+    AddAirway,
+
+    @SerialName("select_procedure")
+    SelectProcedure,
+
+    @SerialName("plates")
+    Plates,
+
+    @SerialName("change_airway")
+    ChangeAirway,
+
+    @SerialName("remove_airway")
+    RemoveAirway,
+
+    @SerialName("remove_procedure")
+    RemoveProcedure,
+}
+
+@Serializable
+data class WireFlightPlanRowActionUiView(
+    val id: WireFlightPlanRowActionId,
+    val enabled: Boolean,
+)
+
+@Serializable
+data class WireFlightPlanDisplayRowUiView(
+    val label: String,
+    val row_kind: WireFlightPlanDisplayRowKind,
+    val component_kind: WireRouteComponentViewKind? = null,
+    val component_index: Int? = null,
+    val leg_index: Int? = null,
+    val chart_airport_id: String? = null,
+    val nav_ref: WireNavRef? = null,
+    val depth: Int,
+    val active: Boolean,
+    val can_add_airway_after: Boolean,
+    val can_add_procedure_before: Boolean,
+    val can_change_airway: Boolean,
+    val can_remove_component: Boolean,
+    val can_reorder_component: Boolean,
+    val can_reorder_up: Boolean,
+    val can_reorder_down: Boolean,
+    val start_component_index: Int? = null,
+    val end_component_index: Int? = null,
+    val origin_anchor: WireNavRef? = null,
+    val destination_anchor: WireNavRef? = null,
+    val preceding_waypoint: WireNavRef? = null,
+    val following_waypoint: WireNavRef? = null,
+    val actions: List<WireFlightPlanRowActionUiView>,
 )
 
 @Serializable

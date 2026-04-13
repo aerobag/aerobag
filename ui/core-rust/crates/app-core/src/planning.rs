@@ -188,7 +188,65 @@ pub struct DirectToState {
 pub struct FlightPlanUiState {
     pub components: Vec<RouteComponentUiView>,
     pub resolved_legs: Vec<ResolvedLegUiView>,
+    pub display_rows: Vec<FlightPlanDisplayRowUiView>,
     pub guidance: Option<GuidanceUiView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlightPlanDisplayRowKind {
+    Waypoint,
+    Group,
+    Discontinuity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlightPlanRowActionId {
+    ActivateLeg,
+    Remove,
+    Insert,
+    Reorder,
+    WaypointInfo,
+    AddAirway,
+    SelectProcedure,
+    Plates,
+    ChangeAirway,
+    RemoveAirway,
+    RemoveProcedure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlightPlanRowActionUiView {
+    pub id: FlightPlanRowActionId,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlightPlanDisplayRowUiView {
+    pub label: String,
+    pub row_kind: FlightPlanDisplayRowKind,
+    pub component_kind: Option<RouteComponentViewKind>,
+    pub component_index: Option<usize>,
+    pub leg_index: Option<usize>,
+    pub chart_airport_id: Option<String>,
+    pub nav_ref: Option<NavRef>,
+    pub depth: usize,
+    pub active: bool,
+    pub can_add_airway_after: bool,
+    pub can_add_procedure_before: bool,
+    pub can_change_airway: bool,
+    pub can_remove_component: bool,
+    pub can_reorder_component: bool,
+    pub can_reorder_up: bool,
+    pub can_reorder_down: bool,
+    pub start_component_index: Option<usize>,
+    pub end_component_index: Option<usize>,
+    pub origin_anchor: Option<NavRef>,
+    pub destination_anchor: Option<NavRef>,
+    pub preceding_waypoint: Option<NavRef>,
+    pub following_waypoint: Option<NavRef>,
+    pub actions: Vec<FlightPlanRowActionUiView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -611,7 +669,7 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         .as_ref()
         .and_then(|guidance| active_component_index_for_guidance(&plan, guidance));
 
-    let components = plan
+    let components: Vec<RouteComponentUiView> = plan
         .route_components
         .iter()
         .enumerate()
@@ -649,7 +707,7 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         })
         .collect();
 
-    let resolved_legs = plan
+    let resolved_legs: Vec<ResolvedLegUiView> = plan
         .resolved_legs
         .iter()
         .enumerate()
@@ -705,10 +763,263 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
     });
 
     FlightPlanUiState {
+        display_rows: project_display_rows(&plan, &components, &resolved_legs),
         components,
         resolved_legs,
         guidance,
     }
+}
+
+fn project_display_rows(
+    plan: &FlightPlan,
+    components: &[RouteComponentUiView],
+    resolved_legs: &[ResolvedLegUiView],
+) -> Vec<FlightPlanDisplayRowUiView> {
+    let mut rows = Vec::new();
+    for component in components {
+        let chart_airport_id = component_waypoint_nav_ref(component).as_ref().and_then(airport_id_from_nav_ref);
+        if component.kind == RouteComponentViewKind::Waypoint {
+            let nav_ref = component_waypoint_nav_ref(component);
+            let origin_anchor = component.preceding_waypoint.clone().or(nav_ref.clone());
+            let destination_anchor = component.following_waypoint.clone();
+            rows.push(FlightPlanDisplayRowUiView {
+                label: nav_ref
+                    .as_ref()
+                    .map(nav_ref_label)
+                    .unwrap_or_else(|| component.summary.clone()),
+                row_kind: FlightPlanDisplayRowKind::Waypoint,
+                component_kind: Some(component.kind.clone()),
+                component_index: Some(component.component_index),
+                leg_index: None,
+                chart_airport_id,
+                nav_ref,
+                depth: 0,
+                active: component.active,
+                can_add_airway_after: component.can_add_airway_after,
+                can_add_procedure_before: component.can_add_procedure_before,
+                can_change_airway: component.can_change_airway,
+                can_remove_component: component.can_remove,
+                can_reorder_component: component.can_reorder,
+                can_reorder_up: component.can_reorder_up,
+                can_reorder_down: component.can_reorder_down,
+                start_component_index: Some(component.component_index),
+                end_component_index: Some(component.component_index + 1),
+                origin_anchor,
+                destination_anchor,
+                preceding_waypoint: component.preceding_waypoint.clone(),
+                following_waypoint: component.following_waypoint.clone(),
+                actions: Vec::new(),
+            });
+        } else {
+            let origin_anchor = component.preceding_waypoint.clone();
+            let destination_anchor = component.following_waypoint.clone();
+            rows.push(FlightPlanDisplayRowUiView {
+                label: structured_component_label(component),
+                row_kind: FlightPlanDisplayRowKind::Group,
+                component_kind: Some(component.kind.clone()),
+                component_index: Some(component.component_index),
+                leg_index: None,
+                chart_airport_id,
+                nav_ref: None,
+                depth: 0,
+                active: component.active,
+                can_add_airway_after: component.can_add_airway_after,
+                can_add_procedure_before: component.can_add_procedure_before,
+                can_change_airway: component.can_change_airway,
+                can_remove_component: component.can_remove,
+                can_reorder_component: component.can_reorder,
+                can_reorder_up: component.can_reorder_up,
+                can_reorder_down: component.can_reorder_down,
+                start_component_index: None,
+                end_component_index: None,
+                origin_anchor: origin_anchor.clone(),
+                destination_anchor: destination_anchor.clone(),
+                preceding_waypoint: component.preceding_waypoint.clone(),
+                following_waypoint: component.following_waypoint.clone(),
+                actions: group_row_actions(component),
+            });
+            for item in &component.items {
+                match item {
+                    ConcretizedNavItem::Waypoint { nav_ref } => rows.push(FlightPlanDisplayRowUiView {
+                        label: nav_ref_label(nav_ref),
+                        row_kind: FlightPlanDisplayRowKind::Waypoint,
+                        component_kind: Some(component.kind.clone()),
+                        component_index: Some(component.component_index),
+                        leg_index: None,
+                        chart_airport_id: airport_id_from_nav_ref(nav_ref),
+                        nav_ref: Some(nav_ref.clone()),
+                        depth: 1,
+                        active: component.active,
+                        can_add_airway_after: false,
+                        can_add_procedure_before: false,
+                        can_change_airway: false,
+                        can_remove_component: false,
+                        can_reorder_component: false,
+                        can_reorder_up: false,
+                        can_reorder_down: false,
+                        start_component_index: None,
+                        end_component_index: None,
+                        origin_anchor: None,
+                        destination_anchor: None,
+                        preceding_waypoint: component.preceding_waypoint.clone(),
+                        following_waypoint: component.following_waypoint.clone(),
+                        actions: Vec::new(),
+                    }),
+                    ConcretizedNavItem::Discontinuity { label, .. } => rows.push(FlightPlanDisplayRowUiView {
+                        label: label.clone(),
+                        row_kind: FlightPlanDisplayRowKind::Discontinuity,
+                        component_kind: Some(component.kind.clone()),
+                        component_index: Some(component.component_index),
+                        leg_index: None,
+                        chart_airport_id: None,
+                        nav_ref: None,
+                        depth: 1,
+                        active: false,
+                        can_add_airway_after: false,
+                        can_add_procedure_before: false,
+                        can_change_airway: false,
+                        can_remove_component: false,
+                        can_reorder_component: false,
+                        can_reorder_up: false,
+                        can_reorder_down: false,
+                        start_component_index: None,
+                        end_component_index: None,
+                        origin_anchor: None,
+                        destination_anchor: None,
+                        preceding_waypoint: component.preceding_waypoint.clone(),
+                        following_waypoint: component.following_waypoint.clone(),
+                        actions: Vec::new(),
+                    }),
+                }
+            }
+        }
+    }
+
+    if let Some(first_leg) = plan.legs.first() {
+        if !rows.iter().any(|row| row.nav_ref.as_ref() == Some(&first_leg.from)) {
+            rows.insert(
+                0,
+                FlightPlanDisplayRowUiView {
+                    label: nav_ref_label(&first_leg.from),
+                    row_kind: FlightPlanDisplayRowKind::Waypoint,
+                    component_kind: None,
+                    component_index: Some(0),
+                    leg_index: None,
+                    chart_airport_id: airport_id_from_nav_ref(&first_leg.from),
+                    nav_ref: Some(first_leg.from.clone()),
+                    depth: 0,
+                    active: false,
+                    can_add_airway_after: false,
+                    can_add_procedure_before: false,
+                    can_change_airway: false,
+                    can_remove_component: false,
+                    can_reorder_component: false,
+                    can_reorder_up: false,
+                    can_reorder_down: false,
+                    start_component_index: Some(0),
+                    end_component_index: Some(1),
+                    origin_anchor: Some(first_leg.from.clone()),
+                    destination_anchor: Some(first_leg.to.clone()),
+                    preceding_waypoint: None,
+                    following_waypoint: None,
+                    actions: Vec::new(),
+                },
+            );
+        }
+    }
+
+    let mut next_leg_cursor = 0usize;
+    for index in 0..rows.len() {
+        if rows[index].row_kind == FlightPlanDisplayRowKind::Waypoint {
+            if let Some(nav_ref) = rows[index].nav_ref.clone() {
+                for leg in &resolved_legs[next_leg_cursor..] {
+                    if leg.to == nav_ref {
+                        rows[index].leg_index = Some(leg.leg_index);
+                        next_leg_cursor = leg.leg_index + 1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    for index in 0..rows.len() {
+        if rows[index].actions.is_empty() {
+            rows[index].actions = waypoint_or_discontinuity_actions(&rows, index);
+        }
+    }
+
+    rows
+}
+
+fn group_row_actions(component: &RouteComponentUiView) -> Vec<FlightPlanRowActionUiView> {
+    match component.kind {
+        RouteComponentViewKind::Airway => vec![
+            action(FlightPlanRowActionId::ChangeAirway, component.can_change_airway),
+            action(FlightPlanRowActionId::RemoveAirway, component.can_remove),
+        ],
+        RouteComponentViewKind::Procedure => vec![action(FlightPlanRowActionId::RemoveProcedure, component.can_remove)],
+        RouteComponentViewKind::Waypoint => Vec::new(),
+    }
+}
+
+fn waypoint_or_discontinuity_actions(
+    rows: &[FlightPlanDisplayRowUiView],
+    index: usize,
+) -> Vec<FlightPlanRowActionUiView> {
+    let row = &rows[index];
+    if row.row_kind != FlightPlanDisplayRowKind::Waypoint {
+        return Vec::new();
+    }
+    if row.depth == 0 {
+        vec![
+            action(FlightPlanRowActionId::ActivateLeg, row.leg_index.is_some()),
+            action(
+                FlightPlanRowActionId::Remove,
+                row.component_index.is_some() && row.can_remove_component,
+            ),
+            action(FlightPlanRowActionId::Insert, false),
+            action(
+                FlightPlanRowActionId::Reorder,
+                row.component_index.is_some() && row.can_reorder_component,
+            ),
+            action(FlightPlanRowActionId::WaypointInfo, false),
+            action(FlightPlanRowActionId::AddAirway, row.can_add_airway_after && row.origin_anchor.is_some()),
+            action(
+                FlightPlanRowActionId::SelectProcedure,
+                row.can_add_procedure_before && row.component_index.is_some() && row.chart_airport_id.is_some(),
+            ),
+            action(FlightPlanRowActionId::Plates, row.chart_airport_id.is_some()),
+        ]
+    } else {
+        vec![
+            action(FlightPlanRowActionId::ActivateLeg, row.leg_index.is_some()),
+            action(FlightPlanRowActionId::WaypointInfo, false),
+            action(FlightPlanRowActionId::Plates, row.chart_airport_id.is_some()),
+        ]
+    }
+}
+
+fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView {
+    FlightPlanRowActionUiView { id, enabled }
+}
+
+fn component_waypoint_nav_ref(component: &RouteComponentUiView) -> Option<NavRef> {
+    component.items.iter().find_map(|item| match item {
+        ConcretizedNavItem::Waypoint { nav_ref } => Some(nav_ref.clone()),
+        ConcretizedNavItem::Discontinuity { .. } => None,
+    })
+}
+
+fn airport_id_from_nav_ref(nav_ref: &NavRef) -> Option<String> {
+    match nav_ref {
+        NavRef::Airport(code) => Some(code.clone()),
+        _ => None,
+    }
+}
+
+fn structured_component_label(component: &RouteComponentUiView) -> String {
+    component.summary.clone()
 }
 
 fn adjacent_waypoint_component(

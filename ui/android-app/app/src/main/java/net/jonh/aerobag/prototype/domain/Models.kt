@@ -336,7 +336,59 @@ data class GuidanceUiView(
 data class FlightPlanUiState(
     val components: List<RouteComponentUiView>,
     val resolvedLegs: List<ResolvedLegUiView>,
+    val displayRows: List<FlightPlanDisplayRowUiView>,
     val guidance: GuidanceUiView?,
+)
+
+enum class FlightPlanDisplayRowKind {
+    Waypoint,
+    Group,
+    Discontinuity,
+}
+
+enum class FlightPlanRowActionId {
+    ActivateLeg,
+    Remove,
+    Insert,
+    Reorder,
+    WaypointInfo,
+    AddAirway,
+    SelectProcedure,
+    Plates,
+    ChangeAirway,
+    RemoveAirway,
+    RemoveProcedure,
+}
+
+data class FlightPlanRowActionUiView(
+    val id: FlightPlanRowActionId,
+    val enabled: Boolean,
+)
+
+data class FlightPlanDisplayRowUiView(
+    val label: String,
+    val rowKind: FlightPlanDisplayRowKind,
+    val componentKind: RouteComponentViewKind?,
+    val componentIndex: Int?,
+    val legIndex: Int?,
+    val chartAirportId: String?,
+    val navRef: NavRef?,
+    val depth: Int,
+    val active: Boolean,
+    val canAddAirwayAfter: Boolean,
+    val canAddProcedureBefore: Boolean,
+    val canChangeAirway: Boolean,
+    val canRemoveComponent: Boolean,
+    val canReorderComponent: Boolean,
+    val canReorderUp: Boolean,
+    val canReorderDown: Boolean,
+    val startComponentIndex: Int?,
+    val endComponentIndex: Int?,
+    val originAnchor: NavRef?,
+    val destinationAnchor: NavRef?,
+    val precedingWaypoint: NavRef?,
+    val followingWaypoint: NavRef?,
+    val actions: List<FlightPlanRowActionUiView>,
 )
 
 data class FlightPlanUiMutation(

@@ -1192,8 +1192,60 @@ private fun SuspendReason.toWire() = when (this) {
 private fun WireFlightPlanUiState.toUi() = FlightPlanUiState(
     components = components.map { it.toUi() },
     resolvedLegs = resolved_legs.map { it.toUi() },
+    displayRows = display_rows.map { it.toUi() },
     guidance = guidance?.toUi(),
 )
+
+private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
+    label = label,
+    rowKind = row_kind.toUi(),
+    componentKind = component_kind?.toUi(),
+    componentIndex = component_index,
+    legIndex = leg_index,
+    chartAirportId = chart_airport_id,
+    navRef = nav_ref?.toUi(),
+    depth = depth,
+    active = active,
+    canAddAirwayAfter = can_add_airway_after,
+    canAddProcedureBefore = can_add_procedure_before,
+    canChangeAirway = can_change_airway,
+    canRemoveComponent = can_remove_component,
+    canReorderComponent = can_reorder_component,
+    canReorderUp = can_reorder_up,
+    canReorderDown = can_reorder_down,
+    startComponentIndex = start_component_index,
+    endComponentIndex = end_component_index,
+    originAnchor = origin_anchor?.toUi(),
+    destinationAnchor = destination_anchor?.toUi(),
+    precedingWaypoint = preceding_waypoint?.toUi(),
+    followingWaypoint = following_waypoint?.toUi(),
+    actions = actions.map { it.toUi() },
+)
+
+private fun WireFlightPlanDisplayRowKind.toUi() = when (this) {
+    WireFlightPlanDisplayRowKind.Waypoint -> FlightPlanDisplayRowKind.Waypoint
+    WireFlightPlanDisplayRowKind.Group -> FlightPlanDisplayRowKind.Group
+    WireFlightPlanDisplayRowKind.Discontinuity -> FlightPlanDisplayRowKind.Discontinuity
+}
+
+private fun WireFlightPlanRowActionUiView.toUi() = FlightPlanRowActionUiView(
+    id = id.toUi(),
+    enabled = enabled,
+)
+
+private fun WireFlightPlanRowActionId.toUi() = when (this) {
+    WireFlightPlanRowActionId.ActivateLeg -> FlightPlanRowActionId.ActivateLeg
+    WireFlightPlanRowActionId.Remove -> FlightPlanRowActionId.Remove
+    WireFlightPlanRowActionId.Insert -> FlightPlanRowActionId.Insert
+    WireFlightPlanRowActionId.Reorder -> FlightPlanRowActionId.Reorder
+    WireFlightPlanRowActionId.WaypointInfo -> FlightPlanRowActionId.WaypointInfo
+    WireFlightPlanRowActionId.AddAirway -> FlightPlanRowActionId.AddAirway
+    WireFlightPlanRowActionId.SelectProcedure -> FlightPlanRowActionId.SelectProcedure
+    WireFlightPlanRowActionId.Plates -> FlightPlanRowActionId.Plates
+    WireFlightPlanRowActionId.ChangeAirway -> FlightPlanRowActionId.ChangeAirway
+    WireFlightPlanRowActionId.RemoveAirway -> FlightPlanRowActionId.RemoveAirway
+    WireFlightPlanRowActionId.RemoveProcedure -> FlightPlanRowActionId.RemoveProcedure
+}
 
 private fun WireFlightPlanUiMutation.toUi() = FlightPlanUiMutation(
     plan = plan.toUiFlightPlan(),

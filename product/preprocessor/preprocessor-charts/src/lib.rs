@@ -15,7 +15,7 @@ use preprocessor_core::{
 };
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives, prefetch_archives_with_provenance,
-    read_source_urls_jsonl, write_package_outputs_jsonl, PackageOutputRecord,
+    read_source_urls_jsonl, write_package_outputs_jsonl, FetchCacheConfig, PackageOutputRecord,
 };
 use preprocessor_tools::{ToolInvocation, ToolOutcome};
 
@@ -26,6 +26,7 @@ pub struct ChartRunRequest {
     pub run_root: PathBuf,
     pub prefetch_source_urls: Option<PathBuf>,
     pub fetch_jobs: usize,
+    pub fetch_cache: Option<FetchCacheConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +70,7 @@ pub struct NativeChartRunRequest {
     pub cpu_jobs: usize,
     pub prefetch_source_urls: Option<PathBuf>,
     pub fetch_jobs: usize,
+    pub fetch_cache: Option<FetchCacheConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -159,7 +161,12 @@ pub fn run_family(request: &ChartRunRequest) -> anyhow::Result<ChartRunResult> {
     if let Some(source_urls_path) = &request.prefetch_source_urls {
         let start = Instant::now();
         let urls = read_source_urls_jsonl(source_urls_path)?;
-        prefetch_archives(&urls, &work_dir, request.fetch_jobs)?;
+        prefetch_archives(
+            &urls,
+            &work_dir,
+            request.fetch_jobs,
+            request.fetch_cache.as_ref(),
+        )?;
         prefetch_elapsed_ms = start.elapsed().as_millis();
     }
 
@@ -248,6 +255,7 @@ pub fn run_native_family(request: &NativeChartRunRequest) -> anyhow::Result<Nati
             &urls,
             &work_dir,
             request.fetch_jobs,
+            request.fetch_cache.as_ref(),
             &provenance_dir,
             request.family.capture_label(),
         )?;

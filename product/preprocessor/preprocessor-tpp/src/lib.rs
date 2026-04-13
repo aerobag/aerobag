@@ -1,4 +1,5 @@
 use std::{
+    collections::hash_map::DefaultHasher,
     collections::{BTreeMap, VecDeque},
     fs,
     hash::{Hash, Hasher},
@@ -14,7 +15,7 @@ use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use preprocessor_core::{Region, RunPaths};
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
-    read_source_urls_jsonl,
+    read_source_urls_jsonl, FetchCacheConfig,
 };
 use preprocessor_tools::{append_pngs_vertical, flatten_png_onto_white, ToolInvocation};
 
@@ -37,6 +38,7 @@ pub struct NativeTppRunRequest {
     pub prefetch_source_urls: Option<PathBuf>,
     pub fetch_jobs: usize,
     pub render_jobs: usize,
+    pub fetch_cache: Option<FetchCacheConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,7 +103,8 @@ enum PlateRotation {
 
 pub fn run_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<NativeTppRunResult> {
     let render = render_native_tpp(request)?;
-    let package = package_native_tpp(&render.work_dir, &render.provenance_dir, request.region)?;
+    let package =
+        package_native_tpp(&render.work_dir, &render.work_dir, &render.provenance_dir, request.region)?;
     Ok(NativeTppRunResult {
         work_dir: render.work_dir,
         prefetch_elapsed_ms: render.prefetch_elapsed_ms,
@@ -136,6 +139,7 @@ pub fn render_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<Native
             &urls,
             &work_dir,
             request.fetch_jobs,
+            request.fetch_cache.as_ref(),
             &provenance_dir,
             &format!("tpp-{}", request.region.code().to_ascii_lowercase()),
         )?;
@@ -155,12 +159,13 @@ pub fn render_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<Native
 }
 
 pub fn package_native_tpp(
-    work_dir: &Path,
+    asset_root: &Path,
+    output_root: &Path,
     provenance_dir: &Path,
     region: Region,
 ) -> anyhow::Result<NativeTppPackageResult> {
     let package_start = Instant::now();
-    let package_count = package_region(work_dir, provenance_dir, region)?;
+    let package_count = package_region(asset_root, output_root, provenance_dir, region)?;
     Ok(NativeTppPackageResult {
         package_elapsed_ms: package_start.elapsed().as_millis(),
         package_count,
@@ -168,7 +173,8 @@ pub fn package_native_tpp(
 }
 
 pub fn package_native_tpp_versioned(
-    work_dir: &Path,
+    asset_root: &Path,
+    output_root: &Path,
     provenance_dir: &Path,
     region: Region,
     manifest_version: &str,
@@ -176,7 +182,14 @@ pub fn package_native_tpp_versioned(
 ) -> anyhow::Result<NativeTppPackageResult> {
     let package_start = Instant::now();
     let package_count =
-        package_region_versioned(work_dir, provenance_dir, region, manifest_version, artifact_version)?;
+        package_region_versioned(
+            asset_root,
+            output_root,
+            provenance_dir,
+            region,
+            manifest_version,
+            artifact_version,
+        )?;
     Ok(NativeTppPackageResult {
         package_elapsed_ms: package_start.elapsed().as_millis(),
         package_count,
@@ -739,10 +752,7 @@ fn render_geotagged_plate(
                 tif_path.to_string_lossy().to_string(),
             ],
             cwd: work_dir.to_path_buf(),
-            label: format!(
-                "tpp-gdalwarp-{}",
-                sanitize_label(&png_path.display().to_string())
-            ),
+            label: format!("tpp-gdalwarp-{}", compact_path_label(png_path)),
             env: Vec::new(),
             stdin_text: None,
         };
@@ -791,10 +801,7 @@ fn render_basic_png(
             input_path.to_string_lossy().to_string(),
         ],
         cwd: work_dir.to_path_buf(),
-        label: format!(
-            "tpp-mogrify-{}",
-            sanitize_label(&png_path.display().to_string())
-        ),
+        label: format!("tpp-mogrify-{}", compact_path_label(png_path)),
         env: Vec::new(),
         stdin_text: None,
     };
@@ -857,10 +864,7 @@ fn rotate_png_if_needed(
             png_path.to_string_lossy().to_string(),
         ],
         cwd: work_dir.to_path_buf(),
-        label: format!(
-            "tpp-rotate-{}",
-            sanitize_label(&png_path.display().to_string())
-        ),
+        label: format!("tpp-rotate-{}", compact_path_label(png_path)),
         env: Vec::new(),
         stdin_text: None,
     };
@@ -916,10 +920,7 @@ fn render_png_preserve_alpha(
             input_path.to_string_lossy().to_string(),
         ],
         cwd: work_dir.to_path_buf(),
-        label: format!(
-            "tpp-mogrify-alpha-{}",
-            sanitize_label(&png_path.display().to_string())
-        ),
+        label: format!("tpp-mogrify-alpha-{}", compact_path_label(png_path)),
         env: Vec::new(),
         stdin_text: None,
     };
@@ -949,10 +950,7 @@ fn write_user_comment(work_dir: &Path, png_path: &Path, comment: &str) -> anyhow
             png_path.to_string_lossy().to_string(),
         ],
         cwd: work_dir.to_path_buf(),
-        label: format!(
-            "tpp-exif-{}",
-            sanitize_label(&png_path.display().to_string())
-        ),
+        label: format!("tpp-exif-{}", compact_path_label(png_path)),
         env: Vec::new(),
         stdin_text: None,
     };
@@ -1374,6 +1372,17 @@ fn sanitize_label(value: &str) -> String {
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
         .collect()
+}
+
+fn compact_path_label(path: &Path) -> String {
+    let base = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(sanitize_label)
+        .unwrap_or_else(|| "path".to_string());
+    let mut hasher = DefaultHasher::new();
+    path.to_string_lossy().hash(&mut hasher);
+    format!("{base}-{:016x}", hasher.finish())
 }
 
 fn remove_if_exists(path: &Path) -> anyhow::Result<()> {

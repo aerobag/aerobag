@@ -12,6 +12,7 @@ use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use preprocessor_core::{Region, RunPaths};
 use preprocessor_fetch::{
     copy_source_urls_provenance, prefetch_archives_with_provenance, read_source_urls_jsonl,
+    FetchCacheConfig,
 };
 use preprocessor_tools::{append_pngs_vertical, write_thumbnail_from_png, ToolInvocation};
 
@@ -26,6 +27,7 @@ pub struct NativeCsupRunRequest {
     pub prefetch_source_urls: Option<PathBuf>,
     pub fetch_jobs: usize,
     pub render_jobs: usize,
+    pub fetch_cache: Option<FetchCacheConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +63,7 @@ pub fn run_native_csup(request: &NativeCsupRunRequest) -> anyhow::Result<NativeC
             &urls,
             &work_dir,
             request.fetch_jobs,
+            request.fetch_cache.as_ref(),
             &provenance_dir,
             "csup",
         )?;

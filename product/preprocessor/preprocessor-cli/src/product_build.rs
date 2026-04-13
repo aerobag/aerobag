@@ -3,15 +3,16 @@ use std::{
     env, fs,
     fs::File,
     io::Write,
+    panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::Command,
-    sync::mpsc,
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{bail, Context};
 use chrono::{Datelike, NaiveDate, Utc};
+use crossbeam_channel::{self, RecvTimeoutError};
 use preprocessor_charts::{
     build_family_tiles, build_family_vrts, package_family_region_versioned, stage_work_dir,
 };
@@ -22,7 +23,8 @@ use preprocessor_csup::{
 use preprocessor_data::{build_data_package, DataBuildMode, DataBuildRequest};
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
-    read_source_urls_jsonl, write_package_outputs_jsonl, PackageOutputRecord,
+    read_source_urls_jsonl, write_package_outputs_jsonl, FetchCacheConfig, FetchCacheMode,
+    PackageOutputRecord,
 };
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, ResourceIndex,
@@ -176,11 +178,11 @@ enum ScheduledTaskKind {
     ChartRender { family: ChartFamily },
     CsupStage,
     CsupRender { region: Region },
-    TppRender { region: Region, run_root: PathBuf },
+    TppRender { region: Region },
     Data,
     ChartPackage { family: ChartFamily },
     CsupPackage,
-    TppPackage { region: Region, run_root: PathBuf },
+    TppPackage { region: Region },
     Vectors,
     ResourceIndex,
     ChartUnpack { family: ChartFamily, region: Region },
@@ -216,10 +218,54 @@ struct TaskCompletion {
     completion_detail: String,
 }
 
+struct TaskCompletionGuard {
+    tx: crossbeam_channel::Sender<(String, usize, anyhow::Result<TaskCompletion>)>,
+    task_id: String,
+    task_weight: usize,
+    sent: bool,
+}
+
+impl TaskCompletionGuard {
+    fn new(
+        tx: crossbeam_channel::Sender<(String, usize, anyhow::Result<TaskCompletion>)>,
+        task_id: String,
+        task_weight: usize,
+    ) -> Self {
+        Self {
+            tx,
+            task_id,
+            task_weight,
+            sent: false,
+        }
+    }
+
+    fn send(mut self, result: anyhow::Result<TaskCompletion>) {
+        let _ = self.tx.send((self.task_id.clone(), self.task_weight, result));
+        self.sent = true;
+    }
+}
+
+impl Drop for TaskCompletionGuard {
+    fn drop(&mut self) {
+        if self.sent {
+            return;
+        }
+
+        let _ = self.tx.send((
+            self.task_id.clone(),
+            self.task_weight,
+            Err(anyhow::anyhow!(
+                "task worker exited without delivering completion"
+            )),
+        ));
+    }
+}
+
 const PRODUCT_BUILD_CGROUP_ACTIVE_ENV: &str = "PRODUCT_BUILD_CGROUP_ACTIVE";
 const DEFAULT_PRODUCT_BUILD_MEMORY_MAX: &str = "80G";
 const TPP_RENDER_JOBS_PER_RUN: usize = 8;
 const TPP_RENDER_WEIGHT: usize = 4;
+const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
 
 pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<String> {
     let mut lines = Vec::new();
@@ -294,6 +340,26 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
         let data_version = data_version_label(&source_urls_dir)?;
         let bundle_cycle = data_manifest_cycle(&source_urls_dir)?;
+        master_log.log(format!(
+            "cycle bundle={} charts=sec:{} tac:{} enr-l:{} enr-h:{} csup:{} tpp={} data:{}",
+            bundle_cycle,
+            chart_versions["sec"],
+            chart_versions["tac"],
+            chart_versions["enr-l"],
+            chart_versions["enr-h"],
+            csup_version,
+            config
+                .profile
+                .tpp_regions()
+                .iter()
+                .map(|region| {
+                    let key = region.code().to_ascii_lowercase();
+                    format!("{}:{}", key, tpp_versions[&key])
+                })
+                .collect::<Vec<_>>()
+                .join(","),
+            data_version,
+        ))?;
 
         let chart_families = [
             ChartFamily::Sec,
@@ -365,29 +431,19 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         let mut tpp_package_ids = Vec::new();
         for region in config.profile.tpp_regions() {
             let region_id = region.code().to_ascii_lowercase();
-            let version = tpp_versions
-                .get(&region_id)
-                .expect("tpp region version should exist");
-            let run_root = build_shared_work_root(config, &format!("tpp-{region_id}-{version}"))?;
             let render_id = format!("tpp-{region_id}");
             let package_id = format!("tpp-{region_id}-package");
             pending_tasks.push(ScheduledTask {
                 id: render_id.clone(),
                 deps: vec![],
                 weight: TPP_RENDER_WEIGHT,
-                kind: ScheduledTaskKind::TppRender {
-                    region: *region,
-                    run_root: run_root.clone(),
-                },
+                kind: ScheduledTaskKind::TppRender { region: *region },
             });
             pending_tasks.push(ScheduledTask {
                 id: package_id.clone(),
                 deps: vec![render_id],
                 weight: 1,
-                kind: ScheduledTaskKind::TppPackage {
-                    region: *region,
-                    run_root,
-                },
+                kind: ScheduledTaskKind::TppPackage { region: *region },
             });
             pending_tasks.push(ScheduledTask {
                 id: format!("tpp-{region_id}-unpack"),
@@ -440,13 +496,19 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             "scheduler-ready tasks={} work_unit_budget={} chart_and_data_weight=4 csup_weight=2 tpp_weight={} tpp_render_jobs_per_run={} light_weight=1 resource_index_weight=2",
             total_tasks, work_unit_budget, TPP_RENDER_WEIGHT, TPP_RENDER_JOBS_PER_RUN
         ))?;
-        let (tx, rx) = mpsc::channel::<(String, usize, anyhow::Result<TaskCompletion>)>();
+        let (tx, rx) = crossbeam_channel::unbounded::<(
+            String,
+            usize,
+            anyhow::Result<TaskCompletion>,
+        )>();
         let mut running_jobs = 0_usize;
         let mut running_units = 0_usize;
         let mut launched_tasks = 0_usize;
         let mut completed_tasks = 0_usize;
         let mut completed_ids = std::collections::BTreeSet::<String>::new();
         let mut task_values = BTreeMap::<String, TaskValue>::new();
+        let mut worker_threads =
+            BTreeMap::<String, thread::JoinHandle<anyhow::Result<()>>>::new();
 
         while running_jobs > 0 || !pending_tasks.is_empty() {
             let mut launched_any = false;
@@ -484,8 +546,12 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 let data_version = data_version.clone();
                 let bundle_cycle = bundle_cycle.clone();
                 let task_values_snapshot = task_values.clone();
-                thread::spawn(move || -> anyhow::Result<()> {
-                    let result = match task.kind {
+                let worker_task_id = task_id.clone();
+                let join_handle = thread::spawn(move || -> anyhow::Result<()> {
+                    let task_label = worker_task_id.clone();
+                    let completion_guard =
+                        TaskCompletionGuard::new(tx, worker_task_id.clone(), task_weight);
+                    let result = panic::catch_unwind(AssertUnwindSafe(|| match task.kind {
                         ScheduledTaskKind::ChartRender { family } => {
                             let family_id = family_slug(family).to_string();
                             let record = build_chart_render_node(
@@ -539,17 +605,18 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 completion_detail: "cache_or_rebuild".to_string(),
                             })
                         }
-                        ScheduledTaskKind::TppRender { region, run_root } => {
+                        ScheduledTaskKind::TppRender { region } => {
                             let region_id = region.code().to_ascii_lowercase();
                             let request = NativeTppRunRequest {
                                 region,
                                 source_repo: PathBuf::new(),
-                                run_root,
+                                run_root: PathBuf::new(),
                                 prefetch_source_urls: Some(
                                     source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
                                 ),
                                 fetch_jobs: config.fetch_jobs,
                                 render_jobs: TPP_RENDER_JOBS_PER_RUN,
+                                fetch_cache: Some(fetch_cache_config(&config)?),
                             };
                             build_tpp_render_node(&config, &request).map(|record| TaskCompletion {
                                 node_records: vec![record],
@@ -612,13 +679,12 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 ),
                             })
                         }
-                        ScheduledTaskKind::TppPackage { region, run_root } => {
+                        ScheduledTaskKind::TppPackage { region } => {
                             let region_id = region.code().to_ascii_lowercase();
                             let started = Instant::now();
                             let (record, source) = build_tpp_package_node(
                                 &config,
                                 region,
-                                &run_root,
                                 &source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
                                 tpp_versions
                                     .get(&region_id)
@@ -796,10 +862,21 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 ),
                             })
                         }
-                    };
-                    let _ = tx.send((task_id, task_weight, result));
+                    }))
+                    .unwrap_or_else(|panic_payload| {
+                        let panic_text = if let Some(text) = panic_payload.downcast_ref::<&str>() {
+                            (*text).to_string()
+                        } else if let Some(text) = panic_payload.downcast_ref::<String>() {
+                            text.clone()
+                        } else {
+                            "unknown panic payload".to_string()
+                        };
+                        Err(anyhow::anyhow!("task thread panicked: {task_label}: {panic_text}"))
+                    });
+                    completion_guard.send(result);
                     Ok(())
                 });
+                worker_threads.insert(task_id.clone(), join_handle);
                 running_jobs += 1;
                 running_units += task_weight;
                 launched_any = true;
@@ -815,11 +892,111 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 // wait for a running task to free capacity or satisfy dependencies
             }
 
-            let (task_id, task_weight, result) = rx
-                .recv()
-                .context("scheduler channel closed unexpectedly")?;
+            let (task_id, task_weight, result) = loop {
+                match rx.recv_timeout(Duration::from_secs(2)) {
+                    Ok(message) => break message,
+                    Err(RecvTimeoutError::Timeout) => {
+                        let finished_count = worker_threads
+                            .values()
+                            .filter(|handle| handle.is_finished())
+                            .count();
+                        master_log.log(format!(
+                            "scheduler-wait running_jobs={} worker_threads={} finished_threads={} pending_tasks={} running_units={}/{}",
+                            running_jobs,
+                            worker_threads.len(),
+                            finished_count,
+                            pending_tasks.len(),
+                            running_units,
+                            work_unit_budget,
+                        ))?;
+                        if running_jobs > 0 && worker_threads.is_empty() {
+                            bail!(
+                                "scheduler invariant violated: running_jobs={} but no worker threads remain",
+                                running_jobs
+                            );
+                        }
+                        if running_jobs > 0
+                            && !worker_threads.is_empty()
+                            && finished_count == worker_threads.len()
+                        {
+                            bail!(
+                                "scheduler invariant violated: all {} worker threads are finished but no completion messages arrived",
+                                worker_threads.len()
+                            );
+                        }
+                        let finished_threads = worker_threads
+                            .iter()
+                            .filter(|(_, handle)| handle.is_finished())
+                            .map(|(task_id, _)| task_id.clone())
+                            .collect::<Vec<_>>();
+                        for finished_task_id in finished_threads {
+                            let join_result = worker_threads
+                                .remove(&finished_task_id)
+                                .expect("finished worker thread handle should exist")
+                                .join();
+                            match join_result {
+                                Ok(Ok(())) => {}
+                                Ok(Err(err)) => {
+                                    master_log.log(format!(
+                                        "complete {finished_task_id} FAIL error=worker thread join returned error: {err}"
+                                    ))?;
+                                    return Err(err);
+                                }
+                                Err(panic_payload) => {
+                                    let panic_text = if let Some(text) =
+                                        panic_payload.downcast_ref::<&str>()
+                                    {
+                                        (*text).to_string()
+                                    } else if let Some(text) =
+                                        panic_payload.downcast_ref::<String>()
+                                    {
+                                        text.clone()
+                                    } else {
+                                        "unknown panic payload".to_string()
+                                    };
+                                    let err = anyhow::anyhow!(
+                                        "worker thread join observed panic: {finished_task_id}: {panic_text}"
+                                    );
+                                    master_log.log(format!(
+                                        "complete {finished_task_id} FAIL error={err}"
+                                    ))?;
+                                    return Err(err);
+                                }
+                            }
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        bail!("scheduler channel closed unexpectedly");
+                    }
+                }
+            };
             running_jobs -= 1;
             running_units = running_units.saturating_sub(task_weight);
+            if let Some(handle) = worker_threads.remove(&task_id) {
+                match handle.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        master_log.log(format!(
+                            "complete {task_id} FAIL error=worker thread join returned error: {err}"
+                        ))?;
+                        return Err(err);
+                    }
+                    Err(panic_payload) => {
+                        let panic_text = if let Some(text) = panic_payload.downcast_ref::<&str>() {
+                            (*text).to_string()
+                        } else if let Some(text) = panic_payload.downcast_ref::<String>() {
+                            text.clone()
+                        } else {
+                            "unknown panic payload".to_string()
+                        };
+                        let err = anyhow::anyhow!(
+                            "worker thread join observed panic: {task_id}: {panic_text}"
+                        );
+                        master_log.log(format!("complete {task_id} FAIL error={err}"))?;
+                        return Err(err);
+                    }
+                }
+            }
             match result {
                 Ok(completion) => {
                     completed_tasks += 1;
@@ -1214,7 +1391,7 @@ fn build_source_urls_node(
     }
     let resolved_cycle = match &config.target_cycle {
         Some(cycle) => cycle.clone(),
-        None => discover_published_cycles()?
+        None => discover_published_cycles(Some(&fetch_cache_config(config)?))?
             .into_iter()
             .last()
             .context("no published FAA cycles discovered")?,
@@ -1249,9 +1426,7 @@ fn build_source_urls_node(
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     fs::create_dir_all(&output_dir)?;
-    env::set_var("FETCH_CACHE_ROOT", &config.fetch_cache_root);
-    env::set_var("FETCH_CACHE_MODE", &config.fetch_cache_mode);
-    emit_source_urls(&output_dir, Some(&resolved_cycle))?;
+    emit_source_urls(&output_dir, Some(&resolved_cycle), Some(&fetch_cache_config(config)?))?;
     let outputs = BTreeMap::from([("output_dir".to_string(), relative_artifact_path(&output_dir, &config.build_root))]);
     let record = write_node_record(
         prepared,
@@ -1263,6 +1438,13 @@ fn build_source_urls_node(
         started.elapsed().as_millis() as u64,
     )?;
     Ok((output_dir, record))
+}
+
+fn fetch_cache_config(config: &ProductBuildConfig) -> anyhow::Result<FetchCacheConfig> {
+    Ok(FetchCacheConfig {
+        root: config.fetch_cache_root.clone(),
+        mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
+    })
 }
 
 fn build_overridden_source_urls_node(
@@ -1344,7 +1526,14 @@ fn build_chart_render_node(
     fs::create_dir_all(&provenance_dir)?;
     copy_source_urls_provenance(source_urls, &provenance_dir)?;
     let urls = read_source_urls_jsonl(source_urls)?;
-    prefetch_archives_with_provenance(&urls, &work_dir, fetch_jobs, &provenance_dir, family.capture_label())?;
+    prefetch_archives_with_provenance(
+        &urls,
+        &work_dir,
+        fetch_jobs,
+        Some(&fetch_cache_config(config)?),
+        &provenance_dir,
+        family.capture_label(),
+    )?;
     build_family_vrts(family, &work_dir, cpu_jobs)?;
     build_family_tiles(family, &work_dir, cpu_jobs)?;
     let outputs = BTreeMap::from([
@@ -1571,7 +1760,14 @@ fn build_csup_stage_node(
     fs::create_dir_all(&provenance_dir)?;
     copy_source_urls_provenance(source_urls, &provenance_dir)?;
     let urls = read_source_urls_jsonl(source_urls)?;
-    prefetch_archives_with_provenance(&urls, &work_dir, fetch_jobs, &provenance_dir, "csup")?;
+    prefetch_archives_with_provenance(
+        &urls,
+        &work_dir,
+        fetch_jobs,
+        Some(&fetch_cache_config(config)?),
+        &provenance_dir,
+        "csup",
+    )?;
     prepare_csup_inputs(&work_dir)?;
     fs::write(&marker, b"ok")
         .with_context(|| format!("failed to write {}", marker.display()))?;
@@ -1734,19 +1930,22 @@ fn build_tpp_render_node(
     let node_name = format!("tpp-{region_id}-render");
     let inputs = tpp_render_inputs(request, source_urls, &region_id)?;
     let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
-    let plates_root = request.run_root.join(format!("work/tpp-{region_id}/plates"));
+    let run_root = prepared.dir.clone();
+    let plates_root = run_root.join(format!("work/tpp-{region_id}/plates"));
     let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&plates_root))? {
         NodeCacheState::CacheHit(record) => return Ok(record),
         NodeCacheState::Build(lock) => lock,
     };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
-    let result = render_native_tpp(request)?;
+    let mut request = request.clone();
+    request.run_root = run_root;
+    let result = render_native_tpp(&request)?;
     let outputs = BTreeMap::from([
-        ("work_dir".to_string(), result.work_dir.display().to_string()),
+        ("work_dir".to_string(), relative_artifact_path(&result.work_dir, &config.build_root)),
         (
             "provenance_dir".to_string(),
-            result.provenance_dir.display().to_string(),
+            relative_artifact_path(&result.provenance_dir, &config.build_root),
         ),
         ("plates_root".to_string(), relative_artifact_path(&plates_root, &config.build_root)),
     ]);
@@ -1764,7 +1963,6 @@ fn build_tpp_render_node(
 fn build_tpp_package_node(
     config: &ProductBuildConfig,
     region: Region,
-    run_root: &Path,
     source_urls_path: &Path,
     version_label: &str,
 ) -> anyhow::Result<(NodeRecord, AssetSource)> {
@@ -1772,10 +1970,11 @@ fn build_tpp_package_node(
     let render_request = NativeTppRunRequest {
         region,
         source_repo: PathBuf::new(),
-        run_root: run_root.to_path_buf(),
+        run_root: PathBuf::new(),
         prefetch_source_urls: Some(source_urls_path.to_path_buf()),
         fetch_jobs: config.fetch_jobs,
         render_jobs: TPP_RENDER_JOBS_PER_RUN,
+        fetch_cache: Some(fetch_cache_config(config)?),
     };
     let render_node_name = format!("tpp-{region_id}-render");
     let render_inputs = tpp_render_inputs(&render_request, source_urls_path, &region_id)?;
@@ -1785,10 +1984,15 @@ fn build_tpp_package_node(
         &render_inputs,
     )?;
     let render_record = load_existing_node_record(&render_prepared.record_path, &render_node_name)?;
+    let asset_root = resolve_artifact_path(config, output_path(&render_record, "work_dir")?);
     let inputs = BTreeMap::from([
         ("render_fingerprint".to_string(), render_record.fingerprint.clone()),
         ("region".to_string(), region.code().to_string()),
         ("version_label".to_string(), version_label.to_string()),
+        (
+            "cache_layout_version".to_string(),
+            TPP_CACHE_LAYOUT_VERSION.to_string(),
+        ),
         (
             "tpp_package".to_string(),
             hash_file(
@@ -1810,10 +2014,11 @@ fn build_tpp_package_node(
     ]);
     let node_name = format!("tpp-{region_id}-package");
     let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
-    let package_outputs_path = run_root.join(format!("meta/provenance/tpp-{region_id}/package_outputs.jsonl"));
-    let work_dir = run_root.join(format!("work/tpp-{region_id}"));
-    let zip_path = work_dir.join(format!("{}_TPP_{}.zip", region.code(), version_label));
-    let manifest_path = work_dir.join(format!("{}_TPP_{}.manifest", region.code(), version_label));
+    let package_root = prepared.dir.join("output");
+    let provenance_dir = prepared.dir.join("meta").join("provenance").join(format!("tpp-{region_id}"));
+    let package_outputs_path = provenance_dir.join("package_outputs.jsonl");
+    let zip_path = package_root.join(format!("{}_TPP_{}.zip", region.code(), version_label));
+    let manifest_path = package_root.join(format!("{}_TPP_{}.manifest", region.code(), version_label));
     let _build_lock = match claim_or_wait_for_node(
         &prepared,
         &[package_outputs_path.clone(), zip_path.clone(), manifest_path.clone()],
@@ -1823,8 +2028,8 @@ fn build_tpp_package_node(
                 record,
                 AssetSource {
                     package_outputs_path,
-                    asset_root: work_dir.clone(),
-                    package_root: work_dir.clone(),
+                    asset_root: asset_root.clone(),
+                    package_root: package_root.clone(),
                     source_urls_path: Some(source_urls_path.to_path_buf()),
                 },
             ));
@@ -1833,11 +2038,17 @@ fn build_tpp_package_node(
     };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
-    let provenance_dir = run_root.join(format!("meta/provenance/tpp-{region_id}"));
-    let result =
-        package_native_tpp_versioned(&work_dir, &provenance_dir, region, version_label, version_label)?;
+    let result = package_native_tpp_versioned(
+        &asset_root,
+        &package_root,
+        &provenance_dir,
+        region,
+        version_label,
+        version_label,
+    )?;
     let outputs = BTreeMap::from([
-        ("work_dir".to_string(), relative_artifact_path(&work_dir, &config.build_root)),
+        ("asset_root".to_string(), relative_artifact_path(&asset_root, &config.build_root)),
+        ("package_root".to_string(), relative_artifact_path(&package_root, &config.build_root)),
         ("package_outputs".to_string(), relative_artifact_path(&package_outputs_path, &config.build_root)),
         ("zip".to_string(), relative_artifact_path(&zip_path, &config.build_root)),
         ("manifest".to_string(), relative_artifact_path(&manifest_path, &config.build_root)),
@@ -1856,8 +2067,8 @@ fn build_tpp_package_node(
         record,
         AssetSource {
             package_outputs_path,
-            asset_root: work_dir.clone(),
-            package_root: work_dir.clone(),
+            asset_root,
+            package_root,
             source_urls_path: Some(source_urls_path.to_path_buf()),
         },
     ))
@@ -1945,6 +2156,10 @@ fn tpp_render_inputs(
         ("region".to_string(), region_id.to_string()),
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("fetch_jobs".to_string(), request.fetch_jobs.to_string()),
+        (
+            "cache_layout_version".to_string(),
+            TPP_CACHE_LAYOUT_VERSION.to_string(),
+        ),
         (
             "tpp_lib".to_string(),
             hash_file(
@@ -2120,6 +2335,7 @@ fn build_data_input_node(
         &urls,
         &staged_root,
         config.fetch_jobs,
+        Some(&fetch_cache_config(config)?),
         &provenance_dir,
         "data",
     )?;
@@ -2542,14 +2758,6 @@ fn relative_product_build_path(path: &Path) -> String {
 
 fn build_node_root(config: &ProductBuildConfig, name: &str) -> anyhow::Result<PathBuf> {
     let root = config.build_root.join("work").join(name);
-    fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
-    Ok(root)
-}
-
-fn build_shared_work_root(config: &ProductBuildConfig, name: &str) -> anyhow::Result<PathBuf> {
-    let root = artifact_root_from_build_root(&config.build_root)
-        .join("private-work")
-        .join(name);
     fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
     Ok(root)
 }
@@ -3053,33 +3261,4 @@ mod tests {
         assert_eq!(filtered, vec!["https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_260416.zip"]);
     }
 
-    #[test]
-    fn versioned_work_roots_are_distinct_between_cycles() {
-        let temp = tempdir().unwrap();
-        let config = ProductBuildConfig {
-            chart_cutline_root: temp.path().join("cutlines"),
-            build_root: temp.path().join("published-packaged/validation"),
-            profile: ProductBuildProfile::Validation,
-            target_cycle: None,
-            fetch_jobs: 1,
-            cpu_jobs: 1,
-            max_heavy_jobs: 1,
-            fetch_cache_root: temp.path().join("cache/fetch"),
-            fetch_cache_mode: "fill".to_string(),
-        };
-
-        let sec_2603 = build_shared_work_root(&config, "charts-sec-2603").unwrap();
-        let sec_2605 = build_shared_work_root(&config, "charts-sec-2605").unwrap();
-        let tpp_2604 = build_shared_work_root(&config, "tpp-ne-2604").unwrap();
-        let tpp_2605 = build_shared_work_root(&config, "tpp-ne-2605").unwrap();
-        let data_a = build_shared_work_root(&config, "data-data_2604").unwrap();
-        let data_b = build_shared_work_root(&config, "data-data_2605").unwrap();
-
-        assert_ne!(sec_2603, sec_2605);
-        assert_ne!(tpp_2604, tpp_2605);
-        assert_ne!(data_a, data_b);
-        assert!(sec_2603.ends_with("private-work/charts-sec-2603"));
-        assert!(tpp_2604.ends_with("private-work/tpp-ne-2604"));
-        assert!(data_a.ends_with("private-work/data-data_2604"));
-    }
 }

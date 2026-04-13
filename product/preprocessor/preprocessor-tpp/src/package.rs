@@ -17,13 +17,15 @@ use preprocessor_tools::{write_thumbnail_from_png, ToolInvocation};
 use crate::calculate_cycle;
 
 pub(crate) fn package_region(
-    work_dir: &Path,
+    asset_root: &Path,
+    output_root: &Path,
     provenance_dir: &Path,
     region: Region,
 ) -> anyhow::Result<usize> {
     let manifest_cycle = current_cycle_manifest();
     package_region_versioned(
-        work_dir,
+        asset_root,
+        output_root,
         provenance_dir,
         region,
         &manifest_cycle,
@@ -32,7 +34,8 @@ pub(crate) fn package_region(
 }
 
 pub(crate) fn package_region_versioned(
-    work_dir: &Path,
+    asset_root: &Path,
+    output_root: &Path,
     provenance_dir: &Path,
     region: Region,
     manifest_version: &str,
@@ -41,17 +44,20 @@ pub(crate) fn package_region_versioned(
     let package_id = format!("{}_TPP_{}", region.code(), artifact_version);
     let manifest_name = format!("{package_id}.manifest");
     let zip_name = format!("{}_TPP_{}.zip", region.code(), artifact_version);
-    let manifest_path = work_dir.join(&manifest_name);
-    let zip_path = work_dir.join(&zip_name);
+    fs::create_dir_all(output_root)
+        .with_context(|| format!("failed to create {}", output_root.display()))?;
+    let manifest_path = output_root.join(&manifest_name);
+    let zip_path = output_root.join(&zip_name);
     remove_if_exists(&manifest_path)?;
     remove_if_exists(&zip_path)?;
 
-    let selected = collect_region_pngs(work_dir, region)?;
-    let package_assets_path = work_dir.join(PACKAGE_ASSET_MANIFEST_NAME);
+    let selected = collect_region_pngs(asset_root, region)?;
+    let package_assets_path = output_root.join(PACKAGE_ASSET_MANIFEST_NAME);
     remove_if_exists(&package_assets_path)?;
-    let selected = with_thumbnail_members(work_dir, &selected)?;
+    stage_member_files(asset_root, output_root, &selected)?;
+    let selected = with_thumbnail_members(asset_root, output_root, &selected)?;
     write_package_asset_manifest(
-        work_dir,
+        asset_root,
         &package_assets_path,
         &package_id,
         &selected,
@@ -79,12 +85,12 @@ pub(crate) fn package_region_versioned(
     let invocation = ToolInvocation {
         program: "zip".to_string(),
         args: vec!["-q".to_string(), zip_name.clone(), "-@".to_string()],
-        cwd: work_dir.to_path_buf(),
+        cwd: output_root.to_path_buf(),
         label: format!("tpp-package-{}", region.code()),
         env: Vec::new(),
         stdin_text: Some(stdin_text),
     };
-    let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
+    let outcome = invocation.run_logged(output_root.join(".rust-logs"))?;
     if !outcome.success {
         bail!("zip failed for region {}", region.code());
     }
@@ -105,7 +111,7 @@ pub(crate) fn package_region_versioned(
     Ok(1)
 }
 
-fn collect_region_pngs(work_dir: &Path, region: Region) -> anyhow::Result<Vec<String>> {
+fn collect_region_pngs(asset_root: &Path, region: Region) -> anyhow::Result<Vec<String>> {
     let script = r#"import glob, sys
 from pathlib import Path
 root = Path(sys.argv[1])
@@ -119,13 +125,13 @@ for state in sys.argv[2:]:
             print(relative)
 "#;
     let mut command = Command::new("python3");
-    command.arg("-c").arg(script).arg(work_dir);
+    command.arg("-c").arg(script).arg(asset_root);
     for state in region.state_codes() {
         command.arg(state);
     }
     let output = command
         .output()
-        .with_context(|| format!("failed to enumerate plates under {}", work_dir.display()))?;
+        .with_context(|| format!("failed to enumerate plates under {}", asset_root.display()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("python plate enumeration failed: {stderr}");
@@ -140,18 +146,22 @@ for state in sys.argv[2:]:
         .collect())
 }
 
-fn with_thumbnail_members(work_dir: &Path, members: &[String]) -> anyhow::Result<Vec<String>> {
+fn with_thumbnail_members(
+    asset_root: &Path,
+    output_root: &Path,
+    members: &[String],
+) -> anyhow::Result<Vec<String>> {
     let mut all = Vec::with_capacity(members.len() * 2);
-    let thumbnail_root = work_dir.join("thumbnails");
+    let thumbnail_root = output_root.join("thumbnails");
     for member in members {
         all.push(member.clone());
         let asset_path = Path::new(member);
-        let source = work_dir.join(asset_path);
+        let source = asset_root.join(asset_path);
         let thumbnail_path = Path::new("thumbnails")
             .join(asset_path)
             .to_string_lossy()
             .replace('\\', "/");
-        if !work_dir.join(&thumbnail_path).is_file() {
+        if !output_root.join(&thumbnail_path).is_file() {
             write_thumbnail_from_png(&source, &thumbnail_root, asset_path)?;
         }
         all.push(thumbnail_path);
@@ -159,8 +169,34 @@ fn with_thumbnail_members(work_dir: &Path, members: &[String]) -> anyhow::Result
     Ok(all)
 }
 
+fn stage_member_files(asset_root: &Path, output_root: &Path, members: &[String]) -> anyhow::Result<()> {
+    for member in members {
+        let relative_path = Path::new(member);
+        let source = asset_root.join(relative_path);
+        let destination = output_root.join(relative_path);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        remove_if_exists(&destination)?;
+        match fs::hard_link(&source, &destination) {
+            Ok(()) => {}
+            Err(_) => {
+                fs::copy(&source, &destination).with_context(|| {
+                    format!(
+                        "failed to copy {} to {}",
+                        source.display(),
+                        destination.display()
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn write_package_asset_manifest(
-    work_dir: &Path,
+    asset_root: &Path,
     output_path: &Path,
     package_id: &str,
     members: &[String],
@@ -197,7 +233,7 @@ fn write_package_asset_manifest(
                     .join(asset_path)
                     .to_string_lossy()
                     .replace('\\', "/"),
-                georef: read_plate_georef_from_png(&work_dir.join(member))?,
+                georef: read_plate_georef_from_png(&asset_root.join(member))?,
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;

@@ -35,6 +35,10 @@ BEGIN_RE = re.compile(
     r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+begin\s+(?P<rest>.*)$"
 )
 
+CYCLE_RE = re.compile(
+    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+cycle\s+bundle=(?P<bundle>\S+)\s+(?P<rest>.*)$"
+)
+
 
 @dataclass
 class TaskState:
@@ -56,6 +60,8 @@ class BuildState:
         self.completed = 0
         self.running_units = 0
         self.header = ""
+        self.cycle_summary = ""
+        self.bundle_cycle = "?"
         self.pid: int | None = None
         self.final_result: str | None = None
         self.final_details = ""
@@ -74,6 +80,13 @@ class BuildState:
             self.header = f"{match.group('ts')} {match.group('rest')}"
             self.pid = parse_pid(match.group("rest"))
             self.last_timestamp = match.group("ts")
+            return
+
+        match = CYCLE_RE.match(line)
+        if match:
+            self.last_timestamp = match.group("ts")
+            self.bundle_cycle = match.group("bundle")
+            self.cycle_summary = match.group("rest")
             return
 
         match = READY_RE.match(line)
@@ -141,6 +154,8 @@ class BuildState:
         self.completed = 0
         self.running_units = 0
         self.header = ""
+        self.cycle_summary = ""
+        self.bundle_cycle = "?"
         self.pid = None
         self.final_result = None
         self.final_details = ""
@@ -244,6 +259,7 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
         )
 
         summary = (
+            f"bundle_cycle={state.bundle_cycle} "
             f"active={len(state.active_tasks())} "
             f"completed={state.completed}/{state.total_tasks or '?'} "
             f"scheduled={state.launched}/{state.total_tasks or '?'} "
@@ -251,6 +267,15 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
             f"pending={state.pending_count()}"
         )
         draw_line(stdscr, 3, 0, summary, curses.A_BOLD, max_x)
+        if state.cycle_summary:
+            draw_line(stdscr, 4, 0, state.cycle_summary, curses.A_DIM, max_x)
+            status_row = 5
+            liveness_row = 6
+            row = 8
+        else:
+            status_row = 4
+            liveness_row = 5
+            row = 7
         if state.final_result == "PASS":
             status_text = f"result=PASS {state.final_at or ''} {state.final_details}".strip()
             status_attr = curses.color_pair(1) | curses.A_BOLD
@@ -260,7 +285,7 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
         else:
             status_text = "result=in_progress"
             status_attr = curses.color_pair(4) | curses.A_BOLD
-        draw_line(stdscr, 4, 0, status_text, status_attr, max_x)
+        draw_line(stdscr, status_row, 0, status_text, status_attr, max_x)
         pid_alive = pid_is_alive(state.pid)
         if pid_alive is None:
             liveness = "pid=unknown"
@@ -271,9 +296,8 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
         else:
             liveness = f"pid={state.pid} dead"
             liveness_attr = curses.color_pair(4) | curses.A_BOLD
-        draw_line(stdscr, 5, 0, liveness, liveness_attr, max_x)
+        draw_line(stdscr, liveness_row, 0, liveness, liveness_attr, max_x)
 
-        row = 7
         draw_line(
             stdscr,
             row,

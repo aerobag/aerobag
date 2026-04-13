@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::{
     collections::VecDeque,
-    env, fs,
+    fs,
     fs::File,
     io::Write,
     path::{Path, PathBuf},
@@ -68,6 +68,32 @@ impl CacheLayout {
     pub fn run_path(&self, run_id: &str) -> PathBuf {
         self.runs_dir().join(run_id)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchCacheMode {
+    Fill,
+    Offline,
+}
+
+impl FetchCacheMode {
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "fill" => Ok(Self::Fill),
+            "offline" => Ok(Self::Offline),
+            other => bail!("unsupported fetch cache mode: {other}"),
+        }
+    }
+
+    fn is_offline(&self) -> bool {
+        matches!(self, Self::Offline)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchCacheConfig {
+    pub root: PathBuf,
+    pub mode: FetchCacheMode,
 }
 
 pub fn hash_text(value: &str) -> String {
@@ -204,8 +230,9 @@ pub fn prefetch_archives(
     urls: &[String],
     dest_dir: impl AsRef<Path>,
     fetch_jobs: usize,
+    fetch_cache: Option<&FetchCacheConfig>,
 ) -> anyhow::Result<()> {
-    prefetch_archives_inner(urls, dest_dir.as_ref(), fetch_jobs, None)
+    prefetch_archives_inner(urls, dest_dir.as_ref(), fetch_jobs, fetch_cache, None)
 }
 
 pub fn copy_source_urls_provenance(
@@ -230,6 +257,7 @@ pub fn prefetch_archives_with_provenance(
     urls: &[String],
     dest_dir: impl AsRef<Path>,
     fetch_jobs: usize,
+    fetch_cache: Option<&FetchCacheConfig>,
     provenance_dir: impl AsRef<Path>,
     label: &str,
 ) -> anyhow::Result<()> {
@@ -242,7 +270,13 @@ pub fn prefetch_archives_with_provenance(
         label: label.to_string(),
         file: Arc::new(Mutex::new(file)),
     };
-    prefetch_archives_inner(urls, dest_dir.as_ref(), fetch_jobs, Some(recorder))
+    prefetch_archives_inner(
+        urls,
+        dest_dir.as_ref(),
+        fetch_jobs,
+        fetch_cache,
+        Some(recorder),
+    )
 }
 
 pub fn write_package_outputs_jsonl(
@@ -280,6 +314,7 @@ fn prefetch_archives_inner(
     urls: &[String],
     dest_dir: &Path,
     fetch_jobs: usize,
+    fetch_cache: Option<&FetchCacheConfig>,
     recorder: Option<PrefetchProvenanceRecorder>,
 ) -> anyhow::Result<()> {
     let dest_dir = dest_dir.to_path_buf();
@@ -287,12 +322,14 @@ fn prefetch_archives_inner(
         .with_context(|| format!("failed to create {}", dest_dir.display()))?;
 
     let queue = Arc::new(Mutex::new(VecDeque::from(urls.to_vec())));
+    let fetch_cache = fetch_cache.cloned();
     let job_count = fetch_jobs.max(1);
     let mut handles = Vec::with_capacity(job_count);
 
     for _ in 0..job_count {
         let queue = Arc::clone(&queue);
         let dest_dir = dest_dir.clone();
+        let fetch_cache = fetch_cache.clone();
         let recorder = recorder.clone();
         handles.push(thread::spawn(move || -> anyhow::Result<()> {
             loop {
@@ -305,7 +342,7 @@ fn prefetch_archives_inner(
                 let Some(url) = url else {
                     break;
                 };
-                prefetch_one(&url, &dest_dir, recorder.as_ref())?;
+                prefetch_one(&url, &dest_dir, fetch_cache.as_ref(), recorder.as_ref())?;
             }
             Ok(())
         }));
@@ -374,6 +411,7 @@ impl PrefetchProvenanceRecorder {
 fn prefetch_one(
     url: &str,
     dest_dir: &Path,
+    fetch_cache: Option<&FetchCacheConfig>,
     recorder: Option<&PrefetchProvenanceRecorder>,
 ) -> anyhow::Result<()> {
     let parsed = parse_logical_download(url)?;
@@ -401,13 +439,12 @@ fn prefetch_one(
     }
 
     if !archive_path.is_file() {
-        if let Some(cache_root) = env::var_os("FETCH_CACHE_ROOT") {
-            let layout = CacheLayout::new(cache_root);
+        if let Some(fetch_cache) = fetch_cache {
+            let layout = CacheLayout::new(&fetch_cache.root);
             if restore_cached_download(&layout, &parsed.cache_key, file_name, &archive_path)? {
                 source = "cache";
             } else {
-                if env::var("FETCH_CACHE_MODE").unwrap_or_else(|_| "fill".to_string()) == "offline"
-                {
+                if fetch_cache.mode.is_offline() {
                     bail!("cache miss in offline mode for {url}");
                 }
                 fetch_network(&parsed.network_url, file_name, dest_dir)?;

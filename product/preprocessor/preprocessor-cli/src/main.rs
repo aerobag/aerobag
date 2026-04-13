@@ -22,7 +22,7 @@ use preprocessor_csup::{run_native_csup, NativeCsupRunRequest};
 use preprocessor_data::{build_data_package, compare_databases, DataBuildMode, DataBuildRequest};
 use preprocessor_fetch::{
     hash_text, manifest_path_for_run, manifest_summary, prefetch_archives_with_provenance, read_download_records,
-    read_extract_records, read_source_url_set, CacheLayout,
+    read_extract_records, read_source_url_set, CacheLayout, FetchCacheConfig, FetchCacheMode,
 };
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource,
@@ -112,6 +112,13 @@ fn obstacle_snapshot_label(value: &str) -> anyhow::Result<String> {
     )
 }
 
+fn fetch_cache_config_from_root(root: PathBuf) -> anyhow::Result<FetchCacheConfig> {
+    Ok(FetchCacheConfig {
+        root,
+        mode: FetchCacheMode::parse(&env::var("FETCH_CACHE_MODE").unwrap_or_else(|_| "fill".to_string()))?,
+    })
+}
+
 fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, PathBuf, PathBuf)> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -181,10 +188,7 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
     let fetch_cache_root = env::var("FETCH_CACHE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| artifact_root.join("cache").join("fetch"));
-    env::set_var("FETCH_CACHE_ROOT", &fetch_cache_root);
-    if env::var("FETCH_CACHE_MODE").is_err() {
-        env::set_var("FETCH_CACHE_MODE", "fill");
-    }
+    let fetch_cache = fetch_cache_config_from_root(fetch_cache_root)?;
 
     let work_dir = artifact_root
         .join("private-work")
@@ -222,6 +226,7 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
         &[logical_url],
         &work_dir,
         fetch_jobs,
+        Some(&fetch_cache),
         &provenance_dir,
         "obstacles",
     )?;
@@ -238,7 +243,10 @@ fn product_cycles_to_build(config: &product_build::ProductBuildConfig) -> anyhow
         return Ok(vec![cycle.clone()]);
     }
     let as_of_date = Utc::now().date_naive();
-    let mut cycles = discover_published_cycles()?
+    let mut cycles = discover_published_cycles(Some(&FetchCacheConfig {
+        root: config.fetch_cache_root.clone(),
+        mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
+    }))?
         .into_iter()
         .filter(|cycle| match cycle_effective_date(cycle) {
             Ok(effective) => effective + Duration::days(28) >= as_of_date,
@@ -1802,6 +1810,11 @@ fn main() -> anyhow::Result<()> {
                 cpu_jobs,
                 prefetch_source_urls,
                 fetch_jobs,
+                fetch_cache: env::var("FETCH_CACHE_ROOT")
+                    .ok()
+                    .map(PathBuf::from)
+                    .map(fetch_cache_config_from_root)
+                    .transpose()?,
             })?;
             println!("family {}", result.family.capture_label());
             println!("prefetch_elapsed_ms {}", result.prefetch_elapsed_ms);
@@ -1861,6 +1874,11 @@ fn main() -> anyhow::Result<()> {
                 render_jobs: std::thread::available_parallelism()
                     .map(usize::from)
                     .unwrap_or(8),
+                fetch_cache: env::var("FETCH_CACHE_ROOT")
+                    .ok()
+                    .map(PathBuf::from)
+                    .map(fetch_cache_config_from_root)
+                    .transpose()?,
             })?;
             println!("prefetch_elapsed_ms {}", result.prefetch_elapsed_ms);
             println!("render_elapsed_ms {}", result.render_elapsed_ms);
@@ -1923,6 +1941,11 @@ fn main() -> anyhow::Result<()> {
                 render_jobs: std::thread::available_parallelism()
                     .map(usize::from)
                     .unwrap_or(8),
+                fetch_cache: env::var("FETCH_CACHE_ROOT")
+                    .ok()
+                    .map(PathBuf::from)
+                    .map(fetch_cache_config_from_root)
+                    .transpose()?,
             })?;
             println!("prefetch_elapsed_ms {}", result.prefetch_elapsed_ms);
             println!("render_elapsed_ms {}", result.render_elapsed_ms);
@@ -2175,6 +2198,11 @@ fn main() -> anyhow::Result<()> {
                 run_root,
                 prefetch_source_urls,
                 fetch_jobs,
+                fetch_cache: env::var("FETCH_CACHE_ROOT")
+                    .ok()
+                    .map(PathBuf::from)
+                    .map(fetch_cache_config_from_root)
+                    .transpose()?,
             })?;
             println!("family {}", result.family.capture_label());
             println!("prefetch_elapsed_ms {}", result.prefetch_elapsed_ms);

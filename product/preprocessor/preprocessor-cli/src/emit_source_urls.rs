@@ -1,13 +1,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env, fs,
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
 
 use anyhow::{Context, bail};
 use chrono::{Datelike, Duration, NaiveDate};
-use preprocessor_fetch::CacheLayout;
+use preprocessor_fetch::{CacheLayout, FetchCacheConfig, FetchCacheMode};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -22,10 +22,14 @@ enum CycleFormat {
     Iso,
 }
 
-pub fn emit_source_urls(output_dir: &Path, target_cycle: Option<&str>) -> anyhow::Result<Vec<PathBuf>> {
+pub fn emit_source_urls(
+    output_dir: &Path,
+    target_cycle: Option<&str>,
+    fetch_cache: Option<&FetchCacheConfig>,
+) -> anyhow::Result<Vec<PathBuf>> {
     fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
-    let records_by_label = build_records(target_cycle)?;
+    let records_by_label = build_records(target_cycle, fetch_cache)?;
     let mut results = Vec::new();
     for (label, records) in records_by_label {
         let path = write_source_urls(output_dir, &label, &records)?;
@@ -34,9 +38,9 @@ pub fn emit_source_urls(output_dir: &Path, target_cycle: Option<&str>) -> anyhow
     Ok(results)
 }
 
-pub fn discover_published_cycles() -> anyhow::Result<Vec<String>> {
-    let published_chart_effective_dates = discover_published_chart_effective_dates()?;
-    let mut cycles = discover_published_tpp_cycles()?
+pub fn discover_published_cycles(fetch_cache: Option<&FetchCacheConfig>) -> anyhow::Result<Vec<String>> {
+    let published_chart_effective_dates = discover_published_chart_effective_dates(fetch_cache)?;
+    let mut cycles = discover_published_tpp_cycles(fetch_cache)?
         .into_iter()
         .filter(|cycle| chart_effective_date_for_cycle(cycle, &published_chart_effective_dates).is_ok())
         .collect::<Vec<_>>();
@@ -59,15 +63,18 @@ pub fn cycle_effective_date(cycle_code: &str) -> anyhow::Result<NaiveDate> {
     Ok(first + Duration::days(28 * i64::from(cycle_lower - 1)))
 }
 
-fn build_records(target_cycle: Option<&str>) -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>> {
+fn build_records(
+    target_cycle: Option<&str>,
+    fetch_cache: Option<&FetchCacheConfig>,
+) -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>> {
     let cycle = match target_cycle {
         Some(cycle) => cycle.to_string(),
-        None => discover_published_cycles()?
+        None => discover_published_cycles(fetch_cache)?
             .into_iter()
             .last()
             .context("no published FAA cycles discovered")?,
     };
-    let published_chart_effective_dates = discover_published_chart_effective_dates()?;
+    let published_chart_effective_dates = discover_published_chart_effective_dates(fetch_cache)?;
     let charts_effective = chart_effective_date_for_cycle(&cycle, &published_chart_effective_dates)?;
     let charts_start = format_effective_date(charts_effective, CycleFormat::Charts);
     let iso_start = format_effective_date(charts_effective, CycleFormat::Iso);
@@ -82,6 +89,7 @@ fn build_records(target_cycle: Option<&str>) -> anyhow::Result<Vec<(String, Vec<
                     "charts-sec",
                     VFR_URL,
                     format!("^http.*{charts_start}/sectional-files/.*.zip$"),
+                    fetch_cache,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/sectional-files/"))
@@ -92,6 +100,7 @@ fn build_records(target_cycle: Option<&str>) -> anyhow::Result<Vec<(String, Vec<
                     "charts-sec",
                     VFR_URL,
                     format!("^http.*{charts_start}/Caribbean/.*.zip$"),
+                    fetch_cache,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/Caribbean/"))
@@ -106,6 +115,7 @@ fn build_records(target_cycle: Option<&str>) -> anyhow::Result<Vec<(String, Vec<
                 "charts-tac",
                 VFR_URL,
                 format!("^http.*{charts_start}.*_TAC.zip$"),
+                fetch_cache,
                 &|href| href.starts_with("http") && href.contains(&charts_start) && href.ends_with("_TAC.zip"),
             )?],
         ),
@@ -116,6 +126,7 @@ fn build_records(target_cycle: Option<&str>) -> anyhow::Result<Vec<(String, Vec<
                     "charts-enr-l",
                     IFR_URL,
                     format!("^http.*{charts_start}/enr_l.*.zip$"),
+                    fetch_cache,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/enr_l"))
@@ -126,6 +137,7 @@ fn build_records(target_cycle: Option<&str>) -> anyhow::Result<Vec<(String, Vec<
                     "charts-enr-l",
                     IFR_URL,
                     format!("^http.*{charts_start}/enr_akl.*.zip$"),
+                    fetch_cache,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/enr_akl"))
@@ -136,6 +148,7 @@ fn build_records(target_cycle: Option<&str>) -> anyhow::Result<Vec<(String, Vec<
                     "charts-enr-l",
                     IFR_URL,
                     format!("^http.*{charts_start}/enr_p.*.zip$"),
+                    fetch_cache,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/enr_p"))
@@ -151,6 +164,7 @@ fn build_records(target_cycle: Option<&str>) -> anyhow::Result<Vec<(String, Vec<
                     "charts-enr-h",
                     IFR_URL,
                     format!("^http.*{charts_start}/enr_h.*.zip$"),
+                    fetch_cache,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/enr_h"))
@@ -161,6 +175,7 @@ fn build_records(target_cycle: Option<&str>) -> anyhow::Result<Vec<(String, Vec<
                     "charts-enr-h",
                     IFR_URL,
                     format!("^http.*{charts_start}/enr_akh.*.zip$"),
+                    fetch_cache,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/enr_akh"))
@@ -171,6 +186,7 @@ fn build_records(target_cycle: Option<&str>) -> anyhow::Result<Vec<(String, Vec<
                     "charts-enr-h",
                     IFR_URL,
                     format!("^http.*{charts_start}/enr_p.*.zip$"),
+                    fetch_cache,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/enr_p"))
@@ -185,6 +201,7 @@ fn build_records(target_cycle: Option<&str>) -> anyhow::Result<Vec<(String, Vec<
                 "csup",
                 DAFD_URL,
                 format!("^http.*DCS_{}.zip$", iso_start.replace('-', "")),
+                fetch_cache,
                 &|href| href.starts_with("http") && href.ends_with(&format!("DCS_{}.zip", iso_start.replace('-', ""))),
             )?],
         ),
@@ -219,6 +236,7 @@ fn build_records(target_cycle: Option<&str>) -> anyhow::Result<Vec<(String, Vec<
                 label,
                 DTPP_URL,
                 format!("^http.*DDTPP[A-E]+_{}.zip$", &current_compact[2..]),
+                fetch_cache,
                 &|href| {
                     href.starts_with("http")
                         && href.ends_with(".zip")
@@ -236,9 +254,10 @@ fn list_crawl_record(
     label: &str,
     url: &str,
     pattern: String,
+    fetch_cache: Option<&FetchCacheConfig>,
     predicate: &dyn Fn(&str) -> bool,
 ) -> anyhow::Result<BTreeMap<String, Value>> {
-    let hrefs = extract_href_links(&fetch_url_bytes(url)?)?;
+    let hrefs = extract_href_links(&fetch_url_bytes(url, fetch_cache)?)?;
     let mut results = hrefs
         .into_iter()
         .filter(|href| predicate(href))
@@ -308,13 +327,13 @@ fn render_value(value: &Value) -> anyhow::Result<String> {
     }
 }
 
-fn fetch_url_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
-    if let Some(cache_root) = env::var_os("FETCH_CACHE_ROOT") {
-        let layout = CacheLayout::new(cache_root);
+fn fetch_url_bytes(url: &str, fetch_cache: Option<&FetchCacheConfig>) -> anyhow::Result<Vec<u8>> {
+    if let Some(fetch_cache) = fetch_cache {
+        let layout = CacheLayout::new(&fetch_cache.root);
         if let Some(bytes) = load_cached_bytes(&layout, url)? {
             return Ok(bytes);
         }
-        if env::var("FETCH_CACHE_MODE").unwrap_or_else(|_| "fill".to_string()) == "offline" {
+        if matches!(fetch_cache.mode, FetchCacheMode::Offline) {
             bail!("cache miss in offline mode for crawl {url}");
         }
         let output = Command::new("curl")
@@ -434,8 +453,10 @@ fn extract_href_links(html: &[u8]) -> anyhow::Result<Vec<String>> {
     Ok(links)
 }
 
-fn discover_published_tpp_cycles() -> anyhow::Result<BTreeSet<String>> {
-    let hrefs = extract_href_links(&fetch_url_bytes(DTPP_URL)?)?;
+fn discover_published_tpp_cycles(
+    fetch_cache: Option<&FetchCacheConfig>,
+) -> anyhow::Result<BTreeSet<String>> {
+    let hrefs = extract_href_links(&fetch_url_bytes(DTPP_URL, fetch_cache)?)?;
     let mut cycles = BTreeSet::new();
     for href in hrefs {
         if !href.starts_with("http") || !href.ends_with(".zip") || !href.contains("DDTPP") {
@@ -450,10 +471,12 @@ fn discover_published_tpp_cycles() -> anyhow::Result<BTreeSet<String>> {
     Ok(cycles)
 }
 
-fn discover_published_chart_effective_dates() -> anyhow::Result<BTreeSet<NaiveDate>> {
+fn discover_published_chart_effective_dates(
+    fetch_cache: Option<&FetchCacheConfig>,
+) -> anyhow::Result<BTreeSet<NaiveDate>> {
     let mut dates = BTreeSet::new();
     for url in [VFR_URL, IFR_URL] {
-        let hrefs = extract_href_links(&fetch_url_bytes(url)?)?;
+        let hrefs = extract_href_links(&fetch_url_bytes(url, fetch_cache)?)?;
         for href in hrefs {
             for segment in href.split('/') {
                 if let Ok(date) = NaiveDate::parse_from_str(segment, "%m-%d-%Y") {
@@ -462,7 +485,7 @@ fn discover_published_chart_effective_dates() -> anyhow::Result<BTreeSet<NaiveDa
             }
         }
     }
-    let hrefs = extract_href_links(&fetch_url_bytes(DAFD_URL)?)?;
+    let hrefs = extract_href_links(&fetch_url_bytes(DAFD_URL, fetch_cache)?)?;
     for href in hrefs {
         if let Some(compact) = extract_prefix_date_token(&href, "DCS_", ".zip") {
             if let Ok(date) = NaiveDate::parse_from_str(&compact, "%Y%m%d") {

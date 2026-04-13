@@ -202,6 +202,27 @@ pub struct ProcedureLegProvenance {
     pub role: ProcedureSegmentRole,
     pub path_termination: PathTermination,
     pub leg_sequence: i32,
+    #[serde(default)]
+    pub display_path: Option<LegDisplayPath>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LegDisplayPath {
+    pub elements: Vec<LegDisplayElement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LegDisplayElement {
+    Segment { start: LatLon, end: LatLon },
+    Arc {
+        center: LatLon,
+        radius_nm: f64,
+        start: LatLon,
+        end: LatLon,
+        clockwise: bool,
+        sweep_degrees: f64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -348,6 +369,7 @@ pub struct ResolvedLegUiView {
     pub to: NavRef,
     pub active: bool,
     pub suspend_boundary_after: bool,
+    pub display_path: Option<LegDisplayPath>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -792,6 +814,10 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
                 .as_ref()
                 .is_some_and(|guidance| guidance.sequencing_mode != SequencingMode::DirectTo && guidance.active_leg_index == leg_index),
             suspend_boundary_after: should_suspend_after_active_leg(&plan, leg_index),
+            display_path: leg
+                .procedure_provenance
+                .as_ref()
+                .and_then(|provenance| provenance.display_path.clone()),
         })
         .collect();
 
@@ -1867,15 +1893,7 @@ pub fn change_procedure_runway_transition(
 }
 
 pub fn interpret_path_termination(code: &str) -> PathTermination {
-    match code.trim() {
-        "IF" => PathTermination::InitialFix,
-        "TF" => PathTermination::TrackToFix,
-        "CF" => PathTermination::CourseToFix,
-        "DF" => PathTermination::DirectToFix,
-        "FM" | "HM" => PathTermination::HeadingToManual,
-        "VA" | "VI" => PathTermination::HeadingToAltitude,
-        other => PathTermination::Other(other.to_string()),
-    }
+    crate::procedure_legs::interpret_path_termination(code)
 }
 
 fn resolved_legs_from_waypoint_components(components: &[RouteComponent]) -> Vec<ResolvedLeg> {

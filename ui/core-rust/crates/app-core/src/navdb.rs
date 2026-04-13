@@ -1180,7 +1180,8 @@ fn resolve_procedure_legs_with_provenance(
                     role: role.clone(),
                     path_termination: pair[1].path_termination_kind.clone(),
                     leg_sequence: pair[1].sequence,
-                    }),
+                    display_path: None,
+                }),
             });
         }
     }
@@ -1617,10 +1618,28 @@ fn resolve_nav_ref_position_in_db(
     connection: &Connection,
     nav_ref: &NavRef,
 ) -> rusqlite::Result<LatLon> {
+    resolve_nav_ref_position_with_airport_context_in_db(connection, None, nav_ref)
+}
+
+pub(crate) fn resolve_nav_ref_position_with_airport_context_in_db(
+    connection: &Connection,
+    airport_id: Option<&str>,
+    nav_ref: &NavRef,
+) -> rusqlite::Result<LatLon> {
     match nav_ref {
         NavRef::LatLon(position) => Ok(*position),
         NavRef::Airport(code) => lookup_nav_ref_position(connection, "airports", code),
         NavRef::Navaid(code) => lookup_nav_ref_position(connection, "nav", code),
+        NavRef::Fix(code) if code.trim().starts_with("RW") => {
+            if let Some(airport_id) = airport_id {
+                if let Some(position) =
+                    lookup_runway_threshold_position(connection, airport_id, code)?
+                {
+                    return Ok(position);
+                }
+            }
+            lookup_nav_ref_position(connection, "fix", code)
+        }
         NavRef::Fix(code) => lookup_nav_ref_position(connection, "fix", code),
     }
 }
@@ -1668,6 +1687,31 @@ fn classify_procedure_identifier_in_db(
         .is_some()
     {
         return Ok(Some(NavRef::Fix(trimmed.to_string())));
+    }
+    Ok(None)
+}
+
+fn lookup_runway_threshold_position(
+    connection: &Connection,
+    airport_id: &str,
+    runway_code: &str,
+) -> rusqlite::Result<Option<LatLon>> {
+    let ident = runway_code.trim().trim_start_matches("RW");
+    let mut rows = connection.prepare(
+        "SELECT
+            CASE WHEN trim(LEIdent) = trim(?2) THEN CAST(LELatitude AS REAL) ELSE CAST(HELatitude AS REAL) END,
+            CASE WHEN trim(LEIdent) = trim(?2) THEN CAST(LELongitude AS REAL) ELSE CAST(HELongitude AS REAL) END
+         FROM airportrunways
+         WHERE trim(LocationID) = trim(?1)
+           AND (trim(LEIdent) = trim(?2) OR trim(HEIdent) = trim(?2))
+         LIMIT 1",
+    )?;
+    let mut query = rows.query(params![airport_id, ident])?;
+    if let Some(row) = query.next()? {
+        return Ok(Some(LatLon {
+            lat: row.get(0)?,
+            lon: row.get(1)?,
+        }));
     }
     Ok(None)
 }

@@ -126,8 +126,21 @@ pub struct ProcedureLegMaterializationRecord {
     pub key: ProcedureVariantKey,
     pub sequence: i32,
     pub nav_ref: Option<NavRef>,
+    pub nav_position: Option<LatLon>,
+    #[serde(default)]
+    pub recommended_nav_ref: Option<NavRef>,
+    #[serde(default)]
+    pub recommended_nav_position: Option<LatLon>,
+    pub airport_magnetic_variation_deg: Option<f64>,
+    #[serde(default)]
+    pub altitude_1_ft: Option<f64>,
+    #[serde(default)]
+    pub altitude_2_ft: Option<f64>,
     pub path_termination: String,
     pub path_termination_kind: PathTermination,
+    pub turn_direction: Option<String>,
+    pub magnetic_course_deg: Option<f64>,
+    pub route_distance_or_time: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

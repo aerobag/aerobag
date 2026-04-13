@@ -11,6 +11,8 @@ pub mod navdb;
 pub mod navdb_types;
 pub mod map_overlay;
 pub mod planning;
+pub mod procedure_geometry;
+pub mod procedure_legs;
 pub mod situation;
 pub mod session;
 pub mod state;
@@ -63,13 +65,20 @@ pub use planning::{
     delete_waypoint_component,
     flatten_component_to_waypoints, insert_airway_between_waypoints,
     insert_airway_after_waypoint,
-    insert_procedure_between_waypoints, interpret_path_termination, project_ui_state,
+    insert_procedure_between_waypoints, project_ui_state,
     move_component, replace_airway_component, replace_procedure_component, sequence_active_leg, suspend_sequencing,
     unsuspend_sequencing, AirwaySegment, ConcretizedNavItem, DirectToState, FlightPlan,
     FlightPlanUiState, GuidanceState, GuidanceUiView, NavRef, PathTermination, PlanLeg,
     ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegment,
     ProcedureSegmentRole, ResolvedLeg, ResolvedLegSource, ResolvedLegUiView, RouteComponent,
     RouteComponentUiView, RouteComponentViewKind, SequencingMode, DirectToUiView,
+    LegDisplayElement, LegDisplayPath,
+};
+pub use procedure_geometry::display_path_for_procedure_leg;
+pub use procedure_legs::{
+    interpret_path_termination, leading_procedure_discontinuity,
+    parse_airport_magnetic_variation, parse_cifp_altitude_ft, parse_cifp_tenths_value,
+    terminal_procedure_discontinuity,
 };
 pub use situation::{Situation, SituationPosition};
 pub use session::{
@@ -923,22 +932,43 @@ fn resolve_procedure_materialization_legs_with_provenance(
         }
         let role = procedure_segment_role(role);
 
-        for pair in fix_records.windows(2) {
+        for (index, pair) in fix_records.windows(2).enumerate() {
             let from = pair[0].nav_ref.clone().expect("filtered non-waypoint leg");
             let to = pair[1].nav_ref.clone().expect("filtered non-waypoint leg");
+            if from == to && pair[1].path_termination.trim() == "HM" {
+                continue;
+            }
             let duplicate_of_previous = resolved
                 .last()
                 .is_some_and(|previous| previous.from == from && previous.to == to);
             if duplicate_of_previous {
                 continue;
             }
+            let hold_record = if pair[1].path_termination.trim() == "HM" {
+                Some(pair[1])
+            } else {
+                fix_records.get(index + 2).and_then(|next| {
+                    if next.path_termination.trim() == "HM" && next.nav_ref == pair[1].nav_ref {
+                        Some(*next)
+                    } else {
+                        None
+                    }
+                })
+            };
+            let provenance_record = hold_record.unwrap_or(pair[1]);
+            let display_path = display_path_for_procedure_leg(
+                leg_records,
+                pair[0],
+                pair[1],
+                hold_record,
+            );
 
             resolved.push(ResolvedLeg {
                 id: format!(
                     "procedure-{}-{}-{}",
                     procedure_id.trim(),
-                    pair[1].key.route_type.trim(),
-                    pair[1].sequence
+                    provenance_record.key.route_type.trim(),
+                    provenance_record.sequence
                 ),
                 from: from.clone(),
                 to: to.clone(),
@@ -948,9 +978,10 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     procedure_id: procedure_id.trim().to_string(),
                     kind: kind.clone(),
                     role: role.clone(),
-                    path_termination: pair[1].path_termination_kind.clone(),
-                    leg_sequence: pair[1].sequence,
-                    }),
+                    path_termination: provenance_record.path_termination_kind.clone(),
+                    leg_sequence: provenance_record.sequence,
+                    display_path,
+                }),
             });
         }
     }
@@ -1030,28 +1061,6 @@ fn merge_concretized_segments_from_records(
     }
 
     merged
-}
-
-fn terminal_procedure_discontinuity(
-    leg: &ProcedureLegMaterializationRecord,
-) -> Option<ProcedureDiscontinuity> {
-    match leg.path_termination.trim() {
-        "FM" => Some(ProcedureDiscontinuity::Vectors),
-        "HM" => Some(ProcedureDiscontinuity::Hold),
-        "VA" | "VI" if leg.nav_ref.is_none() => Some(ProcedureDiscontinuity::Vectors),
-        _ => None,
-    }
-}
-
-fn leading_procedure_discontinuity(
-    leg: &ProcedureLegMaterializationRecord,
-) -> Option<ProcedureDiscontinuity> {
-    match leg.path_termination.trim() {
-        "FM" => Some(ProcedureDiscontinuity::Vectors),
-        "HM" => Some(ProcedureDiscontinuity::Hold),
-        "VA" | "VI" if leg.nav_ref.is_none() => Some(ProcedureDiscontinuity::Vectors),
-        _ => None,
-    }
 }
 
 pub fn remove_flight_plan_leg(plan: &FlightPlan, index: usize) -> AppResult<FlightPlan> {
@@ -1772,7 +1781,9 @@ pub fn resolve_content_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
     use rusqlite::{params, Connection};
+    use std::fs;
     use std::path::PathBuf;
 
     fn sample_catalog_json() -> String {
@@ -1911,6 +1922,183 @@ mod tests {
         .as_path()
     }
 
+    const KRDD_I34_PLATE_PATH: &str = "/root/aerobag-artifacts-snapshot/published-unpacked/production/2604/private-work/tpp-sw-2604/work/tpp-sw/SW_TPP_2604/plates/RDD/IAP-CA-ILS OR LOC RWY 34.png";
+    const KRDD_I34_PLATE_WIDTH: f64 = 813.0;
+    const KRDD_I34_PLATE_HEIGHT: f64 = 1240.0;
+    const KRDD_I34_PIXELS_PER_LONGITUDE: f64 = 667.0723618983761;
+    const KRDD_I34_PIXELS_PER_LATITUDE: f64 = -875.1345342908107;
+    const KRDD_I34_TOP_LEFT_LON: f64 = -122.90490833333334;
+    const KRDD_I34_TOP_LEFT_LAT: f64 = 41.04124722222222;
+
+    fn krdd_i34_plate_pixel(position: LatLon) -> (f64, f64) {
+        (
+            (position.lon - KRDD_I34_TOP_LEFT_LON) * KRDD_I34_PIXELS_PER_LONGITUDE,
+            (position.lat - KRDD_I34_TOP_LEFT_LAT) * KRDD_I34_PIXELS_PER_LATITUDE,
+        )
+    }
+
+    fn plate_points_for_display_elements(elements: &[LegDisplayElement]) -> Vec<(f64, f64)> {
+        let mut points = Vec::new();
+        for element in elements {
+            match element {
+                LegDisplayElement::Segment { start, end } => {
+                    let start_point = krdd_i34_plate_pixel(*start);
+                    let end_point = krdd_i34_plate_pixel(*end);
+                    if points.last().copied() != Some(start_point) {
+                        points.push(start_point);
+                    }
+                    points.push(end_point);
+                }
+                LegDisplayElement::Arc {
+                    center,
+                    radius_nm,
+                    start,
+                    end: _,
+                    clockwise,
+                    sweep_degrees,
+                } => {
+                    let start_bearing = bearing_from(*center, *start);
+                    let sweep = if *clockwise {
+                        sweep_degrees.abs()
+                    } else {
+                        -sweep_degrees.abs()
+                    };
+                    let steps = usize::max(8, (sweep.abs() / 15.0).ceil() as usize);
+                    for index in 0..=steps {
+                        let fraction = index as f64 / steps as f64;
+                        let bearing = start_bearing + sweep * fraction;
+                        let point = destination_point(*center, bearing, *radius_nm);
+                        let pixel = krdd_i34_plate_pixel(point);
+                        if points.last().copied() != Some(pixel) {
+                            points.push(pixel);
+                        }
+                    }
+                }
+            }
+        }
+        points
+    }
+
+    fn draw_polyline(
+        image: &mut RgbaImage,
+        points: &[(f64, f64)],
+        color: Rgba<u8>,
+        radius: i32,
+    ) {
+        for pair in points.windows(2) {
+            let (x0, y0) = pair[0];
+            let (x1, y1) = pair[1];
+            draw_thick_line_segment(image, x0, y0, x1, y1, color, radius);
+        }
+    }
+
+    fn draw_thick_line_segment(
+        image: &mut RgbaImage,
+        x0: f64,
+        y0: f64,
+        x1: f64,
+        y1: f64,
+        color: Rgba<u8>,
+        radius: i32,
+    ) {
+        let dx = x1 - x0;
+        let dy = y1 - y0;
+        let steps = usize::max(dx.abs().max(dy.abs()).ceil() as usize, 1);
+        for step in 0..=steps {
+            let t = step as f64 / steps as f64;
+            let x = x0 + dx * t;
+            let y = y0 + dy * t;
+            stamp_circle(image, x.round() as i32, y.round() as i32, radius, color);
+        }
+    }
+
+    fn stamp_circle(image: &mut RgbaImage, cx: i32, cy: i32, radius: i32, color: Rgba<u8>) {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx * dx + dy * dy > radius * radius {
+                    continue;
+                }
+                let px = cx + dx;
+                let py = cy + dy;
+                if px < 0 || py < 0 {
+                    continue;
+                }
+                let px = px as u32;
+                let py = py as u32;
+                if px >= image.width() || py >= image.height() {
+                    continue;
+                }
+                image.put_pixel(px, py, color);
+            }
+        }
+    }
+
+    fn bearing_from(from: LatLon, to: LatLon) -> f64 {
+        let from_lat = from.lat.to_radians();
+        let from_lon = from.lon.to_radians();
+        let to_lat = to.lat.to_radians();
+        let to_lon = to.lon.to_radians();
+        let delta_lon = to_lon - from_lon;
+        let y = delta_lon.sin() * to_lat.cos();
+        let x = from_lat.cos() * to_lat.sin() - from_lat.sin() * to_lat.cos() * delta_lon.cos();
+        normalize_bearing_degrees(y.atan2(x).to_degrees())
+    }
+
+    fn destination_point(origin: LatLon, bearing_deg: f64, distance_nm: f64) -> LatLon {
+        let angular_distance = distance_nm / 3440.065;
+        let bearing = bearing_deg.to_radians();
+        let lat1 = origin.lat.to_radians();
+        let lon1 = origin.lon.to_radians();
+        let sin_lat1 = lat1.sin();
+        let cos_lat1 = lat1.cos();
+        let sin_angular = angular_distance.sin();
+        let cos_angular = angular_distance.cos();
+        let lat2 = (sin_lat1 * cos_angular + cos_lat1 * sin_angular * bearing.cos()).asin();
+        let lon2 = lon1
+            + (bearing.sin() * sin_angular * cos_lat1)
+                .atan2(cos_angular - sin_lat1 * lat2.sin());
+        LatLon {
+            lat: lat2.to_degrees(),
+            lon: normalize_longitude_degrees(lon2.to_degrees()),
+        }
+    }
+
+    fn normalize_bearing_degrees(value: f64) -> f64 {
+        let mut normalized = value % 360.0;
+        if normalized < 0.0 {
+            normalized += 360.0;
+        }
+        normalized
+    }
+
+    fn normalize_longitude_degrees(value: f64) -> f64 {
+        let mut normalized = value;
+        while normalized <= -180.0 {
+            normalized += 360.0;
+        }
+        while normalized > 180.0 {
+            normalized -= 360.0;
+        }
+        normalized
+    }
+
+    fn distance_nm_between(from: LatLon, to: LatLon) -> f64 {
+        let mean_lat = ((from.lat + to.lat) / 2.0).to_radians();
+        let east_nm = (to.lon - from.lon) * 60.0 * mean_lat.cos();
+        let north_nm = (to.lat - from.lat) * 60.0;
+        east_nm.hypot(north_nm)
+    }
+
+    fn format_point_from_rdd(label: &str, position: LatLon, rdd: LatLon) -> String {
+        format!(
+            "{}=({:.6},{:.6}) {:.2}nm-from-RDD",
+            label,
+            position.lat,
+            position.lon,
+            distance_nm_between(rdd, position),
+        )
+    }
+
     fn find_fixture_nav_db(root: &Path) -> Option<PathBuf> {
         let entries = std::fs::read_dir(root).ok()?;
         for entry in entries {
@@ -2008,6 +2196,19 @@ mod tests {
         None
     }
 
+    fn browser_style_nav_position_for_ref(
+        connection: &Connection,
+        airport_id: &str,
+        nav_ref: &NavRef,
+    ) -> Option<LatLon> {
+        crate::navdb::resolve_nav_ref_position_with_airport_context_in_db(
+            connection,
+            Some(airport_id),
+            nav_ref,
+        )
+        .ok()
+    }
+
     fn load_browser_style_procedure_materialization_records(
         db_path: &Path,
         airport_id: &str,
@@ -2024,7 +2225,14 @@ mod tests {
                   trim(transition_identifier) AS transition_id,
                   CAST(sequence_number AS INTEGER) AS sequence,
                   trim(fix_identifier) AS fix_identifier,
-                  trim(path_and_termination) AS path_termination
+                  trim(recommended_navaid) AS recommended_navaid,
+                  trim((SELECT MagneticVariation FROM airports WHERE trim(LocationID) = trim(airport_identifier) LIMIT 1)) AS airport_magnetic_variation,
+                  trim(altitude_1) AS altitude_1,
+                  trim(altitude_2) AS altitude_2,
+                  trim(path_and_termination) AS path_termination,
+                  trim(turn_direction) AS turn_direction,
+                  trim(magnetic_course) AS magnetic_course,
+                  trim(route_distance_holding_distance_or_time) AS route_distance_or_time
                 FROM cifp_sid_star_app
                 WHERE trim(airport_identifier) = trim(?1)
                   AND trim(sid_star_approach_identifier) = trim(?2)
@@ -2040,7 +2248,23 @@ mod tests {
                 let transition_id = row.get::<_, String>(3)?;
                 let sequence = row.get::<_, i32>(4)?;
                 let fix_identifier = row.get::<_, String>(5)?;
-                let path_termination = row.get::<_, String>(6)?;
+                let recommended_navaid = row.get::<_, String>(6)?;
+                let airport_magnetic_variation = row.get::<_, String>(7)?;
+                let altitude_1 = row.get::<_, String>(8)?;
+                let altitude_2 = row.get::<_, String>(9)?;
+                let path_termination = row.get::<_, String>(10)?;
+                let turn_direction = row.get::<_, String>(11)?;
+                let magnetic_course = row.get::<_, String>(12)?;
+                let route_distance_or_time = row.get::<_, String>(13)?;
+                let nav_ref = browser_style_nav_ref_for_identifier(&connection, &fix_identifier);
+                let recommended_nav_ref =
+                    browser_style_nav_ref_for_identifier(&connection, &recommended_navaid);
+                let nav_position = nav_ref
+                    .as_ref()
+                    .and_then(|nav_ref| browser_style_nav_position_for_ref(&connection, airport_id.as_str(), nav_ref));
+                let recommended_nav_position = recommended_nav_ref
+                    .as_ref()
+                    .and_then(|nav_ref| browser_style_nav_position_for_ref(&connection, airport_id.as_str(), nav_ref));
                 Ok(ProcedureLegMaterializationRecord {
                     key: ProcedureVariantKey {
                         airport_id,
@@ -2049,9 +2273,18 @@ mod tests {
                         transition_id,
                     },
                     sequence,
-                    nav_ref: browser_style_nav_ref_for_identifier(&connection, &fix_identifier),
+                    nav_position,
+                    nav_ref,
+                    recommended_nav_ref,
+                    recommended_nav_position,
+                    airport_magnetic_variation_deg: parse_airport_magnetic_variation(&airport_magnetic_variation),
+                    altitude_1_ft: parse_cifp_altitude_ft(&altitude_1),
+                    altitude_2_ft: parse_cifp_altitude_ft(&altitude_2),
                     path_termination_kind: interpret_path_termination(&path_termination),
                     path_termination,
+                    turn_direction: (!turn_direction.is_empty()).then_some(turn_direction),
+                    magnetic_course_deg: parse_cifp_tenths_value(&magnetic_course),
+                    route_distance_or_time: (!route_distance_or_time.is_empty()).then_some(route_distance_or_time),
                 })
             })
             .expect("query materialization records");
@@ -2578,6 +2811,22 @@ mod tests {
             .map(concretized_item_label_for_test)
             .collect::<Vec<_>>();
         assert_eq!(browser_labels, native_labels);
+        let hold_leg = browser_style
+            .resolved_legs
+            .iter()
+            .find(|leg| {
+                leg.procedure_provenance
+                    .as_ref()
+                    .and_then(|provenance| provenance.display_path.as_ref())
+                    .is_some()
+            })
+            .expect("expected hold leg display path");
+        let hold_path = hold_leg
+            .procedure_provenance
+            .as_ref()
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .expect("expected hold leg display path");
+        assert_eq!(hold_path.elements.len(), 4);
 
         let inserted = insert_procedure_materialized_ui(&airway.plan, 2, 3, browser_style).unwrap();
         let route_pairs = inserted
@@ -2604,6 +2853,240 @@ mod tests {
             NavRef::Fix("LASSN".to_string()),
             NavRef::Fix("RW34".to_string()),
         )));
+        assert!(inserted
+            .ui_state
+            .resolved_legs
+            .iter()
+            .any(|leg| leg.display_path.is_some()));
+    }
+
+    #[test]
+    #[ignore = "exhaustive approach materialization sweep over a supplied nav database"]
+    fn materializes_all_approaches_without_crashing() {
+        let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
+        let mut stmt = connection
+            .prepare(
+                "
+                SELECT DISTINCT
+                  trim(airport_identifier) AS airport_id,
+                  trim(sid_star_approach_identifier) AS procedure_id
+                FROM cifp_sid_star_app
+                WHERE trim(subsection_code) = 'F'
+                ORDER BY trim(airport_identifier), trim(sid_star_approach_identifier)
+                ",
+            )
+            .expect("prepare all approaches query");
+        let approaches = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .expect("query all approaches")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect all approaches");
+
+        for (airport_id, procedure_id) in approaches {
+            let rows = load_browser_style_procedure_distinct_rows(
+                fixture_db_path(),
+                &airport_id,
+                &procedure_id,
+            );
+            let options = describe_procedure_options_from_rows(
+                &airport_id,
+                &procedure_id,
+                ProcedureKind::Approach,
+                rows.clone(),
+            )
+            .unwrap_or_else(|error| panic!("describe options failed for {airport_id} {procedure_id}: {error}"));
+            let records = load_browser_style_procedure_materialization_records(
+                fixture_db_path(),
+                &airport_id,
+                &procedure_id,
+            );
+
+            for choice in options.valid_choices {
+                let materialized = materialize_procedure_from_records(
+                    &airport_id,
+                    &procedure_id,
+                    ProcedureKind::Approach,
+                    choice.runway_transition.clone(),
+                    choice.enroute_transition.clone(),
+                    0,
+                    rows.clone(),
+                    records.clone(),
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "materialize failed for {} {} runway={:?} enroute={:?}: {}",
+                        airport_id,
+                        procedure_id,
+                        choice.runway_transition,
+                        choice.enroute_transition,
+                        error
+                    )
+                });
+                let projected = project_ui_state(&FlightPlan {
+                    id: "exhaustive".to_string(),
+                    name: "exhaustive".to_string(),
+                    legs: Vec::new(),
+                    route_components: vec![RouteComponent::Procedure {
+                        procedure: materialized.procedure.clone(),
+                    }],
+                    resolved_legs: materialized.resolved_legs.clone(),
+                    guidance: None,
+                    departure: None,
+                    destination: None,
+                    alternate: None,
+                    cruise_altitude_ft: None,
+                    notes: None,
+                    updated_at_epoch_ms: 0,
+                    version: 1,
+                });
+                let _display_paths = projected
+                    .resolved_legs
+                    .iter()
+                    .filter_map(|leg| leg.display_path.as_ref())
+                    .count();
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KRDD I34 TAYTO"]
+    fn writes_krdd_i34_tayto_overlay_png() {
+        let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
+        let rdd_position = browser_style_nav_position_for_ref(
+            &connection,
+            "KRDD",
+            &NavRef::Navaid("RDD".to_string()),
+        )
+        .expect("resolve RDD position");
+        let rows = load_browser_style_procedure_distinct_rows(fixture_db_path(), "KRDD", "I34");
+        let records = load_browser_style_procedure_materialization_records(
+            fixture_db_path(),
+            "KRDD",
+            "I34",
+        );
+        let materialized = materialize_procedure_from_records(
+            "KRDD",
+            "I34",
+            ProcedureKind::Approach,
+            None,
+            Some("TAYTO".to_string()),
+            0,
+            rows,
+            records,
+        )
+        .expect("materialize KRDD I34 TAYTO");
+
+        for leg in &materialized.resolved_legs {
+            eprintln!(
+                "{} {:?} -> {:?} display_path={}",
+                leg.id,
+                leg.from,
+                leg.to,
+                leg.procedure_provenance
+                    .as_ref()
+                    .and_then(|provenance| provenance.display_path.as_ref())
+                    .is_some()
+            );
+        }
+
+        let plate = image::open(KRDD_I34_PLATE_PATH).expect("open plate png");
+        let (width, height) = plate.dimensions();
+        let mut canvas = match plate {
+            DynamicImage::ImageRgba8(image) => image,
+            other => other.to_rgba8(),
+        };
+        let mut skipped_legs = Vec::new();
+        for leg in &materialized.resolved_legs {
+            let has_display_path = leg
+                .procedure_provenance
+                .as_ref()
+                .and_then(|provenance| provenance.display_path.as_ref())
+                .is_some();
+            let elements = if let Some(path) = leg
+                .procedure_provenance
+                .as_ref()
+                .and_then(|provenance| provenance.display_path.as_ref())
+            {
+                path.elements.clone()
+            } else {
+                let Some(start) =
+                    browser_style_nav_position_for_ref(&connection, "KRDD", &leg.from)
+                else {
+                    skipped_legs.push(format!("{} unresolved start {:?}", leg.id, leg.from));
+                    continue;
+                };
+                let Some(end) = browser_style_nav_position_for_ref(&connection, "KRDD", &leg.to)
+                else {
+                    skipped_legs.push(format!("{} unresolved end {:?}", leg.id, leg.to));
+                    continue;
+                };
+                vec![LegDisplayElement::Segment { start, end }]
+            };
+            for (element_index, element) in elements.iter().enumerate() {
+                match element {
+                    LegDisplayElement::Segment { start, end } => {
+                        eprintln!(
+                            "{} element#{} SEG {} {}",
+                            leg.id,
+                            element_index,
+                            format_point_from_rdd("start", *start, rdd_position),
+                            format_point_from_rdd("end", *end, rdd_position),
+                        );
+                    }
+                    LegDisplayElement::Arc {
+                        center,
+                        radius_nm,
+                        start,
+                        end,
+                        clockwise,
+                        sweep_degrees,
+                    } => {
+                        eprintln!(
+                            "{} element#{} ARC clockwise={} sweep_degrees={:.1} radius_nm={:.2} {} {} {}",
+                            leg.id,
+                            element_index,
+                            clockwise,
+                            sweep_degrees,
+                            radius_nm,
+                            format_point_from_rdd("center", *center, rdd_position),
+                            format_point_from_rdd("start", *start, rdd_position),
+                            format_point_from_rdd("end", *end, rdd_position),
+                        );
+                    }
+                }
+            }
+            if has_display_path {
+                for element in &elements {
+                    let single_points = plate_points_for_display_elements(std::slice::from_ref(element));
+                    if single_points.len() < 2 {
+                        continue;
+                    }
+                    draw_polyline(&mut canvas, &single_points, Rgba([0, 0, 0, 140]), 4);
+                    let stroke = match element {
+                        LegDisplayElement::Segment { .. } => Rgba([255, 140, 0, 255]),
+                        LegDisplayElement::Arc { .. } => Rgba([0, 210, 120, 255]),
+                    };
+                    draw_polyline(&mut canvas, &single_points, stroke, 2);
+                }
+            } else {
+                let points = plate_points_for_display_elements(&elements);
+                if points.len() >= 2 {
+                    draw_polyline(&mut canvas, &points, Rgba([0, 0, 0, 140]), 4);
+                    draw_polyline(&mut canvas, &points, Rgba([255, 79, 207, 255]), 2);
+                }
+            }
+        }
+        let note = if skipped_legs.is_empty() {
+            "all resolved legs drawn".to_string()
+        } else {
+            format!("skipped {} unresolved legs", skipped_legs.len())
+        };
+        let output_path = "/tmp/krdd-i34-tayto-overlay.png";
+        canvas.save(output_path).expect("write overlay png");
+        fs::write("/tmp/krdd-i34-tayto-overlay.txt", note).expect("write overlay note");
+        assert_eq!(width as f64, KRDD_I34_PLATE_WIDTH);
+        assert_eq!(height as f64, KRDD_I34_PLATE_HEIGHT);
+        eprintln!("wrote {output_path}");
     }
 
     #[test]

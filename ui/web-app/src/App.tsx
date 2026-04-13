@@ -1680,58 +1680,6 @@ function FlightPlanPage(props: {
     () => componentViews.some((component) => component.kind !== "waypoint"),
     [componentViews],
   );
-  const hierarchicalRows = useMemo(() => {
-    const nextRows: Array<{
-      id: string;
-      kind: "group" | "waypoint" | "discontinuity";
-      label: string;
-      navRef: NavRef | null;
-      depth: number;
-      groupKey: string | null;
-      componentIndex: number | null;
-    }> = [];
-
-    for (const component of componentViews) {
-      if (component.kind === "waypoint") {
-        const navRef = componentWaypointNavRef(component);
-        nextRows.push({
-          id: `component:${component.component_index}`,
-          kind: "waypoint",
-          label: navRef ? navRefLabel(navRef) : component.summary,
-          navRef,
-          depth: 0,
-          groupKey: null,
-          componentIndex: component.component_index,
-        });
-        continue;
-      }
-
-      const groupKey = `group:${component.component_index}`;
-      nextRows.push({
-        id: groupKey,
-        kind: "group",
-        label: structuredComponentLabel(component),
-        navRef: null,
-        depth: 0,
-        groupKey,
-        componentIndex: component.component_index,
-      });
-
-      component.items.forEach((item, index) => {
-        nextRows.push({
-          id: `group:${component.component_index}:item:${index}`,
-          kind: item.kind === "waypoint" ? "waypoint" : "discontinuity",
-          label: concretizedNavItemLabel(item),
-          navRef: item.kind === "waypoint" ? item.nav_ref : null,
-          depth: 1,
-          groupKey,
-          componentIndex: component.component_index,
-        });
-      });
-    }
-
-    return nextRows;
-  }, [componentViews]);
   const displayRows = useMemo(() => {
     return planUiState.display_rows.map((row, index) => ({
         id:
@@ -1935,19 +1883,19 @@ function FlightPlanPage(props: {
       const columnGap = Number.parseFloat(computedStyle.columnGap || computedStyle.gap || "0") || 0;
       const verticalInset = rowGap * 0.6;
       const horizontalInset = columnGap * 0.6;
-      const orderedGroupKeys = hierarchicalRows
-        .filter((row) => row.kind === "group" && row.groupKey)
+      const orderedGroupKeys = displayRows
+        .filter((row) => row.rowKind === "group" && row.groupKey)
         .map((row) => row.groupKey as string);
 
       const nextBoxes = orderedGroupKeys.flatMap((groupKey) => {
-        const groupRows = hierarchicalRows.filter((row) => row.groupKey === groupKey);
+        const groupRows = displayRows.filter((row) => row.groupKey === groupKey);
         const firstRow = groupRows[0];
         const lastRow = groupRows[groupRows.length - 1];
         if (!firstRow || !lastRow) {
           return [];
         }
-        const firstElement = structuredRowRefs.current.get(firstRow.id);
-        const lastElement = structuredRowRefs.current.get(lastRow.id);
+        const firstElement = structuredRowRefs.current.get(firstRow.refKey);
+        const lastElement = structuredRowRefs.current.get(lastRow.refKey);
         if (!firstElement || !lastElement) {
           return [];
         }
@@ -1982,7 +1930,7 @@ function FlightPlanPage(props: {
       window.clearTimeout(settleTimer);
       table.removeEventListener("transitionend", handleTransitionEnd);
     };
-  }, [hierarchicalRows, reorderOpen, showComponentViews]);
+  }, [displayRows, reorderOpen, showComponentViews]);
 
   useEffect(() => {
     if (!showComponentViews || !guidance?.active_leg) {
@@ -2018,8 +1966,8 @@ function FlightPlanPage(props: {
       return;
     }
 
-    const fromElement = structuredRowRefs.current.get(displayRows[fromIndex]?.id ?? "");
-    const toElement = structuredRowRefs.current.get(displayRows[toIndex]?.id ?? "");
+    const fromElement = structuredRowRefs.current.get(displayRows[fromIndex]?.refKey ?? "");
+    const toElement = structuredRowRefs.current.get(displayRows[toIndex]?.refKey ?? "");
     if (!fromElement || !toElement) {
       setStructuredArrow(null);
       return;

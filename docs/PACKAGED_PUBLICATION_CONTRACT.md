@@ -19,7 +19,7 @@ The key rule is:
 
 Published packaged artifacts live in:
 
-- `published-packaged/production/`
+- `published-packaged/`
 
 The final published surface is a single flat directory plus `orchestrator-logs/`.
 
@@ -121,7 +121,7 @@ Bad:
 
 - `cache/nodes/data/.../output/data_2604.zip`
 - `private-work/tpp-ne-2604/...`
-- `published-packaged/production/work/resource-index/...`
+- `published-packaged/work/resource-index/...`
 
 If a manifest keeps a path field, it must still be flat:
 
@@ -129,7 +129,7 @@ If a manifest keeps a path field, it must still be flat:
 
 not:
 
-- `relative_path = "published-packaged/production/work/resource-index/abcd/resource-index.json"`
+- `relative_path = "published-packaged/work/resource-index/abcd/resource-index.json"`
 
 
 ## Intended Semantics
@@ -240,7 +240,7 @@ Per cycle:
      - `vectors_data_YYCC.zip`
      - all regional package zips
    - outputs:
-     - hardlinked flat published files in `published-packaged/production/`
+     - hardlinked flat published files in `published-packaged/`
      - `bundle_YYCC.json` written against those flat filenames
 
 3. add a top-level `publish-current-artifacts` node
@@ -282,7 +282,7 @@ We should add a post-build validation step that checks:
   - `cache/`
   - `private-work/`
   - `work/`
-  - `published-packaged/production/`
+  - `published-packaged/`
 
 That validator should fail the build.
 

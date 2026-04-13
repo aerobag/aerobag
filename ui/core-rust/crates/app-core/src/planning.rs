@@ -208,7 +208,17 @@ pub struct ProcedureLegProvenance {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LegDisplayPath {
+    #[serde(default)]
+    pub style: LegDisplayPathStyle,
     pub elements: Vec<LegDisplayElement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LegDisplayPathStyle {
+    #[default]
+    Solid,
+    Dashed,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

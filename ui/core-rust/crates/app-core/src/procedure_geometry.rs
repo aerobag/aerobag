@@ -1,7 +1,11 @@
 use crate::{LatLon, LegDisplayElement, LegDisplayPath, ProcedureLegMaterializationRecord};
+use crate::planning::LegDisplayPathStyle;
 
 const NOMINAL_HOLD_GROUND_SPEED_KT: f64 = 180.0;
 const STANDARD_RATE_TURN_DEG_PER_SEC: f64 = 3.0;
+const NOMINAL_PROCEDURE_TURN_INITIAL_OUTBOUND_DISTANCE_NM: f64 = 5.0;
+const NOMINAL_PROCEDURE_TURN_GROUND_SPEED_KT: f64 = 120.0;
+const NOMINAL_PROCEDURE_TURN_BARB_TIME_MIN: f64 = 2.0;
 
 pub fn display_path_for_procedure_leg(
     segment_records: &[ProcedureLegMaterializationRecord],
@@ -9,6 +13,9 @@ pub fn display_path_for_procedure_leg(
     leg_end: &ProcedureLegMaterializationRecord,
     hold_record: Option<&ProcedureLegMaterializationRecord>,
 ) -> Option<LegDisplayPath> {
+    if leg_end.path_termination.trim() == "PI" {
+        return procedure_turn_display_path(leg_end);
+    }
     if let Some(hold) = hold_record {
         if let Some(path) = missed_approach_display_path(segment_records, leg_start, leg_end, hold) {
             return Some(path);
@@ -40,6 +47,87 @@ fn hold_display_path(leg: &ProcedureLegMaterializationRecord) -> Option<LegDispl
         leg_length_nm,
         turn_radius_nm,
     ))
+}
+
+fn procedure_turn_display_path(leg: &ProcedureLegMaterializationRecord) -> Option<LegDisplayPath> {
+    let fix = leg.nav_position?;
+    let barb_course_deg =
+        leg.magnetic_course_deg? + leg.airport_magnetic_variation_deg.unwrap_or(0.0);
+    let clockwise = match leg.turn_direction.as_deref().unwrap_or("").trim() {
+        "L" => false,
+        "R" => true,
+        _ => return None,
+    };
+    let outbound_course_deg = if clockwise {
+        normalize_bearing_degrees(barb_course_deg + 45.0)
+    } else {
+        normalize_bearing_degrees(barb_course_deg - 45.0)
+    };
+    let outbound_end = destination_point(
+        fix,
+        outbound_course_deg,
+        NOMINAL_PROCEDURE_TURN_INITIAL_OUTBOUND_DISTANCE_NM,
+    );
+    let barb_end = destination_point(
+        outbound_end,
+        barb_course_deg,
+        nominal_procedure_turn_barb_distance_nm(),
+    );
+    let turn_radius_nm = missed_approach_turn_radius_nm();
+    let turn_center = turn_center_for_heading_change(
+        barb_end,
+        barb_course_deg,
+        clockwise,
+        turn_radius_nm,
+    );
+    let return_heading_deg = normalize_bearing_degrees(barb_course_deg + 180.0);
+    let intercept_start = point_on_turn_center(
+        turn_center,
+        return_heading_deg,
+        clockwise,
+        turn_radius_nm,
+    );
+    let inbound_course_deg = normalize_bearing_degrees(outbound_course_deg + 180.0);
+    let intercept = intersect_heading_with_course(
+        intercept_start,
+        return_heading_deg,
+        fix,
+        inbound_course_deg,
+        fix,
+    )?;
+    Some(LegDisplayPath {
+        style: LegDisplayPathStyle::Dashed,
+        elements: vec![
+            LegDisplayElement::Segment {
+                start: fix,
+                end: outbound_end,
+            },
+            LegDisplayElement::Segment {
+                start: outbound_end,
+                end: barb_end,
+            },
+            LegDisplayElement::Arc {
+                center: turn_center,
+                radius_nm: turn_radius_nm,
+                start: barb_end,
+                end: intercept_start,
+                clockwise,
+                sweep_degrees: 180.0,
+            },
+            LegDisplayElement::Segment {
+                start: intercept_start,
+                end: intercept,
+            },
+            LegDisplayElement::Segment {
+                start: intercept,
+                end: fix,
+            },
+        ],
+    })
+}
+
+fn nominal_procedure_turn_barb_distance_nm() -> f64 {
+    NOMINAL_PROCEDURE_TURN_GROUND_SPEED_KT * (NOMINAL_PROCEDURE_TURN_BARB_TIME_MIN / 60.0)
 }
 
 const NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT: f64 = 90.0;
@@ -103,7 +191,7 @@ fn missed_approach_display_path(
     if let Some(hold_path) = hold_display_path(hold_record) {
         elements.extend(hold_path.elements);
     }
-    Some(LegDisplayPath { elements })
+    Some(LegDisplayPath { style: LegDisplayPathStyle::Solid, elements })
 }
 
 fn missed_approach_turn_radius_nm() -> f64 {
@@ -251,6 +339,7 @@ fn build_hold_display_path(
     );
 
     LegDisplayPath {
+        style: LegDisplayPathStyle::Solid,
         elements: vec![
             LegDisplayElement::Arc {
                 center: first_turn_center,

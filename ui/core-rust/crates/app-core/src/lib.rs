@@ -2949,6 +2949,105 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual report of approach PI legs with coded limits under 15 NM"]
+    fn reports_procedure_turn_limits_under_15nm() {
+        let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
+        let mut stmt = connection
+            .prepare(
+                "
+                SELECT
+                  trim(airport_identifier) AS airport_id,
+                  trim(sid_star_approach_identifier) AS procedure_id,
+                  trim(route_type) AS route_type,
+                  trim(transition_identifier) AS transition_id,
+                  CAST(sequence_number AS INTEGER) AS sequence,
+                  trim(fix_identifier) AS fix_identifier,
+                  trim(turn_direction) AS turn_direction,
+                  trim(magnetic_course) AS magnetic_course,
+                  trim(route_distance_holding_distance_or_time) AS route_distance_or_time
+                FROM cifp_sid_star_app
+                WHERE trim(subsection_code) = 'F'
+                  AND trim(path_and_termination) = 'PI'
+                ORDER BY
+                  CAST(route_distance_holding_distance_or_time AS INTEGER),
+                  trim(airport_identifier),
+                  trim(sid_star_approach_identifier),
+                  trim(route_type),
+                  trim(transition_identifier),
+                  CAST(sequence_number AS INTEGER)
+                ",
+            )
+            .expect("prepare PI report query");
+
+        let rows = stmt
+            .query_map([], |row| {
+                let raw_distance = row.get::<_, String>(8)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i32>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    raw_distance.clone(),
+                    parse_cifp_tenths_value(&raw_distance),
+                ))
+            })
+            .expect("query PI rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect PI rows");
+
+        let filtered = rows
+            .into_iter()
+            .filter(|(_, _, _, _, _, _, _, _, _, distance_nm)| {
+                distance_nm.is_some_and(|distance| distance < 15.0)
+            })
+            .collect::<Vec<_>>();
+
+        let mut report = String::from(
+            "airport,procedure,route_type,transition,sequence,fix,turn,course_deg_mag,raw_distance,distance_nm\n",
+        );
+        for (
+            airport_id,
+            procedure_id,
+            route_type,
+            transition_id,
+            sequence,
+            fix_identifier,
+            turn_direction,
+            magnetic_course,
+            raw_distance,
+            distance_nm,
+        ) in &filtered
+        {
+            report.push_str(&format!(
+                "{},{},{},{},{},{},{},{},{},{}\n",
+                airport_id,
+                procedure_id,
+                route_type,
+                transition_id,
+                sequence,
+                fix_identifier,
+                turn_direction,
+                magnetic_course,
+                raw_distance,
+                distance_nm.unwrap_or_default()
+            ));
+        }
+
+        let output_path = "/tmp/procedure-turn-limits-under-15nm.csv";
+        fs::write(output_path, report).expect("write PI report");
+        eprintln!(
+            "wrote {} rows to {}",
+            filtered.len(),
+            output_path
+        );
+        assert!(!filtered.is_empty(), "expected at least one PI leg under 15 NM");
+    }
+
+    #[test]
     #[ignore = "manual visual inspection overlay for KRDD I34 TAYTO"]
     fn writes_krdd_i34_tayto_overlay_png() {
         let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");

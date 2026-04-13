@@ -169,16 +169,16 @@ pub fn load_resource_index_chart_page_input(
 }
 
 pub fn build_flight_plan(plan: FlightPlan) -> AppResult<FlightPlan> {
-    if plan.legs.is_empty() && plan.route_components.is_empty() && plan.resolved_legs.is_empty() {
+    if plan.route_components.is_empty() && plan.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
-            message: "flight plan must contain at least one leg".to_string(),
+            message: "flight plan must contain structured route data".to_string(),
         });
     }
 
     let plan = plan.normalized();
 
-    if plan.legs.is_empty() && plan.resolved_legs.is_empty() {
+    if plan.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: "flight plan must contain at least one flyable leg".to_string(),
@@ -770,36 +770,13 @@ fn leading_procedure_discontinuity(
 }
 
 pub fn remove_flight_plan_leg(plan: &FlightPlan, index: usize) -> AppResult<FlightPlan> {
-    if index >= plan.legs.len() {
-        return Err(AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: format!("flight plan leg index out of range: {index}"),
-        });
-    }
-
-    let mut next = plan.clone();
-    next.legs.remove(index);
-
-    if next.legs.is_empty() {
-        return Err(AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: "flight plan must contain at least one leg".to_string(),
-        });
-    }
-
-    next.departure = next
-        .legs
-        .first()
-        .and_then(|leg| leg.from.airport_code())
-        .map(|code| AirportId(code.to_string()));
-    next.destination = next
-        .legs
-        .last()
-        .and_then(|leg| leg.to.airport_code())
-        .map(|code| AirportId(code.to_string()));
-    next.updated_at_epoch_ms += 1;
-    next.version += 1;
-    Ok(next)
+    let _ = plan;
+    let _ = index;
+    Err(AppError {
+        kind: AppErrorKind::UnsupportedOperation,
+        message: "legacy leg removal is no longer supported; use structured component mutations"
+            .to_string(),
+    })
 }
 
 pub fn move_flight_plan_waypoint(
@@ -807,70 +784,14 @@ pub fn move_flight_plan_waypoint(
     waypoint_index: usize,
     delta: isize,
 ) -> AppResult<FlightPlan> {
-    if delta == 0 {
-        return Ok(plan.clone());
-    }
-
-    if plan.legs.is_empty() {
-        return Err(AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: "flight plan must contain at least one leg".to_string(),
-        });
-    }
-
-    let mut waypoints = Vec::with_capacity(plan.legs.len() + 1);
-    waypoints.push(
-        plan.legs
-            .first()
-            .map(|leg| leg.from.clone())
-            .ok_or_else(|| AppError {
-                kind: AppErrorKind::InvalidFlightPlan,
-                message: "flight plan must contain at least one leg".to_string(),
-            })?,
-    );
-    waypoints.extend(plan.legs.iter().map(|leg| leg.to.clone()));
-
-    if waypoint_index >= waypoints.len() {
-        return Err(AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: format!("flight plan waypoint index out of range: {waypoint_index}"),
-        });
-    }
-
-    let next_index = waypoint_index as isize + delta;
-    if next_index < 0 || next_index >= waypoints.len() as isize {
-        return Err(AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: format!(
-                "flight plan waypoint move out of range: {waypoint_index} -> {next_index}"
-            ),
-        });
-    }
-
-    waypoints.swap(waypoint_index, next_index as usize);
-
-    let legs = waypoints
-        .windows(2)
-        .map(|pair| PlanLeg {
-            from: pair[0].clone(),
-            to: pair[1].clone(),
-            airway: None,
-        })
-        .collect::<Vec<_>>();
-
-    let mut next = plan.clone();
-    next.legs = legs;
-    next.departure = waypoints
-        .first()
-        .and_then(|waypoint| waypoint.airport_code())
-        .map(|code| AirportId(code.to_string()));
-    next.destination = waypoints
-        .last()
-        .and_then(|waypoint| waypoint.airport_code())
-        .map(|code| AirportId(code.to_string()));
-    next.updated_at_epoch_ms += 1;
-    next.version += 1;
-    Ok(next)
+    let _ = plan;
+    let _ = waypoint_index;
+    let _ = delta;
+    Err(AppError {
+        kind: AppErrorKind::UnsupportedOperation,
+        message: "legacy waypoint reordering is no longer supported; use structured component reordering"
+            .to_string(),
+    })
 }
 
 fn distance_nm(first: LatLon, second: LatLon) -> f64 {
@@ -1425,15 +1346,6 @@ pub fn plan_content_requirements(
 fn plan_airport_codes(plan: &FlightPlan) -> Vec<&str> {
     let mut codes = Vec::new();
 
-    for leg in &plan.legs {
-        if let Some(code) = leg.from.airport_code() {
-            codes.push(code);
-        }
-        if let Some(code) = leg.to.airport_code() {
-            codes.push(code);
-        }
-    }
-
     for component in &plan.route_components {
         match component {
             RouteComponent::Waypoint { waypoint } => {
@@ -1600,12 +1512,15 @@ mod tests {
         FlightPlan {
             id: "plan-1".to_string(),
             name: "KBOS to KJFK".to_string(),
-            legs: vec![PlanLeg {
-                from: NavRef::Airport("KBOS".to_string()),
-                to: NavRef::Airport("KJFK".to_string()),
-                airway: None,
-            }],
-            route_components: Vec::new(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KBOS".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KJFK".to_string()),
+                },
+            ],
             resolved_legs: Vec::new(),
             guidance: None,
             departure: Some(AirportId("KBOS".to_string())),
@@ -1815,44 +1730,6 @@ mod tests {
     }
 
     #[test]
-    fn remove_flight_plan_leg_updates_endpoints_and_version() {
-        let plan = FlightPlan {
-            id: "plan-1".to_string(),
-            name: "NW sample".to_string(),
-            legs: vec![
-                PlanLeg {
-                    from: NavRef::Airport("KRNT".to_string()),
-                    to: NavRef::Airport("KSEA".to_string()),
-                    airway: None,
-                },
-                PlanLeg {
-                    from: NavRef::Airport("KSEA".to_string()),
-                    to: NavRef::Airport("KPAE".to_string()),
-                    airway: None,
-                },
-            ],
-            route_components: Vec::new(),
-            resolved_legs: Vec::new(),
-            guidance: None,
-            departure: Some(AirportId("KRNT".to_string())),
-            destination: Some(AirportId("KPAE".to_string())),
-            alternate: None,
-            cruise_altitude_ft: Some(3000),
-            notes: None,
-            updated_at_epoch_ms: 10,
-            version: 1,
-        };
-
-        let next = remove_flight_plan_leg(&plan, 0).unwrap();
-
-        assert_eq!(next.legs.len(), 1);
-        assert_eq!(next.departure, Some(AirportId("KSEA".to_string())));
-        assert_eq!(next.destination, Some(AirportId("KPAE".to_string())));
-        assert_eq!(next.updated_at_epoch_ms, 11);
-        assert_eq!(next.version, 2);
-    }
-
-    #[test]
     fn loads_catalog_with_structured_ids() {
         let handle = load_catalog(&sample_catalog_json()).unwrap();
         assert_eq!(handle.bundle.schema_version, 1);
@@ -1890,36 +1767,26 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_legacy_legs_into_route_components_and_resolved_legs() {
+    fn component_only_plan_builds_resolved_legs() {
         let plan = build_flight_plan(sample_plan()).unwrap();
 
         assert_eq!(plan.route_components.len(), 2);
         assert_eq!(plan.resolved_legs.len(), 1);
-        assert_eq!(plan.legs.len(), 1);
     }
 
     #[test]
-    fn accepts_component_only_plan_and_backfills_legacy_legs() {
-        let plan = build_flight_plan(FlightPlan {
-            id: "component-only".to_string(),
-            name: "Component only".to_string(),
-            legs: Vec::new(),
-            route_components: vec![
-                RouteComponent::Waypoint {
-                    waypoint: NavRef::Airport("KBOS".to_string()),
-                },
-                RouteComponent::Waypoint {
-                    waypoint: NavRef::Airport("KJFK".to_string()),
-                },
-            ],
+    fn rejects_legacy_leg_only_plan() {
+        let err = build_flight_plan(FlightPlan {
+            id: "legacy-only".to_string(),
+            name: "Legacy only".to_string(),
+            legs: vec![PlanLeg {
+                from: NavRef::Airport("KBOS".to_string()),
+                to: NavRef::Airport("KJFK".to_string()),
+                airway: None,
+            }],
+            route_components: Vec::new(),
             resolved_legs: Vec::new(),
-            guidance: Some(GuidanceState {
-                active_leg_index: 0,
-                display_split_leg_id: None,
-                sequencing_mode: SequencingMode::FollowPlan,
-                direct_to: None,
-                suspend_reason: None,
-            }),
+            guidance: None,
             departure: Some(AirportId("KBOS".to_string())),
             destination: Some(AirportId("KJFK".to_string())),
             alternate: None,
@@ -1928,12 +1795,9 @@ mod tests {
             updated_at_epoch_ms: 0,
             version: 1,
         })
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(plan.resolved_legs.len(), 1);
-        assert_eq!(plan.legs.len(), 1);
-        assert_eq!(plan.legs[0].from.airport_code(), Some("KBOS"));
-        assert_eq!(plan.legs[0].to.airport_code(), Some("KJFK"));
+        assert_eq!(err.kind, AppErrorKind::InvalidFlightPlan);
     }
 
     #[test]
@@ -2555,65 +2419,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn move_flight_plan_waypoint_rebuilds_waypoint_sequence() {
-        let plan = FlightPlan {
-            id: "plan-1".to_string(),
-            name: "NW sample".to_string(),
-            legs: vec![
-                PlanLeg {
-                    from: NavRef::Airport("KRNT".to_string()),
-                    to: NavRef::Navaid("SEA".to_string()),
-                    airway: Some("V27".to_string()),
-                },
-                PlanLeg {
-                    from: NavRef::Navaid("SEA".to_string()),
-                    to: NavRef::Navaid("PAE".to_string()),
-                    airway: Some("V27".to_string()),
-                },
-                PlanLeg {
-                    from: NavRef::Navaid("PAE".to_string()),
-                    to: NavRef::Airport("KAWO".to_string()),
-                    airway: None,
-                },
-            ],
-            route_components: Vec::new(),
-            resolved_legs: Vec::new(),
-            guidance: None,
-            departure: Some(AirportId("KRNT".to_string())),
-            destination: Some(AirportId("KAWO".to_string())),
-            alternate: None,
-            cruise_altitude_ft: Some(3000),
-            notes: None,
-            updated_at_epoch_ms: 10,
-            version: 1,
-        };
-
-        let next = move_flight_plan_waypoint(&plan, 2, -1).unwrap();
-
-        assert_eq!(
-            next.legs,
-            vec![
-                PlanLeg {
-                    from: NavRef::Airport("KRNT".to_string()),
-                    to: NavRef::Navaid("PAE".to_string()),
-                    airway: None,
-                },
-                PlanLeg {
-                    from: NavRef::Navaid("PAE".to_string()),
-                    to: NavRef::Navaid("SEA".to_string()),
-                    airway: None,
-                },
-                PlanLeg {
-                    from: NavRef::Navaid("SEA".to_string()),
-                    to: NavRef::Airport("KAWO".to_string()),
-                    airway: None,
-                },
-            ]
-        );
-        assert_eq!(next.departure, Some(AirportId("KRNT".to_string())));
-        assert_eq!(next.destination, Some(AirportId("KAWO".to_string())));
-        assert_eq!(next.updated_at_epoch_ms, 11);
-        assert_eq!(next.version, 2);
-    }
 }

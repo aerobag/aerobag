@@ -81,7 +81,21 @@ class ResourceIndexAdaptersTest {
     private val samplePlan = FlightPlan(
         id = "plan-1",
         name = "test",
-        legs = listOf(FlightPlanLeg(NavRef.Airport("BOS"), NavRef.Airport("BOS"), null)),
+        legs = emptyList(),
+        routeComponents = listOf(
+            RouteComponent.Waypoint(NavRef.Airport("BOS")),
+            RouteComponent.Waypoint(NavRef.Airport("BOS")),
+        ),
+        resolvedLegs = listOf(
+            ResolvedLeg(
+                id = "component-0-1",
+                from = NavRef.Airport("BOS"),
+                to = NavRef.Airport("BOS"),
+                source = ResolvedLegSource.RouteComponent(componentIndex = 0),
+                procedureProvenance = null,
+            ),
+        ),
+        guidance = null,
         departure = "BOS",
         destination = "BOS",
         alternate = null,

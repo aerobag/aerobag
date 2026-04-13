@@ -469,22 +469,19 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
   }
 
   async buildFlightPlanUi(plan: FlightPlan): Promise<FlightPlanUiState> {
-    return buildMockFlightPlanUiState(plan);
+    void plan;
+    throw new Error("MockAppCoreAdapter no longer supports flight-plan UI; use the wasm adapter");
   }
 
   async activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation> {
-    const uiState = buildMockFlightPlanUiState(plan, {
-      active_leg_index: legIndex,
-      sequencing_mode: "follow_plan",
-      direct_to: null,
-    });
-    return { plan, ui_state: uiState };
+    void plan;
+    void legIndex;
+    throw new Error("MockAppCoreAdapter no longer supports flight-plan mutations; use the wasm adapter");
   }
 
   async activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
-    const current = buildMockFlightPlanUiState(plan).guidance?.active_leg_index ?? 0;
-    const nextIndex = Math.min(current + 1, Math.max(plan.legs.length - 1, 0));
-    return this.activateLegUi(plan, nextIndex);
+    void plan;
+    throw new Error("MockAppCoreAdapter no longer supports flight-plan mutations; use the wasm adapter");
   }
 
   async deleteComponentUi(): Promise<FlightPlanUiMutation> {
@@ -496,27 +493,18 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
   }
 
   async suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
-    const current = buildMockFlightPlanUiState(plan).guidance?.active_leg_index ?? 0;
-    const uiState = buildMockFlightPlanUiState(plan, {
-      active_leg_index: current,
-      sequencing_mode: "suspended",
-      direct_to: null,
-    });
-    return { plan, ui_state: uiState };
+    void plan;
+    throw new Error("MockAppCoreAdapter no longer supports flight-plan mutations; use the wasm adapter");
   }
 
   async unsuspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
-    const current = buildMockFlightPlanUiState(plan).guidance?.active_leg_index ?? 0;
-    const uiState = buildMockFlightPlanUiState(plan, {
-      active_leg_index: current,
-      sequencing_mode: "follow_plan",
-      direct_to: null,
-    });
-    return { plan, ui_state: uiState };
+    void plan;
+    throw new Error("MockAppCoreAdapter no longer supports flight-plan mutations; use the wasm adapter");
   }
 
   async sequenceActiveLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
-    return this.activateNextLegUi(plan);
+    void plan;
+    throw new Error("MockAppCoreAdapter no longer supports flight-plan mutations; use the wasm adapter");
   }
 
   async prepareAirwayPresentation(
@@ -1045,138 +1033,6 @@ export async function loadBestAvailableAdapter(
     adapter: new WasmAppCoreAdapter(mod as WasmModule),
     backend: "wasm",
     detail: "Using generated Rust WASM bindings.",
-  };
-}
-
-function navRefLabel(ref: NavRef): string {
-  if ("Airport" in ref) return ref.Airport;
-  if ("Navaid" in ref) return ref.Navaid;
-  if ("Fix" in ref) return ref.Fix;
-  return `${ref.LatLon.lat.toFixed(3)}, ${ref.LatLon.lon.toFixed(3)}`;
-}
-
-function buildMockFlightPlanUiState(
-  plan: FlightPlan,
-  guidance?: GuidanceState | null,
-): FlightPlanUiState {
-  const legs = plan.legs.map<ResolvedLegUiView>((leg, index) => ({
-    leg_index: index,
-    leg_id: `leg-${index}`,
-    component_index: index,
-    from: leg.from,
-    to: leg.to,
-    active: guidance?.active_leg_index === index,
-    suspend_boundary_after: false,
-  }));
-
-  const components = plan.legs.map<RouteComponentUiView>((leg, index) => ({
-    component_index: index,
-    kind: "waypoint",
-    summary: `${navRefLabel(leg.from)} -> ${navRefLabel(leg.to)}`,
-    items: [
-      { kind: "waypoint", nav_ref: leg.from },
-      { kind: "waypoint", nav_ref: leg.to },
-    ],
-    active: legs[index]?.active ?? false,
-    can_add_airway_after: true,
-    can_add_procedure_before: index > 0,
-    can_change_airway: false,
-    can_remove: true,
-    can_reorder: plan.legs.length > 1,
-    can_reorder_up: index > 0,
-    can_reorder_down: index < plan.legs.length - 1,
-    preceding_waypoint: index > 0 ? plan.legs[index - 1]?.from ?? null : null,
-    following_waypoint: leg.to,
-  }));
-
-  const activeLeg = guidance && guidance.active_leg_index >= 0
-    ? plan.legs[guidance.active_leg_index] ?? null
-    : null;
-  const displayRows = plan.legs.flatMap((leg, index) => ([
-    {
-      label: navRefLabel(leg.from),
-      row_kind: "waypoint" as const,
-      component_kind: "waypoint" as const,
-      component_index: index,
-      leg_index: null,
-      chart_airport_id: "Airport" in leg.from ? leg.from.Airport : null,
-      nav_ref: leg.from,
-      depth: 0,
-      active: false,
-      can_add_airway_after: true,
-      can_add_procedure_before: index > 0,
-      can_change_airway: false,
-      can_remove_component: true,
-      can_reorder_component: plan.legs.length > 1,
-      can_reorder_up: index > 0,
-      can_reorder_down: index < plan.legs.length - 1,
-      start_component_index: index,
-      end_component_index: index + 1,
-      origin_anchor: leg.from,
-      destination_anchor: leg.to,
-      preceding_waypoint: index > 0 ? plan.legs[index - 1]?.from ?? null : null,
-      following_waypoint: leg.to,
-      actions: [
-        { id: "activate_leg" as const, enabled: false },
-        { id: "remove" as const, enabled: true },
-        { id: "insert" as const, enabled: false },
-        { id: "reorder" as const, enabled: plan.legs.length > 1 },
-        { id: "waypoint_info" as const, enabled: false },
-        { id: "add_airway" as const, enabled: true },
-        { id: "select_procedure" as const, enabled: index > 0 && "Airport" in leg.from },
-        { id: "plates" as const, enabled: "Airport" in leg.from },
-      ],
-    },
-    {
-      label: navRefLabel(leg.to),
-      row_kind: "waypoint" as const,
-      component_kind: "waypoint" as const,
-      component_index: index,
-      leg_index: index,
-      chart_airport_id: "Airport" in leg.to ? leg.to.Airport : null,
-      nav_ref: leg.to,
-      depth: 1,
-      active: guidance?.active_leg_index === index,
-      can_add_airway_after: false,
-      can_add_procedure_before: false,
-      can_change_airway: false,
-      can_remove_component: false,
-      can_reorder_component: false,
-      can_reorder_up: false,
-      can_reorder_down: false,
-      start_component_index: null,
-      end_component_index: null,
-      origin_anchor: null,
-      destination_anchor: null,
-      preceding_waypoint: null,
-      following_waypoint: null,
-      actions: [
-        { id: "activate_leg" as const, enabled: true },
-        { id: "waypoint_info" as const, enabled: false },
-        { id: "plates" as const, enabled: "Airport" in leg.to },
-      ],
-    },
-  ]));
-
-  return {
-    components,
-    resolved_legs: legs,
-    display_rows: displayRows,
-    guidance: guidance
-        ? {
-          sequencing_mode: guidance.sequencing_mode as SequencingMode,
-          active_leg_index: guidance.active_leg_index,
-          display_split_leg_index: guidance.active_leg_index,
-          active_component_index: guidance.active_leg_index,
-          active_leg: activeLeg as PlanLeg | null,
-          direct_to: null,
-          can_sequence_active_leg: guidance.sequencing_mode === "direct_to" || guidance.active_leg_index < Math.max(plan.legs.length - 1, 0),
-          can_activate_next_leg: guidance.active_leg_index < Math.max(plan.legs.length - 1, 0),
-          can_suspend: guidance.sequencing_mode !== "suspended",
-          can_unsuspend: guidance.sequencing_mode === "suspended",
-          suspend_boundary_after_active_leg: false,
-        }
-      : null,
   };
 }
 

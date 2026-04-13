@@ -79,7 +79,21 @@ const resourceIndex: ResourceIndexJson = {
 const samplePlan: FlightPlan = {
   id: "plan-1",
   name: "test",
-  legs: [{ from: { Airport: "BOS" }, to: { Airport: "BOS" }, airway: null }],
+  legs: [],
+  route_components: [
+    { kind: "waypoint", waypoint: { Airport: "BOS" } },
+    { kind: "waypoint", waypoint: { Airport: "BOS" } },
+  ],
+  resolved_legs: [
+    {
+      id: "component-0-1",
+      from: { Airport: "BOS" },
+      to: { Airport: "BOS" },
+      source: { kind: "route_component", component_index: 0 },
+      procedure_provenance: null,
+    },
+  ],
+  guidance: null,
   departure: "BOS",
   destination: "BOS",
   alternate: null,

@@ -1660,7 +1660,11 @@ function FlightPlanPage(props: {
   const planScrollSurfaceRef = useRef<HTMLDivElement | null>(null);
   const waypointModalRef = useRef<HTMLElement | null>(null);
   const trayOpen = trayGroup.scrimOpen;
-  const guidance = props.planUiState?.guidance ?? null;
+  const planUiState = props.planUiState;
+  if (!planUiState) {
+    throw new Error("FlightPlanPage requires core-projected FlightPlanUiState");
+  }
+  const guidance = planUiState.guidance ?? null;
   const structuredSurfaceRef = useRef<HTMLDivElement | null>(null);
   const structuredTableRef = useRef<HTMLDivElement | null>(null);
   const structuredRowRefs = useRef(new Map<string, HTMLElement>());
@@ -1668,11 +1672,8 @@ function FlightPlanPage(props: {
   const [structuredGroupBoxes, setStructuredGroupBoxes] = useState<Array<{ key: string; top: number; left: number; width: number; height: number }>>([]);
   const [waypointModalTop, setWaypointModalTop] = useState<number | null>(null);
   const [waypointModalMaxHeight, setWaypointModalMaxHeight] = useState<number | null>(null);
-  const componentViews = useMemo(
-    () => props.planUiState?.components ?? buildLegacyComponentViews(props.plan),
-    [props.plan, props.planUiState?.components],
-  );
-  if (props.planUiState && props.planUiState.resolved_legs.length > 0 && componentViews.length === 0) {
+  const componentViews = useMemo(() => planUiState.components, [planUiState.components]);
+  if (planUiState.resolved_legs.length > 0 && componentViews.length === 0) {
     throw new Error("FlightPlanUiState invariant failed: resolved legs present but components are empty");
   }
   const showComponentViews = useMemo(
@@ -1732,9 +1733,7 @@ function FlightPlanPage(props: {
     return nextRows;
   }, [componentViews]);
   const displayRows = useMemo(() => {
-    const projectedRows = props.planUiState?.display_rows;
-    if (projectedRows && projectedRows.length > 0) {
-      return projectedRows.map((row, index) => ({
+    return planUiState.display_rows.map((row, index) => ({
         id:
           row.row_kind === "group"
             ? `group:${row.component_index ?? index}`
@@ -1778,72 +1777,7 @@ function FlightPlanPage(props: {
         followingWaypoint: row.following_waypoint,
         actions: row.actions,
       }));
-    }
-    const resolvedLegs = props.planUiState?.resolved_legs ?? [];
-    const componentByIndex = new Map(componentViews.map((component) => [component.component_index, component]));
-    let nextLegCursor = 0;
-    return hierarchicalRows.map((row) => {
-      let matchingLeg = null as (typeof resolvedLegs)[number] | null;
-      if (row.kind === "waypoint" && row.navRef) {
-        for (let index = nextLegCursor; index < resolvedLegs.length; index += 1) {
-          const leg = resolvedLegs[index];
-          if (navRefsEqual(leg.to, row.navRef)) {
-            matchingLeg = leg;
-            nextLegCursor = index + 1;
-            break;
-          }
-        }
-      }
-
-      const chartAirportId = row.navRef && "Airport" in row.navRef ? row.navRef.Airport : null;
-      const nextTopLevelWaypoint = row.depth === 0 && row.kind === "waypoint"
-        ? hierarchicalRows.slice(hierarchicalRows.indexOf(row) + 1).find((candidate) => candidate.depth === 0 && candidate.kind === "waypoint" && candidate.navRef)
-        : null;
-
-      return {
-        id: row.id,
-        label: row.label,
-        distance: row.kind === "group" ? "" : matchingLeg ? "11.2" : "—",
-        ete: row.kind === "group" ? "" : matchingLeg ? "0:04" : "—",
-        course: row.kind === "group" ? "" : matchingLeg?.active ? "ACT" : matchingLeg?.suspend_boundary_after ? "SUSP" : matchingLeg ? "161" : "—",
-        active: matchingLeg?.active ?? false,
-        depth: row.depth,
-        rowKind: row.kind,
-        refKey: row.id,
-        chartAirportId,
-        legIndex: row.kind === "waypoint" ? matchingLeg?.leg_index ?? null : null,
-        removeLegIndex: null as number | null,
-        startComponentIndex:
-          row.depth === 0 && row.kind === "waypoint" && row.componentIndex !== null
-            ? row.componentIndex
-            : null as number | null,
-        endComponentIndex:
-          row.depth === 0 && row.kind === "waypoint" && nextTopLevelWaypoint && nextTopLevelWaypoint.componentIndex !== null
-            ? nextTopLevelWaypoint.componentIndex
-            : null as number | null,
-        originAnchor:
-          row.depth === 0 && row.kind === "waypoint" && row.navRef
-            ? row.navRef
-            : null as NavRef | null,
-        destinationAnchor:
-          row.depth === 0 && row.kind === "waypoint" && nextTopLevelWaypoint?.navRef
-            ? nextTopLevelWaypoint.navRef
-            : null as NavRef | null,
-        navRef: row.navRef,
-        groupKey: row.groupKey,
-        componentIndex: row.componentIndex,
-        componentKind: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.kind ?? null : null,
-        canAddAirwayAfter: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_add_airway_after ?? false : false,
-        canAddProcedureBefore: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_add_procedure_before ?? false : false,
-        canChangeAirway: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_change_airway ?? false : false,
-        canRemoveComponent: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_remove ?? false : false,
-        canReorderComponent: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_reorder ?? false : false,
-        precedingWaypoint: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.preceding_waypoint ?? null : null,
-        followingWaypoint: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.following_waypoint ?? null : null,
-        actions: [] as Array<{ id: string; enabled: boolean }>,
-      };
-    });
-  }, [componentViews, hierarchicalRows, props.planUiState?.display_rows, props.planUiState?.resolved_legs]);
+  }, [planUiState.display_rows]);
   const selectedRow = selectedWaypointIndex !== null ? displayRows[selectedWaypointIndex] ?? null : null;
 
   useEffect(() => {
@@ -3644,30 +3578,6 @@ async function buildSeededDevPlan(adapter: AppCoreAdapter): Promise<{ plan: type
     plan: mutation.plan,
     uiState: mutation.ui_state,
   };
-}
-
-function buildLegacyComponentViews(plan: typeof samplePlan): FlightPlanUiState["components"] {
-  if (plan.legs.length === 0) {
-    return [];
-  }
-
-  const waypoints: NavRef[] = [plan.legs[0].from, ...plan.legs.map((leg) => leg.to)];
-  return waypoints.map((waypoint, index) => ({
-    component_index: index,
-    kind: "waypoint",
-    summary: navRefLabel(waypoint),
-    items: [{ kind: "waypoint", nav_ref: waypoint }],
-    active: false,
-    can_add_airway_after: true,
-    can_add_procedure_before: index > 0 && "Airport" in waypoint,
-    can_change_airway: false,
-    can_remove: true,
-    can_reorder: waypoints.length > 1,
-    can_reorder_up: index > 0,
-    can_reorder_down: index < waypoints.length - 1,
-    preceding_waypoint: index > 0 ? waypoints[index - 1] : null,
-    following_waypoint: index + 1 < waypoints.length ? waypoints[index + 1] : null,
-  }));
 }
 
 function concretizedNavItemLabel(item: FlightPlanUiState["components"][number]["items"][number]) {

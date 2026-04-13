@@ -24,9 +24,9 @@ export type FlightPlan = {
     to: { Airport: string } | { Navaid: string } | { Fix: string };
     airway: string | null;
   }>;
-  route_components?: RouteComponent[];
-  resolved_legs?: ResolvedLeg[];
-  guidance?: GuidanceState | null;
+  route_components: RouteComponent[];
+  resolved_legs: ResolvedLeg[];
+  guidance: GuidanceState | null;
   departure: string | null;
   destination: string | null;
   alternate: string | null;

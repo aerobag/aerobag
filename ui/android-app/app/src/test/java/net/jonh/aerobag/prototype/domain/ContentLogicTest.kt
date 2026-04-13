@@ -210,6 +210,20 @@ private object SampleDataFixture {
                 to = NavRef.Airport("BOS"),
             ),
         ),
+        routeComponents = listOf(
+            RouteComponent.Waypoint(NavRef.Airport("BOS")),
+            RouteComponent.Waypoint(NavRef.Airport("BOS")),
+        ),
+        resolvedLegs = listOf(
+            ResolvedLeg(
+                id = "component-0-1",
+                from = NavRef.Airport("BOS"),
+                to = NavRef.Airport("BOS"),
+                source = ResolvedLegSource.RouteComponent(componentIndex = 0),
+                procedureProvenance = null,
+            ),
+        ),
+        guidance = null,
         departure = "BOS",
         destination = "BOS",
         alternate = null,

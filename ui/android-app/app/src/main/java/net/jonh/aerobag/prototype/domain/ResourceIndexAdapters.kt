@@ -326,9 +326,12 @@ private fun airportIdsFromPlan(plan: FlightPlan): List<String> {
     plan.departure?.let(result::add)
     plan.destination?.let(result::add)
     plan.alternate?.let(result::add)
-    plan.legs.forEach { leg ->
-        airportCode(leg.from)?.let(result::add)
-        airportCode(leg.to)?.let(result::add)
+    plan.routeComponents.forEach { component ->
+        when (component) {
+            is RouteComponent.Waypoint -> airportCode(component.waypoint)?.let(result::add)
+            is RouteComponent.Procedure -> result.add(component.procedure.airportId)
+            is RouteComponent.Airway -> {}
+        }
     }
     return result.toList()
 }

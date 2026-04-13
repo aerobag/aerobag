@@ -115,9 +115,12 @@ function airportIdsFromPlan(plan: FlightPlan): string[] {
   if (plan.departure) airportIds.add(plan.departure);
   if (plan.destination) airportIds.add(plan.destination);
   if (plan.alternate) airportIds.add(plan.alternate);
-  for (const leg of plan.legs) {
-    if ("Airport" in leg.from) airportIds.add(leg.from.Airport);
-    if ("Airport" in leg.to) airportIds.add(leg.to.Airport);
+  for (const component of plan.route_components ?? []) {
+    if (component.kind === "waypoint" && "Airport" in component.waypoint) {
+      airportIds.add(component.waypoint.Airport);
+    } else if (component.kind === "procedure") {
+      airportIds.add(component.procedure.airport_id);
+    }
   }
   return [...airportIds];
 }

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::planning::FlightPlan;
+use crate::planning::{FlightPlan, RouteComponent};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DerivedChartPage {
@@ -187,12 +187,24 @@ fn airport_ids_from_plan(plan: &FlightPlan) -> Vec<String> {
     if let Some(alternate) = &plan.alternate {
         airport_ids.push(alternate.0.clone());
     }
-    for leg in &plan.legs {
-        if let Some(code) = leg.from.airport_code() {
-            airport_ids.push(code.to_string());
-        }
-        if let Some(code) = leg.to.airport_code() {
-            airport_ids.push(code.to_string());
+    for component in &plan.route_components {
+        match component {
+            RouteComponent::Waypoint { waypoint } => {
+                if let Some(code) = waypoint.airport_code() {
+                    airport_ids.push(code.to_string());
+                }
+            }
+            RouteComponent::Procedure { procedure } => {
+                airport_ids.push(procedure.airport_id.0.clone());
+            }
+            RouteComponent::Airway { airway } => {
+                if let Some(code) = airway.entry.airport_code() {
+                    airport_ids.push(code.to_string());
+                }
+                if let Some(code) = airway.exit.airport_code() {
+                    airport_ids.push(code.to_string());
+                }
+            }
         }
     }
     airport_ids

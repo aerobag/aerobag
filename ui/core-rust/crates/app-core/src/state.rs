@@ -115,7 +115,7 @@ mod tests {
     use super::*;
     use crate::{
         load_catalog, AirportId, AppErrorKind, ChartFamilyId, ContentAvailability,
-        InstalledPackage, NavRef, PackageId, PlanLeg, RegionId,
+        InstalledPackage, NavRef, PackageId, RegionId, RouteComponent,
     };
 
     fn sample_catalog() -> CatalogHandle {
@@ -189,12 +189,15 @@ mod tests {
         FlightPlan {
             id: "plan-1".to_string(),
             name: "KBOS to KJFK".to_string(),
-            legs: vec![PlanLeg {
-                from: NavRef::Airport("KBOS".to_string()),
-                to: NavRef::Airport("KJFK".to_string()),
-                airway: None,
-            }],
-            route_components: Vec::new(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KBOS".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KJFK".to_string()),
+                },
+            ],
             resolved_legs: Vec::new(),
             guidance: None,
             departure: Some(AirportId("KBOS".to_string())),

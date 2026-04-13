@@ -1755,13 +1755,27 @@ mod tests {
         serde_json::json!({
             "id": "plan-1",
             "name": "KBOS local",
-            "legs": [
+            "legs": [],
+            "route_components": [
                 {
-                    "from": {"Airport": "KBOS"},
-                    "to": {"Airport": "KBOS"},
-                    "airway": null
+                    "kind": "waypoint",
+                    "waypoint": {"Airport": "KBOS"}
+                },
+                {
+                    "kind": "waypoint",
+                    "waypoint": {"Airport": "KBOS"}
                 }
             ],
+            "resolved_legs": [
+                {
+                    "id": "component-0-1",
+                    "from": {"Airport": "KBOS"},
+                    "to": {"Airport": "KBOS"},
+                    "source": {"kind": "route_component", "component_index": 0},
+                    "procedure_provenance": null
+                }
+            ],
+            "guidance": null,
             "departure": "KBOS",
             "destination": "KBOS",
             "alternate": null,

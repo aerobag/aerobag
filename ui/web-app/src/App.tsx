@@ -1922,12 +1922,12 @@ function FlightPlanPage(props: {
           { id: "waypoint_info", label: "Waypoint Info" },
           { id: "add_airway", label: "Add Airway" },
           { id: "select_procedure", label: "Select Procedure" },
-          { id: "charts", label: "Charts" },
+          { id: "charts", label: "Plates" },
         ]
       : [
           { id: "activate_leg", label: "Activate Leg" },
           { id: "waypoint_info", label: "Waypoint Info" },
-          { id: "charts", label: "Charts" },
+          { id: "charts", label: "Plates" },
         ];
 
     return waypointActionDefs.map((action) => {

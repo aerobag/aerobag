@@ -2713,11 +2713,11 @@ private fun FlightPlanPage(
                             "Reorder" to (selectedRow.componentIndex != null && selectedRow.canReorderComponent),
                             "Add Airway" to (selectedRow.canAddAirwayAfter && selectedRow.originAnchor != null && selectedRow.destinationAnchor != null),
                             "Select Procedure" to (selectedRow.canAddProcedureBefore && selectedRow.componentIndex != null && selectedRow.chartAirportId != null),
-                            "Charts" to (selectedRow.chartAirportId != null),
+                            "Plates" to (selectedRow.chartAirportId != null),
                         )
                         else -> listOf(
                             "Activate Leg" to (selectedRow.legIndex != null),
-                            "Charts" to (selectedRow.chartAirportId != null),
+                            "Plates" to (selectedRow.chartAirportId != null),
                         )
                     }
                     actions.forEach { (action, enabled) ->
@@ -2818,7 +2818,7 @@ private fun FlightPlanPage(
                                             procedurePicker = procedurePicker?.copy(loading = false, error = error.message ?: error.toString())
                                         }
                                     }
-                                    "Charts" -> {
+                                    "Plates" -> {
                                         onOpenCharts(selectedRow.chartAirportId)
                                         closePanels()
                                     }

@@ -2,6 +2,7 @@ package net.jonh.aerobag.prototype.domain
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import android.util.Log
 
 data class VectorTileRequest(
     val layer: String,
@@ -157,6 +158,16 @@ class NativeAppCoreAdapter(
         return json.decodeFromString<WireLatLon>(nextJson).toUi()
     }
 
+    fun resolveNavRefPosition(dbPath: String, navRef: NavRef, procedureAirportId: String?): LatLonPoint {
+        val nextJson =
+            bridge.resolveNavRefPositionWithAirportJson(
+                dbPath,
+                json.encodeToString(navRef.toWire()),
+                json.encodeToString(procedureAirportId),
+            )
+        return json.decodeFromString<WireLatLon>(nextJson).toUi()
+    }
+
     fun loadAirwayBranches(dbPath: String, airwayName: String): List<AirwayBranch> {
         val nextJson = bridge.loadAirwayBranchesJson(dbPath, airwayName)
         return json.decodeFromString<List<WireAirwayBranch>>(nextJson).map { it.toUi() }
@@ -190,7 +201,12 @@ class NativeAppCoreAdapter(
 
     fun describeProcedureOptions(dbPath: String, airportId: String, procedureId: String, kind: ProcedureKind): ProcedureOptions {
         val nextJson = bridge.describeProcedureOptionsJson(dbPath, airportId, procedureId, json.encodeToString(kind.toWire()))
-        return json.decodeFromString<WireProcedureOptions>(nextJson).toUi()
+        return runCatching {
+            json.decodeFromString<WireProcedureOptions>(nextJson).toUi()
+        }.getOrElse { error ->
+            Log.e("AerobagProcedure", "describeProcedureOptions decode failed airport=$airportId procedure=$procedureId json=$nextJson", error)
+            throw error
+        }
     }
 
     fun materializeProcedureSelection(
@@ -212,7 +228,16 @@ class NativeAppCoreAdapter(
                 json.encodeToString(enrouteTransition),
                 componentIndex,
             )
-        return json.decodeFromString<WireMaterializedProcedure>(nextJson).toUi()
+        return runCatching {
+            json.decodeFromString<WireMaterializedProcedure>(nextJson).toUi()
+        }.getOrElse { error ->
+            Log.e(
+                "AerobagProcedure",
+                "materializeProcedureSelection decode failed airport=$airportId procedure=$procedureId runway=$runwayTransition enroute=$enrouteTransition json=$nextJson",
+                error,
+            )
+            throw error
+        }
     }
 
     fun buildFlightPlanUi(plan: FlightPlan): FlightPlanUiState {
@@ -365,7 +390,12 @@ class NativeAppCoreAdapter(
                 endComponentIndex,
                 json.encodeToString(built.toWire()),
             )
-        val mutation = json.decodeFromString<WireProcedurePlanUiMutation>(nextJson)
+        val mutation = runCatching {
+            json.decodeFromString<WireProcedurePlanUiMutation>(nextJson)
+        }.getOrElse { error ->
+            Log.e("AerobagProcedure", "insertProcedureMaterializedUi decode failed json=$nextJson", error)
+            throw error
+        }
         return FlightPlanUiMutation(
             plan = mutation.mutation.plan.toUiForTesting(),
             uiState = mutation.ui_state.toUi(),
@@ -383,7 +413,12 @@ class NativeAppCoreAdapter(
                 componentIndex,
                 json.encodeToString(built.toWire()),
             )
-        val mutation = json.decodeFromString<WireProcedurePlanUiMutation>(nextJson)
+        val mutation = runCatching {
+            json.decodeFromString<WireProcedurePlanUiMutation>(nextJson)
+        }.getOrElse { error ->
+            Log.e("AerobagProcedure", "replaceProcedureMaterializedUi decode failed json=$nextJson", error)
+            throw error
+        }
         return FlightPlanUiMutation(
             plan = mutation.mutation.plan.toUiForTesting(),
             uiState = mutation.ui_state.toUi(),

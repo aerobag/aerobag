@@ -50,7 +50,8 @@ pub use navdb::{
     list_airway_exit_candidates, list_procedures, load_airway_branches, load_airway_points,
     load_procedure_concretized_items, load_procedure_legs, load_resolved_procedure_legs,
     materialize_airway_selection, materialize_procedure_selection, resolve_airway_segment,
-    resolve_airway_segment_by_index, resolve_nav_ref_position, select_airway_branch,
+    resolve_airway_segment_by_index, resolve_nav_ref_position,
+    resolve_nav_ref_position_with_procedure_airport, select_airway_branch,
     suggest_airways_near,
 };
 pub use planning::{

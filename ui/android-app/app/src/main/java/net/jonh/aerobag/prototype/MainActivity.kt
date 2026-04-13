@@ -459,6 +459,19 @@ private data class OverlaySurfaceUnits(
     val height: Float,
 )
 
+private data class FlightPlanRouteSegment(
+    val id: String,
+    val from: LatLonPoint,
+    val to: LatLonPoint,
+    val status: RouteSegmentStatus,
+)
+
+private enum class RouteSegmentStatus {
+    Completed,
+    Active,
+    Remaining,
+}
+
 private fun initialMapId(fixture: net.jonh.aerobag.prototype.domain.ContentFixture): String {
     return fixture.mapViews.firstOrNull {
         it.mapView.chartFamily == MapChartFamily.Tac
@@ -519,6 +532,41 @@ private fun resolveChartId(
         return candidateChartId
     }
     return airport?.charts?.firstOrNull()?.id.orEmpty()
+}
+
+private fun routeStatusForLeg(planUiState: FlightPlanUiState?, legIndex: Int): RouteSegmentStatus {
+    val guidance = planUiState?.guidance
+    val activeLegIndex = if (guidance?.activeLeg != null) guidance.activeLegIndex else null
+    if (activeLegIndex != null) {
+        return when {
+            legIndex < activeLegIndex -> RouteSegmentStatus.Completed
+            legIndex == activeLegIndex -> RouteSegmentStatus.Active
+            else -> RouteSegmentStatus.Remaining
+        }
+    }
+    val splitIndex = guidance?.displaySplitLegIndex ?: 0
+    return if (legIndex < splitIndex) RouteSegmentStatus.Completed else RouteSegmentStatus.Remaining
+}
+
+private fun routeSegmentColor(status: RouteSegmentStatus): Color =
+    when (status) {
+        RouteSegmentStatus.Completed -> Color(0xFF8C9DAD)
+        RouteSegmentStatus.Active -> Color(0xFFFF4FCF)
+        RouteSegmentStatus.Remaining -> Color.White
+    }
+
+private fun latLonToScreenPoint(
+    viewport: MapViewportState,
+    point: LatLonPoint,
+    widthPx: Float,
+    heightPx: Float,
+): Offset {
+    val world = latLonToWorld(point.lat, point.lon)
+    val scale = scaleForZoom(viewport.zoom)
+    return Offset(
+        x = ((world.x - viewport.centerWorldX) * scale + widthPx / 2f).toFloat(),
+        y = ((world.y - viewport.centerWorldY) * scale + heightPx / 2f).toFloat(),
+    )
 }
 
 private fun plateFolderCategoryOrder(category: String): Int = when (category) {
@@ -1144,6 +1192,8 @@ private fun AerobagApp() {
             when (page) {
             AppPage.Map -> {
                 MapExplorerPage(
+                    appCore = appCore,
+                    navDbPath = navDbPath,
                     page = page,
                     pageHistory = pageHistory,
                     uptimeLabel = uptimeLabel,
@@ -1166,6 +1216,8 @@ private fun AerobagApp() {
                     onSelectPage = ::navigateToPage,
                     onOpenPlan = { navigateToPage(AppPage.Plan) },
                     legSummary = legSummary,
+                    plan = currentPlan,
+                    planUiState = planUiState,
                 )
             }
             AppPage.Plan -> {
@@ -1254,6 +1306,8 @@ private fun AerobagApp() {
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun MapExplorerPage(
+    appCore: NativeAppCoreAdapter,
+    navDbPath: String,
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
@@ -1268,6 +1322,8 @@ private fun MapExplorerPage(
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
     legSummary: String,
+    plan: net.jonh.aerobag.prototype.domain.FlightPlan,
+    planUiState: FlightPlanUiState?,
 ) {
     val context = LocalContext.current
     val activity = context as? MainActivity
@@ -1290,6 +1346,7 @@ private fun MapExplorerPage(
     var committedOverlayViewport by remember(uiSession) { mutableStateOf<MapViewportState?>(null) }
     var committedOverlaySurfaceUnits by remember(uiSession) { mutableStateOf<OverlaySurfaceUnits?>(null) }
     var mapOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
+    var flightPlanRoute by remember(plan.id, plan.version, planUiState) { mutableStateOf<List<FlightPlanRouteSegment>>(emptyList()) }
     var installingPackage by remember { mutableStateOf<String?>(null) }
     var installRevision by remember { mutableStateOf(0) }
     var motionDragActive by remember { mutableStateOf(false) }
@@ -1380,6 +1437,19 @@ private fun MapExplorerPage(
             widthUnits = surfaceWidthUnits,
             heightUnits = surfaceHeightUnits,
         )
+    }
+    val routeScreenSegments = remember(flightPlanRoute, viewport, surfaceWidthUnits, surfaceHeightUnits) {
+        if (surfaceWidthUnits <= 0f || surfaceHeightUnits <= 0f) {
+            emptyList()
+        } else {
+            flightPlanRoute.map { segment ->
+                Triple(
+                    latLonToScreenPoint(viewport, segment.from, surfaceWidthUnits, surfaceHeightUnits),
+                    latLonToScreenPoint(viewport, segment.to, surfaceWidthUnits, surfaceHeightUnits),
+                    segment,
+                )
+            }
+        }
     }
     val aircraftDrawable = remember(context) { AppCompatResources.getDrawable(context, R.drawable.plan_view_icon)?.mutate() }
     val outlinePaint = remember {
@@ -1516,6 +1586,42 @@ private fun MapExplorerPage(
     }
 
     LaunchedEffect(selectedMap.id) { chartTrayOpen = false }
+    LaunchedEffect(appCore, navDbPath, plan, planUiState) {
+        val rawLegs = plan.resolvedLegs
+        val uiLegs = planUiState?.resolvedLegs ?: emptyList()
+        if (rawLegs.isEmpty() || uiLegs.isEmpty()) {
+            flightPlanRoute = emptyList()
+            return@LaunchedEffect
+        }
+        runCatching {
+            val resolvedPositions = linkedMapOf<String, LatLonPoint>()
+            fun resolveCached(navRef: NavRef, procedureAirportId: String?): LatLonPoint {
+                val key = "${navRefSelectionKey(navRef)}:${procedureAirportId ?: ""}"
+                return resolvedPositions.getOrPut(key) {
+                    when (navRef) {
+                        is NavRef.LatLon -> LatLonPoint(navRef.lat, navRef.lon)
+                        else -> appCore.resolveNavRefPosition(navDbPath, navRef, procedureAirportId)
+                    }
+                }
+            }
+
+            rawLegs.mapIndexedNotNull { index, leg ->
+                runCatching {
+                    val airportId = leg.procedureProvenance?.airportId
+                    FlightPlanRouteSegment(
+                        id = leg.id,
+                        from = resolveCached(leg.from, airportId),
+                        to = resolveCached(leg.to, airportId),
+                        status = routeStatusForLeg(planUiState, uiLegs.getOrNull(index)?.legIndex ?: index),
+                    )
+                }.getOrNull()
+            }
+        }.onSuccess {
+            flightPlanRoute = it
+        }.onFailure {
+            flightPlanRoute = emptyList()
+        }
+    }
     LaunchedEffect(selectedMap.id, pageTrayOpen, chartTrayOpen) {
         if (!pageTrayOpen && !chartTrayOpen) {
             withFrameNanos { }
@@ -1803,6 +1909,27 @@ private fun MapExplorerPage(
                         )
                         drawText(label, rectLeft + 8f, tileRect.topPx + 30f, tileLabelPaint)
                     }
+                }
+            }
+        }
+        if (routeScreenSegments.isNotEmpty()) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val densityScale = density.density
+                routeScreenSegments.forEach { (from, to, segment) ->
+                    drawLine(
+                        color = Color(0x8C000000),
+                        start = Offset(from.x * densityScale, from.y * densityScale),
+                        end = Offset(to.x * densityScale, to.y * densityScale),
+                        strokeWidth = 7f * densityScale,
+                        cap = StrokeCap.Round,
+                    )
+                    drawLine(
+                        color = routeSegmentColor(segment.status),
+                        start = Offset(from.x * densityScale, from.y * densityScale),
+                        end = Offset(to.x * densityScale, to.y * densityScale),
+                        strokeWidth = 3.5f * densityScale,
+                        cap = StrokeCap.Round,
+                    )
                 }
             }
         }
@@ -2100,6 +2227,7 @@ private fun FlightPlanPage(
     var debugPanelOpen by remember { mutableStateOf(false) }
     var airwayPicker by remember { mutableStateOf<AndroidAirwayPickerState?>(null) }
     var procedurePicker by remember { mutableStateOf<AndroidProcedurePickerState?>(null) }
+    var trayOpenedAtMs by remember { mutableStateOf(0L) }
     val projectedPlanUiState = requireNotNull(planUiState) { "FlightPlanPage requires core-projected FlightPlanUiState" }
     val guidance = projectedPlanUiState.guidance
     val componentViews = remember(projectedPlanUiState.components) { projectedPlanUiState.components }
@@ -2242,9 +2370,7 @@ private fun FlightPlanPage(
         Log.d("AerobagReorder", "resolveSelection pendingKey=$selectionKey rows=${rows.joinToString(" | ") { "${it.selectionKey}:${it.rowKind}:${it.label}" }}")
         val nextIndex =
             rows.indexOfFirst { row ->
-                row.selectionKey == selectionKey &&
-                    row.depth == 0 &&
-                    (row.rowKind == "waypoint" || row.rowKind == "group")
+                row.selectionKey == selectionKey
             }
         if (nextIndex >= 0) {
             selectedWaypointIndex = nextIndex
@@ -2325,6 +2451,7 @@ private fun FlightPlanPage(
                                         reorderOpen = reorderOpen,
                                         structuredRowBounds = structuredRowBounds,
                                         onWaypointClick = {
+                                            trayOpenedAtMs = SystemClock.elapsedRealtime()
                                             selectedWaypointIndex = block.index
                                             pendingSelectedRowKey = block.row.selectionKey
                                             reorderOpen = false
@@ -2341,6 +2468,7 @@ private fun FlightPlanPage(
                                         reorderOpen = reorderOpen,
                                         structuredRowBounds = structuredRowBounds,
                                         onHeaderClick = {
+                                            trayOpenedAtMs = SystemClock.elapsedRealtime()
                                             selectedWaypointIndex = block.headerIndex
                                             pendingSelectedRowKey = block.header.selectionKey
                                             reorderOpen = false
@@ -2350,6 +2478,7 @@ private fun FlightPlanPage(
                                         children = block.children,
                                         selectedWaypointIndex = selectedWaypointIndex,
                                         onChildClick = { childIndex ->
+                                            trayOpenedAtMs = SystemClock.elapsedRealtime()
                                             selectedWaypointIndex = childIndex
                                             pendingSelectedRowKey = block.children.firstOrNull { it.first == childIndex }?.second?.selectionKey
                                             reorderOpen = false
@@ -2483,7 +2612,9 @@ private fun FlightPlanPage(
 
         if (selectedWaypointIndex != null && selectedRow != null) {
             Scrim {
-                closePanels()
+                if (SystemClock.elapsedRealtime() - trayOpenedAtMs >= 150L) {
+                    closePanels()
+                }
             }
             if (procedurePicker != null) {
                 val picker = procedurePicker!!
@@ -2523,6 +2654,7 @@ private fun FlightPlanPage(
                                                 options = options,
                                             )
                                     }.onFailure { error ->
+                                        Log.e("AerobagProcedure", "describeProcedureOptions failed airport=${picker.airportId} procedure=${procedure.procedureId}", error)
                                         procedurePicker = picker.copy(loading = false, error = error.message ?: error.toString())
                                     }
                                 },
@@ -2557,6 +2689,11 @@ private fun FlightPlanPage(
                                         onApplyMutation(mutation)
                                         closePanels()
                                     }.onFailure { error ->
+                                        Log.e(
+                                            "AerobagProcedure",
+                                            "materialize/insert procedure failed airport=${picker.airportId} procedure=${picker.selectedProcedureId} enroute=${choice.enrouteTransition}",
+                                            error,
+                                        )
                                         procedurePicker = picker.copy(loading = false, error = error.message ?: error.toString())
                                     }
                                 },
@@ -2852,6 +2989,7 @@ private fun FlightPlanPage(
                                         }.onSuccess { procedures ->
                                             procedurePicker = procedurePicker?.copy(loading = false, procedures = procedures)
                                         }.onFailure { error ->
+                                            Log.e("AerobagProcedure", "listProcedures failed airport=$airportId", error)
                                             procedurePicker = procedurePicker?.copy(loading = false, error = error.message ?: error.toString())
                                         }
                                     }

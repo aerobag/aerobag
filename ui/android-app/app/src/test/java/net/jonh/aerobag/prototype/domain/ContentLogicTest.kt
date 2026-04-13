@@ -312,6 +312,8 @@ private class FakeNativeBridge(
     override fun suggestAirwaysNearJson(dbPath: String, anchorJson: String, limit: Int): String = "[]"
 
     override fun resolveNavRefPositionJson(dbPath: String, navRefJson: String): String = """{"lat":0.0,"lon":0.0}"""
+    override fun resolveNavRefPositionWithAirportJson(dbPath: String, navRefJson: String, airportIdJson: String): String =
+        """{"lat":0.0,"lon":0.0}"""
 
     override fun loadAirwayBranchesJson(dbPath: String, airwayName: String): String = "[]"
 

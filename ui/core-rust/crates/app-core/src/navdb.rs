@@ -66,6 +66,23 @@ pub fn resolve_nav_ref_position(db_path: &Path, nav_ref: &NavRef) -> AppResult<L
     with_connection(db_path, |connection| resolve_nav_ref_position_in_db(connection, nav_ref))
 }
 
+pub fn resolve_nav_ref_position_with_procedure_airport(
+    db_path: &Path,
+    nav_ref: &NavRef,
+    procedure_airport_id: Option<&str>,
+) -> AppResult<LatLon> {
+    with_connection(db_path, |connection| {
+        resolve_nav_ref_position_in_db(connection, nav_ref).or_else(|error| {
+            match (nav_ref, procedure_airport_id) {
+                (NavRef::Fix(code), Some(airport_id)) => {
+                    resolve_runway_fix_position_in_db(connection, code, airport_id).or(Err(error))
+                }
+                _ => Err(error),
+            }
+        })
+    })
+}
+
 pub fn suggest_airways_near(
     db_path: &Path,
     anchor: &NavRef,
@@ -1528,6 +1545,38 @@ fn lookup_nav_ref_position(
              LIMIT 1"
         ),
         params![code],
+        |row| {
+            Ok(LatLon {
+                lat: row.get::<_, f64>(0)?,
+                lon: row.get::<_, f64>(1)?,
+            })
+        },
+    )
+}
+
+fn resolve_runway_fix_position_in_db(
+    connection: &Connection,
+    runway_fix: &str,
+    airport_id: &str,
+) -> rusqlite::Result<LatLon> {
+    let runway_ident = runway_fix.trim().trim_start_matches("RW").trim_start_matches("rw");
+    connection.query_row(
+        "
+        SELECT
+          CASE
+            WHEN trim(LEIdent) = trim(?2) THEN CAST(LELatitude AS REAL)
+            ELSE CAST(HELatitude AS REAL)
+          END AS lat,
+          CASE
+            WHEN trim(LEIdent) = trim(?2) THEN CAST(LELongitude AS REAL)
+            ELSE CAST(HELongitude AS REAL)
+          END AS lon
+        FROM airportrunways
+        WHERE trim(LocationID) = trim(?1)
+          AND (trim(LEIdent) = trim(?2) OR trim(HEIdent) = trim(?2))
+        LIMIT 1
+        ",
+        params![airport_id, runway_ident],
         |row| {
             Ok(LatLon {
                 lat: row.get::<_, f64>(0)?,

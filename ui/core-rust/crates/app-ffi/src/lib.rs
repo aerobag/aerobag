@@ -104,6 +104,22 @@ pub fn resolve_nav_ref_position_json(db_path: &str, nav_ref_json: &str) -> Resul
     serde_json::to_string(&position).map_err(|err| err.to_string())
 }
 
+pub fn resolve_nav_ref_position_with_airport_json(
+    db_path: &str,
+    nav_ref_json: &str,
+    airport_id_json: &str,
+) -> Result<String, String> {
+    let nav_ref: app_core::NavRef = serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
+    let airport_id: Option<String> = serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
+    let position = app_core::resolve_nav_ref_position_with_procedure_airport(
+        Path::new(db_path),
+        &nav_ref,
+        airport_id.as_deref(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&position).map_err(|err| err.to_string())
+}
+
 pub fn load_airway_branches_json(db_path: &str, airway_name: &str) -> Result<String, String> {
     let branches = app_core::load_airway_branches(std::path::Path::new(db_path), airway_name)
         .map_err(|err| err.to_string())?;
@@ -971,6 +987,23 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_res
         let db_path = get_java_string(&mut env, db_path)?;
         let nav_ref_json = get_java_string(&mut env, nav_ref_json)?;
         resolve_nav_ref_position_json(&db_path, &nav_ref_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_resolveNavRefPositionWithAirportJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    nav_ref_json: JString,
+    airport_id_json: JString,
+) -> jstring {
+    let result = (|| {
+        let db_path = get_java_string(&mut env, db_path)?;
+        let nav_ref_json = get_java_string(&mut env, nav_ref_json)?;
+        let airport_id_json = get_java_string(&mut env, airport_id_json)?;
+        resolve_nav_ref_position_with_airport_json(&db_path, &nav_ref_json, &airport_id_json)
     })();
     return_string(&mut env, result)
 }

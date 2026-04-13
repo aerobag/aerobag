@@ -12,6 +12,12 @@ interface NativeBridge {
         navRefJson: String,
     ): String
 
+    fun resolveNavRefPositionWithAirportJson(
+        dbPath: String,
+        navRefJson: String,
+        airportIdJson: String,
+    ): String
+
     fun loadAirwayBranchesJson(
         dbPath: String,
         airwayName: String,
@@ -257,6 +263,12 @@ object NativeBindings : NativeBridge {
     external override fun resolveNavRefPositionJson(
         dbPath: String,
         navRefJson: String,
+    ): String
+
+    external override fun resolveNavRefPositionWithAirportJson(
+        dbPath: String,
+        navRefJson: String,
+        airportIdJson: String,
     ): String
 
     external override fun loadAirwayBranchesJson(

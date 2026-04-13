@@ -45,7 +45,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items as lazyColumnItems
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as lazyGridItems
@@ -1034,6 +1036,7 @@ private fun AerobagApp() {
     var mapViewport by remember { mutableStateOf(createInitialSituationViewport(selectedMap.mapView)) }
     var chartViewport by remember { mutableStateOf<net.jonh.aerobag.prototype.domain.ImageViewportState?>(null) }
     var chartFolderOpen by remember { mutableStateOf(false) }
+    val planListState = rememberLazyListState()
     val chartAirportById = remember(chartCatalog.airports) { chartCatalog.airports.associateBy { it.id } }
     val orderedChartAirports = remember(chartCatalog.airports, derivedChartPageState.orderedAirportIds) {
         derivedChartPageState.orderedAirportIds.mapNotNull { chartAirportById[it] }
@@ -1163,6 +1166,7 @@ private fun AerobagApp() {
                     legSummary = legSummary,
                     samplePlan = currentPlan,
                     planUiState = planUiState,
+                    planListState = planListState,
                     uiTheme = uiTheme,
                     onSelectPage = ::navigateToPage,
                     onOpenCharts = { airportId -> if (airportId != null) openChartsForAirport(airportId) },
@@ -2069,6 +2073,7 @@ private fun FlightPlanPage(
     legSummary: String,
     samplePlan: net.jonh.aerobag.prototype.domain.FlightPlan,
     planUiState: FlightPlanUiState?,
+    planListState: LazyListState,
     uiTheme: UiTheme,
     onSelectPage: (AppPage) -> Unit,
     onOpenCharts: (String?) -> Unit,
@@ -2260,6 +2265,7 @@ private fun FlightPlanPage(
                 ) {
                     PlanHeaderRow()
                     LazyColumn(
+                        state = planListState,
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(PlanGridGap),
                     ) {

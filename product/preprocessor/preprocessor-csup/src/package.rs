@@ -199,6 +199,7 @@ fn write_package_asset_manifest(
             PackageAssetRecord {
                 id: format!("csup:{airport_id}:{filename}"),
                 airport_id,
+                icao_airport_id: None,
                 label: asset_path
                     .file_stem()
                     .and_then(|value| value.to_str())
@@ -211,6 +212,7 @@ fn write_package_asset_manifest(
                     .join(asset_path)
                     .to_string_lossy()
                     .replace('\\', "/"),
+                procedure_uid: None,
                 georef: None,
             }
         })

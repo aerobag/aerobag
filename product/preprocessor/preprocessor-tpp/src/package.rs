@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::Path,
     process::Command,
@@ -201,6 +202,7 @@ fn write_package_asset_manifest(
     package_id: &str,
     members: &[String],
 ) -> anyhow::Result<()> {
+    let tpp_metadata = load_tpp_asset_metadata(asset_root)?;
     let assets = members
         .iter()
         .filter(|member| member.ends_with(".png") && !member.starts_with("thumbnails/"))
@@ -222,9 +224,11 @@ fn write_package_asset_manifest(
                 .and_then(|value| value.to_str())
                 .unwrap_or_default()
                 .to_string();
+            let metadata = tpp_metadata.get(&(airport_id.clone(), label.clone()));
             Ok::<_, anyhow::Error>(PackageAssetRecord {
                 id: format!("plate:{airport_id}:{filename}"),
                 airport_id,
+                icao_airport_id: metadata.and_then(|value| value.icao_airport_id.clone()),
                 label: label.clone(),
                 asset_kind: "png".to_string(),
                 document_type: infer_plate_document_type(&label).to_string(),
@@ -233,6 +237,7 @@ fn write_package_asset_manifest(
                     .join(asset_path)
                     .to_string_lossy()
                     .replace('\\', "/"),
+                procedure_uid: metadata.and_then(|value| value.procedure_uid.clone()),
                 georef: read_plate_georef_from_png(&asset_root.join(member))?,
             })
         })
@@ -248,6 +253,97 @@ fn write_package_asset_manifest(
         serde_json::to_vec_pretty(&manifest).context("failed to encode tpp package asset manifest")?,
     )
     .with_context(|| format!("failed to write {}", output_path.display()))
+}
+
+fn rendered_plate_label(chart_code: &str, state_id: &str, chart_name: &str) -> String {
+    format!(
+        "{}-{}-{}",
+        chart_code.trim().to_uppercase(),
+        state_id.trim().to_uppercase(),
+        chart_name.trim().to_uppercase().replace('/', " AND ")
+    )
+}
+
+#[derive(Debug, Clone)]
+struct TppAssetMetadata {
+    icao_airport_id: Option<String>,
+    procedure_uid: Option<String>,
+}
+
+fn load_tpp_asset_metadata(
+    asset_root: &Path,
+) -> anyhow::Result<BTreeMap<(String, String), TppAssetMetadata>> {
+    let xml_path = asset_root.join("d-TPP_Metafile.xml");
+    if !xml_path.is_file() {
+        return Ok(BTreeMap::new());
+    }
+    let text = fs::read_to_string(&xml_path)
+        .with_context(|| format!("failed to read {}", xml_path.display()))?;
+    let document = roxmltree::Document::parse(&text)
+        .with_context(|| format!("failed to parse {}", xml_path.display()))?;
+
+    let mut metadata = BTreeMap::new();
+    for state in document
+        .descendants()
+        .filter(|node| node.has_tag_name("state_code"))
+    {
+        let state_id = state.attribute("ID").unwrap_or("").trim().to_string();
+        if state_id.is_empty() {
+            continue;
+        }
+        for city in state.children().filter(|node| node.has_tag_name("city_name")) {
+            for airport in city.children().filter(|node| node.has_tag_name("airport_name")) {
+                let apt_id = airport
+                    .attribute("apt_ident")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if apt_id.is_empty() {
+                    continue;
+                }
+                let icao_airport_id = airport
+                    .attribute("icao_ident")
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                for record in airport.children().filter(|node| node.has_tag_name("record")) {
+                    let chart_name = record
+                        .children()
+                        .find(|node| node.has_tag_name("chart_name"))
+                        .and_then(|node| node.text())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    let chart_code = record
+                        .children()
+                        .find(|node| node.has_tag_name("chart_code"))
+                        .and_then(|node| node.text())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if chart_name.is_empty() || chart_code.is_empty() {
+                        continue;
+                    }
+                    let procedure_uid = record
+                        .children()
+                        .find(|node| node.has_tag_name("procuid"))
+                        .and_then(|node| node.text())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string);
+                    let label = rendered_plate_label(&chart_code, &state_id, &chart_name);
+                    metadata.insert(
+                        (apt_id.clone(), label),
+                        TppAssetMetadata {
+                            icao_airport_id: icao_airport_id.clone(),
+                            procedure_uid,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    Ok(metadata)
 }
 
 fn read_plate_georef_from_png(png_path: &Path) -> anyhow::Result<Option<PlateGeoref>> {
@@ -345,13 +441,24 @@ mod tests {
     #[test]
     fn tpp_package_includes_package_asset_manifest() {
         let temp = tempdir().unwrap();
-        let work_dir = temp.path();
-        let airport_dir = work_dir.join("plates/RNT");
+        let asset_root = temp.path().join("asset-root");
+        let output_root = temp.path().join("output-root");
+        let provenance_dir = temp.path().join("meta/provenance/tpp-nw");
+        fs::create_dir_all(&provenance_dir).unwrap();
+        let airport_dir = asset_root.join("plates/RNT");
         fs::create_dir_all(&airport_dir).unwrap();
         fs::write(airport_dir.join("STAR-WA-GLASR THREE.png"), ONE_BY_ONE_PNG).unwrap();
 
-        package_region_versioned(work_dir, work_dir, Region::Nw, "2604", "2604").unwrap();
-        let zip_path = work_dir.join("NW_TPP_2604.zip");
+        package_region_versioned(
+            &asset_root,
+            &output_root,
+            &provenance_dir,
+            Region::Nw,
+            "2604",
+            "2604",
+        )
+        .unwrap();
+        let zip_path = output_root.join("NW_TPP_2604.zip");
         let file = fs::File::open(zip_path).unwrap();
         let mut archive = ZipArchive::new(file).unwrap();
         let manifest: PackageAssetManifest =

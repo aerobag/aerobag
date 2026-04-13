@@ -123,6 +123,8 @@ pub struct CatalogChartId {
 pub struct CatalogPlateRecord {
     pub id: CatalogPlateId,
     pub airport_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icao_airport_id: Option<String>,
     pub region_id: String,
     pub cycle: String,
     pub procedure_code: String,
@@ -131,6 +133,8 @@ pub struct CatalogPlateRecord {
     pub georeferenced: bool,
     pub page_count: u32,
     pub asset_base_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub procedure_uid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub georef: Option<PlateGeoref>,
 }
@@ -266,6 +270,8 @@ pub struct AirportResourcesRecord {
 pub struct PlateRecord {
     pub id: String,
     pub airport_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icao_airport_id: Option<String>,
     pub region_id: String,
     pub package_id: String,
     pub asset_path: String,
@@ -273,6 +279,8 @@ pub struct PlateRecord {
     pub label: String,
     pub asset_kind: String,
     pub document_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub procedure_uid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub georef: Option<PlateGeoref>,
 }
@@ -542,6 +550,7 @@ pub fn build_catalog(index: &ResourceIndex) -> Catalog {
                     cycle: cycle.clone(),
                 },
                 airport_id: plate.airport_id.clone(),
+                icao_airport_id: plate.icao_airport_id.clone(),
                 region_id: plate.region_id.clone(),
                 cycle: cycle.clone(),
                 procedure_code: plate.id.clone(),
@@ -554,6 +563,7 @@ pub fn build_catalog(index: &ResourceIndex) -> Catalog {
                     package_record.id,
                     plate.asset_path.strip_suffix(".png").unwrap_or(&plate.asset_path)
                 ),
+                procedure_uid: plate.procedure_uid.clone(),
                 georef: plate.georef.clone(),
             })
         })
@@ -1019,11 +1029,13 @@ fn collect_plate_records(
         PlateRecord {
             id: packaged.asset.id.clone(),
             airport_id,
+            icao_airport_id: packaged.asset.icao_airport_id.clone(),
             region_id: packaged.region_id.clone(),
             package_id: packaged.package_id.clone(),
             label: packaged.asset.label.clone(),
             asset_kind: packaged.asset.asset_kind.clone(),
             document_type: packaged.asset.document_type.clone(),
+            procedure_uid: packaged.asset.procedure_uid.clone(),
             georef: packaged.asset.georef.clone(),
             asset_path: packaged.asset.asset_path.clone(),
             thumbnail_path: packaged.asset.thumbnail_path.clone(),
@@ -1885,12 +1897,14 @@ mod tests {
                 assets: vec![PackageAssetRecord {
                     id: "plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png".to_string(),
                     airport_id: "BOS".to_string(),
+                    icao_airport_id: None,
                     label: "IAP-MA-ILS OR LOC RWY 04R".to_string(),
                     asset_kind: "plate".to_string(),
                     document_type: "approach".to_string(),
                     asset_path: "plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png".to_string(),
                     thumbnail_path:
                         "thumbnails/plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png".to_string(),
+                    procedure_uid: None,
                     georef: None,
                 }],
             };
@@ -1952,11 +1966,13 @@ mod tests {
                 assets: vec![PackageAssetRecord {
                     id: "csup:KBOS:CSUP-NE_0-0.png".to_string(),
                     airport_id: "BOS".to_string(),
+                    icao_airport_id: None,
                     label: "CSUP-NE_0-0".to_string(),
                     asset_kind: "csup_page".to_string(),
                     document_type: "csup".to_string(),
                     asset_path: "afd/BOS/CSUP-NE_0-0.png".to_string(),
                     thumbnail_path: "thumbnails/afd/BOS/CSUP-NE_0-0.png".to_string(),
+                    procedure_uid: None,
                     georef: None,
                 }],
             };

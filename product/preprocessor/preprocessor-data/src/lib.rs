@@ -1494,6 +1494,7 @@ mod tests {
             output_dir,
             manifest_version: "2604".to_string(),
             mode: DataBuildMode::Production,
+            artifact_stem: Some("data_2604".to_string()),
         };
         let result = build_data_package(&request).unwrap();
         let conn = Connection::open(result.main_db).unwrap();

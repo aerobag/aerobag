@@ -264,7 +264,7 @@ impl Drop for TaskCompletionGuard {
 const PRODUCT_BUILD_CGROUP_ACTIVE_ENV: &str = "PRODUCT_BUILD_CGROUP_ACTIVE";
 const DEFAULT_PRODUCT_BUILD_MEMORY_MAX: &str = "80G";
 const TPP_RENDER_JOBS_PER_RUN: usize = 8;
-const TPP_RENDER_WEIGHT: usize = 4;
+const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
 
 pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<String> {

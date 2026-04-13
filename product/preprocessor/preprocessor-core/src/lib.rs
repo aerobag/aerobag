@@ -15,11 +15,15 @@ pub struct PackageAssetManifest {
 pub struct PackageAssetRecord {
     pub id: String,
     pub airport_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icao_airport_id: Option<String>,
     pub label: String,
     pub asset_kind: String,
     pub document_type: String,
     pub asset_path: String,
     pub thumbnail_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub procedure_uid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub georef: Option<PlateGeoref>,
 }

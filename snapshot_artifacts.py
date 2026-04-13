@@ -8,6 +8,7 @@ import time
 
 
 DEST = pathlib.Path("/root/aerobag-artifacts-snapshot")
+BACKUP_DEST = pathlib.Path("/root/aerobag-artifacts-snapshot.bak")
 SOURCE_ROOT = pathlib.Path("/root/aerobag-artifacts")
 
 
@@ -63,8 +64,12 @@ def link_packed_artifacts(source_root: pathlib.Path, dest_root: pathlib.Path) ->
 
 
 def main() -> int:
+    if BACKUP_DEST.exists():
+        shutil.rmtree(BACKUP_DEST)
     if DEST.exists():
-        shutil.rmtree(DEST)
+        print(f"Backing up {DEST} -> {BACKUP_DEST}")
+        shutil.move(DEST, BACKUP_DEST)
+    print(f"Snapshotting {SOURCE_ROOT} -> {DEST}")
     (DEST / "published-packaged").mkdir(parents=True, exist_ok=True)
 
     timed_copytree(

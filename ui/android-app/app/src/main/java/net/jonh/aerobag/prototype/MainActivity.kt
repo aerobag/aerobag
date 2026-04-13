@@ -3571,7 +3571,8 @@ private fun buildFlightPlanDisplayRows(
     planUiState: FlightPlanUiState?,
     componentViews: List<RouteComponentUiView>,
 ): List<FlightPlanDisplayRow> {
-    return buildList {
+    val baseRows =
+        buildList {
         componentViews.forEachIndexed { index, component ->
             val chartAirportId =
                 when (val navRef = componentWaypointNavRef(component)) {
@@ -3587,7 +3588,6 @@ private fun buildFlightPlanDisplayRows(
                         rowKind = "waypoint",
                         componentKind = component.kind,
                         componentIndex = component.componentIndex,
-                        legIndex = planUiState?.resolvedLegs?.firstOrNull { navRefsEqual(it.from, navRef) }?.legIndex,
                         chartAirportId = chartAirportId,
                         navRef = navRef,
                         active = component.active,
@@ -3667,7 +3667,6 @@ private fun buildFlightPlanDisplayRows(
                     chartAirportId = (firstLeg.from as? NavRef.Airport)?.code,
                     navRef = firstLeg.from,
                     componentIndex = 0,
-                    legIndex = planUiState?.resolvedLegs?.firstOrNull { navRefsEqual(it.from, firstLeg.from) }?.legIndex,
                     startComponentIndex = 0,
                     endComponentIndex = 1,
                     originAnchor = firstLeg.from,
@@ -3675,6 +3674,26 @@ private fun buildFlightPlanDisplayRows(
                 ),
             )
         }
+    }
+    val resolvedLegs = planUiState?.resolvedLegs.orEmpty()
+    var nextLegCursor = 0
+    return baseRows.map { row ->
+        val matchingLeg =
+            if (row.rowKind == "waypoint" && row.navRef != null) {
+                var found = null as net.jonh.aerobag.prototype.domain.ResolvedLegUiView?
+                for (index in nextLegCursor until resolvedLegs.size) {
+                    val leg = resolvedLegs[index]
+                    if (navRefsEqual(leg.to, row.navRef)) {
+                        found = leg
+                        nextLegCursor = index + 1
+                        break
+                    }
+                }
+                found
+            } else {
+                null
+            }
+        row.copy(legIndex = matchingLeg?.legIndex)
     }
 }
 

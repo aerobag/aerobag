@@ -295,6 +295,8 @@ data class RouteComponentUiView(
     val canChangeAirway: Boolean,
     val canRemove: Boolean,
     val canReorder: Boolean,
+    val canReorderUp: Boolean,
+    val canReorderDown: Boolean,
     val precedingWaypoint: NavRef?,
     val followingWaypoint: NavRef?,
 )

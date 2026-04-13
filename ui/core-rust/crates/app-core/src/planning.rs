@@ -211,6 +211,8 @@ pub struct RouteComponentUiView {
     pub can_change_airway: bool,
     pub can_remove: bool,
     pub can_reorder: bool,
+    pub can_reorder_up: bool,
+    pub can_reorder_down: bool,
     pub preceding_waypoint: Option<NavRef>,
     pub following_waypoint: Option<NavRef>,
 }
@@ -639,6 +641,8 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
                     && following_waypoint.is_some(),
                 can_remove: can_remove_component(&plan, component_index),
                 can_reorder: can_reorder_component(&plan, component_index),
+                can_reorder_up: can_reorder_component_in_direction(&plan, component_index, -1),
+                can_reorder_down: can_reorder_component_in_direction(&plan, component_index, 1),
                 preceding_waypoint,
                 following_waypoint,
             }
@@ -729,6 +733,18 @@ fn can_remove_component(plan: &FlightPlan, component_index: usize) -> bool {
 
 fn can_reorder_component(plan: &FlightPlan, component_index: usize) -> bool {
     component_index < plan.route_components.len() && plan.route_components.len() > 1
+}
+
+fn can_reorder_component_in_direction(plan: &FlightPlan, component_index: usize, direction: isize) -> bool {
+    if !can_reorder_component(plan, component_index) {
+        return false;
+    }
+    let target_index = if direction < 0 {
+        component_index.checked_sub(direction.unsigned_abs())
+    } else {
+        component_index.checked_add(direction as usize)
+    };
+    target_index.is_some_and(|index| index < plan.route_components.len())
 }
 
 fn rebuild_after_component_remap(
@@ -3413,10 +3429,18 @@ mod tests {
 
         assert!(ui.components.iter().all(|component| component.can_remove));
         assert!(ui.components.iter().all(|component| component.can_reorder));
+        assert!(!ui.components[0].can_reorder_up);
+        assert!(ui.components[0].can_reorder_down);
+        assert!(ui.components[1].can_reorder_up);
+        assert!(ui.components[1].can_reorder_down);
+        assert!(ui.components[2].can_reorder_up);
+        assert!(!ui.components[2].can_reorder_down);
 
         let grouped = project_ui_state(&sample_airway_component_plan());
         assert!(grouped.components[0].can_remove);
         assert!(grouped.components[0].can_reorder);
+        assert!(!grouped.components[0].can_reorder_up);
+        assert!(grouped.components[0].can_reorder_down);
     }
 
     #[test]
@@ -3668,6 +3692,8 @@ mod tests {
         let ui = project_ui_state(&sample_single_component_plan());
         assert_eq!(ui.components.len(), 1);
         assert!(!ui.components[0].can_reorder);
+        assert!(!ui.components[0].can_reorder_up);
+        assert!(!ui.components[0].can_reorder_down);
     }
 
     #[test]

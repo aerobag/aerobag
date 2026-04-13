@@ -250,6 +250,8 @@ export type RouteComponentUiView = {
   can_change_airway: boolean;
   can_remove: boolean;
   can_reorder: boolean;
+  can_reorder_up: boolean;
+  can_reorder_down: boolean;
   preceding_waypoint: NavRef | null;
   following_waypoint: NavRef | null;
 };

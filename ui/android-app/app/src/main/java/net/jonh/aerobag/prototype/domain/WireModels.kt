@@ -776,6 +776,8 @@ data class WireRouteComponentUiView(
     val can_change_airway: Boolean,
     val can_remove: Boolean,
     val can_reorder: Boolean,
+    val can_reorder_up: Boolean,
+    val can_reorder_down: Boolean,
     val preceding_waypoint: WireNavRef? = null,
     val following_waypoint: WireNavRef? = null,
 )

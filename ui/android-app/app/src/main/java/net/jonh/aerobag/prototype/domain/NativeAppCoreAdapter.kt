@@ -1103,6 +1103,8 @@ private fun WireRouteComponentUiView.toUi() = RouteComponentUiView(
     canChangeAirway = can_change_airway,
     canRemove = can_remove,
     canReorder = can_reorder,
+    canReorderUp = can_reorder_up,
+    canReorderDown = can_reorder_down,
     precedingWaypoint = preceding_waypoint?.toUi(),
     followingWaypoint = following_waypoint?.toUi(),
 )

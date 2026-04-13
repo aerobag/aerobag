@@ -13,6 +13,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -81,7 +83,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathFillType
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
@@ -292,6 +296,7 @@ private data class AppViewSnapshot(
 
 private data class FlightPlanDisplayRow(
     val id: String,
+    val selectionKey: String,
     val label: String,
     val rowKind: String,
     val componentKind: RouteComponentViewKind? = null,
@@ -306,6 +311,8 @@ private data class FlightPlanDisplayRow(
     val canChangeAirway: Boolean = false,
     val canRemoveComponent: Boolean = false,
     val canReorderComponent: Boolean = false,
+    val canReorderUp: Boolean = false,
+    val canReorderDown: Boolean = false,
     val startComponentIndex: Int? = null,
     val endComponentIndex: Int? = null,
     val originAnchor: NavRef? = null,
@@ -2082,6 +2089,7 @@ private fun FlightPlanPage(
     val planWaypointTrayStart = ThumbSize * 2.6f + ThumbGap * 2
     val density = LocalDensity.current
     var selectedWaypointIndex by remember { mutableStateOf<Int?>(null) }
+    var pendingSelectedRowKey by remember { mutableStateOf<String?>(null) }
     var reorderOpen by remember { mutableStateOf(false) }
     var pageTrayOpen by remember { mutableStateOf(false) }
     var debugPanelOpen by remember { mutableStateOf(false) }
@@ -2090,6 +2098,18 @@ private fun FlightPlanPage(
     val guidance = planUiState?.guidance
     val componentViews = remember(samplePlan, planUiState?.components) {
         planUiState?.components ?: buildLegacyComponentViews(samplePlan)
+    }
+    val topLevelOrderSummary = remember(componentViews) {
+        componentViews.joinToString(" | ") { component ->
+            val label =
+                when (component.kind) {
+                    RouteComponentViewKind.Waypoint -> navRefLabel(component.items.filterIsInstance<ConcretizedNavItem.Waypoint>().firstOrNull()?.navRef ?: component.precedingWaypoint ?: component.followingWaypoint ?: NavRef.Fix("?"))
+                    RouteComponentViewKind.Airway,
+                    RouteComponentViewKind.Procedure,
+                    -> structuredComponentLabel(component)
+                }
+            "${component.componentIndex}:$label"
+        }
     }
     val rows = remember(samplePlan, planUiState, componentViews) {
         buildFlightPlanDisplayRows(samplePlan, planUiState, componentViews)
@@ -2207,9 +2227,32 @@ private fun FlightPlanPage(
 
     fun closePanels() {
         selectedWaypointIndex = null
+        pendingSelectedRowKey = null
         reorderOpen = false
         airwayPicker = null
         procedurePicker = null
+    }
+
+    LaunchedEffect(rows, pendingSelectedRowKey) {
+        val selectionKey = pendingSelectedRowKey ?: return@LaunchedEffect
+        Log.d("AerobagReorder", "resolveSelection pendingKey=$selectionKey rows=${rows.joinToString(" | ") { "${it.selectionKey}:${it.rowKind}:${it.label}" }}")
+        val nextIndex =
+            rows.indexOfFirst { row ->
+                row.selectionKey == selectionKey &&
+                    row.depth == 0 &&
+                    (row.rowKind == "waypoint" || row.rowKind == "group")
+            }
+        if (nextIndex >= 0) {
+            selectedWaypointIndex = nextIndex
+        } else {
+            selectedWaypointIndex = null
+            reorderOpen = false
+        }
+        pendingSelectedRowKey = null
+    }
+
+    LaunchedEffect(topLevelOrderSummary) {
+        Log.d("AerobagReorder", "topLevelOrder $topLevelOrderSummary")
     }
 
     Box(
@@ -2275,9 +2318,11 @@ private fun FlightPlanPage(
                                     FlightPlanDataRow(
                                         row = block.row,
                                         selected = selectedWaypointIndex == block.index,
+                                        reorderOpen = reorderOpen,
                                         structuredRowBounds = structuredRowBounds,
                                         onWaypointClick = {
                                             selectedWaypointIndex = block.index
+                                            pendingSelectedRowKey = block.row.selectionKey
                                             reorderOpen = false
                                             airwayPicker = null
                                             procedurePicker = null
@@ -2289,9 +2334,11 @@ private fun FlightPlanPage(
                                     FlightPlanGroupBlock(
                                         header = block.header,
                                         headerSelected = selectedWaypointIndex == block.headerIndex,
+                                        reorderOpen = reorderOpen,
                                         structuredRowBounds = structuredRowBounds,
                                         onHeaderClick = {
                                             selectedWaypointIndex = block.headerIndex
+                                            pendingSelectedRowKey = block.header.selectionKey
                                             reorderOpen = false
                                             airwayPicker = null
                                             procedurePicker = null
@@ -2300,6 +2347,7 @@ private fun FlightPlanPage(
                                         selectedWaypointIndex = selectedWaypointIndex,
                                         onChildClick = { childIndex ->
                                             selectedWaypointIndex = childIndex
+                                            pendingSelectedRowKey = block.children.firstOrNull { it.first == childIndex }?.second?.selectionKey
                                             reorderOpen = false
                                             airwayPicker = null
                                             procedurePicker = null
@@ -2663,23 +2711,31 @@ private fun FlightPlanPage(
                                 CompactSquareButton(
                                     label = "Up",
                                     modifier = Modifier.size(ThumbSize),
-                                    enabled = selectedRow.componentIndex != null && selectedRow.canReorderComponent,
+                                    enabled = selectedRow.componentIndex != null && selectedRow.canReorderUp,
                                     onClick = {
                                         selectedRow.componentIndex?.let {
+                                            Log.d(
+                                                "AerobagReorder",
+                                                "request move dir=-1 selectedIndex=$selectedWaypointIndex key=${selectedRow.selectionKey} component=$it row=${selectedRow.label} orderBefore=$topLevelOrderSummary",
+                                            )
+                                            pendingSelectedRowKey = selectedRow.selectionKey
                                             onApplyMutation(appCore.moveComponentUi(samplePlan, it, -1))
                                         }
-                                        closePanels()
                                     },
                                 )
                                 CompactSquareButton(
                                     label = "Down",
                                     modifier = Modifier.size(ThumbSize),
-                                    enabled = selectedRow.componentIndex != null && selectedRow.canReorderComponent,
+                                    enabled = selectedRow.componentIndex != null && selectedRow.canReorderDown,
                                     onClick = {
                                         selectedRow.componentIndex?.let {
+                                            Log.d(
+                                                "AerobagReorder",
+                                                "request move dir=1 selectedIndex=$selectedWaypointIndex key=${selectedRow.selectionKey} component=$it row=${selectedRow.label} orderBefore=$topLevelOrderSummary",
+                                            )
+                                            pendingSelectedRowKey = selectedRow.selectionKey
                                             onApplyMutation(appCore.moveComponentUi(samplePlan, it, 1))
                                         }
-                                        closePanels()
                                     },
                                 )
                             }
@@ -3540,6 +3596,8 @@ private fun buildLegacyComponentViews(plan: net.jonh.aerobag.prototype.domain.Fl
             canChangeAirway = false,
             canRemove = true,
             canReorder = waypoints.size > 1,
+            canReorderUp = index > 0,
+            canReorderDown = index < waypoints.lastIndex,
             precedingWaypoint = waypoints.getOrNull(index - 1),
             followingWaypoint = waypoints.getOrNull(index + 1),
         )
@@ -3572,6 +3630,14 @@ private fun navRefsEqual(left: NavRef?, right: NavRef?): Boolean = when {
     else -> false
 }
 
+private fun navRefSelectionKey(navRef: NavRef?): String = when (navRef) {
+    is NavRef.Airport -> "airport:${navRef.code}"
+    is NavRef.Navaid -> "navaid:${navRef.code}"
+    is NavRef.Fix -> "fix:${navRef.code}"
+    is NavRef.LatLon -> "latlon:${navRef.lat},${navRef.lon}"
+    null -> "none"
+}
+
 private fun buildFlightPlanDisplayRows(
     plan: net.jonh.aerobag.prototype.domain.FlightPlan,
     planUiState: FlightPlanUiState?,
@@ -3590,6 +3656,7 @@ private fun buildFlightPlanDisplayRows(
                 add(
                     FlightPlanDisplayRow(
                         id = "component:${component.componentIndex}",
+                        selectionKey = "waypoint:${navRefSelectionKey(navRef)}",
                         label = navRef?.let(::navRefLabel) ?: component.summary,
                         rowKind = "waypoint",
                         componentKind = component.kind,
@@ -3602,6 +3669,8 @@ private fun buildFlightPlanDisplayRows(
                         canChangeAirway = component.canChangeAirway,
                         canRemoveComponent = component.canRemove,
                         canReorderComponent = component.canReorder,
+                        canReorderUp = component.canReorderUp,
+                        canReorderDown = component.canReorderDown,
                         startComponentIndex = component.componentIndex,
                         endComponentIndex = component.componentIndex + 1,
                         originAnchor = component.precedingWaypoint ?: navRef,
@@ -3614,6 +3683,8 @@ private fun buildFlightPlanDisplayRows(
                 add(
                     FlightPlanDisplayRow(
                         id = "group:${component.componentIndex}",
+                        selectionKey =
+                            "group:${component.kind.name}:${structuredComponentLabel(component)}:${navRefSelectionKey(originAnchor)}:${navRefSelectionKey(destinationAnchor)}",
                         label = structuredComponentLabel(component),
                         rowKind = "group",
                         componentKind = component.kind,
@@ -3625,6 +3696,8 @@ private fun buildFlightPlanDisplayRows(
                         canChangeAirway = component.canChangeAirway,
                         canRemoveComponent = component.canRemove,
                         canReorderComponent = component.canReorder,
+                        canReorderUp = component.canReorderUp,
+                        canReorderDown = component.canReorderDown,
                         originAnchor = originAnchor,
                         destinationAnchor = destinationAnchor,
                     ),
@@ -3635,6 +3708,7 @@ private fun buildFlightPlanDisplayRows(
                             add(
                                 FlightPlanDisplayRow(
                                     id = "item:${component.componentIndex}:${navRefLabel(item.navRef)}:${size}",
+                                    selectionKey = "child:${component.kind.name}:${navRefSelectionKey(item.navRef)}:${size}",
                                     label = navRefLabel(item.navRef),
                                     rowKind = "waypoint",
                                     componentKind = component.kind,
@@ -3650,6 +3724,7 @@ private fun buildFlightPlanDisplayRows(
                             add(
                                 FlightPlanDisplayRow(
                                     id = "disc:${component.componentIndex}:${size}",
+                                    selectionKey = "disc:${component.kind.name}:${size}",
                                     label = item.label,
                                     rowKind = "discontinuity",
                                     componentKind = component.kind,
@@ -3668,6 +3743,7 @@ private fun buildFlightPlanDisplayRows(
                 0,
                 FlightPlanDisplayRow(
                     id = "legacy:start",
+                    selectionKey = "waypoint:${navRefSelectionKey(firstLeg.from)}",
                     label = navRefLabel(firstLeg.from),
                     rowKind = "waypoint",
                     chartAirportId = (firstLeg.from as? NavRef.Airport)?.code,
@@ -3740,12 +3816,31 @@ private fun navRefLabel(ref: NavRef): String = when (ref) {
 private fun FlightPlanDataRow(
     row: FlightPlanDisplayRow,
     selected: Boolean,
+    reorderOpen: Boolean = false,
     modifier: Modifier = Modifier,
     structuredRowBounds: MutableMap<String, Rect>? = null,
     onWaypointClick: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
-    val indent = (row.depth * 18).dp
+    val childRow = row.depth > 0
+    val targetIndent = when {
+        !childRow -> (row.depth * 18).dp
+        reorderOpen -> (row.depth * 24).dp
+        else -> (row.depth * 18).dp
+    }
+    val indent by animateDpAsState(targetValue = targetIndent, label = "planRowIndent")
+    val rowOpacity by animateFloatAsState(
+        targetValue = if (reorderOpen && childRow) 0.72f else 1f,
+        label = "planRowOpacity",
+    )
+    val labelScaleY by animateFloatAsState(
+        targetValue = if (reorderOpen && childRow) 0.72f else 1f,
+        label = "planRowLabelScaleY",
+    )
+    val cellHeight by animateDpAsState(
+        targetValue = if (reorderOpen && childRow) ThumbSize * 0.34f else ThumbSize,
+        label = "planRowCellHeight",
+    )
     val rowBoundsModifier =
         if (structuredRowBounds != null) {
             rememberStructuredRowBounds(row.id, structuredRowBounds)
@@ -3768,21 +3863,26 @@ private fun FlightPlanDataRow(
             )
         }
     Row(modifier = modifier.then(rowBoundsModifier), horizontalArrangement = Arrangement.spacedBy(PlanGridGap)) {
-        Box(modifier = Modifier.width(ThumbSize * 2.5f).height(ThumbSize)) {
+        Box(modifier = Modifier.width(ThumbSize * 2.5f).height(cellHeight)) {
             CompactSquareButton(
                 label = row.label,
-                modifier = Modifier.fillMaxSize().padding(start = indent),
+                modifier = Modifier.fillMaxSize().padding(start = indent).alpha(rowOpacity),
                 centered = false,
                 textStartPadding = 10.dp,
                 backgroundColor = defaultButtonColor,
                 selected = selected,
                 selectedColor = selectedButtonColor,
+                textModifier =
+                    Modifier.graphicsLayer {
+                        scaleY = labelScaleY
+                        transformOrigin = TransformOrigin(0f, 0.5f)
+                    },
                 onClick = onWaypointClick,
             )
         }
-        PlanCell("—", Modifier.weight(1f))
-        PlanCell("—", Modifier.weight(1f))
-        PlanCell("—", Modifier.weight(1f))
+        PlanCell("—", Modifier.weight(1f), cellHeight = cellHeight, alpha = rowOpacity)
+        PlanCell("—", Modifier.weight(1f), cellHeight = cellHeight, alpha = rowOpacity)
+        PlanCell("—", Modifier.weight(1f), cellHeight = cellHeight, alpha = rowOpacity)
     }
 }
 
@@ -3790,6 +3890,7 @@ private fun FlightPlanDataRow(
 private fun FlightPlanGroupBlock(
     header: FlightPlanDisplayRow,
     headerSelected: Boolean,
+    reorderOpen: Boolean,
     structuredRowBounds: MutableMap<String, Rect>? = null,
     onHeaderClick: () -> Unit,
     children: List<Pair<Int, FlightPlanDisplayRow>>,
@@ -3815,6 +3916,7 @@ private fun FlightPlanGroupBlock(
         FlightPlanDataRow(
             row = header,
             selected = headerSelected,
+            reorderOpen = reorderOpen,
             structuredRowBounds = structuredRowBounds,
             onWaypointClick = onHeaderClick,
         )
@@ -3822,6 +3924,7 @@ private fun FlightPlanGroupBlock(
             FlightPlanDataRow(
                 row = childRow,
                 selected = selectedWaypointIndex == childIndex,
+                reorderOpen = reorderOpen,
                 structuredRowBounds = structuredRowBounds,
                 onWaypointClick = { onChildClick(childIndex) },
             )
@@ -3830,12 +3933,13 @@ private fun FlightPlanGroupBlock(
 }
 
 @Composable
-private fun PlanCell(value: String, modifier: Modifier, isHeader: Boolean = false) {
+private fun PlanCell(value: String, modifier: Modifier, isHeader: Boolean = false, cellHeight: Dp? = null, alpha: Float = 1f) {
     val uiTheme = LocalAerobagUiTheme.current
-    val cellHeight = if (isHeader) ThumbSize * 0.5f else ThumbSize
+    val resolvedCellHeight = cellHeight ?: if (isHeader) ThumbSize * 0.5f else ThumbSize
     Box(
         modifier = modifier
-            .height(cellHeight)
+            .height(resolvedCellHeight)
+            .alpha(alpha)
             .background(uiTheme.controls.panelBg, RoundedCornerShape(ThumbRadius))
             .border(1.dp, uiTheme.controls.panelBorder, RoundedCornerShape(ThumbRadius))
             .padding(horizontal = 10.dp),
@@ -3985,6 +4089,7 @@ private fun CompactSquareButton(
     selectedColor: Color? = null,
     centered: Boolean = true,
     textStartPadding: Dp = 0.dp,
+    textModifier: Modifier = Modifier,
     onDisabledClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
@@ -4061,7 +4166,7 @@ private fun CompactSquareButton(
         ) {
             Text(
                 text = label,
-                modifier = if (centered) Modifier else Modifier.padding(start = textStartPadding, end = 8.dp),
+                modifier = (if (centered) Modifier else Modifier.padding(start = textStartPadding, end = 8.dp)).then(textModifier),
                 style = MaterialTheme.typography.labelSmall,
                 maxLines = maxLines,
                 overflow = TextOverflow.Clip,

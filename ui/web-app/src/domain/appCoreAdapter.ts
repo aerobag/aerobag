@@ -1083,6 +1083,8 @@ function buildMockFlightPlanUiState(
     can_change_airway: false,
     can_remove: true,
     can_reorder: plan.legs.length > 1,
+    can_reorder_up: index > 0,
+    can_reorder_down: index < plan.legs.length - 1,
     preceding_waypoint: index > 0 ? plan.legs[index - 1]?.from ?? null : null,
     following_waypoint: leg.to,
   }));

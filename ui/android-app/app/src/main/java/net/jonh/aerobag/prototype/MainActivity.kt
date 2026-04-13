@@ -1057,9 +1057,6 @@ private fun MapExplorerPage(
     val selectedFamilyMapViews = remember(selectedMap, fixture.mapViews) {
         fixture.mapViews.filter { it.mapView.chartFamily == selectedMap.mapView.chartFamily }
     }
-    val familyPackageNames = remember(selectedFamilyMapViews) {
-        selectedFamilyMapViews.mapNotNull { it.mapView.packageName }.distinct()
-    }
     val viewportState = rememberUpdatedState(viewport)
     val center = remember(viewport) { viewportCenterLatLon(viewport) }
     val surfaceWidthUnits = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
@@ -1080,6 +1077,9 @@ private fun MapExplorerPage(
     val topLeftTrayOpen = pageTrayOpen || chartTrayOpen
     val selectedPackageInstalled = remember(selectedPackageName, installRevision) {
         selectedPackageName?.let { SectionalPackages.isInstalled(context, it) } ?: true
+    }
+    val familyPackageNames = remember(selectedFamilyMapViews) {
+        selectedFamilyMapViews.mapNotNull { it.mapView.packageName }.distinct()
     }
     val installedFamilyPackageCount = remember(familyPackageNames, installRevision) {
         familyPackageNames.count { SectionalPackages.isInstalled(context, it) }
@@ -1116,30 +1116,17 @@ private fun MapExplorerPage(
         }
     } ?: trayOptions.first()
     val tileRects = remember(tiles, density) {
-        val columns = tiles.groupBy { it.x }.mapValues { (_, entries) ->
-            with(density) { entries.minOf { it.leftPx.dp.roundToPx() } }
-        }.toList().sortedBy { it.second }
-        val rows = tiles.groupBy { it.yTms }.mapValues { (_, entries) ->
-            with(density) { entries.minOf { it.topPx.dp.roundToPx() } }
-        }.toList().sortedBy { it.second }
-        val columnRects = columns.mapIndexed { index, (x, leftPx) ->
-            val rightPx = if (index + 1 < columns.size) columns[index + 1].second else with(density) {
-                val sample = tiles.first { it.x == x }
-                (sample.leftPx + sample.sizePx).dp.roundToPx()
-            }
-            x to (leftPx to (rightPx - leftPx))
-        }.toMap()
-        val rowRects = rows.mapIndexed { index, (yTms, topPx) ->
-            val bottomPx = if (index + 1 < rows.size) rows[index + 1].second else with(density) {
-                val sample = tiles.first { it.yTms == yTms }
-                (sample.topPx + sample.sizePx).dp.roundToPx()
-            }
-            yTms to (topPx to (bottomPx - topPx))
-        }.toMap()
         tiles.associate { tile ->
-            val (leftPx, widthPx) = columnRects.getValue(tile.x)
-            val (topPx, heightPx) = rowRects.getValue(tile.yTms)
-            Triple(tile.zoom, tile.x, tile.yTms) to TileRect(leftPx, topPx, widthPx, heightPx)
+            val leftPx = with(density) { tile.leftPx.dp.roundToPx() }
+            val topPx = with(density) { tile.topPx.dp.roundToPx() }
+            val rightPx = with(density) { (tile.leftPx + tile.sizePx).dp.roundToPx() }
+            val bottomPx = with(density) { (tile.topPx + tile.sizePx).dp.roundToPx() }
+            Triple(tile.zoom, tile.x, tile.yTms) to TileRect(
+                leftPx = leftPx,
+                topPx = topPx,
+                widthPx = rightPx - leftPx,
+                heightPx = bottomPx - topPx,
+            )
         }
     }
     val situationOverlay = remember(situation, viewport, surfaceWidthUnits, surfaceHeightUnits) {
@@ -1192,37 +1179,10 @@ private fun MapExplorerPage(
     val tileBitmaps = remember(tiles, selectedMap.id, installRevision) {
         tiles.associate { tile ->
             Triple(tile.zoom, tile.x, tile.yTms) to runCatching {
-                val bytes = SectionalPackages.loadTileBytes(context, tile, familyPackageNames) ?: return@runCatching null
+                val bytes = SectionalPackages.loadTileBytes(context, tile) ?: return@runCatching null
                 val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                if (bitmap == null) {
-                    Log.e(
-                        "AerobagTiles",
-                        "bitmap decode returned null package=${tile.mapView.packageName} path=${tileRelativePath(tile)} bytes=${bytes.size}",
-                    )
-                    null
-                } else {
-                    bitmap.asImageBitmap()
-                }
+                bitmap?.asImageBitmap()
             }.getOrNull()
-        }
-    }
-    LaunchedEffect(selectedMap.id, selectedMap.mapView.chartFamily, tiles, tileBitmaps) {
-        if (selectedMap.mapView.chartFamily != MapChartFamily.Tac) {
-            return@LaunchedEffect
-        }
-        val z10Tiles = tiles.filter { it.zoom == 10 }
-        val targetRow = z10Tiles.filter { it.yTms == 663 }
-        Log.w(
-            "AerobagTiles",
-            "render-set map=${selectedMap.id} package=${selectedMap.mapView.packageName} z10=${z10Tiles.size} row663=${targetRow.size}",
-        )
-        targetRow.forEach { tile ->
-            val key = Triple(tile.zoom, tile.x, tile.yTms)
-            val hasBitmap = tileBitmaps[key] != null
-            Log.w(
-                "AerobagTiles",
-                "render-tile package=${tile.mapView.packageName} path=${tileRelativePath(tile)} hasBitmap=$hasBitmap left=${tile.leftPx} top=${tile.topPx} size=${tile.sizePx}",
-            )
         }
     }
     val tileLabelPaint = remember {
@@ -1580,12 +1540,6 @@ private fun MapExplorerPage(
                         image = bitmap,
                         dstOffset = IntOffset(tileRect.leftPx, tileRect.topPx),
                         dstSize = IntSize(tileRect.widthPx, tileRect.heightPx),
-                    )
-                } else {
-                    drawRect(
-                        color = uiTheme.controls.chartSurfaceBg,
-                        topLeft = Offset(tileRect.leftPx.toFloat(), tileRect.topPx.toFloat()),
-                        size = Size(tileRect.widthPx.toFloat(), tileRect.heightPx.toFloat()),
                     )
                 }
                 if (debugTileLabels) {

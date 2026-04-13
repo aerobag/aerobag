@@ -41,6 +41,7 @@ data class RenderTile(
     val zoom: Int,
     val mapViewId: String,
     val mapView: MapView,
+    val candidateMapViews: List<MapView> = listOf(mapView),
 )
 
 data class PinchSnapshot(
@@ -198,39 +199,45 @@ private fun renderTilesForMapView(
     widthPx: Float,
     heightPx: Float,
 ): List<RenderTile> {
-    val level = pickLevel(mapView, viewport.zoom)
+    val desiredLevel = pickLevel(mapView, viewport.zoom)
+    val levels = mapView.levels
+        .filter { it.zoom <= desiredLevel.zoom }
+        .sortedBy { it.zoom }
     val scale = scaleForZoom(viewport.zoom)
-    val tileWorldSize = WORLD_SIZE / 2.0.pow(level.zoom)
-    val tileScreenSize = tileWorldSize * scale
     val minWorldX = viewport.centerWorldX - widthPx / 2f / scale
     val maxWorldX = viewport.centerWorldX + widthPx / 2f / scale
     val minWorldY = viewport.centerWorldY - heightPx / 2f / scale
     val maxWorldY = viewport.centerWorldY + heightPx / 2f / scale
-    val xStart = kotlin.math.floor(minWorldX / tileWorldSize).toInt()
-    val xEnd = kotlin.math.floor(maxWorldX / tileWorldSize).toInt()
-    val yStart = kotlin.math.floor(minWorldY / tileWorldSize).toInt()
-    val yEnd = kotlin.math.floor(maxWorldY / tileWorldSize).toInt()
-    val levelScale = 2.0.pow(level.zoom).toInt()
     val tiles = mutableListOf<RenderTile>()
 
-    for (yXyz in yStart..yEnd) {
-        for (x in xStart..xEnd) {
-            val yTms = (levelScale - 1) - yXyz
-            if (x < level.xMin || x > level.xMax || yTms < level.yTmsMin || yTms > level.yTmsMax) {
-                continue
+    for (level in levels) {
+        val tileWorldSize = WORLD_SIZE / 2.0.pow(level.zoom)
+        val tileScreenSize = tileWorldSize * scale
+        val xStart = kotlin.math.floor(minWorldX / tileWorldSize).toInt()
+        val xEnd = kotlin.math.floor(maxWorldX / tileWorldSize).toInt()
+        val yStart = kotlin.math.floor(minWorldY / tileWorldSize).toInt()
+        val yEnd = kotlin.math.floor(maxWorldY / tileWorldSize).toInt()
+        val levelScale = 2.0.pow(level.zoom).toInt()
+
+        for (yXyz in yStart..yEnd) {
+            for (x in xStart..xEnd) {
+                val yTms = (levelScale - 1) - yXyz
+                if (x < level.xMin || x > level.xMax || yTms < level.yTmsMin || yTms > level.yTmsMax) {
+                    continue
+                }
+                val left = (((x * tileWorldSize - viewport.centerWorldX) * scale) + widthPx / 2f).toFloat()
+                val top = (((yXyz * tileWorldSize - viewport.centerWorldY) * scale) + heightPx / 2f).toFloat()
+                tiles += RenderTile(
+                    x = x,
+                    yTms = yTms,
+                    leftPx = left,
+                    topPx = top,
+                    sizePx = tileScreenSize.toFloat(),
+                    zoom = level.zoom,
+                    mapViewId = mapViewId,
+                    mapView = mapView,
+                )
             }
-            val left = (((x * tileWorldSize - viewport.centerWorldX) * scale) + widthPx / 2f).toFloat()
-            val top = (((yXyz * tileWorldSize - viewport.centerWorldY) * scale) + heightPx / 2f).toFloat()
-            tiles += RenderTile(
-                x = x,
-                yTms = yTms,
-                leftPx = left,
-                topPx = top,
-                sizePx = tileScreenSize.toFloat(),
-                zoom = level.zoom,
-                mapViewId = mapViewId,
-                mapView = mapView,
-            )
         }
     }
 
@@ -246,15 +253,23 @@ private fun dedupeTiles(tiles: List<RenderTile>): List<RenderTile> {
             byScreenKey[key] = tile
             continue
         }
-        if (existing.mapView.chartFamily != MapChartFamily.Tac && tile.mapView.chartFamily == MapChartFamily.Tac) {
-            byScreenKey[key] = tile
+        val preferred = if (existing.mapView.chartFamily != MapChartFamily.Tac && tile.mapView.chartFamily == MapChartFamily.Tac) {
+            tile
+        } else {
+            existing
         }
+        val mergedCandidates = (existing.candidateMapViews + tile.candidateMapViews)
+            .distinctBy { "${it.packageName}:${it.tileRoot}:${it.chartIndex}" }
+        byScreenKey[key] = preferred.copy(candidateMapViews = mergedCandidates)
     }
     return byScreenKey.values.toList()
 }
 
 fun tileRelativePath(tile: RenderTile): String =
     "${tile.mapView.tileRoot}/${tile.mapView.chartIndex}/${tile.zoom}/${tile.x}/${tile.yTms}.webp"
+
+fun tileRelativePath(tile: RenderTile, mapView: MapView): String =
+    "${mapView.tileRoot}/${mapView.chartIndex}/${tile.zoom}/${tile.x}/${tile.yTms}.webp"
 
 fun tileAssetPath(tile: RenderTile): String =
     "tiles/${tileRelativePath(tile)}"

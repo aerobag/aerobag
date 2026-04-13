@@ -60,7 +60,6 @@ object SectionalPackages {
     fun loadTileBytes(
         context: Context,
         tile: RenderTile,
-        packageCandidates: List<String> = emptyList(),
     ): ByteArray? {
         return when (tile.mapView.storageKind) {
             TileStorageKind.AssetTree ->
@@ -69,30 +68,30 @@ object SectionalPackages {
                 }.getOrNull()
 
             TileStorageKind.SectionalPackage -> {
-                val packageName = tile.mapView.packageName ?: return null
-                val candidateNames = buildList {
-                    add(packageName)
-                    packageCandidates.forEach { candidate ->
-                        if (candidate != packageName) {
-                            add(candidate)
-                        }
-                    }
-                }
-                val relativePath = tileRelativePath(tile)
-                candidateNames.forEach { candidateName ->
+                val candidates = tile.candidateMapViews
+                    .distinctBy { "${it.packageName}:${it.tileRoot}:${it.chartIndex}" }
+                candidates.forEach { candidateMapView ->
+                    val candidateName = candidateMapView.packageName ?: return@forEach
                     val installed = existingInstalledFile(context, candidateName) ?: return@forEach
                     if (!installed.isFile) {
                         return@forEach
                     }
+                    val relativePath = tileRelativePath(tile, candidateMapView)
                     val bytes = packageStore.loadTileBytes(installed, relativePath)
                     if (bytes != null) {
-                        if (candidateName != packageName) {
-                            Log.w(TAG, "fallback hit requested=$packageName served=$candidateName path=$relativePath")
+                        if (candidateMapView != tile.mapView) {
+                            Log.w(
+                                TAG,
+                                "fallback hit requested=${tile.mapView.packageName} served=$candidateName path=$relativePath",
+                            )
                         }
                         return bytes
                     }
                 }
-                Log.w(TAG, "tile unavailable across family package=$packageName path=$relativePath candidates=${candidateNames.joinToString(",")}")
+                Log.w(
+                    TAG,
+                    "tile unavailable across family package=${tile.mapView.packageName} zoom=${tile.zoom} x=${tile.x} y=${tile.yTms} candidates=${candidates.joinToString(",") { "${it.packageName}:${tileRelativePath(tile, it)}" }}",
+                )
                 null
             }
         }

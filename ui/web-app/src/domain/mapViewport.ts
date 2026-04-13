@@ -202,41 +202,47 @@ function renderTilesForMapView(
   width: number,
   height: number,
 ): RenderTile[] {
-  const level = pickLevel(mapView, viewport.zoom);
+  const tiles: RenderTile[] = [];
+  const desiredLevel = pickLevel(mapView, viewport.zoom);
+  const levels = mapView.levels
+    .filter((level) => level.zoom <= desiredLevel.zoom)
+    .sort((left, right) => left.zoom - right.zoom);
   const scale = scaleForZoom(viewport.zoom);
-  const tileWorldSize = WORLD_SIZE / (2 ** level.zoom);
-  const tileScreenSize = tileWorldSize * scale;
   const minWorldX = viewport.centerWorldX - width / 2 / scale;
   const maxWorldX = viewport.centerWorldX + width / 2 / scale;
   const minWorldY = viewport.centerWorldY - height / 2 / scale;
   const maxWorldY = viewport.centerWorldY + height / 2 / scale;
-  const xStart = Math.floor(minWorldX / tileWorldSize);
-  const xEnd = Math.floor(maxWorldX / tileWorldSize);
-  const yStart = Math.floor(minWorldY / tileWorldSize);
-  const yEnd = Math.floor(maxWorldY / tileWorldSize);
-  const levelScale = 2 ** level.zoom;
-  const tiles: RenderTile[] = [];
 
-  for (let yXyz = yStart; yXyz <= yEnd; yXyz += 1) {
-    for (let x = xStart; x <= xEnd; x += 1) {
-      const yTms = (levelScale - 1) - yXyz;
-      if (x < level.x_min || x > level.x_max || yTms < level.y_tms_min || yTms > level.y_tms_max) {
-        continue;
+  for (const level of levels) {
+    const tileWorldSize = WORLD_SIZE / (2 ** level.zoom);
+    const tileScreenSize = tileWorldSize * scale;
+    const xStart = Math.floor(minWorldX / tileWorldSize);
+    const xEnd = Math.floor(maxWorldX / tileWorldSize);
+    const yStart = Math.floor(minWorldY / tileWorldSize);
+    const yEnd = Math.floor(maxWorldY / tileWorldSize);
+    const levelScale = 2 ** level.zoom;
+
+    for (let yXyz = yStart; yXyz <= yEnd; yXyz += 1) {
+      for (let x = xStart; x <= xEnd; x += 1) {
+        const yTms = (levelScale - 1) - yXyz;
+        if (x < level.x_min || x > level.x_max || yTms < level.y_tms_min || yTms > level.y_tms_max) {
+          continue;
+        }
+        const left = ((x * tileWorldSize - viewport.centerWorldX) * scale) + width / 2;
+        const top = ((yXyz * tileWorldSize - viewport.centerWorldY) * scale) + height / 2;
+        tiles.push({
+          x,
+          yTms,
+          left,
+          top,
+          size: tileScreenSize,
+          zoom: level.zoom,
+          src: `${mapView.tile_url_root}/${mapView.chart_index}/${level.zoom}/${x}/${yTms}.webp`,
+          mapViewId: mapView.id ?? mapView.chart_name,
+          packageName: mapView.package_name,
+          chartFamily: mapView.chart_family,
+        });
       }
-      const left = ((x * tileWorldSize - viewport.centerWorldX) * scale) + width / 2;
-      const top = ((yXyz * tileWorldSize - viewport.centerWorldY) * scale) + height / 2;
-      tiles.push({
-        x,
-        yTms,
-        left,
-        top,
-        size: tileScreenSize,
-        zoom: level.zoom,
-        src: `${mapView.tile_url_root}/${mapView.chart_index}/${level.zoom}/${x}/${yTms}.webp`,
-        mapViewId: mapView.id ?? mapView.chart_name,
-        packageName: mapView.package_name,
-        chartFamily: mapView.chart_family,
-      });
     }
   }
 

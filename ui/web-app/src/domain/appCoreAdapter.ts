@@ -2,6 +2,8 @@ import type {
   AppState,
   AirwayAutoSelection,
   AirwayBranch,
+  AirwayEntryCandidate,
+  AirwayExitCandidate,
   AirwayPresentationPlan,
   AirwaySuggestion,
   AirwaySegment,
@@ -36,7 +38,13 @@ import {
 } from "./procedurePlanner";
 import { sampleCatalog } from "./sampleData";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
-import { resolveNavRefPosition } from "./airwayPlanner";
+import {
+  materializeAirwaySelection as materializeAirwaySelectionWithNavDb,
+  prepareAirwayPresentationForAnchors as prepareAirwayPresentationForAnchorsWithNavDb,
+  resolveNavRefPosition,
+  suggestAirwaysNearAnchor as suggestAirwaysNearAnchorWithNavDb,
+} from "./airwayPlanner";
+import { getBrowserNavDb } from "./webNavDb";
 
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];
@@ -122,6 +130,7 @@ export interface UiSession {
 }
 
 export interface AppCoreAdapter {
+  prewarm(): Promise<void>;
   createUiSession(
     resourceIndex: unknown,
     plan: FlightPlan,
@@ -150,6 +159,23 @@ export interface AppCoreAdapter {
     originPosition: LatLon,
     destinationPosition: LatLon | null,
   ): Promise<AirwayPresentationPlan>;
+  suggestAirwaysNearAnchor(anchor: NavRef, limit?: number): Promise<AirwaySuggestion[]>;
+  prepareAirwayPresentationForAnchors(
+    airwayName: string,
+    originAnchor: NavRef,
+    destinationAnchor: NavRef | null,
+  ): Promise<AirwayPresentationPlan>;
+  materializeAirwaySelection(
+    startComponentIndex: number,
+    entry: AirwayEntryCandidate,
+    exit: AirwayExitCandidate,
+    originAnchor: NavRef,
+    destinationAnchor: NavRef | null,
+  ): Promise<{
+    selection: AirwayAutoSelection;
+    airway: AirwaySegment;
+    resolvedLegs: ResolvedLeg[];
+  }>;
   sortAirwaySuggestionsForUi(suggestions: AirwaySuggestion[]): Promise<AirwaySuggestion[]>;
   insertAirwayMaterializedUi(
     plan: FlightPlan,
@@ -215,6 +241,8 @@ function airportCode(ref: FlightPlan["legs"][number]["from"] | null | undefined)
 }
 
 export class MockAppCoreAdapter implements AppCoreAdapter {
+  async prewarm(): Promise<void> {}
+
   async createUiSession(
     resourceIndex: unknown,
     plan: FlightPlan,
@@ -539,6 +567,22 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
     };
   }
 
+  async suggestAirwaysNearAnchor(): Promise<AirwaySuggestion[]> {
+    throw new Error("MockAppCoreAdapter no longer supports airway planning; use the wasm adapter");
+  }
+
+  async prepareAirwayPresentationForAnchors(): Promise<AirwayPresentationPlan> {
+    throw new Error("MockAppCoreAdapter no longer supports airway planning; use the wasm adapter");
+  }
+
+  async materializeAirwaySelection(): Promise<{
+    selection: AirwayAutoSelection;
+    airway: AirwaySegment;
+    resolvedLegs: ResolvedLeg[];
+  }> {
+    throw new Error("MockAppCoreAdapter no longer supports airway planning; use the wasm adapter");
+  }
+
   async sortAirwaySuggestionsForUi(suggestions: AirwaySuggestion[]): Promise<AirwaySuggestion[]> {
     return [...suggestions].sort((left, right) => left.airway_name.localeCompare(right.airway_name));
   }
@@ -676,6 +720,10 @@ type WasmModule = {
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
   constructor(private readonly module: WasmModule) {}
+
+  async prewarm(): Promise<void> {
+    await getBrowserNavDb();
+  }
 
   async createUiSession(
     resourceIndex: unknown,
@@ -903,6 +951,38 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         JSON.stringify(destinationPosition),
       ),
     ) as AirwayPresentationPlan;
+  }
+
+  async suggestAirwaysNearAnchor(anchor: NavRef, limit = 5): Promise<AirwaySuggestion[]> {
+    return suggestAirwaysNearAnchorWithNavDb(this, anchor, limit);
+  }
+
+  async prepareAirwayPresentationForAnchors(
+    airwayName: string,
+    originAnchor: NavRef,
+    destinationAnchor: NavRef | null,
+  ): Promise<AirwayPresentationPlan> {
+    return prepareAirwayPresentationForAnchorsWithNavDb(this, airwayName, originAnchor, destinationAnchor);
+  }
+
+  async materializeAirwaySelection(
+    startComponentIndex: number,
+    entry: AirwayEntryCandidate,
+    exit: AirwayExitCandidate,
+    originAnchor: NavRef,
+    destinationAnchor: NavRef | null,
+  ): Promise<{
+    selection: AirwayAutoSelection;
+    airway: AirwaySegment;
+    resolvedLegs: ResolvedLeg[];
+  }> {
+    return materializeAirwaySelectionWithNavDb(
+      startComponentIndex,
+      entry,
+      exit,
+      originAnchor,
+      destinationAnchor,
+    );
   }
 
   async sortAirwaySuggestionsForUi(suggestions: AirwaySuggestion[]): Promise<AirwaySuggestion[]> {

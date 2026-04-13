@@ -51,14 +51,7 @@ import {
 } from "./domain/imageViewport";
 import { pointTileUrl, type PointTilePayload } from "./domain/vectorTiles";
 import type { MapOverlayQueryResult } from "./domain/appCoreAdapter";
-import {
-  airwayEntryCandidateFromPresentation,
-  airwayExitCandidatesFromPresentation,
-  materializeAirwaySelection,
-  prepareAirwayPresentationForAnchors,
-  suggestAirwaysNearAnchor,
-} from "./domain/airwayPlanner";
-import { getBrowserNavDb } from "./domain/webNavDb";
+import { airwayEntryCandidateFromPresentation, airwayExitCandidatesFromPresentation } from "./domain/airwayPlanner";
 import { debugLog } from "./domain/debugLog";
 
 type SurfaceSize = {
@@ -390,15 +383,15 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    void getBrowserNavDb().catch((error) => {
+    void appCoreAdapter?.prewarm().catch((error) => {
       if (!cancelled) {
-        console.error("failed to prewarm browser nav db", error);
+        console.error("failed to prewarm web adapter", error);
       }
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [appCoreAdapter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -718,7 +711,7 @@ export default function App() {
             if (!appCoreAdapter) return;
             const entry = airwayEntryCandidateFromPresentation(presentation, entryIndex);
             const exit = airwayExitCandidatesFromPresentation(presentation, entryIndex)[exitIndex];
-            const materialized = await materializeAirwaySelection(
+            const materialized = await appCoreAdapter.materializeAirwaySelection(
               startComponentIndex,
               entry,
               exit,
@@ -739,7 +732,7 @@ export default function App() {
             if (!appCoreAdapter) return;
             const entry = airwayEntryCandidateFromPresentation(presentation, entryIndex);
             const exit = airwayExitCandidatesFromPresentation(presentation, entryIndex)[exitIndex];
-            const materialized = await materializeAirwaySelection(
+            const materialized = await appCoreAdapter.materializeAirwaySelection(
               componentIndex,
               entry,
               exit,
@@ -1772,7 +1765,7 @@ function FlightPlanPage(props: {
               selectedEntryIndex: null,
             });
             window.requestAnimationFrame(() => {
-              void suggestAirwaysNearAnchor(adapter, selectedRow.originAnchor!).then((suggestions) => {
+              void adapter.suggestAirwaysNearAnchor(selectedRow.originAnchor!).then((suggestions) => {
                 setAirwayPicker((current) => current ? {
                   ...current,
                   loading: false,
@@ -2361,8 +2354,7 @@ function FlightPlanPage(props: {
                             }
                             setAirwayPicker((current) => current ? { ...current, loading: true, error: null } : current);
                             try {
-                              const presentation = await prepareAirwayPresentationForAnchors(
-                                adapter,
+                              const presentation = await adapter.prepareAirwayPresentationForAnchors(
                                 suggestion.airway_name,
                                 airwayPicker.originAnchor,
                                 airwayPicker.destinationAnchor,
@@ -3460,8 +3452,7 @@ async function applyFlightPlanMutation(
 async function buildSeededDevPlan(adapter: AppCoreAdapter): Promise<{ plan: typeof samplePlan; uiState: FlightPlanUiState }> {
   const originAnchor: NavRef = { Airport: "KRNT" };
   const destinationAnchor: NavRef = { Airport: "KUAO" };
-  const presentation = await prepareAirwayPresentationForAnchors(
-    adapter,
+  const presentation = await adapter.prepareAirwayPresentationForAnchors(
     "V23",
     originAnchor,
     destinationAnchor,
@@ -3477,7 +3468,7 @@ async function buildSeededDevPlan(adapter: AppCoreAdapter): Promise<{ plan: type
   if (!exit) {
     throw new Error("failed to seed V23 airway: RAWER not found in exit candidates");
   }
-  const materialized = await materializeAirwaySelection(
+  const materialized = await adapter.materializeAirwaySelection(
     0,
     entry,
     exit,

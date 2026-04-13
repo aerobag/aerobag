@@ -6,6 +6,12 @@ APP_DIR="$ROOT/ui/android-app"
 APP_ID="net.jonh.aerobag.prototype"
 ACTIVITY="$APP_ID/.MainActivity"
 TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
+cleanup_repo_local_tool_dirs() {
+  rm -rf "$APP_DIR/.gradle" "$APP_DIR/.kotlin"
+}
+
+trap cleanup_repo_local_tool_dirs EXIT
+
 DEFAULT_UI_TARGET_ROOT="$(python3 - <<'PY' "$ROOT" "$TARGET_ROOT_FILE"
 from pathlib import Path
 import sys

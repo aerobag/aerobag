@@ -80,7 +80,7 @@ object SectionalPackages {
                     val bytes = packageStore.loadTileBytes(installed, relativePath)
                     if (bytes != null) {
                         if (candidateMapView != tile.mapView) {
-                            Log.w(
+                            logWarn(
                                 TAG,
                                 "fallback hit requested=${tile.mapView.packageName} served=$candidateName path=$relativePath",
                             )
@@ -88,7 +88,7 @@ object SectionalPackages {
                         return bytes
                     }
                 }
-                Log.w(
+                logWarn(
                     TAG,
                     "tile unavailable across family package=${tile.mapView.packageName} zoom=${tile.zoom} x=${tile.x} y=${tile.yTms} candidates=${candidates.joinToString(",") { "${it.packageName}:${tileRelativePath(tile, it)}" }}",
                 )
@@ -115,14 +115,14 @@ internal class ZipPackageStore {
     fun loadTileBytes(file: File, relativePath: String): ByteArray? {
         val packageRef = packageFor(file)
         if (!packageRef.entries.contains(relativePath)) {
-            Log.w(TAG, "zip missing entry file=${file.name} path=$relativePath entries=${packageRef.entries.size}")
+            logWarn(TAG, "zip missing entry file=${file.name} path=$relativePath entries=${packageRef.entries.size}")
             return null
         }
         val entry = packageRef.zipFile.getEntry(relativePath) ?: return null
         return runCatching {
             packageRef.zipFile.getInputStream(entry).use { it.readBytes() }
         }.onFailure { error ->
-            Log.e(TAG, "zip read failed file=${file.name} path=$relativePath", error)
+            logError(TAG, "zip read failed file=${file.name} path=$relativePath", error)
         }.getOrNull()
     }
 
@@ -153,6 +153,14 @@ internal class ZipPackageStore {
             return replacement
         }
     }
+}
+
+private fun logWarn(tag: String, message: String) {
+    runCatching { Log.w(tag, message) }
+}
+
+private fun logError(tag: String, message: String, error: Throwable) {
+    runCatching { Log.e(tag, message, error) }
 }
 
 internal class OpenZipPackage private constructor(

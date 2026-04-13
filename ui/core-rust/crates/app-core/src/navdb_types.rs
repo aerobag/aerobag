@@ -128,9 +128,13 @@ pub struct ProcedureLegMaterializationRecord {
     pub nav_ref: Option<NavRef>,
     pub nav_position: Option<LatLon>,
     #[serde(default)]
-    pub recommended_nav_ref: Option<NavRef>,
+    pub nav_magnetic_variation_deg: Option<f64>,
     #[serde(default)]
-    pub recommended_nav_position: Option<LatLon>,
+    pub defining_nav_ref: Option<NavRef>,
+    #[serde(default)]
+    pub defining_nav_position: Option<LatLon>,
+    #[serde(default)]
+    pub defining_nav_magnetic_variation_deg: Option<f64>,
     pub airport_magnetic_variation_deg: Option<f64>,
     #[serde(default)]
     pub altitude_1_ft: Option<f64>,

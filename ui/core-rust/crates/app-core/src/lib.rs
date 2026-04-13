@@ -921,6 +921,8 @@ fn resolve_procedure_materialization_legs_with_provenance(
     )],
 ) -> Vec<ResolvedLeg> {
     let mut resolved = Vec::<ResolvedLeg>::new();
+    let mut previous_display_path: Option<LegDisplayPath> = None;
+    let mut previous_leg_to: Option<NavRef> = None;
 
     for (role, leg_records, _, reversed) in segments {
         let mut fix_records = leg_records
@@ -935,6 +937,15 @@ fn resolve_procedure_materialization_legs_with_provenance(
         for (index, pair) in fix_records.windows(2).enumerate() {
             let from = pair[0].nav_ref.clone().expect("filtered non-waypoint leg");
             let to = pair[1].nav_ref.clone().expect("filtered non-waypoint leg");
+            if should_skip_reconciliation_anchor_leg(
+                previous_display_path.as_ref(),
+                previous_leg_to.as_ref(),
+                pair[0],
+                &from,
+                &to,
+            ) {
+                continue;
+            }
             if from == to && pair[1].path_termination.trim() == "HM" {
                 continue;
             }
@@ -980,13 +991,72 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     role: role.clone(),
                     path_termination: provenance_record.path_termination_kind.clone(),
                     leg_sequence: provenance_record.sequence,
-                    display_path,
+                    display_path: display_path.clone(),
                 }),
             });
+            previous_display_path = display_path;
+            previous_leg_to = Some(to);
         }
     }
 
     resolved
+}
+
+fn should_skip_reconciliation_anchor_leg(
+    previous_display_path: Option<&LegDisplayPath>,
+    previous_leg_to: Option<&NavRef>,
+    current_from_record: &ProcedureLegMaterializationRecord,
+    current_from: &NavRef,
+    current_to: &NavRef,
+) -> bool {
+    let Some(previous_display_path) = previous_display_path else {
+        return false;
+    };
+    let Some(previous_leg_to) = previous_leg_to else {
+        return false;
+    };
+    if previous_leg_to != current_to {
+        return false;
+    }
+    let Some(final_heading_deg) = final_course_of_display_path(previous_display_path) else {
+        return false;
+    };
+    let Some(anchor_position) = current_from_record.nav_position else {
+        return false;
+    };
+    let Some(fix_position) = previous_display_path_terminal_position(previous_display_path) else {
+        return false;
+    };
+    let heading_to_anchor_deg = bearing_degrees(fix_position, anchor_position);
+    let heading_delta_deg =
+        angular_difference_degrees(final_heading_deg, heading_to_anchor_deg);
+    heading_delta_deg > 10.0 && current_from != current_to
+}
+
+fn final_course_of_display_path(path: &LegDisplayPath) -> Option<f64> {
+    match path.elements.last()? {
+        LegDisplayElement::Segment { start, end } => Some(bearing_degrees(*start, *end)),
+        LegDisplayElement::Arc {
+            center,
+            end,
+            clockwise,
+            ..
+        } => {
+            let radial_deg = bearing_degrees(*center, *end);
+            Some(normalize_bearing_degrees(if *clockwise {
+                radial_deg + 90.0
+            } else {
+                radial_deg - 90.0
+            }))
+        }
+    }
+}
+
+fn previous_display_path_terminal_position(path: &LegDisplayPath) -> Option<LatLon> {
+    match path.elements.last()? {
+        LegDisplayElement::Segment { end, .. } => Some(*end),
+        LegDisplayElement::Arc { end, .. } => Some(*end),
+    }
 }
 
 fn procedure_segment_role(role: &MaterializedSegmentRole) -> ProcedureSegmentRole {
@@ -1092,6 +1162,29 @@ fn distance_nm(first: LatLon, second: LatLon) -> f64 {
     let lat_nm = (second.lat - first.lat) * 60.0;
     let lon_nm = (second.lon - first.lon) * 60.0 * ((first.lat + second.lat).to_radians() / 2.0).cos();
     (lat_nm.powi(2) + lon_nm.powi(2)).sqrt()
+}
+
+fn bearing_degrees(from: LatLon, to: LatLon) -> f64 {
+    let from_lat = from.lat.to_radians();
+    let from_lon = from.lon.to_radians();
+    let to_lat = to.lat.to_radians();
+    let to_lon = to.lon.to_radians();
+    let delta_lon = to_lon - from_lon;
+    let y = delta_lon.sin() * to_lat.cos();
+    let x = from_lat.cos() * to_lat.sin() - from_lat.sin() * to_lat.cos() * delta_lon.cos();
+    normalize_bearing_degrees(y.atan2(x).to_degrees())
+}
+
+fn angular_difference_degrees(left: f64, right: f64) -> f64 {
+    let mut delta = (normalize_bearing_degrees(left) - normalize_bearing_degrees(right)).abs();
+    if delta > 180.0 {
+        delta = 360.0 - delta;
+    }
+    delta
+}
+
+fn normalize_bearing_degrees(bearing_deg: f64) -> f64 {
+    bearing_deg.rem_euclid(360.0)
 }
 
 fn compare_airway_name_for_ui(left: &str, right: &str) -> std::cmp::Ordering {
@@ -1929,11 +2022,25 @@ mod tests {
     const KRDD_I34_PIXELS_PER_LATITUDE: f64 = -875.1345342908107;
     const KRDD_I34_TOP_LEFT_LON: f64 = -122.90490833333334;
     const KRDD_I34_TOP_LEFT_LAT: f64 = 41.04124722222222;
+    const KELN_VORB_PLATE_PATH: &str = "/root/aerobag-artifacts-snapshot/published-unpacked/production/2604/private-work/tpp-nw-2604/work/tpp-nw/NW_TPP_2604/plates/ELN/IAP-WA-VOR-B.png";
+    const KELN_VORB_PLATE_WIDTH: f64 = 812.0;
+    const KELN_VORB_PLATE_HEIGHT: f64 = 1239.0;
+    const KELN_VORB_PIXELS_PER_LONGITUDE: f64 = 895.5745163217357;
+    const KELN_VORB_PIXELS_PER_LATITUDE: f64 = -1312.6776811833108;
+    const KELN_VORB_TOP_LEFT_LON: f64 = -120.91211111111112;
+    const KELN_VORB_TOP_LEFT_LAT: f64 = 47.45025277777778;
 
     fn krdd_i34_plate_pixel(position: LatLon) -> (f64, f64) {
         (
             (position.lon - KRDD_I34_TOP_LEFT_LON) * KRDD_I34_PIXELS_PER_LONGITUDE,
             (position.lat - KRDD_I34_TOP_LEFT_LAT) * KRDD_I34_PIXELS_PER_LATITUDE,
+        )
+    }
+
+    fn keln_vorb_plate_pixel(position: LatLon) -> (f64, f64) {
+        (
+            (position.lon - KELN_VORB_TOP_LEFT_LON) * KELN_VORB_PIXELS_PER_LONGITUDE,
+            (position.lat - KELN_VORB_TOP_LEFT_LAT) * KELN_VORB_PIXELS_PER_LATITUDE,
         )
     }
 
@@ -1969,6 +2076,48 @@ mod tests {
                         let bearing = start_bearing + sweep * fraction;
                         let point = destination_point(*center, bearing, *radius_nm);
                         let pixel = krdd_i34_plate_pixel(point);
+                        if points.last().copied() != Some(pixel) {
+                            points.push(pixel);
+                        }
+                    }
+                }
+            }
+        }
+        points
+    }
+
+    fn keln_vorb_plate_points_for_display_elements(elements: &[LegDisplayElement]) -> Vec<(f64, f64)> {
+        let mut points = Vec::new();
+        for element in elements {
+            match element {
+                LegDisplayElement::Segment { start, end } => {
+                    let start_point = keln_vorb_plate_pixel(*start);
+                    let end_point = keln_vorb_plate_pixel(*end);
+                    if points.last().copied() != Some(start_point) {
+                        points.push(start_point);
+                    }
+                    points.push(end_point);
+                }
+                LegDisplayElement::Arc {
+                    center,
+                    radius_nm,
+                    start,
+                    end: _,
+                    clockwise,
+                    sweep_degrees,
+                } => {
+                    let start_bearing = bearing_from(*center, *start);
+                    let sweep = if *clockwise {
+                        sweep_degrees.abs()
+                    } else {
+                        -sweep_degrees.abs()
+                    };
+                    let steps = usize::max(8, (sweep.abs() / 15.0).ceil() as usize);
+                    for index in 0..=steps {
+                        let fraction = index as f64 / steps as f64;
+                        let bearing = start_bearing + sweep * fraction;
+                        let point = destination_point(*center, bearing, *radius_nm);
+                        let pixel = keln_vorb_plate_pixel(point);
                         if points.last().copied() != Some(pixel) {
                             points.push(pixel);
                         }
@@ -2226,6 +2375,8 @@ mod tests {
                   CAST(sequence_number AS INTEGER) AS sequence,
                   trim(fix_identifier) AS fix_identifier,
                   trim(recommended_navaid) AS recommended_navaid,
+                  trim((SELECT Variation FROM nav WHERE trim(LocationID) = trim(fix_identifier) LIMIT 1)) AS nav_magnetic_variation,
+                  trim((SELECT Variation FROM nav WHERE trim(LocationID) = trim(recommended_navaid) LIMIT 1)) AS defining_nav_magnetic_variation,
                   trim((SELECT MagneticVariation FROM airports WHERE trim(LocationID) = trim(airport_identifier) LIMIT 1)) AS airport_magnetic_variation,
                   trim(altitude_1) AS altitude_1,
                   trim(altitude_2) AS altitude_2,
@@ -2249,20 +2400,22 @@ mod tests {
                 let sequence = row.get::<_, i32>(4)?;
                 let fix_identifier = row.get::<_, String>(5)?;
                 let recommended_navaid = row.get::<_, String>(6)?;
-                let airport_magnetic_variation = row.get::<_, String>(7)?;
-                let altitude_1 = row.get::<_, String>(8)?;
-                let altitude_2 = row.get::<_, String>(9)?;
-                let path_termination = row.get::<_, String>(10)?;
-                let turn_direction = row.get::<_, String>(11)?;
-                let magnetic_course = row.get::<_, String>(12)?;
-                let route_distance_or_time = row.get::<_, String>(13)?;
+                let nav_magnetic_variation = row.get::<_, Option<String>>(7)?;
+                let defining_nav_magnetic_variation = row.get::<_, Option<String>>(8)?;
+                let airport_magnetic_variation = row.get::<_, String>(9)?;
+                let altitude_1 = row.get::<_, String>(10)?;
+                let altitude_2 = row.get::<_, String>(11)?;
+                let path_termination = row.get::<_, String>(12)?;
+                let turn_direction = row.get::<_, String>(13)?;
+                let magnetic_course = row.get::<_, String>(14)?;
+                let route_distance_or_time = row.get::<_, String>(15)?;
                 let nav_ref = browser_style_nav_ref_for_identifier(&connection, &fix_identifier);
-                let recommended_nav_ref =
+                let defining_nav_ref =
                     browser_style_nav_ref_for_identifier(&connection, &recommended_navaid);
                 let nav_position = nav_ref
                     .as_ref()
                     .and_then(|nav_ref| browser_style_nav_position_for_ref(&connection, airport_id.as_str(), nav_ref));
-                let recommended_nav_position = recommended_nav_ref
+                let defining_nav_position = defining_nav_ref
                     .as_ref()
                     .and_then(|nav_ref| browser_style_nav_position_for_ref(&connection, airport_id.as_str(), nav_ref));
                 Ok(ProcedureLegMaterializationRecord {
@@ -2275,8 +2428,14 @@ mod tests {
                     sequence,
                     nav_position,
                     nav_ref,
-                    recommended_nav_ref,
-                    recommended_nav_position,
+                    nav_magnetic_variation_deg: nav_magnetic_variation
+                        .as_deref()
+                        .and_then(|value| value.trim().parse::<f64>().ok()),
+                    defining_nav_ref,
+                    defining_nav_position,
+                    defining_nav_magnetic_variation_deg: defining_nav_magnetic_variation
+                        .as_deref()
+                        .and_then(|value| value.trim().parse::<f64>().ok()),
                     airport_magnetic_variation_deg: parse_airport_magnetic_variation(&airport_magnetic_variation),
                     altitude_1_ft: parse_cifp_altitude_ft(&altitude_1),
                     altitude_2_ft: parse_cifp_altitude_ft(&altitude_2),
@@ -3048,6 +3207,42 @@ mod tests {
     }
 
     #[test]
+    fn suppresses_reconciliation_anchor_leg_after_procedure_turn_when_heading_breaks_inbound() {
+        let rows = load_browser_style_procedure_distinct_rows(fixture_db_path(), "KELN", "VOR-B");
+        let records = load_browser_style_procedure_materialization_records(
+            fixture_db_path(),
+            "KELN",
+            "VOR-B",
+        );
+        let materialized = materialize_procedure_from_records(
+            "KELN",
+            "VOR-B",
+            ProcedureKind::Approach,
+            None,
+            Some("ELN".to_string()),
+            0,
+            rows,
+            records,
+        )
+        .expect("materialize KELN VOR-B ELN");
+
+        assert!(
+            materialized
+                .resolved_legs
+                .iter()
+                .any(|leg| leg.id == "procedure-VOR-B-A-20"),
+            "expected PI leg to remain present"
+        );
+        assert!(
+            materialized
+                .resolved_legs
+                .iter()
+                .all(|leg| leg.id != "procedure-VOR-B-S-20"),
+            "expected common anchor leg JIDES->ELN to be suppressed after the PI"
+        );
+    }
+
+    #[test]
     #[ignore = "manual visual inspection overlay for KRDD I34 TAYTO"]
     fn writes_krdd_i34_tayto_overlay_png() {
         let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
@@ -3244,6 +3439,165 @@ mod tests {
                 .unwrap();
 
         assert!(!projected.is_empty());
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KELN VOR-B ELN"]
+    fn writes_keln_vorb_eln_overlay_png() {
+        let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
+        let eln_position = browser_style_nav_position_for_ref(
+            &connection,
+            "KELN",
+            &NavRef::Navaid("ELN".to_string()),
+        )
+        .expect("resolve ELN position");
+        let rows = load_browser_style_procedure_distinct_rows(fixture_db_path(), "KELN", "VOR-B");
+        let records = load_browser_style_procedure_materialization_records(
+            fixture_db_path(),
+            "KELN",
+            "VOR-B",
+        );
+        let materialized = materialize_procedure_from_records(
+            "KELN",
+            "VOR-B",
+            ProcedureKind::Approach,
+            None,
+            Some("ELN".to_string()),
+            0,
+            rows,
+            records,
+        )
+        .expect("materialize KELN VOR-B ELN");
+
+        for leg in &materialized.resolved_legs {
+            eprintln!(
+                "{} {:?} -> {:?} display_path={}",
+                leg.id,
+                leg.from,
+                leg.to,
+                leg.procedure_provenance
+                    .as_ref()
+                    .and_then(|provenance| provenance.display_path.as_ref())
+                    .is_some()
+            );
+        }
+
+        let plate = image::open(KELN_VORB_PLATE_PATH).expect("open plate png");
+        let (width, height) = plate.dimensions();
+        let base_canvas = match plate {
+            DynamicImage::ImageRgba8(image) => image,
+            other => other.to_rgba8(),
+        };
+        let mut canvas = base_canvas.clone();
+        let mut skipped_legs = Vec::new();
+        let mut draw_steps = Vec::<(String, Vec<(f64, f64)>, Rgba<u8>)>::new();
+        for leg in &materialized.resolved_legs {
+            let has_display_path = leg
+                .procedure_provenance
+                .as_ref()
+                .and_then(|provenance| provenance.display_path.as_ref())
+                .is_some();
+            let elements = if let Some(path) = leg
+                .procedure_provenance
+                .as_ref()
+                .and_then(|provenance| provenance.display_path.as_ref())
+            {
+                path.elements.clone()
+            } else {
+                let Some(start) =
+                    browser_style_nav_position_for_ref(&connection, "KELN", &leg.from)
+                else {
+                    skipped_legs.push(format!("{} unresolved start {:?}", leg.id, leg.from));
+                    continue;
+                };
+                let Some(end) = browser_style_nav_position_for_ref(&connection, "KELN", &leg.to)
+                else {
+                    skipped_legs.push(format!("{} unresolved end {:?}", leg.id, leg.to));
+                    continue;
+                };
+                vec![LegDisplayElement::Segment { start, end }]
+            };
+            for (element_index, element) in elements.iter().enumerate() {
+                match element {
+                    LegDisplayElement::Segment { start, end } => {
+                        eprintln!(
+                            "{} element#{} SEG {} {}",
+                            leg.id,
+                            element_index,
+                            format_point_from_rdd("start", *start, eln_position),
+                            format_point_from_rdd("end", *end, eln_position),
+                        );
+                    }
+                    LegDisplayElement::Arc {
+                        center,
+                        radius_nm,
+                        start,
+                        end,
+                        clockwise,
+                        sweep_degrees,
+                    } => {
+                        eprintln!(
+                            "{} element#{} ARC clockwise={} sweep_degrees={:.1} radius_nm={:.2} {} {} {}",
+                            leg.id,
+                            element_index,
+                            clockwise,
+                            sweep_degrees,
+                            radius_nm,
+                            format_point_from_rdd("center", *center, eln_position),
+                            format_point_from_rdd("start", *start, eln_position),
+                            format_point_from_rdd("end", *end, eln_position),
+                        );
+                    }
+                }
+            }
+            if has_display_path {
+                for element in &elements {
+                    let single_points =
+                        keln_vorb_plate_points_for_display_elements(std::slice::from_ref(element));
+                    if single_points.len() < 2 {
+                        continue;
+                    }
+                    draw_polyline(&mut canvas, &single_points, Rgba([0, 0, 0, 140]), 4);
+                    let stroke = match element {
+                        LegDisplayElement::Segment { .. } => Rgba([255, 140, 0, 255]),
+                        LegDisplayElement::Arc { .. } => Rgba([0, 210, 120, 255]),
+                    };
+                    draw_polyline(&mut canvas, &single_points, stroke, 2);
+                    draw_steps.push((leg.id.clone(), single_points, stroke));
+                }
+            } else {
+                let points = keln_vorb_plate_points_for_display_elements(&elements);
+                if points.len() >= 2 {
+                    draw_polyline(&mut canvas, &points, Rgba([0, 0, 0, 140]), 4);
+                    draw_polyline(&mut canvas, &points, Rgba([255, 79, 207, 255]), 2);
+                    draw_steps.push((leg.id.clone(), points, Rgba([255, 79, 207, 255])));
+                }
+            }
+        }
+        let note = if skipped_legs.is_empty() {
+            "all resolved legs drawn".to_string()
+        } else {
+            format!("skipped {} unresolved legs", skipped_legs.len())
+        };
+        let output_path = "/tmp/keln-vorb-eln-overlay.png";
+        canvas.save(output_path).expect("write overlay png");
+        fs::write("/tmp/keln-vorb-eln-overlay.txt", note).expect("write overlay note");
+        for (index, (_, points, stroke)) in draw_steps.iter().enumerate() {
+            let mut frame = base_canvas.clone();
+            for (_, prior_points, prior_stroke) in draw_steps.iter().take(index + 1) {
+                draw_polyline(&mut frame, prior_points, Rgba([0, 0, 0, 140]), 4);
+                draw_polyline(&mut frame, prior_points, *prior_stroke, 2);
+            }
+            let frame_path = format!("/tmp/keln-vorb-eln-overlay-step-{index:02}.png");
+            frame.save(&frame_path).expect("write overlay frame png");
+            let frame_note_path = format!("/tmp/keln-vorb-eln-overlay-step-{index:02}.txt");
+            fs::write(&frame_note_path, &draw_steps[index].0).expect("write overlay frame note");
+            let _ = points;
+            let _ = stroke;
+        }
+        assert_eq!(width as f64, KELN_VORB_PLATE_WIDTH);
+        assert_eq!(height as f64, KELN_VORB_PLATE_HEIGHT);
+        eprintln!("wrote {output_path}");
     }
 
     #[test]

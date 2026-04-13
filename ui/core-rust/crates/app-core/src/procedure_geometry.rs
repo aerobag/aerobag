@@ -30,8 +30,7 @@ fn hold_display_path(leg: &ProcedureLegMaterializationRecord) -> Option<LegDispl
         return None;
     }
     let fix = leg.nav_position?;
-    let inbound_course_deg =
-        leg.magnetic_course_deg? + leg.airport_magnetic_variation_deg.unwrap_or(0.0);
+    let inbound_course_deg = leg.magnetic_course_deg? + course_reference_variation_deg(leg);
     let turn_direction = leg.turn_direction.as_deref().unwrap_or("").trim();
     let clockwise = match turn_direction {
         "L" => false,
@@ -51,8 +50,7 @@ fn hold_display_path(leg: &ProcedureLegMaterializationRecord) -> Option<LegDispl
 
 fn procedure_turn_display_path(leg: &ProcedureLegMaterializationRecord) -> Option<LegDisplayPath> {
     let fix = leg.nav_position?;
-    let barb_course_deg =
-        leg.magnetic_course_deg? + leg.airport_magnetic_variation_deg.unwrap_or(0.0);
+    let barb_course_deg = leg.magnetic_course_deg? + course_reference_variation_deg(leg);
     let clockwise = match leg.turn_direction.as_deref().unwrap_or("").trim() {
         "L" => false,
         "R" => true,
@@ -144,8 +142,8 @@ fn missed_approach_display_path(
     }
     let start = leg_start.nav_position?;
     let fix = leg_end.nav_position?;
-    let course_cf_deg = leg_end.magnetic_course_deg? + leg_end.airport_magnetic_variation_deg.unwrap_or(0.0);
-    let recommended = leg_end.recommended_nav_position?;
+    let course_cf_deg = leg_end.magnetic_course_deg? + course_reference_variation_deg(leg_end);
+    let recommended = leg_end.defining_nav_position?;
     let ca = segment_records
         .iter()
         .find(|record| record.sequence > leg_start.sequence && record.sequence < leg_end.sequence && record.path_termination.trim() == "CA")?;
@@ -156,10 +154,10 @@ fn missed_approach_display_path(
     let target_alt_ft = ca.altitude_1_ft?;
     let climb_minutes = ((target_alt_ft - start_alt_ft).max(0.0)) / NOMINAL_MISSED_APPROACH_CLIMB_FTPM;
     let climb_distance_nm = NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT * (climb_minutes / 60.0);
-    let initial_course_deg = ca.magnetic_course_deg? + ca.airport_magnetic_variation_deg.unwrap_or(0.0);
+    let initial_course_deg = ca.magnetic_course_deg? + course_reference_variation_deg(ca);
     let climb_end = destination_point(start, initial_course_deg, climb_distance_nm);
 
-    let turn_heading_deg = vi.magnetic_course_deg? + vi.airport_magnetic_variation_deg.unwrap_or(0.0);
+    let turn_heading_deg = vi.magnetic_course_deg? + course_reference_variation_deg(vi);
     let turn_clockwise = vi.turn_direction.as_deref().unwrap_or("").trim() == "R";
     let turn_radius_nm = missed_approach_turn_radius_nm();
     let turn_center = turn_center_for_heading_change(climb_end, initial_course_deg, turn_clockwise, turn_radius_nm);
@@ -192,6 +190,23 @@ fn missed_approach_display_path(
         elements.extend(hold_path.elements);
     }
     Some(LegDisplayPath { style: LegDisplayPathStyle::Solid, elements })
+}
+
+fn course_reference_variation_deg(leg: &ProcedureLegMaterializationRecord) -> f64 {
+    if matches!(leg.defining_nav_ref, Some(crate::NavRef::Navaid(_))) {
+        return leg
+            .defining_nav_magnetic_variation_deg
+            .or(leg.nav_magnetic_variation_deg)
+            .or(leg.airport_magnetic_variation_deg)
+            .unwrap_or(0.0);
+    }
+    if matches!(leg.nav_ref, Some(crate::NavRef::Navaid(_))) {
+        return leg
+            .defining_nav_magnetic_variation_deg
+            .or(leg.airport_magnetic_variation_deg)
+            .unwrap_or(0.0);
+    }
+    leg.airport_magnetic_variation_deg.unwrap_or(0.0)
 }
 
 fn missed_approach_turn_radius_nm() -> f64 {

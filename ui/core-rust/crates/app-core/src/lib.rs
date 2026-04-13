@@ -1901,8 +1901,10 @@ mod tests {
     use super::*;
     use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
     use rusqlite::{params, Connection};
+    use std::collections::HashMap;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
 
     fn sample_catalog_json() -> String {
         serde_json::json!({
@@ -2209,6 +2211,69 @@ mod tests {
         points
     }
 
+    #[derive(Clone)]
+    struct PlateGeoRef {
+        path: PathBuf,
+        width: f64,
+        height: f64,
+        pixels_per_longitude: f64,
+        pixels_per_latitude: f64,
+        top_left_lon: f64,
+        top_left_lat: f64,
+    }
+
+    fn generic_plate_pixel(plate: &PlateGeoRef, position: LatLon) -> (f64, f64) {
+        (
+            (position.lon - plate.top_left_lon) * plate.pixels_per_longitude,
+            (position.lat - plate.top_left_lat) * plate.pixels_per_latitude,
+        )
+    }
+
+    fn generic_plate_points_for_display_elements(
+        plate: &PlateGeoRef,
+        elements: &[LegDisplayElement],
+    ) -> Vec<(f64, f64)> {
+        let mut points = Vec::new();
+        for element in elements {
+            match element {
+                LegDisplayElement::Segment { start, end } => {
+                    let start_point = generic_plate_pixel(plate, *start);
+                    let end_point = generic_plate_pixel(plate, *end);
+                    if points.last().copied() != Some(start_point) {
+                        points.push(start_point);
+                    }
+                    points.push(end_point);
+                }
+                LegDisplayElement::Arc {
+                    center,
+                    radius_nm,
+                    start,
+                    end: _,
+                    clockwise,
+                    sweep_degrees,
+                } => {
+                    let start_bearing = bearing_from(*center, *start);
+                    let sweep = if *clockwise {
+                        sweep_degrees.abs()
+                    } else {
+                        -sweep_degrees.abs()
+                    };
+                    let steps = usize::max(8, (sweep.abs() / 15.0).ceil() as usize);
+                    for index in 0..=steps {
+                        let fraction = index as f64 / steps as f64;
+                        let bearing = start_bearing + sweep * fraction;
+                        let point = destination_point(*center, bearing, *radius_nm);
+                        let pixel = generic_plate_pixel(plate, point);
+                        if points.last().copied() != Some(pixel) {
+                            points.push(pixel);
+                        }
+                    }
+                }
+            }
+        }
+        points
+    }
+
     fn draw_polyline(
         image: &mut RgbaImage,
         points: &[(f64, f64)],
@@ -2360,6 +2425,220 @@ mod tests {
             }
         }
         None
+    }
+
+    fn latest_snapshot_cycle_root() -> PathBuf {
+        let production_root =
+            Path::new("/root/aerobag-artifacts-snapshot/published-unpacked/production");
+        let mut cycles = fs::read_dir(production_root)
+            .expect("read snapshot production root")
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                let name = path.file_name()?.to_str()?;
+                if !path.is_dir() || !name.chars().all(|c| c.is_ascii_digit()) {
+                    return None;
+                }
+                Some((name.parse::<u32>().ok()?, path))
+            })
+            .collect::<Vec<_>>();
+        cycles.sort_by_key(|(cycle, _)| *cycle);
+        cycles
+            .pop()
+            .map(|(_, path)| path)
+            .expect("find snapshot cycle root")
+    }
+
+    fn collect_plate_paths(root: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_plate_paths(&path, out);
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.starts_with("IAP-") && name.ends_with(".png") {
+                out.push(path);
+            }
+        }
+    }
+
+    fn collect_tpp_plate_paths(private_work_root: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let Ok(region_dirs) = fs::read_dir(private_work_root) else {
+            return out;
+        };
+        for region_dir in region_dirs.flatten().map(|entry| entry.path()) {
+            if !region_dir.is_dir() {
+                continue;
+            }
+            let work_root = region_dir.join("work");
+            if work_root.is_dir() {
+                collect_plate_paths(&work_root, &mut out);
+            }
+        }
+        out
+    }
+
+    fn parse_plate_georef_from_comment(path: &Path, user_comment: &str) -> Option<PlateGeoRef> {
+        let values = user_comment
+            .trim()
+            .split('|')
+            .map(str::trim)
+            .collect::<Vec<_>>();
+        if values.len() != 4 {
+            return None;
+        }
+        let image = image::open(path).ok()?;
+        let (width, height) = image.dimensions();
+        Some(PlateGeoRef {
+            path: path.to_path_buf(),
+            width: width as f64,
+            height: height as f64,
+            pixels_per_longitude: values[0].parse().ok()?,
+            pixels_per_latitude: values[1].parse().ok()?,
+            top_left_lon: values[2].parse().ok()?,
+            top_left_lat: values[3].parse().ok()?,
+        })
+    }
+
+    fn collect_georeferenced_plate_comments(root: &Path) -> HashMap<PathBuf, String> {
+        let mut out = HashMap::new();
+        let Some(root_str) = root.to_str() else {
+            return out;
+        };
+        let Ok(output) = Command::new("exiftool")
+            .args([
+                "-r",
+                "-if",
+                "$UserComment",
+                "-p",
+                "$FilePath|$UserComment",
+                root_str,
+            ])
+            .output()
+        else {
+            return out;
+        };
+        if !output.status.success() {
+            return out;
+        }
+        let Ok(stdout) = String::from_utf8(output.stdout) else {
+            return out;
+        };
+        for line in stdout.lines() {
+            let Some((path, user_comment)) = line.split_once('|') else {
+                continue;
+            };
+            out.insert(PathBuf::from(path), user_comment.to_string());
+        }
+        out
+    }
+
+    fn pseudo_random_score(key: &str) -> u64 {
+        let mut hash = 1469598103934665603u64;
+        for byte in b"procedure-plots-seed-20260413"
+            .iter()
+            .chain(key.as_bytes().iter())
+        {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(1099511628211);
+        }
+        hash
+    }
+
+    fn sanitize_filename_component(value: &str) -> String {
+        value.chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+
+    fn plate_airport_dir_key(airport_id: &str) -> String {
+        let trimmed = airport_id.trim();
+        if trimmed.len() == 4 && trimmed.starts_with('K') {
+            trimmed[1..].to_string()
+        } else {
+            trimmed.to_string()
+        }
+    }
+
+    fn approach_plate_patterns(procedure_id: &str) -> Vec<String> {
+        let proc = procedure_id.trim();
+        if let Some(runway) = proc.strip_prefix('I') {
+            if !runway.is_empty() {
+                return vec![
+                    format!("ILS OR LOC RWY {}", runway),
+                    format!("ILS RWY {}", runway),
+                ];
+            }
+        }
+        if let Some(runway) = proc.strip_prefix('L') {
+            if !runway.is_empty() {
+                return vec![format!("LOC RWY {}", runway)];
+            }
+        }
+        if let Some(runway) = proc.strip_prefix('R') {
+            if !runway.is_empty() {
+                return vec![format!("RNAV (GPS) RWY {}", runway)];
+            }
+        }
+        if proc.starts_with("VOR-")
+            || proc.starts_with("NDB-")
+            || proc.starts_with("GPS-")
+            || proc.starts_with("LOC-")
+        {
+            return vec![proc.to_string()];
+        }
+        Vec::new()
+    }
+
+    fn build_plate_index(plate_paths: &[PathBuf]) -> HashMap<String, Vec<PathBuf>> {
+        let mut index = HashMap::<String, Vec<PathBuf>>::new();
+        for plate_path in plate_paths {
+            let Some(airport_key) = plate_path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+            else {
+                continue;
+            };
+            index
+                .entry(airport_key.to_string())
+                .or_default()
+                .push(plate_path.clone());
+        }
+        index
+    }
+
+    fn find_matching_plate_path(
+        plate_index: &HashMap<String, Vec<PathBuf>>,
+        airport_id: &str,
+        procedure_id: &str,
+    ) -> Option<PathBuf> {
+        let airport_key = plate_airport_dir_key(airport_id);
+        let patterns = approach_plate_patterns(procedure_id);
+        if patterns.is_empty() {
+            return None;
+        }
+        plate_index
+            .get(&airport_key)?
+            .iter()
+            .find(|plate_path| {
+                let name = plate_path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+                patterns.iter().any(|pattern| name.contains(pattern))
+            })
+            .cloned()
     }
 
     fn load_browser_style_procedure_distinct_rows(
@@ -3097,6 +3376,63 @@ mod tests {
             .resolved_legs
             .iter()
             .any(|leg| leg.display_path.is_some()));
+    }
+
+    #[test]
+    fn browser_style_ttf_r03_missed_approach_keeps_obose_to_maccs_before_hold() {
+        fn close_enough(a: LatLon, b: LatLon) -> bool {
+            (a.lat - b.lat).abs() < 0.0005 && (a.lon - b.lon).abs() < 0.0005
+        }
+
+        let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
+        let distinct_rows =
+            load_browser_style_procedure_distinct_rows(fixture_db_path(), "KTTF", "R03");
+        let records =
+            load_browser_style_procedure_materialization_records(fixture_db_path(), "KTTF", "R03");
+        let browser_style = materialize_procedure_from_records(
+            "KTTF",
+            "R03",
+            ProcedureKind::Approach,
+            None,
+            Some("FESOX".to_string()),
+            0,
+            distinct_rows,
+            records,
+        )
+        .expect("materialize KTTF R03");
+
+        let obose_to_maccs = browser_style
+            .resolved_legs
+            .iter()
+            .find(|leg| {
+                leg.from == NavRef::Fix("OBOSE".to_string())
+                    && leg.to == NavRef::Fix("MACCS".to_string())
+            })
+            .expect("expected OBOSE -> MACCS leg");
+        let display_path = obose_to_maccs
+            .procedure_provenance
+            .as_ref()
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .expect("expected display path on OBOSE -> MACCS");
+        let obose = browser_style_nav_position_for_ref(
+            &connection,
+            "KTTF",
+            &NavRef::Fix("OBOSE".to_string()),
+        )
+        .expect("resolve OBOSE");
+        let maccs = browser_style_nav_position_for_ref(
+            &connection,
+            "KTTF",
+            &NavRef::Fix("MACCS".to_string()),
+        )
+        .expect("resolve MACCS");
+
+        assert!(display_path.elements.iter().any(|element| matches!(
+            element,
+            LegDisplayElement::Segment { start, end }
+                if close_enough(*start, obose)
+                    && close_enough(*end, maccs)
+        )));
     }
 
     #[test]
@@ -3990,6 +4326,272 @@ mod tests {
         assert_eq!(width as f64, K04W_R06_PLATE_WIDTH);
         assert_eq!(height as f64, K04W_R06_PLATE_HEIGHT);
         eprintln!("wrote {output_path}");
+    }
+
+    #[test]
+    #[ignore = "manual batch overlay generation for 50 random procedures"]
+    fn writes_random_procedure_plots_batch() {
+        let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
+        let cycle_root = latest_snapshot_cycle_root();
+        let private_work_root = cycle_root.join("private-work");
+        let plate_paths = collect_tpp_plate_paths(&private_work_root);
+        assert!(!plate_paths.is_empty(), "expected plate pngs under private-work");
+        eprintln!("discovered {} candidate plate pngs", plate_paths.len());
+        let georef_comments = collect_georeferenced_plate_comments(&private_work_root);
+        eprintln!(
+            "discovered {} georeferenced candidate plate pngs",
+            georef_comments.len()
+        );
+        let georef_plate_paths = georef_comments.keys().cloned().collect::<Vec<_>>();
+        let plate_index = build_plate_index(&georef_plate_paths);
+
+        let mut candidates = Vec::<(u64, String, String, PathBuf)>::new();
+        let mut approach_stmt = connection
+            .prepare(
+                "select distinct airport_identifier, trim(sid_star_approach_identifier) \
+                 from cifp_sid_star_app \
+                 where route_type in ('A','I','L','R','S','V') \
+                 order by airport_identifier, trim(sid_star_approach_identifier)",
+            )
+            .expect("prepare approach list");
+        let mut approach_rows = approach_stmt.query([]).expect("query approach list");
+        while let Some(row) = approach_rows.next().expect("step approach rows") {
+            let airport_id: String = row.get(0).expect("airport id");
+            let procedure_id: String = row.get(1).expect("procedure id");
+            let Some(plate_path) =
+                find_matching_plate_path(&plate_index, &airport_id, &procedure_id)
+            else {
+                continue;
+            };
+            let key = format!("{}|{}|{}", airport_id, procedure_id, plate_path.display());
+            candidates.push((pseudo_random_score(&key), airport_id, procedure_id, plate_path));
+        }
+        candidates.sort_by_key(|entry| entry.0);
+        eprintln!("found {} mappable procedure candidates", candidates.len());
+        assert!(
+            candidates.len() >= 50,
+            "expected at least 50 mappable procedure plots, found {}",
+            candidates.len()
+        );
+
+        let output_dir = Path::new("/tmp/procedure-plots");
+        fs::create_dir_all(output_dir).expect("create procedure-plots dir");
+        for entry in fs::read_dir(output_dir).expect("read procedure-plots dir") {
+            let path = entry.expect("read procedure-plots entry").path();
+            if path.is_file() {
+                fs::remove_file(path).expect("clear old procedure plot");
+            }
+        }
+
+        let mut written = 0usize;
+        let mut attempted = 0usize;
+        let mut no_rows = 0usize;
+        let mut describe_failed = 0usize;
+        let mut no_choices = 0usize;
+        let mut materialize_failed = 0usize;
+        let mut failed_examples = Vec::new();
+        for (_, airport_id, procedure_id, plate_path) in candidates.into_iter() {
+            if written >= 50 {
+                break;
+            }
+            attempted += 1;
+            if attempted % 100 == 0 {
+                eprintln!(
+                    "attempted {attempted} candidates, wrote {written}, no_rows={no_rows}, describe_failed={describe_failed}, no_choices={no_choices}, materialize_failed={materialize_failed}"
+                );
+            }
+            let rows = load_browser_style_procedure_distinct_rows(
+                fixture_db_path(),
+                &airport_id,
+                &procedure_id,
+            );
+            if rows.is_empty() {
+                no_rows += 1;
+                if failed_examples.len() < 10 {
+                    failed_examples.push(format!(
+                        "no_rows {} {} {}",
+                        airport_id,
+                        procedure_id,
+                        plate_path.display()
+                    ));
+                }
+                continue;
+            }
+            let Ok(options) = describe_procedure_options_from_rows(
+                &airport_id,
+                &procedure_id,
+                ProcedureKind::Approach,
+                rows.clone(),
+            ) else {
+                describe_failed += 1;
+                if failed_examples.len() < 10 {
+                    failed_examples.push(format!(
+                        "describe_failed {} {} {}",
+                        airport_id,
+                        procedure_id,
+                        plate_path.display()
+                    ));
+                }
+                continue;
+            };
+            let Some(choice) = options.valid_choices.first().cloned() else {
+                no_choices += 1;
+                if failed_examples.len() < 10 {
+                    failed_examples.push(format!(
+                        "no_choices {} {} {}",
+                        airport_id,
+                        procedure_id,
+                        plate_path.display()
+                    ));
+                }
+                continue;
+            };
+            let records = load_browser_style_procedure_materialization_records(
+                fixture_db_path(),
+                &airport_id,
+                &procedure_id,
+            );
+            let Ok(materialized) = materialize_procedure_from_records(
+                &airport_id,
+                &procedure_id,
+                ProcedureKind::Approach,
+                None,
+                choice.enroute_transition.clone(),
+                0,
+                rows,
+                records,
+            )
+            else {
+                materialize_failed += 1;
+                if failed_examples.len() < 10 {
+                    failed_examples.push(format!(
+                        "materialize_failed {} {} {}",
+                        airport_id,
+                        procedure_id,
+                        plate_path.display()
+                    ));
+                }
+                continue;
+            };
+            let Some(user_comment) = georef_comments.get(&plate_path) else {
+                if failed_examples.len() < 10 {
+                    failed_examples.push(format!(
+                        "missing_georef_comment {} {} {}",
+                        airport_id,
+                        procedure_id,
+                        plate_path.display()
+                    ));
+                }
+                continue;
+            };
+            let Some(plate) = parse_plate_georef_from_comment(&plate_path, user_comment) else {
+                if failed_examples.len() < 10 {
+                    failed_examples.push(format!(
+                        "bad_georef_comment {} {} {}",
+                        airport_id,
+                        procedure_id,
+                        plate_path.display()
+                    ));
+                }
+                continue;
+            };
+
+            let base_canvas = match image::open(&plate.path).expect("open plate png") {
+                DynamicImage::ImageRgba8(image) => image,
+                other => other.to_rgba8(),
+            };
+            let mut canvas = base_canvas.clone();
+            for leg in &materialized.resolved_legs {
+                let elements = if let Some(path) = leg
+                    .procedure_provenance
+                    .as_ref()
+                    .and_then(|provenance| provenance.display_path.as_ref())
+                {
+                    path.elements.clone()
+                } else {
+                    let Some(start) =
+                        browser_style_nav_position_for_ref(&connection, &airport_id, &leg.from)
+                    else {
+                        continue;
+                    };
+                    let Some(end) =
+                        browser_style_nav_position_for_ref(&connection, &airport_id, &leg.to)
+                    else {
+                        continue;
+                    };
+                    vec![LegDisplayElement::Segment { start, end }]
+                };
+                if let Some(path) = leg
+                    .procedure_provenance
+                    .as_ref()
+                    .and_then(|provenance| provenance.display_path.as_ref())
+                {
+                    for element in &path.elements {
+                        let points = generic_plate_points_for_display_elements(
+                            &plate,
+                            std::slice::from_ref(element),
+                        );
+                        if points.len() < 2 {
+                            continue;
+                        }
+                        draw_polyline(&mut canvas, &points, Rgba([0, 0, 0, 140]), 4);
+                        let stroke = match element {
+                            LegDisplayElement::Segment { .. } => Rgba([255, 140, 0, 255]),
+                            LegDisplayElement::Arc { .. } => Rgba([0, 210, 120, 255]),
+                        };
+                        draw_polyline(&mut canvas, &points, stroke, 2);
+                    }
+                } else {
+                    let points = generic_plate_points_for_display_elements(&plate, &elements);
+                    if points.len() >= 2 {
+                        draw_polyline(&mut canvas, &points, Rgba([0, 0, 0, 140]), 4);
+                        draw_polyline(&mut canvas, &points, Rgba([255, 79, 207, 255]), 2);
+                    }
+                }
+            }
+
+            let transition_label = choice
+                .enroute_transition
+                .clone()
+                .map(|value| sanitize_filename_component(value.trim()))
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "none".to_string());
+            let stem = format!(
+                "{:02}_{}_{}_{}",
+                written + 1,
+                sanitize_filename_component(airport_id.trim()),
+                sanitize_filename_component(procedure_id.trim()),
+                transition_label,
+            );
+            let png_path = output_dir.join(format!("{stem}.png"));
+            canvas.save(&png_path).expect("write procedure plot");
+            let note_path = output_dir.join(format!("{stem}.txt"));
+            fs::write(
+                note_path,
+                format!(
+                    "airport={}\nprocedure={}\nenroute_transition={}\nplate={}\n",
+                    airport_id,
+                    procedure_id,
+                    choice
+                        .enroute_transition
+                        .clone()
+                        .unwrap_or_else(|| "none".to_string()),
+                    plate.path.display()
+                ),
+            )
+            .expect("write procedure plot note");
+            assert_eq!(base_canvas.width() as f64, plate.width);
+            assert_eq!(base_canvas.height() as f64, plate.height);
+            written += 1;
+            if written % 10 == 0 {
+                eprintln!("wrote {} procedure plots", written);
+            }
+        }
+        for example in failed_examples {
+            eprintln!("example: {example}");
+        }
+        assert_eq!(written, 50, "expected to write exactly 50 procedure plots");
+        eprintln!("wrote 50 procedure plots to {}", output_dir.display());
     }
 
     #[test]

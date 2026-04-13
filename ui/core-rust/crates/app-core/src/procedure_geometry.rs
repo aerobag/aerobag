@@ -296,6 +296,17 @@ fn missed_approach_display_path(
                 current_position = fix;
                 current_course_deg = Some(course_deg);
             }
+            "TF" => {
+                let fix = step.nav_position?;
+                if distance_between_points_nm(current_position, fix) > 0.05 {
+                    elements.push(LegDisplayElement::Segment {
+                        start: current_position,
+                        end: fix,
+                    });
+                }
+                current_course_deg = Some(bearing_from(current_position, fix));
+                current_position = fix;
+            }
             "HM" => {
                 if let Some(hold_path) = hold_display_path(step, current_course_deg) {
                     elements.extend(hold_path.elements);

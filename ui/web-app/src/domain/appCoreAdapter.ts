@@ -826,69 +826,131 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<UiSession> {
-    const init = JSON.parse(
-      await this.module.create_ui_session(
-        JSON.stringify(sampleCatalogLike(resourceIndex)),
-        JSON.stringify(deriveChartCatalog(resourceIndex as Parameters<typeof deriveChartCatalog>[0], plan)),
-        JSON.stringify(plan),
-        JSON.stringify(recentAirportIds),
-        JSON.stringify(selectedAirportId ?? null),
-        JSON.stringify(selectedChartId ?? null),
-      ),
-    ) as { handle: number; chart_catalog: ChartPageData; snapshot: UiSessionSnapshot };
-    const { handle } = init;
+    const catalogJson = JSON.stringify(sampleCatalogLike(resourceIndex));
+    const chartCatalog = deriveChartCatalog(resourceIndex as Parameters<typeof deriveChartCatalog>[0], plan);
+    const chartCatalogJson = JSON.stringify(chartCatalog);
+    const module = this.module;
+    const createSession = async (
+      nextPlan: FlightPlan,
+      nextRecentAirportIds: string[],
+      nextSelectedAirportId?: string,
+      nextSelectedChartId?: string,
+    ) => {
+      return JSON.parse(
+        await module.create_ui_session(
+          catalogJson,
+          chartCatalogJson,
+          JSON.stringify(nextPlan),
+          JSON.stringify(nextRecentAirportIds),
+          JSON.stringify(nextSelectedAirportId ?? null),
+          JSON.stringify(nextSelectedChartId ?? null),
+        ),
+      ) as { handle: number; chart_catalog: ChartPageData; snapshot: UiSessionSnapshot };
+    };
+    const init = await createSession(plan, recentAirportIds, selectedAirportId, selectedChartId);
+    let handle = init.handle;
     let snapshot = init.snapshot;
+    const isInvalidSessionHandleError = (error: unknown) =>
+      error instanceof Error && error.message.includes("invalid ui session handle");
+    const ensureSession = async () => {
+      const desiredPlan = snapshot.app_state.active_plan ?? plan;
+      const desiredRecentAirportIds = snapshot.chart_page_state.recent_airport_ids;
+      const desiredSelectedAirportId = snapshot.chart_page_state.selected_airport_id || undefined;
+      const desiredSelectedChartId = snapshot.chart_page_state.selected_chart_id || undefined;
+      const restored = await createSession(
+        desiredPlan,
+        desiredRecentAirportIds,
+        desiredSelectedAirportId,
+        desiredSelectedChartId,
+      );
+      handle = restored.handle;
+      snapshot = restored.snapshot;
+      snapshot = JSON.parse(
+        await this.module.set_situation_in_session(handle, JSON.stringify(snapshot.app_state.situation)),
+      ) as UiSessionSnapshot;
+    };
+    const withSessionRetry = async <T>(operation: () => Promise<T>) => {
+      try {
+        return await operation();
+      } catch (error) {
+        if (!isInvalidSessionHandleError(error)) {
+          throw error;
+        }
+        await ensureSession();
+        return operation();
+      }
+    };
     return {
       chartCatalog: init.chart_catalog,
       snapshot: async () => {
-        snapshot = JSON.parse(await this.module.get_session_snapshot(handle)) as UiSessionSnapshot;
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(await this.module.get_session_snapshot(handle)) as UiSessionSnapshot,
+        );
         return snapshot;
       },
       replaceFlightPlan: async (plan) => {
-        snapshot = JSON.parse(await this.module.replace_flight_plan_in_session(handle, JSON.stringify(plan))) as UiSessionSnapshot;
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(await this.module.replace_flight_plan_in_session(handle, JSON.stringify(plan))) as UiSessionSnapshot,
+        );
         return snapshot;
       },
       removeLeg: async (index) => {
-        snapshot = JSON.parse(await this.module.remove_leg_in_session(handle, index)) as UiSessionSnapshot;
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(await this.module.remove_leg_in_session(handle, index)) as UiSessionSnapshot,
+        );
         return snapshot;
       },
       moveWaypoint: async (index, delta) => {
-        snapshot = JSON.parse(await this.module.move_waypoint_in_session(handle, index, delta)) as UiSessionSnapshot;
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(await this.module.move_waypoint_in_session(handle, index, delta)) as UiSessionSnapshot,
+        );
         return snapshot;
       },
       setSituation: async (situation) => {
-        snapshot = JSON.parse(await this.module.set_situation_in_session(handle, JSON.stringify(situation))) as UiSessionSnapshot;
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(await this.module.set_situation_in_session(handle, JSON.stringify(situation))) as UiSessionSnapshot,
+        );
         return snapshot;
       },
       selectAirport: async (airportId) => {
-        snapshot = JSON.parse(await this.module.select_airport_in_session(handle, JSON.stringify(airportId))) as UiSessionSnapshot;
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(await this.module.select_airport_in_session(handle, JSON.stringify(airportId))) as UiSessionSnapshot,
+        );
         return snapshot;
       },
       selectChart: async (chartId) => {
-        snapshot = JSON.parse(await this.module.select_chart_in_session(handle, JSON.stringify(chartId))) as UiSessionSnapshot;
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(await this.module.select_chart_in_session(handle, JSON.stringify(chartId))) as UiSessionSnapshot,
+        );
         return snapshot;
       },
       ingestPointTiles: async (tiles) => {
-        await this.module.ingest_point_tiles_in_session(handle, JSON.stringify(tiles));
+        await withSessionRetry(async () => {
+          await this.module.ingest_point_tiles_in_session(handle, JSON.stringify(tiles));
+        });
       },
       queryMapOverlay: async (viewport, widthPx, heightPx) =>
-        JSON.parse(
-          await this.module.get_map_overlay_in_session(
-            handle,
-            JSON.stringify(coreViewportForMap(viewport)),
-            widthPx,
-            heightPx,
-          ),
-        ) as MapOverlayQueryResult,
+        withSessionRetry(async () =>
+          JSON.parse(
+            await this.module.get_map_overlay_in_session(
+              handle,
+              JSON.stringify(coreViewportForMap(viewport)),
+              widthPx,
+              heightPx,
+            ),
+          ) as MapOverlayQueryResult,
+        ),
       restoreChartPageState: async (nextRecentAirportIds, nextSelectedAirportId, nextSelectedChartId) => {
-        snapshot = JSON.parse(
-          await this.module.restore_chart_page_state_in_session(
-            handle,
-            JSON.stringify(nextRecentAirportIds),
-            JSON.stringify(nextSelectedAirportId ?? null),
-            JSON.stringify(nextSelectedChartId ?? null),
-          ),
-        ) as UiSessionSnapshot;
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(
+            await this.module.restore_chart_page_state_in_session(
+              handle,
+              JSON.stringify(nextRecentAirportIds),
+              JSON.stringify(nextSelectedAirportId ?? null),
+              JSON.stringify(nextSelectedChartId ?? null),
+            ),
+          ) as UiSessionSnapshot,
+        );
         return snapshot;
       },
       destroy: async () => {

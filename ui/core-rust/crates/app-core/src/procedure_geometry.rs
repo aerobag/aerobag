@@ -20,12 +20,15 @@ pub fn display_path_for_procedure_leg(
         if let Some(path) = missed_approach_display_path(segment_records, leg_start, leg_end, hold) {
             return Some(path);
         }
-        return hold_display_path(hold);
+        return hold_display_path(hold, None);
     }
     None
 }
 
-fn hold_display_path(leg: &ProcedureLegMaterializationRecord) -> Option<LegDisplayPath> {
+fn hold_display_path(
+    leg: &ProcedureLegMaterializationRecord,
+    arrival_course_deg: Option<f64>,
+) -> Option<LegDisplayPath> {
     if leg.path_termination.trim() != "HM" {
         return None;
     }
@@ -45,6 +48,7 @@ fn hold_display_path(leg: &ProcedureLegMaterializationRecord) -> Option<LegDispl
         clockwise,
         leg_length_nm,
         turn_radius_nm,
+        arrival_course_deg,
     ))
 }
 
@@ -134,60 +138,171 @@ const NOMINAL_MISSED_APPROACH_CLIMB_FTPM: f64 = 500.0;
 fn missed_approach_display_path(
     segment_records: &[ProcedureLegMaterializationRecord],
     leg_start: &ProcedureLegMaterializationRecord,
-    leg_end: &ProcedureLegMaterializationRecord,
+    _leg_end: &ProcedureLegMaterializationRecord,
     hold_record: &ProcedureLegMaterializationRecord,
 ) -> Option<LegDisplayPath> {
-    if leg_end.path_termination.trim() != "CF" || hold_record.path_termination.trim() != "HM" {
+    if hold_record.path_termination.trim() != "HM" {
         return None;
     }
-    let start = leg_start.nav_position?;
-    let fix = leg_end.nav_position?;
-    let course_cf_deg = leg_end.magnetic_course_deg? + course_reference_variation_deg(leg_end);
-    let recommended = leg_end.defining_nav_position?;
-    let ca = segment_records
-        .iter()
-        .find(|record| record.sequence > leg_start.sequence && record.sequence < leg_end.sequence && record.path_termination.trim() == "CA")?;
-    let vi = segment_records
-        .iter()
-        .find(|record| record.sequence > leg_start.sequence && record.sequence < leg_end.sequence && record.path_termination.trim() == "VI")?;
-    let start_alt_ft = leg_start.altitude_1_ft?;
-    let target_alt_ft = ca.altitude_1_ft?;
-    let climb_minutes = ((target_alt_ft - start_alt_ft).max(0.0)) / NOMINAL_MISSED_APPROACH_CLIMB_FTPM;
-    let climb_distance_nm = NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT * (climb_minutes / 60.0);
-    let initial_course_deg = ca.magnetic_course_deg? + course_reference_variation_deg(ca);
-    let climb_end = destination_point(start, initial_course_deg, climb_distance_nm);
+    let mut current_position = leg_start.nav_position?;
+    let mut current_course_deg =
+        leg_start.magnetic_course_deg.map(|course| course + course_reference_variation_deg(leg_start));
+    let mut current_altitude_ft = leg_start.altitude_1_ft;
+    let mut elements = Vec::new();
 
-    let turn_heading_deg = vi.magnetic_course_deg? + course_reference_variation_deg(vi);
-    let turn_clockwise = vi.turn_direction.as_deref().unwrap_or("").trim() == "R";
-    let turn_radius_nm = missed_approach_turn_radius_nm();
-    let turn_center = turn_center_for_heading_change(climb_end, initial_course_deg, turn_clockwise, turn_radius_nm);
-    let turn_end = point_on_turn_center(turn_center, turn_heading_deg, turn_clockwise, turn_radius_nm);
+    let mut steps = segment_records
+        .iter()
+        .filter(|record| record.sequence > leg_start.sequence && record.sequence <= hold_record.sequence)
+        .collect::<Vec<_>>();
+    steps.sort_by_key(|record| record.sequence);
 
-    let intercept = intersect_heading_with_course(turn_end, turn_heading_deg, recommended, course_cf_deg, fix)?;
-    let mut elements = vec![
-        LegDisplayElement::Segment {
-            start,
-            end: climb_end,
-        },
-        LegDisplayElement::Arc {
-            center: turn_center,
-            radius_nm: turn_radius_nm,
-            start: climb_end,
-            end: turn_end,
-            clockwise: turn_clockwise,
-            sweep_degrees: heading_sweep_degrees(initial_course_deg, turn_heading_deg, turn_clockwise),
-        },
-        LegDisplayElement::Segment {
-            start: turn_end,
-            end: intercept,
-        },
-        LegDisplayElement::Segment {
-            start: intercept,
-            end: fix,
-        },
-    ];
-    if let Some(hold_path) = hold_display_path(hold_record) {
-        elements.extend(hold_path.elements);
+    for step in steps {
+        match step.path_termination.trim() {
+            "CA" => {
+                let course_deg = if step.defining_nav_ref.is_none() && step.nav_ref.is_none() {
+                    current_course_deg.or_else(|| {
+                        step.magnetic_course_deg
+                            .map(|course| course + course_reference_variation_deg(step))
+                    })?
+                } else {
+                    step.magnetic_course_deg? + course_reference_variation_deg(step)
+                };
+                let start_alt_ft = current_altitude_ft?;
+                let target_alt_ft = step.altitude_1_ft?;
+                let climb_minutes =
+                    ((target_alt_ft - start_alt_ft).max(0.0)) / NOMINAL_MISSED_APPROACH_CLIMB_FTPM;
+                let climb_distance_nm = NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT * (climb_minutes / 60.0);
+                let climb_end = destination_point(current_position, course_deg, climb_distance_nm);
+                elements.push(LegDisplayElement::Segment {
+                    start: current_position,
+                    end: climb_end,
+                });
+                current_position = climb_end;
+                current_course_deg = Some(course_deg);
+                current_altitude_ft = Some(target_alt_ft);
+            }
+            "VI" => {
+                let initial_course_deg = current_course_deg?;
+                let turn_heading_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
+                let turn_clockwise = step.turn_direction.as_deref().unwrap_or("").trim() == "R";
+                let turn_radius_nm = missed_approach_turn_radius_nm();
+                let turn_center = turn_center_for_heading_change(
+                    current_position,
+                    initial_course_deg,
+                    turn_clockwise,
+                    turn_radius_nm,
+                );
+                let turn_end = point_on_turn_center(
+                    turn_center,
+                    turn_heading_deg,
+                    turn_clockwise,
+                    turn_radius_nm,
+                );
+                elements.push(LegDisplayElement::Arc {
+                    center: turn_center,
+                    radius_nm: turn_radius_nm,
+                    start: current_position,
+                    end: turn_end,
+                    clockwise: turn_clockwise,
+                    sweep_degrees: heading_sweep_degrees(
+                        initial_course_deg,
+                        turn_heading_deg,
+                        turn_clockwise,
+                    ),
+                });
+                current_position = turn_end;
+                current_course_deg = Some(turn_heading_deg);
+            }
+            "DF" => {
+                let fix = step.nav_position?;
+                let direct_course_deg = bearing_from(current_position, fix);
+                let turn_clockwise = match step.turn_direction.as_deref().unwrap_or("").trim() {
+                    "L" => false,
+                    "R" => true,
+                    _ => shortest_turn_clockwise(current_course_deg?, direct_course_deg),
+                };
+                let initial_course_deg = current_course_deg?;
+                if angular_difference_degrees(initial_course_deg, direct_course_deg) > 1.0 {
+                    let turn_radius_nm = missed_approach_turn_radius_nm();
+                    let turn_center = turn_center_for_heading_change(
+                        current_position,
+                        initial_course_deg,
+                        turn_clockwise,
+                        turn_radius_nm,
+                    );
+                    let turn_end = point_on_turn_center(
+                        turn_center,
+                        direct_course_deg,
+                        turn_clockwise,
+                        turn_radius_nm,
+                    );
+                    elements.push(LegDisplayElement::Arc {
+                        center: turn_center,
+                        radius_nm: turn_radius_nm,
+                        start: current_position,
+                        end: turn_end,
+                        clockwise: turn_clockwise,
+                        sweep_degrees: heading_sweep_degrees(
+                            initial_course_deg,
+                            direct_course_deg,
+                            turn_clockwise,
+                        ),
+                    });
+                    current_position = turn_end;
+                }
+                elements.push(LegDisplayElement::Segment {
+                    start: current_position,
+                    end: fix,
+                });
+                current_position = fix;
+                current_course_deg = Some(direct_course_deg);
+            }
+            "CF" => {
+                let fix = step.nav_position?;
+                let course_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
+                if let Some(defining_nav) = step.defining_nav_position {
+                    if let Some(current_heading_deg) = current_course_deg {
+                        let intercept = intersect_heading_with_course(
+                            current_position,
+                            current_heading_deg,
+                            defining_nav,
+                            course_deg,
+                            fix,
+                        )?;
+                        if distance_between_points_nm(current_position, intercept) > 0.05 {
+                            elements.push(LegDisplayElement::Segment {
+                                start: current_position,
+                                end: intercept,
+                            });
+                        }
+                        if distance_between_points_nm(intercept, fix) > 0.05 {
+                            elements.push(LegDisplayElement::Segment {
+                                start: intercept,
+                                end: fix,
+                            });
+                        }
+                    } else {
+                        elements.push(LegDisplayElement::Segment {
+                            start: current_position,
+                            end: fix,
+                        });
+                    }
+                } else {
+                    elements.push(LegDisplayElement::Segment {
+                        start: current_position,
+                        end: fix,
+                    });
+                }
+                current_position = fix;
+                current_course_deg = Some(course_deg);
+            }
+            "HM" => {
+                if let Some(hold_path) = hold_display_path(step, current_course_deg) {
+                    elements.extend(hold_path.elements);
+                }
+            }
+            _ => {}
+        }
     }
     Some(LegDisplayPath { style: LegDisplayPathStyle::Solid, elements })
 }
@@ -202,7 +317,7 @@ fn course_reference_variation_deg(leg: &ProcedureLegMaterializationRecord) -> f6
     }
     if matches!(leg.nav_ref, Some(crate::NavRef::Navaid(_))) {
         return leg
-            .defining_nav_magnetic_variation_deg
+            .nav_magnetic_variation_deg
             .or(leg.airport_magnetic_variation_deg)
             .unwrap_or(0.0);
     }
@@ -243,6 +358,46 @@ fn point_on_turn_center(
         left_normal(tangent)
     };
     offset_latlon(center, -normal.0 * radius_nm, -normal.1 * radius_nm)
+}
+
+fn tangent_rejoin_from_turn(
+    turn_center: LatLon,
+    radius_nm: f64,
+    initial_course_deg: f64,
+    clockwise: bool,
+    fix: LatLon,
+) -> Option<(LatLon, f64)> {
+    let fix_en = to_local_en(turn_center, fix);
+    let distance_sq = fix_en.0 * fix_en.0 + fix_en.1 * fix_en.1;
+    if distance_sq <= radius_nm * radius_nm {
+        return None;
+    }
+    let scale = (radius_nm * radius_nm) / distance_sq;
+    let offset_scale = radius_nm * (distance_sq - radius_nm * radius_nm).sqrt() / distance_sq;
+    let candidates = [
+        (
+            scale * fix_en.0 - offset_scale * fix_en.1,
+            scale * fix_en.1 + offset_scale * fix_en.0,
+        ),
+        (
+            scale * fix_en.0 + offset_scale * fix_en.1,
+            scale * fix_en.1 - offset_scale * fix_en.0,
+        ),
+    ];
+    candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let turn_end = offset_latlon(turn_center, candidate.0, candidate.1);
+            let rejoin_course_deg = bearing_from(turn_end, fix);
+            let sweep_degrees =
+                heading_sweep_degrees(initial_course_deg, rejoin_course_deg, clockwise);
+            if sweep_degrees < 1.0 {
+                return None;
+            }
+            Some((turn_end, rejoin_course_deg, sweep_degrees))
+        })
+        .max_by(|left, right| left.2.partial_cmp(&right.2).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(turn_end, rejoin_course_deg, _)| (turn_end, rejoin_course_deg))
 }
 
 fn heading_sweep_degrees(from_deg: f64, to_deg: f64, clockwise: bool) -> f64 {
@@ -317,6 +472,7 @@ fn build_hold_display_path(
     clockwise: bool,
     leg_length_nm: f64,
     turn_radius_nm: f64,
+    arrival_course_deg: Option<f64>,
 ) -> LegDisplayPath {
     let inbound = bearing_unit_vector(inbound_course_deg);
     let outbound = (-inbound.0, -inbound.1);
@@ -353,9 +509,15 @@ fn build_hold_display_path(
         -lateral.1 * turn_radius_nm,
     );
 
-    LegDisplayPath {
-        style: LegDisplayPathStyle::Solid,
-        elements: vec![
+    let mut elements = hold_entry_elements(
+        fix,
+        inbound_course_deg,
+        clockwise,
+        arrival_course_deg,
+        leg_length_nm,
+        turn_radius_nm,
+    );
+    elements.extend(vec![
             LegDisplayElement::Arc {
                 center: first_turn_center,
                 radius_nm: turn_radius_nm,
@@ -380,7 +542,191 @@ fn build_hold_display_path(
                 start: inbound_rejoin,
                 end: inbound_end,
             },
-        ],
+        ]);
+
+    LegDisplayPath {
+        style: LegDisplayPathStyle::Solid,
+        elements,
+    }
+}
+
+fn hold_entry_elements(
+    fix: LatLon,
+    inbound_course_deg: f64,
+    clockwise: bool,
+    arrival_course_deg: Option<f64>,
+    leg_length_nm: f64,
+    turn_radius_nm: f64,
+) -> Vec<LegDisplayElement> {
+    let Some(arrival_course_deg) = arrival_course_deg else {
+        return Vec::new();
+    };
+    match classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise) {
+        HoldEntryKind::Direct => Vec::new(),
+        HoldEntryKind::Parallel => {
+            let outbound_course_deg = normalize_bearing_degrees(inbound_course_deg + 180.0);
+            let entry_distance_nm = nominal_hold_entry_distance_nm(leg_length_nm);
+            let entry_end = destination_point(fix, outbound_course_deg, entry_distance_nm);
+            let entry_turn_clockwise = !clockwise;
+            let turn_center = turn_center_for_heading_change(
+                entry_end,
+                outbound_course_deg,
+                entry_turn_clockwise,
+                turn_radius_nm,
+            );
+            let Some((turn_end, rejoin_course_deg)) = tangent_rejoin_from_turn(
+                turn_center,
+                turn_radius_nm,
+                outbound_course_deg,
+                entry_turn_clockwise,
+                fix,
+            ) else {
+                return Vec::new();
+            };
+            vec![
+                LegDisplayElement::Segment {
+                    start: fix,
+                    end: entry_end,
+                },
+                LegDisplayElement::Arc {
+                    center: turn_center,
+                    radius_nm: turn_radius_nm,
+                    start: entry_end,
+                    end: turn_end,
+                    clockwise: entry_turn_clockwise,
+                    sweep_degrees: heading_sweep_degrees(
+                        outbound_course_deg,
+                        rejoin_course_deg,
+                        entry_turn_clockwise,
+                    ),
+                },
+                LegDisplayElement::Segment {
+                    start: turn_end,
+                    end: fix,
+                },
+            ]
+        }
+        HoldEntryKind::Teardrop => {
+            let outbound_course_deg = normalize_bearing_degrees(inbound_course_deg + 180.0);
+            let teardrop_course_deg = if clockwise {
+                normalize_bearing_degrees(outbound_course_deg - 30.0)
+            } else {
+                normalize_bearing_degrees(outbound_course_deg + 30.0)
+            };
+            let entry_distance_nm = nominal_hold_entry_distance_nm(leg_length_nm);
+            let entry_end = destination_point(fix, teardrop_course_deg, entry_distance_nm);
+            let direct_course_deg = bearing_from(entry_end, fix);
+            let turn_clockwise = shortest_turn_clockwise(teardrop_course_deg, direct_course_deg);
+            let turn_center = turn_center_for_heading_change(
+                entry_end,
+                teardrop_course_deg,
+                turn_clockwise,
+                turn_radius_nm,
+            );
+            let turn_end = point_on_turn_center(
+                turn_center,
+                direct_course_deg,
+                turn_clockwise,
+                turn_radius_nm,
+            );
+            vec![
+                LegDisplayElement::Segment {
+                    start: fix,
+                    end: entry_end,
+                },
+                LegDisplayElement::Arc {
+                    center: turn_center,
+                    radius_nm: turn_radius_nm,
+                    start: entry_end,
+                    end: turn_end,
+                    clockwise: turn_clockwise,
+                    sweep_degrees: heading_sweep_degrees(
+                        teardrop_course_deg,
+                        direct_course_deg,
+                        turn_clockwise,
+                    ),
+                },
+                LegDisplayElement::Segment {
+                    start: turn_end,
+                    end: fix,
+                },
+            ]
+        }
+    }
+}
+
+fn nominal_hold_entry_distance_nm(leg_length_nm: f64) -> f64 {
+    leg_length_nm.min(NOMINAL_HOLD_GROUND_SPEED_KT / 60.0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoldEntryKind {
+    Direct,
+    Parallel,
+    Teardrop,
+}
+
+fn classify_hold_entry(
+    arrival_course_deg: f64,
+    inbound_course_deg: f64,
+    clockwise: bool,
+) -> HoldEntryKind {
+    let outbound_course_deg = normalize_bearing_degrees(inbound_course_deg + 180.0);
+    let delta = clockwise_delta_degrees(outbound_course_deg, arrival_course_deg);
+    if clockwise {
+        if delta <= 110.0 {
+            return HoldEntryKind::Parallel;
+        }
+        if delta >= 290.0 {
+            return HoldEntryKind::Teardrop;
+        }
+        return HoldEntryKind::Direct;
+    }
+    if delta < 70.0 {
+        return HoldEntryKind::Teardrop;
+    }
+    if delta >= 250.0 {
+        return HoldEntryKind::Parallel;
+    }
+    HoldEntryKind::Direct
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_hold_entry, HoldEntryKind};
+
+    #[test]
+    fn left_hold_entry_sectors_match_expected_examples() {
+        let inbound = 264.0;
+        assert_eq!(
+            classify_hold_entry(20.0, inbound, false),
+            HoldEntryKind::Parallel
+        );
+        assert_eq!(
+            classify_hold_entry(105.0, inbound, false),
+            HoldEntryKind::Teardrop
+        );
+        assert_eq!(
+            classify_hold_entry(200.0, inbound, false),
+            HoldEntryKind::Direct
+        );
+    }
+
+    #[test]
+    fn right_hold_entry_sectors_mirror_left_hold() {
+        let inbound = 264.0;
+        assert_eq!(
+            classify_hold_entry(120.0, inbound, true),
+            HoldEntryKind::Parallel
+        );
+        assert_eq!(
+            classify_hold_entry(40.0, inbound, true),
+            HoldEntryKind::Teardrop
+        );
+        assert_eq!(
+            classify_hold_entry(300.0, inbound, true),
+            HoldEntryKind::Direct
+        );
     }
 }
 
@@ -395,6 +741,50 @@ fn normalize_bearing_degrees(value: f64) -> f64 {
         normalized += 360.0;
     }
     normalized
+}
+
+fn clockwise_delta_degrees(from_deg: f64, to_deg: f64) -> f64 {
+    let mut delta = normalize_bearing_degrees(to_deg) - normalize_bearing_degrees(from_deg);
+    if delta < 0.0 {
+        delta += 360.0;
+    }
+    delta
+}
+
+fn shortest_turn_clockwise(from_deg: f64, to_deg: f64) -> bool {
+    let clockwise_delta = normalize_bearing_degrees(to_deg) - normalize_bearing_degrees(from_deg);
+    let clockwise_delta = if clockwise_delta < 0.0 {
+        clockwise_delta + 360.0
+    } else {
+        clockwise_delta
+    };
+    clockwise_delta <= 180.0
+}
+
+fn angular_difference_degrees(left: f64, right: f64) -> f64 {
+    let mut delta = (normalize_bearing_degrees(left) - normalize_bearing_degrees(right)).abs();
+    if delta > 180.0 {
+        delta = 360.0 - delta;
+    }
+    delta
+}
+
+fn bearing_from(from: LatLon, to: LatLon) -> f64 {
+    let from_lat = from.lat.to_radians();
+    let from_lon = from.lon.to_radians();
+    let to_lat = to.lat.to_radians();
+    let to_lon = to.lon.to_radians();
+    let delta_lon = to_lon - from_lon;
+    let y = delta_lon.sin() * to_lat.cos();
+    let x = from_lat.cos() * to_lat.sin() - from_lat.sin() * to_lat.cos() * delta_lon.cos();
+    normalize_bearing_degrees(y.atan2(x).to_degrees())
+}
+
+fn distance_between_points_nm(from: LatLon, to: LatLon) -> f64 {
+    let mean_lat = ((from.lat + to.lat) / 2.0).to_radians();
+    let east_nm = (to.lon - from.lon) * 60.0 * mean_lat.cos();
+    let north_nm = (to.lat - from.lat) * 60.0;
+    east_nm.hypot(north_nm)
 }
 
 fn left_normal((east, north): (f64, f64)) -> (f64, f64) {

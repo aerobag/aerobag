@@ -11,6 +11,22 @@ pub fn build_flight_plan(plan_json: &str) -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
+pub fn classify_procedure_identifier(
+    identifier: &str,
+    exists_as_airport: bool,
+    exists_as_navaid: bool,
+    exists_as_fix: bool,
+) -> Result<String, JsValue> {
+    classify_procedure_identifier_json(
+        identifier,
+        exists_as_airport,
+        exists_as_navaid,
+        exists_as_fix,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn build_flight_plan_ui(plan_json: &str) -> Result<String, JsValue> {
     build_flight_plan_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
 }
@@ -959,6 +975,21 @@ fn describe_plate_procedure_load_options_json(
     let described = app_core::describe_plate_procedure_load_options(&plan, candidates)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&described).map_err(|err| err.to_string())
+}
+
+fn classify_procedure_identifier_json(
+    identifier: &str,
+    exists_as_airport: bool,
+    exists_as_navaid: bool,
+    exists_as_fix: bool,
+) -> Result<String, String> {
+    let nav_ref = app_core::classify_procedure_identifier(
+        identifier,
+        exists_as_airport,
+        exists_as_navaid,
+        exists_as_fix,
+    );
+    serde_json::to_string(&nav_ref).map_err(|err| err.to_string())
 }
 
 fn replace_flight_plan_state_json(

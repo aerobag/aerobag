@@ -249,6 +249,31 @@ pub fn build_flight_plan(plan: FlightPlan) -> AppResult<FlightPlan> {
     Ok(plan)
 }
 
+pub fn classify_procedure_identifier(
+    identifier: &str,
+    exists_as_airport: bool,
+    exists_as_navaid: bool,
+    exists_as_fix: bool,
+) -> Option<NavRef> {
+    let trimmed = identifier.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("RW") {
+        return Some(NavRef::Fix(trimmed.to_string()));
+    }
+    if exists_as_navaid {
+        return Some(NavRef::Navaid(trimmed.to_string()));
+    }
+    if exists_as_airport {
+        return Some(NavRef::Airport(trimmed.to_string()));
+    }
+    if exists_as_fix {
+        return Some(NavRef::Fix(trimmed.to_string()));
+    }
+    None
+}
+
 pub fn prepare_airway_presentation(
     airway_name: &str,
     branches: Vec<AirwayBranch>,
@@ -2309,40 +2334,28 @@ mod tests {
         if trimmed.is_empty() {
             return None;
         }
-        if trimmed.starts_with("RW") {
-            return Some(NavRef::Fix(trimmed.to_string()));
-        }
-        if connection
-            .query_row(
-                "SELECT LocationID FROM airports WHERE trim(LocationID) = trim(?1) LIMIT 1",
-                params![trimmed],
-                |row| row.get::<_, String>(0),
-            )
-            .is_ok()
-        {
-            return Some(NavRef::Airport(trimmed.to_string()));
-        }
-        if connection
+        let exists_as_navaid = connection
             .query_row(
                 "SELECT LocationID FROM nav WHERE trim(LocationID) = trim(?1) LIMIT 1",
                 params![trimmed],
                 |row| row.get::<_, String>(0),
             )
-            .is_ok()
-        {
-            return Some(NavRef::Navaid(trimmed.to_string()));
-        }
-        if connection
+            .is_ok();
+        let exists_as_airport = connection
+            .query_row(
+                "SELECT LocationID FROM airports WHERE trim(LocationID) = trim(?1) LIMIT 1",
+                params![trimmed],
+                |row| row.get::<_, String>(0),
+            )
+            .is_ok();
+        let exists_as_fix = connection
             .query_row(
                 "SELECT LocationID FROM fix WHERE trim(LocationID) = trim(?1) LIMIT 1",
                 params![trimmed],
                 |row| row.get::<_, String>(0),
             )
-            .is_ok()
-        {
-            return Some(NavRef::Fix(trimmed.to_string()));
-        }
-        None
+            .is_ok();
+        classify_procedure_identifier(trimmed, exists_as_airport, exists_as_navaid, exists_as_fix)
     }
 
     fn browser_style_nav_position_for_ref(
@@ -2985,7 +2998,7 @@ mod tests {
             .as_ref()
             .and_then(|provenance| provenance.display_path.as_ref())
             .expect("expected hold leg display path");
-        assert_eq!(hold_path.elements.len(), 4);
+        assert_eq!(hold_path.elements.len(), 8);
 
         let inserted = insert_procedure_materialized_ui(&airway.plan, 2, 3, browser_style).unwrap();
         let route_pairs = inserted
@@ -3371,7 +3384,7 @@ mod tests {
             }
         }
         let note = if skipped_legs.is_empty() {
-            "all resolved legs drawn".to_string()
+            "all resolved legs drawn\nmanual inspection TODO: validate KELN VOR-B parallel hold entry against plate/AIM depiction".to_string()
         } else {
             format!("skipped {} unresolved legs", skipped_legs.len())
         };

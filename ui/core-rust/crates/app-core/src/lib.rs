@@ -2339,6 +2339,64 @@ mod tests {
     }
 
     #[test]
+    fn projects_route_for_krdd_i34_tayto_without_native_resolution_failure() {
+        let base_plan = FlightPlan {
+            id: "seeded-krnt-v23-kuao-krdd".to_string(),
+            name: "Seeded KRNT V23 KUAO KRDD".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KUAO".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRDD".to_string()),
+                },
+            ],
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KRDD".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let airway = insert_airway_from_anchors(
+            fixture_db_path(),
+            &base_plan,
+            0,
+            1,
+            "V23",
+            &NavRef::Airport("KRNT".to_string()),
+            &NavRef::Airport("KUAO".to_string()),
+        )
+        .unwrap();
+
+        let built = materialize_procedure_selection(
+            fixture_db_path(),
+            "KRDD",
+            "I34",
+            ProcedureKind::Approach,
+            None,
+            Some("TAYTO"),
+            0,
+        )
+        .unwrap();
+
+        let inserted = insert_procedure_materialized_ui(&airway.plan, 2, 3, built).unwrap();
+        let projected =
+            project_flight_plan_route(fixture_db_path().to_str().unwrap(), &inserted.mutation.plan)
+                .unwrap();
+
+        assert!(!projected.is_empty());
+    }
+
+    #[test]
     fn replaces_procedure_from_selection_returns_updated_atomic_component_payload() {
         let inserted = insert_procedure_from_selection(
             fixture_db_path(),

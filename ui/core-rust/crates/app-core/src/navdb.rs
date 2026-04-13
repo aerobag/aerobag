@@ -731,6 +731,7 @@ pub fn materialize_procedure_selection(
     component_index: usize,
 ) -> AppResult<MaterializedProcedure> {
     let options = describe_procedure_options(db_path, airport_id, procedure_id, kind.clone())?;
+    let connection = Connection::open(db_path).map_err(sqlite_error)?;
     let requested = ProcedureSpecChoice {
         runway_transition: runway_transition.map(str::trim).filter(|value| !value.is_empty()).map(str::to_string),
         enroute_transition: enroute_transition.map(str::trim).filter(|value| !value.is_empty()).map(str::to_string),
@@ -765,7 +766,7 @@ pub fn materialize_procedure_selection(
                 transition_id: enroute_transition.to_string(),
             };
             let leg_records = load_procedure_legs(db_path, &key)?;
-            let items = concretize_procedure_legs(&leg_records, false);
+            let items = concretize_procedure_legs(&connection, &leg_records, false).map_err(sqlite_error)?;
             segments.push((MaterializedSegmentRole::EnrouteTransition, leg_records, items, false));
         }
 
@@ -777,7 +778,7 @@ pub fn materialize_procedure_selection(
                 transition_id: "".to_string(),
             };
             let leg_records = load_procedure_legs(db_path, &key)?;
-            let items = concretize_procedure_legs(&leg_records, false);
+            let items = concretize_procedure_legs(&connection, &leg_records, false).map_err(sqlite_error)?;
             segments.push((MaterializedSegmentRole::Common, leg_records, items, false));
         }
 
@@ -793,8 +794,15 @@ pub fn materialize_procedure_selection(
             }
             _ => None,
         };
-        let resolved_legs =
-            resolve_procedure_legs_with_provenance(airport_id, procedure_id, kind.clone(), component_index, &segments);
+        let resolved_legs = resolve_procedure_legs_with_provenance(
+            &connection,
+            airport_id,
+            procedure_id,
+            kind.clone(),
+            component_index,
+            &segments,
+        )
+        .map_err(sqlite_error)?;
 
         return Ok(MaterializedProcedure {
             procedure: crate::planning::ProcedureSegment {
@@ -820,7 +828,8 @@ pub fn materialize_procedure_selection(
             transition_id: enroute_transition.to_string(),
         };
         let leg_records = load_procedure_legs(db_path, &key)?;
-        let items = concretize_procedure_legs(&leg_records, layout.reverse_segment_order);
+        let items = concretize_procedure_legs(&connection, &leg_records, layout.reverse_segment_order)
+            .map_err(sqlite_error)?;
         segments.push((
             MaterializedSegmentRole::EnrouteTransition,
             leg_records,
@@ -837,7 +846,8 @@ pub fn materialize_procedure_selection(
             transition_id: layout.common_transition_id.to_string(),
         };
         let leg_records = load_procedure_legs(db_path, &key)?;
-        let items = concretize_procedure_legs(&leg_records, layout.reverse_segment_order);
+        let items = concretize_procedure_legs(&connection, &leg_records, layout.reverse_segment_order)
+            .map_err(sqlite_error)?;
         segments.push((
             MaterializedSegmentRole::Common,
             leg_records,
@@ -854,7 +864,8 @@ pub fn materialize_procedure_selection(
             transition_id: runway_transition.to_string(),
         };
         let leg_records = load_procedure_legs(db_path, &key)?;
-        let items = concretize_procedure_legs(&leg_records, layout.reverse_segment_order);
+        let items = concretize_procedure_legs(&connection, &leg_records, layout.reverse_segment_order)
+            .map_err(sqlite_error)?;
         segments.push((
             MaterializedSegmentRole::RunwayTransition,
             leg_records,
@@ -874,12 +885,14 @@ pub fn materialize_procedure_selection(
         _ => None,
     };
     let resolved_legs = resolve_procedure_legs_with_provenance(
+        &connection,
         airport_id,
         procedure_id,
         kind.clone(),
         component_index,
         &segments,
-    );
+    )
+    .map_err(sqlite_error)?;
 
     Ok(MaterializedProcedure {
         procedure: crate::planning::ProcedureSegment {
@@ -900,7 +913,7 @@ pub fn load_procedure_concretized_items(
     key: &ProcedureVariantKey,
 ) -> AppResult<Vec<ConcretizedNavItem>> {
     let legs = load_procedure_legs(db_path, key)?;
-    Ok(concretize_procedure_legs(&legs, false))
+    with_connection(db_path, |connection| concretize_procedure_legs(connection, &legs, false))
 }
 
 fn resolve_airway_fix_point(
@@ -1043,6 +1056,7 @@ fn approach_common_route_type(rows: &[ProcedureDistinctRow]) -> Option<String> {
 }
 
 fn resolve_procedure_legs_with_provenance(
+    connection: &Connection,
     airport_id: &str,
     procedure_id: &str,
     kind: ProcedureKind,
@@ -1053,7 +1067,7 @@ fn resolve_procedure_legs_with_provenance(
         Vec<ConcretizedNavItem>,
         bool,
     )],
-) -> Vec<ResolvedLeg> {
+) -> rusqlite::Result<Vec<ResolvedLeg>> {
     let mut resolved = Vec::<ResolvedLeg>::new();
 
     for (role, leg_records, _, reversed) in segments {
@@ -1067,8 +1081,10 @@ fn resolve_procedure_legs_with_provenance(
         let role = procedure_segment_role(role);
 
         for pair in fix_records.windows(2) {
-            let from = NavRef::Fix(pair[0].fix_identifier.clone());
-            let to = NavRef::Fix(pair[1].fix_identifier.clone());
+            let from = classify_procedure_identifier_in_db(connection, &pair[0].fix_identifier)?
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let to = classify_procedure_identifier_in_db(connection, &pair[1].fix_identifier)?
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
             let duplicate_of_previous = resolved
                 .last()
                 .is_some_and(|previous| previous.from == from && previous.to == to);
@@ -1093,7 +1109,7 @@ fn resolve_procedure_legs_with_provenance(
         }
     }
 
-    resolved
+    Ok(resolved)
 }
 
 fn procedure_segment_role(role: &MaterializedSegmentRole) -> ProcedureSegmentRole {
@@ -1105,14 +1121,14 @@ fn procedure_segment_role(role: &MaterializedSegmentRole) -> ProcedureSegmentRol
 }
 
 fn concretize_procedure_legs(
+    connection: &Connection,
     legs: &[ProcedureLegRecord],
     reverse_segment_order: bool,
-) -> Vec<ConcretizedNavItem> {
+) -> rusqlite::Result<Vec<ConcretizedNavItem>> {
     let mut waypoints = legs
         .iter()
-        .filter(|leg| !leg.fix_identifier.is_empty())
-        .map(|leg| NavRef::Fix(leg.fix_identifier.clone()))
-        .collect::<Vec<_>>();
+        .filter_map(|leg| classify_procedure_identifier_in_db(connection, &leg.fix_identifier).transpose())
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     waypoints.dedup();
 
     let terminal_discontinuity = legs.last().and_then(terminal_procedure_discontinuity);
@@ -1141,7 +1157,7 @@ fn concretize_procedure_legs(
         });
     }
 
-    items
+    Ok(items)
 }
 
 fn merge_concretized_segments(segments: Vec<Vec<ConcretizedNavItem>>) -> Vec<ConcretizedNavItem> {
@@ -1531,6 +1547,53 @@ fn resolve_nav_ref_position_in_db(
         NavRef::Navaid(code) => lookup_nav_ref_position(connection, "nav", code),
         NavRef::Fix(code) => lookup_nav_ref_position(connection, "fix", code),
     }
+}
+
+fn classify_procedure_identifier_in_db(
+    connection: &Connection,
+    identifier: &str,
+) -> rusqlite::Result<Option<NavRef>> {
+    let trimmed = identifier.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.starts_with("RW") || trimmed.starts_with("rw") {
+        return Ok(Some(NavRef::Fix(trimmed.to_string())));
+    }
+    if connection
+        .query_row(
+            "SELECT LocationID FROM airports WHERE trim(LocationID) = trim(?1) LIMIT 1",
+            params![trimmed],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some()
+    {
+        return Ok(Some(NavRef::Airport(trimmed.to_string())));
+    }
+    if connection
+        .query_row(
+            "SELECT LocationID FROM nav WHERE trim(LocationID) = trim(?1) LIMIT 1",
+            params![trimmed],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some()
+    {
+        return Ok(Some(NavRef::Navaid(trimmed.to_string())));
+    }
+    if connection
+        .query_row(
+            "SELECT LocationID FROM fix WHERE trim(LocationID) = trim(?1) LIMIT 1",
+            params![trimmed],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some()
+    {
+        return Ok(Some(NavRef::Fix(trimmed.to_string())));
+    }
+    Ok(None)
 }
 
 fn lookup_nav_ref_position(
@@ -2344,7 +2407,7 @@ mod tests {
             built.concretized_items,
             vec![
                 ConcretizedNavItem::Waypoint {
-                    nav_ref: NavRef::Fix("ARD".to_string())
+                    nav_ref: NavRef::Navaid("ARD".to_string())
                 },
                 ConcretizedNavItem::Waypoint {
                     nav_ref: NavRef::Fix("DYLIN".to_string())
@@ -2359,7 +2422,7 @@ mod tests {
             ]
         );
         assert_eq!(built.resolved_legs.len(), 2);
-        assert_eq!(built.resolved_legs[0].from, NavRef::Fix("ARD".to_string()));
+        assert_eq!(built.resolved_legs[0].from, NavRef::Navaid("ARD".to_string()));
         assert_eq!(built.resolved_legs[1].to, NavRef::Fix("METRO".to_string()));
         let provenance = built.resolved_legs[0].procedure_provenance.as_ref().unwrap();
         assert_eq!(provenance.role, ProcedureSegmentRole::Common);
@@ -2449,5 +2512,28 @@ mod tests {
         assert!(built
             .concretized_items
             .contains(&ConcretizedNavItem::Waypoint { nav_ref: NavRef::Fix("OMVOZ".to_string()) }));
+    }
+
+    #[test]
+    fn materializes_tayto_approach_with_navaid_rdd() {
+        let built = materialize_procedure_selection(
+            fixture_db_path(),
+            "KRDD",
+            "I34",
+            ProcedureKind::Approach,
+            None,
+            Some("TAYTO"),
+            0,
+        )
+        .unwrap();
+
+        assert!(built.resolved_legs.iter().any(|leg| {
+            leg.from == NavRef::Fix("TAYTO".to_string())
+                && leg.to == NavRef::Navaid("RDD".to_string())
+        }));
+        assert!(built.resolved_legs.iter().any(|leg| {
+            leg.from == NavRef::Navaid("RDD".to_string())
+                && leg.to == NavRef::Fix("LASSN".to_string())
+        }));
     }
 }

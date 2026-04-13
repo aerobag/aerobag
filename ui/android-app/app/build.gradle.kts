@@ -99,29 +99,42 @@ fun resolveProductBuildOutput(nodeName: String, outputName: String): File {
     throw GradleException("missing product build output ${nodeName}.${outputName} in ${productBuildFile.absolutePath}")
 }
 
-fun resolvePublishedUnpackedSibling(relativePath: String, vararg candidateSuffixes: String): File {
-    val unpackedRoot = resolvedArtifactRoot.resolve("published-unpacked/production").resolve(productCycle)
-    val baseRelative = relativePath.removeSuffix(".zip")
-    candidateSuffixes.forEach { suffix ->
-        val candidate = unpackedRoot.resolve(baseRelative).resolve(suffix)
-        if (candidate.isFile) {
-            return candidate
+fun resolveProductBuildRelativePath(nodeName: String, outputName: String): String {
+    val topLevel = productBuildPayload[nodeName] as? Map<*, *>
+    if (topLevel != null) {
+        val rawPath = topLevel["relative_path"] as? String
+        if (!rawPath.isNullOrBlank()) {
+            return rawPath
         }
     }
-    throw GradleException(
-        "missing unpacked artifact sibling for $relativePath (checked ${candidateSuffixes.joinToString()}) under ${unpackedRoot.absolutePath}",
-    )
+    val nodes = productBuildPayload["nodes"] as? List<*> ?: error("invalid product build manifest ${productBuildFile.absolutePath}")
+    for (node in nodes) {
+        val nodeMap = node as? Map<*, *> ?: continue
+        if (nodeMap["name"] != nodeName) continue
+        val outputs = nodeMap["outputs"] as? Map<*, *> ?: break
+        val rawPath = outputs[outputName] as? String
+        if (!rawPath.isNullOrBlank()) {
+            return rawPath
+        }
+        break
+    }
+    throw GradleException("missing product build relative path ${nodeName}.${outputName} in ${productBuildFile.absolutePath}")
+}
+
+fun resolvePublishedUnpackedZipRoot(relativePath: String): File {
+    require(relativePath.endsWith(".zip")) { "expected zip artifact path, got $relativePath" }
+    val unpackedRoot = resolvedArtifactRoot.resolve("published-unpacked/production").resolve(productCycle)
+    return unpackedRoot.resolve(relativePath.removeSuffix(".zip"))
 }
 
 val resourceIndexFile = resolveProductBuildOutput("resource_index", "resource_index")
 val vectorsZipFile = resolveProductBuildOutput("vectors", "zip")
-val mainDbRelativePath = ((productBuildPayload["data"] as? Map<*, *>)?.get("relative_path") as? String)
-    ?: throw GradleException("missing data.relative_path in ${productBuildFile.absolutePath}")
-val mainDbFile = resolvePublishedUnpackedSibling(
-    mainDbRelativePath,
-    "main.db",
-    "data_$productCycle/main.db",
-)
+val mainDbRelativePath = resolveProductBuildRelativePath("data", "main_db")
+val mainDbFile = resolvePublishedUnpackedZipRoot(mainDbRelativePath).resolve("main.db").also {
+    if (!it.isFile) {
+        throw GradleException("missing unpacked main.db for $mainDbRelativePath at ${it.absolutePath}")
+    }
+}
 val uiThemeFile = file("../../shared-fixtures/ui-theme.json")
 val devBootstrapFile = file("../../shared/dev-bootstrap.json")
 

@@ -109,6 +109,25 @@ def resolve_product_build_output(node_name: str, output_name: str) -> Path:
     raise RuntimeError(f"missing product build output {node_name}.{output_name} in {PRODUCT_BUILD_FILE}")
 
 
+def resolve_product_build_relative_path(node_name: str, output_name: str) -> str:
+    if isinstance(PRODUCT_BUILD.get(node_name), dict):
+        record = PRODUCT_BUILD[node_name]
+        raw_path = record.get("relative_path")
+        if isinstance(raw_path, str) and raw_path:
+            return raw_path
+    for node in BUILD_MANIFEST.get("nodes", []):
+        if not isinstance(node, dict) or node.get("name") != node_name:
+            continue
+        outputs = node.get("outputs")
+        if not isinstance(outputs, dict):
+            break
+        raw_path = outputs.get(output_name)
+        if isinstance(raw_path, str) and raw_path:
+            return raw_path
+        break
+    raise RuntimeError(f"missing product build relative path {node_name}.{output_name} in {PRODUCT_BUILD_FILE}")
+
+
 def resolve_build_manifest_output_relative_path(node_name: str, output_name: str) -> str:
     for node in BUILD_MANIFEST.get("nodes", []):
         if not isinstance(node, dict) or node.get("name") != node_name:
@@ -125,7 +144,7 @@ def resolve_build_manifest_output_relative_path(node_name: str, output_name: str
 
 RESOURCE_INDEX_PATH = resolve_product_build_output("resource_index", "resource_index")
 VECTOR_ZIP_RELATIVE_PATH = resolve_build_manifest_output_relative_path("vectors", "zip")
-NAV_DB_PATH = resolve_product_build_output("data", "main_db")
+DATA_ZIP_RELATIVE_PATH = resolve_product_build_relative_path("data", "main_db")
 
 
 def reset_dir(path: Path) -> None:
@@ -190,6 +209,9 @@ def unpacked_dir_from_relative_zip(relative_zip_path: str) -> Path:
     if relative.suffix != ".zip":
         raise RuntimeError(f"expected zip path, got {relative_zip_path}")
     return published_path_from_relative(str(relative.with_suffix("")))
+
+
+NAV_DB_PATH = unpacked_dir_from_relative_zip(DATA_ZIP_RELATIVE_PATH) / "main.db"
 
 
 def family_tiles_roots() -> dict[str, Path]:

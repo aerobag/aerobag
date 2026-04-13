@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PORT="${1:-8090}"
+PORT="${1:-8080}"
 HOST="${HOST:-0.0.0.0}"
 DEV_SCRIPT="${AEROBAG_DEV_SCRIPT:-inner:dev}"
 

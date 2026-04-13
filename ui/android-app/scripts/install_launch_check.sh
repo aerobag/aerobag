@@ -25,14 +25,14 @@ mkdir -p "$GRADLE_USER_HOME" "$PROJECT_CACHE_DIR"
 
 echo "[1/6] installDebug"
 (
-  cd "$APP_DIR"
-  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" ./gradlew --project-cache-dir "$PROJECT_CACHE_DIR" installDebug
+  cd "$ROOT"
+  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" "$APP_DIR/gradlew" --project-cache-dir "$PROJECT_CACHE_DIR" -p "$APP_DIR" installDebug
 )
 
 echo "[2/6] seed chart payloads"
 (
-  cd "$APP_DIR"
-  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" ./gradlew --project-cache-dir "$PROJECT_CACHE_DIR" seedPrototypeSectionalPackages seedPrototypeChartPackages
+  cd "$ROOT"
+  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" "$APP_DIR/gradlew" --project-cache-dir "$PROJECT_CACHE_DIR" -p "$APP_DIR" seedPrototypeSectionalPackages seedPrototypeChartPackages
 )
 
 echo "[3/6] clear logcat"

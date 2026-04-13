@@ -1,7 +1,7 @@
 use crate::{LatLon, LegDisplayElement, LegDisplayPath, ProcedureLegMaterializationRecord};
 use crate::planning::LegDisplayPathStyle;
 
-const NOMINAL_HOLD_GROUND_SPEED_KT: f64 = 180.0;
+const NOMINAL_HOLD_GROUND_SPEED_KT: f64 = 120.0;
 const STANDARD_RATE_TURN_DEG_PER_SEC: f64 = 3.0;
 const NOMINAL_PROCEDURE_TURN_INITIAL_OUTBOUND_DISTANCE_NM: f64 = 5.0;
 const NOMINAL_PROCEDURE_TURN_GROUND_SPEED_KT: f64 = 120.0;
@@ -615,20 +615,21 @@ fn hold_entry_elements(
             };
             let entry_distance_nm = nominal_hold_entry_distance_nm(leg_length_nm);
             let entry_end = destination_point(fix, teardrop_course_deg, entry_distance_nm);
-            let direct_course_deg = bearing_from(entry_end, fix);
-            let turn_clockwise = shortest_turn_clockwise(teardrop_course_deg, direct_course_deg);
             let turn_center = turn_center_for_heading_change(
                 entry_end,
                 teardrop_course_deg,
-                turn_clockwise,
+                clockwise,
                 turn_radius_nm,
             );
-            let turn_end = point_on_turn_center(
+            let Some((turn_end, rejoin_course_deg)) = tangent_rejoin_from_turn(
                 turn_center,
-                direct_course_deg,
-                turn_clockwise,
                 turn_radius_nm,
-            );
+                teardrop_course_deg,
+                clockwise,
+                fix,
+            ) else {
+                return Vec::new();
+            };
             vec![
                 LegDisplayElement::Segment {
                     start: fix,
@@ -639,11 +640,11 @@ fn hold_entry_elements(
                     radius_nm: turn_radius_nm,
                     start: entry_end,
                     end: turn_end,
-                    clockwise: turn_clockwise,
+                    clockwise,
                     sweep_degrees: heading_sweep_degrees(
                         teardrop_course_deg,
-                        direct_course_deg,
-                        turn_clockwise,
+                        rejoin_course_deg,
+                        clockwise,
                     ),
                 },
                 LegDisplayElement::Segment {

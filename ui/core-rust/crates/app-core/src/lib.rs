@@ -2054,6 +2054,13 @@ mod tests {
     const KELN_VORB_PIXELS_PER_LATITUDE: f64 = -1312.6776811833108;
     const KELN_VORB_TOP_LEFT_LON: f64 = -120.91211111111112;
     const KELN_VORB_TOP_LEFT_LAT: f64 = 47.45025277777778;
+    const K04W_R06_PLATE_PATH: &str = "/root/aerobag-artifacts-snapshot/published-unpacked/production/2604/private-work/tpp-nc-2604/work/tpp-nc/NC_TPP_2604/plates/04W/IAP-MN-RNAV (GPS) RWY 06.png";
+    const K04W_R06_PLATE_WIDTH: f64 = 811.0;
+    const K04W_R06_PLATE_HEIGHT: f64 = 1239.0;
+    const K04W_R06_PIXELS_PER_LONGITUDE: f64 = 913.8056770130733;
+    const K04W_R06_PIXELS_PER_LATITUDE: f64 = -1313.5010498231577;
+    const K04W_R06_TOP_LEFT_LON: f64 = -93.43105;
+    const K04W_R06_TOP_LEFT_LAT: f64 = 46.38666388888889;
 
     fn krdd_i34_plate_pixel(position: LatLon) -> (f64, f64) {
         (
@@ -2066,6 +2073,13 @@ mod tests {
         (
             (position.lon - KELN_VORB_TOP_LEFT_LON) * KELN_VORB_PIXELS_PER_LONGITUDE,
             (position.lat - KELN_VORB_TOP_LEFT_LAT) * KELN_VORB_PIXELS_PER_LATITUDE,
+        )
+    }
+
+    fn k04w_r06_plate_pixel(position: LatLon) -> (f64, f64) {
+        (
+            (position.lon - K04W_R06_TOP_LEFT_LON) * K04W_R06_PIXELS_PER_LONGITUDE,
+            (position.lat - K04W_R06_TOP_LEFT_LAT) * K04W_R06_PIXELS_PER_LATITUDE,
         )
     }
 
@@ -2143,6 +2157,48 @@ mod tests {
                         let bearing = start_bearing + sweep * fraction;
                         let point = destination_point(*center, bearing, *radius_nm);
                         let pixel = keln_vorb_plate_pixel(point);
+                        if points.last().copied() != Some(pixel) {
+                            points.push(pixel);
+                        }
+                    }
+                }
+            }
+        }
+        points
+    }
+
+    fn k04w_r06_plate_points_for_display_elements(elements: &[LegDisplayElement]) -> Vec<(f64, f64)> {
+        let mut points = Vec::new();
+        for element in elements {
+            match element {
+                LegDisplayElement::Segment { start, end } => {
+                    let start_point = k04w_r06_plate_pixel(*start);
+                    let end_point = k04w_r06_plate_pixel(*end);
+                    if points.last().copied() != Some(start_point) {
+                        points.push(start_point);
+                    }
+                    points.push(end_point);
+                }
+                LegDisplayElement::Arc {
+                    center,
+                    radius_nm,
+                    start,
+                    end: _,
+                    clockwise,
+                    sweep_degrees,
+                } => {
+                    let start_bearing = bearing_from(*center, *start);
+                    let sweep = if *clockwise {
+                        sweep_degrees.abs()
+                    } else {
+                        -sweep_degrees.abs()
+                    };
+                    let steps = usize::max(8, (sweep.abs() / 15.0).ceil() as usize);
+                    for index in 0..=steps {
+                        let fraction = index as f64 / steps as f64;
+                        let bearing = start_bearing + sweep * fraction;
+                        let point = destination_point(*center, bearing, *radius_nm);
+                        let pixel = k04w_r06_plate_pixel(point);
                         if points.last().copied() != Some(pixel) {
                             points.push(pixel);
                         }
@@ -2270,6 +2326,17 @@ mod tests {
             position.lat,
             position.lon,
             distance_nm_between(rdd, position),
+        )
+    }
+
+    fn format_point_from_anchor(label: &str, position: LatLon, anchor_label: &str, anchor: LatLon) -> String {
+        format!(
+            "{}=({:.6},{:.6}) {:.2}nm-from-{}",
+            label,
+            position.lat,
+            position.lon,
+            distance_nm_between(anchor, position),
+            anchor_label,
         )
     }
 
@@ -3610,6 +3677,318 @@ mod tests {
         }
         assert_eq!(width as f64, KELN_VORB_PLATE_WIDTH);
         assert_eq!(height as f64, KELN_VORB_PLATE_HEIGHT);
+        eprintln!("wrote {output_path}");
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KRDD I34 RBL"]
+    fn writes_krdd_i34_rbl_overlay_png() {
+        let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
+        let rdd_position = browser_style_nav_position_for_ref(
+            &connection,
+            "KRDD",
+            &NavRef::Navaid("RDD".to_string()),
+        )
+        .expect("resolve RDD position");
+        let rows = load_browser_style_procedure_distinct_rows(fixture_db_path(), "KRDD", "I34");
+        let records = load_browser_style_procedure_materialization_records(
+            fixture_db_path(),
+            "KRDD",
+            "I34",
+        );
+        let materialized = materialize_procedure_from_records(
+            "KRDD",
+            "I34",
+            ProcedureKind::Approach,
+            None,
+            Some("RBL".to_string()),
+            0,
+            rows,
+            records,
+        )
+        .expect("materialize KRDD I34 RBL");
+
+        for leg in &materialized.resolved_legs {
+            eprintln!(
+                "{} {:?} -> {:?} display_path={}",
+                leg.id,
+                leg.from,
+                leg.to,
+                leg.procedure_provenance
+                    .as_ref()
+                    .and_then(|provenance| provenance.display_path.as_ref())
+                    .is_some()
+            );
+        }
+
+        let plate = image::open(KRDD_I34_PLATE_PATH).expect("open plate png");
+        let (width, height) = plate.dimensions();
+        let base_canvas = match plate {
+            DynamicImage::ImageRgba8(image) => image,
+            other => other.to_rgba8(),
+        };
+        let mut canvas = base_canvas.clone();
+        let mut skipped_legs = Vec::new();
+        let mut draw_steps = Vec::<(String, Vec<(f64, f64)>, Rgba<u8>)>::new();
+        for leg in &materialized.resolved_legs {
+            let has_display_path = leg
+                .procedure_provenance
+                .as_ref()
+                .and_then(|provenance| provenance.display_path.as_ref())
+                .is_some();
+            let elements = if let Some(path) = leg
+                .procedure_provenance
+                .as_ref()
+                .and_then(|provenance| provenance.display_path.as_ref())
+            {
+                path.elements.clone()
+            } else {
+                let Some(start) =
+                    browser_style_nav_position_for_ref(&connection, "KRDD", &leg.from)
+                else {
+                    skipped_legs.push(format!("{} unresolved start {:?}", leg.id, leg.from));
+                    continue;
+                };
+                let Some(end) = browser_style_nav_position_for_ref(&connection, "KRDD", &leg.to)
+                else {
+                    skipped_legs.push(format!("{} unresolved end {:?}", leg.id, leg.to));
+                    continue;
+                };
+                vec![LegDisplayElement::Segment { start, end }]
+            };
+            for (element_index, element) in elements.iter().enumerate() {
+                match element {
+                    LegDisplayElement::Segment { start, end } => {
+                        eprintln!(
+                            "{} element#{} SEG {} {}",
+                            leg.id,
+                            element_index,
+                            format_point_from_rdd("start", *start, rdd_position),
+                            format_point_from_rdd("end", *end, rdd_position),
+                        );
+                    }
+                    LegDisplayElement::Arc {
+                        center,
+                        radius_nm,
+                        start,
+                        end,
+                        clockwise,
+                        sweep_degrees,
+                    } => {
+                        eprintln!(
+                            "{} element#{} ARC clockwise={} sweep_degrees={:.1} radius_nm={:.2} {} {} {}",
+                            leg.id,
+                            element_index,
+                            clockwise,
+                            sweep_degrees,
+                            radius_nm,
+                            format_point_from_rdd("center", *center, rdd_position),
+                            format_point_from_rdd("start", *start, rdd_position),
+                            format_point_from_rdd("end", *end, rdd_position),
+                        );
+                    }
+                }
+            }
+            if has_display_path {
+                for element in &elements {
+                    let single_points =
+                        plate_points_for_display_elements(std::slice::from_ref(element));
+                    if single_points.len() < 2 {
+                        continue;
+                    }
+                    draw_polyline(&mut canvas, &single_points, Rgba([0, 0, 0, 140]), 4);
+                    let stroke = match element {
+                        LegDisplayElement::Segment { .. } => Rgba([255, 140, 0, 255]),
+                        LegDisplayElement::Arc { .. } => Rgba([0, 210, 120, 255]),
+                    };
+                    draw_polyline(&mut canvas, &single_points, stroke, 2);
+                    draw_steps.push((leg.id.clone(), single_points, stroke));
+                }
+            } else {
+                let points = plate_points_for_display_elements(&elements);
+                if points.len() >= 2 {
+                    draw_polyline(&mut canvas, &points, Rgba([0, 0, 0, 140]), 4);
+                    draw_polyline(&mut canvas, &points, Rgba([255, 79, 207, 255]), 2);
+                    draw_steps.push((leg.id.clone(), points, Rgba([255, 79, 207, 255])));
+                }
+            }
+        }
+        let note = if skipped_legs.is_empty() {
+            "all resolved legs drawn".to_string()
+        } else {
+            format!("skipped {} unresolved legs", skipped_legs.len())
+        };
+        let output_path = "/tmp/krdd-i34-rbl-overlay.png";
+        canvas.save(output_path).expect("write overlay png");
+        fs::write("/tmp/krdd-i34-rbl-overlay.txt", note).expect("write overlay note");
+        for (index, _) in draw_steps.iter().enumerate() {
+            let mut frame = base_canvas.clone();
+            for (_, prior_points, prior_stroke) in draw_steps.iter().take(index + 1) {
+                draw_polyline(&mut frame, prior_points, Rgba([0, 0, 0, 140]), 4);
+                draw_polyline(&mut frame, prior_points, *prior_stroke, 2);
+            }
+            let frame_path = format!("/tmp/krdd-i34-rbl-overlay-step-{index:02}.png");
+            frame.save(&frame_path).expect("write overlay frame png");
+            let frame_note_path = format!("/tmp/krdd-i34-rbl-overlay-step-{index:02}.txt");
+            fs::write(&frame_note_path, &draw_steps[index].0).expect("write overlay frame note");
+        }
+        assert_eq!(width as f64, KRDD_I34_PLATE_WIDTH);
+        assert_eq!(height as f64, KRDD_I34_PLATE_HEIGHT);
+        eprintln!("wrote {output_path}");
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for 04W RNAV (GPS) RWY 06"]
+    fn writes_04w_r06_overlay_png() {
+        let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
+        let fitan_position = browser_style_nav_position_for_ref(
+            &connection,
+            "04W",
+            &NavRef::Fix("FITAN".to_string()),
+        )
+        .expect("resolve FITAN position");
+        let rows = load_browser_style_procedure_distinct_rows(fixture_db_path(), "04W", "R06");
+        let records =
+            load_browser_style_procedure_materialization_records(fixture_db_path(), "04W", "R06");
+        let materialized = materialize_procedure_from_records(
+            "04W",
+            "R06",
+            ProcedureKind::Approach,
+            None,
+            Some("LINDR".to_string()),
+            0,
+            rows,
+            records,
+        )
+        .expect("materialize 04W R06");
+
+        for leg in &materialized.resolved_legs {
+            eprintln!(
+                "{} {:?} -> {:?} display_path={}",
+                leg.id,
+                leg.from,
+                leg.to,
+                leg.procedure_provenance
+                    .as_ref()
+                    .and_then(|provenance| provenance.display_path.as_ref())
+                    .is_some()
+            );
+        }
+
+        let plate = image::open(K04W_R06_PLATE_PATH).expect("open plate png");
+        let (width, height) = plate.dimensions();
+        let base_canvas = match plate {
+            DynamicImage::ImageRgba8(image) => image,
+            other => other.to_rgba8(),
+        };
+        let mut canvas = base_canvas.clone();
+        let mut skipped_legs = Vec::new();
+        let mut draw_steps = Vec::<(String, Vec<(f64, f64)>, Rgba<u8>)>::new();
+        for leg in &materialized.resolved_legs {
+            let has_display_path = leg
+                .procedure_provenance
+                .as_ref()
+                .and_then(|provenance| provenance.display_path.as_ref())
+                .is_some();
+            let elements = if let Some(path) = leg
+                .procedure_provenance
+                .as_ref()
+                .and_then(|provenance| provenance.display_path.as_ref())
+            {
+                path.elements.clone()
+            } else {
+                let Some(start) =
+                    browser_style_nav_position_for_ref(&connection, "04W", &leg.from)
+                else {
+                    skipped_legs.push(format!("{} unresolved start {:?}", leg.id, leg.from));
+                    continue;
+                };
+                let Some(end) =
+                    browser_style_nav_position_for_ref(&connection, "04W", &leg.to)
+                else {
+                    skipped_legs.push(format!("{} unresolved end {:?}", leg.id, leg.to));
+                    continue;
+                };
+                vec![LegDisplayElement::Segment { start, end }]
+            };
+            for (element_index, element) in elements.iter().enumerate() {
+                match element {
+                    LegDisplayElement::Segment { start, end } => {
+                        eprintln!(
+                            "{} element#{} SEG {} {}",
+                            leg.id,
+                            element_index,
+                            format_point_from_anchor("start", *start, "FITAN", fitan_position),
+                            format_point_from_anchor("end", *end, "FITAN", fitan_position),
+                        );
+                    }
+                    LegDisplayElement::Arc {
+                        center,
+                        radius_nm,
+                        start,
+                        end,
+                        clockwise,
+                        sweep_degrees,
+                    } => {
+                        eprintln!(
+                            "{} element#{} ARC clockwise={} sweep_degrees={:.1} radius_nm={:.2} {} {} {}",
+                            leg.id,
+                            element_index,
+                            clockwise,
+                            sweep_degrees,
+                            radius_nm,
+                            format_point_from_anchor("center", *center, "FITAN", fitan_position),
+                            format_point_from_anchor("start", *start, "FITAN", fitan_position),
+                            format_point_from_anchor("end", *end, "FITAN", fitan_position),
+                        );
+                    }
+                }
+            }
+            if has_display_path {
+                for element in &elements {
+                    let single_points =
+                        k04w_r06_plate_points_for_display_elements(std::slice::from_ref(element));
+                    if single_points.len() < 2 {
+                        continue;
+                    }
+                    draw_polyline(&mut canvas, &single_points, Rgba([0, 0, 0, 140]), 4);
+                    let stroke = match element {
+                        LegDisplayElement::Segment { .. } => Rgba([255, 140, 0, 255]),
+                        LegDisplayElement::Arc { .. } => Rgba([0, 210, 120, 255]),
+                    };
+                    draw_polyline(&mut canvas, &single_points, stroke, 2);
+                    draw_steps.push((leg.id.clone(), single_points, stroke));
+                }
+            } else {
+                let points = k04w_r06_plate_points_for_display_elements(&elements);
+                if points.len() >= 2 {
+                    draw_polyline(&mut canvas, &points, Rgba([0, 0, 0, 140]), 4);
+                    draw_polyline(&mut canvas, &points, Rgba([255, 79, 207, 255]), 2);
+                    draw_steps.push((leg.id.clone(), points, Rgba([255, 79, 207, 255])));
+                }
+            }
+        }
+        let note = if skipped_legs.is_empty() {
+            "all resolved legs drawn".to_string()
+        } else {
+            format!("skipped {} unresolved legs", skipped_legs.len())
+        };
+        let output_path = "/tmp/04w-r06-overlay.png";
+        canvas.save(output_path).expect("write overlay png");
+        fs::write("/tmp/04w-r06-overlay.txt", note).expect("write overlay note");
+        for (index, _) in draw_steps.iter().enumerate() {
+            let mut frame = base_canvas.clone();
+            for (_, prior_points, prior_stroke) in draw_steps.iter().take(index + 1) {
+                draw_polyline(&mut frame, prior_points, Rgba([0, 0, 0, 140]), 4);
+                draw_polyline(&mut frame, prior_points, *prior_stroke, 2);
+            }
+            let frame_path = format!("/tmp/04w-r06-overlay-step-{index:02}.png");
+            frame.save(&frame_path).expect("write overlay frame png");
+            let frame_note_path = format!("/tmp/04w-r06-overlay-step-{index:02}.txt");
+            fs::write(&frame_note_path, &draw_steps[index].0).expect("write overlay frame note");
+        }
+        assert_eq!(width as f64, K04W_R06_PLATE_WIDTH);
+        assert_eq!(height as f64, K04W_R06_PLATE_HEIGHT);
         eprintln!("wrote {output_path}");
     }
 

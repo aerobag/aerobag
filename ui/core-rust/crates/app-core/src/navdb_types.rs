@@ -105,6 +105,12 @@ pub struct ProcedureVariantKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcedureDistinctRow {
+    pub route_type: String,
+    pub transition_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcedureLegRecord {
     pub key: ProcedureVariantKey,
     pub sequence: i32,
@@ -112,6 +118,15 @@ pub struct ProcedureLegRecord {
     pub path_termination: String,
     pub path_termination_kind: PathTermination,
     pub inferred_kind: ProcedureKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcedureLegMaterializationRecord {
+    pub key: ProcedureVariantKey,
+    pub sequence: i32,
+    pub nav_ref: Option<NavRef>,
+    pub path_termination: String,
+    pub path_termination_kind: PathTermination,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -244,6 +244,41 @@ pub fn replace_procedure_materialized_ui(
 }
 
 #[wasm_bindgen]
+pub fn describe_procedure_options_from_rows(
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    rows_json: &str,
+) -> Result<String, JsValue> {
+    describe_procedure_options_from_rows_json(airport_id, procedure_id, kind_json, rows_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn materialize_procedure_from_records(
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    runway_transition_json: &str,
+    enroute_transition_json: &str,
+    component_index: usize,
+    rows_json: &str,
+    legs_json: &str,
+) -> Result<String, JsValue> {
+    materialize_procedure_from_records_json(
+        airport_id,
+        procedure_id,
+        kind_json,
+        runway_transition_json,
+        enroute_transition_json,
+        component_index,
+        rows_json,
+        legs_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn replace_flight_plan_state(
     state_json: &str,
     catalog_json: &str,
@@ -369,6 +404,11 @@ pub fn select_airport_in_session(handle: u32, airport_id_json: &str) -> Result<S
 #[wasm_bindgen]
 pub fn set_situation_in_session(handle: u32, situation_json: &str) -> Result<String, JsValue> {
     set_situation_in_session_json(handle, situation_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn replace_flight_plan_in_session(handle: u32, plan_json: &str) -> Result<String, JsValue> {
+    replace_flight_plan_in_session_json(handle, plan_json).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -758,6 +798,60 @@ fn replace_procedure_materialized_ui_json(
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
+fn describe_procedure_options_from_rows_json(
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    rows_json: &str,
+) -> Result<String, String> {
+    let kind: app_core::ProcedureKind =
+        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
+    let rows: Vec<app_core::ProcedureDistinctRow> =
+        serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
+    let options = app_core::describe_procedure_options_from_rows(
+        airport_id,
+        procedure_id,
+        kind,
+        rows,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&options).map_err(|err| err.to_string())
+}
+
+fn materialize_procedure_from_records_json(
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    runway_transition_json: &str,
+    enroute_transition_json: &str,
+    component_index: usize,
+    rows_json: &str,
+    legs_json: &str,
+) -> Result<String, String> {
+    let kind: app_core::ProcedureKind =
+        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
+    let runway_transition: Option<String> =
+        serde_json::from_str(runway_transition_json).map_err(|err| err.to_string())?;
+    let enroute_transition: Option<String> =
+        serde_json::from_str(enroute_transition_json).map_err(|err| err.to_string())?;
+    let rows: Vec<app_core::ProcedureDistinctRow> =
+        serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
+    let legs: Vec<app_core::ProcedureLegMaterializationRecord> =
+        serde_json::from_str(legs_json).map_err(|err| err.to_string())?;
+    let built = app_core::materialize_procedure_from_records(
+        airport_id,
+        procedure_id,
+        kind,
+        runway_transition,
+        enroute_transition,
+        component_index,
+        rows,
+        legs,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&built).map_err(|err| err.to_string())
+}
+
 fn replace_flight_plan_state_json(
     state_json: &str,
     catalog_json: &str,
@@ -966,6 +1060,14 @@ fn set_situation_in_session_json(handle: u32, situation_json: &str) -> Result<St
         serde_json::from_str(situation_json).map_err(|err| err.to_string())?;
     let snapshot =
         app_core::set_situation_in_session(handle, situation).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn replace_flight_plan_in_session_json(handle: u32, plan_json: &str) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::replace_flight_plan_in_session(handle, plan).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 

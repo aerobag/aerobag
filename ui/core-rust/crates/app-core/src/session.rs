@@ -187,6 +187,27 @@ pub fn set_situation_in_session(
     Ok(snapshot_for_session(session))
 }
 
+pub fn replace_flight_plan_in_session(
+    handle: u32,
+    plan: FlightPlan,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::ReplaceFlightPlan(plan.clone()),
+        &session.catalog,
+    )?;
+    session.chart_page_state = derive_chart_page_state_from_catalog(
+        &session.chart_catalog,
+        &plan,
+        &session.chart_page_state.recent_airport_ids,
+        Some(&session.chart_page_state.selected_airport_id),
+        Some(&session.chart_page_state.selected_chart_id),
+    );
+    Ok(snapshot_for_session(session))
+}
+
 pub fn restore_chart_page_state_in_session(
     handle: u32,
     recent_airport_ids: &[String],

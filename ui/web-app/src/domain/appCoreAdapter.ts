@@ -16,8 +16,11 @@ import type {
   ContentAvailability,
   GuidanceState,
   LatLon,
+  MaterializedProcedure,
   NavRef,
   PlanLeg,
+  ProcedureOptions,
+  ProcedureSummary,
   ResolvedLeg,
   ResolvedLegUiView,
   RouteComponentUiView,
@@ -25,6 +28,11 @@ import type {
   Situation,
 } from "./types";
 import { deriveChartPage as deriveChartCatalog } from "./resourceIndexAdapters";
+import {
+  listProceduresForAirport,
+  loadProcedureDistinctRows,
+  loadProcedureMaterializationRecords,
+} from "./procedurePlanner";
 import { sampleCatalog } from "./sampleData";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 
@@ -99,6 +107,7 @@ export type MapOverlayQueryResult = {
 export interface UiSession {
   chartCatalog: ChartPageData;
   snapshot(): Promise<UiSessionSnapshot>;
+  replaceFlightPlan(plan: FlightPlan): Promise<UiSessionSnapshot>;
   removeLeg(index: number): Promise<UiSessionSnapshot>;
   moveWaypoint(index: number, delta: number): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
@@ -154,6 +163,22 @@ export interface AppCoreAdapter {
     airway: AirwaySegment,
     resolvedLegs: ResolvedLeg[],
   ): Promise<FlightPlanUiMutation>;
+  listProcedures(airportId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureSummary[]>;
+  describeProcedureOptions(airportId: string, procedureId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureOptions>;
+  insertProcedureMaterializedUi(
+    plan: FlightPlan,
+    startComponentIndex: number,
+    endComponentIndex: number,
+    built: MaterializedProcedure,
+  ): Promise<FlightPlanUiMutation>;
+  materializeProcedure(
+    airportId: string,
+    procedureId: string,
+    kind: "sid" | "star" | "approach",
+    runwayTransition: string | null,
+    enrouteTransition: string | null,
+    componentIndex: number,
+  ): Promise<MaterializedProcedure>;
 }
 
 export type AdapterBackendKind = "wasm";
@@ -221,6 +246,17 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
     return {
       chartCatalog,
       snapshot: async () => ({ app_state: appState, chart_page_state: chartPageState }),
+      replaceFlightPlan: async (nextPlan) => {
+        appState = await adapter.replaceFlightPlanState(appState, sampleCatalogLike(resourceIndex), nextPlan);
+        chartPageState = compactChartPageState(await adapter.deriveChartPageState(
+          resourceIndex,
+          nextPlan,
+          chartPageState.recent_airport_ids,
+          chartPageState.selected_airport_id,
+          chartPageState.selected_chart_id,
+        ));
+        return { app_state: appState, chart_page_state: chartPageState };
+      },
       removeLeg: async (index) => {
         const nextPlan = await adapter.removeFlightPlanLeg(appState.active_plan ?? plan, index);
         appState = await adapter.replaceFlightPlanState(appState, sampleCatalogLike(resourceIndex), nextPlan);
@@ -518,6 +554,22 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
     throw new Error("airway replacement requires wasm adapter");
   }
 
+  async listProcedures(_airportId: string, _kind: "sid" | "star" | "approach"): Promise<ProcedureSummary[]> {
+    return [];
+  }
+
+  async describeProcedureOptions(_airportId: string, _procedureId: string, _kind: "sid" | "star" | "approach"): Promise<ProcedureOptions> {
+    throw new Error("mock adapter procedure options are unavailable");
+  }
+
+  async insertProcedureMaterializedUi(): Promise<FlightPlanUiMutation> {
+    throw new Error("procedure insertion requires wasm adapter");
+  }
+
+  async materializeProcedure(): Promise<MaterializedProcedure> {
+    throw new Error("procedure materialization requires wasm adapter");
+  }
+
   async chartForPosition(
     catalog: CatalogJson,
     geometry: { polygons: Array<{ id: string; points: number[][] }> },
@@ -552,6 +604,7 @@ type WasmModule = {
   remove_leg_in_session(handle: number, index: number): Promise<string> | string;
   move_waypoint_in_session(handle: number, waypointIndex: number, delta: number): Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
+  replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
   ingest_point_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
@@ -595,6 +648,33 @@ type WasmModule = {
     airwayJson: string,
     resolvedLegsJson: string,
   ): Promise<string> | string;
+  insert_procedure_materialized_ui(
+    planJson: string,
+    startComponentIndex: number,
+    endComponentIndex: number,
+    builtJson: string,
+  ): Promise<string> | string;
+  replace_procedure_materialized_ui(
+    planJson: string,
+    componentIndex: number,
+    builtJson: string,
+  ): Promise<string> | string;
+  describe_procedure_options_from_rows(
+    airportId: string,
+    procedureId: string,
+    kindJson: string,
+    rowsJson: string,
+  ): Promise<string> | string;
+  materialize_procedure_from_records(
+    airportId: string,
+    procedureId: string,
+    kindJson: string,
+    runwayTransitionJson: string,
+    enrouteTransitionJson: string,
+    componentIndex: number,
+    rowsJson: string,
+    legsJson: string,
+  ): Promise<string> | string;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
@@ -623,6 +703,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       chartCatalog: init.chart_catalog,
       snapshot: async () => {
         snapshot = JSON.parse(await this.module.get_session_snapshot(handle)) as UiSessionSnapshot;
+        return snapshot;
+      },
+      replaceFlightPlan: async (plan) => {
+        snapshot = JSON.parse(await this.module.replace_flight_plan_in_session(handle, JSON.stringify(plan))) as UiSessionSnapshot;
         return snapshot;
       },
       removeLeg: async (index) => {
@@ -849,6 +933,66 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       ui_state: result.ui_state,
     };
   }
+
+  async listProcedures(airportId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureSummary[]> {
+    return listProceduresForAirport(airportId, kind);
+  }
+
+  async describeProcedureOptions(airportId: string, procedureId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureOptions> {
+    const rows = await loadProcedureDistinctRows(airportId, procedureId);
+    return JSON.parse(
+      await this.module.describe_procedure_options_from_rows(
+        airportId,
+        procedureId,
+        JSON.stringify(kind),
+        JSON.stringify(rows),
+      ),
+    ) as ProcedureOptions;
+  }
+
+  async insertProcedureMaterializedUi(
+    plan: FlightPlan,
+    startComponentIndex: number,
+    endComponentIndex: number,
+    built: MaterializedProcedure,
+  ): Promise<FlightPlanUiMutation> {
+    const result = JSON.parse(
+      await this.module.insert_procedure_materialized_ui(
+        JSON.stringify(plan),
+        startComponentIndex,
+        endComponentIndex,
+        JSON.stringify(built),
+      ),
+    ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
+    return {
+      plan: result.mutation.plan,
+      ui_state: result.ui_state,
+    };
+  }
+
+  async materializeProcedure(
+    airportId: string,
+    procedureId: string,
+    kind: "sid" | "star" | "approach",
+    runwayTransition: string | null,
+    enrouteTransition: string | null,
+    componentIndex: number,
+  ): Promise<MaterializedProcedure> {
+    const rows = await loadProcedureDistinctRows(airportId, procedureId);
+    const legs = await loadProcedureMaterializationRecords(airportId, procedureId);
+    return JSON.parse(
+      await this.module.materialize_procedure_from_records(
+        airportId,
+        procedureId,
+        JSON.stringify(kind),
+        JSON.stringify(runwayTransition),
+        JSON.stringify(enrouteTransition),
+        componentIndex,
+        JSON.stringify(rows),
+        JSON.stringify(legs),
+      ),
+    ) as MaterializedProcedure;
+  }
 }
 
 export async function loadBestAvailableAdapter(
@@ -863,6 +1007,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.remove_leg_in_session !== "function" ||
     typeof mod.move_waypoint_in_session !== "function" ||
     typeof mod.set_situation_in_session !== "function" ||
+    typeof mod.replace_flight_plan_in_session !== "function" ||
     typeof mod.select_airport_in_session !== "function" ||
     typeof mod.select_chart_in_session !== "function" ||
     typeof mod.ingest_point_tiles_in_session !== "function" ||
@@ -884,6 +1029,10 @@ export async function loadBestAvailableAdapter(
     typeof mod.sort_airway_suggestions_for_ui !== "function" ||
     typeof mod.insert_airway_materialized_ui !== "function" ||
     typeof mod.replace_airway_materialized_ui !== "function" ||
+    typeof mod.insert_procedure_materialized_ui !== "function" ||
+    typeof mod.replace_procedure_materialized_ui !== "function" ||
+    typeof mod.describe_procedure_options_from_rows !== "function" ||
+    typeof mod.materialize_procedure_from_records !== "function" ||
     typeof mod.derive_chart_page !== "function" ||
     typeof mod.derive_chart_page_state !== "function" ||
     typeof mod.set_content_policy_state !== "function" ||
@@ -930,6 +1079,7 @@ function buildMockFlightPlanUiState(
     ],
     active: legs[index]?.active ?? false,
     can_add_airway_after: true,
+    can_add_procedure_before: index > 0,
     can_change_airway: false,
     can_remove: true,
     can_reorder: plan.legs.length > 1,

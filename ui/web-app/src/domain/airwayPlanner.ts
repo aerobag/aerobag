@@ -246,7 +246,48 @@ export async function materializeAirwaySelection(
   return materialized;
 }
 
-export async function resolveNavRefPosition(navRef: NavRef): Promise<LatLon> {
+async function resolveRunwayFixPosition(runwayFix: string, airportId?: string | null): Promise<LatLon | null> {
+  const runwayIdent = runwayFix.trim().replace(/^RW/i, "");
+  if (!runwayIdent) {
+    return null;
+  }
+
+  const db = await getBrowserNavDb();
+  const params = airportId ? [airportId, runwayIdent, runwayIdent] : [runwayIdent, runwayIdent];
+  const sql = airportId
+    ? `
+      SELECT
+        CASE
+          WHEN trim(LEIdent) = trim(?2) THEN CAST(LELatitude AS REAL)
+          ELSE CAST(HELatitude AS REAL)
+        END AS lat,
+        CASE
+          WHEN trim(LEIdent) = trim(?2) THEN CAST(LELongitude AS REAL)
+          ELSE CAST(HELongitude AS REAL)
+        END AS lon
+      FROM airportrunways
+      WHERE trim(LocationID) = trim(?1)
+        AND (trim(LEIdent) = trim(?2) OR trim(HEIdent) = trim(?3))
+      LIMIT 1
+    `
+    : `
+      SELECT
+        CASE
+          WHEN trim(LEIdent) = trim(?1) THEN CAST(LELatitude AS REAL)
+          ELSE CAST(HELatitude AS REAL)
+        END AS lat,
+        CASE
+          WHEN trim(LEIdent) = trim(?1) THEN CAST(LELongitude AS REAL)
+          ELSE CAST(HELongitude AS REAL)
+        END AS lon
+      FROM airportrunways
+      WHERE trim(LEIdent) = trim(?1) OR trim(HEIdent) = trim(?2)
+      LIMIT 1
+    `;
+  return db.queryObjects<PositionRow>(sql, params)[0] ?? null;
+}
+
+export async function resolveNavRefPosition(navRef: NavRef, procedureAirportId?: string | null): Promise<LatLon> {
   if ("LatLon" in navRef) {
     return navRef.LatLon;
   }
@@ -278,6 +319,10 @@ export async function resolveNavRefPosition(navRef: NavRef): Promise<LatLon> {
     [navRef.Fix],
   )[0];
   if (!row) {
+    const runwayPosition = await resolveRunwayFixPosition(navRef.Fix, procedureAirportId);
+    if (runwayPosition) {
+      return runwayPosition;
+    }
     throw new Error(`unknown fix ${navRef.Fix}`);
   }
   return row;

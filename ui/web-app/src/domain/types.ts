@@ -145,15 +145,77 @@ export type ProcedureSegment = {
   terminal_discontinuity?: ProcedureDiscontinuity | null;
 };
 
+export type ProcedureLegProvenance = {
+  airport_id: string;
+  procedure_id: string;
+  kind: ProcedureKind;
+  role: "enroute_transition" | "common" | "runway_transition";
+  path_termination: string;
+  leg_sequence: number;
+};
+
+export type ProcedureSummary = {
+  airport_id: string;
+  procedure_id: string;
+  kind: ProcedureKind;
+};
+
+export type ProcedureDistinctRow = {
+  route_type: string;
+  transition_id: string;
+};
+
+export type ProcedureSpecChoice = {
+  runway_transition: string | null;
+  enroute_transition: string | null;
+};
+
+export type ProcedureOptions = {
+  airport_id: string;
+  procedure_id: string;
+  kind: ProcedureKind;
+  runway_transitions: string[];
+  enroute_transitions: string[];
+  has_common_segment: boolean;
+  valid_choices: ProcedureSpecChoice[];
+};
+
+export type MaterializedProcedure = {
+  procedure: ProcedureSegment;
+  concretized_items: ConcretizedNavItem[];
+  resolved_legs: ResolvedLeg[];
+};
+
+export type ProcedureLegMaterializationRecord = {
+  key: {
+    airport_id: string;
+    procedure_id: string;
+    route_type: string;
+    transition_id: string;
+  };
+  sequence: number;
+  nav_ref: NavRef | null;
+  path_termination: string;
+  path_termination_kind:
+    | "initial_fix"
+    | "track_to_fix"
+    | "course_to_fix"
+    | "direct_to_fix"
+    | "heading_to_manual"
+    | "heading_to_altitude"
+    | { other: string };
+};
+
 export type ResolvedLeg =
   {
     id: string;
     from: NavRef;
     to: NavRef;
-    procedure_provenance?: unknown;
+    procedure_provenance?: ProcedureLegProvenance | null;
   } & (
-    | { source: { kind: "legacy_plan_leg"; leg_index: number } }
+  | { source: { kind: "legacy_plan_leg"; leg_index: number } }
     | { source: { kind: "route_component"; component_index: number } }
+    | { source: { kind: "synthetic_bridge"; from_component_index: number; to_component_index: number } }
   );
 
 export type SequencingMode = "follow_plan" | "suspended" | "direct_to";
@@ -184,6 +246,7 @@ export type RouteComponentUiView = {
   items: ConcretizedNavItem[];
   active: boolean;
   can_add_airway_after: boolean;
+  can_add_procedure_before: boolean;
   can_change_airway: boolean;
   can_remove: boolean;
   can_reorder: boolean;

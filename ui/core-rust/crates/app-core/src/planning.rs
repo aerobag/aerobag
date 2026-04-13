@@ -207,6 +207,7 @@ pub struct RouteComponentUiView {
     pub items: Vec<ConcretizedNavItem>,
     pub active: bool,
     pub can_add_airway_after: bool,
+    pub can_add_procedure_before: bool,
     pub can_change_airway: bool,
     pub can_remove: bool,
     pub can_reorder: bool,
@@ -627,6 +628,11 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
                     && matches!(
                         plan.route_components.get(component_index + 1),
                         Some(RouteComponent::Waypoint { .. }) | None
+                    ),
+                can_add_procedure_before: matches!(component, RouteComponent::Waypoint { waypoint: NavRef::Airport(_) })
+                    && matches!(
+                        component_index.checked_sub(1).and_then(|index| plan.route_components.get(index)),
+                        Some(RouteComponent::Waypoint { .. })
                     ),
                 can_change_airway: matches!(component, RouteComponent::Airway { .. })
                     && preceding_waypoint.is_some()
@@ -3628,6 +3634,15 @@ mod tests {
         assert!(matches!(moved.route_components[2], RouteComponent::Airway { .. }));
         let ui = project_ui_state(&moved);
         assert!(ui.components.iter().all(|component| component.can_reorder));
+    }
+
+    #[test]
+    fn project_ui_state_enables_procedure_insertion_before_airport_with_waypoint_predecessor() {
+        let ui = project_ui_state(&sample_waypoint_only_plan());
+
+        assert!(!ui.components[0].can_add_procedure_before);
+        assert!(ui.components[1].can_add_procedure_before);
+        assert!(ui.components[2].can_add_procedure_before);
     }
 
     #[test]

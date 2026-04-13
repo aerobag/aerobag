@@ -8,7 +8,10 @@ import type {
   FlightPlanUiMutation,
   FlightPlanUiState,
   LatLon,
+  MaterializedProcedure,
   NavRef,
+  ProcedureOptions,
+  ProcedureSummary,
   Situation,
 } from "./domain/types";
 import uiTheme from "@shared-ui-theme";
@@ -56,6 +59,7 @@ import {
   suggestAirwaysNearAnchor,
 } from "./domain/airwayPlanner";
 import { getBrowserNavDb } from "./domain/webNavDb";
+import { debugLog } from "./domain/debugLog";
 
 type SurfaceSize = {
   width: number;
@@ -515,12 +519,15 @@ export default function App() {
     if (typeof window === "undefined") {
       return;
     }
-    const state: WebHistoryState = {
-      __aerobag: true,
-      current: currentSnapshot(),
-      stack: pageHistory,
-    };
-    window.history.replaceState(state, "");
+    const timeoutId = window.setTimeout(() => {
+      const state: WebHistoryState = {
+        __aerobag: true,
+        current: currentSnapshot(),
+        stack: pageHistory,
+      };
+      window.history.replaceState(state, "");
+    }, 120);
+    return () => window.clearTimeout(timeoutId);
   }, [page, pageHistory, selectedMapId, mapViewport, selectedAirportId, selectedChartId, recentAirportIds, chartViewport, chartFolderOpen]);
 
   useEffect(() => {
@@ -638,6 +645,7 @@ export default function App() {
           legSummary={legSummary}
           locationSearch={locationSearch}
           situation={appState.situation}
+          plan={currentPlan}
           planUiState={planUiState}
           uiSession={uiSession}
           adapterBackend={adapterBackend}
@@ -678,37 +686,37 @@ export default function App() {
           onMoveComponent={async (componentIndex, delta) => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.moveComponentUi(currentPlan, componentIndex, delta);
-            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
           onActivateLeg={async (legIndex) => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.activateLegUi(currentPlan, legIndex);
-            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
           onDeleteComponent={async (componentIndex) => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.deleteComponentUi(currentPlan, componentIndex);
-            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
           onActivateNextLeg={async () => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.activateNextLegUi(currentPlan);
-            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
           onSuspendSequencing={async () => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.suspendSequencingUi(currentPlan);
-            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
           onUnsuspendSequencing={async () => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.unsuspendSequencingUi(currentPlan);
-            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
           onSequenceActiveLeg={async () => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.sequenceActiveLegUi(currentPlan);
-            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
           onInsertAirway={async (startComponentIndex, endComponentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
             if (!appCoreAdapter) return;
@@ -729,7 +737,7 @@ export default function App() {
               materialized.airway,
               materialized.resolvedLegs,
             );
-            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
           onReplaceAirway={async (componentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
             if (!appCoreAdapter) return;
@@ -749,7 +757,17 @@ export default function App() {
               materialized.airway,
               materialized.resolvedLegs,
             );
-            applyFlightPlanMutation(setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+          }}
+          onInsertProcedure={async (startComponentIndex, endComponentIndex, built) => {
+            if (!appCoreAdapter) return;
+            const mutation = await appCoreAdapter.insertProcedureMaterializedUi(
+              currentPlan,
+              startComponentIndex,
+              endComponentIndex,
+              built,
+            );
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
         />
       </div>
@@ -829,6 +847,7 @@ function MapPage(props: {
   legSummary: string;
   locationSearch: string;
   situation: Situation;
+  plan: typeof samplePlan;
   planUiState: FlightPlanUiState | null;
   uiSession: UiSession | null;
   adapterBackend: AdapterBackendKind;
@@ -851,6 +870,7 @@ function MapPage(props: {
     legSummary,
     locationSearch,
     situation,
+    plan,
     planUiState,
     uiSession,
     adapterBackend,
@@ -934,27 +954,46 @@ function MapPage(props: {
     let cancelled = false;
 
     async function resolveFlightPlanRoute() {
-      const legs = planUiState?.resolved_legs ?? [];
-      if (legs.length === 0) {
+      const rawLegs = plan.resolved_legs ?? [];
+      const uiLegs = planUiState?.resolved_legs ?? [];
+      if (rawLegs.length === 0 || uiLegs.length === 0) {
         setFlightPlanRoute([]);
         return;
       }
       const resolvedPositions = new Map<string, Promise<LatLon>>();
-      const resolveCachedPosition = (navRef: NavRef) => {
-        const key = navRefKey(navRef);
+      const resolveCachedPosition = (navRef: NavRef, procedureAirportId?: string | null) => {
+        const key = `${navRefKey(navRef)}:${procedureAirportId ?? ""}`;
         let promise = resolvedPositions.get(key);
         if (!promise) {
-          promise = resolveNavRefPosition(navRef);
+          promise = resolveNavRefPosition(navRef, procedureAirportId);
           resolvedPositions.set(key, promise);
         }
         return promise;
       };
-      const segments = await Promise.all(legs.map(async (leg) => ({
-        id: leg.leg_id,
-        from: await resolveCachedPosition(leg.from),
-        to: await resolveCachedPosition(leg.to),
-        status: routeStatusForLeg(planUiState, leg.leg_index),
-      })));
+      const segmentEntries = await Promise.all(rawLegs.map(async (leg, index) => {
+        try {
+          const airportId = leg.procedure_provenance?.airport_id ?? null;
+          return {
+            id: leg.id,
+            from: await resolveCachedPosition(leg.from, airportId),
+            to: await resolveCachedPosition(leg.to, airportId),
+            status: routeStatusForLeg(planUiState, uiLegs[index]?.leg_index ?? index),
+          };
+        } catch (error) {
+          console.error("failed to resolve flight plan segment", leg, error);
+          return null;
+        }
+      }));
+      const segments = segmentEntries.filter((segment): segment is FlightPlanRouteSegment => segment !== null);
+      debugLog("map.route.segments", {
+        count: segments.length,
+        segments: segments.map((segment) => ({
+          id: segment.id,
+          from: segment.from,
+          to: segment.to,
+          status: segment.status,
+        })),
+      });
       if (!cancelled) {
         setFlightPlanRoute(segments);
       }
@@ -970,7 +1009,7 @@ function MapPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [planUiState]);
+  }, [plan, planUiState]);
 
   useEffect(() => {
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -987,12 +1026,35 @@ function MapPage(props: {
 
     async function syncMapOverlay() {
       let overlay: MapOverlayQueryResult;
+      const startedAt = performance.now();
       try {
+        debugLog("map.overlay.query.start", {
+          zoom: viewport.zoom,
+          width: surfaceSize.width,
+          height: surfaceSize.height,
+        });
         overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
+        debugLog("map.overlay.query.done", {
+          zoom: viewport.zoom,
+          elapsed_ms: Math.round(performance.now() - startedAt),
+          needed_point_tiles: overlay.needed_point_tiles.length,
+          visible_features: overlay.visible_features.length,
+          warnings: overlay.warnings.map((warning) => warning.code),
+        });
       } catch (error) {
+        debugLog("map.overlay.query.error", {
+          zoom: viewport.zoom,
+          elapsed_ms: Math.round(performance.now() - startedAt),
+          error: error instanceof Error ? error.message : String(error),
+        });
         throw error;
       }
       if (overlay.needed_point_tiles.length > 0) {
+        const tileFetchStartedAt = performance.now();
+        debugLog("map.overlay.tiles.fetch.start", {
+          zoom: viewport.zoom,
+          count: overlay.needed_point_tiles.length,
+        });
         const tiles = await Promise.all(
           overlay.needed_point_tiles.map(async (tile) => {
             const response = await fetch(pointTileUrl(tile.layer, tile.z, tile.x, tile.y), {
@@ -1014,8 +1076,27 @@ function MapPage(props: {
             return (await response.json()) as PointTilePayload;
           }),
         );
+        debugLog("map.overlay.tiles.fetch.done", {
+          zoom: viewport.zoom,
+          count: tiles.length,
+          elapsed_ms: Math.round(performance.now() - tileFetchStartedAt),
+        });
+        const ingestStartedAt = performance.now();
         await session.ingestPointTiles(tiles);
+        debugLog("map.overlay.tiles.ingest.done", {
+          zoom: viewport.zoom,
+          count: tiles.length,
+          elapsed_ms: Math.round(performance.now() - ingestStartedAt),
+        });
+        const refreshStartedAt = performance.now();
         overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
+        debugLog("map.overlay.query.refresh.done", {
+          zoom: viewport.zoom,
+          elapsed_ms: Math.round(performance.now() - refreshStartedAt),
+          needed_point_tiles: overlay.needed_point_tiles.length,
+          visible_features: overlay.visible_features.length,
+          warnings: overlay.warnings.map((warning) => warning.code),
+        });
       }
       if (!cancelled) {
         setMapOverlay(overlay);
@@ -1537,6 +1618,11 @@ function FlightPlanPage(props: {
     originAnchor: NavRef,
     destinationAnchor: NavRef | null,
   ) => void | Promise<void>;
+  onInsertProcedure: (
+    startComponentIndex: number,
+    endComponentIndex: number,
+    built: MaterializedProcedure,
+  ) => void | Promise<void>;
 }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
   const [pendingSelectedComponentIndex, setPendingSelectedComponentIndex] = useState<number | null>(null);
@@ -1555,6 +1641,16 @@ function FlightPlanPage(props: {
     selectedAirwayName: string | null;
     presentation: AirwayPresentationPlan | null;
     selectedEntryIndex: number | null;
+  } | null>(null);
+  const [procedurePicker, setProcedurePicker] = useState<{
+    loading: boolean;
+    error: string | null;
+    airportId: string;
+    startComponentIndex: number;
+    endComponentIndex: number;
+    procedures: ProcedureSummary[];
+    selectedProcedureId: string | null;
+    options: ProcedureOptions | null;
   } | null>(null);
   const trayGroup = useModalTrayGroup(["page"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
@@ -1689,6 +1785,7 @@ function FlightPlanPage(props: {
         componentIndex: row.componentIndex,
         componentKind: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.kind ?? null : null,
         canAddAirwayAfter: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_add_airway_after ?? false : false,
+        canAddProcedureBefore: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_add_procedure_before ?? false : false,
         canChangeAirway: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_change_airway ?? false : false,
         canRemoveComponent: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_remove ?? false : false,
         canReorderComponent: row.componentIndex !== null ? componentByIndex.get(row.componentIndex)?.can_reorder ?? false : false,
@@ -1784,6 +1881,24 @@ function FlightPlanPage(props: {
       ];
     }
 
+    if (selectedRow.rowKind === "group" && selectedRow.componentKind === "procedure" && selectedRow.componentIndex !== null) {
+      return [
+        {
+          id: "remove_procedure",
+          label: "Remove Procedure",
+          enabled: selectedRow.canRemoveComponent,
+          onSelect: () => {
+            if (!selectedRow.canRemoveComponent) {
+              return;
+            }
+            void props.onDeleteComponent(selectedRow.componentIndex!);
+            setReorderOpen(false);
+            setSelectedWaypointIndex(null);
+          },
+        },
+      ];
+    }
+
     if (selectedRow.rowKind !== "waypoint") {
       return [] as Array<{ id: string; label: string; enabled: boolean; onSelect: () => void }>;
     }
@@ -1791,6 +1906,8 @@ function FlightPlanPage(props: {
     const closeTray = () => {
       setReorderOpen(false);
       setSelectedWaypointIndex(null);
+      setAirwayPicker(null);
+      setProcedurePicker(null);
     };
 
     const topLevelWaypoint = selectedRow.depth === 0;
@@ -1824,6 +1941,11 @@ function FlightPlanPage(props: {
               selectedRow.startComponentIndex !== null &&
               selectedRow.originAnchor !== null &&
               props.appCoreAdapter !== null
+            : action.id === "select_procedure"
+              ? selectedRow.canAddProcedureBefore &&
+                selectedRow.componentIndex !== null &&
+                selectedRow.chartAirportId !== null &&
+                props.appCoreAdapter !== null
             : action.id === "charts"
               ? selectedRow.chartAirportId !== null
               : false;
@@ -1878,6 +2000,39 @@ function FlightPlanPage(props: {
                 } : current);
               }).catch((error) => {
                 setAirwayPicker((current) => current ? {
+                  ...current,
+                  loading: false,
+                  error: error instanceof Error ? error.message : String(error),
+                } : current);
+              });
+            });
+            return;
+          }
+          if (action.id === "select_procedure") {
+            if (selectedRow.componentIndex === null || !selectedRow.chartAirportId) {
+              return;
+            }
+            const startComponentIndex = selectedRow.componentIndex - 1;
+            const endComponentIndex = selectedRow.componentIndex;
+            setProcedurePicker({
+              loading: true,
+              error: null,
+              airportId: selectedRow.chartAirportId,
+              startComponentIndex,
+              endComponentIndex,
+              procedures: [],
+              selectedProcedureId: null,
+              options: null,
+            });
+            window.requestAnimationFrame(() => {
+              void props.appCoreAdapter!.listProcedures(selectedRow.chartAirportId!, "approach").then((procedures) => {
+                setProcedurePicker((current) => current ? {
+                  ...current,
+                  loading: false,
+                  procedures,
+                } : current);
+              }).catch((error) => {
+                setProcedurePicker((current) => current ? {
                   ...current,
                   loading: false,
                   error: error instanceof Error ? error.message : String(error),
@@ -2189,6 +2344,7 @@ function FlightPlanPage(props: {
                     setSelectedWaypointIndex(index);
                     setReorderOpen(false);
                     setAirwayPicker(null);
+                    setProcedurePicker(null);
                   }}
                 >
                   <span className={`planStructuredLabel${showComponentViews && row.depth > 0 ? " isIndented" : ""}`}>{row.label}</span>
@@ -2275,6 +2431,7 @@ function FlightPlanPage(props: {
               setSelectedWaypointAnchor(null);
               setReorderOpen(false);
               setAirwayPicker(null);
+              setProcedurePicker(null);
             }}
           />
           <section
@@ -2286,7 +2443,117 @@ function FlightPlanPage(props: {
               maxHeight: waypointModalMaxHeight === null ? undefined : `${waypointModalMaxHeight}px`,
             }}
           >
-            {airwayPicker ? (
+            {procedurePicker ? (
+              <div className="waypointActionTray">
+                <div className="planGuidanceSummary">
+                  APPROACH {procedurePicker.airportId}
+                </div>
+                {procedurePicker.error ? <div className="planGuidanceSummary">{procedurePicker.error}</div> : null}
+                {procedurePicker.loading ? (
+                  <div className="airwayLoadingPanel" aria-live="polite">
+                    <div className="spinner" aria-hidden="true" />
+                    <div className="planGuidanceSummary">Loading…</div>
+                  </div>
+                ) : procedurePicker.selectedProcedureId === null ? (
+                  <>
+                    {procedurePicker.procedures.map((procedure) => (
+                      <button
+                        key={procedure.procedure_id}
+                        type="button"
+                        className="trayButton airwayChoiceButton"
+                        onPointerDown={stopPointer}
+                        onPointerUp={stopPointer}
+                        onClick={async () => {
+                          setProcedurePicker((current) => current ? {
+                            ...current,
+                            loading: true,
+                            error: null,
+                          } : current);
+                          try {
+                            const options = await props.appCoreAdapter!.describeProcedureOptions(
+                              procedurePicker.airportId,
+                              procedure.procedure_id,
+                              "approach",
+                            );
+                            setProcedurePicker((current) => current ? {
+                              ...current,
+                              loading: false,
+                              selectedProcedureId: procedure.procedure_id,
+                              options,
+                            } : current);
+                          } catch (error) {
+                            setProcedurePicker((current) => current ? {
+                              ...current,
+                              loading: false,
+                              error: error instanceof Error ? error.message : String(error),
+                            } : current);
+                          }
+                        }}
+                      >
+                        {procedure.procedure_id}
+                      </button>
+                    ))}
+                  </>
+                ) : procedurePicker.options ? (
+                  <>
+                    {procedurePicker.options.valid_choices.map((choice, index) => (
+                      <button
+                        key={`${procedurePicker.selectedProcedureId}:${choice.enroute_transition ?? "none"}:${index}`}
+                        type="button"
+                        className="trayButton airwayChoiceButton"
+                        onPointerDown={stopPointer}
+                        onPointerUp={stopPointer}
+                        onClick={async () => {
+                          setProcedurePicker((current) => current ? {
+                            ...current,
+                            loading: true,
+                            error: null,
+                          } : current);
+                          try {
+                            const built = await props.appCoreAdapter!.materializeProcedure(
+                              procedurePicker.airportId,
+                              procedurePicker.selectedProcedureId!,
+                              "approach",
+                              null,
+                              choice.enroute_transition,
+                              procedurePicker.startComponentIndex + 1,
+                            );
+                            await props.onInsertProcedure(
+                              procedurePicker.startComponentIndex,
+                              procedurePicker.endComponentIndex,
+                              built,
+                            );
+                            setProcedurePicker(null);
+                            setSelectedWaypointIndex(null);
+                          } catch (error) {
+                            setProcedurePicker((current) => current ? {
+                              ...current,
+                              loading: false,
+                              error: error instanceof Error ? error.message : String(error),
+                            } : current);
+                          }
+                        }}
+                      >
+                        {choice.enroute_transition ?? "No Transition"}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      className="trayButton airwayChoiceButton"
+                      onPointerDown={stopPointer}
+                      onPointerUp={stopPointer}
+                      onClick={() => setProcedurePicker((current) => current ? {
+                        ...current,
+                        selectedProcedureId: null,
+                        options: null,
+                      } : current)}
+                    >
+                      Back
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            ) : airwayPicker ? (
               <div className="waypointActionTray">
                 <div className="planGuidanceSummary">
                   AIRWAY {navRefLabel(airwayPicker.originAnchor)}
@@ -3366,18 +3633,17 @@ function formatRingDistance(radiusNm: number) {
   return `${Number.isInteger(radiusNm) ? radiusNm.toFixed(0) : radiusNm.toString()}nm`;
 }
 
-function applyFlightPlanMutation(
+async function applyFlightPlanMutation(
+  uiSession: UiSession | null,
   setSessionSnapshot: Dispatch<SetStateAction<UiSessionSnapshot>>,
   setPlanUiState: Dispatch<SetStateAction<FlightPlanUiState | null>>,
   mutation: FlightPlanUiMutation,
 ) {
-  setSessionSnapshot((current) => ({
-    ...current,
-    app_state: {
-      ...current.app_state,
-      active_plan: mutation.plan,
-    },
-  }));
+  if (!uiSession) {
+    throw new Error("flight plan mutation requires live core session");
+  }
+  const nextSnapshot = await uiSession.replaceFlightPlan(mutation.plan);
+  setSessionSnapshot(nextSnapshot);
   setPlanUiState(mutation.ui_state);
 }
 
@@ -3435,6 +3701,7 @@ function buildLegacyComponentViews(plan: typeof samplePlan): FlightPlanUiState["
     items: [{ kind: "waypoint", nav_ref: waypoint }],
     active: false,
     can_add_airway_after: true,
+    can_add_procedure_before: index > 0 && "Airport" in waypoint,
     can_change_airway: false,
     can_remove: true,
     can_reorder: waypoints.length > 1,

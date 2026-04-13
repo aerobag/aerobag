@@ -40,8 +40,9 @@ pub use map_overlay::{
 pub use navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
     AirwayExitSelection, AirwayFixPoint, AirwayPoint, AirwaySuggestion, MaterializedProcedure,
-    ProcedureLegRecord, ProcedureOptions, ProcedureSpecChoice, ProcedureSummary,
-    ProcedureVariantKey, AirwayPresentationPlan, AirwayPresentationPoint,
+    ProcedureDistinctRow, ProcedureLegMaterializationRecord, ProcedureLegRecord,
+    ProcedureOptions, ProcedureSpecChoice, ProcedureSummary, ProcedureVariantKey,
+    AirwayPresentationPlan, AirwayPresentationPoint,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use navdb::{
@@ -71,6 +72,7 @@ pub use situation::{Situation, SituationPosition};
 pub use session::{
     create_ui_session, destroy_session, get_map_overlay_in_session, get_session_snapshot,
     ingest_point_tiles_in_session, move_waypoint_in_session, remove_leg_in_session,
+    replace_flight_plan_in_session,
     restore_chart_page_state_in_session, select_airport_in_session, select_chart_in_session,
     set_situation_in_session,
     UiChartPageState, UiSessionInitResult, UiSessionSnapshot,
@@ -273,6 +275,498 @@ pub fn sort_airway_suggestions_for_ui(mut suggestions: Vec<AirwaySuggestion>) ->
             })
     });
     suggestions
+}
+
+pub fn describe_procedure_options_from_rows(
+    airport_id: &str,
+    procedure_id: &str,
+    kind: ProcedureKind,
+    rows: Vec<ProcedureDistinctRow>,
+) -> AppResult<ProcedureOptions> {
+    if kind == ProcedureKind::Approach {
+        let enroute_transitions = rows
+            .iter()
+            .filter(|row| row.route_type == "A")
+            .map(|row| row.transition_id.clone())
+            .filter(|transition| !transition.is_empty() && transition != "ALL")
+            .collect::<Vec<_>>();
+        let has_common_segment = approach_common_route_type(&rows).is_some();
+        let valid_choices = if enroute_transitions.is_empty() {
+            vec![ProcedureSpecChoice {
+                runway_transition: None,
+                enroute_transition: None,
+            }]
+        } else {
+            enroute_transitions
+                .iter()
+                .cloned()
+                .map(|enroute_transition| ProcedureSpecChoice {
+                    runway_transition: None,
+                    enroute_transition: Some(enroute_transition),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        return Ok(ProcedureOptions {
+            airport_id: airport_id.trim().to_string(),
+            procedure_id: procedure_id.trim().to_string(),
+            kind,
+            runway_transitions: Vec::new(),
+            enroute_transitions,
+            has_common_segment,
+            valid_choices,
+        });
+    }
+
+    let layout = procedure_layout(kind.clone());
+    let runway_transitions = rows
+        .iter()
+        .filter(|row| row.route_type == layout.runway_route_type)
+        .map(|row| row.transition_id.clone())
+        .filter(|transition| !transition.is_empty() && transition != "ALL")
+        .collect::<Vec<_>>();
+    let enroute_transitions = rows
+        .iter()
+        .filter(|row| row.route_type == layout.enroute_route_type)
+        .map(|row| row.transition_id.clone())
+        .filter(|transition| !transition.is_empty() && transition != "ALL")
+        .collect::<Vec<_>>();
+    let has_common_segment = rows.iter().any(|row| row.route_type == layout.common_route_type);
+
+    let runway_choices = if runway_transitions.is_empty() {
+        vec![None]
+    } else {
+        runway_transitions.iter().cloned().map(Some).collect::<Vec<_>>()
+    };
+    let enroute_choices = if enroute_transitions.is_empty() {
+        vec![None]
+    } else {
+        enroute_transitions.iter().cloned().map(Some).collect::<Vec<_>>()
+    };
+    let valid_choices = runway_choices
+        .into_iter()
+        .flat_map(|runway_transition| {
+            enroute_choices
+                .iter()
+                .cloned()
+                .map(move |enroute_transition| ProcedureSpecChoice {
+                    runway_transition: runway_transition.clone(),
+                    enroute_transition,
+                })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(ProcedureOptions {
+        airport_id: airport_id.trim().to_string(),
+        procedure_id: procedure_id.trim().to_string(),
+        kind,
+        runway_transitions,
+        enroute_transitions,
+        has_common_segment,
+        valid_choices,
+    })
+}
+
+pub fn materialize_procedure_from_records(
+    airport_id: &str,
+    procedure_id: &str,
+    kind: ProcedureKind,
+    runway_transition: Option<String>,
+    enroute_transition: Option<String>,
+    component_index: usize,
+    rows: Vec<ProcedureDistinctRow>,
+    legs: Vec<ProcedureLegMaterializationRecord>,
+) -> AppResult<MaterializedProcedure> {
+    let options = describe_procedure_options_from_rows(
+        airport_id,
+        procedure_id,
+        kind.clone(),
+        rows.clone(),
+    )?;
+    let requested = ProcedureSpecChoice {
+        runway_transition: runway_transition.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(str::to_string),
+        enroute_transition: enroute_transition.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(str::to_string),
+    };
+
+    if !options.valid_choices.iter().any(|choice| choice == &requested) {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!(
+                "invalid procedure selection for {} {}: runway={:?} enroute={:?}",
+                airport_id.trim(),
+                procedure_id.trim(),
+                requested.runway_transition,
+                requested.enroute_transition
+            ),
+        });
+    }
+
+    let mut segments = Vec::<(
+        MaterializedSegmentRole,
+        Vec<ProcedureLegMaterializationRecord>,
+        Vec<ConcretizedNavItem>,
+        bool,
+    )>::new();
+
+    if kind == ProcedureKind::Approach {
+        if let Some(enroute_transition) = requested.enroute_transition.as_deref() {
+            let transition_legs = filter_procedure_records(
+                &legs,
+                airport_id,
+                procedure_id,
+                "A",
+                enroute_transition,
+            );
+            let items = concretize_procedure_materialization_legs(&transition_legs, false);
+            segments.push((MaterializedSegmentRole::EnrouteTransition, transition_legs, items, false));
+        }
+
+        if let Some(common_route_type) = approach_common_route_type(&rows) {
+            let common_legs = filter_procedure_records(
+                &legs,
+                airport_id,
+                procedure_id,
+                &common_route_type,
+                "",
+            );
+            let items = concretize_procedure_materialization_legs(&common_legs, false);
+            segments.push((MaterializedSegmentRole::Common, common_legs, items, false));
+        }
+
+        let concretized_items = merge_concretized_segments_from_records(
+            segments
+                .iter()
+                .map(|(_, _, items, _)| items.clone())
+                .collect::<Vec<_>>(),
+        );
+        let terminal_discontinuity = match concretized_items.last() {
+            Some(ConcretizedNavItem::Discontinuity { discontinuity, .. }) => Some(discontinuity.clone()),
+            _ => None,
+        };
+        let resolved_legs = resolve_procedure_materialization_legs_with_provenance(
+            airport_id,
+            procedure_id,
+            kind.clone(),
+            component_index,
+            &segments,
+        );
+
+        return Ok(MaterializedProcedure {
+            procedure: ProcedureSegment {
+                airport_id: AirportId(airport_id.trim().to_string()),
+                procedure_id: procedure_id.trim().to_string(),
+                kind,
+                runway_transition: None,
+                enroute_transition: requested.enroute_transition,
+                terminal_discontinuity,
+            },
+            concretized_items,
+            resolved_legs,
+        });
+    }
+
+    let layout = procedure_layout(kind.clone());
+    if let Some(enroute_transition) = requested.enroute_transition.as_deref() {
+        let segment_legs = filter_procedure_records(
+            &legs,
+            airport_id,
+            procedure_id,
+            layout.enroute_route_type,
+            enroute_transition,
+        );
+        let items = concretize_procedure_materialization_legs(&segment_legs, layout.reverse_segment_order);
+        segments.push((
+            MaterializedSegmentRole::EnrouteTransition,
+            segment_legs,
+            items,
+            layout.reverse_segment_order,
+        ));
+    }
+    if options.has_common_segment {
+        let common_legs = filter_procedure_records(
+            &legs,
+            airport_id,
+            procedure_id,
+            layout.common_route_type,
+            layout.common_transition_id,
+        );
+        let items = concretize_procedure_materialization_legs(&common_legs, layout.reverse_segment_order);
+        segments.push((
+            MaterializedSegmentRole::Common,
+            common_legs,
+            items,
+            layout.reverse_segment_order,
+        ));
+    }
+    if let Some(runway_transition) = requested.runway_transition.as_deref() {
+        let segment_legs = filter_procedure_records(
+            &legs,
+            airport_id,
+            procedure_id,
+            layout.runway_route_type,
+            runway_transition,
+        );
+        let items = concretize_procedure_materialization_legs(&segment_legs, layout.reverse_segment_order);
+        segments.push((
+            MaterializedSegmentRole::RunwayTransition,
+            segment_legs,
+            items,
+            layout.reverse_segment_order,
+        ));
+    }
+
+    let concretized_items = merge_concretized_segments_from_records(
+        segments
+            .iter()
+            .map(|(_, _, items, _)| items.clone())
+            .collect::<Vec<_>>(),
+    );
+    let terminal_discontinuity = match concretized_items.last() {
+        Some(ConcretizedNavItem::Discontinuity { discontinuity, .. }) => Some(discontinuity.clone()),
+        _ => None,
+    };
+    let resolved_legs = resolve_procedure_materialization_legs_with_provenance(
+        airport_id,
+        procedure_id,
+        kind.clone(),
+        component_index,
+        &segments,
+    );
+
+    Ok(MaterializedProcedure {
+        procedure: ProcedureSegment {
+            airport_id: AirportId(airport_id.trim().to_string()),
+            procedure_id: procedure_id.trim().to_string(),
+            kind,
+            runway_transition: requested.runway_transition,
+            enroute_transition: requested.enroute_transition,
+            terminal_discontinuity,
+        },
+        concretized_items,
+        resolved_legs,
+    })
+}
+
+struct ProcedureLayout {
+    runway_route_type: &'static str,
+    enroute_route_type: &'static str,
+    common_route_type: &'static str,
+    common_transition_id: &'static str,
+    reverse_segment_order: bool,
+}
+
+enum MaterializedSegmentRole {
+    EnrouteTransition,
+    Common,
+    RunwayTransition,
+}
+
+fn procedure_layout(kind: ProcedureKind) -> ProcedureLayout {
+    match kind {
+        ProcedureKind::Sid => ProcedureLayout {
+            runway_route_type: "5",
+            enroute_route_type: "4",
+            common_route_type: "6",
+            common_transition_id: "",
+            reverse_segment_order: true,
+        },
+        ProcedureKind::Star => ProcedureLayout {
+            runway_route_type: "1",
+            enroute_route_type: "3",
+            common_route_type: "2",
+            common_transition_id: "",
+            reverse_segment_order: true,
+        },
+        ProcedureKind::Approach => ProcedureLayout {
+            runway_route_type: "",
+            enroute_route_type: "",
+            common_route_type: "",
+            common_transition_id: "",
+            reverse_segment_order: false,
+        },
+    }
+}
+
+fn approach_common_route_type(rows: &[ProcedureDistinctRow]) -> Option<String> {
+    rows.iter()
+        .find(|row| row.route_type != "A")
+        .map(|row| row.route_type.clone())
+}
+
+fn filter_procedure_records(
+    legs: &[ProcedureLegMaterializationRecord],
+    airport_id: &str,
+    procedure_id: &str,
+    route_type: &str,
+    transition_id: &str,
+) -> Vec<ProcedureLegMaterializationRecord> {
+    let mut filtered = legs
+        .iter()
+        .filter(|leg| {
+            leg.key.airport_id.trim() == airport_id.trim()
+                && leg.key.procedure_id.trim() == procedure_id.trim()
+                && leg.key.route_type.trim() == route_type.trim()
+                && leg.key.transition_id.trim() == transition_id.trim()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    filtered.sort_by_key(|leg| leg.sequence);
+    filtered
+}
+
+fn resolve_procedure_materialization_legs_with_provenance(
+    airport_id: &str,
+    procedure_id: &str,
+    kind: ProcedureKind,
+    component_index: usize,
+    segments: &[(
+        MaterializedSegmentRole,
+        Vec<ProcedureLegMaterializationRecord>,
+        Vec<ConcretizedNavItem>,
+        bool,
+    )],
+) -> Vec<ResolvedLeg> {
+    let mut resolved = Vec::<ResolvedLeg>::new();
+
+    for (role, leg_records, _, reversed) in segments {
+        let mut fix_records = leg_records
+            .iter()
+            .filter(|leg| leg.nav_ref.is_some())
+            .collect::<Vec<_>>();
+        if *reversed {
+            fix_records.reverse();
+        }
+        let role = procedure_segment_role(role);
+
+        for pair in fix_records.windows(2) {
+            let from = pair[0].nav_ref.clone().expect("filtered non-waypoint leg");
+            let to = pair[1].nav_ref.clone().expect("filtered non-waypoint leg");
+            let duplicate_of_previous = resolved
+                .last()
+                .is_some_and(|previous| previous.from == from && previous.to == to);
+            if duplicate_of_previous {
+                continue;
+            }
+
+            resolved.push(ResolvedLeg {
+                id: format!(
+                    "procedure-{}-{}-{}",
+                    procedure_id.trim(),
+                    pair[1].key.route_type.trim(),
+                    pair[1].sequence
+                ),
+                from: from.clone(),
+                to: to.clone(),
+                source: ResolvedLegSource::RouteComponent { component_index },
+                procedure_provenance: Some(ProcedureLegProvenance {
+                    airport_id: airport_id.trim().to_string(),
+                    procedure_id: procedure_id.trim().to_string(),
+                    kind: kind.clone(),
+                    role: role.clone(),
+                    path_termination: pair[1].path_termination_kind.clone(),
+                    leg_sequence: pair[1].sequence,
+                    }),
+            });
+        }
+    }
+
+    resolved
+}
+
+fn procedure_segment_role(role: &MaterializedSegmentRole) -> ProcedureSegmentRole {
+    match role {
+        MaterializedSegmentRole::EnrouteTransition => ProcedureSegmentRole::EnrouteTransition,
+        MaterializedSegmentRole::Common => ProcedureSegmentRole::Common,
+        MaterializedSegmentRole::RunwayTransition => ProcedureSegmentRole::RunwayTransition,
+    }
+}
+
+fn concretize_procedure_materialization_legs(
+    legs: &[ProcedureLegMaterializationRecord],
+    reverse_segment_order: bool,
+) -> Vec<ConcretizedNavItem> {
+    let mut waypoints = legs
+        .iter()
+        .filter_map(|leg| leg.nav_ref.clone())
+        .collect::<Vec<_>>();
+    waypoints.dedup();
+
+    let terminal_discontinuity = legs.last().and_then(terminal_procedure_discontinuity);
+    let initial_discontinuity = legs
+        .iter()
+        .take_while(|leg| leg.nav_ref.is_none())
+        .last()
+        .and_then(leading_procedure_discontinuity);
+
+    if reverse_segment_order {
+        waypoints.reverse();
+    }
+
+    let mut items = waypoints
+        .into_iter()
+        .map(|nav_ref| ConcretizedNavItem::Waypoint { nav_ref })
+        .collect::<Vec<_>>();
+
+    if reverse_segment_order {
+        if let Some(discontinuity) = initial_discontinuity {
+            items.push(ConcretizedNavItem::Discontinuity {
+                label: discontinuity.display_label().to_string(),
+                discontinuity,
+            });
+        }
+    } else if let Some(discontinuity) = terminal_discontinuity {
+        items.push(ConcretizedNavItem::Discontinuity {
+            label: discontinuity.display_label().to_string(),
+            discontinuity,
+        });
+    }
+
+    items
+}
+
+fn merge_concretized_segments_from_records(
+    segments: Vec<Vec<ConcretizedNavItem>>,
+) -> Vec<ConcretizedNavItem> {
+    let mut merged = Vec::<ConcretizedNavItem>::new();
+
+    for segment in segments {
+        for item in segment {
+            let is_duplicate_boundary = matches!(
+                (merged.last(), &item),
+                (
+                    Some(ConcretizedNavItem::Waypoint { nav_ref: left }),
+                    ConcretizedNavItem::Waypoint { nav_ref: right }
+                ) if left == right
+            );
+            if !is_duplicate_boundary {
+                merged.push(item);
+            }
+        }
+    }
+
+    merged
+}
+
+fn terminal_procedure_discontinuity(
+    leg: &ProcedureLegMaterializationRecord,
+) -> Option<ProcedureDiscontinuity> {
+    match leg.path_termination.trim() {
+        "FM" => Some(ProcedureDiscontinuity::Vectors),
+        "HM" => Some(ProcedureDiscontinuity::Hold),
+        "VA" | "VI" if leg.nav_ref.is_none() => Some(ProcedureDiscontinuity::Vectors),
+        _ => None,
+    }
+}
+
+fn leading_procedure_discontinuity(
+    leg: &ProcedureLegMaterializationRecord,
+) -> Option<ProcedureDiscontinuity> {
+    match leg.path_termination.trim() {
+        "FM" => Some(ProcedureDiscontinuity::Vectors),
+        "HM" => Some(ProcedureDiscontinuity::Hold),
+        "VA" | "VI" if leg.nav_ref.is_none() => Some(ProcedureDiscontinuity::Vectors),
+        _ => None,
+    }
 }
 
 pub fn remove_flight_plan_leg(plan: &FlightPlan, index: usize) -> AppResult<FlightPlan> {
@@ -1020,6 +1514,7 @@ pub fn resolve_content_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::{params, Connection};
     use std::path::PathBuf;
 
     fn sample_catalog_json() -> String {
@@ -1175,6 +1670,148 @@ mod tests {
             }
         }
         None
+    }
+
+    fn load_browser_style_procedure_distinct_rows(
+        db_path: &Path,
+        airport_id: &str,
+        procedure_id: &str,
+    ) -> Vec<ProcedureDistinctRow> {
+        let connection = Connection::open(db_path).expect("open fixture nav db");
+        let mut stmt = connection
+            .prepare(
+                "
+                SELECT DISTINCT
+                  trim(route_type) AS route_type,
+                  trim(transition_identifier) AS transition_id
+                FROM cifp_sid_star_app
+                WHERE trim(airport_identifier) = trim(?1)
+                  AND trim(sid_star_approach_identifier) = trim(?2)
+                ORDER BY trim(route_type), trim(transition_identifier)
+                ",
+            )
+            .expect("prepare distinct row query");
+        let rows = stmt
+            .query_map(params![airport_id, procedure_id], |row| {
+                Ok(ProcedureDistinctRow {
+                    route_type: row.get::<_, String>(0)?,
+                    transition_id: row.get::<_, String>(1)?,
+                })
+            })
+            .expect("query distinct rows");
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect distinct rows")
+    }
+
+    fn browser_style_nav_ref_for_identifier(
+        connection: &Connection,
+        identifier: &str,
+    ) -> Option<NavRef> {
+        let trimmed = identifier.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if trimmed.starts_with("RW") {
+            return Some(NavRef::Fix(trimmed.to_string()));
+        }
+        if connection
+            .query_row(
+                "SELECT LocationID FROM airports WHERE trim(LocationID) = trim(?1) LIMIT 1",
+                params![trimmed],
+                |row| row.get::<_, String>(0),
+            )
+            .is_ok()
+        {
+            return Some(NavRef::Airport(trimmed.to_string()));
+        }
+        if connection
+            .query_row(
+                "SELECT LocationID FROM nav WHERE trim(LocationID) = trim(?1) LIMIT 1",
+                params![trimmed],
+                |row| row.get::<_, String>(0),
+            )
+            .is_ok()
+        {
+            return Some(NavRef::Navaid(trimmed.to_string()));
+        }
+        if connection
+            .query_row(
+                "SELECT LocationID FROM fix WHERE trim(LocationID) = trim(?1) LIMIT 1",
+                params![trimmed],
+                |row| row.get::<_, String>(0),
+            )
+            .is_ok()
+        {
+            return Some(NavRef::Fix(trimmed.to_string()));
+        }
+        None
+    }
+
+    fn load_browser_style_procedure_materialization_records(
+        db_path: &Path,
+        airport_id: &str,
+        procedure_id: &str,
+    ) -> Vec<ProcedureLegMaterializationRecord> {
+        let connection = Connection::open(db_path).expect("open fixture nav db");
+        let mut stmt = connection
+            .prepare(
+                "
+                SELECT
+                  trim(airport_identifier) AS airport_id,
+                  trim(sid_star_approach_identifier) AS procedure_id,
+                  trim(route_type) AS route_type,
+                  trim(transition_identifier) AS transition_id,
+                  CAST(sequence_number AS INTEGER) AS sequence,
+                  trim(fix_identifier) AS fix_identifier,
+                  trim(path_and_termination) AS path_termination
+                FROM cifp_sid_star_app
+                WHERE trim(airport_identifier) = trim(?1)
+                  AND trim(sid_star_approach_identifier) = trim(?2)
+                ORDER BY trim(route_type), trim(transition_identifier), CAST(sequence_number AS INTEGER)
+                ",
+            )
+            .expect("prepare materialization records query");
+        let rows = stmt
+            .query_map(params![airport_id, procedure_id], |row| {
+                let airport_id = row.get::<_, String>(0)?;
+                let procedure_id = row.get::<_, String>(1)?;
+                let route_type = row.get::<_, String>(2)?;
+                let transition_id = row.get::<_, String>(3)?;
+                let sequence = row.get::<_, i32>(4)?;
+                let fix_identifier = row.get::<_, String>(5)?;
+                let path_termination = row.get::<_, String>(6)?;
+                Ok(ProcedureLegMaterializationRecord {
+                    key: ProcedureVariantKey {
+                        airport_id,
+                        procedure_id,
+                        route_type,
+                        transition_id,
+                    },
+                    sequence,
+                    nav_ref: browser_style_nav_ref_for_identifier(&connection, &fix_identifier),
+                    path_termination_kind: interpret_path_termination(&path_termination),
+                    path_termination,
+                })
+            })
+            .expect("query materialization records");
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect materialization records")
+    }
+
+    fn nav_ref_label_for_test(nav_ref: &NavRef) -> String {
+        match nav_ref {
+            NavRef::Airport(code) => code.clone(),
+            NavRef::Navaid(code) => code.clone(),
+            NavRef::Fix(code) => code.clone(),
+            NavRef::LatLon(position) => format!("L:{:.6},{:.6}", position.lat, position.lon),
+        }
+    }
+
+    fn concretized_item_label_for_test(item: &ConcretizedNavItem) -> String {
+        match item {
+            ConcretizedNavItem::Waypoint { nav_ref } => nav_ref_label_for_test(nav_ref),
+            ConcretizedNavItem::Discontinuity { label, .. } => format!("D:{label}"),
+        }
     }
 
     #[test]
@@ -1646,6 +2283,117 @@ mod tests {
             RouteComponent::Procedure { .. }
         ));
         assert_eq!(mutation.ui_state.components[1].kind, RouteComponentViewKind::Procedure);
+    }
+
+    #[test]
+    fn browser_style_i34_materialization_matches_native_core_and_stays_local() {
+        let base_plan = FlightPlan {
+            id: "krnt-v23-kuao-krdd".to_string(),
+            name: "Seeded KRNT V23 KUAO KRDD".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KUAO".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRDD".to_string()),
+                },
+            ],
+            resolved_legs: Vec::new(),
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KRDD".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let airway = insert_airway_from_anchors(
+            fixture_db_path(),
+            &base_plan,
+            0,
+            1,
+            "V23",
+            &NavRef::Airport("KRNT".to_string()),
+            &NavRef::Airport("KUAO".to_string()),
+        )
+        .unwrap();
+
+        let native = materialize_procedure_selection(
+            fixture_db_path(),
+            "KRDD",
+            "I34",
+            ProcedureKind::Approach,
+            None,
+            Some("RBL"),
+            0,
+        )
+        .unwrap();
+
+        let distinct_rows =
+            load_browser_style_procedure_distinct_rows(fixture_db_path(), "KRDD", "I34");
+        let records =
+            load_browser_style_procedure_materialization_records(fixture_db_path(), "KRDD", "I34");
+        let browser_style = materialize_procedure_from_records(
+            "KRDD",
+            "I34",
+            ProcedureKind::Approach,
+            None,
+            Some("RBL".to_string()),
+            0,
+            distinct_rows,
+            records,
+        )
+        .unwrap();
+
+        let browser_labels = browser_style
+            .concretized_items
+            .iter()
+            .map(concretized_item_label_for_test)
+            .collect::<Vec<_>>();
+        let native_labels = native
+            .concretized_items
+            .iter()
+            .map(concretized_item_label_for_test)
+            .collect::<Vec<_>>();
+        assert_eq!(browser_labels, native_labels);
+
+        let inserted = insert_procedure_materialized_ui(&airway.plan, 2, 3, browser_style).unwrap();
+        let route_pairs = inserted
+            .mutation
+            .plan
+            .resolved_legs
+            .iter()
+            .map(|leg| (leg.from.clone(), leg.to.clone()))
+            .collect::<Vec<_>>();
+
+        assert!(route_pairs.contains(&(
+            NavRef::Airport("KUAO".to_string()),
+            NavRef::Navaid("RBL".to_string()),
+        )));
+        assert!(route_pairs.contains(&(
+            NavRef::Navaid("RBL".to_string()),
+            NavRef::Fix("DIBLE".to_string()),
+        )));
+        assert!(route_pairs.contains(&(
+            NavRef::Fix("DIBLE".to_string()),
+            NavRef::Fix("LASSN".to_string()),
+        )));
+        assert!(route_pairs.contains(&(
+            NavRef::Fix("LASSN".to_string()),
+            NavRef::Fix("RW34".to_string()),
+        )));
     }
 
     #[test]

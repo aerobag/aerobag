@@ -1038,8 +1038,6 @@ fn resolve_procedure_legs_with_provenance(
     )],
 ) -> Vec<ResolvedLeg> {
     let mut resolved = Vec::<ResolvedLeg>::new();
-    let mut previous_waypoint = None::<NavRef>;
-    let mut previous_sequence = None::<i32>;
 
     for (role, leg_records, _, reversed) in segments {
         let mut fix_records = leg_records
@@ -1054,9 +1052,10 @@ fn resolve_procedure_legs_with_provenance(
         for pair in fix_records.windows(2) {
             let from = NavRef::Fix(pair[0].fix_identifier.clone());
             let to = NavRef::Fix(pair[1].fix_identifier.clone());
-            let same_boundary_as_previous = previous_waypoint.as_ref() == Some(&from)
-                && previous_sequence == Some(pair[1].sequence);
-            if same_boundary_as_previous {
+            let duplicate_of_previous = resolved
+                .last()
+                .is_some_and(|previous| previous.from == from && previous.to == to);
+            if duplicate_of_previous {
                 continue;
             }
 
@@ -1072,10 +1071,8 @@ fn resolve_procedure_legs_with_provenance(
                     role: role.clone(),
                     path_termination: pair[1].path_termination_kind.clone(),
                     leg_sequence: pair[1].sequence,
-                }),
+                    }),
             });
-            previous_waypoint = Some(to);
-            previous_sequence = Some(pair[1].sequence);
         }
     }
 

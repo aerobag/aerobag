@@ -20,7 +20,10 @@ use preprocessor_core::{ChartFamily, Region};
 use preprocessor_csup::{
     package_csup_region_versioned, prepare_csup_inputs, render_csup_region, stage_work_dir_for_product,
 };
-use preprocessor_data::{build_data_package, DataBuildMode, DataBuildRequest};
+use preprocessor_data::{
+    build_data_package, build_data_package_with_tpp_matches, DataBuildMode, DataBuildRequest,
+    DataTppMatchRequest,
+};
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
     read_source_urls_jsonl, write_package_outputs_jsonl, FetchCacheConfig, FetchCacheMode,
@@ -179,7 +182,8 @@ enum ScheduledTaskKind {
     CsupStage,
     CsupRender { region: Region },
     TppRender { region: Region },
-    Data,
+    DataBase,
+    DataMatch,
     ChartPackage { family: ChartFamily },
     CsupPackage,
     TppPackage { region: Region },
@@ -285,6 +289,7 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
         lines.push(format!("  tpp-{}", region.code().to_ascii_lowercase()));
     }
     lines.push("  data-input-staging".to_string());
+    lines.push("  data-base".to_string());
     lines.push("  data".to_string());
     lines.push("  vectors".to_string());
     lines.push("  resource-index".to_string());
@@ -454,10 +459,20 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             tpp_package_ids.push(package_id);
         }
         pending_tasks.push(ScheduledTask {
-            id: "data".to_string(),
+            id: "data-base".to_string(),
             deps: vec![],
             weight: 4,
-            kind: ScheduledTaskKind::Data,
+            kind: ScheduledTaskKind::DataBase,
+        });
+        pending_tasks.push(ScheduledTask {
+            id: "data".to_string(),
+            deps: {
+                let mut deps = vec!["data-base".to_string()];
+                deps.extend(tpp_package_ids.iter().cloned());
+                deps
+            },
+            weight: 1,
+            kind: ScheduledTaskKind::DataMatch,
         });
         pending_tasks.push(ScheduledTask {
             id: "vectors".to_string(),
@@ -624,12 +639,12 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 completion_detail: "cache_or_rebuild".to_string(),
                             })
                         }
-                        ScheduledTaskKind::Data => build_data_nodes(&config, &source_urls_dir).and_then(|records| {
+                        ScheduledTaskKind::DataBase => build_data_nodes(&config, &source_urls_dir, "data-base").and_then(|records| {
                             let data_record = records
                                 .iter()
-                                .find(|record| record.name == "data")
+                                .find(|record| record.name == "data-base")
                                 .cloned()
-                                .context("data task missing data node record")?;
+                                .context("data-base task missing data node record")?;
                             let zip = resolve_artifact_path(&config, output_path(&data_record, "zip")?);
                             let main_db = resolve_artifact_path(&config, output_path(&data_record, "main_db")?);
                             Ok(TaskCompletion {
@@ -638,6 +653,40 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 completion_detail: "cache_or_rebuild".to_string(),
                             })
                         }),
+                        ScheduledTaskKind::DataMatch => {
+                            let raw_data = match task_values_snapshot.get("data-base") {
+                                Some(TaskValue::Data { main_db, zip }) => (main_db.clone(), zip.clone()),
+                                _ => unreachable!("data-base dependency should have completed"),
+                            };
+                            let tpp_sources = config
+                                .profile
+                                .tpp_regions()
+                                .iter()
+                                .map(|region| {
+                                    let region_id = region.code().to_ascii_lowercase();
+                                    let key = format!("tpp-{region_id}-package");
+                                    match task_values_snapshot.get(&key) {
+                                        Some(TaskValue::TppSource(source)) => Ok((*region, source.clone())),
+                                        _ => bail!("missing tpp package source for {region_id}"),
+                                    }
+                                })
+                                .collect::<anyhow::Result<Vec<_>>>()?;
+                            let record = build_data_match_node(
+                                &config,
+                                &raw_data.0,
+                                &raw_data.1,
+                                &data_version,
+                                &tpp_sources,
+                            )?;
+                            let cache_hit = record.cache_hit;
+                            let zip = resolve_artifact_path(&config, output_path(&record, "zip")?);
+                            let main_db = resolve_artifact_path(&config, output_path(&record, "main_db")?);
+                            Ok(TaskCompletion {
+                                node_records: vec![record],
+                                value: TaskValue::Data { main_db, zip },
+                                completion_detail: format!("cache_hit={}", cache_hit),
+                            })
+                        }
                         ScheduledTaskKind::ChartPackage { family } => {
                             let family_id = family_slug(family).to_string();
                             let started = Instant::now();
@@ -2184,6 +2233,7 @@ fn tpp_render_inputs(
 fn build_data_nodes(
     config: &ProductBuildConfig,
     source_urls_dir: &Path,
+    node_name: &str,
 ) -> anyhow::Result<Vec<NodeRecord>> {
     let source_urls = source_urls_dir.join("data/source_urls.jsonl");
     let data_version = data_version_label(source_urls_dir)?;
@@ -2201,8 +2251,8 @@ fn build_data_nodes(
         ("manifest_version".to_string(), data_manifest_version.clone()),
         ("artifact_stem".to_string(), artifact_stem.clone()),
     ]);
-    let prepared = prepare_node_at(&build_shared_node_dir(config, "data")?, "data", &inputs)?;
-    let provenance_dir = prepared.dir.join("meta/provenance/data");
+    let prepared = prepare_node_at(&build_shared_node_dir(config, node_name)?, node_name, &inputs)?;
+    let provenance_dir = prepared.dir.join(format!("meta/provenance/{node_name}"));
     fs::create_dir_all(&provenance_dir)?;
     copy_source_urls_provenance(&source_urls, &provenance_dir)?;
 
@@ -2241,6 +2291,99 @@ fn build_data_nodes(
         started.elapsed().as_millis() as u64,
     )?;
     Ok(vec![staging_record, build_record])
+}
+
+fn build_data_match_node(
+    config: &ProductBuildConfig,
+    raw_main_db: &Path,
+    raw_zip: &Path,
+    artifact_stem: &str,
+    tpp_sources: &[(Region, AssetSource)],
+) -> anyhow::Result<NodeRecord> {
+    let mut inputs = BTreeMap::from([
+        ("raw_main_db".to_string(), hash_file(raw_main_db)?),
+        ("raw_zip".to_string(), hash_file(raw_zip)?),
+        ("artifact_stem".to_string(), artifact_stem.to_string()),
+        (
+            "matching_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-data/src/tpp_cifp_matching.rs"),
+            )?,
+        ),
+        (
+            "data_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-data/src/lib.rs"),
+            )?,
+        ),
+        (
+            "core_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-core/src/lib.rs"),
+            )?,
+        ),
+        (
+            "product_build_cli".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("src/product_build.rs"),
+            )?,
+        ),
+    ]);
+    let mut tpp_zips = Vec::new();
+    for (region, source) in tpp_sources {
+        let package = package_record_for_region(&source.package_outputs_path, *region)?;
+        let zip_path = source.package_root.join(&package.zip);
+        inputs.insert(
+            format!("tpp_{}", region.code().to_ascii_lowercase()),
+            hash_file(&zip_path)?,
+        );
+        tpp_zips.push(zip_path);
+    }
+    let prepared = prepare_node_at(&build_shared_node_dir(config, "data")?, "data", &inputs)?;
+    let output_dir = prepared.dir.join("output");
+    let manifest_path = output_dir.join(format!("{artifact_stem}.manifest"));
+    let zip_path = output_dir.join(format!("{artifact_stem}.zip"));
+    let main_db_path = output_dir.join("main.db");
+    let _build_lock = match claim_or_wait_for_node(
+        &prepared,
+        &[main_db_path.clone(), manifest_path.clone(), zip_path.clone()],
+    )? {
+        NodeCacheState::CacheHit(record) => return Ok(record),
+        NodeCacheState::Build(lock) => lock,
+    };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    let result = build_data_package_with_tpp_matches(&DataTppMatchRequest {
+        input_main_db: raw_main_db.to_path_buf(),
+        input_zip: raw_zip.to_path_buf(),
+        output_dir: output_dir.clone(),
+        artifact_stem: artifact_stem.to_string(),
+        tpp_package_zips: tpp_zips,
+    })?;
+    let outputs = BTreeMap::from([
+        ("main_db".to_string(), relative_artifact_path(&result.main_db, &config.build_root)),
+        ("manifest".to_string(), relative_artifact_path(&result.manifest_path, &config.build_root)),
+        ("zip".to_string(), relative_artifact_path(&result.zip_path, &config.build_root)),
+    ]);
+    write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )
 }
 
 fn build_vectors_node(

@@ -19,7 +19,11 @@ use preprocessor_core::{
     WorkKind,
 };
 use preprocessor_csup::{run_native_csup, NativeCsupRunRequest};
-use preprocessor_data::{build_data_package, compare_databases, DataBuildMode, DataBuildRequest};
+use preprocessor_data::{
+    audit_tpp_cifp_matching, build_data_package, choose_matching_bundle, compare_databases,
+    load_matching_bundle, resolve_matching_db_path, tpp_zip_paths_from_bundle, DataBuildMode,
+    DataBuildRequest,
+};
 use preprocessor_fetch::{
     hash_text, manifest_path_for_run, manifest_summary, prefetch_archives_with_provenance, read_download_records,
     read_extract_records, read_source_url_set, CacheLayout, FetchCacheConfig, FetchCacheMode,
@@ -70,6 +74,7 @@ fn usage() -> &'static str {
   preprocessor-cli compare-tpp-images --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --legacy-work-dir <path> --rust-work-dir <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
   preprocessor-cli compare-provenance --left-provenance-dir <path> --right-provenance-dir <path>
   preprocessor-cli compare-data-db --left-db <path> --right-db <path>
+  preprocessor-cli audit-cifp-tpp-matching [--artifact-root <path>] [--bundle <path>] [--limit <count>]
   preprocessor-cli compare-sampled-images --left-root <path> --right-root <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
   preprocessor-cli print-cache-layout --cache-root <path> --url <url> --sha256 <sha256>
   preprocessor-cli print-tool-example --cwd <path>
@@ -101,6 +106,94 @@ fn hash_file(path: &Path) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn collect_workspace_hash_inputs(root: &Path) -> Vec<PathBuf> {
+    fn walk(root: &Path, path: &Path, files: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let child = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                if child
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == "target" || name == ".git")
+                {
+                    continue;
+                }
+                walk(root, &child, files);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let include = child
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext == "rs")
+                || child
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == "Cargo.toml" || name == "Cargo.lock");
+            if include {
+                files.push(
+                    child
+                        .strip_prefix(root)
+                        .expect("hashed file should live under workspace root")
+                        .to_path_buf(),
+                );
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    walk(root, root, &mut files);
+    files.sort();
+    files
+}
+
+fn hash_preprocessor_workspace(root: &Path) -> anyhow::Result<String> {
+    let mut hasher = Sha256::new();
+    for relative in collect_workspace_hash_inputs(root) {
+        hasher.update(relative.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        hasher.update(
+            fs::read(root.join(&relative))
+                .with_context(|| format!("failed to read {}", root.join(&relative).display()))?,
+        );
+        hasher.update([0xff]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn ensure_binary_matches_workspace() -> anyhow::Result<()> {
+    let expected = env!("PREPROCESSOR_WORKSPACE_HASH");
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("preprocessor-cli should live under workspace root")
+        .to_path_buf();
+    if !workspace_root.exists() {
+        return Ok(());
+    }
+    let actual = hash_preprocessor_workspace(&workspace_root)?;
+    if actual == expected {
+        return Ok(());
+    }
+    let binary = env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "<unknown>".to_string());
+    anyhow::bail!(
+        "binary/source mismatch: {} was built from workspace hash {} but current source tree is {}; rebuild preprocessor-cli from {} before running mutating commands",
+        binary,
+        expected,
+        actual,
+        workspace_root.display()
+    );
 }
 
 fn obstacle_snapshot_label(value: &str) -> anyhow::Result<String> {
@@ -1250,6 +1343,127 @@ fn compare_provenance(
     Ok(())
 }
 
+fn audit_cifp_tpp_matching_command(
+    artifact_root: &Path,
+    explicit_bundle: Option<&Path>,
+    limit: usize,
+) -> anyhow::Result<()> {
+    let bundle_path = choose_matching_bundle(artifact_root, explicit_bundle)?;
+    let bundle = load_matching_bundle(&bundle_path)?;
+    let db_path = resolve_matching_db_path(artifact_root, &bundle)?;
+    let tpp_zips = tpp_zip_paths_from_bundle(artifact_root, &bundle)?;
+    let report = audit_tpp_cifp_matching(&db_path, &tpp_zips)?;
+
+    println!("bundle: {}", bundle_path.display());
+    println!(
+        "cycle: {}",
+        bundle
+            .get("cycle")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+    );
+    println!("db: {}", db_path.display());
+    println!("approach plates: {}", report.approach_plate_count);
+    println!(
+        "airports with approach plates: {}",
+        report.airports_with_approach_plates
+    );
+    println!(
+        "airports with CIFP approaches: {}",
+        report.airports_with_cifp_approaches
+    );
+    println!();
+
+    println!("count audit:");
+    println!("  airports checked: {}", report.count_rows.len());
+    println!("  exact count match: {}", report.exact_count_match);
+    println!("  count mismatch: {}", report.count_mismatch);
+    let mut mismatches = report
+        .count_rows
+        .iter()
+        .filter(|(_, plates, cifp)| plates != cifp)
+        .cloned()
+        .collect::<Vec<_>>();
+    mismatches.sort_by_key(|(airport, plate_count, cifp_count)| {
+        (usize::MAX - plate_count.abs_diff(*cifp_count), airport.clone())
+    });
+    for (airport_id, plate_count, cifp_count) in mismatches.into_iter().take(limit) {
+        println!("  {}: plates={} cifp_iaps={}", airport_id, plate_count, cifp_count);
+    }
+    println!();
+
+    println!("heuristic match audit:");
+    println!("  matched_unique: {}", report.match_summary.matched_unique);
+    println!("  matched_partial: {}", report.match_summary.matched_partial);
+    println!("  matched_none: {}", report.match_summary.matched_none);
+    println!("  no_heuristic: {}", report.match_summary.no_heuristic);
+    println!(
+        "  airport_missing_from_cifp: {}",
+        report.match_summary.airport_missing_from_cifp
+    );
+    println!();
+
+    println!("relation audit:");
+    println!(
+        "  airports_considered: {}",
+        report.relation_summary.airports_considered
+    );
+    println!(
+        "  airports_with_no_unresolved_cids: {}",
+        report.relation_summary.airports_with_no_unresolved_cids
+    );
+    println!(
+        "  airports_with_unresolved_cids: {}",
+        report.relation_summary.airports_with_unresolved_cids
+    );
+    println!(
+        "  uniquely_bound_cids_total: {}",
+        report.relation_summary.uniquely_bound_cids_total
+    );
+    println!(
+        "  multiply_bound_cids_total: {}",
+        report.relation_summary.multiply_bound_cids_total
+    );
+    println!(
+        "  copter_only_cids_total: {}",
+        report.relation_summary.copter_only_cids_total
+    );
+    println!(
+        "  unresolved_cids_total: {}",
+        report.relation_summary.unresolved_cids_total
+    );
+    println!(
+        "  ignored_noheur_plates_total: {}",
+        report.relation_summary.ignored_noheur_plates_total
+    );
+    println!(
+        "  ignored_nomatch_plates_total: {}",
+        report.relation_summary.ignored_nomatch_plates_total
+    );
+    println!();
+
+    println!("sample difficult cases:");
+    for example in report.match_examples.iter().take(limit) {
+        println!(
+            "  {} {} candidate_groups={:?} matched={:?}",
+            example.airport_id, example.label, example.candidate_groups, example.matched
+        );
+    }
+    println!();
+
+    println!("sample relation exceptions:");
+    for example in report.relation_examples.iter().take(limit) {
+        println!(
+            "  {} unresolved={} multiply_bound={} unresolved_cids={:?}",
+            example.airport,
+            example.unresolved_count,
+            example.multiply_bound,
+            example.unresolved_cids
+        );
+    }
+    Ok(())
+}
+
 fn parse_family(value: &str) -> anyhow::Result<ChartFamily> {
     match value {
         "sec" => Ok(ChartFamily::Sec),
@@ -1283,6 +1497,26 @@ fn work_kind_name(value: WorkKind) -> &'static str {
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
+    if matches!(
+        args.get(1).map(String::as_str),
+        Some(
+            "build-vrts"
+                | "build-tiles"
+                | "package-regions"
+                | "run-native-chart"
+                | "run-native-csup"
+                | "run-native-tpp"
+                | "build-resource-index"
+                | "build-data"
+                | "build-vectors"
+                | "build-obstacles"
+                | "build-cycle"
+                | "build-product"
+                | "run-chart"
+        )
+    ) {
+        ensure_binary_matches_workspace()?;
+    }
 
     match args.get(1).map(String::as_str) {
         Some("inspect-run") => {
@@ -1582,6 +1816,50 @@ fn main() -> anyhow::Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
             );
             compare_databases(&left_db, &right_db)?;
+        }
+        Some("audit-cifp-tpp-matching") => {
+            let mut artifact_root = default_artifact_write_path(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli crate should live under workspace")
+                    .parent()
+                    .expect("workspace should live under product")
+                    .parent()
+                    .expect("product should live under repo root"),
+            );
+            let mut bundle = None;
+            let mut limit = 20_usize;
+            let mut index = 2;
+            while index < args.len() {
+                match args.get(index).map(String::as_str) {
+                    Some("--artifact-root") => {
+                        artifact_root = PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        );
+                        index += 2;
+                    }
+                    Some("--bundle") => {
+                        bundle = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--limit") => {
+                        limit = args
+                            .get(index + 1)
+                            .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                            .parse()
+                            .context("failed to parse limit")?;
+                        index += 2;
+                    }
+                    _ => anyhow::bail!("{}", usage()),
+                }
+            }
+            audit_cifp_tpp_matching_command(&artifact_root, bundle.as_deref(), limit)?;
         }
         Some("compare-sampled-images") => {
             if args.get(2).map(String::as_str) != Some("--left-root")

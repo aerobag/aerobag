@@ -13,9 +13,50 @@ The intended use is:
 - allow some CIFPs to map to multiple TPPs when the FAA really publishes multiple plates for the same procedure
 - prefer the public plate later in product/UI code when both public and special-aircraft variants exist
 
-The matching work in this document is exploratory and currently lives in:
+The matcher and audit now live in product code:
 
-- [`product/preprocessor/scripts/iap_match_audit.py`](/root/aerobag-preprocessor/aerobag/product/preprocessor/scripts/iap_match_audit.py)
+- Rust matcher/audit module:
+  - [`product/preprocessor/preprocessor-data/src/tpp_cifp_matching.rs`](/root/aerobag-preprocessor/aerobag/product/preprocessor/preprocessor-data/src/tpp_cifp_matching.rs)
+- Rust audit command:
+  - `preprocessor-cli audit-cifp-tpp-matching`
+- Published production DB table:
+  - `cifp_tpp_matches`
+
+This document is the handoff/history for that implementation.
+
+
+## Published Output
+
+Production data generation now writes `cifp_tpp_matches` into `main.db`.
+
+Current table shape:
+
+- `airport_id`
+- `cifp_id`
+- `plate_id`
+- `plate_label`
+- `package_id`
+- `public`
+- `priority`
+- `match_kind`
+- `is_primary`
+
+Interpretation:
+
+- each row is one known `(airport_id, cifp_id) -> plate` relation
+- `match_kind='unique'` means only one TPP plate was confidently bound
+- `match_kind='multiple'` means multiple TPP plates were confidently bound
+- `is_primary=true` marks the preferred plate inside a multi-binding set
+- `priority` is lower-is-better and currently prefers:
+  - public plate over special/copter variants
+  - generic public plate over `SA CAT` / `CAT II/III` variants
+
+The intended app behavior is:
+
+- from a selected CIFP, query `cifp_tpp_matches`
+- if one row exists, use it
+- if multiple rows exist, prefer `is_primary=true`
+- if no rows exist, the join is unknown and UI should fall back gracefully
 
 
 ## Scope
@@ -112,6 +153,23 @@ The audit classifies CIFPs into:
 - unresolved
 
 This was the right model. Earlier attempts that forced a one-to-one relationship overstated the failure count.
+
+
+## Rust Audit Parity
+
+Before publishing the table, the Python audit was ported to Rust and matched against the same
+published artifacts.
+
+The Rust audit reproduces the same headline numbers as the final Python version:
+
+- airports considered: `3017`
+- uniquely bound CIFPs: `10047`
+- multiply bound CIFPs: `269`
+- copter-only residual CIFPs: `16`
+- unresolved CIFPs: `52`
+- airports with unresolved CIFPs: `40`
+
+That parity check is what justified deleting the Python implementation.
 
 
 ## Current State

@@ -447,16 +447,6 @@ data class WireProcedureSegment(
 )
 
 @Serializable
-data class WireProcedureLegProvenance(
-    val airport_id: String,
-    val procedure_id: String,
-    val kind: WireProcedureKind,
-    val role: String,
-    val path_termination: String,
-    val leg_sequence: Int,
-)
-
-@Serializable
 data class WireProcedureSummary(
     val airport_id: String,
     val procedure_id: String,
@@ -486,52 +476,6 @@ data class WireProcedureOptions(
     val valid_choices: List<WireProcedureSpecChoice>,
 )
 
-@Serializable(with = WirePathTerminationKindSerializer::class)
-sealed interface WirePathTerminationKind {
-    data object InitialFix : WirePathTerminationKind
-    data object TrackToFix : WirePathTerminationKind
-    data object CourseToFix : WirePathTerminationKind
-    data object DirectToFix : WirePathTerminationKind
-    data object HeadingToManual : WirePathTerminationKind
-    data object HeadingToAltitude : WirePathTerminationKind
-    data class Other(val value: String) : WirePathTerminationKind
-}
-
-object WirePathTerminationKindSerializer : KSerializer<WirePathTerminationKind> {
-    override val descriptor: SerialDescriptor =
-        PrimitiveSerialDescriptor("WirePathTerminationKind", PrimitiveKind.STRING)
-
-    override fun serialize(encoder: Encoder, value: WirePathTerminationKind) {
-        val element = when (value) {
-            WirePathTerminationKind.InitialFix -> JsonPrimitive("initial_fix")
-            WirePathTerminationKind.TrackToFix -> JsonPrimitive("track_to_fix")
-            WirePathTerminationKind.CourseToFix -> JsonPrimitive("course_to_fix")
-            WirePathTerminationKind.DirectToFix -> JsonPrimitive("direct_to_fix")
-            WirePathTerminationKind.HeadingToManual -> JsonPrimitive("heading_to_manual")
-            WirePathTerminationKind.HeadingToAltitude -> JsonPrimitive("heading_to_altitude")
-            is WirePathTerminationKind.Other -> JsonObject(mapOf("other" to JsonPrimitive(value.value)))
-        }
-        (encoder as JsonEncoder).encodeJsonElement(element)
-    }
-
-    override fun deserialize(decoder: Decoder): WirePathTerminationKind {
-        val element = (decoder as JsonDecoder).decodeJsonElement()
-        return when (element) {
-            is JsonPrimitive -> when (element.content) {
-                "initial_fix" -> WirePathTerminationKind.InitialFix
-                "track_to_fix" -> WirePathTerminationKind.TrackToFix
-                "course_to_fix" -> WirePathTerminationKind.CourseToFix
-                "direct_to_fix" -> WirePathTerminationKind.DirectToFix
-                "heading_to_manual" -> WirePathTerminationKind.HeadingToManual
-                "heading_to_altitude" -> WirePathTerminationKind.HeadingToAltitude
-                else -> WirePathTerminationKind.Other(element.content)
-            }
-            is JsonObject -> WirePathTerminationKind.Other(element["other"]?.jsonPrimitive?.content ?: "unknown")
-            else -> WirePathTerminationKind.Other(element.toString())
-        }
-    }
-}
-
 @Serializable
 data class WireProcedureLegMaterializationKey(
     val airport_id: String,
@@ -546,7 +490,6 @@ data class WireProcedureLegMaterializationRecord(
     val sequence: Int,
     val nav_ref: WireNavRef? = null,
     val path_termination: String,
-    val path_termination_kind: WirePathTerminationKind,
 )
 
 @Serializable(with = WireResolvedLegSourceSerializer::class)
@@ -604,8 +547,28 @@ data class WireResolvedLeg(
     val id: String,
     val from: WireNavRef,
     val to: WireNavRef,
-    val procedure_provenance: WireProcedureLegProvenance? = null,
+    val procedure_airport_id: String? = null,
     val source: WireResolvedLegSource,
+)
+
+@Serializable
+enum class WireRouteSegmentStatus {
+    @SerialName("completed")
+    Completed,
+
+    @SerialName("active")
+    Active,
+
+    @SerialName("remaining")
+    Remaining,
+}
+
+@Serializable
+data class WireFlightPlanRouteSegment(
+    val id: String,
+    val from: WireLatLon,
+    val to: WireLatLon,
+    val status: WireRouteSegmentStatus,
 )
 
 @Serializable

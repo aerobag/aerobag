@@ -116,6 +116,22 @@ pub struct ProcedurePlanUiMutation {
     pub ui_state: FlightPlanUiState,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlightPlanRouteSegmentStatus {
+    Completed,
+    Active,
+    Remaining,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlightPlanRouteSegment {
+    pub id: String,
+    pub from: LatLon,
+    pub to: LatLon,
+    pub status: FlightPlanRouteSegmentStatus,
+}
+
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
@@ -829,6 +845,67 @@ fn parse_airway_name_for_ui(name: &str) -> (String, i32) {
 pub fn build_flight_plan_ui(plan: FlightPlan) -> AppResult<FlightPlanUiState> {
     let plan = build_flight_plan(plan)?;
     Ok(project_ui_state(&plan))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn route_status_for_leg(
+    ui_state: &FlightPlanUiState,
+    leg_index: usize,
+) -> FlightPlanRouteSegmentStatus {
+    let guidance = match ui_state.guidance.as_ref() {
+        Some(guidance) => guidance,
+        None => return FlightPlanRouteSegmentStatus::Remaining,
+    };
+    let active_leg_index = if guidance.active_leg.is_some() {
+        guidance.active_leg_index
+    } else {
+        None
+    };
+    if let Some(active_leg_index) = active_leg_index {
+        return if leg_index < active_leg_index {
+            FlightPlanRouteSegmentStatus::Completed
+        } else if leg_index == active_leg_index {
+            FlightPlanRouteSegmentStatus::Active
+        } else {
+            FlightPlanRouteSegmentStatus::Remaining
+        };
+    }
+    let split_index = guidance.display_split_leg_index.unwrap_or(0);
+    if leg_index < split_index {
+        FlightPlanRouteSegmentStatus::Completed
+    } else {
+        FlightPlanRouteSegmentStatus::Remaining
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn project_flight_plan_route(
+    db_path: &str,
+    plan: &FlightPlan,
+) -> AppResult<Vec<FlightPlanRouteSegment>> {
+    let plan = build_flight_plan(plan.clone())?;
+    let ui_state = project_ui_state(&plan);
+    let db_path = Path::new(db_path);
+    plan.resolved_legs
+        .iter()
+        .enumerate()
+        .map(|(leg_index, leg)| {
+            let procedure_airport_id = leg
+                .procedure_provenance
+                .as_ref()
+                .and_then(|provenance| (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str()));
+            let from =
+                resolve_nav_ref_position_with_procedure_airport(db_path, &leg.from, procedure_airport_id)?;
+            let to =
+                resolve_nav_ref_position_with_procedure_airport(db_path, &leg.to, procedure_airport_id)?;
+            Ok(FlightPlanRouteSegment {
+                id: leg.id.clone(),
+                from,
+                to,
+                status: route_status_for_leg(&ui_state, leg_index),
+            })
+        })
+        .collect()
 }
 
 #[cfg(not(target_arch = "wasm32"))]

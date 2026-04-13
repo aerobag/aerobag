@@ -129,6 +129,7 @@ import net.jonh.aerobag.prototype.domain.FlightPlanDisplayRowKind
 import net.jonh.aerobag.prototype.domain.FlightPlanDisplayRowUiView
 import net.jonh.aerobag.prototype.domain.FlightPlanRowActionId
 import net.jonh.aerobag.prototype.domain.FlightPlanRowActionUiView
+import net.jonh.aerobag.prototype.domain.FlightPlanRouteSegment
 import net.jonh.aerobag.prototype.domain.FlightPlanUiState
 import net.jonh.aerobag.prototype.domain.LatLonPoint
 import net.jonh.aerobag.prototype.domain.MapChartFamily
@@ -142,6 +143,7 @@ import net.jonh.aerobag.prototype.domain.PointTilePayload
 import net.jonh.aerobag.prototype.domain.ProcedureKind
 import net.jonh.aerobag.prototype.domain.ProcedureOptions
 import net.jonh.aerobag.prototype.domain.ProcedureSummary
+import net.jonh.aerobag.prototype.domain.RouteSegmentStatus
 import net.jonh.aerobag.prototype.domain.RouteComponentUiView
 import net.jonh.aerobag.prototype.domain.RouteComponentViewKind
 import net.jonh.aerobag.prototype.domain.ScreenPoint
@@ -459,19 +461,6 @@ private data class OverlaySurfaceUnits(
     val height: Float,
 )
 
-private data class FlightPlanRouteSegment(
-    val id: String,
-    val from: LatLonPoint,
-    val to: LatLonPoint,
-    val status: RouteSegmentStatus,
-)
-
-private enum class RouteSegmentStatus {
-    Completed,
-    Active,
-    Remaining,
-}
-
 private fun initialMapId(fixture: net.jonh.aerobag.prototype.domain.ContentFixture): String {
     return fixture.mapViews.firstOrNull {
         it.mapView.chartFamily == MapChartFamily.Tac
@@ -532,20 +521,6 @@ private fun resolveChartId(
         return candidateChartId
     }
     return airport?.charts?.firstOrNull()?.id.orEmpty()
-}
-
-private fun routeStatusForLeg(planUiState: FlightPlanUiState?, legIndex: Int): RouteSegmentStatus {
-    val guidance = planUiState?.guidance
-    val activeLegIndex = if (guidance?.activeLeg != null) guidance.activeLegIndex else null
-    if (activeLegIndex != null) {
-        return when {
-            legIndex < activeLegIndex -> RouteSegmentStatus.Completed
-            legIndex == activeLegIndex -> RouteSegmentStatus.Active
-            else -> RouteSegmentStatus.Remaining
-        }
-    }
-    val splitIndex = guidance?.displaySplitLegIndex ?: 0
-    return if (legIndex < splitIndex) RouteSegmentStatus.Completed else RouteSegmentStatus.Remaining
 }
 
 private fun routeSegmentColor(status: RouteSegmentStatus): Color =
@@ -1587,35 +1562,12 @@ private fun MapExplorerPage(
 
     LaunchedEffect(selectedMap.id) { chartTrayOpen = false }
     LaunchedEffect(appCore, navDbPath, plan, planUiState) {
-        val rawLegs = plan.resolvedLegs
-        val uiLegs = planUiState?.resolvedLegs ?: emptyList()
-        if (rawLegs.isEmpty() || uiLegs.isEmpty()) {
+        if (plan.resolvedLegs.isEmpty() || planUiState?.resolvedLegs.isNullOrEmpty()) {
             flightPlanRoute = emptyList()
             return@LaunchedEffect
         }
         runCatching {
-            val resolvedPositions = linkedMapOf<String, LatLonPoint>()
-            fun resolveCached(navRef: NavRef, procedureAirportId: String?): LatLonPoint {
-                val key = "${navRefSelectionKey(navRef)}:${procedureAirportId ?: ""}"
-                return resolvedPositions.getOrPut(key) {
-                    when (navRef) {
-                        is NavRef.LatLon -> LatLonPoint(navRef.lat, navRef.lon)
-                        else -> appCore.resolveNavRefPosition(navDbPath, navRef, procedureAirportId)
-                    }
-                }
-            }
-
-            rawLegs.mapIndexedNotNull { index, leg ->
-                runCatching {
-                    val airportId = leg.procedureProvenance?.airportId
-                    FlightPlanRouteSegment(
-                        id = leg.id,
-                        from = resolveCached(leg.from, airportId),
-                        to = resolveCached(leg.to, airportId),
-                        status = routeStatusForLeg(planUiState, uiLegs.getOrNull(index)?.legIndex ?: index),
-                    )
-                }.getOrNull()
-            }
+            appCore.projectFlightPlanRoute(navDbPath, plan)
         }.onSuccess {
             flightPlanRoute = it
         }.onFailure {

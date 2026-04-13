@@ -168,6 +168,11 @@ class NativeAppCoreAdapter(
         return json.decodeFromString<WireLatLon>(nextJson).toUi()
     }
 
+    fun projectFlightPlanRoute(dbPath: String, plan: FlightPlan): List<FlightPlanRouteSegment> {
+        val nextJson = bridge.projectFlightPlanRouteJson(dbPath, json.encodeToString(plan.toWire()))
+        return json.decodeFromString<List<WireFlightPlanRouteSegment>>(nextJson).map { it.toUi() }
+    }
+
     fun loadAirwayBranches(dbPath: String, airwayName: String): List<AirwayBranch> {
         val nextJson = bridge.loadAirwayBranchesJson(dbPath, airwayName)
         return json.decodeFromString<List<WireAirwayBranch>>(nextJson).map { it.toUi() }
@@ -1032,7 +1037,7 @@ private fun ResolvedLeg.toWire() = WireResolvedLeg(
     from = from.toWire(),
     to = to.toWire(),
     source = source.toWire(),
-    procedure_provenance = procedureProvenance?.toWire(),
+    procedure_airport_id = procedureAirportId,
 )
 
 private fun WireResolvedLeg.toUi() = ResolvedLeg(
@@ -1040,7 +1045,7 @@ private fun WireResolvedLeg.toUi() = ResolvedLeg(
     from = from.toUi(),
     to = to.toUi(),
     source = source.toUi(),
-    procedureProvenance = procedure_provenance?.toUi(),
+    procedureAirportId = procedure_airport_id,
 )
 
 private fun RouteComponent.toWire(): WireRouteComponent = when (this) {
@@ -1108,24 +1113,6 @@ private fun WireResolvedLegSource.toUi(): ResolvedLegSource = when (this) {
         toComponentIndex = to_component_index,
     )
 }
-
-private fun ProcedureLegProvenance.toWire() = WireProcedureLegProvenance(
-    airport_id = airportId,
-    procedure_id = procedureId,
-    kind = kind.toWire(),
-    role = role,
-    path_termination = pathTermination,
-    leg_sequence = legSequence,
-)
-
-private fun WireProcedureLegProvenance.toUi() = ProcedureLegProvenance(
-    airportId = airport_id,
-    procedureId = procedure_id,
-    kind = kind.toUi(),
-    role = role,
-    pathTermination = path_termination,
-    legSequence = leg_sequence,
-)
 
 private fun WireRouteComponentUiView.toUi() = RouteComponentUiView(
     componentIndex = component_index,
@@ -1222,6 +1209,19 @@ private fun SuspendReason.toWire() = when (this) {
     SuspendReason.Boundary -> WireSuspendReason.Boundary
     SuspendReason.RouteEnd -> WireSuspendReason.RouteEnd
     SuspendReason.DirectToComplete -> WireSuspendReason.DirectToComplete
+}
+
+private fun WireFlightPlanRouteSegment.toUi() = FlightPlanRouteSegment(
+    id = id,
+    from = from.toUi(),
+    to = to.toUi(),
+    status = status.toUi(),
+)
+
+private fun WireRouteSegmentStatus.toUi() = when (this) {
+    WireRouteSegmentStatus.Completed -> RouteSegmentStatus.Completed
+    WireRouteSegmentStatus.Active -> RouteSegmentStatus.Active
+    WireRouteSegmentStatus.Remaining -> RouteSegmentStatus.Remaining
 }
 
 private fun WireFlightPlanUiState.toUi() = FlightPlanUiState(

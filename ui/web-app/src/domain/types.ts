@@ -145,15 +145,6 @@ export type ProcedureSegment = {
   terminal_discontinuity?: ProcedureDiscontinuity | null;
 };
 
-export type ProcedureLegProvenance = {
-  airport_id: string;
-  procedure_id: string;
-  kind: ProcedureKind;
-  role: "enroute_transition" | "common" | "runway_transition";
-  path_termination: string;
-  leg_sequence: number;
-};
-
 export type ProcedureSummary = {
   airport_id: string;
   procedure_id: string;
@@ -196,14 +187,6 @@ export type ProcedureLegMaterializationRecord = {
   sequence: number;
   nav_ref: NavRef | null;
   path_termination: string;
-  path_termination_kind:
-    | "initial_fix"
-    | "track_to_fix"
-    | "course_to_fix"
-    | "direct_to_fix"
-    | "heading_to_manual"
-    | "heading_to_altitude"
-    | { other: string };
 };
 
 export type ResolvedLeg =
@@ -211,12 +194,19 @@ export type ResolvedLeg =
     id: string;
     from: NavRef;
     to: NavRef;
-    procedure_provenance?: ProcedureLegProvenance | null;
+    procedure_airport_id?: string | null;
   } & (
   | { source: { kind: "legacy_plan_leg"; leg_index: number } }
     | { source: { kind: "route_component"; component_index: number } }
     | { source: { kind: "synthetic_bridge"; from_component_index: number; to_component_index: number } }
   );
+
+export type FlightPlanRouteSegment = {
+  id: string;
+  from: LatLon;
+  to: LatLon;
+  status: "completed" | "active" | "remaining";
+};
 
 export type SequencingMode = "follow_plan" | "suspended" | "direct_to";
 

@@ -171,15 +171,6 @@ data class ProcedureSegment(
     val terminalDiscontinuity: ProcedureDiscontinuity? = null,
 )
 
-data class ProcedureLegProvenance(
-    val airportId: String,
-    val procedureId: String,
-    val kind: ProcedureKind,
-    val role: String,
-    val pathTermination: String,
-    val legSequence: Int,
-)
-
 data class ProcedureSummary(
     val airportId: String,
     val procedureId: String,
@@ -206,16 +197,6 @@ data class ProcedureOptions(
     val validChoices: List<ProcedureSpecChoice>,
 )
 
-sealed interface PathTerminationKind {
-    data object InitialFix : PathTerminationKind
-    data object TrackToFix : PathTerminationKind
-    data object CourseToFix : PathTerminationKind
-    data object DirectToFix : PathTerminationKind
-    data object HeadingToManual : PathTerminationKind
-    data object HeadingToAltitude : PathTerminationKind
-    data class Other(val value: String) : PathTerminationKind
-}
-
 data class ProcedureLegMaterializationKey(
     val airportId: String,
     val procedureId: String,
@@ -228,7 +209,6 @@ data class ProcedureLegMaterializationRecord(
     val sequence: Int,
     val navRef: NavRef?,
     val pathTermination: String,
-    val pathTerminationKind: PathTerminationKind,
 )
 
 sealed interface ResolvedLegSource {
@@ -241,8 +221,21 @@ data class ResolvedLeg(
     val id: String,
     val from: NavRef,
     val to: NavRef,
-    val procedureProvenance: ProcedureLegProvenance? = null,
+    val procedureAirportId: String? = null,
     val source: ResolvedLegSource,
+)
+
+enum class RouteSegmentStatus {
+    Completed,
+    Active,
+    Remaining,
+}
+
+data class FlightPlanRouteSegment(
+    val id: String,
+    val from: LatLonPoint,
+    val to: LatLonPoint,
+    val status: RouteSegmentStatus,
 )
 
 enum class SequencingMode {

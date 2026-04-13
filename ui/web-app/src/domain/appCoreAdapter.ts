@@ -10,6 +10,7 @@ import type {
   ContentInventory,
   ContentPolicy,
   FlightPlan,
+  FlightPlanRouteSegment,
   FlightPlanUiMutation,
   FlightPlanUiState,
   ChartFamilyId,
@@ -35,6 +36,7 @@ import {
 } from "./procedurePlanner";
 import { sampleCatalog } from "./sampleData";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
+import { resolveNavRefPosition } from "./airwayPlanner";
 
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];
@@ -134,6 +136,7 @@ export interface AppCoreAdapter {
   setContentPolicyState(state: AppState, catalog: CatalogJson, policy: ContentPolicy): Promise<AppState>;
   refreshContentState(state: AppState, catalog: CatalogJson, inventory: ContentInventory): Promise<AppState>;
   buildFlightPlanUi(plan: FlightPlan): Promise<FlightPlanUiState>;
+  projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]>;
   activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation>;
   activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   deleteComponentUi(plan: FlightPlan, componentIndex: number): Promise<FlightPlanUiMutation>;
@@ -471,6 +474,12 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
   async buildFlightPlanUi(plan: FlightPlan): Promise<FlightPlanUiState> {
     void plan;
     throw new Error("MockAppCoreAdapter no longer supports flight-plan UI; use the wasm adapter");
+  }
+
+  async projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]> {
+    void plan;
+    void planUiState;
+    throw new Error("MockAppCoreAdapter no longer supports route projection; use the wasm adapter");
   }
 
   async activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation> {
@@ -812,6 +821,32 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as FlightPlanUiState;
   }
 
+  async projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]> {
+    const rawLegs = plan.resolved_legs ?? [];
+    const uiLegs = planUiState?.resolved_legs ?? [];
+    if (rawLegs.length === 0 || uiLegs.length === 0) {
+      return [];
+    }
+    const resolvedPositions = new Map<string, Promise<LatLon>>();
+    const resolveCachedPosition = (navRef: NavRef, procedureAirportId?: string | null) => {
+      const key = `${JSON.stringify(navRef)}:${procedureAirportId ?? ""}`;
+      let promise = resolvedPositions.get(key);
+      if (!promise) {
+        promise = resolveNavRefPosition(navRef, procedureAirportId);
+        resolvedPositions.set(key, promise);
+      }
+      return promise;
+    };
+    return Promise.all(
+      rawLegs.map(async (leg, index) => ({
+        id: leg.id,
+        from: await resolveCachedPosition(leg.from, leg.procedure_airport_id ?? null),
+        to: await resolveCachedPosition(leg.to, leg.procedure_airport_id ?? null),
+        status: routeStatusForLeg(planUiState, uiLegs[index]?.leg_index ?? index),
+      })),
+    );
+  }
+
   async activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation> {
     return JSON.parse(
       await this.module.activate_leg_ui(JSON.stringify(plan), legIndex),
@@ -1060,6 +1095,22 @@ function sampleCatalogLike(_resourceIndex: unknown): CatalogJson {
       supplements: sampleCatalog.supplements,
     } as CatalogJson),
   };
+}
+
+function routeStatusForLeg(planUiState: FlightPlanUiState | null, legIndex: number): FlightPlanRouteSegment["status"] {
+  const guidance = planUiState?.guidance ?? null;
+  const activeLegIndex = guidance?.active_leg != null ? guidance.active_leg_index : null;
+  if (activeLegIndex != null) {
+    if (legIndex < activeLegIndex) {
+      return "completed";
+    }
+    if (legIndex === activeLegIndex) {
+      return "active";
+    }
+    return "remaining";
+  }
+  const splitIndex = guidance?.display_split_leg_index ?? 0;
+  return legIndex < splitIndex ? "completed" : "remaining";
 }
 
 function pointInPolygon(lat: number, lon: number, points: number[][]): boolean {

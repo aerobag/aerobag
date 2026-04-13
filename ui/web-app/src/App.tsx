@@ -5,6 +5,7 @@ import type {
   AirwaySuggestion,
   AppState,
   ChartPageData,
+  FlightPlanRouteSegment,
   FlightPlanUiMutation,
   FlightPlanUiState,
   LatLon,
@@ -55,7 +56,6 @@ import {
   airwayExitCandidatesFromPresentation,
   materializeAirwaySelection,
   prepareAirwayPresentationForAnchors,
-  resolveNavRefPosition,
   suggestAirwaysNearAnchor,
 } from "./domain/airwayPlanner";
 import { getBrowserNavDb } from "./domain/webNavDb";
@@ -64,13 +64,6 @@ import { debugLog } from "./domain/debugLog";
 type SurfaceSize = {
   width: number;
   height: number;
-};
-
-type FlightPlanRouteSegment = {
-  id: string;
-  from: LatLon;
-  to: LatLon;
-  status: "completed" | "active" | "remaining";
 };
 
 type AppPage = "map" | "plan" | "charts";
@@ -625,6 +618,7 @@ export default function App() {
     <main className="appShell" style={themeVars}>
       <div className={`pageLayer${page === "map" ? " isActive" : ""}`} aria-hidden={page !== "map"}>
         <MapPage
+          appCoreAdapter={appCoreAdapter}
           page={page}
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
@@ -832,6 +826,7 @@ export default function App() {
 }
 
 function MapPage(props: {
+  appCoreAdapter: AppCoreAdapter;
   page: AppPage;
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
@@ -856,6 +851,7 @@ function MapPage(props: {
   adapterDetail: string;
 }) {
   const {
+    appCoreAdapter,
     debugTileLabels,
     page,
     pageHistory,
@@ -956,37 +952,11 @@ function MapPage(props: {
     let cancelled = false;
 
     async function resolveFlightPlanRoute() {
-      const rawLegs = plan.resolved_legs ?? [];
-      const uiLegs = planUiState?.resolved_legs ?? [];
-      if (rawLegs.length === 0 || uiLegs.length === 0) {
+      if ((plan.resolved_legs ?? []).length === 0 || (planUiState?.resolved_legs ?? []).length === 0) {
         setFlightPlanRoute([]);
         return;
       }
-      const resolvedPositions = new Map<string, Promise<LatLon>>();
-      const resolveCachedPosition = (navRef: NavRef, procedureAirportId?: string | null) => {
-        const key = `${navRefKey(navRef)}:${procedureAirportId ?? ""}`;
-        let promise = resolvedPositions.get(key);
-        if (!promise) {
-          promise = resolveNavRefPosition(navRef, procedureAirportId);
-          resolvedPositions.set(key, promise);
-        }
-        return promise;
-      };
-      const segmentEntries = await Promise.all(rawLegs.map(async (leg, index) => {
-        try {
-          const airportId = leg.procedure_provenance?.airport_id ?? null;
-          return {
-            id: leg.id,
-            from: await resolveCachedPosition(leg.from, airportId),
-            to: await resolveCachedPosition(leg.to, airportId),
-            status: routeStatusForLeg(planUiState, uiLegs[index]?.leg_index ?? index),
-          };
-        } catch (error) {
-          console.error("failed to resolve flight plan segment", leg, error);
-          return null;
-        }
-      }));
-      const segments = segmentEntries.filter((segment): segment is FlightPlanRouteSegment => segment !== null);
+      const segments = await appCoreAdapter.projectFlightPlanRoute(plan, planUiState);
       debugLog("map.route.segments", {
         count: segments.length,
         segments: segments.map((segment) => ({
@@ -1011,7 +981,7 @@ function MapPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [plan, planUiState]);
+  }, [appCoreAdapter, plan, planUiState]);
 
   useEffect(() => {
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -3575,22 +3545,6 @@ function navRefLabel(value: NavRef) {
   if ("Navaid" in value) return value.Navaid;
   if ("Fix" in value) return value.Fix;
   return `${value.LatLon.lat.toFixed(3)}, ${value.LatLon.lon.toFixed(3)}`;
-}
-
-function routeStatusForLeg(planUiState: FlightPlanUiState | null, legIndex: number): FlightPlanRouteSegment["status"] {
-  const guidance = planUiState?.guidance ?? null;
-  const activeLegIndex = guidance?.active_leg != null ? guidance.active_leg_index : null;
-  if (activeLegIndex != null) {
-    if (legIndex < activeLegIndex) {
-      return "completed";
-    }
-    if (legIndex === activeLegIndex) {
-      return "active";
-    }
-    return "remaining";
-  }
-  const splitIndex = guidance?.display_split_leg_index ?? 0;
-  return legIndex < splitIndex ? "completed" : "remaining";
 }
 
 function routeSegmentColor(status: FlightPlanRouteSegment["status"]) {

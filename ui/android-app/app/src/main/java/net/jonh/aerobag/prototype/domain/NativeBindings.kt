@@ -18,6 +18,11 @@ interface NativeBridge {
         airportIdJson: String,
     ): String
 
+    fun projectFlightPlanRouteJson(
+        dbPath: String,
+        planJson: String,
+    ): String
+
     fun loadAirwayBranchesJson(
         dbPath: String,
         airwayName: String,
@@ -269,6 +274,11 @@ object NativeBindings : NativeBridge {
         dbPath: String,
         navRefJson: String,
         airportIdJson: String,
+    ): String
+
+    external override fun projectFlightPlanRouteJson(
+        dbPath: String,
+        planJson: String,
     ): String
 
     external override fun loadAirwayBranchesJson(

@@ -220,7 +220,7 @@ private object SampleDataFixture {
                 from = NavRef.Airport("BOS"),
                 to = NavRef.Airport("BOS"),
                 source = ResolvedLegSource.RouteComponent(componentIndex = 0),
-                procedureProvenance = null,
+                procedureAirportId = null,
             ),
         ),
         guidance = null,
@@ -314,6 +314,7 @@ private class FakeNativeBridge(
     override fun resolveNavRefPositionJson(dbPath: String, navRefJson: String): String = """{"lat":0.0,"lon":0.0}"""
     override fun resolveNavRefPositionWithAirportJson(dbPath: String, navRefJson: String, airportIdJson: String): String =
         """{"lat":0.0,"lon":0.0}"""
+    override fun projectFlightPlanRouteJson(dbPath: String, planJson: String): String = "[]"
 
     override fun loadAirwayBranchesJson(dbPath: String, airwayName: String): String = "[]"
 

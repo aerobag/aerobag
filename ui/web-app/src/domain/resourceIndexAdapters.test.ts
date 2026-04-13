@@ -90,7 +90,7 @@ const samplePlan: FlightPlan = {
       from: { Airport: "BOS" },
       to: { Airport: "BOS" },
       source: { kind: "route_component", component_index: 0 },
-      procedure_provenance: null,
+      procedure_airport_id: null,
     },
   ],
   guidance: null,

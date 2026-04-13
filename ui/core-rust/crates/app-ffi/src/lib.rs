@@ -51,6 +51,14 @@ pub fn build_flight_plan_ui_json(plan_json: &str) -> Result<String, String> {
     serde_json::to_string(&ui).map_err(|err| err.to_string())
 }
 
+pub fn project_flight_plan_route_json(db_path: &str, plan_json: &str) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let route =
+        app_core::project_flight_plan_route(db_path, &plan).map_err(|err| err.to_string())?;
+    serde_json::to_string(&route).map_err(|err| err.to_string())
+}
+
 pub fn activate_leg_ui_json(plan_json: &str, leg_index: usize) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
@@ -1004,6 +1012,21 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_res
         let nav_ref_json = get_java_string(&mut env, nav_ref_json)?;
         let airport_id_json = get_java_string(&mut env, airport_id_json)?;
         resolve_nav_ref_position_with_airport_json(&db_path, &nav_ref_json, &airport_id_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_projectFlightPlanRouteJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    plan_json: JString,
+) -> jstring {
+    let result = (|| {
+        let db_path = get_java_string(&mut env, db_path)?;
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        project_flight_plan_route_json(&db_path, &plan_json)
     })();
     return_string(&mut env, result)
 }

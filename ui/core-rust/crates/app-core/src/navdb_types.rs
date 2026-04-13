@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::geometry::LatLon;
 use crate::planning::{
-    ConcretizedNavItem, NavRef, PathTermination, ProcedureKind, ResolvedLeg,
+    interpret_path_termination, ConcretizedNavItem, NavRef, PathTermination,
+    ProcedureKind, ResolvedLeg,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -120,13 +121,57 @@ pub struct ProcedureLegRecord {
     pub inferred_kind: ProcedureKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProcedureLegMaterializationRecord {
     pub key: ProcedureVariantKey,
     pub sequence: i32,
     pub nav_ref: Option<NavRef>,
     pub path_termination: String,
     pub path_termination_kind: PathTermination,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ProcedureLegMaterializationRecordSerde {
+    key: ProcedureVariantKey,
+    sequence: i32,
+    nav_ref: Option<NavRef>,
+    path_termination: String,
+    #[serde(default)]
+    path_termination_kind: Option<PathTermination>,
+}
+
+impl Serialize for ProcedureLegMaterializationRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        ProcedureLegMaterializationRecordSerde {
+            key: self.key.clone(),
+            sequence: self.sequence,
+            nav_ref: self.nav_ref.clone(),
+            path_termination: self.path_termination.clone(),
+            path_termination_kind: None,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProcedureLegMaterializationRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = ProcedureLegMaterializationRecordSerde::deserialize(deserializer)?;
+        Ok(Self {
+            key: raw.key,
+            sequence: raw.sequence,
+            nav_ref: raw.nav_ref,
+            path_termination_kind: raw
+                .path_termination_kind
+                .unwrap_or_else(|| interpret_path_termination(&raw.path_termination)),
+            path_termination: raw.path_termination,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

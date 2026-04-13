@@ -92,7 +92,7 @@ class ResourceIndexAdaptersTest {
                 from = NavRef.Airport("BOS"),
                 to = NavRef.Airport("BOS"),
                 source = ResolvedLegSource.RouteComponent(componentIndex = 0),
-                procedureProvenance = null,
+                procedureAirportId = null,
             ),
         ),
         guidance = null,

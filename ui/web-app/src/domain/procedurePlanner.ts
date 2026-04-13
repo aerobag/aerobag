@@ -11,27 +11,6 @@ type IdentifierRow = {
   LocationID: string;
 };
 
-function pathTerminationKind(code: string): ProcedureLegMaterializationRecord["path_termination_kind"] {
-  switch (code.trim()) {
-    case "IF":
-      return "initial_fix";
-    case "TF":
-      return "track_to_fix";
-    case "CF":
-      return "course_to_fix";
-    case "DF":
-      return "direct_to_fix";
-    case "FM":
-    case "HM":
-      return "heading_to_manual";
-    case "VA":
-    case "VI":
-      return "heading_to_altitude";
-    default:
-      return { other: code.trim() };
-  }
-}
-
 function inferProcedureKind(routeType: string): ProcedureKind {
   switch (routeType.trim()) {
     case "1":
@@ -134,7 +113,6 @@ export async function loadProcedureMaterializationRecords(
     sequence: number;
     fix_identifier: string;
     path_termination: string;
-    path_termination_kind: string;
   }>(
     `
       SELECT
@@ -164,7 +142,6 @@ export async function loadProcedureMaterializationRecords(
       sequence: row.sequence,
       nav_ref: await navRefForProcedureIdentifier(row.fix_identifier),
       path_termination: row.path_termination,
-      path_termination_kind: pathTerminationKind(row.path_termination),
     })),
   );
 }

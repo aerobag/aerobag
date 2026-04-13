@@ -109,14 +109,70 @@ pub enum ConcretizedNavItem {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedLeg {
     pub id: String,
     pub from: NavRef,
     pub to: NavRef,
     pub source: ResolvedLegSource,
-    #[serde(default)]
     pub procedure_provenance: Option<ProcedureLegProvenance>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ResolvedLegSerde {
+    id: String,
+    from: NavRef,
+    to: NavRef,
+    source: ResolvedLegSource,
+    #[serde(default)]
+    procedure_airport_id: Option<String>,
+    #[serde(default)]
+    procedure_provenance: Option<ProcedureLegProvenance>,
+}
+
+impl Serialize for ResolvedLeg {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        ResolvedLegSerde {
+            id: self.id.clone(),
+            from: self.from.clone(),
+            to: self.to.clone(),
+            source: self.source.clone(),
+            procedure_airport_id: self
+                .procedure_provenance
+                .as_ref()
+                .map(|provenance| provenance.airport_id.clone()),
+            procedure_provenance: None,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ResolvedLeg {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = ResolvedLegSerde::deserialize(deserializer)?;
+        Ok(Self {
+            id: raw.id,
+            from: raw.from,
+            to: raw.to,
+            source: raw.source,
+            procedure_provenance: raw.procedure_provenance.or_else(|| {
+                raw.procedure_airport_id.map(|airport_id| ProcedureLegProvenance {
+                    airport_id,
+                    procedure_id: String::new(),
+                    kind: ProcedureKind::Approach,
+                    role: ProcedureSegmentRole::Common,
+                    path_termination: PathTermination::Other(String::new()),
+                    leg_sequence: 0,
+                })
+            }),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

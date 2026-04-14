@@ -1208,6 +1208,44 @@ fn build_bundle_manifest(
         .or_else(|| index.temporal_summary.expiration_dates.first().cloned())
         .context("resource-index missing end-valid date")?;
     let cycle = build_manifest.cycle.clone();
+    let data_filename = format!("data_{cycle}.zip");
+    let vectors_filename = format!("vectors_data_{cycle}.zip");
+
+    let package_artifacts = index
+        .packages
+        .iter()
+        .map(|package| {
+            let package_path = resolve_product_build_path(config, &package.artifact_path);
+            let filename = canonical_package_filename(
+                &package.family_id,
+                &package.region_id,
+                Path::new(&package.artifact_path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default(),
+            )?;
+            publish_flat_artifact(&package_path, &config.build_root.join(&filename))?;
+            Ok(BundlePackageArtifact {
+                id: package.id.clone(),
+                family_id: package.family_id.clone(),
+                region_id: package.region_id.clone(),
+                filename: filename.clone(),
+                relative_path: filename,
+                checksum_sha256: package.checksum_sha256.clone(),
+                size_bytes: fs::metadata(&package_path)
+                    .with_context(|| format!("failed to stat {}", package_path.display()))?
+                    .len(),
+                effective_date: package.effective_date.clone(),
+                expiration_date: package.expiration_date.clone(),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let public_resource_index = rewrite_public_resource_index(
+        &index,
+        &data_filename,
+        &package_artifacts,
+    );
 
     Ok(BundleManifest {
         schema_version: 1,
@@ -1222,44 +1260,19 @@ fn build_bundle_manifest(
         )?,
         resource_index: publish_bundle_artifact(
             config,
-            &resource_index_path,
+            &write_published_json(
+                &config.build_root.join(format!("resource_index_{cycle}.json")),
+                &public_resource_index,
+            )?,
             &format!("resource_index_{cycle}.json"),
         )?,
-        data: publish_bundle_artifact(config, &data_zip_path, &format!("data_{cycle}.zip"))?,
+        data: publish_bundle_artifact(config, &data_zip_path, &data_filename)?,
         vectors: publish_bundle_artifact(
             config,
             &vectors_zip_path,
-            &format!("vectors_data_{cycle}.zip"),
+            &vectors_filename,
         )?,
-        packages: index
-            .packages
-            .iter()
-            .map(|package| {
-                let package_path = resolve_product_build_path(config, &package.artifact_path);
-                let filename = canonical_package_filename(
-                    &package.family_id,
-                    &package.region_id,
-                    Path::new(&package.artifact_path)
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or_default(),
-                )?;
-                publish_flat_artifact(&package_path, &config.build_root.join(&filename))?;
-                Ok(BundlePackageArtifact {
-                    id: package.id.clone(),
-                    family_id: package.family_id.clone(),
-                    region_id: package.region_id.clone(),
-                    filename: filename.clone(),
-                    relative_path: filename,
-                    checksum_sha256: package.checksum_sha256.clone(),
-                    size_bytes: fs::metadata(&package_path)
-                        .with_context(|| format!("failed to stat {}", package_path.display()))?
-                        .len(),
-                    effective_date: package.effective_date.clone(),
-                    expiration_date: package.expiration_date.clone(),
-                })
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?,
+        packages: package_artifacts,
     })
 }
 
@@ -1522,6 +1535,34 @@ fn bundle_artifact(
             .with_context(|| format!("failed to stat {}", absolute_path.display()))?
             .len(),
     })
+}
+
+fn write_published_json<T: Serialize>(published_path: &Path, value: &T) -> anyhow::Result<PathBuf> {
+    fs::write(
+        published_path,
+        serde_json::to_vec_pretty(value).context("failed to encode published json")?,
+    )
+    .with_context(|| format!("failed to write {}", published_path.display()))?;
+    Ok(published_path.to_path_buf())
+}
+
+fn rewrite_public_resource_index(
+    index: &ResourceIndex,
+    data_filename: &str,
+    package_artifacts: &[BundlePackageArtifact],
+) -> ResourceIndex {
+    let package_filenames = package_artifacts
+        .iter()
+        .map(|package| (package.id.clone(), package.filename.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut public_index = index.clone();
+    public_index.nav_db.artifact_path = data_filename.to_string();
+    for package in &mut public_index.packages {
+        if let Some(filename) = package_filenames.get(&package.id) {
+            package.artifact_path = filename.clone();
+        }
+    }
+    public_index
 }
 
 fn publish_bundle_artifact(

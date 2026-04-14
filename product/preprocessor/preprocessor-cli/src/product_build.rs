@@ -464,9 +464,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         BundleManifest { cycle: String },
         ObstaclesBuild,
         ObstaclesPublish,
-        CurrentArtifacts,
-        ProductUnpack,
-    }
+    CurrentArtifacts,
+    ProductUnpack,
+    ValidatePackagedContract,
+    ValidateUnpackedContract,
+}
 
     #[derive(Debug, Clone)]
     struct ProductScheduledTask {
@@ -723,6 +725,21 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             deps: vec!["current-artifacts".to_string(), "publish-obstacles".to_string()],
             weight: 1,
             kind: ProductScheduledTaskKind::ProductUnpack,
+        });
+        pending_tasks.push(ProductScheduledTask {
+            id: "validate-packaged-contract".to_string(),
+            deps: vec!["current-artifacts".to_string()],
+            weight: 1,
+            kind: ProductScheduledTaskKind::ValidatePackagedContract,
+        });
+        pending_tasks.push(ProductScheduledTask {
+            id: "validate-unpacked-contract".to_string(),
+            deps: vec![
+                "product-unpack".to_string(),
+                "validate-packaged-contract".to_string(),
+            ],
+            weight: 1,
+            kind: ProductScheduledTaskKind::ValidateUnpackedContract,
         });
 
         let total_tasks = pending_tasks.len();
@@ -1506,6 +1523,35 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 node_records: vec![],
                                 value: ProductTaskValue::None,
                                 completion_detail: "synced".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::ValidatePackagedContract => {
+                            let current_artifacts_path = match task_values_snapshot.get("current-artifacts") {
+                                Some(ProductTaskValue::CurrentArtifacts { path }) => path.clone(),
+                                _ => bail!("missing current artifacts output"),
+                            };
+                            validate_packaged_contract(&config.build_root, &current_artifacts_path)?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::None,
+                                completion_detail: "validated".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::ValidateUnpackedContract => {
+                            let current_artifacts_path = match task_values_snapshot.get("current-artifacts") {
+                                Some(ProductTaskValue::CurrentArtifacts { path }) => path.clone(),
+                                _ => bail!("missing current artifacts output"),
+                            };
+                            let unpacked_root = published_unpacked_root(&config)?;
+                            validate_unpacked_contract(
+                                &config.build_root,
+                                &unpacked_root,
+                                &current_artifacts_path,
+                            )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::None,
+                                completion_detail: "validated".to_string(),
                             })
                         }
                     }))
@@ -3082,6 +3128,199 @@ fn write_current_artifacts_manifest(
     )
     .with_context(|| format!("failed to write {}", manifest_path.display()))?;
     Ok(manifest_path)
+}
+
+fn validate_packaged_contract(
+    packaged_root: &Path,
+    current_artifacts_path: &Path,
+) -> anyhow::Result<()> {
+    validate_no_internal_paths_in_json(current_artifacts_path)?;
+    let current: CurrentArtifactsManifest = serde_json::from_slice(
+        &fs::read(current_artifacts_path)
+            .with_context(|| format!("failed to read {}", current_artifacts_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", current_artifacts_path.display()))?;
+
+    for bundle in &current.bundles {
+        validate_public_filename(&bundle.filename, "current_artifacts.bundles[].filename")?;
+        let bundle_path = packaged_root.join(&bundle.filename);
+        ensure_public_file_exists(&bundle_path)?;
+        validate_bundle_manifest(packaged_root, &bundle_path)?;
+    }
+
+    validate_public_filename(
+        &current.obstacles.filename,
+        "current_artifacts.obstacles.filename",
+    )?;
+    ensure_public_file_exists(&packaged_root.join(&current.obstacles.filename))?;
+    Ok(())
+}
+
+fn validate_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow::Result<()> {
+    validate_no_internal_paths_in_json(bundle_path)?;
+    let bundle: BundleManifest = serde_json::from_slice(
+        &fs::read(bundle_path)
+            .with_context(|| format!("failed to read {}", bundle_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+
+    for artifact in [&bundle.catalog, &bundle.resource_index, &bundle.data, &bundle.vectors] {
+        validate_bundle_artifact_ref(packaged_root, artifact)?;
+    }
+    for package in &bundle.packages {
+        validate_public_filename(&package.filename, "bundle.packages[].filename")?;
+        validate_public_filename(&package.relative_path, "bundle.packages[].relative_path")?;
+        if package.filename != package.relative_path {
+            bail!(
+                "package filename/relative_path mismatch in {}: {} != {}",
+                bundle_path.display(),
+                package.filename,
+                package.relative_path
+            );
+        }
+        ensure_public_file_exists(&packaged_root.join(&package.filename))?;
+    }
+    Ok(())
+}
+
+fn validate_unpacked_contract(
+    packaged_root: &Path,
+    unpacked_root: &Path,
+    current_artifacts_path: &Path,
+) -> anyhow::Result<()> {
+    validate_packaged_contract(packaged_root, current_artifacts_path)?;
+    let current_filename = current_artifacts_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("current artifacts path has no filename")?;
+    let unpacked_current_path = unpacked_root.join(current_filename);
+    ensure_public_file_exists(&unpacked_current_path)?;
+    validate_no_internal_paths_in_json(&unpacked_current_path)?;
+
+    let current: CurrentArtifactsManifest = serde_json::from_slice(
+        &fs::read(current_artifacts_path)
+            .with_context(|| format!("failed to read {}", current_artifacts_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", current_artifacts_path.display()))?;
+
+    for bundle in &current.bundles {
+        let unpacked_bundle_path = unpacked_root.join(&bundle.filename);
+        ensure_public_file_exists(&unpacked_bundle_path)?;
+        validate_no_internal_paths_in_json(&unpacked_bundle_path)?;
+        let bundle: BundleManifest = serde_json::from_slice(
+            &fs::read(&unpacked_bundle_path)
+                .with_context(|| format!("failed to read {}", unpacked_bundle_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", unpacked_bundle_path.display()))?;
+
+        for artifact in [&bundle.catalog, &bundle.resource_index] {
+            ensure_public_file_exists(&unpacked_root.join(&artifact.filename))?;
+        }
+        for artifact in [&bundle.data, &bundle.vectors] {
+            ensure_public_dir_exists(&unpacked_root.join(zip_stem(&artifact.filename)?))?;
+        }
+        for package in &bundle.packages {
+            ensure_public_dir_exists(&unpacked_root.join(zip_stem(&package.filename)?))?;
+        }
+    }
+
+    ensure_public_dir_exists(&unpacked_root.join(zip_stem(&current.obstacles.filename)?))?;
+    Ok(())
+}
+
+fn validate_bundle_artifact_ref(packaged_root: &Path, artifact: &BundleArtifact) -> anyhow::Result<()> {
+    validate_public_filename(&artifact.filename, "bundle artifact filename")?;
+    validate_public_filename(&artifact.relative_path, "bundle artifact relative_path")?;
+    if artifact.filename != artifact.relative_path {
+        bail!(
+            "bundle artifact filename/relative_path mismatch: {} != {}",
+            artifact.filename,
+            artifact.relative_path
+        );
+    }
+    ensure_public_file_exists(&packaged_root.join(&artifact.filename))
+}
+
+fn validate_public_filename(value: &str, field: &str) -> anyhow::Result<()> {
+    if value != Path::new(value).file_name().and_then(|name| name.to_str()).unwrap_or_default() {
+        bail!("{field} must be a basename, got {value}");
+    }
+    if value.contains('/') || value.contains('\\') {
+        bail!("{field} must not contain path separators: {value}");
+    }
+    Ok(())
+}
+
+fn ensure_public_file_exists(path: &Path) -> anyhow::Result<()> {
+    let meta = fs::metadata(path).with_context(|| format!("missing published file {}", path.display()))?;
+    if !meta.is_file() {
+        bail!("expected published file, found non-file at {}", path.display());
+    }
+    Ok(())
+}
+
+fn ensure_public_dir_exists(path: &Path) -> anyhow::Result<()> {
+    let meta = fs::metadata(path).with_context(|| format!("missing published dir {}", path.display()))?;
+    if !meta.is_dir() {
+        bail!("expected published dir, found non-dir at {}", path.display());
+    }
+    Ok(())
+}
+
+fn zip_stem(filename: &str) -> anyhow::Result<String> {
+    let path = Path::new(filename);
+    let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+    if extension != "zip" {
+        bail!("expected zip filename, got {filename}");
+    }
+    Ok(path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .context("zip filename missing stem")?
+        .to_string())
+}
+
+fn validate_no_internal_paths_in_json(path: &Path) -> anyhow::Result<()> {
+    let value: serde_json::Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    validate_no_internal_paths_in_value(path, "$", &value)
+}
+
+fn validate_no_internal_paths_in_value(
+    path: &Path,
+    json_path: &str,
+    value: &serde_json::Value,
+) -> anyhow::Result<()> {
+    match value {
+        serde_json::Value::String(text) => {
+            for forbidden in ["cache/", "private-work/", "work/", "published-packaged/production"] {
+                if text.contains(forbidden) {
+                    bail!(
+                        "{} contains forbidden internal path fragment at {}: {}",
+                        path.display(),
+                        json_path,
+                        text
+                    );
+                }
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                validate_no_internal_paths_in_value(path, &format!("{json_path}[{index}]"), item)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(map) => {
+            for (key, item) in map {
+                validate_no_internal_paths_in_value(path, &format!("{json_path}.{key}"), item)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn remove_legacy_unpacked_subtree(unpacked_root: &Path) -> anyhow::Result<()> {

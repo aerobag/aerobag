@@ -597,6 +597,7 @@ pub fn load_procedure_legs(
                AND trim(sid_star_approach_identifier) = trim(?2)
                AND trim(route_type) = trim(?3)
                AND trim(transition_identifier) = trim(?4)
+               AND trim(path_and_termination) <> ''
              ORDER BY CAST(sequence_number AS INTEGER)",
         )?;
 

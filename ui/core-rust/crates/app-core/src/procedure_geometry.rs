@@ -16,11 +16,20 @@ pub fn display_path_for_procedure_leg(
     if leg_end.path_termination.trim() == "PI" {
         return procedure_turn_display_path(leg_end);
     }
+    let arrival_course_deg = procedure_arrival_course_deg(leg_start, leg_end);
     if let Some(hold) = hold_record {
         if let Some(path) = missed_approach_display_path(segment_records, leg_start, leg_end, hold) {
             return Some(path);
         }
-        return hold_display_path(hold, None);
+        let mut path = hold_display_path(hold, arrival_course_deg)?;
+        if hold.path_termination.trim() == "HF" {
+            let start = leg_start.nav_position?;
+            let fix = hold.nav_position?;
+            if distance_between_points_nm(start, fix) > 0.05 {
+                path.elements.insert(0, LegDisplayElement::Segment { start, end: fix });
+            }
+        }
+        return Some(path);
     }
     None
 }
@@ -29,7 +38,8 @@ fn hold_display_path(
     leg: &ProcedureLegMaterializationRecord,
     arrival_course_deg: Option<f64>,
 ) -> Option<LegDisplayPath> {
-    if leg.path_termination.trim() != "HM" {
+    let hold_kind = leg.path_termination.trim();
+    if !matches!(hold_kind, "HF" | "HM") {
         return None;
     }
     let fix = leg.nav_position?;
@@ -49,7 +59,15 @@ fn hold_display_path(
         leg_length_nm,
         turn_radius_nm,
         arrival_course_deg,
+        hold_kind == "HF",
     ))
+}
+
+fn procedure_arrival_course_deg(
+    leg_start: &ProcedureLegMaterializationRecord,
+    leg_end: &ProcedureLegMaterializationRecord,
+) -> Option<f64> {
+    Some(bearing_from(leg_start.nav_position?, leg_end.nav_position?))
 }
 
 fn procedure_turn_display_path(leg: &ProcedureLegMaterializationRecord) -> Option<LegDisplayPath> {
@@ -269,15 +287,22 @@ fn missed_approach_display_path(
                             course_deg,
                             fix,
                         )?;
-                        if distance_between_points_nm(current_position, intercept) > 0.05 {
+                        if cf_intercept_is_reasonable(intercept, defining_nav, course_deg, fix) {
+                            if distance_between_points_nm(current_position, intercept) > 0.05 {
+                                elements.push(LegDisplayElement::Segment {
+                                    start: current_position,
+                                    end: intercept,
+                                });
+                            }
+                            if distance_between_points_nm(intercept, fix) > 0.05 {
+                                elements.push(LegDisplayElement::Segment {
+                                    start: intercept,
+                                    end: fix,
+                                });
+                            }
+                        } else {
                             elements.push(LegDisplayElement::Segment {
                                 start: current_position,
-                                end: intercept,
-                            });
-                        }
-                        if distance_between_points_nm(intercept, fix) > 0.05 {
-                            elements.push(LegDisplayElement::Segment {
-                                start: intercept,
                                 end: fix,
                             });
                         }
@@ -411,6 +436,23 @@ fn tangent_rejoin_from_turn(
         .map(|(turn_end, rejoin_course_deg, _)| (turn_end, rejoin_course_deg))
 }
 
+fn cf_intercept_is_reasonable(
+    intercept: LatLon,
+    defining_nav: LatLon,
+    course_deg: f64,
+    fix: LatLon,
+) -> bool {
+    let course_unit = bearing_unit_vector(course_deg);
+    let intercept_projection = projection_along_course_nm(defining_nav, intercept, course_unit);
+    let fix_projection = projection_along_course_nm(defining_nav, fix, course_unit);
+    intercept_projection <= fix_projection + 0.05
+}
+
+fn projection_along_course_nm(origin: LatLon, point: LatLon, course_unit: (f64, f64)) -> f64 {
+    let east_north = to_local_en(origin, point);
+    east_north.0 * course_unit.0 + east_north.1 * course_unit.1
+}
+
 fn heading_sweep_degrees(from_deg: f64, to_deg: f64, clockwise: bool) -> f64 {
     let mut delta = normalize_bearing_degrees(to_deg) - normalize_bearing_degrees(from_deg);
     if clockwise {
@@ -484,6 +526,7 @@ fn build_hold_display_path(
     leg_length_nm: f64,
     turn_radius_nm: f64,
     arrival_course_deg: Option<f64>,
+    stop_when_established_inbound: bool,
 ) -> LegDisplayPath {
     let inbound = bearing_unit_vector(inbound_course_deg);
     let outbound = (-inbound.0, -inbound.1);
@@ -520,6 +563,8 @@ fn build_hold_display_path(
         -lateral.1 * turn_radius_nm,
     );
 
+    let entry_kind = arrival_course_deg
+        .map(|arrival_course_deg| classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise));
     let mut elements = hold_entry_elements(
         fix,
         inbound_course_deg,
@@ -528,32 +573,40 @@ fn build_hold_display_path(
         leg_length_nm,
         turn_radius_nm,
     );
+    if stop_when_established_inbound {
+        if !matches!(entry_kind, Some(HoldEntryKind::Direct) | None) {
+            return LegDisplayPath {
+                style: LegDisplayPathStyle::Solid,
+                elements,
+            };
+        }
+    }
     elements.extend(vec![
-            LegDisplayElement::Arc {
-                center: first_turn_center,
-                radius_nm: turn_radius_nm,
-                start: inbound_end,
-                end: outbound_start,
-                clockwise,
-                sweep_degrees: 180.0,
-            },
-            LegDisplayElement::Segment {
-                start: outbound_start,
-                end: outbound_end,
-            },
-            LegDisplayElement::Arc {
-                center: second_turn_center,
-                radius_nm: turn_radius_nm,
-                start: outbound_end,
-                end: inbound_rejoin,
-                clockwise,
-                sweep_degrees: 180.0,
-            },
-            LegDisplayElement::Segment {
-                start: inbound_rejoin,
-                end: inbound_end,
-            },
-        ]);
+        LegDisplayElement::Arc {
+            center: first_turn_center,
+            radius_nm: turn_radius_nm,
+            start: inbound_end,
+            end: outbound_start,
+            clockwise,
+            sweep_degrees: 180.0,
+        },
+        LegDisplayElement::Segment {
+            start: outbound_start,
+            end: outbound_end,
+        },
+        LegDisplayElement::Arc {
+            center: second_turn_center,
+            radius_nm: turn_radius_nm,
+            start: outbound_end,
+            end: inbound_rejoin,
+            clockwise,
+            sweep_degrees: 180.0,
+        },
+        LegDisplayElement::Segment {
+            start: inbound_rejoin,
+            end: inbound_end,
+        },
+    ]);
 
     LegDisplayPath {
         style: LegDisplayPathStyle::Solid,

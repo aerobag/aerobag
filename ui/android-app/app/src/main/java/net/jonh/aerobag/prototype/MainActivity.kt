@@ -92,6 +92,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -3612,6 +3613,7 @@ private fun MenuDock(
     val trayMaxHeight = with(density) {
         ((screenHeightPx - anchorTopPx - trayOffsetPx - trayBottomMarginPx).coerceAtLeast(ThumbSize.toPx())).toDp()
     }
+    val launcherAccentColor = options.firstOrNull { it.active }?.accentColor
     Box(
         modifier = modifier
             .width(style.buttonWidth)
@@ -3622,6 +3624,7 @@ private fun MenuDock(
             label = launcherLabel,
             maxLines = style.launcherMaxLines,
             enabled = !blocked || open,
+            accentColor = launcherAccentColor,
             onDisabledClick = if (blocked && !open) onBlockedClick else null,
             modifier = Modifier
                 .width(style.buttonWidth)
@@ -3692,6 +3695,7 @@ private fun MenuPanelRow(
     onSelect: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
+    val rowShape = RoundedCornerShape(ThumbRadius)
     val rowBackground = when {
         !enabled -> uiTheme.controls.panelBg
         active -> lerp(uiTheme.controls.buttonBg, Color.White, 0.18f)
@@ -3705,6 +3709,7 @@ private fun MenuPanelRow(
         modifier = Modifier
             .then(if (width != Dp.Unspecified) Modifier.width(width) else Modifier.fillMaxWidth())
             .height(ThumbSize)
+            .clip(rowShape)
             .background(rowBackground)
             .clickable(
                 enabled = enabled,
@@ -3712,8 +3717,7 @@ private fun MenuPanelRow(
                 interactionSource = remember { MutableInteractionSource() },
             ) {
                 onSelect()
-            }
-            .padding(horizontal = 12.dp),
+            },
         contentAlignment = Alignment.CenterStart,
     ) {
         if (accentColor != null) {
@@ -3727,6 +3731,7 @@ private fun MenuPanelRow(
         }
         Text(
             text = label,
+            modifier = Modifier.padding(horizontal = 12.dp),
             style = MaterialTheme.typography.labelLarge,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
@@ -4165,6 +4170,7 @@ private fun CompactSquareButton(
     selected: Boolean = false,
     backgroundColor: Color? = null,
     selectedColor: Color? = null,
+    accentColor: Color? = null,
     centered: Boolean = true,
     textStartPadding: Dp = 0.dp,
     textModifier: Modifier = Modifier,
@@ -4239,9 +4245,18 @@ private fun CompactSquareButton(
         shadowElevation = 2.dp,
     ) {
         Box(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxSize(),
             contentAlignment = if (centered) Alignment.Center else Alignment.CenterStart,
         ) {
+            if (accentColor != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(ThumbSize / 2f)
+                        .align(Alignment.BottomStart)
+                        .background(accentColor.copy(alpha = if (enabled) 1f else 0.45f)),
+                )
+            }
             Text(
                 text = label,
                 modifier = (if (centered) Modifier else Modifier.padding(start = textStartPadding, end = 8.dp)).then(textModifier),

@@ -279,6 +279,33 @@ pub fn materialize_procedure_from_records(
 }
 
 #[wasm_bindgen]
+pub fn infer_procedure_kind_from_rows(rows_json: &str) -> Result<String, JsValue> {
+    infer_procedure_kind_from_rows_json(rows_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn select_preferred_cifp_tpp_match(rows_json: &str) -> Result<String, JsValue> {
+    select_preferred_cifp_tpp_match_json(rows_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn describe_show_plate_for_procedure(rows_json: &str) -> Result<String, JsValue> {
+    describe_show_plate_for_procedure_json(rows_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn describe_load_procedure_from_plate(
+    plan_json: &str,
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    options_json: &str,
+) -> Result<String, JsValue> {
+    describe_load_procedure_from_plate_json(plan_json, airport_id, procedure_id, kind_json, options_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn replace_flight_plan_state(
     state_json: &str,
     catalog_json: &str,
@@ -850,6 +877,46 @@ fn materialize_procedure_from_records_json(
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&built).map_err(|err| err.to_string())
+}
+
+fn infer_procedure_kind_from_rows_json(rows_json: &str) -> Result<String, String> {
+    let rows: Vec<app_core::ProcedureDistinctRow> =
+        serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
+    let kind = app_core::infer_procedure_kind_from_rows(&rows).map_err(|err| err.to_string())?;
+    serde_json::to_string(&kind).map_err(|err| err.to_string())
+}
+
+fn select_preferred_cifp_tpp_match_json(rows_json: &str) -> Result<String, String> {
+    let rows: Vec<app_core::CifpTppMatchRow> =
+        serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
+    let matched = app_core::select_preferred_cifp_tpp_match(rows);
+    serde_json::to_string(&matched).map_err(|err| err.to_string())
+}
+
+fn describe_show_plate_for_procedure_json(rows_json: &str) -> Result<String, String> {
+    let rows: Vec<app_core::CifpTppMatchRow> =
+        serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
+    let matched = app_core::describe_show_plate_for_procedure(rows);
+    serde_json::to_string(&matched).map_err(|err| err.to_string())
+}
+
+fn describe_load_procedure_from_plate_json(
+    plan_json: &str,
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    options_json: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let kind: app_core::ProcedureKind =
+        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
+    let options: app_core::ProcedureOptions =
+        serde_json::from_str(options_json).map_err(|err| err.to_string())?;
+    let description =
+        app_core::describe_load_procedure_from_plate(&plan, airport_id, procedure_id, kind, options)
+            .map_err(|err| err.to_string())?;
+    serde_json::to_string(&description).map_err(|err| err.to_string())
 }
 
 fn replace_flight_plan_state_json(

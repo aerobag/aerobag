@@ -182,6 +182,30 @@ pub struct ProcedureSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CifpTppMatchRow {
+    pub airport_id: String,
+    pub cifp_id: String,
+    pub plate_id: String,
+    pub plate_label: String,
+    pub package_id: String,
+    pub public: i32,
+    pub priority: i32,
+    pub match_kind: String,
+    pub is_primary: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CifpTppMatch {
+    pub airport_id: String,
+    pub cifp_id: String,
+    pub plate_id: String,
+    pub plate_label: String,
+    pub package_id: String,
+    pub match_kind: String,
+    pub is_primary: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcedureSpecChoice {
     pub runway_transition: Option<String>,
     pub enroute_transition: Option<String>,

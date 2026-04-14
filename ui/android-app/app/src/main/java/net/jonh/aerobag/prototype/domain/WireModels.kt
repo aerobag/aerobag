@@ -860,6 +860,7 @@ data class WireFlightPlanDisplayRowUiView(
     val can_reorder_component: Boolean,
     val can_reorder_up: Boolean,
     val can_reorder_down: Boolean,
+    val replace_procedure_component_index: Int? = null,
     val start_component_index: Int? = null,
     val end_component_index: Int? = null,
     val origin_anchor: WireNavRef? = null,

@@ -267,6 +267,7 @@ pub enum FlightPlanRowActionId {
     AddAirway,
     SelectProcedure,
     Plates,
+    ShowPlate,
     ChangeAirway,
     RemoveAirway,
     RemoveProcedure,
@@ -284,6 +285,8 @@ pub struct FlightPlanDisplayRowUiView {
     pub row_kind: FlightPlanDisplayRowKind,
     pub component_kind: Option<RouteComponentViewKind>,
     pub component_index: Option<usize>,
+    pub procedure_id: Option<String>,
+    pub procedure_kind: Option<ProcedureKind>,
     pub leg_index: Option<usize>,
     pub chart_airport_id: Option<String>,
     pub nav_ref: Option<NavRef>,
@@ -296,6 +299,7 @@ pub struct FlightPlanDisplayRowUiView {
     pub can_reorder_component: bool,
     pub can_reorder_up: bool,
     pub can_reorder_down: bool,
+    pub replace_procedure_component_index: Option<usize>,
     pub start_component_index: Option<usize>,
     pub end_component_index: Option<usize>,
     pub origin_anchor: Option<NavRef>,
@@ -318,6 +322,9 @@ pub struct RouteComponentUiView {
     pub component_index: usize,
     pub kind: RouteComponentViewKind,
     pub summary: String,
+    pub procedure_id: Option<String>,
+    pub procedure_kind: Option<ProcedureKind>,
+    pub chart_airport_id: Option<String>,
     pub items: Vec<ConcretizedNavItem>,
     pub active: bool,
     pub can_add_airway_after: bool,
@@ -327,6 +334,7 @@ pub struct RouteComponentUiView {
     pub can_reorder: bool,
     pub can_reorder_up: bool,
     pub can_reorder_down: bool,
+    pub replace_procedure_component_index: Option<usize>,
     pub preceding_waypoint: Option<NavRef>,
     pub following_waypoint: Option<NavRef>,
 }
@@ -722,10 +730,15 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
                 adjacent_waypoint_component(&plan.route_components, component_index, -1);
             let following_waypoint =
                 adjacent_waypoint_component(&plan.route_components, component_index, 1);
+            let replace_procedure_component_index =
+                replaceable_procedure_component_before(&plan, component_index);
             RouteComponentUiView {
                 component_index,
                 kind: component_view_kind(component),
                 summary: component_summary(component),
+                procedure_id: component_procedure_id(component),
+                procedure_kind: component_procedure_kind(component),
+                chart_airport_id: component_chart_airport_id(component),
                 items: projected_items.get(component_index).cloned().unwrap_or_default(),
                 active: active_component_index == Some(component_index),
                 can_add_airway_after: matches!(component, RouteComponent::Waypoint { .. })
@@ -734,10 +747,10 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
                         Some(RouteComponent::Waypoint { .. }) | None
                     ),
                 can_add_procedure_before: matches!(component, RouteComponent::Waypoint { waypoint: NavRef::Airport(_) })
-                    && matches!(
+                    && (matches!(
                         component_index.checked_sub(1).and_then(|index| plan.route_components.get(index)),
                         Some(RouteComponent::Waypoint { .. })
-                    ),
+                    ) || replace_procedure_component_index.is_some()),
                 can_change_airway: matches!(component, RouteComponent::Airway { .. })
                     && preceding_waypoint.is_some()
                     && following_waypoint.is_some(),
@@ -745,6 +758,7 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
                 can_reorder: can_reorder_component(&plan, component_index),
                 can_reorder_up: can_reorder_component_in_direction(&plan, component_index, -1),
                 can_reorder_down: can_reorder_component_in_direction(&plan, component_index, 1),
+                replace_procedure_component_index,
                 preceding_waypoint,
                 following_waypoint,
             }
@@ -821,7 +835,7 @@ fn project_display_rows(
 ) -> Vec<FlightPlanDisplayRowUiView> {
     let mut rows = Vec::new();
     for component in components {
-        let chart_airport_id = component_waypoint_nav_ref(component).as_ref().and_then(airport_id_from_nav_ref);
+        let chart_airport_id = component.chart_airport_id.clone();
         if component.kind == RouteComponentViewKind::Waypoint {
             let nav_ref = component_waypoint_nav_ref(component);
             let origin_anchor = component.preceding_waypoint.clone().or(nav_ref.clone());
@@ -834,6 +848,8 @@ fn project_display_rows(
                 row_kind: FlightPlanDisplayRowKind::Waypoint,
                 component_kind: Some(component.kind.clone()),
                 component_index: Some(component.component_index),
+                procedure_id: component.procedure_id.clone(),
+                procedure_kind: component.procedure_kind.clone(),
                 leg_index: None,
                 chart_airport_id,
                 nav_ref,
@@ -846,6 +862,7 @@ fn project_display_rows(
                 can_reorder_component: component.can_reorder,
                 can_reorder_up: component.can_reorder_up,
                 can_reorder_down: component.can_reorder_down,
+                replace_procedure_component_index: component.replace_procedure_component_index,
                 start_component_index: Some(component.component_index),
                 end_component_index: Some(component.component_index + 1),
                 origin_anchor,
@@ -862,6 +879,8 @@ fn project_display_rows(
                 row_kind: FlightPlanDisplayRowKind::Group,
                 component_kind: Some(component.kind.clone()),
                 component_index: Some(component.component_index),
+                procedure_id: component.procedure_id.clone(),
+                procedure_kind: component.procedure_kind.clone(),
                 leg_index: None,
                 chart_airport_id,
                 nav_ref: None,
@@ -874,6 +893,7 @@ fn project_display_rows(
                 can_reorder_component: component.can_reorder,
                 can_reorder_up: component.can_reorder_up,
                 can_reorder_down: component.can_reorder_down,
+                replace_procedure_component_index: None,
                 start_component_index: None,
                 end_component_index: None,
                 origin_anchor: origin_anchor.clone(),
@@ -889,6 +909,8 @@ fn project_display_rows(
                         row_kind: FlightPlanDisplayRowKind::Waypoint,
                         component_kind: Some(component.kind.clone()),
                         component_index: Some(component.component_index),
+                        procedure_id: component.procedure_id.clone(),
+                        procedure_kind: component.procedure_kind.clone(),
                         leg_index: None,
                         chart_airport_id: airport_id_from_nav_ref(nav_ref),
                         nav_ref: Some(nav_ref.clone()),
@@ -901,6 +923,7 @@ fn project_display_rows(
                         can_reorder_component: false,
                         can_reorder_up: false,
                         can_reorder_down: false,
+                        replace_procedure_component_index: None,
                         start_component_index: None,
                         end_component_index: None,
                         origin_anchor: None,
@@ -914,6 +937,8 @@ fn project_display_rows(
                         row_kind: FlightPlanDisplayRowKind::Discontinuity,
                         component_kind: Some(component.kind.clone()),
                         component_index: Some(component.component_index),
+                        procedure_id: component.procedure_id.clone(),
+                        procedure_kind: component.procedure_kind.clone(),
                         leg_index: None,
                         chart_airport_id: None,
                         nav_ref: None,
@@ -926,6 +951,7 @@ fn project_display_rows(
                         can_reorder_component: false,
                         can_reorder_up: false,
                         can_reorder_down: false,
+                        replace_procedure_component_index: None,
                         start_component_index: None,
                         end_component_index: None,
                         origin_anchor: None,
@@ -963,13 +989,34 @@ fn project_display_rows(
     rows
 }
 
+fn replaceable_procedure_component_before(plan: &FlightPlan, component_index: usize) -> Option<usize> {
+    let RouteComponent::Waypoint {
+        waypoint: NavRef::Airport(ref airport_id),
+    } = plan.route_components.get(component_index)?
+    else {
+        return None;
+    };
+    let previous_index = component_index.checked_sub(1)?;
+    let RouteComponent::Procedure { procedure } = plan.route_components.get(previous_index)? else {
+        return None;
+    };
+    if procedure.kind == ProcedureKind::Approach && procedure.airport_id.0 == *airport_id {
+        Some(previous_index)
+    } else {
+        None
+    }
+}
+
 fn group_row_actions(component: &RouteComponentUiView) -> Vec<FlightPlanRowActionUiView> {
     match component.kind {
         RouteComponentViewKind::Airway => vec![
             action(FlightPlanRowActionId::ChangeAirway, component.can_change_airway),
             action(FlightPlanRowActionId::RemoveAirway, component.can_remove),
         ],
-        RouteComponentViewKind::Procedure => vec![action(FlightPlanRowActionId::RemoveProcedure, component.can_remove)],
+        RouteComponentViewKind::Procedure => vec![
+            action(FlightPlanRowActionId::ShowPlate, component.chart_airport_id.is_some() && component.procedure_id.is_some()),
+            action(FlightPlanRowActionId::RemoveProcedure, component.can_remove),
+        ],
         RouteComponentViewKind::Waypoint => Vec::new(),
     }
 }
@@ -1020,6 +1067,28 @@ fn component_waypoint_nav_ref(component: &RouteComponentUiView) -> Option<NavRef
         ConcretizedNavItem::Waypoint { nav_ref } => Some(nav_ref.clone()),
         ConcretizedNavItem::Discontinuity { .. } => None,
     })
+}
+
+fn component_procedure_id(component: &RouteComponent) -> Option<String> {
+    match component {
+        RouteComponent::Procedure { procedure } => Some(procedure.procedure_id.clone()),
+        _ => None,
+    }
+}
+
+fn component_procedure_kind(component: &RouteComponent) -> Option<ProcedureKind> {
+    match component {
+        RouteComponent::Procedure { procedure } => Some(procedure.kind.clone()),
+        _ => None,
+    }
+}
+
+fn component_chart_airport_id(component: &RouteComponent) -> Option<String> {
+    match component {
+        RouteComponent::Waypoint { waypoint } => airport_id_from_nav_ref(waypoint),
+        RouteComponent::Procedure { procedure } => Some(procedure.airport_id.0.clone()),
+        RouteComponent::Airway { .. } => None,
+    }
 }
 
 fn airport_id_from_nav_ref(nav_ref: &NavRef) -> Option<String> {
@@ -3932,6 +4001,58 @@ mod tests {
         assert!(!ui.components[0].can_add_procedure_before);
         assert!(ui.components[1].can_add_procedure_before);
         assert!(ui.components[2].can_add_procedure_before);
+    }
+
+    #[test]
+    fn project_ui_state_enables_procedure_replacement_before_airport_with_matching_approach_predecessor() {
+        let plan = FlightPlan {
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+                RouteComponent::Procedure {
+                    procedure: ProcedureSegment {
+                        airport_id: AirportId("KUAO".to_string()),
+                        procedure_id: "I35".to_string(),
+                        kind: ProcedureKind::Approach,
+                        runway_transition: Some("RW35".to_string()),
+                        enroute_transition: Some("FOO".to_string()),
+                        terminal_discontinuity: None,
+                    },
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KUAO".to_string()),
+                },
+            ],
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "component-0-1".to_string(),
+                    from: NavRef::Airport("KRNT".to_string()),
+                    to: NavRef::Fix("FOO".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "proc-0".to_string(),
+                    from: NavRef::Fix("FOO".to_string()),
+                    to: NavRef::Airport("KUAO".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+            ],
+            ..sample_waypoint_only_plan()
+        };
+
+        let ui = project_ui_state(&plan);
+
+        assert!(ui.components[2].can_add_procedure_before);
+        assert_eq!(ui.components[2].replace_procedure_component_index, Some(1));
+        let airport_row = ui
+            .display_rows
+            .iter()
+            .find(|row| row.component_index == Some(2) && row.row_kind == FlightPlanDisplayRowKind::Waypoint)
+            .expect("airport row");
+        assert_eq!(airport_row.replace_procedure_component_index, Some(1));
     }
 
     #[test]

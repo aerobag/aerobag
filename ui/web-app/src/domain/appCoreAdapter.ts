@@ -8,6 +8,8 @@ import type {
   AirwaySuggestion,
   AirwaySegment,
   CatalogJson,
+  CifpTppMatch,
+  CifpTppMatchRow,
   ChartPageData,
   ContentInventory,
   ContentPolicy,
@@ -23,6 +25,7 @@ import type {
   NavRef,
   PlanLeg,
   ProcedureOptions,
+  ProcedureLoadTarget,
   ProcedureSummary,
   ResolvedLeg,
   ResolvedLegUiView,
@@ -32,6 +35,8 @@ import type {
 } from "./types";
 import { deriveChartPage as deriveChartCatalog } from "./resourceIndexAdapters";
 import {
+  loadCifpTppMatchesForPlate,
+  loadCifpTppMatchesForProcedure,
   listProceduresForAirport,
   loadProcedureDistinctRows,
   loadProcedureMaterializationRecords,
@@ -45,6 +50,7 @@ import {
   suggestAirwaysNearAnchor as suggestAirwaysNearAnchorWithNavDb,
 } from "./airwayPlanner";
 import { getBrowserNavDb } from "./webNavDb";
+import { debugLog } from "./debugLog";
 
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];
@@ -63,6 +69,10 @@ export type UiChartPageState = {
   recent_airport_ids: string[];
   selected_airport_id: string;
   selected_chart_id: string;
+};
+
+type FlightPlanDisplayRowWithShowPlateTarget = FlightPlanUiState["display_rows"][number] & {
+  show_plate_target_id?: string | null;
 };
 
 export type PointTilePayload = {
@@ -200,6 +210,11 @@ export interface AppCoreAdapter {
     endComponentIndex: number,
     built: MaterializedProcedure,
   ): Promise<FlightPlanUiMutation>;
+  replaceProcedureMaterializedUi(
+    plan: FlightPlan,
+    componentIndex: number,
+    built: MaterializedProcedure,
+  ): Promise<FlightPlanUiMutation>;
   materializeProcedure(
     airportId: string,
     procedureId: string,
@@ -208,6 +223,8 @@ export interface AppCoreAdapter {
     enrouteTransition: string | null,
     componentIndex: number,
   ): Promise<MaterializedProcedure>;
+  findProcedurePlateMatch(airportId: string, cifpId: string): Promise<CifpTppMatch | null>;
+  describePlateProcedureLoads(plan: FlightPlan, plateId: string): Promise<ProcedureLoadTarget[]>;
 }
 
 export type AdapterBackendKind = "wasm";
@@ -607,8 +624,20 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
     throw new Error("procedure insertion requires wasm adapter");
   }
 
+  async replaceProcedureMaterializedUi(): Promise<FlightPlanUiMutation> {
+    throw new Error("procedure replacement requires wasm adapter");
+  }
+
   async materializeProcedure(): Promise<MaterializedProcedure> {
     throw new Error("procedure materialization requires wasm adapter");
+  }
+
+  async findProcedurePlateMatch(): Promise<CifpTppMatch | null> {
+    throw new Error("procedure plate matching requires wasm adapter");
+  }
+
+  async describePlateProcedureLoads(): Promise<ProcedureLoadTarget[]> {
+    throw new Error("plate procedure loading requires wasm adapter");
   }
 
   async chartForPosition(
@@ -716,6 +745,16 @@ type WasmModule = {
     rowsJson: string,
     legsJson: string,
   ): Promise<string> | string;
+  infer_procedure_kind_from_rows(rowsJson: string): Promise<string> | string;
+  select_preferred_cifp_tpp_match(rowsJson: string): Promise<string> | string;
+  describe_show_plate_for_procedure(rowsJson: string): Promise<string> | string;
+  describe_load_procedure_from_plate(
+    planJson: string,
+    airportId: string,
+    procedureId: string,
+    kindJson: string,
+    optionsJson: string,
+  ): Promise<string> | string;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
@@ -723,6 +762,39 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
 
   async prewarm(): Promise<void> {
     await getBrowserNavDb();
+  }
+
+  private async enrichFlightPlanUiState(uiState: FlightPlanUiState): Promise<FlightPlanUiState> {
+    const display_rows = await Promise.all(uiState.display_rows.map(async (row) => {
+      const showPlateAction = row.actions.find((action) => action.id === "show_plate");
+      if (!showPlateAction || !row.chart_airport_id || !row.procedure_id) {
+        return row as FlightPlanDisplayRowWithShowPlateTarget;
+      }
+      const rows = await loadCifpTppMatchesForProcedure(row.chart_airport_id, row.procedure_id);
+      const match = JSON.parse(
+        await this.module.describe_show_plate_for_procedure(JSON.stringify(rows)),
+      ) as CifpTppMatch | null;
+      return {
+        ...row,
+        show_plate_target_id: match?.plate_id ?? null,
+        actions: row.actions.map((action) =>
+          action.id === "show_plate"
+            ? { ...action, enabled: match !== null }
+            : action,
+        ),
+      } satisfies FlightPlanDisplayRowWithShowPlateTarget;
+    }));
+    return {
+      ...uiState,
+      display_rows,
+    };
+  }
+
+  private async enrichFlightPlanUiMutation(mutation: FlightPlanUiMutation): Promise<FlightPlanUiMutation> {
+    return {
+      ...mutation,
+      ui_state: await this.enrichFlightPlanUiState(mutation.ui_state),
+    };
   }
 
   async createUiSession(
@@ -864,9 +936,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async buildFlightPlanUi(plan: FlightPlan): Promise<FlightPlanUiState> {
-    return JSON.parse(
+    const uiState = JSON.parse(
       await this.module.build_flight_plan_ui(JSON.stringify(plan)),
     ) as FlightPlanUiState;
+    return this.enrichFlightPlanUiState(uiState);
   }
 
   async projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]> {
@@ -896,45 +969,45 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation> {
-    return JSON.parse(
+    return this.enrichFlightPlanUiMutation(JSON.parse(
       await this.module.activate_leg_ui(JSON.stringify(plan), legIndex),
-    ) as FlightPlanUiMutation;
+    ) as FlightPlanUiMutation);
   }
 
   async activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
-    return JSON.parse(
+    return this.enrichFlightPlanUiMutation(JSON.parse(
       await this.module.activate_next_leg_ui(JSON.stringify(plan)),
-    ) as FlightPlanUiMutation;
+    ) as FlightPlanUiMutation);
   }
 
   async deleteComponentUi(plan: FlightPlan, componentIndex: number): Promise<FlightPlanUiMutation> {
-    return JSON.parse(
+    return this.enrichFlightPlanUiMutation(JSON.parse(
       await this.module.delete_component_ui(JSON.stringify(plan), componentIndex),
-    ) as FlightPlanUiMutation;
+    ) as FlightPlanUiMutation);
   }
 
   async moveComponentUi(plan: FlightPlan, componentIndex: number, delta: number): Promise<FlightPlanUiMutation> {
-    return JSON.parse(
+    return this.enrichFlightPlanUiMutation(JSON.parse(
       await this.module.move_component_ui(JSON.stringify(plan), componentIndex, delta),
-    ) as FlightPlanUiMutation;
+    ) as FlightPlanUiMutation);
   }
 
   async suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
-    return JSON.parse(
+    return this.enrichFlightPlanUiMutation(JSON.parse(
       await this.module.suspend_sequencing_ui(JSON.stringify(plan)),
-    ) as FlightPlanUiMutation;
+    ) as FlightPlanUiMutation);
   }
 
   async unsuspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
-    return JSON.parse(
+    return this.enrichFlightPlanUiMutation(JSON.parse(
       await this.module.unsuspend_sequencing_ui(JSON.stringify(plan)),
-    ) as FlightPlanUiMutation;
+    ) as FlightPlanUiMutation);
   }
 
   async sequenceActiveLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
-    return JSON.parse(
+    return this.enrichFlightPlanUiMutation(JSON.parse(
       await this.module.sequence_active_leg_ui(JSON.stringify(plan)),
-    ) as FlightPlanUiMutation;
+    ) as FlightPlanUiMutation);
   }
 
   async prepareAirwayPresentation(
@@ -1011,7 +1084,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
     return {
       plan: result.mutation.plan,
-      ui_state: result.ui_state,
+      ui_state: await this.enrichFlightPlanUiState(result.ui_state),
     };
   }
 
@@ -1033,7 +1106,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
     return {
       plan: result.mutation.plan,
-      ui_state: result.ui_state,
+      ui_state: await this.enrichFlightPlanUiState(result.ui_state),
     };
   }
 
@@ -1069,7 +1142,25 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
     return {
       plan: result.mutation.plan,
-      ui_state: result.ui_state,
+      ui_state: await this.enrichFlightPlanUiState(result.ui_state),
+    };
+  }
+
+  async replaceProcedureMaterializedUi(
+    plan: FlightPlan,
+    componentIndex: number,
+    built: MaterializedProcedure,
+  ): Promise<FlightPlanUiMutation> {
+    const result = JSON.parse(
+      await this.module.replace_procedure_materialized_ui(
+        JSON.stringify(plan),
+        componentIndex,
+        JSON.stringify(built),
+      ),
+    ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
+    return {
+      plan: result.mutation.plan,
+      ui_state: await this.enrichFlightPlanUiState(result.ui_state),
     };
   }
 
@@ -1095,6 +1186,61 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         JSON.stringify(legs),
       ),
     ) as MaterializedProcedure;
+  }
+
+  async findProcedurePlateMatch(airportId: string, cifpId: string): Promise<CifpTppMatch | null> {
+    const rows = await loadCifpTppMatchesForProcedure(airportId, cifpId);
+    debugLog("adapter.cifp_tpp.by_procedure", { airport_id: airportId, cifp_id: cifpId, rows });
+    return JSON.parse(
+      await this.module.describe_show_plate_for_procedure(JSON.stringify(rows)),
+    ) as CifpTppMatch | null;
+  }
+
+  async describePlateProcedureLoads(plan: FlightPlan, plateId: string): Promise<ProcedureLoadTarget[]> {
+    const rows = await loadCifpTppMatchesForPlate(plateId);
+    debugLog("adapter.cifp_tpp.by_plate", { plate_id: plateId, rows });
+    const grouped = new Map<string, CifpTppMatchRow[]>();
+    for (const row of rows) {
+      const key = `${row.airport_id}:${row.cifp_id}`;
+      grouped.set(key, [...(grouped.get(key) ?? []), row]);
+    }
+    const loads: ProcedureLoadTarget[] = [];
+    for (const groupedRows of grouped.values()) {
+      const preferred = JSON.parse(
+        await this.module.select_preferred_cifp_tpp_match(JSON.stringify(groupedRows)),
+      ) as CifpTppMatch | null;
+      if (!preferred) {
+        continue;
+      }
+      const procedureRows = await loadProcedureDistinctRows(preferred.airport_id, preferred.cifp_id);
+      if (procedureRows.length === 0) {
+        continue;
+      }
+      const kind = JSON.parse(
+        await this.module.infer_procedure_kind_from_rows(JSON.stringify(procedureRows)),
+      ) as ProcedureSummary["kind"];
+      const options = JSON.parse(
+        await this.module.describe_procedure_options_from_rows(
+          preferred.airport_id,
+          preferred.cifp_id,
+          JSON.stringify(kind),
+          JSON.stringify(procedureRows),
+        ),
+      ) as ProcedureOptions;
+      const described = JSON.parse(
+        await this.module.describe_load_procedure_from_plate(
+          JSON.stringify(plan),
+          preferred.airport_id,
+          preferred.cifp_id,
+          JSON.stringify(kind),
+          JSON.stringify(options),
+        ),
+      ) as ProcedureLoadTarget | null;
+      if (described) {
+        loads.push(described);
+      }
+    }
+    return loads;
   }
 }
 
@@ -1136,6 +1282,10 @@ export async function loadBestAvailableAdapter(
     typeof mod.replace_procedure_materialized_ui !== "function" ||
     typeof mod.describe_procedure_options_from_rows !== "function" ||
     typeof mod.materialize_procedure_from_records !== "function" ||
+    typeof mod.infer_procedure_kind_from_rows !== "function" ||
+    typeof mod.select_preferred_cifp_tpp_match !== "function" ||
+    typeof mod.describe_show_plate_for_procedure !== "function" ||
+    typeof mod.describe_load_procedure_from_plate !== "function" ||
     typeof mod.derive_chart_page !== "function" ||
     typeof mod.derive_chart_page_state !== "function" ||
     typeof mod.set_content_policy_state !== "function" ||

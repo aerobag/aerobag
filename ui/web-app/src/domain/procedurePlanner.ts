@@ -1,4 +1,5 @@
 import type {
+  CifpTppMatchRow,
   NavRef,
   ProcedureDistinctRow,
   ProcedureKind,
@@ -143,5 +144,55 @@ export async function loadProcedureMaterializationRecords(
       nav_ref: await navRefForProcedureIdentifier(row.fix_identifier),
       path_termination: row.path_termination,
     })),
+  );
+}
+
+export async function loadCifpTppMatchesForProcedure(
+  airportId: string,
+  cifpId: string,
+): Promise<CifpTppMatchRow[]> {
+  const db = await getBrowserNavDb();
+  return db.queryObjects<CifpTppMatchRow>(
+    `
+      SELECT
+        trim(airport_id) AS airport_id,
+        trim(cifp_id) AS cifp_id,
+        trim(plate_id) AS plate_id,
+        trim(plate_label) AS plate_label,
+        trim(package_id) AS package_id,
+        CAST(public AS INTEGER) AS public,
+        CAST(priority AS INTEGER) AS priority,
+        trim(match_kind) AS match_kind,
+        CAST(is_primary AS INTEGER) AS is_primary
+      FROM cifp_tpp_matches
+      WHERE trim(airport_id) = trim(?1)
+        AND trim(cifp_id) = trim(?2)
+      ORDER BY CAST(is_primary AS INTEGER) DESC, CAST(priority AS INTEGER), trim(plate_label)
+    `,
+    [airportId, cifpId],
+  );
+}
+
+export async function loadCifpTppMatchesForPlate(
+  plateId: string,
+): Promise<CifpTppMatchRow[]> {
+  const db = await getBrowserNavDb();
+  return db.queryObjects<CifpTppMatchRow>(
+    `
+      SELECT
+        trim(airport_id) AS airport_id,
+        trim(cifp_id) AS cifp_id,
+        trim(plate_id) AS plate_id,
+        trim(plate_label) AS plate_label,
+        trim(package_id) AS package_id,
+        CAST(public AS INTEGER) AS public,
+        CAST(priority AS INTEGER) AS priority,
+        trim(match_kind) AS match_kind,
+        CAST(is_primary AS INTEGER) AS is_primary
+      FROM cifp_tpp_matches
+      WHERE trim(plate_id) = trim(?1)
+      ORDER BY trim(cifp_id), CAST(is_primary AS INTEGER) DESC, CAST(priority AS INTEGER), trim(plate_label)
+    `,
+    [plateId],
   );
 }

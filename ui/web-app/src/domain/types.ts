@@ -151,6 +151,28 @@ export type ProcedureSummary = {
   kind: ProcedureKind;
 };
 
+export type CifpTppMatchRow = {
+  airport_id: string;
+  cifp_id: string;
+  plate_id: string;
+  plate_label: string;
+  package_id: string;
+  public: number;
+  priority: number;
+  match_kind: string;
+  is_primary: number;
+};
+
+export type CifpTppMatch = {
+  airport_id: string;
+  cifp_id: string;
+  plate_id: string;
+  plate_label: string;
+  package_id: string;
+  match_kind: string;
+  is_primary: boolean;
+};
+
 export type ProcedureDistinctRow = {
   route_type: string;
   transition_id: string;
@@ -233,6 +255,9 @@ export type RouteComponentUiView = {
   component_index: number;
   kind: RouteComponentViewKind;
   summary: string;
+  procedure_id: string | null;
+  procedure_kind: ProcedureKind | null;
+  chart_airport_id: string | null;
   items: ConcretizedNavItem[];
   active: boolean;
   can_add_airway_after: boolean;
@@ -242,6 +267,7 @@ export type RouteComponentUiView = {
   can_reorder: boolean;
   can_reorder_up: boolean;
   can_reorder_down: boolean;
+  replace_procedure_component_index: number | null;
   preceding_waypoint: NavRef | null;
   following_waypoint: NavRef | null;
 };
@@ -296,6 +322,7 @@ export type FlightPlanRowActionId =
   | "add_airway"
   | "select_procedure"
   | "plates"
+  | "show_plate"
   | "change_airway"
   | "remove_airway"
   | "remove_procedure";
@@ -310,6 +337,8 @@ export type FlightPlanDisplayRowUiView = {
   row_kind: FlightPlanDisplayRowKind;
   component_kind: RouteComponentViewKind | null;
   component_index: number | null;
+  procedure_id: string | null;
+  procedure_kind: ProcedureKind | null;
   leg_index: number | null;
   chart_airport_id: string | null;
   nav_ref: NavRef | null;
@@ -322,6 +351,7 @@ export type FlightPlanDisplayRowUiView = {
   can_reorder_component: boolean;
   can_reorder_up: boolean;
   can_reorder_down: boolean;
+  replace_procedure_component_index: number | null;
   start_component_index: number | null;
   end_component_index: number | null;
   origin_anchor: NavRef | null;
@@ -329,6 +359,17 @@ export type FlightPlanDisplayRowUiView = {
   preceding_waypoint: NavRef | null;
   following_waypoint: NavRef | null;
   actions: FlightPlanRowActionUiView[];
+};
+
+export type ProcedureLoadTarget = {
+  airport_id: string;
+  procedure_id: string;
+  kind: ProcedureKind;
+  replace_component_index: number | null;
+  start_component_index: number;
+  end_component_index: number;
+  preferred_choice: ProcedureSpecChoice | null;
+  valid_choices: ProcedureSpecChoice[];
 };
 
 export type FlightPlanUiMutation = {

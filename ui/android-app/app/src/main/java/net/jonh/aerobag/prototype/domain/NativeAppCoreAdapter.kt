@@ -1248,6 +1248,7 @@ private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
     canReorderComponent = can_reorder_component,
     canReorderUp = can_reorder_up,
     canReorderDown = can_reorder_down,
+    replaceProcedureComponentIndex = replace_procedure_component_index,
     startComponentIndex = start_component_index,
     endComponentIndex = end_component_index,
     originAnchor = origin_anchor?.toUi(),

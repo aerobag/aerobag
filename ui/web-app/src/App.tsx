@@ -12,6 +12,8 @@ import type {
   MaterializedProcedure,
   NavRef,
   ProcedureOptions,
+  ProcedureLoadTarget,
+  ProcedureSpecChoice,
   ProcedureSummary,
   Situation,
 } from "./domain/types";
@@ -652,24 +654,44 @@ export default function App() {
           plan={currentPlan}
           planUiState={planUiState}
           onSelectPage={navigateToPage}
-          onOpenCharts={(airportId) => {
+          onOpenCharts={(airportId, chartId) => {
             if (!airportId) {
               return;
             }
             const airport = chartPageData.airports.find((entry) => entry.id === airportId);
+            const resolvedChartId =
+              (chartId && airport?.charts.find((chart) => chart.id === chartId)?.id) ??
+              airport?.charts[0]?.id ??
+              "";
+            const resolvedChartLabel = airport?.charts.find((chart) => chart.id === resolvedChartId)?.label ?? airport?.charts[0]?.label ?? "";
             if (uiSession) {
-              void uiSession.selectAirport(airportId).then((nextSnapshot) => {
+              debugLog("charts.open.request", {
+                airport_id: airportId,
+                chart_id: resolvedChartId,
+                chart_label: resolvedChartLabel,
+              });
+              void uiSession.restoreChartPageState(
+                moveAirportToFront(recentAirportIds, airportId, chartPageData.airports),
+                airportId,
+                resolvedChartId || undefined,
+              ).then((nextSnapshot) => {
+                debugLog("charts.open.snapshot", {
+                  requested_airport_id: airportId,
+                  requested_chart_id: resolvedChartId,
+                  selected_airport_id: nextSnapshot.chart_page_state.selected_airport_id,
+                  selected_chart_id: nextSnapshot.chart_page_state.selected_chart_id,
+                });
                 setSessionSnapshot(nextSnapshot);
               }).catch(() => {});
             }
             pushViewSnapshot({
               page: "charts",
               selectedAirportId: airportId,
-              selectedChartId: airport?.charts[0]?.id ?? "",
-              selectedChartLabel: airport?.charts[0]?.label ?? "",
+              selectedChartId: resolvedChartId,
+              selectedChartLabel: resolvedChartLabel,
               recentAirportIds: moveAirportToFront(recentAirportIds, airportId, chartPageData.airports),
               chartViewport: null,
-              chartFolderOpen: true,
+              chartFolderOpen: !chartId,
             });
           }}
           onMoveComponent={async (componentIndex, delta) => {
@@ -758,14 +780,25 @@ export default function App() {
             );
             await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
+          onReplaceProcedure={async (componentIndex, built) => {
+            if (!appCoreAdapter) return;
+            const mutation = await appCoreAdapter.replaceProcedureMaterializedUi(
+              currentPlan,
+              componentIndex,
+              built,
+            );
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+          }}
         />
       </div>
 
       <div className={`pageLayer${page === "charts" ? " isActive" : ""}`} aria-hidden={page !== "charts"}>
         <ChartsPage
+          appCoreAdapter={appCoreAdapter}
           page={page}
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
+          plan={currentPlan}
           airports={orderedChartAirports}
           selectedAirport={selectedAirport}
           selectedChart={selectedChart}
@@ -810,6 +843,9 @@ export default function App() {
               chartViewport: null,
               chartFolderOpen: false,
             });
+          }}
+          onApplyMutation={async (mutation) => {
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
           situation={appState.situation}
         />
@@ -1558,7 +1594,7 @@ function FlightPlanPage(props: {
   plan: typeof samplePlan;
   planUiState: FlightPlanUiState | null;
   onSelectPage: (page: AppPage) => void;
-  onOpenCharts: (airportId: string | null) => void;
+  onOpenCharts: (airportId: string | null, chartId?: string | null) => void;
   onMoveComponent: (componentIndex: number, delta: number) => void | Promise<void>;
   onActivateLeg: (index: number) => void | Promise<void>;
   onDeleteComponent: (componentIndex: number) => void | Promise<void>;
@@ -1588,6 +1624,7 @@ function FlightPlanPage(props: {
     endComponentIndex: number,
     built: MaterializedProcedure,
   ) => void | Promise<void>;
+  onReplaceProcedure: (componentIndex: number, built: MaterializedProcedure) => void | Promise<void>;
 }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
   const [pendingSelectedComponentIndex, setPendingSelectedComponentIndex] = useState<number | null>(null);
@@ -1611,6 +1648,7 @@ function FlightPlanPage(props: {
     loading: boolean;
     error: string | null;
     airportId: string;
+    replaceComponentIndex: number | null;
     startComponentIndex: number;
     endComponentIndex: number;
     procedures: ProcedureSummary[];
@@ -1645,6 +1683,10 @@ function FlightPlanPage(props: {
   );
   const displayRows = useMemo(() => {
     return planUiState.display_rows.map((row, index) => ({
+        showPlateTargetId:
+          typeof (row as { show_plate_target_id?: unknown }).show_plate_target_id === "string"
+            ? (row as { show_plate_target_id?: string | null }).show_plate_target_id ?? null
+            : null,
         id:
           row.row_kind === "group"
             ? `group:${row.component_index ?? index}`
@@ -1673,12 +1715,15 @@ function FlightPlanPage(props: {
         removeLegIndex: null as number | null,
         startComponentIndex: row.start_component_index,
         endComponentIndex: row.end_component_index,
+        replaceProcedureComponentIndex: row.replace_procedure_component_index,
         originAnchor: row.origin_anchor,
         destinationAnchor: row.destination_anchor,
         navRef: row.nav_ref,
         groupKey: row.row_kind === "group" || row.depth > 0 ? `group:${row.component_index ?? index}` : null,
         componentIndex: row.component_index,
         componentKind: row.component_kind,
+        procedureId: row.procedure_id,
+        procedureKind: row.procedure_kind,
         canAddAirwayAfter: row.can_add_airway_after,
         canAddProcedureBefore: row.can_add_procedure_before,
         canChangeAirway: row.can_change_airway,
@@ -1791,6 +1836,7 @@ function FlightPlanPage(props: {
               loading: true,
               error: null,
               airportId: selectedRow.chartAirportId,
+              replaceComponentIndex: selectedRow.replaceProcedureComponentIndex ?? null,
               startComponentIndex,
               endComponentIndex,
               procedures: [],
@@ -1812,6 +1858,19 @@ function FlightPlanPage(props: {
                 } : current);
               });
             });
+            return;
+          }
+          if (action.id === "show_plate") {
+            if (!selectedRow.chartAirportId || !selectedRow.showPlateTargetId) {
+              return;
+            }
+            debugLog("plan.show_plate.match", {
+              airport_id: selectedRow.chartAirportId,
+              procedure_id: selectedRow.procedureId,
+              plate_id: selectedRow.showPlateTargetId,
+            });
+            props.onOpenCharts(selectedRow.chartAirportId, selectedRow.showPlateTargetId);
+            closeTray();
             return;
           }
           if (action.id === "charts" || action.id === "plates") {
@@ -2291,11 +2350,15 @@ function FlightPlanPage(props: {
                               choice.enroute_transition,
                               procedurePicker.startComponentIndex + 1,
                             );
-                            await props.onInsertProcedure(
-                              procedurePicker.startComponentIndex,
-                              procedurePicker.endComponentIndex,
-                              built,
-                            );
+                            if (procedurePicker.replaceComponentIndex !== null) {
+                              await props.onReplaceProcedure(procedurePicker.replaceComponentIndex, built);
+                            } else {
+                              await props.onInsertProcedure(
+                                procedurePicker.startComponentIndex,
+                                procedurePicker.endComponentIndex,
+                                built,
+                              );
+                            }
                             setProcedurePicker(null);
                             setSelectedWaypointIndex(null);
                           } catch (error) {
@@ -2558,20 +2621,22 @@ function TrayDock(props: {
   onToggle: () => void;
   ariaLabel: string;
   blocked?: boolean;
+  disabled?: boolean;
   style?: TrayDockStyle;
   launcherAccentColor?: string;
   options: TrayOption[];
 }) {
-  const { launcherLabel, open, onToggle, ariaLabel, blocked = false, style = "compact", launcherAccentColor, options } = props;
+  const { launcherLabel, open, onToggle, ariaLabel, blocked = false, disabled = false, style = "compact", launcherAccentColor, options } = props;
   const launcherWide = style === "plate_wide";
   const trayWide = style === "plate_narrow" || style === "plate_wide";
   const launcherBlocked = blocked && !open;
+  const launcherDisabled = disabled && !open;
   return (
     <div className="chartDockColumn">
       <button
         type="button"
-        className={`chartButton${launcherWide ? " chartButtonWide" : ""}${open ? " isOpen" : ""}${launcherBlocked ? " isBlocked" : ""}`}
-        aria-disabled={launcherBlocked}
+        className={`chartButton${launcherWide ? " chartButtonWide" : ""}${open ? " isOpen" : ""}${launcherBlocked || launcherDisabled ? " isBlocked" : ""}`}
+        aria-disabled={launcherBlocked || launcherDisabled}
         tabIndex={launcherBlocked ? -1 : undefined}
         style={{
           ...(launcherBlocked ? { pointerEvents: "none" } : undefined),
@@ -2580,7 +2645,7 @@ function TrayDock(props: {
         onPointerDown={launcherBlocked ? undefined : stopPointer}
         onPointerUp={launcherBlocked ? undefined : stopPointer}
         onDoubleClick={launcherBlocked ? undefined : stopDoubleClick}
-        onClick={launcherBlocked ? undefined : onToggle}
+        onClick={launcherBlocked || launcherDisabled ? undefined : onToggle}
       >
         <span className={`chartButtonLabel${launcherWide ? " chartButtonLabelWide" : ""}`}>{launcherLabel}</span>
       </button>
@@ -2606,9 +2671,11 @@ function TrayDock(props: {
 }
 
 function ChartsPage(props: {
+  appCoreAdapter: AppCoreAdapter | null;
   page: AppPage;
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
+  plan: typeof samplePlan;
   airports: ChartPageData["airports"];
   selectedAirport: ChartPageData["airports"][number] | null;
   selectedChart: ChartAsset | null;
@@ -2619,9 +2686,10 @@ function ChartsPage(props: {
   onSelectPage: (page: AppPage) => void;
   onSelectAirport: (airportId: string) => void;
   onSelectChart: (chartId: string) => void;
+  onApplyMutation: (mutation: FlightPlanUiMutation) => void | Promise<void>;
   situation: Situation;
 }) {
-  const { page, pageHistory, uptimeLabel, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onSelectAirport, onSelectChart, situation } = props;
+  const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onSelectAirport, onSelectChart, onApplyMutation, situation } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -2633,8 +2701,9 @@ function ChartsPage(props: {
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<{ zoom: number; distance: number; midpoint: ScreenPoint } | null>(null);
   const lastChartLayoutKeyRef = useRef("");
-  const trayGroup = useModalTrayGroup(["page", "airport", "chart"] as const);
+  const trayGroup = useModalTrayGroup(["page", "airport", "chart", "load"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
+  const [plateProcedureLoads, setPlateProcedureLoads] = useState<ProcedureLoadTarget[]>([]);
   const sortedCharts = useMemo(() => sortChartsForFolder(selectedAirport?.charts ?? []), [selectedAirport]);
   const selectedImageSize = imageSize && imageSize.chartId === (selectedChart?.id ?? "") ? imageSize : null;
   const fallbackViewport = useMemo(() => {
@@ -2759,6 +2828,65 @@ function ChartsPage(props: {
 
   const trayOpen = trayGroup.scrimOpen;
   const overscrollPx = 64;
+
+  useEffect(() => {
+    if (!appCoreAdapter || !selectedChart) {
+      setPlateProcedureLoads([]);
+      return;
+    }
+    let cancelled = false;
+    debugLog("charts.load_procedure.query", { plate_id: selectedChart.id });
+    void appCoreAdapter.describePlateProcedureLoads(plan, selectedChart.id).then((loads) => {
+      debugLog("charts.load_procedure.result", {
+        plate_id: selectedChart.id,
+        load_count: loads.length,
+        loads,
+      });
+      if (!cancelled) {
+        setPlateProcedureLoads(loads);
+      }
+    }).catch(() => {
+      debugLog("charts.load_procedure.error", { plate_id: selectedChart.id });
+      if (!cancelled) {
+        setPlateProcedureLoads([]);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [appCoreAdapter, plan, selectedChart?.id]);
+
+  const loadProcedureOptions = useMemo(() => {
+    return plateProcedureLoads.flatMap((load) => {
+      const choices = load.preferred_choice ? [load.preferred_choice] : load.valid_choices;
+      return choices.map((choice, index) => ({
+        id: `${load.procedure_id}:${choice.runway_transition ?? "none"}:${choice.enroute_transition ?? "none"}:${index}`,
+        label: formatLoadProcedureOptionLabel(load, choice, choices.length > 1 || plateProcedureLoads.length > 1),
+        active: false,
+        onSelect: () => {
+          if (!appCoreAdapter) {
+            return;
+          }
+          void appCoreAdapter.materializeProcedure(
+            load.airport_id,
+            load.procedure_id,
+            load.kind,
+            choice.runway_transition ?? null,
+            choice.enroute_transition ?? null,
+            load.replace_component_index ?? load.start_component_index,
+          ).then(async (built) => {
+            const mutation =
+              load.replace_component_index != null
+                ? await appCoreAdapter.replaceProcedureMaterializedUi(plan, load.replace_component_index, built)
+                : await appCoreAdapter.insertProcedureMaterializedUi(plan, load.start_component_index, load.end_component_index, built);
+            await onApplyMutation(mutation);
+            trayGroup.close("load");
+          }).catch(() => {});
+        },
+      }));
+    });
+  }, [appCoreAdapter, onApplyMutation, plan, plateProcedureLoads, trayGroup]);
+  const loadApproachEnabled = loadProcedureOptions.length > 0;
 
   function localPointFromPointerEvent(
     event:
@@ -3032,6 +3160,15 @@ function ChartsPage(props: {
               },
             }))}
           />
+          <TrayDock
+            launcherLabel={"LOAD\nAPPCH"}
+            open={trayGroup.isOpen("load")}
+            blocked={trayGroup.blocked("load")}
+            disabled={!loadApproachEnabled}
+            onToggle={() => trayGroup.toggle("load")}
+            ariaLabel="Load procedure"
+            options={loadProcedureOptions}
+          />
           <button
             type="button"
             className={`chartButton${folderOpen ? " isOpen" : ""}${trayOpen ? " isBlocked" : ""}`}
@@ -3213,6 +3350,8 @@ function flightPlanActionLabel(actionId: string): string {
     case "charts":
     case "plates":
       return "Plates";
+    case "show_plate":
+      return "Show Plate";
     case "change_airway":
       return "Change Airway";
     case "remove_airway":
@@ -3222,6 +3361,26 @@ function flightPlanActionLabel(actionId: string): string {
     default:
       return actionId;
   }
+}
+
+function formatLoadProcedureOptionLabel(
+  load: ProcedureLoadTarget,
+  choice: ProcedureSpecChoice,
+  includeProcedureId: boolean,
+) {
+  const parts: string[] = [];
+  if (includeProcedureId) {
+    parts.push(load.procedure_id);
+  } else {
+    parts.push("Load Procedure");
+  }
+  if (choice.enroute_transition) {
+    parts.push(choice.enroute_transition);
+  }
+  if (choice.runway_transition) {
+    parts.push(choice.runway_transition);
+  }
+  return parts.join(" ");
 }
 
 function resolveChartId(

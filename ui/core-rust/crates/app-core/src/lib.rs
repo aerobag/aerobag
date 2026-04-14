@@ -40,6 +40,7 @@ pub use map_overlay::{
 pub use navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
     AirwayExitSelection, AirwayFixPoint, AirwayPoint, AirwaySuggestion, MaterializedProcedure,
+    CifpTppMatch, CifpTppMatchRow,
     ProcedureDistinctRow, ProcedureLegMaterializationRecord, ProcedureLegRecord,
     ProcedureOptions, ProcedureSpecChoice, ProcedureSummary, ProcedureVariantKey,
     AirwayPresentationPlan, AirwayPresentationPoint,
@@ -48,6 +49,7 @@ pub use navdb_types::{
 pub use navdb::{
     choose_best_airway_plan, describe_procedure_options, list_airway_entry_candidates,
     list_airway_exit_candidates, list_procedures, load_airway_branches, load_airway_points,
+    load_cifp_tpp_matches_for_plate, load_cifp_tpp_matches_for_procedure,
     load_procedure_concretized_items, load_procedure_legs, load_resolved_procedure_legs,
     materialize_airway_selection, materialize_procedure_selection, resolve_airway_segment,
     resolve_airway_segment_by_index, resolve_nav_ref_position,
@@ -114,6 +116,18 @@ pub struct AirwayPlanUiMutation {
 pub struct ProcedurePlanUiMutation {
     pub mutation: ProcedurePlanMutation,
     pub ui_state: FlightPlanUiState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcedureLoadTarget {
+    pub airport_id: String,
+    pub procedure_id: String,
+    pub kind: ProcedureKind,
+    pub replace_component_index: Option<usize>,
+    pub start_component_index: usize,
+    pub end_component_index: usize,
+    pub preferred_choice: Option<ProcedureSpecChoice>,
+    pub valid_choices: Vec<ProcedureSpecChoice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,6 +396,142 @@ pub fn describe_procedure_options_from_rows(
         has_common_segment,
         valid_choices,
     })
+}
+
+pub fn infer_procedure_kind_from_rows(rows: &[ProcedureDistinctRow]) -> AppResult<ProcedureKind> {
+    let route_type = rows
+        .first()
+        .map(|row| row.route_type.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "cannot infer procedure kind from empty procedure rows".to_string(),
+        })?;
+    Ok(match route_type.as_str() {
+        "1" | "2" | "3" => ProcedureKind::Star,
+        "4" | "5" | "6" => ProcedureKind::Sid,
+        _ => ProcedureKind::Approach,
+    })
+}
+
+pub fn select_preferred_cifp_tpp_match(rows: Vec<CifpTppMatchRow>) -> Option<CifpTppMatch> {
+    rows.into_iter()
+        .map(|row| CifpTppMatch {
+            airport_id: row.airport_id,
+            cifp_id: row.cifp_id,
+            plate_id: row.plate_id,
+            plate_label: row.plate_label,
+            package_id: row.package_id,
+            match_kind: row.match_kind,
+            is_primary: row.is_primary != 0,
+        })
+        .min_by(|left, right| {
+            right.is_primary.cmp(&left.is_primary)
+                .then_with(|| left.match_kind.cmp(&right.match_kind))
+                .then_with(|| left.plate_label.cmp(&right.plate_label))
+        })
+}
+
+pub fn describe_show_plate_for_procedure(rows: Vec<CifpTppMatchRow>) -> Option<CifpTppMatch> {
+    select_preferred_cifp_tpp_match(rows)
+}
+
+pub fn describe_load_procedure_from_plate(
+    plan: &FlightPlan,
+    airport_id: &str,
+    procedure_id: &str,
+    kind: ProcedureKind,
+    options: ProcedureOptions,
+) -> AppResult<Option<ProcedureLoadTarget>> {
+    let plan = plan.clone().normalized();
+    let Some(terminal_airport_index) = plan.route_components.iter().enumerate().rev().find_map(|(index, component)| {
+        match component {
+            RouteComponent::Waypoint { waypoint: NavRef::Airport(code) } if code.trim() == airport_id.trim() => Some(index),
+            _ => None,
+        }
+    }) else {
+        return Ok(None);
+    };
+
+    if terminal_airport_index == 0 {
+        return Ok(None);
+    }
+
+    let replace_component_index = match plan.route_components.get(terminal_airport_index - 1) {
+        Some(RouteComponent::Procedure { procedure })
+            if procedure.kind == ProcedureKind::Approach && procedure.airport_id.0.trim() == airport_id.trim() =>
+        {
+            Some(terminal_airport_index - 1)
+        }
+        _ => None,
+    };
+
+    let preferred_choice = choose_obvious_procedure_choice(&plan, terminal_airport_index, &options);
+
+    Ok(Some(ProcedureLoadTarget {
+        airport_id: airport_id.trim().to_string(),
+        procedure_id: procedure_id.trim().to_string(),
+        kind,
+        replace_component_index,
+        start_component_index: terminal_airport_index - 1,
+        end_component_index: terminal_airport_index,
+        preferred_choice,
+        valid_choices: options.valid_choices,
+    }))
+}
+
+fn choose_obvious_procedure_choice(
+    plan: &FlightPlan,
+    terminal_airport_index: usize,
+    options: &ProcedureOptions,
+) -> Option<ProcedureSpecChoice> {
+    if options.valid_choices.len() == 1 {
+        return options.valid_choices.first().cloned();
+    }
+
+    let expected_enroute = plan
+        .route_components
+        .get(terminal_airport_index.checked_sub(1)?)
+        .and_then(|component| match component {
+            RouteComponent::Procedure { .. } => plan.route_components.get(terminal_airport_index.checked_sub(2)?),
+            _ => Some(component),
+        })
+        .and_then(component_terminal_nav_ref)
+        .and_then(nav_ref_identifier);
+
+    if let Some(expected_enroute) = expected_enroute {
+        let matching = options
+            .valid_choices
+            .iter()
+            .filter(|choice| choice.enroute_transition.as_deref() == Some(expected_enroute))
+            .cloned()
+            .collect::<Vec<_>>();
+        if matching.len() == 1 {
+            return matching.into_iter().next();
+        }
+    }
+
+    options
+        .valid_choices
+        .iter()
+        .filter(|choice| choice.enroute_transition.is_none() && choice.runway_transition.is_none())
+        .cloned()
+        .next()
+}
+
+fn component_terminal_nav_ref(component: &RouteComponent) -> Option<&NavRef> {
+    match component {
+        RouteComponent::Waypoint { waypoint } => Some(waypoint),
+        RouteComponent::Airway { airway } => Some(&airway.exit),
+        RouteComponent::Procedure { .. } => None,
+    }
+}
+
+fn nav_ref_identifier(nav_ref: &NavRef) -> Option<&str> {
+    match nav_ref {
+        NavRef::Airport(code) | NavRef::Navaid(code) | NavRef::Fix(code) => Some(code.as_str()),
+        NavRef::LatLon(_) => None,
+    }
 }
 
 pub fn materialize_procedure_from_records(

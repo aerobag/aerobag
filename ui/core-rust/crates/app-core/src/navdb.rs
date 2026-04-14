@@ -7,8 +7,8 @@ use crate::geometry::LatLon;
 use crate::navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
     AirwayExitSelection, AirwayFixPoint, AirwayPoint, AirwaySuggestion, MaterializedProcedure,
-    ProcedureLegRecord, ProcedureOptions, ProcedureSpecChoice, ProcedureSummary,
-    ProcedureVariantKey,
+    CifpTppMatchRow, ProcedureLegRecord, ProcedureOptions, ProcedureSpecChoice,
+    ProcedureSummary, ProcedureVariantKey,
 };
 use crate::planning::{
     interpret_path_termination, AirwaySegment, ConcretizedNavItem, NavRef,
@@ -317,6 +317,82 @@ pub fn choose_best_airway_plan(
             "unable to choose airway entry and exit for {} from the provided anchors",
             airway_name.trim()
         ),
+    })
+}
+
+pub fn load_cifp_tpp_matches_for_procedure(
+    db_path: &Path,
+    airport_id: &str,
+    cifp_id: &str,
+) -> AppResult<Vec<CifpTppMatchRow>> {
+    with_connection(db_path, |connection| {
+        let mut stmt = connection.prepare(
+            "SELECT
+                trim(airport_id),
+                trim(cifp_id),
+                trim(plate_id),
+                trim(plate_label),
+                trim(package_id),
+                CAST(public AS INTEGER),
+                CAST(priority AS INTEGER),
+                trim(match_kind),
+                CAST(is_primary AS INTEGER)
+             FROM cifp_tpp_matches
+             WHERE trim(airport_id) = trim(?1)
+               AND trim(cifp_id) = trim(?2)
+             ORDER BY CAST(is_primary AS INTEGER) DESC, CAST(priority AS INTEGER), trim(plate_label)",
+        )?;
+        let rows = stmt.query_map(params![airport_id, cifp_id], |row| {
+            Ok(CifpTppMatchRow {
+                airport_id: row.get::<_, String>(0)?,
+                cifp_id: row.get::<_, String>(1)?,
+                plate_id: row.get::<_, String>(2)?,
+                plate_label: row.get::<_, String>(3)?,
+                package_id: row.get::<_, String>(4)?,
+                public: row.get::<_, i32>(5)?,
+                priority: row.get::<_, i32>(6)?,
+                match_kind: row.get::<_, String>(7)?,
+                is_primary: row.get::<_, i32>(8)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+    })
+}
+
+pub fn load_cifp_tpp_matches_for_plate(
+    db_path: &Path,
+    plate_id: &str,
+) -> AppResult<Vec<CifpTppMatchRow>> {
+    with_connection(db_path, |connection| {
+        let mut stmt = connection.prepare(
+            "SELECT
+                trim(airport_id),
+                trim(cifp_id),
+                trim(plate_id),
+                trim(plate_label),
+                trim(package_id),
+                CAST(public AS INTEGER),
+                CAST(priority AS INTEGER),
+                trim(match_kind),
+                CAST(is_primary AS INTEGER)
+             FROM cifp_tpp_matches
+             WHERE trim(plate_id) = trim(?1)
+             ORDER BY trim(cifp_id), CAST(is_primary AS INTEGER) DESC, CAST(priority AS INTEGER), trim(plate_label)",
+        )?;
+        let rows = stmt.query_map(params![plate_id], |row| {
+            Ok(CifpTppMatchRow {
+                airport_id: row.get::<_, String>(0)?,
+                cifp_id: row.get::<_, String>(1)?,
+                plate_id: row.get::<_, String>(2)?,
+                plate_label: row.get::<_, String>(3)?,
+                package_id: row.get::<_, String>(4)?,
+                public: row.get::<_, i32>(5)?,
+                priority: row.get::<_, i32>(6)?,
+                match_kind: row.get::<_, String>(7)?,
+                is_primary: row.get::<_, i32>(8)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     })
 }
 

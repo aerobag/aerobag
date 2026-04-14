@@ -375,6 +375,7 @@ data class FlightPlanDisplayRowUiView(
     val canReorderComponent: Boolean,
     val canReorderUp: Boolean,
     val canReorderDown: Boolean,
+    val replaceProcedureComponentIndex: Int?,
     val startComponentIndex: Int?,
     val endComponentIndex: Int?,
     val originAnchor: NavRef?,

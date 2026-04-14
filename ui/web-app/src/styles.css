@@ -305,11 +305,12 @@ button {
   padding: 0;
   border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
   border-radius: var(--thumb-radius);
-  background:
+  background-color: var(--theme-button-bg);
+  background-image:
     linear-gradient(
       to bottom,
-      var(--theme-button-bg) 0,
-      var(--theme-button-bg) 50%,
+      transparent 0,
+      transparent 50%,
       var(--tray-accent, var(--theme-button-bg)) 50%,
       var(--tray-accent, var(--theme-button-bg)) 100%
     );
@@ -325,11 +326,12 @@ button {
 }
 
 .chartButton.isOpen {
-  background:
+  background-color: color-mix(in srgb, var(--theme-button-bg) 88%, white);
+  background-image:
     linear-gradient(
       to bottom,
-      color-mix(in srgb, var(--theme-button-bg) 88%, white) 0,
-      color-mix(in srgb, var(--theme-button-bg) 88%, white) 50%,
+      transparent 0,
+      transparent 50%,
       var(--tray-accent, color-mix(in srgb, var(--theme-button-bg) 88%, white)) 50%,
       var(--tray-accent, color-mix(in srgb, var(--theme-button-bg) 88%, white)) 100%
     );

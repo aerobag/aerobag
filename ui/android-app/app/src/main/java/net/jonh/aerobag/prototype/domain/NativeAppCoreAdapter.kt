@@ -636,7 +636,7 @@ private fun WireAppUiState.toUi() = AppUiState(
                 ContentReportItem(
                     label = item.label,
                     availability =
-                        ContentAvailabilityDetail(
+                        AvailabilityDetail(
                             availability = item.availability.availability.toUi(),
                             cycleCurrent = item.availability.cycle_current,
                             integrityOk = item.availability.integrity_ok,

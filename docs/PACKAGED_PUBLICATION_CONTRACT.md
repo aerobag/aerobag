@@ -1,8 +1,8 @@
-# Packaged Publication Contract
+# Publication Contract
 
 ## Goal
 
-Define a stable, flat, published artifact surface for:
+Define stable, flat, published artifact surfaces for:
 
 - snapshotting
 - UI discovery
@@ -15,13 +15,14 @@ The key rule is:
 - internal build paths such as `cache/nodes/...`, `private-work/...`, and `work/...` are not part of the contract
 
 
-## Root
+## Roots
 
-Published packaged artifacts live in:
+Published roots live in:
 
 - `published-packaged/`
+- `published-unpacked/`
 
-The final published surface is a single flat directory plus `orchestrator-logs/`.
+The packaged and unpacked surfaces are both flat at the top level.
 
 
 ## Canonical Filenames
@@ -103,6 +104,37 @@ Consumer rule:
 1. discover from `current_artifacts_YYYYMMDD.json`
 2. choose a cycle via `bundle_YYCC.json`
 3. fetch leaf artifacts named by that bundle
+
+
+## Unpacked Contract
+
+`published-unpacked/` mirrors `published-packaged/` with one transformation:
+
+- every non-zip published file remains a sibling file with the same filename
+- every published `foo.zip` becomes a sibling directory `foo/`
+- every zip member `X/Y/Z.ext` inside `foo.zip` appears at `foo/X/Y/Z.ext`
+
+Examples:
+
+- `published-packaged/data_2604.zip`
+  becomes
+  `published-unpacked/data_2604/`
+- `published-packaged/tpp_ne_2604.zip`
+  becomes
+  `published-unpacked/tpp_ne_2604/`
+- `published-packaged/obstacles_<sha256>.zip`
+  becomes
+  `published-unpacked/obstacles_<sha256>/`
+
+Examples of top-level unpacked files that remain files:
+
+- `current_artifacts_YYYYMMDD.json`
+- `bundle_YYCC.json`
+- `catalog_YYCC.json`
+- `resource_index_YYCC.json`
+
+The unpacked contract allows a consumer to browse the exact published content shape
+without re-extracting zip files locally.
 
 
 ## Manifest Rules
@@ -191,9 +223,8 @@ This contract does not require:
 
 - build cache paths to be flat
 - internal node outputs to be renamed
-- unpacked assets to use the same exact layout yet
 
-It only requires that the final published packaged surface be flat and stable.
+It only requires that the final published packaged and unpacked surfaces be flat and stable.
 
 
 ## Recommended Implementation
@@ -251,7 +282,13 @@ Per cycle:
    - outputs:
      - `current_artifacts_YYYYMMDD.json`
 
-Obstacle publishing can remain its own content-addressed publish node.
+4. add unpacked publish nodes
+   - per published zip, materialize a sibling unpacked directory using hardlinks
+     from the pre-zip source tree
+   - mirror non-zip published files as sibling files in `published-unpacked/`
+
+Obstacle publishing can remain its own content-addressed publish node, but the
+published obstacle zip should also have an unpacked sibling directory.
 
 
 ## Publish-Node Behavior
@@ -269,6 +306,8 @@ It should not:
 - expose `work/`
 - expose `private-work/`
 - expose node fingerprints in the published contract
+- emit internal cache markers into `published-unpacked/`
+- keep legacy directory trees like `published-unpacked/production/`
 
 
 ## Validation Rules
@@ -278,24 +317,18 @@ We should add a post-build validation step that checks:
 - every filename referenced by `current_artifacts_*.json` exists
 - every filename referenced by `bundle_YYCC.json` exists
 - every referenced path is flat, with no `/`
+- every published `*.zip` in `published-packaged/` has a sibling directory in `published-unpacked/`
+- every top-level non-zip public file in `published-packaged/` has a sibling file in `published-unpacked/`
 - no published manifest contains:
   - `cache/`
   - `private-work/`
   - `work/`
   - `published-packaged/`
+- `published-unpacked/` contains no:
+  - `.source-zip-sha256`
+  - `production/`
 
 That validator should fail the build.
-
-
-## Migration Notes
-
-Current known mismatch:
-
-- `catalog.json` and `resource-index.json` are still effectively published from internal `work/resource-index/...` paths
-- snapshot copy strips `work/`
-- so the current packaged contract is internally inconsistent
-
-The flat publish node above is the intended fix.
 
 
 ## Consumer Guidance
@@ -305,9 +338,11 @@ Consumers should assume:
 - filenames are stable and flat
 - `bundle_YYCC.json` is the authoritative per-cycle manifest
 - `current_artifacts_YYYYMMDD.json` is the authoritative top-level discovery document
+- `published-unpacked/` is a direct unzip-shaped mirror of `published-packaged/`
 
 Consumers should not:
 
 - crawl internal directories
 - infer publication structure from cache layout
 - follow historical `work/...` paths
+- rely on `build-manifest_*.json`, which is internal and not part of the public contract

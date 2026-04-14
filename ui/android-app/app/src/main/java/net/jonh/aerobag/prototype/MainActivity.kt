@@ -141,6 +141,7 @@ import net.jonh.aerobag.prototype.domain.MapViewportState
 import net.jonh.aerobag.prototype.domain.NativeAppCoreAdapter
 import net.jonh.aerobag.prototype.domain.NativeUiSession
 import net.jonh.aerobag.prototype.domain.NavRef
+import net.jonh.aerobag.prototype.domain.NavElementUiView
 import net.jonh.aerobag.prototype.domain.PointTilePayload
 import net.jonh.aerobag.prototype.domain.ProcedureKind
 import net.jonh.aerobag.prototype.domain.ProcedureOptions
@@ -1049,6 +1050,7 @@ private fun AerobagApp() {
         )
     }
     var pageHistory by remember { mutableStateOf<List<AppViewSnapshot>>(emptyList()) }
+    var planFocusRequest by remember { mutableStateOf(0) }
     var selectedMapId by remember { mutableStateOf(initialMapId(fixture)) }
     val uiSession = remember(appCore, fixture.resourceIndexJson) {
         appCore.createUiSession(
@@ -1097,9 +1099,8 @@ private fun AerobagApp() {
     LaunchedEffect(appCore, currentPlan) {
         planUiState = appCore.buildFlightPlanUi(currentPlan)
     }
-    val legSummary = remember(currentPlan) {
-        currentPlan.legs.firstOrNull()?.let { "${navRefLabel(it.from)} -> ${navRefLabel(it.to)} CRS 342" } ?: "NO LEG"
-    }
+    val sessionPlanUiState = sessionSnapshot.appUiState.activePlan ?: planUiState
+    val navElement = sessionPlanUiState?.guidance?.navElement ?: NavElementUiView("", null)
 
     LaunchedEffect(selectedMap.id) {
         mapViewport = preserveViewportForMap(mapViewport, selectedMap.mapView)
@@ -1140,6 +1141,11 @@ private fun AerobagApp() {
         }
         pageHistory = boundedHistory(pageHistory + currentSnapshot())
         page = nextPage
+    }
+
+    fun openPlanAndFocusActiveLeg() {
+        planFocusRequest += 1
+        navigateToPage(AppPage.Plan)
     }
 
     fun openChartsForAirport(airportId: String) {
@@ -1191,10 +1197,10 @@ private fun AerobagApp() {
                         )
                     },
                     onSelectPage = ::navigateToPage,
-                    onOpenPlan = { navigateToPage(AppPage.Plan) },
-                    legSummary = legSummary,
+                    onOpenPlan = ::openPlanAndFocusActiveLeg,
+                    navElement = navElement,
                     plan = currentPlan,
-                    planUiState = planUiState,
+                    planUiState = sessionPlanUiState,
                 )
             }
             AppPage.Plan -> {
@@ -1204,12 +1210,14 @@ private fun AerobagApp() {
                     page = page,
                     pageHistory = pageHistory,
                     uptimeLabel = uptimeLabel,
-                    legSummary = legSummary,
+                    navElement = navElement,
+                    focusActiveLegRequest = planFocusRequest,
                     samplePlan = currentPlan,
-                    planUiState = planUiState,
+                    planUiState = sessionPlanUiState,
                     planListState = planListState,
                     uiTheme = uiTheme,
                     onSelectPage = ::navigateToPage,
+                    onOpenPlan = ::openPlanAndFocusActiveLeg,
                     onOpenCharts = { airportId -> if (airportId != null) openChartsForAirport(airportId) },
                     onApplyMutation = { mutation ->
                         sessionSnapshot = uiSession.replaceFlightPlan(mutation.plan)
@@ -1227,6 +1235,7 @@ private fun AerobagApp() {
                     selectedChart = selectedChart,
                     uiTheme = uiTheme,
                     situation = appState.situation,
+                    navElement = navElement,
                     folderOpen = chartFolderOpen,
                     viewport = chartViewport,
                     onViewportChange = { chartViewport = it },
@@ -1240,6 +1249,7 @@ private fun AerobagApp() {
                         )
                     },
                     onSelectPage = ::navigateToPage,
+                    onOpenPlan = ::openPlanAndFocusActiveLeg,
                     onSelectAirport = { airportId ->
                         sessionSnapshot = uiSession.selectAirport(airportId)
                         val airport = chartAirportById[airportId]
@@ -1298,7 +1308,7 @@ private fun MapExplorerPage(
     onSelectMapId: (String) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
-    legSummary: String,
+    navElement: NavElementUiView,
     plan: net.jonh.aerobag.prototype.domain.FlightPlan,
     planUiState: FlightPlanUiState?,
 ) {
@@ -2110,20 +2120,13 @@ private fun MapExplorerPage(
             },
         )
 
-        Button(
+        NavElementDock(
+            navElement = navElement,
             onClick = onOpenPlan,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = ThumbGap)
-                .width(ThumbSize * 3f)
-                .height(ThumbSize * 0.67f),
-            shape = RoundedCornerShape(ThumbRadius),
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(legSummary, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
-                Text("° ° ^| ° °", style = MaterialTheme.typography.labelSmall)
-            }
-        }
+                .padding(bottom = ThumbGap),
+        )
 
         DebugDock(
             open = debugPanelOpen,
@@ -2163,12 +2166,14 @@ private fun FlightPlanPage(
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
-    legSummary: String,
+    navElement: NavElementUiView,
+    focusActiveLegRequest: Int,
     samplePlan: net.jonh.aerobag.prototype.domain.FlightPlan,
     planUiState: FlightPlanUiState?,
     planListState: LazyListState,
     uiTheme: UiTheme,
     onSelectPage: (AppPage) -> Unit,
+    onOpenPlan: () -> Unit,
     onOpenCharts: (String?) -> Unit,
     onApplyMutation: (FlightPlanUiMutation) -> Unit,
 ) {
@@ -2414,6 +2419,30 @@ private fun FlightPlanPage(
         Log.d("AerobagReorder", "topLevelOrder $topLevelOrderSummary")
     }
 
+    LaunchedEffect(focusActiveLegRequest, rows, guidance?.activeLeg) {
+        if (focusActiveLegRequest <= 0) {
+            return@LaunchedEffect
+        }
+        val activeLeg = guidance?.activeLeg ?: return@LaunchedEffect
+        val fromIndex =
+            rows.indexOfFirst { row ->
+                row.rowKind == "waypoint" && navRefsEqual(row.navRef, activeLeg.from)
+            }
+        if (fromIndex < 0) {
+            return@LaunchedEffect
+        }
+        val targetIndex =
+            ((fromIndex + 1) until rows.size).firstOrNull { index ->
+                val row = rows[index]
+                row.rowKind == "waypoint" && navRefsEqual(row.navRef, activeLeg.to)
+            } ?: rows.indexOfFirst { row ->
+                row.rowKind == "waypoint" && navRefsEqual(row.navRef, activeLeg.to)
+            }
+        if (targetIndex >= 0) {
+            planListState.animateScrollToItem(targetIndex)
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -2596,11 +2625,11 @@ private fun FlightPlanPage(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .height(ThumbSize * 1.2f)
+                .height(ThumbSize * 2.05f)
                 .padding(start = ThumbGap, end = ThumbGap, bottom = ThumbGap),
         ) {
             Row(
-                modifier = Modifier.align(Alignment.Center),
+                modifier = Modifier.align(Alignment.TopCenter),
                 horizontalArrangement = Arrangement.spacedBy(ThumbGap),
             ) {
                 CompactSquareButton(
@@ -2628,22 +2657,10 @@ private fun FlightPlanPage(
                     onClick = { onApplyMutation(appCore.unsuspendSequencingUi(samplePlan)) },
                 )
             }
-            Text(
-                text =
-                    guidance?.let {
-                        buildString {
-                            append(it.sequencingMode.name.uppercase())
-                            it.activeLeg?.let { leg ->
-                                append(" · ")
-                                append(navRefLabel(leg.from))
-                                append(" -> ")
-                                append(navRefLabel(leg.to))
-                            }
-                        }
-                    } ?: legSummary,
+            NavElementDock(
+                navElement = navElement,
+                onClick = onOpenPlan,
                 modifier = Modifier.align(Alignment.BottomCenter),
-                style = MaterialTheme.typography.labelMedium,
-                color = Color(0xFF52656D),
             )
         }
 
@@ -3066,11 +3083,13 @@ private fun ChartsPage(
     selectedChart: ChartAsset?,
     uiTheme: UiTheme,
     situation: Situation,
+    navElement: NavElementUiView,
     folderOpen: Boolean,
     viewport: net.jonh.aerobag.prototype.domain.ImageViewportState?,
     onViewportChange: (net.jonh.aerobag.prototype.domain.ImageViewportState?) -> Unit,
     onFolderOpenChange: (Boolean) -> Unit,
     onSelectPage: (AppPage) -> Unit,
+    onOpenPlan: () -> Unit,
     onSelectAirport: (String) -> Unit,
     onSelectChart: (String) -> Unit,
 ) {
@@ -3367,6 +3386,14 @@ private fun ChartsPage(
                 onSelectChart(it)
                 chartTrayOpen = false
             },
+        )
+
+        NavElementDock(
+            navElement = navElement,
+            onClick = onOpenPlan,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = ThumbGap),
         )
 
         DebugDock(
@@ -3737,6 +3764,100 @@ private fun MenuPanelRow(
             overflow = TextOverflow.Ellipsis,
             color = rowTextColor,
         )
+    }
+}
+
+@Composable
+private fun NavElementDock(
+    navElement: NavElementUiView,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val shape = RoundedCornerShape(ThumbRadius * 0.9f)
+    Surface(
+        modifier =
+            modifier
+                .width(ThumbSize * 3f)
+                .height(ThumbSize * 0.67f)
+                .then(
+                    if (onClick != null) {
+                        Modifier.clickable(
+                            indication = null,
+                            interactionSource = remember { MutableInteractionSource() },
+                        ) { onClick() }
+                    } else {
+                        Modifier
+                    },
+                ),
+        shape = shape,
+        color = uiTheme.controls.panelFg,
+        contentColor = Color.White,
+        border = BorderStroke(1.dp, uiTheme.controls.panelBorder),
+        shadowElevation = 6.dp,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(horizontal = ThumbSize * 0.14f),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Box(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = navElement.activeLegSummary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                )
+            }
+            Canvas(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+            ) {
+                val unit = size.width / 4.5f
+                val centerX = 2.25f * unit
+                val baselineY = size.height * 0.5f
+                val dotXs = listOf(0.25f, 1.25f, 3.25f, 4.25f).map { it * unit }
+                val dotRadius = unit * 0.04375f
+                val pointerPosition = navElement.cdiIndicatorDots
+                val pointerX = pointerPosition?.let { ((it + 2.25f).coerceIn(0.25f, 4.25f)) * unit }
+                if (pointerX != null) {
+                    val triangleHalfWidth = unit * 0.25f
+                    val triangleTopY = 0f
+                    val triangleBottomY = size.height
+                    drawPath(
+                        path =
+                            Path().apply {
+                                moveTo(pointerX - triangleHalfWidth, triangleBottomY)
+                                lineTo(pointerX + triangleHalfWidth, triangleBottomY)
+                                lineTo(pointerX, triangleTopY)
+                                close()
+                            },
+                        color = Color(0xFFD45A7A),
+                    )
+                }
+                drawLine(
+                    color = Color.White,
+                    start = Offset(centerX, 0f),
+                    end = Offset(centerX, size.height),
+                    strokeWidth = unit * 0.07f,
+                    cap = StrokeCap.Round,
+                )
+                dotXs.forEach { x ->
+                    drawCircle(
+                        color = Color.White,
+                        radius = dotRadius,
+                        center = Offset(x, baselineY),
+                        style = Stroke(width = unit * 0.05f),
+                    )
+                }
+            }
+        }
     }
 }
 

@@ -539,7 +539,7 @@ button {
   color: white;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: stretch;
   align-items: stretch;
   text-align: center;
 }
@@ -552,16 +552,21 @@ button {
 }
 
 .navElementTop {
-  min-height: calc(var(--thumb) * 0.18);
+  flex: 1 1 50%;
+  min-height: 0;
   font-size: calc(var(--thumb) * 0.18);
   font-weight: 700;
   letter-spacing: 0.04em;
   line-height: 1.05;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .navElementBottom {
   width: 100%;
-  height: calc(var(--thumb) * 0.26);
+  flex: 1 1 50%;
+  min-height: 0;
   overflow: visible;
   display: block;
 }

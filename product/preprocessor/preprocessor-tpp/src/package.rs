@@ -231,7 +231,11 @@ fn write_package_asset_manifest(
                 icao_airport_id: metadata.and_then(|value| value.icao_airport_id.clone()),
                 label: label.clone(),
                 asset_kind: "png".to_string(),
-                document_type: infer_plate_document_type(&label).to_string(),
+                document_type: infer_plate_document_type(
+                    metadata.map(|value| value.chart_code.as_str()),
+                    &label,
+                )
+                .to_string(),
                 asset_path: member.clone(),
                 thumbnail_path: Path::new("thumbnails")
                     .join(asset_path)
@@ -266,6 +270,7 @@ fn rendered_plate_label(chart_code: &str, state_id: &str, chart_name: &str) -> S
 
 #[derive(Debug, Clone)]
 struct TppAssetMetadata {
+    chart_code: String,
     icao_airport_id: Option<String>,
     procedure_uid: Option<String>,
 }
@@ -335,6 +340,7 @@ fn load_tpp_asset_metadata(
                     metadata.insert(
                         (apt_id.clone(), label),
                         TppAssetMetadata {
+                            chart_code: chart_code.trim().to_uppercase(),
                             icao_airport_id: icao_airport_id.clone(),
                             procedure_uid,
                         },
@@ -392,23 +398,41 @@ fn parse_plate_georef_comment(comment: &str) -> anyhow::Result<Option<PlateGeore
     }
 }
 
-fn infer_plate_document_type(label: &str) -> &'static str {
-    if label.starts_with("APD-") {
-        "airport_diagram"
-    } else if label.starts_with("MIN-") && label.contains("TAKEOFF MINIMUMS") {
-        "takeoff_minimums"
-    } else if label.starts_with("MIN-") && label.contains("ALTERNATE MINIMUMS") {
-        "alternate_minimums"
-    } else if label.starts_with("MIN-") {
-        "minimums"
-    } else if label.starts_with("IAP-") {
-        "approach"
-    } else if label.starts_with("DP-") || label.starts_with("ODP-") {
-        "departure"
-    } else if label.starts_with("STAR-") {
-        "star"
-    } else {
-        "other"
+fn infer_plate_document_type(chart_code: Option<&str>, label: &str) -> &'static str {
+    match chart_code.map(|value| value.trim().to_ascii_uppercase()) {
+        Some(code) if code == "APD" => "airport_diagram",
+        Some(code) if code == "IAP" => "approach",
+        Some(code) if code == "DP" || code == "ODP" => "departure",
+        Some(code) if code == "STAR" => "star",
+        Some(code) if code == "MIN" => {
+            if label.contains("TAKEOFF MINIMUMS") {
+                "takeoff_minimums"
+            } else if label.contains("ALTERNATE MINIMUMS") {
+                "alternate_minimums"
+            } else {
+                "minimums"
+            }
+        }
+        Some(_) => "other",
+        None => {
+            if label.starts_with("APD-") {
+                "airport_diagram"
+            } else if label.starts_with("MIN-") && label.contains("TAKEOFF MINIMUMS") {
+                "takeoff_minimums"
+            } else if label.starts_with("MIN-") && label.contains("ALTERNATE MINIMUMS") {
+                "alternate_minimums"
+            } else if label.starts_with("MIN-") {
+                "minimums"
+            } else if label.starts_with("IAP-") {
+                "approach"
+            } else if label.starts_with("DP-") || label.starts_with("ODP-") {
+                "departure"
+            } else if label.starts_with("STAR-") {
+                "star"
+            } else {
+                "other"
+            }
+        }
     }
 }
 

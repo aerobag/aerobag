@@ -355,6 +355,20 @@ fn missed_approach_display_path(
                             ) {
                                 elements.extend(directed_elements);
                             } else {
+                                if step.key.airport_id.trim() == "KSQI"
+                                    && step.key.procedure_id.trim() == "L25"
+                                {
+                                    eprintln!(
+                                        "ksqi_cf_fallback current=({:.6},{:.6}) current_hdg={:.1} fix=({:.6},{:.6}) course={:.1} turn_clockwise={}",
+                                        current_position.lat,
+                                        current_position.lon,
+                                        current_heading_deg,
+                                        fix.lat,
+                                        fix.lon,
+                                        course_deg,
+                                        turn_clockwise,
+                                    );
+                                }
                                 elements.push(LegDisplayElement::Segment {
                                     start: current_position,
                                     end: fix,
@@ -539,41 +553,73 @@ fn directed_cf_join_elements(
 ) -> Option<Vec<LegDisplayElement>> {
     let heading_change_deg = angular_difference_degrees(current_heading_deg, course_deg);
     if heading_change_deg >= 175.0 {
-        let turn_center = turn_center_for_heading_change(
-            current_position,
-            current_heading_deg,
-            turn_clockwise,
-            turn_radius_nm,
-        );
-        let turn_end = point_on_turn_center(
-            turn_center,
+        let intercept_heading_deg = intercept_heading_for_course(
             course_deg,
             turn_clockwise,
-            turn_radius_nm,
+            NOMINAL_COURSE_INTERCEPT_ANGLE_DEG,
         );
-        let rejoin_course_deg = bearing_from(turn_end, fix);
-        if angular_difference_degrees(rejoin_course_deg, course_deg) > 20.0 {
-            return None;
-        }
-        let mut elements = vec![LegDisplayElement::Arc {
-            center: turn_center,
-            radius_nm: turn_radius_nm,
-            start: current_position,
-            end: turn_end,
-            clockwise: turn_clockwise,
-            sweep_degrees: heading_sweep_degrees(
+        for extra_straight_nm in (0..=20).map(|index| index as f64 * 0.25) {
+            let turn_start = if extra_straight_nm <= 0.0 {
+                current_position
+            } else {
+                destination_point(current_position, current_heading_deg, extra_straight_nm)
+            };
+            let turn_center = turn_center_for_heading_change(
+                turn_start,
                 current_heading_deg,
-                course_deg,
                 turn_clockwise,
-            ),
-        }];
-        if distance_between_points_nm(turn_end, fix) > 0.05 {
-            elements.push(LegDisplayElement::Segment {
-                start: turn_end,
-                end: fix,
+                turn_radius_nm,
+            );
+            let turn_end = point_on_turn_center(
+                turn_center,
+                intercept_heading_deg,
+                turn_clockwise,
+                turn_radius_nm,
+            );
+            let intercept = intersect_heading_with_course(
+                turn_end,
+                intercept_heading_deg,
+                course_anchor,
+                course_deg,
+                fix,
+            )?;
+            if !cf_intercept_is_reasonable(intercept, course_anchor, course_deg, fix) {
+                continue;
+            }
+            let mut elements = Vec::new();
+            if distance_between_points_nm(current_position, turn_start) > 0.05 {
+                elements.push(LegDisplayElement::Segment {
+                    start: current_position,
+                    end: turn_start,
+                });
+            }
+            elements.push(LegDisplayElement::Arc {
+                center: turn_center,
+                radius_nm: turn_radius_nm,
+                start: turn_start,
+                end: turn_end,
+                clockwise: turn_clockwise,
+                sweep_degrees: heading_sweep_degrees(
+                    current_heading_deg,
+                    intercept_heading_deg,
+                    turn_clockwise,
+                ),
             });
+            if distance_between_points_nm(turn_end, intercept) > 0.05 {
+                elements.push(LegDisplayElement::Segment {
+                    start: turn_end,
+                    end: intercept,
+                });
+            }
+            if distance_between_points_nm(intercept, fix) > 0.05 {
+                elements.push(LegDisplayElement::Segment {
+                    start: intercept,
+                    end: fix,
+                });
+            }
+            return Some(elements);
         }
-        return Some(elements);
+        return None;
     }
     let initial_dir = bearing_unit_vector(current_heading_deg);
     let initial_normal = if turn_clockwise {

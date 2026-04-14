@@ -4378,6 +4378,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual visual inspection overlay for KSQI L25 ZADAK"]
+    fn writes_ksqi_l25_zadak_overlay_png() {
+        render_procedure_overlay_to_paths("KSQI", "L25", "ZADAK", "KSQI_L25_ZADAK", true);
+    }
+
+    #[test]
     #[ignore = "exhaustive approach materialization sweep over a supplied nav database"]
     fn materializes_all_approaches_without_crashing() {
         let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");

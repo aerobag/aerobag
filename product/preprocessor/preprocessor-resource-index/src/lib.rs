@@ -544,10 +544,11 @@ pub fn build_catalog(index: &ResourceIndex) -> Catalog {
         .iter()
         .filter_map(|plate| {
             let package_record = package_by_id.get(&plate.package_id)?;
+            let procedure_code = procedure_code_from_asset_path(&plate.asset_path);
             Some(CatalogPlateRecord {
                 id: CatalogPlateId {
                     airport_id: plate.airport_id.clone(),
-                    procedure_code: plate.id.clone(),
+                    procedure_code: procedure_code.clone(),
                     page: 1,
                     cycle: cycle.clone(),
                 },
@@ -555,7 +556,7 @@ pub fn build_catalog(index: &ResourceIndex) -> Catalog {
                 icao_airport_id: plate.icao_airport_id.clone(),
                 region_id: plate.region_id.clone(),
                 cycle: cycle.clone(),
-                procedure_code: plate.id.clone(),
+                procedure_code,
                 display_name: plate.label.clone(),
                 kind: plate.asset_kind.clone(),
                 georeferenced: plate.georef.is_some(),
@@ -1029,6 +1030,60 @@ fn canonicalize_airport_id(raw_id: &str, airport_aliases: &BTreeMap<String, Stri
         .unwrap_or_else(|| raw_id.to_string())
 }
 
+fn pretty_tpp_label(raw_label: &str, document_type: &str) -> String {
+    let label = raw_label.trim();
+    let Some((prefix, remainder)) = split_tpp_prefix(label) else {
+        return label.to_string();
+    };
+    match (prefix, document_type) {
+        ("APD", _) => "Airport Diagram".to_string(),
+        ("MIN", "alternate_minimums") => pretty_minimums(remainder, "ALTERNATE MINIMUMS", "Alt Minimums"),
+        ("MIN", "takeoff_minimums") => pretty_minimums(remainder, "TAKEOFF MINIMUMS", "Takeoff Minimums"),
+        ("MIN", _) => pretty_minimums(remainder, "MINIMUMS", "Minimums"),
+        ("IAP", _) => pretty_approach_label(remainder),
+        ("DP", _) | ("ODP", _) | ("STAR", _) => remainder.to_string(),
+        _ => label.to_string(),
+    }
+}
+
+fn split_tpp_prefix(label: &str) -> Option<(&str, &str)> {
+    let mut parts = label.splitn(3, '-');
+    let prefix = parts.next()?;
+    let state = parts.next()?;
+    let remainder = parts.next()?;
+    if prefix.is_empty() || state.len() != 2 || remainder.is_empty() {
+        return None;
+    }
+    Some((prefix, remainder))
+}
+
+fn pretty_minimums(remainder: &str, raw_prefix: &str, pretty_prefix: &str) -> String {
+    if let Some(suffix) = remainder.strip_prefix(raw_prefix) {
+        if let Some(page) = suffix.strip_prefix('-') {
+            return format!("{pretty_prefix} {page}");
+        }
+        return pretty_prefix.to_string();
+    }
+    remainder.replace('-', " ")
+}
+
+fn pretty_approach_label(remainder: &str) -> String {
+    remainder
+        .replace("RNAV (GPS)", "RNAV")
+        .replace(" RWY ", " ")
+        .replace(" OR ", " or ")
+        .replace(" AND ", " and ")
+}
+
+fn procedure_code_from_asset_path(asset_path: &str) -> String {
+    asset_path
+        .rsplit('/')
+        .next()
+        .and_then(|name| name.strip_suffix(".png"))
+        .unwrap_or(asset_path)
+        .to_string()
+}
+
 fn collect_plate_records(
     sources: &[AssetSource],
     airport_aliases: &BTreeMap<String, String>,
@@ -1042,7 +1097,7 @@ fn collect_plate_records(
             icao_airport_id: packaged.asset.icao_airport_id.clone(),
             region_id: packaged.region_id.clone(),
             package_id: packaged.package_id.clone(),
-            label: packaged.asset.label.clone(),
+            label: pretty_tpp_label(&packaged.asset.label, &packaged.asset.document_type),
             asset_kind: packaged.asset.asset_kind.clone(),
             document_type: packaged.asset.document_type.clone(),
             procedure_uid: packaged.asset.procedure_uid.clone(),
@@ -1067,7 +1122,7 @@ fn collect_csup_records(
             airport_id,
             region_id: packaged.region_id.clone(),
             package_id: packaged.package_id.clone(),
-            label: packaged.asset.label.clone(),
+            label: "Chart Supplement".to_string(),
             thumbnail_path: packaged.asset.thumbnail_path.clone(),
             asset_kind: packaged.asset.asset_kind.clone(),
             document_type: packaged.asset.document_type.clone(),
@@ -2135,6 +2190,7 @@ mod tests {
         assert_eq!(index.plates[0].id, "plate:KBOS:IAP-MA-ILS OR LOC RWY 04R.png");
         assert_eq!(index.plates[0].airport_id, "KBOS");
         assert_eq!(index.plates[0].package_id, "NE_TPP");
+        assert_eq!(index.plates[0].label, "ILS or LOC 04R");
         assert_eq!(index.plates[0].document_type, "approach");
         assert_eq!(
             index.plates[0].thumbnail_path,
@@ -2145,6 +2201,7 @@ mod tests {
         assert_eq!(index.csups[0].airport_id, "KBOS");
         assert_eq!(index.csups[0].region_id, "ne");
         assert_eq!(index.csups[0].package_id, "NE_CSUP");
+        assert_eq!(index.csups[0].label, "Chart Supplement");
         assert_eq!(index.csups[0].document_type, "csup");
         assert_eq!(
             index.csups[0].thumbnail_path,

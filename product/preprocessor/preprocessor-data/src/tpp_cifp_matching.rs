@@ -961,7 +961,7 @@ fn classify_relation(
                 airport_id: airport_id.clone(),
                 cifp_id: cid.clone(),
                 plate_id: claimer.plate_id.clone(),
-                plate_label: claimer.plate_label.clone(),
+                plate_label: pretty_match_plate_label(&claimer.plate_label),
                 package_id: claimer.package_id.clone(),
                 public: claimer.public,
                 priority: claimer.priority,
@@ -984,7 +984,7 @@ fn classify_relation(
                     airport_id: airport_id.clone(),
                     cifp_id: cid.clone(),
                     plate_id: claimer.plate_id.clone(),
-                    plate_label: claimer.plate_label.clone(),
+                    plate_label: pretty_match_plate_label(&claimer.plate_label),
                     package_id: claimer.package_id.clone(),
                     public: claimer.public,
                     priority: claimer.priority,
@@ -1017,6 +1017,49 @@ fn classify_relation(
         examples,
         published_rows,
     }
+}
+
+fn pretty_match_plate_label(label: &str) -> String {
+    let trimmed = label.trim();
+    if let Some(captures) = IAP_PREFIX_RE.captures(trimmed) {
+        return captures
+            .get(1)
+            .map(|m| {
+                m.as_str()
+                    .replace("RNAV (GPS)", "RNAV")
+                    .replace(" RWY ", " ")
+                    .replace(" OR ", " or ")
+                    .replace(" AND ", " and ")
+            })
+            .unwrap_or_else(|| trimmed.to_string());
+    }
+    let Some((prefix, remainder)) = split_non_iap_tpp_prefix(trimmed) else {
+        return trimmed.to_string();
+    };
+    match prefix {
+        "APD" => "Airport Diagram".to_string(),
+        "MIN" if remainder.starts_with("ALTERNATE MINIMUMS-") => {
+            format!("Alt Minimums {}", remainder.trim_start_matches("ALTERNATE MINIMUMS-"))
+        }
+        "MIN" if remainder == "ALTERNATE MINIMUMS" => "Alt Minimums".to_string(),
+        "MIN" if remainder.starts_with("TAKEOFF MINIMUMS-") => {
+            format!("Takeoff Minimums {}", remainder.trim_start_matches("TAKEOFF MINIMUMS-"))
+        }
+        "MIN" if remainder == "TAKEOFF MINIMUMS" => "Takeoff Minimums".to_string(),
+        "DP" | "ODP" | "STAR" => remainder.to_string(),
+        _ => trimmed.to_string(),
+    }
+}
+
+fn split_non_iap_tpp_prefix(label: &str) -> Option<(&str, &str)> {
+    let mut parts = label.splitn(3, '-');
+    let prefix = parts.next()?;
+    let state = parts.next()?;
+    let remainder = parts.next()?;
+    if state.len() != 2 {
+        return None;
+    }
+    Some((prefix, remainder))
 }
 
 pub fn audit_tpp_cifp_matching(main_db: &Path, tpp_package_zips: &[PathBuf]) -> Result<TppCifpAuditReport> {

@@ -281,7 +281,7 @@ fn chart_asset_for_plate(airport_id: &str, plate: &ResourcePlate) -> DerivedChar
         package_id: plate.package_id.clone(),
         label: plate.label.clone(),
         kind: "plate".to_string(),
-        folder_category: folder_category("plate", &plate.label),
+        folder_category: folder_category("plate", raw_label_from_asset_path(&plate.asset_path)),
         source_asset_path: plate.asset_path.clone(),
         asset_path: format!("chart-assets/{airport_id}/{filename}"),
         asset_url: format!("/chart-assets/{airport_id}/{filename}"),
@@ -343,6 +343,14 @@ fn folder_category(kind: &str, label: &str) -> String {
     }
 }
 
+fn raw_label_from_asset_path(asset_path: &str) -> &str {
+    asset_path
+        .rsplit('/')
+        .next()
+        .and_then(|name| name.strip_suffix(".png"))
+        .unwrap_or(asset_path)
+}
+
 fn folder_category_rank(category: &str) -> usize {
     match category {
         "airport-diagram" => 0,
@@ -382,7 +390,7 @@ mod tests {
                 package_id: "NW_TPP".to_string(),
                 asset_path: "plates/SEA/APD-WA-AIRPORT DIAGRAM.png".to_string(),
                 thumbnail_path: Some("thumbs/SEA/APD-WA-AIRPORT DIAGRAM.png".to_string()),
-                label: "APD-WA-AIRPORT DIAGRAM".to_string(),
+                label: "Airport Diagram".to_string(),
                 asset_kind: "plate".to_string(),
             }],
             csups: vec![ResourceCsup {
@@ -443,7 +451,7 @@ mod tests {
                     package_id: "NW_TPP".to_string(),
                     asset_path: "plates/SEA/APD-WA-AIRPORT DIAGRAM.png".to_string(),
                     thumbnail_path: None,
-                    label: "APD-WA-AIRPORT DIAGRAM".to_string(),
+                    label: "Airport Diagram".to_string(),
                     asset_kind: "plate".to_string(),
                 },
                 ResourcePlate {
@@ -452,7 +460,7 @@ mod tests {
                     package_id: "NW_TPP".to_string(),
                     asset_path: "plates/PAE/DP-WA-RNDR TWO.png".to_string(),
                     thumbnail_path: None,
-                    label: "DP-WA-RNDR TWO".to_string(),
+                    label: "RNDR TWO".to_string(),
                     asset_kind: "plate".to_string(),
                 },
             ],

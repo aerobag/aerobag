@@ -226,17 +226,18 @@ fun deriveWireCatalog(resourceIndex: WireResourceIndex): WireCatalog {
 
     val plates = resourceIndex.plates.mapNotNull { plate ->
         val packageRecord = packageById[plate.package_id] ?: return@mapNotNull null
+        val procedureCode = plate.asset_path.substringAfterLast('/').removeSuffix(".png")
         WirePlateRecord(
             id = WirePlateId(
                 airport_id = plate.airport_id,
-                procedure_code = plate.id,
+                procedure_code = procedureCode,
                 page = 1,
                 cycle = cycle,
             ),
             airport_id = plate.airport_id,
             region_id = plate.region_id,
             cycle = cycle,
-            procedure_code = plate.id,
+            procedure_code = procedureCode,
             display_name = plate.label,
             kind = plate.asset_kind,
             georeferenced = true,

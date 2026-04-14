@@ -61,7 +61,7 @@ type SurfaceSize = {
   height: number;
 };
 
-type AppPage = "map" | "plan" | "charts";
+type AppPage = "map" | "plan" | "charts" | "settings";
 
 type ChartFamilyId = "sec" | "tac" | "enr-l" | "enr-h";
 
@@ -106,6 +106,7 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> 
   { id: "map", label: "CHART", launcherLabel: "CHT" },
   { id: "charts", label: "PLATE", launcherLabel: "PLT" },
   { id: "plan", label: "PLAN", launcherLabel: "PLN" },
+  { id: "settings", label: "SETTINGS", launcherLabel: "STGS" },
 ];
 
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
@@ -870,6 +871,17 @@ export default function App() {
             await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
           situation={appState.situation}
+        />
+      </div>
+
+      <div className={`pageLayer${page === "settings" ? " isActive" : ""}`} aria-hidden={page !== "settings"}>
+        <SettingsPage
+          page={page}
+          pageHistory={pageHistory}
+          uptimeLabel={uptimeLabel}
+          sessionPlanUiState={appUiState.active_plan}
+          onSelectPage={navigateToPage}
+          onOpenPlan={() => navigateToPage("plan")}
         />
       </div>
     </main>
@@ -3273,6 +3285,63 @@ function ChartsPage(props: {
           </DebugDock>
         </div>
 
+      </div>
+    </section>
+  );
+}
+
+function SettingsPage(props: {
+  page: AppPage;
+  pageHistory: AppViewSnapshot[];
+  uptimeLabel: string;
+  sessionPlanUiState: FlightPlanUiState | null;
+  onSelectPage: (page: AppPage) => void;
+  onOpenPlan: () => void;
+}) {
+  const { page, pageHistory, uptimeLabel, sessionPlanUiState, onSelectPage, onOpenPlan } = props;
+  const trayGroup = useModalTrayGroup(["page"] as const);
+  const [debugOpen, setDebugOpen] = useState(false);
+
+  return (
+    <section className="appPage planPage">
+      {trayGroup.scrimOpen ? <TrayScrim ariaLabel="Close page tray" onClose={trayGroup.closeAll} /> : null}
+
+      <div className="chartDock">
+        <TrayDock
+          launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "STGS"}
+          open={trayGroup.isOpen("page")}
+          blocked={false}
+          onToggle={() => trayGroup.toggle("page")}
+          ariaLabel="Page"
+          options={pageOptions.map((option) => ({
+            id: option.id,
+            label: option.label,
+            active: option.id === page,
+            onSelect: () => {
+              onSelectPage(option.id);
+              trayGroup.close("page");
+            },
+          }))}
+        />
+      </div>
+
+      <button
+        type="button"
+        className="navElement"
+        onPointerDown={stopPointer}
+        onPointerUp={stopPointer}
+        onDoubleClick={stopDoubleClick}
+        onClick={onOpenPlan}
+      >
+        <NavElementView navElement={sessionPlanUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
+      </button>
+
+      <div className="debugDock">
+        <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>
+          <div className="debugLine">page {pageLabel(page)}</div>
+          <div className="debugLine">up {uptimeLabel}</div>
+          <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: "", selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
+        </DebugDock>
       </div>
     </section>
   );

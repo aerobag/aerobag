@@ -169,6 +169,7 @@ impl<'de> Deserialize<'de> for ResolvedLeg {
                     role: ProcedureSegmentRole::Common,
                     path_termination: PathTermination::Other(String::new()),
                     leg_sequence: 0,
+                    display_path: None,
                 })
             }),
         })

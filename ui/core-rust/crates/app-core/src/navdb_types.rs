@@ -127,18 +127,12 @@ pub struct ProcedureLegMaterializationRecord {
     pub sequence: i32,
     pub nav_ref: Option<NavRef>,
     pub nav_position: Option<LatLon>,
-    #[serde(default)]
     pub nav_magnetic_variation_deg: Option<f64>,
-    #[serde(default)]
     pub defining_nav_ref: Option<NavRef>,
-    #[serde(default)]
     pub defining_nav_position: Option<LatLon>,
-    #[serde(default)]
     pub defining_nav_magnetic_variation_deg: Option<f64>,
     pub airport_magnetic_variation_deg: Option<f64>,
-    #[serde(default)]
     pub altitude_1_ft: Option<f64>,
-    #[serde(default)]
     pub altitude_2_ft: Option<f64>,
     pub path_termination: String,
     pub path_termination_kind: PathTermination,
@@ -183,10 +177,21 @@ impl<'de> Deserialize<'de> for ProcedureLegMaterializationRecord {
             key: raw.key,
             sequence: raw.sequence,
             nav_ref: raw.nav_ref,
+            nav_position: None,
+            nav_magnetic_variation_deg: None,
+            defining_nav_ref: None,
+            defining_nav_position: None,
+            defining_nav_magnetic_variation_deg: None,
+            airport_magnetic_variation_deg: None,
+            altitude_1_ft: None,
+            altitude_2_ft: None,
             path_termination_kind: raw
                 .path_termination_kind
                 .unwrap_or_else(|| interpret_path_termination(&raw.path_termination)),
             path_termination: raw.path_termination,
+            turn_direction: None,
+            magnetic_course_deg: None,
+            route_distance_or_time: None,
         })
     }
 }

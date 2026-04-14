@@ -92,6 +92,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -2170,9 +2171,10 @@ private fun FlightPlanPage(
     onOpenCharts: (String?) -> Unit,
     onApplyMutation: (FlightPlanUiMutation) -> Unit,
 ) {
-    val planWaypointTrayStart = ThumbSize * 2.6f + ThumbGap * 2
+    val planWaypointTrayStart = ThumbGap + PlanArrowLane + ThumbSize * 2.5f + PlanGridGap
     val density = LocalDensity.current
     var selectedWaypointIndex by remember { mutableStateOf<Int?>(null) }
+    var selectedWaypointTrayAnchor by remember { mutableStateOf<Dp?>(null) }
     var pendingSelectedRowKey by remember { mutableStateOf<String?>(null) }
     var reorderOpen by remember { mutableStateOf(false) }
     var pageTrayOpen by remember { mutableStateOf(false) }
@@ -2204,6 +2206,79 @@ private fun FlightPlanPage(
     var structuredSurfaceBounds by remember { mutableStateOf<Rect?>(null) }
     val structuredRowBounds = remember { mutableStateMapOf<String, Rect>() }
     val selectedRow = selectedWaypointIndex?.let(rows::getOrNull)
+    val selectedRowBounds = selectedRow?.let { structuredRowBounds[it.id] }
+    val waypointTrayStart = planWaypointTrayStart
+    fun estimateTrayHeightDp(rowCount: Int): Dp =
+        ThumbGap * 2 + (ThumbSize + 3.dp) * rowCount
+    val waypointTrayTop =
+        run {
+            val defaultTop = ThumbSize + ThumbGap * 1.25f
+            val anchoredTop = selectedWaypointTrayAnchor
+            if (anchoredTop != null) {
+                val paneTop = defaultTop + ThumbSize * 0.1f
+                val estimatedRows =
+                    when {
+                        reorderOpen -> 2
+                        procedurePicker != null -> {
+                            val picker = procedurePicker!!
+                            when {
+                                picker.loading || picker.error != null -> 2
+                                picker.selectedProcedureId == null -> 1 + picker.procedures.size
+                                else -> 1 + (picker.options?.validChoices?.size ?: 0)
+                            }
+                        }
+                        airwayPicker != null -> {
+                            val picker = airwayPicker!!
+                            when {
+                                picker.loading || picker.error != null -> 2
+                                picker.selectedAirwayName == null -> 1 + picker.suggestions.size
+                                picker.selectedEntryIndex == null -> 1 + picker.entries.size
+                                else -> 1 + picker.exits.size
+                            }
+                        }
+                        else -> selectedRow?.actions?.size ?: 1
+                    }.coerceAtLeast(1)
+                val estimatedHeight = estimateTrayHeightDp(estimatedRows)
+                val paneBottom = with(density) { (structuredSurfaceBounds?.height ?: 0f).toDp() } + defaultTop
+                val maxTop = (paneBottom - estimatedHeight - ThumbSize * 0.1f).coerceAtLeast(paneTop)
+                return@run anchoredTop.coerceIn(paneTop, maxTop)
+            }
+            val surfaceBounds = structuredSurfaceBounds
+            val rowBounds = selectedRowBounds
+            if (surfaceBounds == null || rowBounds == null) {
+                defaultTop
+            } else {
+                val desiredTop = with(density) { (rowBounds.top - surfaceBounds.top).toDp() } + defaultTop
+                val paneTop = defaultTop + ThumbSize * 0.1f
+                val estimatedRows =
+                    when {
+                        reorderOpen -> 2
+                        procedurePicker != null -> {
+                            val picker = procedurePicker!!
+                            when {
+                                picker.loading || picker.error != null -> 2
+                                picker.selectedProcedureId == null -> 1 + picker.procedures.size
+                                else -> 1 + (picker.options?.validChoices?.size ?: 0)
+                            }
+                        }
+                        airwayPicker != null -> {
+                            val picker = airwayPicker!!
+                            when {
+                                picker.loading || picker.error != null -> 2
+                                picker.selectedAirwayName == null -> 1 + picker.suggestions.size
+                                picker.selectedEntryIndex == null -> 1 + picker.entries.size
+                                else -> 1 + picker.exits.size
+                            }
+                        }
+                        else -> selectedRow.actions.size
+                    }.coerceAtLeast(1)
+                val estimatedHeight = estimateTrayHeightDp(estimatedRows)
+                val paneBottom = with(density) { (surfaceBounds.bottom - surfaceBounds.top).toDp() } + defaultTop
+                val maxTop = (paneBottom - estimatedHeight - ThumbSize * 0.1f).coerceAtLeast(paneTop)
+                desiredTop.coerceIn(paneTop, maxTop)
+            }
+        }
+    val waypointTrayWidth = ThumbSize * 2.35f
     val structuredArrow =
         remember(rows, guidance?.activeLeg, structuredSurfaceBounds, structuredRowBounds.toMap(), density) {
             val surfaceBounds = structuredSurfaceBounds ?: return@remember null
@@ -2311,6 +2386,7 @@ private fun FlightPlanPage(
 
     fun closePanels() {
         selectedWaypointIndex = null
+        selectedWaypointTrayAnchor = null
         pendingSelectedRowKey = null
         reorderOpen = false
         airwayPicker = null
@@ -2404,6 +2480,12 @@ private fun FlightPlanPage(
                                         structuredRowBounds = structuredRowBounds,
                                         onWaypointClick = {
                                             trayOpenedAtMs = SystemClock.elapsedRealtime()
+                                            selectedWaypointTrayAnchor =
+                                                structuredSurfaceBounds?.let { surface ->
+                                                    structuredRowBounds[block.row.id]?.top?.let { top ->
+                                                        with(density) { (top - surface.top).toDp() } + (ThumbSize + ThumbGap * 1.25f)
+                                                    }
+                                                }
                                             selectedWaypointIndex = block.index
                                             pendingSelectedRowKey = block.row.selectionKey
                                             reorderOpen = false
@@ -2421,6 +2503,12 @@ private fun FlightPlanPage(
                                         structuredRowBounds = structuredRowBounds,
                                         onHeaderClick = {
                                             trayOpenedAtMs = SystemClock.elapsedRealtime()
+                                            selectedWaypointTrayAnchor =
+                                                structuredSurfaceBounds?.let { surface ->
+                                                    structuredRowBounds[block.header.id]?.top?.let { top ->
+                                                        with(density) { (top - surface.top).toDp() } + (ThumbSize + ThumbGap * 1.25f)
+                                                    }
+                                                }
                                             selectedWaypointIndex = block.headerIndex
                                             pendingSelectedRowKey = block.header.selectionKey
                                             reorderOpen = false
@@ -2431,6 +2519,14 @@ private fun FlightPlanPage(
                                         selectedWaypointIndex = selectedWaypointIndex,
                                         onChildClick = { childIndex ->
                                             trayOpenedAtMs = SystemClock.elapsedRealtime()
+                                            selectedWaypointTrayAnchor =
+                                                structuredSurfaceBounds?.let { surface ->
+                                                    block.children.firstOrNull { it.first == childIndex }?.second?.id?.let { rowId ->
+                                                        structuredRowBounds[rowId]?.top?.let { top ->
+                                                            with(density) { (top - surface.top).toDp() } + (ThumbSize + ThumbGap * 1.25f)
+                                                        }
+                                                    }
+                                                }
                                             selectedWaypointIndex = childIndex
                                             pendingSelectedRowKey = block.children.firstOrNull { it.first == childIndex }?.second?.selectionKey
                                             reorderOpen = false
@@ -2573,9 +2669,9 @@ private fun FlightPlanPage(
                 MenuPanel(
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(top = ThumbSize + ThumbGap * 2, start = planWaypointTrayStart, end = ThumbGap)
+                        .padding(top = waypointTrayTop, start = waypointTrayStart, end = ThumbGap)
                         .zIndex(5f),
-                    width = Dp.Unspecified,
+                    width = waypointTrayWidth,
                 ) {
                     MenuPanelRow(label = "APPROACH ${picker.airportId}", active = false, enabled = false, onSelect = {})
                     if (picker.error != null) {
@@ -2664,9 +2760,9 @@ private fun FlightPlanPage(
                 MenuPanel(
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(top = ThumbSize + ThumbGap * 2, start = planWaypointTrayStart, end = ThumbGap)
+                        .padding(top = waypointTrayTop, start = waypointTrayStart, end = ThumbGap)
                         .zIndex(5f),
-                    width = Dp.Unspecified,
+                    width = waypointTrayWidth,
                 ) {
                     MenuPanelRow(
                         label = buildString {
@@ -2786,52 +2882,48 @@ private fun FlightPlanPage(
                         .fillMaxSize()
                         .zIndex(5f),
                 ) {
-                    val trayWidth = minOf(ThumbSize * 4f, maxWidth - planWaypointTrayStart - ThumbGap)
-                    val trayHeight = maxHeight - (ThumbSize + ThumbGap * 2) - ThumbSize
+                    val trayWidth = minOf(ThumbSize * 4f, maxWidth - waypointTrayStart - ThumbGap)
                     MenuPanel(
                         modifier = Modifier
                             .align(Alignment.TopStart)
-                            .padding(top = ThumbSize + ThumbGap * 2, start = planWaypointTrayStart, end = ThumbGap, bottom = ThumbSize)
-                            .height(trayHeight),
+                            .padding(top = waypointTrayTop, start = waypointTrayStart, end = ThumbGap),
                         width = trayWidth,
                     ) {
                         Column(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(ThumbGap),
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
-                            Column(verticalArrangement = Arrangement.spacedBy(ThumbGap)) {
-                                CompactSquareButton(
-                                    label = "Up",
-                                    modifier = Modifier.size(ThumbSize),
-                                    enabled = selectedRow.componentIndex != null && selectedRow.canReorderUp,
-                                    onClick = {
-                                        selectedRow.componentIndex?.let {
-                                            Log.d(
-                                                "AerobagReorder",
-                                                "request move dir=-1 selectedIndex=$selectedWaypointIndex key=${selectedRow.selectionKey} component=$it row=${selectedRow.label} orderBefore=$topLevelOrderSummary",
-                                            )
-                                            pendingSelectedRowKey = selectedRow.selectionKey
-                                            onApplyMutation(appCore.moveComponentUi(samplePlan, it, -1))
-                                        }
-                                    },
-                                )
-                                CompactSquareButton(
-                                    label = "Down",
-                                    modifier = Modifier.size(ThumbSize),
-                                    enabled = selectedRow.componentIndex != null && selectedRow.canReorderDown,
-                                    onClick = {
-                                        selectedRow.componentIndex?.let {
-                                            Log.d(
-                                                "AerobagReorder",
-                                                "request move dir=1 selectedIndex=$selectedWaypointIndex key=${selectedRow.selectionKey} component=$it row=${selectedRow.label} orderBefore=$topLevelOrderSummary",
-                                            )
-                                            pendingSelectedRowKey = selectedRow.selectionKey
-                                            onApplyMutation(appCore.moveComponentUi(samplePlan, it, 1))
-                                        }
-                                    },
-                                )
-                            }
+                            CompactSquareButton(
+                                label = "Up",
+                                modifier = Modifier.size(ThumbSize),
+                                enabled = selectedRow.componentIndex != null && selectedRow.canReorderUp,
+                                onClick = {
+                                    selectedRow.componentIndex?.let {
+                                        Log.d(
+                                            "AerobagReorder",
+                                            "request move dir=-1 selectedIndex=$selectedWaypointIndex key=${selectedRow.selectionKey} component=$it row=${selectedRow.label} orderBefore=$topLevelOrderSummary",
+                                        )
+                                        pendingSelectedRowKey = selectedRow.selectionKey
+                                        onApplyMutation(appCore.moveComponentUi(samplePlan, it, -1))
+                                    }
+                                },
+                            )
+                            CompactSquareButton(
+                                label = "Down",
+                                modifier = Modifier.size(ThumbSize),
+                                enabled = selectedRow.componentIndex != null && selectedRow.canReorderDown,
+                                onClick = {
+                                    selectedRow.componentIndex?.let {
+                                        Log.d(
+                                            "AerobagReorder",
+                                            "request move dir=1 selectedIndex=$selectedWaypointIndex key=${selectedRow.selectionKey} component=$it row=${selectedRow.label} orderBefore=$topLevelOrderSummary",
+                                        )
+                                        pendingSelectedRowKey = selectedRow.selectionKey
+                                        onApplyMutation(appCore.moveComponentUi(samplePlan, it, 1))
+                                    }
+                                },
+                            )
                         }
                     }
                 }
@@ -2839,9 +2931,9 @@ private fun FlightPlanPage(
                 MenuPanel(
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(top = ThumbSize + ThumbGap * 2, start = planWaypointTrayStart, end = ThumbGap)
+                        .padding(top = waypointTrayTop, start = waypointTrayStart, end = ThumbGap)
                         .zIndex(5f),
-                    width = Dp.Unspecified,
+                    width = waypointTrayWidth,
                 ) {
                     selectedRow.actions.forEach { action ->
                         MenuPanelRow(
@@ -3797,11 +3889,7 @@ private fun FlightPlanDataRow(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val childRow = row.depth > 0
-    val targetIndent = when {
-        !childRow -> (row.depth * 18).dp
-        reorderOpen -> (row.depth * 24).dp
-        else -> (row.depth * 18).dp
-    }
+    val targetIndent = ThumbSize * (row.depth * 0.5f)
     val indent by animateDpAsState(targetValue = targetIndent, label = "planRowIndent")
     val rowOpacity by animateFloatAsState(
         targetValue = if (reorderOpen && childRow) 0.72f else 1f,
@@ -3840,7 +3928,12 @@ private fun FlightPlanDataRow(
         Box(modifier = Modifier.width(ThumbSize * 2.5f).height(cellHeight)) {
             CompactSquareButton(
                 label = row.label,
-                modifier = Modifier.fillMaxSize().padding(start = indent).alpha(rowOpacity),
+                modifier =
+                    Modifier
+                        .height(cellHeight)
+                        .width(ThumbSize * 2.5f - indent)
+                        .align(Alignment.CenterEnd)
+                        .alpha(rowOpacity),
                 centered = false,
                 textStartPadding = 10.dp,
                 backgroundColor = defaultButtonColor,
@@ -3872,20 +3965,31 @@ private fun FlightPlanGroupBlock(
     onChildClick: (Int) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
+    val groupOverhang = 8.dp
+    val cornerRadius = ThumbRadius + 2.dp
     Column(
         verticalArrangement = Arrangement.spacedBy(PlanGridGap),
         modifier = Modifier
-            .padding(PlanGridGap / 2)
-            .background(
-                color = uiTheme.controls.panelBg.copy(alpha = 0.82f),
-                shape = RoundedCornerShape(ThumbRadius + 2.dp),
-            )
-            .border(
-                width = 2.dp,
-                color = uiTheme.controls.panelBorder.copy(alpha = 0.95f),
-                shape = RoundedCornerShape(ThumbRadius + 2.dp),
-            )
-            .padding(8.dp),
+            .fillMaxWidth()
+            .padding(vertical = PlanGridGap / 2)
+            .drawBehind {
+                val overhangPx = groupOverhang.toPx()
+                val radiusPx = cornerRadius.toPx()
+                drawRoundRect(
+                    color = uiTheme.controls.panelBg.copy(alpha = 0.82f),
+                    topLeft = Offset(-overhangPx, 0f),
+                    size = Size(size.width + overhangPx, size.height),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(radiusPx, radiusPx),
+                )
+                drawRoundRect(
+                    color = uiTheme.controls.panelBorder.copy(alpha = 0.95f),
+                    topLeft = Offset(-overhangPx, 0f),
+                    size = Size(size.width + overhangPx, size.height),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(radiusPx, radiusPx),
+                    style = Stroke(width = 2.dp.toPx()),
+                )
+            }
+            .padding(top = 8.dp, end = 8.dp, bottom = 8.dp),
     ) {
         FlightPlanDataRow(
             row = header,

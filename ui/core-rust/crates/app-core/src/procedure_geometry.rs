@@ -280,31 +280,52 @@ fn missed_approach_display_path(
                 let course_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
                 if let Some(defining_nav) = step.defining_nav_position {
                     if let Some(current_heading_deg) = current_course_deg {
-                        let intercept = intersect_heading_with_course(
-                            current_position,
-                            current_heading_deg,
-                            defining_nav,
-                            course_deg,
-                            fix,
-                        )?;
-                        if cf_intercept_is_reasonable(intercept, defining_nav, course_deg, fix) {
-                            if distance_between_points_nm(current_position, intercept) > 0.05 {
+                        if let Some(turn_clockwise) = cf_turn_direction(step) {
+                            if let Some(directed_elements) = directed_cf_join_elements(
+                                current_position,
+                                current_heading_deg,
+                                turn_clockwise,
+                                defining_nav,
+                                course_deg,
+                                fix,
+                                missed_approach_turn_radius_nm(),
+                            ) {
+                                elements.extend(directed_elements);
+                            } else {
                                 elements.push(LegDisplayElement::Segment {
                                     start: current_position,
-                                    end: intercept,
-                                });
-                            }
-                            if distance_between_points_nm(intercept, fix) > 0.05 {
-                                elements.push(LegDisplayElement::Segment {
-                                    start: intercept,
                                     end: fix,
                                 });
                             }
                         } else {
-                            elements.push(LegDisplayElement::Segment {
-                                start: current_position,
-                                end: fix,
-                            });
+                            let intercept = intersect_heading_with_course(
+                                current_position,
+                                current_heading_deg,
+                                defining_nav,
+                                course_deg,
+                                fix,
+                            )?;
+                            let intercept_is_reasonable =
+                                cf_intercept_is_reasonable(intercept, defining_nav, course_deg, fix);
+                            if intercept_is_reasonable {
+                                if distance_between_points_nm(current_position, intercept) > 0.05 {
+                                    elements.push(LegDisplayElement::Segment {
+                                        start: current_position,
+                                        end: intercept,
+                                    });
+                                }
+                                if distance_between_points_nm(intercept, fix) > 0.05 {
+                                    elements.push(LegDisplayElement::Segment {
+                                        start: intercept,
+                                        end: fix,
+                                    });
+                                }
+                            } else {
+                                elements.push(LegDisplayElement::Segment {
+                                    start: current_position,
+                                    end: fix,
+                                });
+                            }
                         }
                     } else {
                         elements.push(LegDisplayElement::Segment {
@@ -436,6 +457,133 @@ fn tangent_rejoin_from_turn(
         .map(|(turn_end, rejoin_course_deg, _)| (turn_end, rejoin_course_deg))
 }
 
+fn cf_turn_direction(step: &ProcedureLegMaterializationRecord) -> Option<bool> {
+    match step.turn_direction.as_deref().unwrap_or("").trim() {
+        "L" => Some(false),
+        "R" => Some(true),
+        _ => None,
+    }
+}
+
+fn directed_cf_join_elements(
+    current_position: LatLon,
+    current_heading_deg: f64,
+    turn_clockwise: bool,
+    course_anchor: LatLon,
+    course_deg: f64,
+    fix: LatLon,
+    turn_radius_nm: f64,
+) -> Option<Vec<LegDisplayElement>> {
+    let heading_change_deg = angular_difference_degrees(current_heading_deg, course_deg);
+    if heading_change_deg >= 175.0 {
+        let turn_center = turn_center_for_heading_change(
+            current_position,
+            current_heading_deg,
+            turn_clockwise,
+            turn_radius_nm,
+        );
+        let turn_end = point_on_turn_center(
+            turn_center,
+            course_deg,
+            turn_clockwise,
+            turn_radius_nm,
+        );
+        let rejoin_course_deg = bearing_from(turn_end, fix);
+        if angular_difference_degrees(rejoin_course_deg, course_deg) > 20.0 {
+            return None;
+        }
+        let mut elements = vec![LegDisplayElement::Arc {
+            center: turn_center,
+            radius_nm: turn_radius_nm,
+            start: current_position,
+            end: turn_end,
+            clockwise: turn_clockwise,
+            sweep_degrees: heading_sweep_degrees(
+                current_heading_deg,
+                course_deg,
+                turn_clockwise,
+            ),
+        }];
+        if distance_between_points_nm(turn_end, fix) > 0.05 {
+            elements.push(LegDisplayElement::Segment {
+                start: turn_end,
+                end: fix,
+            });
+        }
+        return Some(elements);
+    }
+    let initial_dir = bearing_unit_vector(current_heading_deg);
+    let initial_normal = if turn_clockwise {
+        right_normal(initial_dir)
+    } else {
+        left_normal(initial_dir)
+    };
+    let final_dir = bearing_unit_vector(course_deg);
+    let final_normal = if turn_clockwise {
+        right_normal(final_dir)
+    } else {
+        left_normal(final_dir)
+    };
+    let base_turn_end = offset_latlon(
+        current_position,
+        (initial_normal.0 - final_normal.0) * turn_radius_nm,
+        (initial_normal.1 - final_normal.1) * turn_radius_nm,
+    );
+    let turn_end = intersect_lines(base_turn_end, initial_dir, course_anchor, final_dir)?;
+    let straight_nm = projection_along_course_nm(current_position, turn_end, initial_dir);
+    if straight_nm < -0.05 {
+        return None;
+    }
+    if !cf_intercept_is_reasonable(turn_end, course_anchor, course_deg, fix) {
+        return None;
+    }
+    let turn_start = if straight_nm <= 0.05 {
+        current_position
+    } else {
+        destination_point(current_position, current_heading_deg, straight_nm)
+    };
+    let turn_center = turn_center_for_heading_change(
+        turn_start,
+        current_heading_deg,
+        turn_clockwise,
+        turn_radius_nm,
+    );
+    let turn_end_from_center = point_on_turn_center(
+        turn_center,
+        course_deg,
+        turn_clockwise,
+        turn_radius_nm,
+    );
+    let mut elements = Vec::new();
+    if distance_between_points_nm(current_position, turn_start) > 0.05 {
+        elements.push(LegDisplayElement::Segment {
+            start: current_position,
+            end: turn_start,
+        });
+    }
+    if distance_between_points_nm(turn_start, turn_end_from_center) > 0.05 {
+        elements.push(LegDisplayElement::Arc {
+            center: turn_center,
+            radius_nm: turn_radius_nm,
+            start: turn_start,
+            end: turn_end_from_center,
+            clockwise: turn_clockwise,
+            sweep_degrees: heading_sweep_degrees(
+                current_heading_deg,
+                course_deg,
+                turn_clockwise,
+            ),
+        });
+    }
+    if distance_between_points_nm(turn_end_from_center, fix) > 0.05 {
+        elements.push(LegDisplayElement::Segment {
+            start: turn_end_from_center,
+            end: fix,
+        });
+    }
+    Some(elements)
+}
+
 fn cf_intercept_is_reasonable(
     intercept: LatLon,
     defining_nav: LatLon,
@@ -446,6 +594,27 @@ fn cf_intercept_is_reasonable(
     let intercept_projection = projection_along_course_nm(defining_nav, intercept, course_unit);
     let fix_projection = projection_along_course_nm(defining_nav, fix, course_unit);
     intercept_projection <= fix_projection + 0.05
+}
+
+fn intersect_lines(
+    line1_anchor: LatLon,
+    line1_dir: (f64, f64),
+    line2_anchor: LatLon,
+    line2_dir: (f64, f64),
+) -> Option<LatLon> {
+    let origin = line2_anchor;
+    let line1_anchor_en = to_local_en(origin, line1_anchor);
+    let cross = line1_dir.0 * line2_dir.1 - line1_dir.1 * line2_dir.0;
+    if cross.abs() < 1e-6 {
+        return None;
+    }
+    let delta = (-line1_anchor_en.0, -line1_anchor_en.1);
+    let t = (delta.0 * line2_dir.1 - delta.1 * line2_dir.0) / cross;
+    Some(offset_latlon(
+        line1_anchor,
+        line1_dir.0 * t,
+        line1_dir.1 * t,
+    ))
 }
 
 fn projection_along_course_nm(origin: LatLon, point: LatLon, course_unit: (f64, f64)) -> f64 {

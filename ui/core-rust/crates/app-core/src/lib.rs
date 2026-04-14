@@ -4301,6 +4301,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual visual inspection overlay for KNVD VOR-A ROFBE"]
+    fn writes_knvd_vora_rofbe_overlay_png() {
+        render_procedure_overlay_to_paths("KNVD", "VOR-A", "ROFBE", "KNVD_VOR-A_ROFBE", true);
+    }
+
+    #[test]
     #[ignore = "exhaustive approach materialization sweep over a supplied nav database"]
     fn materializes_all_approaches_without_crashing() {
         let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
@@ -5194,7 +5200,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual batch overlay generation for 20 random procedures"]
+    #[ignore = "manual batch overlay generation for 100 random procedures"]
     fn writes_random_procedure_plots_batch() {
         let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
         let unpacked_root = latest_snapshot_unpacked_root();
@@ -5207,7 +5213,8 @@ mod tests {
             !georef_plates.is_empty(),
             "expected georeferenced plate pngs in package-assets manifests"
         );
-        let georef_plate_paths = georef_plates.keys().cloned().collect::<Vec<_>>();
+        let mut georef_plate_paths = georef_plates.keys().cloned().collect::<Vec<_>>();
+        georef_plate_paths.sort();
         let plate_index = build_plate_index(&georef_plate_paths);
 
         let mut candidates = Vec::<(u64, String, String, PathBuf)>::new();
@@ -5234,8 +5241,8 @@ mod tests {
         candidates.sort_by_key(|entry| entry.0);
         eprintln!("found {} mappable procedure candidates", candidates.len());
         assert!(
-            candidates.len() >= 20,
-            "expected at least 20 mappable procedure plots, found {}",
+            candidates.len() >= 100,
+            "expected at least 100 mappable procedure plots, found {}",
             candidates.len()
         );
 
@@ -5256,7 +5263,7 @@ mod tests {
         let mut materialize_failed = 0usize;
         let mut failed_examples = Vec::new();
         for (_, airport_id, procedure_id, plate_path) in candidates.into_iter() {
-            if written >= 20 {
+            if written >= 100 {
                 break;
             }
             attempted += 1;
@@ -5299,7 +5306,17 @@ mod tests {
                 }
                 continue;
             };
-            let Some(choice) = options.valid_choices.first().cloned() else {
+            let Some(choice) = (!options.valid_choices.is_empty()).then(|| {
+                let choice_key = format!(
+                    "choice|{}|{}|{}",
+                    airport_id,
+                    procedure_id,
+                    plate_path.display()
+                );
+                let choice_index =
+                    (pseudo_random_score(&choice_key) as usize) % options.valid_choices.len();
+                options.valid_choices[choice_index].clone()
+            }) else {
                 no_choices += 1;
                 if failed_examples.len() < 10 {
                     failed_examples.push(format!(
@@ -5311,99 +5328,6 @@ mod tests {
                 }
                 continue;
             };
-            let records = load_browser_style_procedure_materialization_records(
-                fixture_db_path(),
-                &airport_id,
-                &procedure_id,
-            );
-            let Ok(materialized) = materialize_procedure_from_records(
-                &airport_id,
-                &procedure_id,
-                ProcedureKind::Approach,
-                None,
-                choice.enroute_transition.clone(),
-                0,
-                rows,
-                records,
-            )
-            else {
-                materialize_failed += 1;
-                if failed_examples.len() < 10 {
-                    failed_examples.push(format!(
-                        "materialize_failed {} {} {}",
-                        airport_id,
-                        procedure_id,
-                        plate_path.display()
-                    ));
-                }
-                continue;
-            };
-            let Some(plate) = georef_plates.get(&plate_path).cloned() else {
-                if failed_examples.len() < 10 {
-                    failed_examples.push(format!(
-                        "missing_georef {} {} {}",
-                        airport_id,
-                        procedure_id,
-                        plate_path.display()
-                    ));
-                }
-                continue;
-            };
-
-            let base_canvas = match image::open(&plate.path).expect("open plate png") {
-                DynamicImage::ImageRgba8(image) => image,
-                other => other.to_rgba8(),
-            };
-            let mut canvas = base_canvas.clone();
-            for leg in &materialized.resolved_legs {
-                let elements = if let Some(path) = leg
-                    .procedure_provenance
-                    .as_ref()
-                    .and_then(|provenance| provenance.display_path.as_ref())
-                {
-                    path.elements.clone()
-                } else {
-                    let Some(start) =
-                        browser_style_nav_position_for_ref(&connection, &airport_id, &leg.from)
-                    else {
-                        continue;
-                    };
-                    let Some(end) =
-                        browser_style_nav_position_for_ref(&connection, &airport_id, &leg.to)
-                    else {
-                        continue;
-                    };
-                    vec![LegDisplayElement::Segment { start, end }]
-                };
-                if let Some(path) = leg
-                    .procedure_provenance
-                    .as_ref()
-                    .and_then(|provenance| provenance.display_path.as_ref())
-                {
-                    for element in &path.elements {
-                        let points = generic_plate_points_for_display_elements(
-                            &plate,
-                            std::slice::from_ref(element),
-                        );
-                        if points.len() < 2 {
-                            continue;
-                        }
-                        draw_polyline(&mut canvas, &points, Rgba([0, 0, 0, 140]), 4);
-                        let stroke = match element {
-                            LegDisplayElement::Segment { .. } => Rgba([255, 140, 0, 255]),
-                            LegDisplayElement::Arc { .. } => Rgba([0, 210, 120, 255]),
-                        };
-                        draw_polyline(&mut canvas, &points, stroke, 2);
-                    }
-                } else {
-                    let points = generic_plate_points_for_display_elements(&plate, &elements);
-                    if points.len() >= 2 {
-                        draw_polyline(&mut canvas, &points, Rgba([0, 0, 0, 140]), 4);
-                        draw_polyline(&mut canvas, &points, Rgba([255, 79, 207, 255]), 2);
-                    }
-                }
-            }
-
             let transition_label = choice
                 .enroute_transition
                 .clone()
@@ -5415,27 +5339,146 @@ mod tests {
                 written + 1,
                 sanitize_filename_component(airport_id.trim()),
                 sanitize_filename_component(procedure_id.trim()),
-                transition_label,
+                transition_label.clone(),
             );
-            let png_path = output_dir.join(format!("{stem}.png"));
-            canvas.save(&png_path).expect("write procedure plot");
-            let note_path = output_dir.join(format!("{stem}.txt"));
-            fs::write(
-                note_path,
-                format!(
-                    "airport={}\nprocedure={}\nenroute_transition={}\nplate={}\n",
+            let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let records = load_browser_style_procedure_materialization_records(
+                    fixture_db_path(),
+                    &airport_id,
+                    &procedure_id,
+                );
+                let materialized = materialize_procedure_from_records(
+                    &airport_id,
+                    &procedure_id,
+                    ProcedureKind::Approach,
+                    None,
+                    choice.enroute_transition.clone(),
+                    0,
+                    rows,
+                    records,
+                )
+                .expect("materialize procedure plot");
+                let plate = georef_plates
+                    .get(&plate_path)
+                    .cloned()
+                    .expect("load procedure plot georef");
+
+                let base_canvas = match image::open(&plate.path).expect("open plate png") {
+                    DynamicImage::ImageRgba8(image) => image,
+                    other => other.to_rgba8(),
+                };
+                let mut canvas = base_canvas.clone();
+                for leg in &materialized.resolved_legs {
+                    let elements = if let Some(path) = leg
+                        .procedure_provenance
+                        .as_ref()
+                        .and_then(|provenance| provenance.display_path.as_ref())
+                    {
+                        path.elements.clone()
+                    } else {
+                        let Some(start) = browser_style_nav_position_for_ref(
+                            &connection,
+                            &airport_id,
+                            &leg.from,
+                        ) else {
+                            continue;
+                        };
+                        let Some(end) = browser_style_nav_position_for_ref(
+                            &connection,
+                            &airport_id,
+                            &leg.to,
+                        ) else {
+                            continue;
+                        };
+                        vec![LegDisplayElement::Segment { start, end }]
+                    };
+                    if let Some(path) = leg
+                        .procedure_provenance
+                        .as_ref()
+                        .and_then(|provenance| provenance.display_path.as_ref())
+                    {
+                        for element in &path.elements {
+                            let points = generic_plate_points_for_display_elements(
+                                &plate,
+                                std::slice::from_ref(element),
+                            );
+                            if points.len() < 2 {
+                                continue;
+                            }
+                            draw_polyline(&mut canvas, &points, Rgba([0, 0, 0, 140]), 4);
+                            let stroke = match element {
+                                LegDisplayElement::Segment { .. } => Rgba([255, 140, 0, 255]),
+                                LegDisplayElement::Arc { .. } => Rgba([0, 210, 120, 255]),
+                            };
+                            draw_polyline(&mut canvas, &points, stroke, 2);
+                        }
+                    } else {
+                        let points = generic_plate_points_for_display_elements(&plate, &elements);
+                        if points.len() >= 2 {
+                            draw_polyline(&mut canvas, &points, Rgba([0, 0, 0, 140]), 4);
+                            draw_polyline(&mut canvas, &points, Rgba([255, 79, 207, 255]), 2);
+                        }
+                    }
+                }
+
+                let png_path = output_dir.join(format!("{stem}.png"));
+                canvas.save(&png_path).expect("write procedure plot");
+                let note_path = output_dir.join(format!("{stem}.txt"));
+                fs::write(
+                    note_path,
+                    format!(
+                        "airport={}\nprocedure={}\nenroute_transition={}\nplate={}\n",
+                        airport_id,
+                        procedure_id,
+                        choice
+                            .enroute_transition
+                            .clone()
+                            .unwrap_or_else(|| "none".to_string()),
+                        plate.path.display()
+                    ),
+                )
+                .expect("write procedure plot note");
+                assert_eq!(base_canvas.width() as f64, plate.width);
+                assert_eq!(base_canvas.height() as f64, plate.height);
+            }));
+            if render_result.is_err() {
+                let fail_stem = format!(
+                    "FAIL_{}_{}_{}",
+                    sanitize_filename_component(airport_id.trim()),
+                    sanitize_filename_component(procedure_id.trim()),
+                    transition_label,
+                );
+                eprintln!(
+                    "failure candidate airport={} procedure={} enroute_transition={} plate={}",
                     airport_id,
                     procedure_id,
                     choice
                         .enroute_transition
                         .clone()
                         .unwrap_or_else(|| "none".to_string()),
-                    plate.path.display()
-                ),
-            )
-            .expect("write procedure plot note");
-            assert_eq!(base_canvas.width() as f64, plate.width);
-            assert_eq!(base_canvas.height() as f64, plate.height);
+                    plate_path.display()
+                );
+                render_procedure_overlay_to_paths(
+                    &airport_id,
+                    &procedure_id,
+                    choice
+                        .enroute_transition
+                        .as_deref()
+                        .unwrap_or(""),
+                    &fail_stem,
+                    true,
+                );
+                panic!(
+                    "batch plot failed for airport={} procedure={} enroute_transition={} fail_artifact=/tmp/procedure-plots/{}.png",
+                    airport_id,
+                    procedure_id,
+                    choice
+                        .enroute_transition
+                        .clone()
+                        .unwrap_or_else(|| "none".to_string()),
+                    fail_stem
+                );
+            }
             written += 1;
             if written % 10 == 0 {
                 eprintln!("wrote {} procedure plots", written);
@@ -5444,8 +5487,8 @@ mod tests {
         for example in failed_examples {
             eprintln!("example: {example}");
         }
-        assert_eq!(written, 20, "expected to write exactly 20 procedure plots");
-        eprintln!("wrote 20 procedure plots to {}", output_dir.display());
+        assert_eq!(written, 100, "expected to write exactly 100 procedure plots");
+        eprintln!("wrote 100 procedure plots to {}", output_dir.display());
     }
 
     #[test]

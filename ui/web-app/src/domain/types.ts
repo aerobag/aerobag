@@ -556,7 +556,6 @@ export type ResourceIndexJson = {
     id: string;
     family_id: ChartFamilyId | "tpp" | "csup";
     region_id: RegionId;
-    artifact_path: string;
     size_bytes: number;
     checksum_sha256: string;
   }>;

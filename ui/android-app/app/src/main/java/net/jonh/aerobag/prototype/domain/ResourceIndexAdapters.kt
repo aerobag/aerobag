@@ -29,7 +29,6 @@ data class WireResourcePackage(
     val id: String,
     val family_id: String,
     val region_id: WireRegionId,
-    val artifact_path: String,
     val size_bytes: Long,
     val checksum_sha256: String,
 )

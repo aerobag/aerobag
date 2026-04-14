@@ -158,7 +158,8 @@ pub struct CatalogSupplementRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NavDbRef {
-    pub artifact_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
     pub sqlite_entry: String,
     pub cycle_code: Option<String>,
     pub version_label: Option<String>,
@@ -196,7 +197,8 @@ pub struct ResourcePackage {
     pub id: String,
     pub family_id: String,
     pub region_id: String,
-    pub artifact_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
     pub size_bytes: u64,
     pub checksum_sha256: String,
     pub cycle_code: Option<String>,
@@ -367,7 +369,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         generated_at_utc: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         temporal_summary,
         nav_db: NavDbRef {
-            artifact_path: relativize_to_artifact_root(&request.nav_db_zip, &artifact_root),
+            artifact_path: Some(relativize_to_artifact_root(&request.nav_db_zip, &artifact_root)),
             sqlite_entry: "main.db".to_string(),
             cycle_code: nav_cycle_code,
             version_label: nav_db_version_label(&request.nav_db_zip, &nav_temporal),
@@ -644,8 +646,14 @@ fn validate_packaged_assets(
 ) -> anyhow::Result<()> {
     let package_map = packages
         .iter()
-        .map(|package| (package.id.clone(), artifact_root.join(&package.artifact_path)))
-        .collect::<BTreeMap<_, _>>();
+        .map(|package| {
+            let artifact_path = package
+                .artifact_path
+                .as_ref()
+                .with_context(|| format!("package {} missing internal artifact_path", package.id))?;
+            Ok::<_, anyhow::Error>((package.id.clone(), artifact_root.join(artifact_path)))
+        })
+        .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
     let package_members = package_map
         .iter()
         .map(|(package_id, package_path)| {
@@ -944,7 +952,7 @@ fn package_from_record(
         id: package_id_from_manifest_name(&record.manifest),
         family_id: family_id.to_string(),
         region_id: record.region.to_ascii_lowercase(),
-        artifact_path: relativize_to_artifact_root(&artifact_path, artifact_root),
+        artifact_path: Some(relativize_to_artifact_root(&artifact_path, artifact_root)),
         size_bytes,
         checksum_sha256: record.zip_sha256.clone(),
         cycle_code: temporal.and_then(|value| value.cycle_code.clone()),

@@ -61,6 +61,17 @@ val productBuildFile = resolvedArtifactRoot.resolve("published-packaged").resolv
 val productBuildPayload by lazy { JsonSlurper().parse(productBuildFile) as Map<*, *> }
 val productCycle = productBuildPayload["cycle"] as? String
     ?: throw GradleException("missing cycle in ${productBuildFile.absolutePath}")
+val bundlePackageFilenamesById by lazy {
+    val packages = productBuildPayload["packages"] as? List<*> ?: emptyList<Any?>()
+    packages
+        .filterIsInstance<Map<*, *>>()
+        .mapNotNull { entry ->
+            val id = entry["id"] as? String ?: return@mapNotNull null
+            val filename = entry["filename"] as? String ?: return@mapNotNull null
+            id to filename
+        }
+        .toMap()
+}
 
 fun resolvePublishedFilename(rawPath: String): File {
     val relative = File(rawPath)
@@ -172,9 +183,9 @@ val stagePrototypeSectionalPackages by tasks.registering {
             .map {
                 val packageId = it["id"] as? String
                     ?: throw GradleException("missing package id in ${resourceIndexFile.absolutePath}")
-                val artifactPath = it["artifact_path"] as? String
-                    ?: throw GradleException("missing artifact_path for $packageId in ${resourceIndexFile.absolutePath}")
-                resolvePublishedFilename(artifactPath) to "$packageId.zip"
+                val filename = bundlePackageFilenamesById[packageId]
+                    ?: throw GradleException("missing bundle filename for $packageId in ${productBuildFile.absolutePath}")
+                resolvePublishedFilename(filename) to "$packageId.zip"
             }
         val outputDir = generatedPrototypeSeedPackagesDir.get().dir("sectional-packages").asFile
         delete(outputDir)
@@ -244,9 +255,9 @@ val stagePrototypeChartPackages by tasks.registering {
             .map {
                 val packageId = it["id"] as? String
                     ?: throw GradleException("missing package id in ${resourceIndexFile.absolutePath}")
-                val artifactPath = it["artifact_path"] as? String
-                    ?: throw GradleException("missing artifact_path for $packageId in ${resourceIndexFile.absolutePath}")
-                resolvePublishedFilename(artifactPath) to "$packageId.zip"
+                val filename = bundlePackageFilenamesById[packageId]
+                    ?: throw GradleException("missing bundle filename for $packageId in ${productBuildFile.absolutePath}")
+                resolvePublishedFilename(filename) to "$packageId.zip"
             }
         val outputDir = generatedPrototypeSeedChartPackagesDir.get().dir("chart-packages").asFile
         delete(outputDir)

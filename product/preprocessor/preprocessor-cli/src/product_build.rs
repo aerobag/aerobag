@@ -2605,7 +2605,7 @@ fn build_bundle_manifest(
             let filename = canonical_package_filename(
                 &package.family_id,
                 &package.region_id,
-                Path::new(&package.artifact_path)
+                Path::new(&package_path)
                     .file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or_default(),
@@ -3369,16 +3369,12 @@ fn rewrite_public_resource_index(
     data_filename: &str,
     package_artifacts: &[BundlePackageArtifact],
 ) -> ResourceIndex {
-    let package_filenames = package_artifacts
-        .iter()
-        .map(|package| (package.id.clone(), package.filename.clone()))
-        .collect::<BTreeMap<_, _>>();
     let mut public_index = index.clone();
-    public_index.nav_db.artifact_path = data_filename.to_string();
+    let _ = data_filename;
+    let _ = package_artifacts;
+    public_index.nav_db.artifact_path = None;
     for package in &mut public_index.packages {
-        if let Some(filename) = package_filenames.get(&package.id) {
-            package.artifact_path = filename.clone();
-        }
+        package.artifact_path = None;
     }
     public_index
 }

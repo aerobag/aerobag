@@ -70,6 +70,21 @@ def load_product_build() -> dict:
 PRODUCT_BUILD = load_product_build()
 
 
+def bundle_package_filenames_by_id() -> dict[str, str]:
+    result: dict[str, str] = {}
+    for package in PRODUCT_BUILD.get("packages", []):
+        if not isinstance(package, dict):
+            continue
+        package_id = package.get("id")
+        filename = package.get("filename")
+        if isinstance(package_id, str) and isinstance(filename, str) and filename:
+            result[package_id] = filename
+    return result
+
+
+BUNDLE_PACKAGE_FILENAMES = bundle_package_filenames_by_id()
+
+
 def resolve_published_filename(raw_path: str) -> Path:
     relative = Path(raw_path)
     if relative.is_absolute():
@@ -208,10 +223,10 @@ def family_tiles_roots() -> dict[str, Path]:
         package_id = package.get("id")
         if not isinstance(package_id, str) or package_id in roots:
             continue
-        artifact_path = package.get("artifact_path")
-        if not isinstance(artifact_path, str) or not artifact_path:
+        package_filename = BUNDLE_PACKAGE_FILENAMES.get(package_id)
+        if not isinstance(package_filename, str) or not package_filename:
             continue
-        tiles_root = unpacked_dir_from_relative_zip(artifact_path) / "tiles"
+        tiles_root = unpacked_dir_from_relative_zip(package_filename) / "tiles"
         if tiles_root.is_dir():
             roots[package_id] = tiles_root
     expected = {
@@ -227,11 +242,8 @@ def family_tiles_roots() -> dict[str, Path]:
 
 def unpacked_package_dirs_by_id() -> dict[str, Path]:
     directories: dict[str, Path] = {}
-    for package in RESOURCE_INDEX.get("packages", []):
-        package_id = package.get("id")
-        artifact_path = package.get("artifact_path")
-        if isinstance(package_id, str) and isinstance(artifact_path, str):
-            directories[package_id] = unpacked_dir_from_relative_zip(artifact_path)
+    for package_id, package_filename in BUNDLE_PACKAGE_FILENAMES.items():
+        directories[package_id] = unpacked_dir_from_relative_zip(package_filename)
     return directories
 
 

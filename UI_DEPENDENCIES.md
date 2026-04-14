@@ -216,10 +216,10 @@ Android build config note:
 - Compose Material 3 UI dependencies do not by themselves provide XML theme resources for the manifest theme
 - for a Compose app using an XML theme such as `Theme.Material3.*`, also add:
   - `com.google.android.material:material`
-- Android package staging now also needs the artifact-root rebasing logic
+- Android package staging now resolves package filenames from the active bundle manifest
   - [ui/android-app/app/build.gradle.kts](/root/aerobag/ui/android-app/app/build.gradle.kts)
-    resolves stale absolute `artifact_path` values from `resource-index` onto:
-    - `<source-root>/../../aerobag-artifacts/product-builds/...`
+    resolves package files from:
+    - the active `bundle_*.json` under the configured artifact root
   - override supported by Gradle staging too:
     - `AEROBAG_ARTIFACT_ROOT`
 

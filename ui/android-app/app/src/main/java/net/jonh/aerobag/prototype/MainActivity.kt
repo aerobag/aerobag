@@ -2439,7 +2439,16 @@ private fun FlightPlanPage(
                 row.rowKind == "waypoint" && navRefsEqual(row.navRef, activeLeg.to)
             }
         if (targetIndex >= 0) {
-            planListState.animateScrollToItem(targetIndex)
+            val visibleItem = planListState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == targetIndex }
+            val viewportStart = planListState.layoutInfo.viewportStartOffset
+            val viewportEnd = planListState.layoutInfo.viewportEndOffset
+            val fullyVisible =
+                visibleItem != null &&
+                    visibleItem.offset >= viewportStart &&
+                    visibleItem.offset + visibleItem.size <= viewportEnd
+            if (!fullyVisible) {
+                planListState.animateScrollToItem(targetIndex)
+            }
         }
     }
 

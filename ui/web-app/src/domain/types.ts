@@ -372,6 +372,25 @@ export type ProcedureLoadTarget = {
   valid_choices: ProcedureSpecChoice[];
 };
 
+export type PlateProcedureLoadCandidateInput = {
+  airport_id: string;
+  cifp_id: string;
+  match_rows: CifpTppMatchRow[];
+  distinct_rows: ProcedureDistinctRow[];
+};
+
+export type ProcedureLoadOption = {
+  label: string;
+  airport_id: string;
+  procedure_id: string;
+  kind: ProcedureKind;
+  replace_component_index: number | null;
+  start_component_index: number;
+  end_component_index: number;
+  runway_transition: string | null;
+  enroute_transition: string | null;
+};
+
 export type FlightPlanUiMutation = {
   plan: FlightPlan;
   ui_state: FlightPlanUiState;

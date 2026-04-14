@@ -34,6 +34,7 @@ declare module "@generated/app_wasm.js" {
   export const insert_procedure_materialized_ui: (...args: unknown[]) => string;
   export const replace_procedure_materialized_ui: (...args: unknown[]) => string;
   export const describe_procedure_options_from_rows: (...args: unknown[]) => string;
+  export const list_approach_procedures_from_match_rows: (...args: unknown[]) => string;
   export const materialize_procedure_from_records: (...args: unknown[]) => string;
   export const infer_procedure_kind_from_rows: (...args: unknown[]) => string;
   export const select_preferred_cifp_tpp_match: (...args: unknown[]) => string;

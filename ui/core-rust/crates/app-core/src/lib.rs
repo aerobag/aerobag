@@ -131,6 +131,27 @@ pub struct ProcedureLoadTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlateProcedureLoadCandidateInput {
+    pub airport_id: String,
+    pub cifp_id: String,
+    pub match_rows: Vec<CifpTppMatchRow>,
+    pub distinct_rows: Vec<ProcedureDistinctRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcedureLoadOption {
+    pub label: String,
+    pub airport_id: String,
+    pub procedure_id: String,
+    pub kind: ProcedureKind,
+    pub replace_component_index: Option<usize>,
+    pub start_component_index: usize,
+    pub end_component_index: usize,
+    pub runway_transition: Option<String>,
+    pub enroute_transition: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FlightPlanRouteSegmentStatus {
     Completed,
@@ -436,6 +457,79 @@ pub fn describe_show_plate_for_procedure(rows: Vec<CifpTppMatchRow>) -> Option<C
     select_preferred_cifp_tpp_match(rows)
 }
 
+pub fn list_approach_procedures_from_match_rows(
+    airport_id: &str,
+    rows: Vec<CifpTppMatchRow>,
+) -> AppResult<Vec<ProcedureSummary>> {
+    let mut procedure_ids = rows
+        .into_iter()
+        .filter(|row| row.airport_id.trim() == airport_id.trim())
+        .map(|row| row.cifp_id.trim().to_string())
+        .filter(|cifp_id| !cifp_id.is_empty())
+        .collect::<Vec<_>>();
+    procedure_ids.sort();
+    procedure_ids.dedup();
+    Ok(procedure_ids
+        .into_iter()
+        .map(|procedure_id| ProcedureSummary {
+            airport_id: airport_id.trim().to_string(),
+            procedure_id,
+            kind: ProcedureKind::Approach,
+        })
+        .collect())
+}
+
+pub fn describe_plate_procedure_load_options(
+    plan: &FlightPlan,
+    candidates: Vec<PlateProcedureLoadCandidateInput>,
+) -> AppResult<Vec<ProcedureLoadOption>> {
+    let mut loads = Vec::new();
+    for candidate in candidates {
+        let Some(preferred) = select_preferred_cifp_tpp_match(candidate.match_rows) else {
+            continue;
+        };
+        let options = describe_procedure_options_from_rows(
+            &preferred.airport_id,
+            &preferred.cifp_id,
+            ProcedureKind::Approach,
+            candidate.distinct_rows,
+        )?;
+        let Some(target) = describe_load_procedure_from_plate(
+            plan,
+            &preferred.airport_id,
+            &preferred.cifp_id,
+            ProcedureKind::Approach,
+            options,
+        )? else {
+            continue;
+        };
+        let choices = target
+            .preferred_choice
+            .clone()
+            .map(|choice| vec![choice])
+            .unwrap_or_else(|| target.valid_choices.clone());
+        let include_procedure_id = choices.len() > 1 || target.valid_choices.len() > 1;
+        for choice in choices {
+            loads.push(ProcedureLoadOption {
+                label: format_procedure_load_option_label(
+                    &target.procedure_id,
+                    &choice,
+                    include_procedure_id,
+                ),
+                airport_id: target.airport_id.clone(),
+                procedure_id: target.procedure_id.clone(),
+                kind: target.kind.clone(),
+                replace_component_index: target.replace_component_index,
+                start_component_index: target.start_component_index,
+                end_component_index: target.end_component_index,
+                runway_transition: choice.runway_transition,
+                enroute_transition: choice.enroute_transition,
+            });
+        }
+    }
+    Ok(loads)
+}
+
 pub fn describe_load_procedure_from_plate(
     plan: &FlightPlan,
     airport_id: &str,
@@ -478,6 +572,30 @@ pub fn describe_load_procedure_from_plate(
         preferred_choice,
         valid_choices: options.valid_choices,
     }))
+}
+
+fn format_procedure_load_option_label(
+    procedure_id: &str,
+    choice: &ProcedureSpecChoice,
+    include_procedure_id: bool,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if include_procedure_id {
+        parts.push(procedure_id.trim().to_string());
+    } else {
+        parts.push("Load Procedure".to_string());
+    }
+    if let Some(enroute_transition) = choice.enroute_transition.as_deref() {
+        if !enroute_transition.trim().is_empty() {
+            parts.push(enroute_transition.trim().to_string());
+        }
+    }
+    if let Some(runway_transition) = choice.runway_transition.as_deref() {
+        if !runway_transition.trim().is_empty() {
+            parts.push(runway_transition.trim().to_string());
+        }
+    }
+    parts.join(" ")
 }
 
 fn choose_obvious_procedure_choice(

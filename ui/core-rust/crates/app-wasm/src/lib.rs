@@ -255,6 +255,15 @@ pub fn describe_procedure_options_from_rows(
 }
 
 #[wasm_bindgen]
+pub fn list_approach_procedures_from_match_rows(
+    airport_id: &str,
+    rows_json: &str,
+) -> Result<String, JsValue> {
+    list_approach_procedures_from_match_rows_json(airport_id, rows_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn materialize_procedure_from_records(
     airport_id: &str,
     procedure_id: &str,
@@ -302,6 +311,15 @@ pub fn describe_load_procedure_from_plate(
     options_json: &str,
 ) -> Result<String, JsValue> {
     describe_load_procedure_from_plate_json(plan_json, airport_id, procedure_id, kind_json, options_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn describe_plate_procedure_load_options(
+    plan_json: &str,
+    candidates_json: &str,
+) -> Result<String, JsValue> {
+    describe_plate_procedure_load_options_json(plan_json, candidates_json)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -845,6 +863,17 @@ fn describe_procedure_options_from_rows_json(
     serde_json::to_string(&options).map_err(|err| err.to_string())
 }
 
+fn list_approach_procedures_from_match_rows_json(
+    airport_id: &str,
+    rows_json: &str,
+) -> Result<String, String> {
+    let rows: Vec<app_core::CifpTppMatchRow> =
+        serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
+    let procedures = app_core::list_approach_procedures_from_match_rows(airport_id, rows)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&procedures).map_err(|err| err.to_string())
+}
+
 fn materialize_procedure_from_records_json(
     airport_id: &str,
     procedure_id: &str,
@@ -917,6 +946,19 @@ fn describe_load_procedure_from_plate_json(
         app_core::describe_load_procedure_from_plate(&plan, airport_id, procedure_id, kind, options)
             .map_err(|err| err.to_string())?;
     serde_json::to_string(&description).map_err(|err| err.to_string())
+}
+
+fn describe_plate_procedure_load_options_json(
+    plan_json: &str,
+    candidates_json: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let candidates: Vec<app_core::PlateProcedureLoadCandidateInput> =
+        serde_json::from_str(candidates_json).map_err(|err| err.to_string())?;
+    let described = app_core::describe_plate_procedure_load_options(&plan, candidates)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&described).map_err(|err| err.to_string())
 }
 
 fn replace_flight_plan_state_json(

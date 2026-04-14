@@ -24,8 +24,9 @@ import type {
   MaterializedProcedure,
   NavRef,
   PlanLeg,
+  PlateProcedureLoadCandidateInput,
+  ProcedureLoadOption,
   ProcedureOptions,
-  ProcedureLoadTarget,
   ProcedureSummary,
   ResolvedLeg,
   ResolvedLegUiView,
@@ -35,6 +36,7 @@ import type {
 } from "./types";
 import { deriveChartPage as deriveChartCatalog } from "./resourceIndexAdapters";
 import {
+  loadCifpTppMatchesForAirport,
   loadCifpTppMatchesForPlate,
   loadCifpTppMatchesForProcedure,
   listProceduresForAirport,
@@ -224,7 +226,7 @@ export interface AppCoreAdapter {
     componentIndex: number,
   ): Promise<MaterializedProcedure>;
   findProcedurePlateMatch(airportId: string, cifpId: string): Promise<CifpTppMatch | null>;
-  describePlateProcedureLoads(plan: FlightPlan, plateId: string): Promise<ProcedureLoadTarget[]>;
+  describePlateProcedureLoads(plan: FlightPlan, plateId: string): Promise<ProcedureLoadOption[]>;
 }
 
 export type AdapterBackendKind = "wasm";
@@ -636,7 +638,7 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
     throw new Error("procedure plate matching requires wasm adapter");
   }
 
-  async describePlateProcedureLoads(): Promise<ProcedureLoadTarget[]> {
+  async describePlateProcedureLoads(): Promise<ProcedureLoadOption[]> {
     throw new Error("plate procedure loading requires wasm adapter");
   }
 
@@ -735,6 +737,10 @@ type WasmModule = {
     kindJson: string,
     rowsJson: string,
   ): Promise<string> | string;
+  list_approach_procedures_from_match_rows(
+    airportId: string,
+    rowsJson: string,
+  ): Promise<string> | string;
   materialize_procedure_from_records(
     airportId: string,
     procedureId: string,
@@ -754,6 +760,10 @@ type WasmModule = {
     procedureId: string,
     kindJson: string,
     optionsJson: string,
+  ): Promise<string> | string;
+  describe_plate_procedure_load_options(
+    planJson: string,
+    candidatesJson: string,
   ): Promise<string> | string;
 };
 
@@ -1111,6 +1121,15 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async listProcedures(airportId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureSummary[]> {
+    if (kind === "approach") {
+      const rows = await loadCifpTppMatchesForAirport(airportId);
+      return JSON.parse(
+        await this.module.list_approach_procedures_from_match_rows(
+          airportId,
+          JSON.stringify(rows),
+        ),
+      ) as ProcedureSummary[];
+    }
     return listProceduresForAirport(airportId, kind);
   }
 
@@ -1196,7 +1215,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as CifpTppMatch | null;
   }
 
-  async describePlateProcedureLoads(plan: FlightPlan, plateId: string): Promise<ProcedureLoadTarget[]> {
+  async describePlateProcedureLoads(plan: FlightPlan, plateId: string): Promise<ProcedureLoadOption[]> {
     const rows = await loadCifpTppMatchesForPlate(plateId);
     debugLog("adapter.cifp_tpp.by_plate", { plate_id: plateId, rows });
     const grouped = new Map<string, CifpTppMatchRow[]>();
@@ -1204,7 +1223,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       const key = `${row.airport_id}:${row.cifp_id}`;
       grouped.set(key, [...(grouped.get(key) ?? []), row]);
     }
-    const loads: ProcedureLoadTarget[] = [];
+    const candidates: PlateProcedureLoadCandidateInput[] = [];
     for (const groupedRows of grouped.values()) {
       const preferred = JSON.parse(
         await this.module.select_preferred_cifp_tpp_match(JSON.stringify(groupedRows)),
@@ -1216,31 +1235,19 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       if (procedureRows.length === 0) {
         continue;
       }
-      const kind = JSON.parse(
-        await this.module.infer_procedure_kind_from_rows(JSON.stringify(procedureRows)),
-      ) as ProcedureSummary["kind"];
-      const options = JSON.parse(
-        await this.module.describe_procedure_options_from_rows(
-          preferred.airport_id,
-          preferred.cifp_id,
-          JSON.stringify(kind),
-          JSON.stringify(procedureRows),
-        ),
-      ) as ProcedureOptions;
-      const described = JSON.parse(
-        await this.module.describe_load_procedure_from_plate(
-          JSON.stringify(plan),
-          preferred.airport_id,
-          preferred.cifp_id,
-          JSON.stringify(kind),
-          JSON.stringify(options),
-        ),
-      ) as ProcedureLoadTarget | null;
-      if (described) {
-        loads.push(described);
-      }
+      candidates.push({
+        airport_id: preferred.airport_id,
+        cifp_id: preferred.cifp_id,
+        match_rows: groupedRows,
+        distinct_rows: procedureRows,
+      });
     }
-    return loads;
+    return JSON.parse(
+      await this.module.describe_plate_procedure_load_options(
+        JSON.stringify(plan),
+        JSON.stringify(candidates),
+      ),
+    ) as ProcedureLoadOption[];
   }
 }
 
@@ -1281,11 +1288,13 @@ export async function loadBestAvailableAdapter(
     typeof mod.insert_procedure_materialized_ui !== "function" ||
     typeof mod.replace_procedure_materialized_ui !== "function" ||
     typeof mod.describe_procedure_options_from_rows !== "function" ||
+    typeof mod.list_approach_procedures_from_match_rows !== "function" ||
     typeof mod.materialize_procedure_from_records !== "function" ||
     typeof mod.infer_procedure_kind_from_rows !== "function" ||
     typeof mod.select_preferred_cifp_tpp_match !== "function" ||
     typeof mod.describe_show_plate_for_procedure !== "function" ||
     typeof mod.describe_load_procedure_from_plate !== "function" ||
+    typeof mod.describe_plate_procedure_load_options !== "function" ||
     typeof mod.derive_chart_page !== "function" ||
     typeof mod.derive_chart_page_state !== "function" ||
     typeof mod.set_content_policy_state !== "function" ||

@@ -12,8 +12,7 @@ import type {
   MaterializedProcedure,
   NavRef,
   ProcedureOptions,
-  ProcedureLoadTarget,
-  ProcedureSpecChoice,
+  ProcedureLoadOption,
   ProcedureSummary,
   Situation,
 } from "./domain/types";
@@ -2703,7 +2702,7 @@ function ChartsPage(props: {
   const lastChartLayoutKeyRef = useRef("");
   const trayGroup = useModalTrayGroup(["page", "airport", "chart", "load"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
-  const [plateProcedureLoads, setPlateProcedureLoads] = useState<ProcedureLoadTarget[]>([]);
+  const [plateProcedureLoads, setPlateProcedureLoads] = useState<ProcedureLoadOption[]>([]);
   const sortedCharts = useMemo(() => sortChartsForFolder(selectedAirport?.charts ?? []), [selectedAirport]);
   const selectedImageSize = imageSize && imageSize.chartId === (selectedChart?.id ?? "") ? imageSize : null;
   const fallbackViewport = useMemo(() => {
@@ -2857,11 +2856,9 @@ function ChartsPage(props: {
   }, [appCoreAdapter, plan, selectedChart?.id]);
 
   const loadProcedureOptions = useMemo(() => {
-    return plateProcedureLoads.flatMap((load) => {
-      const choices = load.preferred_choice ? [load.preferred_choice] : load.valid_choices;
-      return choices.map((choice, index) => ({
-        id: `${load.procedure_id}:${choice.runway_transition ?? "none"}:${choice.enroute_transition ?? "none"}:${index}`,
-        label: formatLoadProcedureOptionLabel(load, choice, choices.length > 1 || plateProcedureLoads.length > 1),
+    return plateProcedureLoads.map((load, index) => ({
+        id: `${load.procedure_id}:${load.runway_transition ?? "none"}:${load.enroute_transition ?? "none"}:${index}`,
+        label: load.label,
         active: false,
         onSelect: () => {
           if (!appCoreAdapter) {
@@ -2871,8 +2868,8 @@ function ChartsPage(props: {
             load.airport_id,
             load.procedure_id,
             load.kind,
-            choice.runway_transition ?? null,
-            choice.enroute_transition ?? null,
+            load.runway_transition ?? null,
+            load.enroute_transition ?? null,
             load.replace_component_index ?? load.start_component_index,
           ).then(async (built) => {
             const mutation =
@@ -2884,7 +2881,6 @@ function ChartsPage(props: {
           }).catch(() => {});
         },
       }));
-    });
   }, [appCoreAdapter, onApplyMutation, plan, plateProcedureLoads, trayGroup]);
   const loadApproachEnabled = loadProcedureOptions.length > 0;
 
@@ -3361,26 +3357,6 @@ function flightPlanActionLabel(actionId: string): string {
     default:
       return actionId;
   }
-}
-
-function formatLoadProcedureOptionLabel(
-  load: ProcedureLoadTarget,
-  choice: ProcedureSpecChoice,
-  includeProcedureId: boolean,
-) {
-  const parts: string[] = [];
-  if (includeProcedureId) {
-    parts.push(load.procedure_id);
-  } else {
-    parts.push("Load Procedure");
-  }
-  if (choice.enroute_transition) {
-    parts.push(choice.enroute_transition);
-  }
-  if (choice.runway_transition) {
-    parts.push(choice.runway_transition);
-  }
-  return parts.join(" ");
 }
 
 function resolveChartId(

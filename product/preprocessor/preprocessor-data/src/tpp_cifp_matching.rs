@@ -715,9 +715,13 @@ pub fn load_tpp_approach_plates(package_zips: &[PathBuf]) -> Result<Vec<PlateRec
             if asset.document_type != "approach" {
                 continue;
             }
+            let canonical_airport_id = asset
+                .icao_airport_id
+                .clone()
+                .unwrap_or_else(|| asset.airport_id.trim().to_string());
             plates.push(PlateRecord {
                 plate_id: asset.id,
-                airport_id: asset.airport_id.trim().to_string(),
+                airport_id: canonical_airport_id,
                 package_id: manifest.package_id.clone(),
                 label: asset.label.trim().to_string(),
             });

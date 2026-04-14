@@ -37,8 +37,9 @@ Canonical chart family ids from preprocessing are:
 - `tac`
 - `enr-l`
 - `enr-h`
+- `enr-a`
 
-UI and app-core now use those ids directly on live paths. Legacy aliases like `sectional` / `ifr_low` / `ifr_high` are transitional compatibility only and should not be used for new code.
+UI and app-core now use only those canonical ids at the catalog boundary.
 
 Install used:
 

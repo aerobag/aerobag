@@ -2,17 +2,17 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Ord, PartialOrd)]
 pub enum ChartFamilyId {
-    #[serde(rename = "sec", alias = "sectional")]
+    #[serde(rename = "sec")]
     Sectional,
     #[serde(rename = "tac")]
     Tac,
     #[serde(rename = "wac")]
     Wac,
-    #[serde(rename = "enr-l", alias = "ifr_low")]
+    #[serde(rename = "enr-l")]
     IfrLow,
-    #[serde(rename = "enr-h", alias = "ifr_high")]
+    #[serde(rename = "enr-h")]
     IfrHigh,
-    #[serde(rename = "enr-a", alias = "ifr_area")]
+    #[serde(rename = "enr-a")]
     IfrArea,
     #[serde(rename = "flyway")]
     Flyway,
@@ -97,7 +97,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn package_name_matches_legacy_sectional_contract() {
+    fn package_name_matches_sec_contract() {
         let id = PackageId {
             region: RegionId::Ne,
             family: ChartFamilyId::Sectional,
@@ -108,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn package_name_matches_legacy_ifr_low_contract() {
+    fn package_name_matches_enr_l_contract() {
         let id = PackageId {
             region: RegionId::Pac,
             family: ChartFamilyId::IfrLow,

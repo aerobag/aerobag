@@ -225,9 +225,12 @@ fn write_package_asset_manifest(
                 .unwrap_or_default()
                 .to_string();
             let metadata = tpp_metadata.get(&(airport_id.clone(), label.clone()));
+            let canonical_airport_id = metadata
+                .and_then(|value| value.icao_airport_id.clone())
+                .unwrap_or_else(|| airport_id.clone());
             Ok::<_, anyhow::Error>(PackageAssetRecord {
-                id: format!("plate:{airport_id}:{filename}"),
-                airport_id,
+                id: format!("plate:{canonical_airport_id}:{filename}"),
+                airport_id: canonical_airport_id,
                 icao_airport_id: metadata.and_then(|value| value.icao_airport_id.clone()),
                 label: label.clone(),
                 asset_kind: "png".to_string(),

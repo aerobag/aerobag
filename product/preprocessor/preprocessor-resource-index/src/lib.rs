@@ -452,10 +452,10 @@ fn log_progress(request: &BuildResourceIndexRequest, message: &str) -> anyhow::R
 pub fn build_catalog(index: &ResourceIndex) -> Catalog {
     let cycle = index.cycle.clone().unwrap_or_else(|| "unknown".to_string());
     let supported_families = BTreeSet::from([
-        "sectional".to_string(),
+        "sec".to_string(),
         "tac".to_string(),
-        "ifr_low".to_string(),
-        "ifr_high".to_string(),
+        "enr-l".to_string(),
+        "enr-h".to_string(),
     ]);
     let family_by_id = index
         .families
@@ -1754,10 +1754,10 @@ fn tile_y_to_lat(tile_y_xyz: f64, scale: f64) -> f64 {
 
 fn family_display_name(id: &str) -> &'static str {
     match id {
-        "sectional" => "Sectional",
+        "sec" => "Sectional",
         "tac" => "TAC",
-        "ifr_low" => "IFR Low",
-        "ifr_high" => "IFR High",
+        "enr-l" => "IFR Low",
+        "enr-h" => "IFR High",
         "tpp" => "TPP",
         "csup" => "CSUP",
         _ => "Unknown",
@@ -1766,7 +1766,7 @@ fn family_display_name(id: &str) -> &'static str {
 
 fn family_kind(id: &str) -> &'static str {
     match id {
-        "sectional" | "tac" | "ifr_low" | "ifr_high" => "tiled_raster",
+        "sec" | "tac" | "enr-l" | "enr-h" => "tiled_raster",
         "tpp" | "csup" => "flat_image",
         _ => "unknown",
     }
@@ -2019,7 +2019,7 @@ mod tests {
                 .join("product-builds/test/work/resource-index/resource-index.json"),
             catalog_output_path: None,
             chart_sources: vec![ChartSource {
-                family_id: "sectional".to_string(),
+                family_id: "sec".to_string(),
                 package_outputs_path: chart_outputs,
                 package_root: chart_root,
                 source_urls_path: Some(chart_source_urls),
@@ -2063,9 +2063,9 @@ mod tests {
         assert!(index
             .packages
             .iter()
-            .any(|package| package.family_id == "sectional"));
+            .any(|package| package.family_id == "sec"));
         assert!(index.packages.iter().any(|package| {
-            package.family_id == "sectional"
+            package.family_id == "sec"
                 && package.effective_date.as_deref() == Some("2026-03-19")
                 && package.expiration_date.as_deref() == Some("2026-05-14")
                 && package.cycle_code.is_none()
@@ -2094,7 +2094,7 @@ mod tests {
                 && package.version_label.as_deref() == Some("2603")
         }));
         assert_eq!(index.chart_collections.len(), 1);
-        assert_eq!(index.chart_collections[0].family_id, "sectional");
+        assert_eq!(index.chart_collections[0].family_id, "sec");
         assert_eq!(index.chart_collections[0].region_id, "nw");
         assert_eq!(index.chart_collections[0].package_id, "NW_SEC");
         assert_eq!(index.chart_collections[0].chart_index, 0);

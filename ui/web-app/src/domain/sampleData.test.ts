@@ -10,8 +10,9 @@ describe("sampleCatalog", () => {
     expect(familyIds.has("sectional" as never)).toBe(false);
     expect(familyIds.has("ifr_low" as never)).toBe(false);
     expect(familyIds.has("ifr_high" as never)).toBe(false);
+    expect(familyIds.has("ifr_area" as never)).toBe(false);
     for (const familyId of familyIds) {
-      expect(["sec", "tac", "wac", "enr-l", "enr-h", "ifr_area", "flyway", "heli", "misc"]).toContain(familyId);
+      expect(["sec", "tac", "wac", "enr-l", "enr-h", "enr-a", "flyway", "heli", "misc"]).toContain(familyId);
     }
   });
 });

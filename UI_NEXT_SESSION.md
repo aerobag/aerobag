@@ -9,9 +9,10 @@ Snapshot date: 2026-04-09
   - `tac`
   - `enr-l`
   - `enr-h`
+  - `enr-a`
 - Web and Android runtime paths now use those canonical ids directly.
 - Android package seeding was updated to include all four canonical map families again.
-- app-core now emits canonical family ids at the catalog boundary and accepts legacy aliases (`sectional`, `ifr_low`, `ifr_high`, `ifr_area`) during the transition.
+- app-core now expects canonical family ids at the catalog boundary.
 
 ## Current UI State
 

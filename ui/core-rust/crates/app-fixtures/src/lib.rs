@@ -77,7 +77,7 @@ pub fn sample_geometry() -> GeometryBundle {
     GeometryBundle {
         schema_version: 1,
         polygons: vec![PolygonRecord {
-            id: "sectional:boston".to_string(),
+            id: "sec:boston".to_string(),
             points: vec![[-72.0, 43.0], [-72.0, 41.0], [-69.0, 41.0], [-69.0, 43.0]],
         }],
     }
@@ -186,7 +186,7 @@ mod tests {
         let json = sample_geometry_json();
         let parsed: GeometryBundle = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.polygons.len(), 1);
-        assert_eq!(parsed.polygons[0].id, "sectional:boston");
+        assert_eq!(parsed.polygons[0].id, "sec:boston");
     }
 
     #[test]

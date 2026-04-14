@@ -1140,7 +1140,7 @@ mod tests {
             "catalog_revision": "2026-04-05T22:00:00Z",
             "families": [
                 {
-                    "id": "sectional",
+                    "id": "sec",
                     "display_name": "VFR Sectional Charts",
                     "kind": "tiled_raster",
                     "max_zoom": 10,
@@ -1158,11 +1158,11 @@ mod tests {
                 {
                     "id": {
                         "region": "ne",
-                        "family": "sectional",
+                        "family": "sec",
                         "cycle": "2026-04-16"
                     },
                     "package_name": "NE_SEC",
-                    "family_id": "sectional",
+                    "family_id": "sec",
                     "region_id": "ne",
                     "cycle": "2026-04-16",
                     "artifact_kind": "zip",
@@ -1175,11 +1175,11 @@ mod tests {
             "charts": [
                 {
                     "id": {
-                        "family": "sectional",
+                        "family": "sec",
                         "name": "Boston",
                         "cycle": "2026-04-16"
                     },
-                    "family_id": "sectional",
+                    "family_id": "sec",
                     "name": "Boston",
                     "display_name": "Boston",
                     "cycle": "2026-04-16",

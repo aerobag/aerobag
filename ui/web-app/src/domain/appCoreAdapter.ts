@@ -227,7 +227,7 @@ function packageName(region: string, family: string): string {
         ? "ENR_L"
         : family === "enr-h"
           ? "ENR_H"
-          : family === "ifr_area"
+          : family === "enr-a"
             ? "ENR_A"
             : family.toUpperCase();
   return `${regionCode}_${familyCode}`;

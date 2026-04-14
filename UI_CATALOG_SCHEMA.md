@@ -42,7 +42,7 @@ It replaces hardcoded client metadata such as:
 
 ```json
 {
-  "id": "sectional",
+  "id": "sec",
   "display_name": "VFR Sectional Charts",
   "kind": "tiled_raster",
   "max_zoom": 10,
@@ -66,11 +66,11 @@ It replaces hardcoded client metadata such as:
 {
   "id": {
     "region": "ne",
-    "family": "sectional",
+    "family": "sec",
     "cycle": "2026-04-16"
   },
   "package_name": "NE_SEC",
-  "family_id": "sectional",
+  "family_id": "sec",
   "region_id": "ne",
   "cycle": "2026-04-16",
   "artifact_kind": "zip",
@@ -86,11 +86,11 @@ It replaces hardcoded client metadata such as:
 ```json
 {
   "id": {
-    "family": "sectional",
+    "family": "sec",
     "name": "Chicago",
     "cycle": "2026-04-16"
   },
-  "family_id": "sectional",
+  "family_id": "sec",
   "name": "Chicago",
   "display_name": "Chicago",
   "cycle": "2026-04-16",
@@ -100,7 +100,7 @@ It replaces hardcoded client metadata such as:
   "coverage": {
     "kind": "polygon_ref",
     "value": {
-      "polygon_id": "sectional:chicago"
+      "polygon_id": "sec:chicago"
     }
   }
 }
@@ -151,7 +151,7 @@ Keep chart geometry in a separate file:
   "schema_version": 1,
   "polygons": [
     {
-      "id": "sectional:chicago",
+      "id": "sec:chicago",
       "points": [
         [-93.0001, 44.2002],
         [-93.0001, 40.0],

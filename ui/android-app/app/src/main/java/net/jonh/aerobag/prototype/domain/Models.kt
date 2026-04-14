@@ -23,7 +23,7 @@ data class PackageId(
             "sec" -> "SEC"
             "enr-l" -> "ENR_L"
             "enr-h" -> "ENR_H"
-            "ifr_area" -> "ENR_A"
+            "enr-a" -> "ENR_A"
             else -> family.uppercase()
         }
         return "${region.uppercase()}_$familyCode"

@@ -4,7 +4,7 @@ export type ChartFamilyId =
   | "wac"
   | "enr-l"
   | "enr-h"
-  | "ifr_area"
+  | "enr-a"
   | "flyway"
   | "heli"
   | "misc";

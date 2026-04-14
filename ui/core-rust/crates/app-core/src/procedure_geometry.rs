@@ -204,10 +204,16 @@ fn missed_approach_display_path(
                 let initial_course_deg = current_course_deg?;
                 let mut turn_heading_deg =
                     step.magnetic_course_deg? + course_reference_variation_deg(step);
-                let turn_clockwise = step.turn_direction.as_deref().unwrap_or("").trim() == "R";
+                let raw_turn_direction = step.turn_direction.as_deref().unwrap_or("").trim();
+                let nominal_turn_clockwise = match raw_turn_direction {
+                    "L" => false,
+                    "R" => true,
+                    _ => true,
+                };
                 if let Some(next_step) = steps.get(index + 1).copied() {
                     if next_step.path_termination.trim() == "CF"
                         && next_step.defining_nav_position.is_some()
+                        && !raw_turn_direction.is_empty()
                     {
                         let next_magnetic_course_deg = next_step.magnetic_course_deg?;
                         let next_course_deg =
@@ -219,12 +225,23 @@ fn missed_approach_display_path(
                         {
                             turn_heading_deg = intercept_heading_for_course(
                                 next_course_deg,
-                                turn_clockwise,
+                                nominal_turn_clockwise,
                                 NOMINAL_COURSE_INTERCEPT_ANGLE_DEG,
                             );
                         }
                     }
                 }
+                let heading_delta_deg =
+                    angular_difference_degrees(initial_course_deg, turn_heading_deg);
+                if heading_delta_deg <= 1.0 {
+                    current_course_deg = Some(turn_heading_deg);
+                    continue;
+                }
+                let turn_clockwise = match raw_turn_direction {
+                    "L" => false,
+                    "R" => true,
+                    _ => shortest_turn_clockwise(initial_course_deg, turn_heading_deg),
+                };
                 let turn_radius_nm = missed_approach_turn_radius_nm();
                 let turn_center = turn_center_for_heading_change(
                     current_position,
@@ -300,6 +317,30 @@ fn missed_approach_display_path(
             "CF" => {
                 let fix = step.nav_position?;
                 let course_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
+                if step.turn_direction.as_deref().unwrap_or("").trim().is_empty() {
+                    if let (Some(current_heading_deg), Some(start_alt_ft), Some(target_alt_ft)) =
+                        (current_course_deg, current_altitude_ft, step.altitude_1_ft)
+                    {
+                        if target_alt_ft > start_alt_ft + 50.0
+                            && angular_difference_degrees(current_heading_deg, course_deg) <= 5.0
+                        {
+                            let climb_minutes = (target_alt_ft - start_alt_ft)
+                                / NOMINAL_MISSED_APPROACH_CLIMB_FTPM;
+                            let climb_distance_nm = NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT
+                                * (climb_minutes / 60.0);
+                            let climb_end =
+                                destination_point(current_position, current_heading_deg, climb_distance_nm);
+                            if distance_between_points_nm(current_position, climb_end) > 0.05 {
+                                elements.push(LegDisplayElement::Segment {
+                                    start: current_position,
+                                    end: climb_end,
+                                });
+                                current_position = climb_end;
+                            }
+                            current_altitude_ft = Some(target_alt_ft);
+                        }
+                    }
+                }
                 if let Some(defining_nav) = step.defining_nav_position {
                     if let Some(current_heading_deg) = current_course_deg {
                         if let Some(turn_clockwise) = cf_turn_direction(step) {

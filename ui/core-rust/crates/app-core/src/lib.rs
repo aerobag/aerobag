@@ -952,6 +952,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
     let mut previous_display_path: Option<LegDisplayPath> = None;
     let mut previous_leg_to: Option<NavRef> = None;
     let mut heading_checks = Vec::<DisplayElementHeadingSignature>::new();
+    let mut next_heading_step_index = 0usize;
 
     for (role, leg_records, _, reversed) in segments {
         let mut fix_records = leg_records
@@ -1012,13 +1013,16 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 pair[1],
                 hold_record,
             );
-            heading_checks.extend(heading_signatures_for_leg(
+            let signatures = heading_signatures_for_leg(
+                next_heading_step_index,
                 display_path.as_ref(),
                 pair[0],
                 pair[1],
                 provenance_record.path_termination.trim(),
                 provenance_record.nav_position,
-            ));
+            );
+            next_heading_step_index += signatures.len();
+            heading_checks.extend(signatures);
 
             resolved.push(ResolvedLeg {
                 id: format!(
@@ -1053,13 +1057,16 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     .expect("filtered non-waypoint standalone procedure leg");
                 let display_path =
                     display_path_for_procedure_leg(leg_records, standalone, standalone, None);
-                heading_checks.extend(heading_signatures_for_leg(
+                let signatures = heading_signatures_for_leg(
+                    next_heading_step_index,
                     display_path.as_ref(),
                     standalone,
                     standalone,
                     standalone.path_termination.trim(),
                     standalone.nav_position,
-                ));
+                );
+                next_heading_step_index += signatures.len();
+                heading_checks.extend(signatures);
                 resolved.push(ResolvedLeg {
                     id: format!(
                         "procedure-{}-{}-{}",
@@ -1093,6 +1100,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
 
 #[derive(Clone)]
 struct DisplayElementHeadingSignature {
+    step_index: usize,
     start_position: LatLon,
     start_course_deg: f64,
     start_label: String,
@@ -1112,6 +1120,7 @@ enum DisplayElementKind {
 }
 
 fn heading_signatures_for_leg(
+    starting_step_index: usize,
     display_path: Option<&LegDisplayPath>,
     from_record: &ProcedureLegMaterializationRecord,
     to_record: &ProcedureLegMaterializationRecord,
@@ -1128,6 +1137,7 @@ fn heading_signatures_for_leg(
                 let (start_position, start_course_deg, end_position, end_course_deg) =
                     heading_signature_for_element(element)?;
                 Some(DisplayElementHeadingSignature {
+                    step_index: starting_step_index + index,
                     start_position,
                     start_course_deg,
                     start_label: if index == 0 {
@@ -1168,6 +1178,7 @@ fn heading_signatures_for_leg(
     };
     let course = bearing_degrees(start, end);
     vec![DisplayElementHeadingSignature {
+        step_index: starting_step_index,
         start_position: start,
         start_course_deg: course,
         start_label: describe_record_anchor(from_record),
@@ -1224,7 +1235,7 @@ fn validate_heading_continuity_checks(
             current.start_magnetic_variation_deg.or(previous.end_magnetic_variation_deg),
         );
         panic!(
-            "procedure heading continuity violated for {}: {:.1} deg (allowed {:.1}) at {} ({:.6},{:.6}) inbound_mh={:.1} outbound_mh={:.1}",
+            "procedure heading continuity violated for {}: {:.1} deg (allowed {:.1}) at {} ({:.6},{:.6}) inbound_mh={:.1} outbound_mh={:.1} steps={:02}->{:02}",
             procedure_id.trim(),
             delta,
             allowed_delta_deg,
@@ -1233,6 +1244,8 @@ fn validate_heading_continuity_checks(
             previous.end_position.lon,
             inbound_magnetic_heading,
             outbound_magnetic_heading,
+            previous.step_index,
+            current.step_index,
         );
     }
 }
@@ -4356,6 +4369,12 @@ mod tests {
     #[ignore = "manual visual inspection overlay for KVLD L36 GEF"]
     fn writes_kvld_l36_gef_overlay_png() {
         render_procedure_overlay_to_paths("KVLD", "L36", "GEF", "KVLD_L36_GEF", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KOKC I35R IRW"]
+    fn writes_kokc_i35r_irw_overlay_png() {
+        render_procedure_overlay_to_paths("KOKC", "I35R", "IRW", "KOKC_I35R_IRW", true);
     }
 
     #[test]

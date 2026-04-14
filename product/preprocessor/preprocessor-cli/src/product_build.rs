@@ -827,9 +827,18 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             };
                             let package = package_record_for_region(&source.package_outputs_path, region)?;
                             let zip_path = source.package_root.join(&package.zip);
-                            let unpacked_root = published_unpacked_root(&config, &bundle_cycle)?;
-                            let (cache_hit, unpack_dir) =
-                                sync_unpacked_zip(&config, &zip_path, &unpacked_root)?;
+                            let unpacked_root = published_unpacked_root(&config)?;
+                            let published_filename = canonical_package_filename(
+                                &family_id,
+                                &region.code().to_ascii_lowercase(),
+                                &package.zip,
+                            )?;
+                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
+                                &zip_path,
+                                &source.package_root,
+                                &unpacked_root,
+                                &published_filename,
+                            )?;
                             Ok(TaskCompletion {
                                 node_records: vec![],
                                 value: TaskValue::None,
@@ -847,9 +856,18 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             };
                             let package = package_record_for_region(&source.package_outputs_path, region)?;
                             let zip_path = source.package_root.join(&package.zip);
-                            let unpacked_root = published_unpacked_root(&config, &bundle_cycle)?;
-                            let (cache_hit, unpack_dir) =
-                                sync_unpacked_zip(&config, &zip_path, &unpacked_root)?;
+                            let unpacked_root = published_unpacked_root(&config)?;
+                            let published_filename = canonical_package_filename(
+                                "csup",
+                                &region.code().to_ascii_lowercase(),
+                                &package.zip,
+                            )?;
+                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
+                                &zip_path,
+                                &source.package_root,
+                                &unpacked_root,
+                                &published_filename,
+                            )?;
                             Ok(TaskCompletion {
                                 node_records: vec![],
                                 value: TaskValue::None,
@@ -869,9 +887,18 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             };
                             let package = package_record_for_region(&source.package_outputs_path, region)?;
                             let zip_path = source.package_root.join(&package.zip);
-                            let unpacked_root = published_unpacked_root(&config, &bundle_cycle)?;
-                            let (cache_hit, unpack_dir) =
-                                sync_unpacked_zip(&config, &zip_path, &unpacked_root)?;
+                            let unpacked_root = published_unpacked_root(&config)?;
+                            let published_filename = canonical_package_filename(
+                                "tpp",
+                                &region.code().to_ascii_lowercase(),
+                                &package.zip,
+                            )?;
+                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
+                                &zip_path,
+                                &source.package_root,
+                                &unpacked_root,
+                                &published_filename,
+                            )?;
                             Ok(TaskCompletion {
                                 node_records: vec![],
                                 value: TaskValue::None,
@@ -887,9 +914,13 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 Some(TaskValue::Data { main_db: _, zip }) => zip.clone(),
                                 _ => bail!("missing data zip"),
                             };
-                            let unpacked_root = published_unpacked_root(&config, &bundle_cycle)?;
-                            let (cache_hit, unpack_dir) =
-                                sync_unpacked_zip(&config, &zip, &unpacked_root)?;
+                            let unpacked_root = published_unpacked_root(&config)?;
+                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
+                                &zip,
+                                zip.parent().unwrap_or_else(|| Path::new("/")),
+                                &unpacked_root,
+                                &format!("data_{bundle_cycle}.zip"),
+                            )?;
                             Ok(TaskCompletion {
                                 node_records: vec![],
                                 value: TaskValue::None,
@@ -905,9 +936,13 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 Some(TaskValue::ZipArtifact { zip }) => zip.clone(),
                                 _ => bail!("missing vectors zip"),
                             };
-                            let unpacked_root = published_unpacked_root(&config, &bundle_cycle)?;
-                            let (cache_hit, unpack_dir) =
-                                sync_unpacked_zip(&config, &zip, &unpacked_root)?;
+                            let unpacked_root = published_unpacked_root(&config)?;
+                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
+                                &zip,
+                                zip.parent().unwrap_or_else(|| Path::new("/")),
+                                &unpacked_root,
+                                &format!("vectors_data_{bundle_cycle}.zip"),
+                            )?;
                             Ok(TaskCompletion {
                                 node_records: vec![],
                                 value: TaskValue::None,
@@ -1092,9 +1127,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             fetch_cache_mode: config.fetch_cache_mode.clone(),
             nodes: node_records,
         };
-        let build_manifest_path = config
-            .build_root
-            .join(format!("build-manifest_{bundle_cycle}.json"));
+        let build_manifest_path = internal_build_manifest_path(config, &bundle_cycle)?;
         fs::write(
             &build_manifest_path,
             serde_json::to_vec_pretty(&build_manifest)
@@ -1112,7 +1145,12 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 .context("failed to encode bundle manifest")?,
         )
         .with_context(|| format!("failed to write {}", bundle_manifest_path.display()))?;
-        sync_unpacked_metadata(config, &build_manifest, &build_manifest_path, &bundle_manifest_path)?;
+        sync_unpacked_metadata(
+            config,
+            &bundle_manifest,
+            &build_manifest,
+            &bundle_manifest_path,
+        )?;
         Ok(bundle_manifest_path)
     })();
 
@@ -1241,35 +1279,76 @@ fn resolve_product_build_path(config: &ProductBuildConfig, relative_path: &str) 
     artifact_root_from_build_root(&config.build_root).join(relative_path)
 }
 
-fn published_unpacked_root(
+fn published_unpacked_root(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
+    published_unpacked_root_from_build_root(&config.build_root)
+}
+
+fn internal_build_manifest_path(
     config: &ProductBuildConfig,
-    cycle: &str,
+    bundle_cycle: &str,
 ) -> anyhow::Result<PathBuf> {
-    Ok(
-        artifact_root_from_build_root(&config.build_root)
-            .join("published-unpacked")
-            .join(config.profile.as_str())
-            .join(cycle),
-    )
+    let artifact_root = artifact_root_from_build_root(&config.build_root);
+    let build_root_name = config
+        .build_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("build root has no final path component"))?;
+    let dir = artifact_root
+        .join("private-work")
+        .join("build-manifests")
+        .join(build_root_name);
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create {}", dir.display()))?;
+    Ok(dir.join(format!("build-manifest_{bundle_cycle}.json")))
 }
 
-fn unpacked_target_dir(config: &ProductBuildConfig, unpacked_root: &Path, zip_path: &Path) -> anyhow::Result<PathBuf> {
-    let artifact_root = normalize_absolute_path(artifact_root_from_build_root(&config.build_root));
-    let normalized_zip_path = normalize_absolute_path(zip_path);
-    let relative = normalized_zip_path
-        .strip_prefix(&artifact_root)
-        .with_context(|| format!("failed to relativize {}", zip_path.display()))?;
-    let relative_dir = relative.with_extension("");
-    Ok(unpacked_root.join(relative_dir))
+pub fn published_unpacked_root_from_build_root(build_root: &Path) -> anyhow::Result<PathBuf> {
+    let artifact_root = artifact_root_from_build_root(build_root);
+    let unpacked_dir_name = match build_root.file_name().and_then(|name| name.to_str()) {
+        Some("published-packaged") => "published-unpacked",
+        Some("published-packaged-validation") => "published-unpacked-validation",
+        Some(other) => {
+            return Err(anyhow::anyhow!(
+                "unsupported build root for unpacked publication: {}",
+                other
+            ))
+        }
+        None => return Err(anyhow::anyhow!("build root has no final path component")),
+    };
+    Ok(artifact_root.join(unpacked_dir_name))
 }
 
-fn sync_unpacked_zip(
-    config: &ProductBuildConfig,
+fn unpacked_target_dir(unpacked_root: &Path, published_filename: &str) -> anyhow::Result<PathBuf> {
+    let stem = Path::new(published_filename)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("failed to derive unpacked target from {published_filename}"))?;
+    Ok(unpacked_root.join(stem))
+}
+
+fn unpacked_marker_path(unpacked_root: &Path, published_filename: &str) -> anyhow::Result<PathBuf> {
+    let artifact_root = artifact_root_from_build_root(unpacked_root);
+    let unpacked_dir_name = unpacked_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("unpacked root has no final path component"))?;
+    let marker_dir = artifact_root
+        .join("private-work")
+        .join("published-unpacked-state")
+        .join(unpacked_dir_name);
+    fs::create_dir_all(&marker_dir)
+        .with_context(|| format!("failed to create {}", marker_dir.display()))?;
+    Ok(marker_dir.join(format!("{published_filename}.source-zip-sha256")))
+}
+
+fn sync_unpacked_zip_from_source(
     zip_path: &Path,
+    source_root: &Path,
     unpacked_root: &Path,
+    published_filename: &str,
 ) -> anyhow::Result<(bool, PathBuf)> {
-    let unpack_dir = unpacked_target_dir(config, unpacked_root, zip_path)?;
-    let marker_path = unpack_dir.join(".source-zip-sha256");
+    let unpack_dir = unpacked_target_dir(unpacked_root, published_filename)?;
+    let marker_path = unpacked_marker_path(unpacked_root, published_filename)?;
     let zip_sha256 = hash_file(zip_path)?;
     if unpack_dir.is_dir()
         && fs::read_to_string(&marker_path)
@@ -1286,18 +1365,22 @@ fn sync_unpacked_zip(
     }
     fs::create_dir_all(&unpack_dir)
         .with_context(|| format!("failed to create {}", unpack_dir.display()))?;
-    extract_zip_to_dir(zip_path, &unpack_dir)?;
+    hardlink_zip_members_from_source_root(zip_path, source_root, &unpack_dir)?;
     fs::write(&marker_path, format!("{zip_sha256}\n"))
         .with_context(|| format!("failed to write {}", marker_path.display()))?;
     Ok((false, unpack_dir))
 }
 
-fn extract_zip_to_dir(zip_path: &Path, output_dir: &Path) -> anyhow::Result<()> {
+fn hardlink_zip_members_from_source_root(
+    zip_path: &Path,
+    source_root: &Path,
+    output_dir: &Path,
+) -> anyhow::Result<()> {
     let file = File::open(zip_path).with_context(|| format!("failed to open {}", zip_path.display()))?;
     let mut archive = ZipArchive::new(file)
         .with_context(|| format!("failed to open zip {}", zip_path.display()))?;
     for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).with_context(|| {
+        let entry = archive.by_index(index).with_context(|| {
             format!("failed to read zip member #{index} from {}", zip_path.display())
         })?;
         let member = entry.name().to_string();
@@ -1311,23 +1394,110 @@ fn extract_zip_to_dir(zip_path: &Path, output_dir: &Path) -> anyhow::Result<()> 
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        let mut output =
-            File::create(&outpath).with_context(|| format!("failed to create {}", outpath.display()))?;
-        std::io::copy(&mut entry, &mut output)
-            .with_context(|| format!("failed to extract {} from {}", member, zip_path.display()))?;
+        let source = resolve_source_member_path(source_root, &member)?;
+        if !source.is_file() {
+            bail!(
+                "missing source member {} for {} under {}",
+                member,
+                zip_path.display(),
+                source_root.display()
+            );
+        }
+        match fs::hard_link(&source, &outpath) {
+            Ok(()) => {}
+            Err(_) => {
+                fs::copy(&source, &outpath).with_context(|| {
+                    format!("failed to copy {} to {}", source.display(), outpath.display())
+                })?;
+            }
+        }
     }
     Ok(())
 }
 
+fn resolve_source_member_path(source_root: &Path, member: &str) -> anyhow::Result<PathBuf> {
+    let direct = source_root.join(member);
+    if direct.is_file() {
+        return Ok(direct);
+    }
+
+    let member_path = Path::new(member);
+    if member_path.components().count() == 1 && member_path.extension().is_none() {
+        let mut manifests = fs::read_dir(source_root)
+            .with_context(|| format!("failed to read {}", source_root.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .with_context(|| format!("failed to iterate {}", source_root.display()))?
+            .into_iter()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("manifest"))
+            .collect::<Vec<_>>();
+        manifests.sort();
+        if manifests.len() == 1 {
+            return Ok(manifests.remove(0));
+        }
+    }
+
+    Ok(direct)
+}
+
 fn sync_unpacked_metadata(
     config: &ProductBuildConfig,
-    build_manifest: &BuildManifest,
-    _build_manifest_path: &Path,
-    _bundle_manifest_path: &Path,
+    bundle_manifest: &BundleManifest,
+    _build_manifest: &BuildManifest,
+    bundle_manifest_path: &Path,
 ) -> anyhow::Result<()> {
-    let unpacked_root = published_unpacked_root(config, &build_manifest.cycle)?;
+    let unpacked_root = published_unpacked_root(config)?;
+    remove_legacy_unpacked_subtree(&unpacked_root)?;
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
+    sync_unpacked_file(bundle_manifest_path, &unpacked_root)?;
+    sync_unpacked_file(&config.build_root.join(&bundle_manifest.catalog.filename), &unpacked_root)?;
+    sync_unpacked_file(
+        &config.build_root.join(&bundle_manifest.resource_index.filename),
+        &unpacked_root,
+    )?;
+    Ok(())
+}
+
+fn sync_unpacked_file(source_path: &Path, unpacked_root: &Path) -> anyhow::Result<()> {
+    let filename = source_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("failed to determine filename for {}", source_path.display()))?;
+    let published_path = unpacked_root.join(filename);
+    publish_flat_artifact(source_path, &published_path)
+}
+
+pub fn sync_product_level_unpacked(
+    build_root: &Path,
+    current_artifacts_path: &Path,
+    obstacle_zip_path: &Path,
+    published_obstacle_zip: &Path,
+) -> anyhow::Result<()> {
+    let unpacked_root = published_unpacked_root_from_build_root(build_root)?;
+    remove_legacy_unpacked_subtree(&unpacked_root)?;
+    fs::create_dir_all(&unpacked_root)
+        .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
+    sync_unpacked_file(current_artifacts_path, &unpacked_root)?;
+    let published_filename = published_obstacle_zip
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("failed to determine obstacle filename"))?;
+    sync_unpacked_zip_from_source(
+        published_obstacle_zip,
+        obstacle_zip_path.parent().unwrap_or_else(|| Path::new("/")),
+        &unpacked_root,
+        published_filename,
+    )?;
+    Ok(())
+}
+
+fn remove_legacy_unpacked_subtree(unpacked_root: &Path) -> anyhow::Result<()> {
+    let legacy = unpacked_root.join("production");
+    if legacy.exists() {
+        fs::remove_dir_all(&legacy)
+            .with_context(|| format!("failed to remove legacy {}", legacy.display()))?;
+    }
     Ok(())
 }
 

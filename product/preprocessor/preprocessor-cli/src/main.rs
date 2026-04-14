@@ -38,7 +38,7 @@ use preprocessor_vectors::{
 };
 use product_build::{
     build_cycle, default_artifact_write_path, explain_product_build, maybe_reexec_build_cycle_under_cgroup,
-    ProductBuildConfig,
+    sync_product_level_unpacked, ProductBuildConfig,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -2410,6 +2410,12 @@ fn main() -> anyhow::Result<()> {
                 &published_obstacle_zip,
                 &obstacle_sha256,
                 obstacle_size_bytes,
+            )?;
+            sync_product_level_unpacked(
+                &config.build_root,
+                &current_artifacts_path,
+                &obstacle_zip_path,
+                &published_obstacle_zip,
             )?;
             for cycle_manifest_path in cycle_manifest_paths {
                 println!("cycle_manifest {}", cycle_manifest_path.display());

@@ -32,11 +32,6 @@ def collect_packed_artifacts(source_root: pathlib.Path) -> set[pathlib.Path]:
     for bundle_entry in current["bundles"]:
         bundle_path = packaged_root / bundle_entry["filename"]
         files_to_copy.add(bundle_path)
-        build_manifest_path = packaged_root / bundle_entry["filename"].replace(
-            "bundle_", "build-manifest_"
-        )
-        if build_manifest_path.exists():
-            files_to_copy.add(build_manifest_path)
 
         bundle = json.loads(bundle_path.read_text())
         files_to_copy.add(packaged_root / bundle["catalog"]["relative_path"])

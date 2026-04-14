@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     env, fs,
-    fs::File,
+    fs::{File, OpenOptions},
     io::Write,
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
@@ -35,12 +35,15 @@ use preprocessor_resource_index::{
 use preprocessor_tpp::{
     package_native_tpp_versioned, render_native_tpp, NativeTppRunRequest,
 };
-use preprocessor_vectors::{build_vectors_dataset, BuildVectorsRequest};
+use preprocessor_vectors::{
+    build_obstacle_dataset, build_vectors_dataset, BuildObstacleDatasetRequest,
+    BuildVectorsRequest,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
-use crate::emit_source_urls::{discover_published_cycles, emit_source_urls};
+use crate::emit_source_urls::{cycle_effective_date, discover_published_cycles, emit_source_urls};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProductBuildProfile {
@@ -124,6 +127,32 @@ struct BundleManifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct CurrentArtifactsManifest {
+    schema_version: u32,
+    as_of_date: String,
+    bundles: Vec<CurrentBundleEntry>,
+    obstacles: CurrentObstacleEntry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CurrentBundleEntry {
+    filename: String,
+    cycle: String,
+    start_valid: String,
+    end_valid: String,
+    checksum_sha256: String,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CurrentObstacleEntry {
+    filename: String,
+    published_date: String,
+    checksum_sha256: String,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct BundleArtifact {
     filename: String,
     relative_path: String,
@@ -142,6 +171,16 @@ struct BundlePackageArtifact {
     size_bytes: u64,
     effective_date: Option<String>,
     expiration_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProductBuildResult {
+    pub cycle_manifest_paths: Vec<PathBuf>,
+    pub current_artifacts_path: PathBuf,
+    pub obstacle_manifest_path: PathBuf,
+    pub obstacle_stats_path: PathBuf,
+    pub obstacle_zip_path: PathBuf,
+    pub published_obstacle_zip: PathBuf,
 }
 
 #[derive(Debug)]
@@ -216,6 +255,45 @@ enum TaskValue {
 }
 
 #[derive(Debug, Clone)]
+enum ProductTaskValue {
+    None,
+    SourceUrls {
+        dir: PathBuf,
+        chart_versions: BTreeMap<String, String>,
+        csup_version: String,
+        tpp_versions: BTreeMap<String, String>,
+        data_version: String,
+        bundle_cycle: String,
+    },
+    CsupStage { record: NodeRecord, work_dir: PathBuf },
+    ChartSource(ChartSource),
+    CsupSource(AssetSource),
+    TppSource(AssetSource),
+    Data { main_db: PathBuf, zip: PathBuf },
+    ZipArtifact { zip: PathBuf },
+    CycleManifest { path: PathBuf },
+    ObstaclesBuilt {
+        manifest_path: PathBuf,
+        stats_path: PathBuf,
+        zip_path: PathBuf,
+    },
+    PublishedObstacle {
+        source_zip_path: PathBuf,
+        published_zip: PathBuf,
+        sha256: String,
+        size_bytes: u64,
+    },
+    CurrentArtifacts { path: PathBuf },
+}
+
+#[derive(Debug, Clone)]
+struct ProductTaskCompletion {
+    node_records: Vec<NodeRecord>,
+    value: ProductTaskValue,
+    completion_detail: String,
+}
+
+#[derive(Debug, Clone)]
 struct TaskCompletion {
     node_records: Vec<NodeRecord>,
     value: TaskValue,
@@ -265,6 +343,49 @@ impl Drop for TaskCompletionGuard {
     }
 }
 
+struct ProductCompletionGuard {
+    tx: crossbeam_channel::Sender<(String, usize, anyhow::Result<ProductTaskCompletion>)>,
+    task_id: String,
+    task_weight: usize,
+    sent: bool,
+}
+
+impl ProductCompletionGuard {
+    fn new(
+        tx: crossbeam_channel::Sender<(String, usize, anyhow::Result<ProductTaskCompletion>)>,
+        task_id: String,
+        task_weight: usize,
+    ) -> Self {
+        Self {
+            tx,
+            task_id,
+            task_weight,
+            sent: false,
+        }
+    }
+
+    fn send(mut self, result: anyhow::Result<ProductTaskCompletion>) {
+        let _ = self.tx.send((self.task_id.clone(), self.task_weight, result));
+        self.sent = true;
+    }
+}
+
+impl Drop for ProductCompletionGuard {
+    fn drop(&mut self) {
+        if self.sent {
+            return;
+        }
+
+        let _ = self.tx.send((
+            self.task_id.clone(),
+            self.task_weight,
+            Err(anyhow::anyhow!(
+                "product task worker exited without delivering completion"
+            )),
+        ));
+    }
+}
+
 const PRODUCT_BUILD_CGROUP_ACTIVE_ENV: &str = "PRODUCT_BUILD_CGROUP_ACTIVE";
 const DEFAULT_PRODUCT_BUILD_MEMORY_MAX: &str = "80G";
 const TPP_RENDER_JOBS_PER_RUN: usize = 8;
@@ -294,6 +415,1225 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
     lines.push("  vectors".to_string());
     lines.push("  resource-index".to_string());
     Ok(lines.join("\n") + "\n")
+}
+
+pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuildResult> {
+    fs::create_dir_all(&config.build_root)
+        .with_context(|| format!("failed to create {}", config.build_root.display()))?;
+    let log_root = artifact_root_from_build_root(&config.build_root)
+        .join("private-work")
+        .join("orchestrator-logs")
+        .join(if config.profile == ProductBuildProfile::Production {
+            "published-packaged"
+        } else {
+            "published-packaged-validation"
+        });
+    fs::create_dir_all(&log_root)
+        .with_context(|| format!("failed to create {}", log_root.display()))?;
+    let mut master_log = MasterLog::create(&log_root.join("master.log"))?;
+    master_log.log(format!(
+        "begin pid={} profile={} build_root={} scheduler=product_weighted_dag scheduler_version=2 fetch_jobs={} cpu_jobs={} max_heavy_jobs={} fetch_cache_mode={}",
+        std::process::id(),
+        config.profile.as_str(),
+        config.build_root.display(),
+        config.fetch_jobs,
+        config.cpu_jobs,
+        config.max_heavy_jobs,
+        config.fetch_cache_mode,
+    ))?;
+
+    #[derive(Debug, Clone)]
+    enum ProductScheduledTaskKind {
+        SourceUrls { cycle: String },
+        ChartRender { cycle: String, family: ChartFamily },
+        ChartPackage { cycle: String, family: ChartFamily },
+        ChartUnpack { cycle: String, family: ChartFamily, region: Region },
+        CsupStage { cycle: String },
+        CsupRender { cycle: String, region: Region },
+        CsupPackage { cycle: String },
+        CsupUnpack { cycle: String, region: Region },
+        TppRender { cycle: String, region: Region },
+        TppPackage { cycle: String, region: Region },
+        TppUnpack { cycle: String, region: Region },
+        DataBase { cycle: String },
+        DataMatch { cycle: String },
+        Vectors { cycle: String },
+        DataUnpack { cycle: String },
+        VectorsUnpack { cycle: String },
+        ResourceIndex { cycle: String },
+        BundleManifest { cycle: String },
+        ObstaclesBuild,
+        ObstaclesPublish,
+        CurrentArtifacts,
+        ProductUnpack,
+    }
+
+    #[derive(Debug, Clone)]
+    struct ProductScheduledTask {
+        id: String,
+        deps: Vec<String>,
+        weight: usize,
+        kind: ProductScheduledTaskKind,
+    }
+
+    fn cycle_task_id(cycle: &str, name: &str) -> String {
+        format!("{cycle}:{name}")
+    }
+
+    let result = (|| -> anyhow::Result<ProductBuildResult> {
+        let cycles = product_cycles_to_build(config)?;
+        let chart_families = [
+            ChartFamily::Sec,
+            ChartFamily::Tac,
+            ChartFamily::EnrL,
+            ChartFamily::EnrH,
+        ];
+        let work_unit_budget = config.max_heavy_jobs.max(1) * 4 + 3;
+        let mut pending_tasks = Vec::new();
+
+        for cycle in &cycles {
+            pending_tasks.push(ProductScheduledTask {
+                id: cycle_task_id(cycle, "source-urls"),
+                deps: vec![],
+                weight: 1,
+                kind: ProductScheduledTaskKind::SourceUrls {
+                    cycle: cycle.clone(),
+                },
+            });
+            for family in chart_families {
+                let family_id = family_slug(family);
+                let render_id = cycle_task_id(cycle, &format!("charts-{family_id}-render"));
+                let package_id = cycle_task_id(cycle, &format!("charts-{family_id}-package"));
+                pending_tasks.push(ProductScheduledTask {
+                    id: render_id.clone(),
+                    deps: vec![cycle_task_id(cycle, "source-urls")],
+                    weight: 4,
+                    kind: ProductScheduledTaskKind::ChartRender {
+                        cycle: cycle.clone(),
+                        family,
+                    },
+                });
+                pending_tasks.push(ProductScheduledTask {
+                    id: package_id.clone(),
+                    deps: vec![render_id],
+                    weight: 1,
+                    kind: ProductScheduledTaskKind::ChartPackage {
+                        cycle: cycle.clone(),
+                        family,
+                    },
+                });
+                for region in Region::ALL {
+                    pending_tasks.push(ProductScheduledTask {
+                        id: cycle_task_id(
+                            cycle,
+                            &format!(
+                                "charts-{}-unpack-{}",
+                                family_id,
+                                region.code().to_ascii_lowercase()
+                            ),
+                        ),
+                        deps: vec![package_id.clone()],
+                        weight: 1,
+                        kind: ProductScheduledTaskKind::ChartUnpack {
+                            cycle: cycle.clone(),
+                            family,
+                            region,
+                        },
+                    });
+                }
+            }
+
+            pending_tasks.push(ProductScheduledTask {
+                id: cycle_task_id(cycle, "csup-stage"),
+                deps: vec![cycle_task_id(cycle, "source-urls")],
+                weight: 1,
+                kind: ProductScheduledTaskKind::CsupStage {
+                    cycle: cycle.clone(),
+                },
+            });
+            let mut csup_render_ids = Vec::new();
+            for region in Region::ALL {
+                let task_id =
+                    cycle_task_id(cycle, &format!("csup-render-{}", region.code().to_ascii_lowercase()));
+                csup_render_ids.push(task_id.clone());
+                pending_tasks.push(ProductScheduledTask {
+                    id: task_id,
+                    deps: vec![cycle_task_id(cycle, "csup-stage")],
+                    weight: 2,
+                    kind: ProductScheduledTaskKind::CsupRender {
+                        cycle: cycle.clone(),
+                        region,
+                    },
+                });
+            }
+            pending_tasks.push(ProductScheduledTask {
+                id: cycle_task_id(cycle, "csup-package"),
+                deps: csup_render_ids.clone(),
+                weight: 1,
+                kind: ProductScheduledTaskKind::CsupPackage {
+                    cycle: cycle.clone(),
+                },
+            });
+            for region in Region::ALL {
+                pending_tasks.push(ProductScheduledTask {
+                    id: cycle_task_id(
+                        cycle,
+                        &format!("csup-unpack-{}", region.code().to_ascii_lowercase()),
+                    ),
+                    deps: vec![cycle_task_id(cycle, "csup-package")],
+                    weight: 1,
+                    kind: ProductScheduledTaskKind::CsupUnpack {
+                        cycle: cycle.clone(),
+                        region,
+                    },
+                });
+            }
+
+            let mut tpp_package_ids = Vec::new();
+            for region in config.profile.tpp_regions() {
+                let region_id = region.code().to_ascii_lowercase();
+                let render_id = cycle_task_id(cycle, &format!("tpp-{region_id}"));
+                let package_id = cycle_task_id(cycle, &format!("tpp-{region_id}-package"));
+                pending_tasks.push(ProductScheduledTask {
+                    id: render_id.clone(),
+                    deps: vec![cycle_task_id(cycle, "source-urls")],
+                    weight: TPP_RENDER_WEIGHT,
+                    kind: ProductScheduledTaskKind::TppRender {
+                        cycle: cycle.clone(),
+                        region: *region,
+                    },
+                });
+                pending_tasks.push(ProductScheduledTask {
+                    id: package_id.clone(),
+                    deps: vec![render_id],
+                    weight: 1,
+                    kind: ProductScheduledTaskKind::TppPackage {
+                        cycle: cycle.clone(),
+                        region: *region,
+                    },
+                });
+                pending_tasks.push(ProductScheduledTask {
+                    id: cycle_task_id(cycle, &format!("tpp-{region_id}-unpack")),
+                    deps: vec![package_id.clone()],
+                    weight: 1,
+                    kind: ProductScheduledTaskKind::TppUnpack {
+                        cycle: cycle.clone(),
+                        region: *region,
+                    },
+                });
+                tpp_package_ids.push(package_id);
+            }
+
+            pending_tasks.push(ProductScheduledTask {
+                id: cycle_task_id(cycle, "data-base"),
+                deps: vec![cycle_task_id(cycle, "source-urls")],
+                weight: 4,
+                kind: ProductScheduledTaskKind::DataBase {
+                    cycle: cycle.clone(),
+                },
+            });
+            pending_tasks.push(ProductScheduledTask {
+                id: cycle_task_id(cycle, "data"),
+                deps: {
+                    let mut deps = vec![cycle_task_id(cycle, "data-base")];
+                    deps.extend(tpp_package_ids.iter().cloned());
+                    deps
+                },
+                weight: 1,
+                kind: ProductScheduledTaskKind::DataMatch {
+                    cycle: cycle.clone(),
+                },
+            });
+            pending_tasks.push(ProductScheduledTask {
+                id: cycle_task_id(cycle, "vectors"),
+                deps: vec![cycle_task_id(cycle, "data")],
+                weight: 1,
+                kind: ProductScheduledTaskKind::Vectors {
+                    cycle: cycle.clone(),
+                },
+            });
+            pending_tasks.push(ProductScheduledTask {
+                id: cycle_task_id(cycle, "data-unpack"),
+                deps: vec![cycle_task_id(cycle, "data")],
+                weight: 1,
+                kind: ProductScheduledTaskKind::DataUnpack {
+                    cycle: cycle.clone(),
+                },
+            });
+            pending_tasks.push(ProductScheduledTask {
+                id: cycle_task_id(cycle, "vectors-unpack"),
+                deps: vec![cycle_task_id(cycle, "vectors")],
+                weight: 1,
+                kind: ProductScheduledTaskKind::VectorsUnpack {
+                    cycle: cycle.clone(),
+                },
+            });
+            let mut resource_index_deps = chart_families
+                .iter()
+                .map(|family| cycle_task_id(cycle, &format!("charts-{}-package", family_slug(*family))))
+                .collect::<Vec<_>>();
+            resource_index_deps.push(cycle_task_id(cycle, "csup-package"));
+            resource_index_deps.extend(tpp_package_ids.iter().cloned());
+            resource_index_deps.push(cycle_task_id(cycle, "data"));
+            pending_tasks.push(ProductScheduledTask {
+                id: cycle_task_id(cycle, "resource-index"),
+                deps: resource_index_deps,
+                weight: 2,
+                kind: ProductScheduledTaskKind::ResourceIndex {
+                    cycle: cycle.clone(),
+                },
+            });
+            pending_tasks.push(ProductScheduledTask {
+                id: cycle_task_id(cycle, "bundle-manifest"),
+                deps: vec![
+                    cycle_task_id(cycle, "resource-index"),
+                    cycle_task_id(cycle, "vectors"),
+                ],
+                weight: 1,
+                kind: ProductScheduledTaskKind::BundleManifest {
+                    cycle: cycle.clone(),
+                },
+            });
+        }
+
+        pending_tasks.push(ProductScheduledTask {
+            id: "build-obstacles".to_string(),
+            deps: vec![],
+            weight: 1,
+            kind: ProductScheduledTaskKind::ObstaclesBuild,
+        });
+        pending_tasks.push(ProductScheduledTask {
+            id: "publish-obstacles".to_string(),
+            deps: vec!["build-obstacles".to_string()],
+            weight: 1,
+            kind: ProductScheduledTaskKind::ObstaclesPublish,
+        });
+        pending_tasks.push(ProductScheduledTask {
+            id: "current-artifacts".to_string(),
+            deps: cycles
+                .iter()
+                .map(|cycle| cycle_task_id(cycle, "bundle-manifest"))
+                .chain(std::iter::once("publish-obstacles".to_string()))
+                .collect(),
+            weight: 1,
+            kind: ProductScheduledTaskKind::CurrentArtifacts,
+        });
+        pending_tasks.push(ProductScheduledTask {
+            id: "product-unpack".to_string(),
+            deps: vec!["current-artifacts".to_string(), "publish-obstacles".to_string()],
+            weight: 1,
+            kind: ProductScheduledTaskKind::ProductUnpack,
+        });
+
+        let total_tasks = pending_tasks.len();
+        master_log.log(format!(
+            "product-scheduler-ready tasks={} work_unit_budget={} chart_and_data_weight=4 csup_weight=2 tpp_weight={} tpp_render_jobs_per_run={} light_weight=1 resource_index_weight=2",
+            total_tasks, work_unit_budget, TPP_RENDER_WEIGHT, TPP_RENDER_JOBS_PER_RUN
+        ))?;
+
+        let (tx, rx) = crossbeam_channel::unbounded::<(
+            String,
+            usize,
+            anyhow::Result<ProductTaskCompletion>,
+        )>();
+        let mut running_jobs = 0_usize;
+        let mut running_units = 0_usize;
+        let mut launched_tasks = 0_usize;
+        let mut completed_tasks = 0_usize;
+        let mut completed_ids = std::collections::BTreeSet::<String>::new();
+        let mut task_values = BTreeMap::<String, ProductTaskValue>::new();
+        let mut task_node_records = BTreeMap::<String, Vec<NodeRecord>>::new();
+        let mut worker_threads =
+            BTreeMap::<String, thread::JoinHandle<anyhow::Result<()>>>::new();
+
+        while running_jobs > 0 || !pending_tasks.is_empty() {
+            let mut launched_any = false;
+            let mut index = 0_usize;
+            while index < pending_tasks.len() {
+                let task = &pending_tasks[index];
+                let deps_ready = task.deps.iter().all(|dep| completed_ids.contains(dep));
+                let fits_budget = running_units + task.weight <= work_unit_budget;
+                if !deps_ready || !fits_budget {
+                    index += 1;
+                    continue;
+                }
+
+                let task = pending_tasks.remove(index);
+                let task_id = task.id.clone();
+                let task_weight = task.weight;
+                launched_tasks += 1;
+                master_log.log(format!(
+                    "launch {} launched={}/{} completed={}/{} weight={} running_units={}/{}",
+                    task_id,
+                    launched_tasks,
+                    total_tasks,
+                    completed_tasks,
+                    total_tasks,
+                    task_weight,
+                    running_units + task_weight,
+                    work_unit_budget,
+                ))?;
+                let tx = tx.clone();
+                let config = config.clone();
+                let task_values_snapshot = task_values.clone();
+                let task_node_records_snapshot = task_node_records.clone();
+                let worker_task_id = task_id.clone();
+                let join_handle = thread::spawn(move || -> anyhow::Result<()> {
+                    let task_label = worker_task_id.clone();
+                    let completion_guard =
+                        ProductCompletionGuard::new(tx, worker_task_id.clone(), task_weight);
+                    let result = panic::catch_unwind(AssertUnwindSafe(|| match task.kind {
+                        ProductScheduledTaskKind::SourceUrls { cycle } => {
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle.clone());
+                            let (source_urls_dir, source_urls_record) =
+                                build_source_urls_node(&cycle_config)?;
+                            let chart_versions = [
+                                ("sec".to_string(), chart_family_version_label(&source_urls_dir, ChartFamily::Sec)?),
+                                ("tac".to_string(), chart_family_version_label(&source_urls_dir, ChartFamily::Tac)?),
+                                ("enr-l".to_string(), chart_family_version_label(&source_urls_dir, ChartFamily::EnrL)?),
+                                ("enr-h".to_string(), chart_family_version_label(&source_urls_dir, ChartFamily::EnrH)?),
+                            ]
+                            .into_iter()
+                            .collect::<BTreeMap<_, _>>();
+                            let csup_version = csup_version_label(&source_urls_dir)?;
+                            let tpp_versions = config
+                                .profile
+                                .tpp_regions()
+                                .iter()
+                                .map(|region| {
+                                    Ok((
+                                        region.code().to_ascii_lowercase(),
+                                        tpp_region_version_label(&source_urls_dir, *region)?,
+                                    ))
+                                })
+                                .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+                            let data_version = data_version_label(&source_urls_dir)?;
+                            let bundle_cycle = data_manifest_cycle(&source_urls_dir)?;
+                            let completion_detail = format!(
+                                "cycle bundle={} charts=sec:{} tac:{} enr-l:{} enr-h:{} csup:{} tpp={} data:{}",
+                                bundle_cycle,
+                                chart_versions["sec"],
+                                chart_versions["tac"],
+                                chart_versions["enr-l"],
+                                chart_versions["enr-h"],
+                                csup_version,
+                                config
+                                    .profile
+                                    .tpp_regions()
+                                    .iter()
+                                    .map(|region| {
+                                        let key = region.code().to_ascii_lowercase();
+                                        format!("{}:{}", key, tpp_versions[&key])
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(","),
+                                data_version,
+                            );
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![normalize_node_record_paths(
+                                    source_urls_record,
+                                    &cycle_config.build_root,
+                                )],
+                                value: ProductTaskValue::SourceUrls {
+                                    dir: source_urls_dir,
+                                    chart_versions,
+                                    csup_version,
+                                    tpp_versions,
+                                    data_version,
+                                    bundle_cycle: bundle_cycle.clone(),
+                                },
+                                completion_detail,
+                            })
+                        }
+                        ProductScheduledTaskKind::ChartRender { cycle, family } => {
+                            let source_urls = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "source-urls"))
+                            {
+                                Some(ProductTaskValue::SourceUrls { dir, .. }) => dir.clone(),
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let family_id = family_slug(family).to_string();
+                            let record = build_chart_render_node(
+                                &cycle_config,
+                                family,
+                                &cycle_config.chart_cutline_root,
+                                &source_urls.join(format!("charts-{family_id}/source_urls.jsonl")),
+                                cycle_config.fetch_jobs,
+                                cycle_config.cpu_jobs.min(8).max(1),
+                            )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
+                                value: ProductTaskValue::None,
+                                completion_detail: "cache_or_rebuild".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::CsupStage { cycle } => {
+                            let source_urls = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "source-urls"))
+                            {
+                                Some(ProductTaskValue::SourceUrls { dir, .. }) => dir.clone(),
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let record = build_csup_stage_node(
+                                &cycle_config,
+                                Path::new(""),
+                                &source_urls.join("csup/source_urls.jsonl"),
+                                cycle_config.fetch_jobs,
+                            )?;
+                            let work_dir = resolve_artifact_path(&cycle_config, output_path(&record, "work_dir")?);
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![normalize_node_record_paths(record.clone(), &cycle_config.build_root)],
+                                value: ProductTaskValue::CsupStage { record, work_dir },
+                                completion_detail: "cache_or_rebuild".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::CsupRender { cycle, region } => {
+                            let source_urls_key = cycle_task_id(&cycle, "source-urls");
+                            let source_urls = match task_values_snapshot.get(&source_urls_key) {
+                                Some(ProductTaskValue::SourceUrls { csup_version, .. }) => csup_version.clone(),
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                            let stage = match task_values_snapshot.get(&cycle_task_id(&cycle, "csup-stage")) {
+                                Some(ProductTaskValue::CsupStage { record, work_dir }) => (record.clone(), work_dir.clone()),
+                                _ => bail!("missing csup stage for cycle {cycle}"),
+                            };
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let record = build_csup_render_node(
+                                &cycle_config,
+                                region,
+                                &stage.1,
+                                &stage.0.fingerprint,
+                                &source_urls,
+                                cycle_config.cpu_jobs.max(1),
+                            )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
+                                value: ProductTaskValue::None,
+                                completion_detail: "cache_or_rebuild".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::TppRender { cycle, region } => {
+                            let source_urls = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "source-urls"))
+                            {
+                                Some(ProductTaskValue::SourceUrls { dir, .. }) => dir.clone(),
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let region_id = region.code().to_ascii_lowercase();
+                            let request = NativeTppRunRequest {
+                                region,
+                                source_repo: PathBuf::new(),
+                                run_root: PathBuf::new(),
+                                prefetch_source_urls: Some(
+                                    source_urls.join(format!("tpp-{region_id}/source_urls.jsonl")),
+                                ),
+                                fetch_jobs: cycle_config.fetch_jobs,
+                                render_jobs: TPP_RENDER_JOBS_PER_RUN,
+                                fetch_cache: Some(fetch_cache_config(&cycle_config)?),
+                            };
+                            let record = build_tpp_render_node(&cycle_config, &request)?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
+                                value: ProductTaskValue::None,
+                                completion_detail: "cache_or_rebuild".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::DataBase { cycle } => {
+                            let source_urls = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "source-urls"))
+                            {
+                                Some(ProductTaskValue::SourceUrls { dir, .. }) => dir.clone(),
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let records = build_data_nodes(&cycle_config, &source_urls, "data-base")?;
+                            let data_record = records
+                                .iter()
+                                .find(|record| record.name == "data-base")
+                                .cloned()
+                                .context("data-base task missing data node record")?;
+                            let zip = resolve_artifact_path(&cycle_config, output_path(&data_record, "zip")?);
+                            let main_db = resolve_artifact_path(&cycle_config, output_path(&data_record, "main_db")?);
+                            Ok(ProductTaskCompletion {
+                                node_records: records
+                                    .into_iter()
+                                    .map(|record| normalize_node_record_paths(record, &cycle_config.build_root))
+                                    .collect(),
+                                value: ProductTaskValue::Data { main_db, zip },
+                                completion_detail: "cache_or_rebuild".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::ChartPackage { cycle, family } => {
+                            let source_urls = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "source-urls"))
+                            {
+                                Some(ProductTaskValue::SourceUrls {
+                                    dir,
+                                    chart_versions,
+                                    ..
+                                }) => (dir.clone(), chart_versions.clone()),
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let family_id = family_slug(family).to_string();
+                            let started = Instant::now();
+                            let (records, source) = build_chart_package_nodes(
+                                &cycle_config,
+                                family,
+                                &source_urls.0,
+                                source_urls
+                                    .1
+                                    .get(&family_id)
+                                    .expect("chart family version should exist"),
+                            )?;
+                            let summary = summarize_package_records(&records);
+                            Ok(ProductTaskCompletion {
+                                node_records: records
+                                    .into_iter()
+                                    .map(|record| normalize_node_record_paths(record, &cycle_config.build_root))
+                                    .collect(),
+                                value: ProductTaskValue::ChartSource(source),
+                                completion_detail: format!(
+                                    "elapsed_ms={} regions={} cache_hits={} rebuilt={}",
+                                    started.elapsed().as_millis(),
+                                    summary.total,
+                                    summary.cache_hits,
+                                    summary.rebuilt,
+                                ),
+                            })
+                        }
+                        ProductScheduledTaskKind::CsupPackage { cycle } => {
+                            let source_urls = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "source-urls"))
+                            {
+                                Some(ProductTaskValue::SourceUrls {
+                                    dir,
+                                    csup_version,
+                                    ..
+                                }) => (dir.clone(), csup_version.clone()),
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let started = Instant::now();
+                            let (records, source) = build_csup_package_nodes(
+                                &cycle_config,
+                                &source_urls.0,
+                                &source_urls.1,
+                            )?;
+                            let summary = summarize_package_records(&records);
+                            Ok(ProductTaskCompletion {
+                                node_records: records
+                                    .into_iter()
+                                    .map(|record| normalize_node_record_paths(record, &cycle_config.build_root))
+                                    .collect(),
+                                value: ProductTaskValue::CsupSource(source),
+                                completion_detail: format!(
+                                    "elapsed_ms={} regions={} cache_hits={} rebuilt={}",
+                                    started.elapsed().as_millis(),
+                                    summary.total,
+                                    summary.cache_hits,
+                                    summary.rebuilt,
+                                ),
+                            })
+                        }
+                        ProductScheduledTaskKind::TppPackage { cycle, region } => {
+                            let source_urls = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "source-urls"))
+                            {
+                                Some(ProductTaskValue::SourceUrls {
+                                    dir,
+                                    tpp_versions,
+                                    ..
+                                }) => (dir.clone(), tpp_versions.clone()),
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let region_id = region.code().to_ascii_lowercase();
+                            let started = Instant::now();
+                            let (record, source) = build_tpp_package_node(
+                                &cycle_config,
+                                region,
+                                &source_urls.0.join(format!("tpp-{region_id}/source_urls.jsonl")),
+                                source_urls
+                                    .1
+                                    .get(&region_id)
+                                    .expect("tpp region version should exist"),
+                            )?;
+                            let cache_hit = record.cache_hit;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
+                                value: ProductTaskValue::TppSource(source),
+                                completion_detail: format!(
+                                    "elapsed_ms={} cache_hit={}",
+                                    started.elapsed().as_millis(),
+                                    cache_hit,
+                                ),
+                            })
+                        }
+                        ProductScheduledTaskKind::DataMatch { cycle } => {
+                            let source_urls = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "source-urls"))
+                            {
+                                Some(ProductTaskValue::SourceUrls { data_version, .. }) => {
+                                    data_version.clone()
+                                }
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                            let raw_data = match task_values_snapshot.get(&cycle_task_id(&cycle, "data-base")) {
+                                Some(ProductTaskValue::Data { main_db, zip }) => {
+                                    (main_db.clone(), zip.clone())
+                                }
+                                _ => bail!("missing data-base output for cycle {cycle}"),
+                            };
+                            let tpp_sources = config
+                                .profile
+                                .tpp_regions()
+                                .iter()
+                                .map(|region| {
+                                    let key = cycle_task_id(
+                                        &cycle,
+                                        &format!("tpp-{}-package", region.code().to_ascii_lowercase()),
+                                    );
+                                    match task_values_snapshot.get(&key) {
+                                        Some(ProductTaskValue::TppSource(source)) => Ok((*region, source.clone())),
+                                        _ => bail!("missing tpp package source for {}", region.code()),
+                                    }
+                                })
+                                .collect::<anyhow::Result<Vec<_>>>()?;
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let record = build_data_match_node(
+                                &cycle_config,
+                                &raw_data.0,
+                                &raw_data.1,
+                                &source_urls,
+                                &tpp_sources,
+                            )?;
+                            let cache_hit = record.cache_hit;
+                            let zip = resolve_artifact_path(&cycle_config, output_path(&record, "zip")?);
+                            let main_db = resolve_artifact_path(&cycle_config, output_path(&record, "main_db")?);
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
+                                value: ProductTaskValue::Data { main_db, zip },
+                                completion_detail: format!("cache_hit={}", cache_hit),
+                            })
+                        }
+                        ProductScheduledTaskKind::Vectors { cycle } => {
+                            let data = match task_values_snapshot.get(&cycle_task_id(&cycle, "data")) {
+                                Some(ProductTaskValue::Data { main_db, .. }) => main_db.clone(),
+                                _ => bail!("missing data output for cycle {cycle}"),
+                            };
+                            let data_version = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "source-urls"))
+                            {
+                                Some(ProductTaskValue::SourceUrls { data_version, .. }) => {
+                                    data_version.clone()
+                                }
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let record = build_vectors_node(&cycle_config, &data, &data_version)?;
+                            let cache_hit = record.cache_hit;
+                            let zip = resolve_artifact_path(&cycle_config, output_path(&record, "zip")?);
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
+                                value: ProductTaskValue::ZipArtifact { zip },
+                                completion_detail: format!("cache_hit={}", cache_hit),
+                            })
+                        }
+                        ProductScheduledTaskKind::ResourceIndex { cycle } => {
+                            let data_zip = match task_values_snapshot.get(&cycle_task_id(&cycle, "data")) {
+                                Some(ProductTaskValue::Data { zip, .. }) => zip.clone(),
+                                _ => bail!("missing data output for cycle {cycle}"),
+                            };
+                            let chart_sources = ["sec", "tac", "enr-l", "enr-h"]
+                                .iter()
+                                .map(|family_id| {
+                                    let key = cycle_task_id(&cycle, &format!("charts-{family_id}-package"));
+                                    match task_values_snapshot.get(&key) {
+                                        Some(ProductTaskValue::ChartSource(source)) => Ok(source.clone()),
+                                        _ => bail!("missing chart source for cycle {cycle} family {family_id}"),
+                                    }
+                                })
+                                .collect::<anyhow::Result<Vec<_>>>()?;
+                            let csup_sources = vec![match task_values_snapshot.get(&cycle_task_id(&cycle, "csup-package")) {
+                                Some(ProductTaskValue::CsupSource(source)) => source.clone(),
+                                _ => bail!("missing csup package source for cycle {cycle}"),
+                            }];
+                            let tpp_sources = config
+                                .profile
+                                .tpp_regions()
+                                .iter()
+                                .map(|region| {
+                                    let key = cycle_task_id(
+                                        &cycle,
+                                        &format!("tpp-{}-package", region.code().to_ascii_lowercase()),
+                                    );
+                                    match task_values_snapshot.get(&key) {
+                                        Some(ProductTaskValue::TppSource(source)) => Ok(source.clone()),
+                                        _ => bail!("missing tpp package source for cycle {cycle} {}", region.code()),
+                                    }
+                                })
+                                .collect::<anyhow::Result<Vec<_>>>()?;
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let record = build_resource_index_node(
+                                &cycle_config,
+                                &data_zip,
+                                chart_sources,
+                                tpp_sources,
+                                csup_sources,
+                            )?;
+                            let cache_hit = record.cache_hit;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
+                                value: ProductTaskValue::None,
+                                completion_detail: format!("cache_hit={}", cache_hit),
+                            })
+                        }
+                        ProductScheduledTaskKind::ChartUnpack {
+                            cycle,
+                            family,
+                            region,
+                        } => {
+                            let key = cycle_task_id(&cycle, &format!("charts-{}-package", family_slug(family)));
+                            let source = match task_values_snapshot.get(&key) {
+                                Some(ProductTaskValue::ChartSource(source)) => source.clone(),
+                                _ => bail!("missing chart source for cycle {cycle}"),
+                            };
+                            let package = package_record_for_region(&source.package_outputs_path, region)?;
+                            let zip_path = source.package_root.join(&package.zip);
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let unpacked_root = published_unpacked_root(&cycle_config)?;
+                            let published_filename = canonical_package_filename(
+                                family_slug(family),
+                                &region.code().to_ascii_lowercase(),
+                                &package.zip,
+                            )?;
+                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
+                                &zip_path,
+                                &source.package_root,
+                                &unpacked_root,
+                                &published_filename,
+                            )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::None,
+                                completion_detail: format!(
+                                    "cache_hit={} unpack_dir={}",
+                                    cache_hit,
+                                    unpack_dir.display()
+                                ),
+                            })
+                        }
+                        ProductScheduledTaskKind::CsupUnpack { cycle, region } => {
+                            let source = match task_values_snapshot.get(&cycle_task_id(&cycle, "csup-package")) {
+                                Some(ProductTaskValue::CsupSource(source)) => source.clone(),
+                                _ => bail!("missing csup source for cycle {cycle}"),
+                            };
+                            let package = package_record_for_region(&source.package_outputs_path, region)?;
+                            let zip_path = source.package_root.join(&package.zip);
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let unpacked_root = published_unpacked_root(&cycle_config)?;
+                            let published_filename = canonical_package_filename(
+                                "csup",
+                                &region.code().to_ascii_lowercase(),
+                                &package.zip,
+                            )?;
+                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
+                                &zip_path,
+                                &source.package_root,
+                                &unpacked_root,
+                                &published_filename,
+                            )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::None,
+                                completion_detail: format!(
+                                    "cache_hit={} unpack_dir={}",
+                                    cache_hit,
+                                    unpack_dir.display()
+                                ),
+                            })
+                        }
+                        ProductScheduledTaskKind::TppUnpack { cycle, region } => {
+                            let region_id = region.code().to_ascii_lowercase();
+                            let source = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, &format!("tpp-{region_id}-package")))
+                            {
+                                Some(ProductTaskValue::TppSource(source)) => source.clone(),
+                                _ => bail!("missing tpp source for cycle {cycle}"),
+                            };
+                            let package = package_record_for_region(&source.package_outputs_path, region)?;
+                            let zip_path = source.package_root.join(&package.zip);
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let unpacked_root = published_unpacked_root(&cycle_config)?;
+                            let published_filename = canonical_package_filename(
+                                "tpp",
+                                &region.code().to_ascii_lowercase(),
+                                &package.zip,
+                            )?;
+                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
+                                &zip_path,
+                                &source.package_root,
+                                &unpacked_root,
+                                &published_filename,
+                            )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::None,
+                                completion_detail: format!(
+                                    "cache_hit={} unpack_dir={}",
+                                    cache_hit,
+                                    unpack_dir.display()
+                                ),
+                            })
+                        }
+                        ProductScheduledTaskKind::DataUnpack { cycle } => {
+                            let zip = match task_values_snapshot.get(&cycle_task_id(&cycle, "data")) {
+                                Some(ProductTaskValue::Data { zip, .. }) => zip.clone(),
+                                _ => bail!("missing data zip for cycle {cycle}"),
+                            };
+                            let bundle_cycle = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "source-urls"))
+                            {
+                                Some(ProductTaskValue::SourceUrls { bundle_cycle, .. }) => bundle_cycle.clone(),
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let unpacked_root = published_unpacked_root(&cycle_config)?;
+                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
+                                &zip,
+                                zip.parent().unwrap_or_else(|| Path::new("/")),
+                                &unpacked_root,
+                                &format!("data_{bundle_cycle}.zip"),
+                            )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::None,
+                                completion_detail: format!(
+                                    "cache_hit={} unpack_dir={}",
+                                    cache_hit,
+                                    unpack_dir.display()
+                                ),
+                            })
+                        }
+                        ProductScheduledTaskKind::VectorsUnpack { cycle } => {
+                            let zip = match task_values_snapshot.get(&cycle_task_id(&cycle, "vectors")) {
+                                Some(ProductTaskValue::ZipArtifact { zip }) => zip.clone(),
+                                _ => bail!("missing vectors zip for cycle {cycle}"),
+                            };
+                            let bundle_cycle = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "source-urls"))
+                            {
+                                Some(ProductTaskValue::SourceUrls { bundle_cycle, .. }) => bundle_cycle.clone(),
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle);
+                            let unpacked_root = published_unpacked_root(&cycle_config)?;
+                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
+                                &zip,
+                                zip.parent().unwrap_or_else(|| Path::new("/")),
+                                &unpacked_root,
+                                &format!("vectors_data_{bundle_cycle}.zip"),
+                            )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::None,
+                                completion_detail: format!(
+                                    "cache_hit={} unpack_dir={}",
+                                    cache_hit,
+                                    unpack_dir.display()
+                                ),
+                            })
+                        }
+                        ProductScheduledTaskKind::BundleManifest { cycle } => {
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle.clone());
+                            let source_urls = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "source-urls"))
+                            {
+                                Some(ProductTaskValue::SourceUrls { bundle_cycle, .. }) => bundle_cycle.clone(),
+                                _ => bail!("missing source urls for cycle {cycle}"),
+                            };
+                            let mut node_records = task_node_records_snapshot
+                                .iter()
+                                .filter(|(task_id, _)| task_id.starts_with(&format!("{cycle}:")))
+                                .flat_map(|(_, records)| records.clone())
+                                .collect::<Vec<_>>();
+                            node_records.sort_by(|left, right| left.name.cmp(&right.name));
+                            let build_manifest = BuildManifest {
+                                schema_version: 1,
+                                profile: cycle_config.profile.as_str().to_string(),
+                                cycle: source_urls.clone(),
+                                build_root: relative_product_build_path(&cycle_config.build_root),
+                                generated_at_utc: manifest_generated_at(&node_records),
+                                fetch_cache_root: relative_artifact_path(
+                                    &cycle_config.fetch_cache_root,
+                                    &cycle_config.build_root,
+                                ),
+                                fetch_cache_mode: cycle_config.fetch_cache_mode.clone(),
+                                nodes: node_records,
+                            };
+                            let build_manifest_path =
+                                internal_build_manifest_path(&cycle_config, &source_urls)?;
+                            fs::write(
+                                &build_manifest_path,
+                                serde_json::to_vec_pretty(&build_manifest)
+                                    .context("failed to encode product build manifest")?,
+                            )
+                            .with_context(|| {
+                                format!("failed to write {}", build_manifest_path.display())
+                            })?;
+                            let bundle_manifest = build_bundle_manifest(&cycle_config, &build_manifest)?;
+                            let bundle_manifest_path =
+                                cycle_config.build_root.join(format!("bundle_{source_urls}.json"));
+                            fs::write(
+                                &bundle_manifest_path,
+                                serde_json::to_vec_pretty(&bundle_manifest)
+                                    .context("failed to encode bundle manifest")?,
+                            )
+                            .with_context(|| {
+                                format!("failed to write {}", bundle_manifest_path.display())
+                            })?;
+                            sync_unpacked_metadata(
+                                &cycle_config,
+                                &bundle_manifest,
+                                &build_manifest,
+                                &bundle_manifest_path,
+                            )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::CycleManifest {
+                                    path: bundle_manifest_path,
+                                },
+                                completion_detail: "published".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::ObstaclesBuild => {
+                            let (manifest_path, stats_path, zip_path) = build_obstacles_product(&config)?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::ObstaclesBuilt {
+                                    manifest_path,
+                                    stats_path,
+                                    zip_path,
+                                },
+                                completion_detail: "cache_or_rebuild".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::ObstaclesPublish => {
+                            let built = match task_values_snapshot.get("build-obstacles") {
+                                Some(ProductTaskValue::ObstaclesBuilt { zip_path, .. }) => zip_path.clone(),
+                                _ => bail!("missing obstacle build output"),
+                            };
+                            let (published_zip, sha256, size_bytes) =
+                                publish_content_addressed_obstacle_zip(&config.build_root, &built)?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::PublishedObstacle {
+                                    source_zip_path: built,
+                                    published_zip,
+                                    sha256,
+                                    size_bytes,
+                                },
+                                completion_detail: "published".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::CurrentArtifacts => {
+                            let published_obstacle = match task_values_snapshot.get("publish-obstacles") {
+                                Some(ProductTaskValue::PublishedObstacle {
+                                    published_zip,
+                                    sha256,
+                                    size_bytes,
+                                    ..
+                                }) => (published_zip.clone(), sha256.clone(), *size_bytes),
+                                _ => bail!("missing published obstacle output"),
+                            };
+                            let current_artifacts_path = write_current_artifacts_manifest(
+                                &config.build_root,
+                                Utc::now().date_naive(),
+                                &published_obstacle.0,
+                                &published_obstacle.1,
+                                published_obstacle.2,
+                            )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::CurrentArtifacts {
+                                    path: current_artifacts_path,
+                                },
+                                completion_detail: "published".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::ProductUnpack => {
+                            let current_artifacts_path = match task_values_snapshot.get("current-artifacts") {
+                                Some(ProductTaskValue::CurrentArtifacts { path }) => path.clone(),
+                                _ => bail!("missing current artifacts output"),
+                            };
+                            let obstacle = match task_values_snapshot.get("publish-obstacles") {
+                                Some(ProductTaskValue::PublishedObstacle {
+                                    source_zip_path,
+                                    published_zip,
+                                    ..
+                                }) => (source_zip_path.clone(), published_zip.clone()),
+                                _ => bail!("missing published obstacle output"),
+                            };
+                            sync_product_level_unpacked(
+                                &config.build_root,
+                                &current_artifacts_path,
+                                &obstacle.0,
+                                &obstacle.1,
+                            )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::None,
+                                completion_detail: "synced".to_string(),
+                            })
+                        }
+                    }))
+                    .unwrap_or_else(|panic_payload| {
+                        let panic_text = if let Some(text) = panic_payload.downcast_ref::<&str>() {
+                            (*text).to_string()
+                        } else if let Some(text) = panic_payload.downcast_ref::<String>() {
+                            text.clone()
+                        } else {
+                            "unknown panic payload".to_string()
+                        };
+                        Err(anyhow::anyhow!("product task thread panicked: {task_label}: {panic_text}"))
+                    });
+                    completion_guard.send(result);
+                    Ok(())
+                });
+                worker_threads.insert(task_id.clone(), join_handle);
+                running_jobs += 1;
+                running_units += task_weight;
+                launched_any = true;
+            }
+
+            if running_jobs == 0 {
+                if pending_tasks.is_empty() {
+                    break;
+                }
+                bail!("product scheduler deadlock: no runnable tasks remain");
+            }
+            if !launched_any {
+                // wait for a running task to free capacity or satisfy dependencies
+            }
+
+            let (task_id, task_weight, result) = loop {
+                match rx.recv_timeout(Duration::from_secs(2)) {
+                    Ok(message) => break message,
+                    Err(RecvTimeoutError::Timeout) => {
+                        master_log.log(format!(
+                            "product-scheduler-wait running_jobs={} pending_tasks={} running_units={}/{}",
+                            running_jobs,
+                            pending_tasks.len(),
+                            running_units,
+                            work_unit_budget,
+                        ))?;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        bail!("product scheduler channel closed unexpectedly");
+                    }
+                }
+            };
+            running_jobs -= 1;
+            running_units = running_units.saturating_sub(task_weight);
+            if let Some(handle) = worker_threads.remove(&task_id) {
+                handle
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("failed to join product worker {task_id}"))??;
+            }
+            match result {
+                Ok(completion) => {
+                    completed_tasks += 1;
+                    task_node_records.insert(task_id.clone(), completion.node_records.clone());
+                    completed_ids.insert(task_id.clone());
+                    task_values.insert(task_id.clone(), completion.value);
+                    master_log.log(format!(
+                        "complete {} completed={}/{} running_units={}/{} {}",
+                        task_id,
+                        completed_tasks,
+                        total_tasks,
+                        running_units,
+                        work_unit_budget,
+                        completion.completion_detail,
+                    ))?;
+                }
+                Err(err) => {
+                    master_log.log(format!("complete {task_id} FAIL error={err}"))?;
+                    return Err(err);
+                }
+            }
+        }
+
+        let mut cycle_manifest_paths = cycles
+            .iter()
+            .map(|cycle| match task_values.get(&cycle_task_id(cycle, "bundle-manifest")) {
+                Some(ProductTaskValue::CycleManifest { path }) => Ok(path.clone()),
+                _ => bail!("missing cycle manifest for {cycle}"),
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        cycle_manifest_paths.sort();
+        let (obstacle_manifest_path, obstacle_stats_path, obstacle_zip_path) =
+            match task_values.get("build-obstacles") {
+                Some(ProductTaskValue::ObstaclesBuilt {
+                    manifest_path,
+                    stats_path,
+                    zip_path,
+                }) => (manifest_path.clone(), stats_path.clone(), zip_path.clone()),
+                _ => bail!("missing obstacle build outputs"),
+            };
+        let published_obstacle_zip = match task_values.get("publish-obstacles") {
+            Some(ProductTaskValue::PublishedObstacle { published_zip, .. }) => published_zip.clone(),
+            _ => bail!("missing published obstacle output"),
+        };
+        let current_artifacts_path = match task_values.get("current-artifacts") {
+            Some(ProductTaskValue::CurrentArtifacts { path }) => path.clone(),
+            _ => bail!("missing current artifacts output"),
+        };
+
+        Ok(ProductBuildResult {
+            cycle_manifest_paths,
+            current_artifacts_path,
+            obstacle_manifest_path,
+            obstacle_stats_path,
+            obstacle_zip_path,
+            published_obstacle_zip,
+        })
+    })();
+
+    match result {
+        Ok(result) => {
+            master_log.log(format!(
+                "complete PASS current_artifacts={}",
+                result.current_artifacts_path.display()
+            ))?;
+            Ok(result)
+        }
+        Err(err) => {
+            master_log.log(format!("complete FAIL error={err}"))?;
+            Err(err)
+        }
+    }
 }
 
 pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
@@ -1215,7 +2555,7 @@ fn build_bundle_manifest(
         .packages
         .iter()
         .map(|package| {
-            let package_path = resolve_product_build_path(config, &package.artifact_path);
+            let package_path = resolve_bundle_package_source_path(config, build_manifest, package)?;
             let filename = canonical_package_filename(
                 &package.family_id,
                 &package.region_id,
@@ -1246,6 +2586,10 @@ fn build_bundle_manifest(
         &data_filename,
         &package_artifacts,
     );
+    let published_resource_index_path = write_published_json(
+        &config.build_root.join(format!("resource_index_{cycle}.json")),
+        &public_resource_index,
+    )?;
 
     Ok(BundleManifest {
         schema_version: 1,
@@ -1258,12 +2602,8 @@ fn build_bundle_manifest(
             &catalog_path,
             &format!("catalog_{cycle}.json"),
         )?,
-        resource_index: publish_bundle_artifact(
-            config,
-            &write_published_json(
-                &config.build_root.join(format!("resource_index_{cycle}.json")),
-                &public_resource_index,
-            )?,
+        resource_index: bundle_artifact(
+            &published_resource_index_path,
             &format!("resource_index_{cycle}.json"),
         )?,
         data: publish_bundle_artifact(config, &data_zip_path, &data_filename)?,
@@ -1276,6 +2616,25 @@ fn build_bundle_manifest(
     })
 }
 
+fn resolve_bundle_package_source_path(
+    config: &ProductBuildConfig,
+    build_manifest: &BuildManifest,
+    package: &preprocessor_resource_index::ResourcePackage,
+) -> anyhow::Result<PathBuf> {
+    let region_id = package.region_id.to_ascii_lowercase();
+    let node_name = match package.family_id.as_str() {
+        "csup" => format!("csup-package-{region_id}"),
+        "tpp" => format!("tpp-{region_id}-package"),
+        family_id => format!("charts-{family_id}-package-{region_id}"),
+    };
+    let record = build_manifest
+        .nodes
+        .iter()
+        .find(|node| node.name == node_name)
+        .with_context(|| format!("build manifest missing package node {node_name}"))?;
+    Ok(resolve_artifact_path(config, output_path(record, "zip")?))
+}
+
 fn output_path<'a>(record: &'a NodeRecord, key: &str) -> anyhow::Result<&'a str> {
     record
         .outputs
@@ -1285,10 +2644,6 @@ fn output_path<'a>(record: &'a NodeRecord, key: &str) -> anyhow::Result<&'a str>
 }
 
 fn resolve_artifact_path(config: &ProductBuildConfig, relative_path: &str) -> PathBuf {
-    artifact_root_from_build_root(&config.build_root).join(relative_path)
-}
-
-fn resolve_product_build_path(config: &ProductBuildConfig, relative_path: &str) -> PathBuf {
     artifact_root_from_build_root(&config.build_root).join(relative_path)
 }
 
@@ -1505,6 +2860,230 @@ pub fn sync_product_level_unpacked(
     Ok(())
 }
 
+fn product_cycles_to_build(config: &ProductBuildConfig) -> anyhow::Result<Vec<String>> {
+    if let Some(cycle) = &config.target_cycle {
+        return Ok(vec![cycle.clone()]);
+    }
+    let as_of_date = Utc::now().date_naive();
+    let mut cycles = discover_published_cycles(Some(&FetchCacheConfig {
+        root: config.fetch_cache_root.clone(),
+        mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
+    }))?
+    .into_iter()
+    .filter(|cycle| match cycle_effective_date(cycle) {
+        Ok(effective) => effective + chrono::Duration::days(28) >= as_of_date,
+        Err(_) => false,
+    })
+    .collect::<Vec<_>>();
+    cycles.sort();
+    cycles.dedup();
+    if cycles.is_empty() {
+        anyhow::bail!("no published FAA cycles are currently buildable");
+    }
+    Ok(cycles)
+}
+
+fn obstacle_snapshot_label(value: &str) -> anyhow::Result<String> {
+    Ok(
+        NaiveDate::parse_from_str(value, "%Y-%m-%d")
+            .with_context(|| format!("failed to parse obstacle snapshot date {value}"))?
+            .format("%Y.%m.%d")
+            .to_string(),
+    )
+}
+
+fn build_obstacles_product(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<(PathBuf, PathBuf, PathBuf)> {
+    let artifact_root = artifact_root_from_build_root(&config.build_root).to_path_buf();
+    let snapshot_date = env::var("AEROBAG_OBSTACLE_SNAPSHOT_DATE")
+        .unwrap_or_else(|_| Utc::now().format("%Y-%m-%d").to_string());
+    let snapshot_label = obstacle_snapshot_label(&snapshot_date)?;
+    let build_root = artifact_root
+        .join("private-work")
+        .join("obstacles")
+        .join(&snapshot_label);
+    let output_dir = build_root.join("output");
+    let manifest_path = output_dir.join(format!("obstacles_{snapshot_label}"));
+    let stats_path = output_dir.join("stats.json");
+    let zip_path = output_dir.join(format!("obstacles_{snapshot_label}.zip"));
+    if manifest_path.is_file() && stats_path.is_file() && zip_path.is_file() {
+        return Ok((manifest_path, stats_path, zip_path));
+    }
+
+    let fetch_cache = FetchCacheConfig {
+        root: config.fetch_cache_root.clone(),
+        mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
+    };
+    let work_dir = build_root.join("work");
+    fs::create_dir_all(&work_dir)
+        .with_context(|| format!("failed to create {}", work_dir.display()))?;
+    let provenance_dir = build_root.join("meta").join("provenance").join("obstacles");
+    fs::create_dir_all(&provenance_dir)
+        .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
+    let logical_url = format!(
+        "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_{snapshot_label}.zip"
+    );
+    fs::write(
+        provenance_dir.join("source_urls.jsonl"),
+        format!(
+            "{{\"event\":\"source_url\",\"label\":\"obstacles\",\"url\":\"{}\"}}\n",
+            logical_url
+        ),
+    )
+    .with_context(|| {
+        format!(
+            "failed to write {}",
+            provenance_dir.join("source_urls.jsonl").display()
+        )
+    })?;
+    prefetch_archives_with_provenance(
+        &[logical_url],
+        &work_dir,
+        config.fetch_jobs,
+        Some(&fetch_cache),
+        &provenance_dir,
+        "obstacles",
+    )?;
+    let result = build_obstacle_dataset(&BuildObstacleDatasetRequest {
+        input_dir: work_dir,
+        output_dir,
+        version_label: snapshot_label,
+    })?;
+    Ok((result.manifest_path, result.stats_path, result.zip_path))
+}
+
+fn publish_content_addressed_obstacle_zip(
+    build_root: &Path,
+    obstacle_zip_path: &Path,
+) -> anyhow::Result<(PathBuf, String, u64)> {
+    let sha256 = hash_file(obstacle_zip_path)?;
+    let size_bytes = fs::metadata(obstacle_zip_path)
+        .with_context(|| format!("failed to stat {}", obstacle_zip_path.display()))?
+        .len();
+    let published_path = build_root.join(format!("obstacles_{sha256}.zip"));
+    if !published_path.is_file() {
+        fs::copy(obstacle_zip_path, &published_path).with_context(|| {
+            format!(
+                "failed to copy {} to {}",
+                obstacle_zip_path.display(),
+                published_path.display()
+            )
+        })?;
+    }
+    Ok((published_path, sha256, size_bytes))
+}
+
+fn build_current_bundle_entries(
+    build_root: &Path,
+    as_of_date: NaiveDate,
+) -> anyhow::Result<Vec<CurrentBundleEntry>> {
+    let mut bundle_paths = fs::read_dir(build_root)
+        .with_context(|| format!("failed to read {}", build_root.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to iterate {}", build_root.display()))?
+        .into_iter()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("bundle_") && name.ends_with(".json"))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    bundle_paths.sort();
+
+    let mut bundles = Vec::new();
+    for bundle_path in bundle_paths {
+        let bundle_manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(&bundle_path)
+                .with_context(|| format!("failed to read {}", bundle_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+        let bundle_cycle = bundle_manifest
+            .get("cycle")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing top-level cycle"))?;
+        let file_cycle = bundle_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| stem.strip_prefix("bundle_"))
+            .unwrap_or("unknown");
+        if bundle_cycle != file_cycle {
+            anyhow::bail!(
+                "bundle cycle mismatch for {}: payload cycle {} != filename cycle {}",
+                bundle_path.display(),
+                bundle_cycle,
+                file_cycle
+            );
+        }
+        let start_valid = bundle_manifest
+            .get("start_valid")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing start_valid"))?;
+        let end_valid = bundle_manifest
+            .get("end_valid")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing end_valid"))?;
+        let end_valid_date = NaiveDate::parse_from_str(end_valid, "%Y-%m-%d")
+            .with_context(|| format!("failed to parse bundle end_valid {end_valid}"))?;
+        if end_valid_date < as_of_date {
+            continue;
+        }
+        bundles.push(CurrentBundleEntry {
+            filename: bundle_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            cycle: bundle_cycle.to_string(),
+            start_valid: start_valid.to_string(),
+            end_valid: end_valid.to_string(),
+            checksum_sha256: hash_file(&bundle_path)?,
+            size_bytes: fs::metadata(&bundle_path)
+                .with_context(|| format!("failed to stat {}", bundle_path.display()))?
+                .len(),
+        });
+    }
+    Ok(bundles)
+}
+
+fn write_current_artifacts_manifest(
+    build_root: &Path,
+    as_of_date: NaiveDate,
+    published_obstacle_zip: &Path,
+    obstacle_sha256: &str,
+    obstacle_size_bytes: u64,
+) -> anyhow::Result<PathBuf> {
+    let bundles = build_current_bundle_entries(build_root, as_of_date)?;
+    let published_date = as_of_date.format("%Y-%m-%d").to_string();
+    let manifest = CurrentArtifactsManifest {
+        schema_version: 1,
+        as_of_date: published_date.clone(),
+        bundles,
+        obstacles: CurrentObstacleEntry {
+            filename: published_obstacle_zip
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            published_date: published_date.clone(),
+            checksum_sha256: obstacle_sha256.to_string(),
+            size_bytes: obstacle_size_bytes,
+        },
+    };
+    let manifest_path = build_root.join(format!(
+        "current_artifacts_{}.json",
+        as_of_date.format("%Y%m%d")
+    ));
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).context("failed to encode current artifacts manifest")?,
+    )
+    .with_context(|| format!("failed to write {}", manifest_path.display()))?;
+    Ok(manifest_path)
+}
+
 fn remove_legacy_unpacked_subtree(unpacked_root: &Path) -> anyhow::Result<()> {
     let legacy = unpacked_root.join("production");
     if legacy.exists() {
@@ -1577,14 +3156,6 @@ fn publish_bundle_artifact(
 
 fn publish_flat_artifact(source_path: &Path, published_path: &Path) -> anyhow::Result<()> {
     if published_path.exists() {
-        let existing_same = fs::metadata(published_path)
-            .and_then(|meta| fs::metadata(source_path).map(|src| (meta, src)))
-            .map(|(left, right)| left.len() == right.len())
-            .unwrap_or(false)
-            && hash_file(published_path)? == hash_file(source_path)?;
-        if existing_same {
-            return Ok(());
-        }
         fs::remove_file(published_path)
             .with_context(|| format!("failed to remove {}", published_path.display()))?;
     }
@@ -3408,8 +4979,11 @@ struct MasterLog {
 
 impl MasterLog {
     fn create(path: &Path) -> anyhow::Result<Self> {
-        let file =
-            File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
         Ok(Self {
             start: Instant::now(),
             file,
@@ -3418,14 +4992,16 @@ impl MasterLog {
 
     fn log(&mut self, message: impl AsRef<str>) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
-        writeln!(
-            self.file,
+        let line = format!(
             "{} {} {}",
             now,
             format_elapsed(self.start.elapsed().as_secs()),
             message.as_ref()
-        )
-        .context("failed to write master log")?;
+        );
+        self.file
+            .write_all(line.as_bytes())
+            .and_then(|_| self.file.write_all(b"\n"))
+            .context("failed to write master log")?;
         self.file.flush().context("failed to flush master log")?;
         Ok(())
     }

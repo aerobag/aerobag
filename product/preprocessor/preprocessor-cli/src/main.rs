@@ -6,10 +6,9 @@ use std::{
 };
 
 use anyhow::Context;
-use chrono::{Duration, NaiveDate, Utc};
+use chrono::{NaiveDate, Utc};
 mod emit_source_urls;
 mod product_build;
-use crate::emit_source_urls::{cycle_effective_date, discover_published_cycles};
 use preprocessor_charts::{
     build_family_tiles, build_family_vrts, likely_current_bottleneck, package_family_regions,
     phase_plan, run_family, run_native_family, ChartRunRequest, NativeChartRunRequest,
@@ -37,10 +36,9 @@ use preprocessor_vectors::{
     build_obstacle_dataset, build_vectors_dataset, BuildObstacleDatasetRequest, BuildVectorsRequest,
 };
 use product_build::{
-    build_cycle, default_artifact_write_path, explain_product_build, maybe_reexec_build_cycle_under_cgroup,
-    sync_product_level_unpacked, ProductBuildConfig,
+    build_cycle, build_product, default_artifact_write_path, explain_product_build,
+    maybe_reexec_build_cycle_under_cgroup, ProductBuildConfig,
 };
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 fn load_manifest(run_root: &PathBuf) -> anyhow::Result<CaptureManifest> {
@@ -329,196 +327,6 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
         version_label: snapshot_label,
     })?;
     Ok((result.manifest_path, result.stats_path, result.zip_path))
-}
-
-fn product_cycles_to_build(config: &product_build::ProductBuildConfig) -> anyhow::Result<Vec<String>> {
-    if let Some(cycle) = &config.target_cycle {
-        return Ok(vec![cycle.clone()]);
-    }
-    let as_of_date = Utc::now().date_naive();
-    let mut cycles = discover_published_cycles(Some(&FetchCacheConfig {
-        root: config.fetch_cache_root.clone(),
-        mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
-    }))?
-        .into_iter()
-        .filter(|cycle| match cycle_effective_date(cycle) {
-            Ok(effective) => effective + Duration::days(28) >= as_of_date,
-            Err(_) => false,
-        })
-        .collect::<Vec<_>>();
-    cycles.sort();
-    cycles.dedup();
-    if cycles.is_empty() {
-        anyhow::bail!("no published FAA cycles are currently buildable");
-    }
-    Ok(cycles)
-}
-
-#[derive(Debug, Serialize)]
-struct CurrentArtifactsManifest {
-    schema_version: u32,
-    as_of_date: String,
-    bundles: Vec<CurrentBundleEntry>,
-    obstacles: CurrentObstacleEntry,
-}
-
-#[derive(Debug, Serialize)]
-struct CurrentBundleEntry {
-    filename: String,
-    cycle: String,
-    start_valid: String,
-    end_valid: String,
-    checksum_sha256: String,
-    size_bytes: u64,
-}
-
-#[derive(Debug, Serialize)]
-struct CurrentObstacleEntry {
-    filename: String,
-    published_date: String,
-    checksum_sha256: String,
-    size_bytes: u64,
-}
-
-fn publish_content_addressed_obstacle_zip(
-    build_root: &Path,
-    obstacle_zip_path: &Path,
-) -> anyhow::Result<(PathBuf, String, u64)> {
-    let sha256 = hash_file(obstacle_zip_path)?;
-    let size_bytes = fs::metadata(obstacle_zip_path)
-        .with_context(|| format!("failed to stat {}", obstacle_zip_path.display()))?
-        .len();
-    let published_path = build_root.join(format!("obstacles_{sha256}.zip"));
-    if !published_path.is_file() {
-        fs::copy(obstacle_zip_path, &published_path).with_context(|| {
-            format!(
-                "failed to copy {} to {}",
-                obstacle_zip_path.display(),
-                published_path.display()
-            )
-        })?;
-    }
-    Ok((published_path, sha256, size_bytes))
-}
-
-fn build_current_bundle_entries(
-    build_root: &Path,
-    as_of_date: NaiveDate,
-) -> anyhow::Result<Vec<CurrentBundleEntry>> {
-    let mut bundle_paths = fs::read_dir(build_root)
-        .with_context(|| format!("failed to read {}", build_root.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("failed to iterate {}", build_root.display()))?
-        .into_iter()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("bundle_") && name.ends_with(".json"))
-                .unwrap_or(false)
-        })
-        .collect::<Vec<_>>();
-    bundle_paths.sort();
-
-    let mut bundles = Vec::new();
-    for bundle_path in bundle_paths {
-        let bundle_manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(&bundle_path)
-                .with_context(|| format!("failed to read {}", bundle_path.display()))?,
-        )
-        .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
-        let bundle_cycle = bundle_manifest
-            .get("cycle")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing top-level cycle"))?;
-        let file_cycle = bundle_path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .and_then(|stem| stem.strip_prefix("bundle_"))
-            .unwrap_or("unknown");
-        if bundle_cycle != file_cycle {
-            anyhow::bail!(
-                "bundle cycle mismatch for {}: payload cycle {} != filename cycle {}",
-                bundle_path.display(),
-                bundle_cycle,
-                file_cycle
-            );
-        }
-
-        let start_valid = bundle_manifest
-            .get("start_valid")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing start_valid"))?;
-        let end_valid = bundle_manifest
-            .get("end_valid")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing end_valid"))?;
-        let end_valid_date = NaiveDate::parse_from_str(end_valid, "%Y-%m-%d")
-            .with_context(|| format!("failed to parse bundle end_valid {end_valid}"))?;
-        if end_valid_date < as_of_date {
-            continue;
-        }
-        bundles.push(CurrentBundleEntry {
-            filename: bundle_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_string(),
-            cycle: bundle_cycle.to_string(),
-            start_valid: start_valid.to_string(),
-            end_valid: end_valid.to_string(),
-            checksum_sha256: bundle_manifest
-                .get("checksum_sha256")
-                .and_then(|value| value.as_str())
-                .map(ToOwned::to_owned)
-                .unwrap_or(hash_file(&bundle_path)?),
-            size_bytes: bundle_manifest
-                .get("size_bytes")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(
-                    fs::metadata(&bundle_path)
-                        .with_context(|| format!("failed to stat {}", bundle_path.display()))?
-                        .len(),
-                ),
-        });
-    }
-    Ok(bundles)
-}
-
-fn write_current_artifacts_manifest(
-    build_root: &Path,
-    as_of_date: NaiveDate,
-    published_obstacle_zip: &Path,
-    obstacle_sha256: &str,
-    obstacle_size_bytes: u64,
-) -> anyhow::Result<PathBuf> {
-    let bundles = build_current_bundle_entries(build_root, as_of_date)?;
-    let published_date = as_of_date.format("%Y-%m-%d").to_string();
-    let manifest = CurrentArtifactsManifest {
-        schema_version: 1,
-        as_of_date: published_date.clone(),
-        bundles,
-        obstacles: CurrentObstacleEntry {
-            filename: published_obstacle_zip
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_string(),
-            published_date: published_date.clone(),
-            checksum_sha256: obstacle_sha256.to_string(),
-            size_bytes: obstacle_size_bytes,
-        },
-    };
-    let manifest_path = build_root.join(format!(
-        "current_artifacts_{}.json",
-        as_of_date.format("%Y%m%d")
-    ));
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).context("failed to encode current artifacts manifest")?,
-    )
-    .with_context(|| format!("failed to write {}", manifest_path.display()))?;
-    Ok(manifest_path)
 }
 
 fn read_zip_members(path: &Path) -> anyhow::Result<Vec<String>> {
@@ -2390,41 +2198,18 @@ fn main() -> anyhow::Result<()> {
         }
         Some("build-product") => {
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;
-            let mut cycle_manifest_paths = Vec::new();
-            for cycle in product_cycles_to_build(&config)? {
-                let mut cycle_config = config.clone();
-                cycle_config.target_cycle = Some(cycle);
-                cycle_manifest_paths.push(build_cycle(&cycle_config)?);
-            }
-            let (obstacle_manifest_path, obstacle_stats_path, obstacle_zip_path) =
-                run_build_obstacles_command(&[])?;
-            let as_of_date = Utc::now().date_naive();
-            let (published_obstacle_zip, obstacle_sha256, obstacle_size_bytes) =
-                publish_content_addressed_obstacle_zip(
-                    &config.build_root,
-                    &obstacle_zip_path,
-                )?;
-            let current_artifacts_path = write_current_artifacts_manifest(
-                &config.build_root,
-                as_of_date,
-                &published_obstacle_zip,
-                &obstacle_sha256,
-                obstacle_size_bytes,
-            )?;
-            sync_product_level_unpacked(
-                &config.build_root,
-                &current_artifacts_path,
-                &obstacle_zip_path,
-                &published_obstacle_zip,
-            )?;
-            for cycle_manifest_path in cycle_manifest_paths {
+            let result = build_product(&config)?;
+            for cycle_manifest_path in result.cycle_manifest_paths {
                 println!("cycle_manifest {}", cycle_manifest_path.display());
             }
-            println!("current_artifacts {}", current_artifacts_path.display());
-            println!("obstacle_manifest {}", obstacle_manifest_path.display());
-            println!("obstacle_stats {}", obstacle_stats_path.display());
-            println!("obstacle_zip {}", obstacle_zip_path.display());
-            println!("published_obstacle_zip {}", published_obstacle_zip.display());
+            println!("current_artifacts {}", result.current_artifacts_path.display());
+            println!("obstacle_manifest {}", result.obstacle_manifest_path.display());
+            println!("obstacle_stats {}", result.obstacle_stats_path.display());
+            println!("obstacle_zip {}", result.obstacle_zip_path.display());
+            println!(
+                "published_obstacle_zip {}",
+                result.published_obstacle_zip.display()
+            );
         }
         Some("explain-product-build") => {
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;

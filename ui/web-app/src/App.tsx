@@ -2908,6 +2908,7 @@ function ChartsPage(props: {
   const trayGroup = useModalTrayGroup(["page", "airport", "chart", "load"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
   const [plateProcedureLoads, setPlateProcedureLoads] = useState<ProcedureLoadOption[]>([]);
+  const trayOpen = trayGroup.scrimOpen;
   const sortedCharts = useMemo(() => sortChartsForFolder(selectedAirport?.charts ?? []), [selectedAirport]);
   const selectedImageSize = imageSize && imageSize.chartId === (selectedChart?.id ?? "") ? imageSize : null;
   const fallbackViewport = useMemo(() => {
@@ -3030,7 +3031,6 @@ function ChartsPage(props: {
     }
   }, [selectedImageSize, selectedChart?.id, surfaceSize.width, surfaceSize.height, viewport, onViewportChange]);
 
-  const trayOpen = trayGroup.scrimOpen;
   const overscrollPx = 64;
 
   useEffect(() => {

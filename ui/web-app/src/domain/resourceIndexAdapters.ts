@@ -168,7 +168,7 @@ function chartAssetForRecord(
     id: `${kind}:${airportId}:${record.asset_path.split("/").pop() ?? record.asset_path}`,
     airport_id: airportId,
     package_id: record.package_id,
-    label: kind === "csup" ? "CSup" : record.label,
+    label: record.label,
     kind,
     folder_category: folderCategoryForRecord(kind, record),
     source_asset_path: record.asset_path,

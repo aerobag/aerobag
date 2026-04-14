@@ -152,6 +152,7 @@ fn nominal_procedure_turn_barb_distance_nm() -> f64 {
 
 const NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT: f64 = 90.0;
 const NOMINAL_MISSED_APPROACH_CLIMB_FTPM: f64 = 500.0;
+const NOMINAL_COURSE_INTERCEPT_ANGLE_DEG: f64 = 30.0;
 
 fn missed_approach_display_path(
     segment_records: &[ProcedureLegMaterializationRecord],
@@ -174,7 +175,7 @@ fn missed_approach_display_path(
         .collect::<Vec<_>>();
     steps.sort_by_key(|record| record.sequence);
 
-    for step in steps {
+    for (index, step) in steps.iter().enumerate() {
         match step.path_termination.trim() {
             "CA" => {
                 let course_deg = if step.defining_nav_ref.is_none() && step.nav_ref.is_none() {
@@ -201,8 +202,29 @@ fn missed_approach_display_path(
             }
             "VI" => {
                 let initial_course_deg = current_course_deg?;
-                let turn_heading_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
+                let mut turn_heading_deg =
+                    step.magnetic_course_deg? + course_reference_variation_deg(step);
                 let turn_clockwise = step.turn_direction.as_deref().unwrap_or("").trim() == "R";
+                if let Some(next_step) = steps.get(index + 1).copied() {
+                    if next_step.path_termination.trim() == "CF"
+                        && next_step.defining_nav_position.is_some()
+                    {
+                        let next_magnetic_course_deg = next_step.magnetic_course_deg?;
+                        let next_course_deg =
+                            next_step.magnetic_course_deg? + course_reference_variation_deg(next_step);
+                        if angular_difference_degrees(
+                            step.magnetic_course_deg?,
+                            next_magnetic_course_deg,
+                        ) <= 1.0
+                        {
+                            turn_heading_deg = intercept_heading_for_course(
+                                next_course_deg,
+                                turn_clockwise,
+                                NOMINAL_COURSE_INTERCEPT_ANGLE_DEG,
+                            );
+                        }
+                    }
+                }
                 let turn_radius_nm = missed_approach_turn_radius_nm();
                 let turn_center = turn_center_for_heading_change(
                     current_position,
@@ -634,6 +656,14 @@ fn heading_sweep_degrees(from_deg: f64, to_deg: f64, clockwise: bool) -> f64 {
             delta -= 360.0;
         }
         delta.abs()
+    }
+}
+
+fn intercept_heading_for_course(course_deg: f64, clockwise: bool, intercept_angle_deg: f64) -> f64 {
+    if clockwise {
+        normalize_bearing_degrees(course_deg - intercept_angle_deg)
+    } else {
+        normalize_bearing_degrees(course_deg + intercept_angle_deg)
     }
 }
 

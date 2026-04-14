@@ -2556,6 +2556,14 @@ mod tests {
         top_left_lat: f64,
     }
 
+    #[derive(Clone, Copy)]
+    struct PlateCanvasPadding {
+        left_px: u32,
+        right_px: u32,
+        top_px: u32,
+        bottom_px: u32,
+    }
+
     #[derive(Deserialize)]
     struct PackageAssetsManifest {
         assets: Vec<PackageAssetRecord>,
@@ -2638,6 +2646,42 @@ mod tests {
             let (x1, y1) = pair[1];
             draw_thick_line_segment(image, x0, y0, x1, y1, color, radius);
         }
+    }
+
+    fn default_overlay_padding(plate: &PlateGeoRef) -> PlateCanvasPadding {
+        PlateCanvasPadding {
+            left_px: (plate.width * 0.45).round() as u32,
+            right_px: (plate.width * 0.15).round() as u32,
+            top_px: (plate.height * 0.10).round() as u32,
+            bottom_px: (plate.height * 0.10).round() as u32,
+        }
+    }
+
+    fn padded_plate_georef(plate: &PlateGeoRef, padding: PlateCanvasPadding) -> PlateGeoRef {
+        PlateGeoRef {
+            path: plate.path.clone(),
+            width: plate.width + (padding.left_px + padding.right_px) as f64,
+            height: plate.height + (padding.top_px + padding.bottom_px) as f64,
+            pixels_per_longitude: plate.pixels_per_longitude,
+            pixels_per_latitude: plate.pixels_per_latitude,
+            top_left_lon: plate.top_left_lon
+                - (padding.left_px as f64 / plate.pixels_per_longitude),
+            top_left_lat: plate.top_left_lat
+                - (padding.top_px as f64 / plate.pixels_per_latitude),
+        }
+    }
+
+    fn padded_canvas(base_canvas: &RgbaImage, padding: PlateCanvasPadding) -> RgbaImage {
+        let width = base_canvas.width() + padding.left_px + padding.right_px;
+        let height = base_canvas.height() + padding.top_px + padding.bottom_px;
+        let mut canvas = RgbaImage::from_pixel(width, height, Rgba([255, 255, 255, 255]));
+        image::imageops::overlay(
+            &mut canvas,
+            base_canvas,
+            padding.left_px.into(),
+            padding.top_px.into(),
+        );
+        canvas
     }
 
     fn draw_thick_line_segment(
@@ -2805,7 +2849,9 @@ mod tests {
             DynamicImage::ImageRgba8(image) => image,
             other => other.to_rgba8(),
         };
-        let mut canvas = base_canvas.clone();
+        let padding = default_overlay_padding(&plate);
+        let padded_plate = padded_plate_georef(&plate, padding);
+        let mut canvas = padded_canvas(&base_canvas, padding);
         let mut draw_steps = Vec::<(String, Vec<(f64, f64)>, Rgba<u8>)>::new();
         let mut path_dump_lines = Vec::<String>::new();
         for leg in &materialized.resolved_legs {
@@ -2843,7 +2889,7 @@ mod tests {
             {
                 for element in &path.elements {
                     let points = generic_plate_points_for_display_elements(
-                        &plate,
+                        &padded_plate,
                         std::slice::from_ref(element),
                     );
                     if points.len() < 2 {
@@ -2860,7 +2906,7 @@ mod tests {
                     }
                 }
             } else {
-                let points = generic_plate_points_for_display_elements(&plate, &elements);
+                let points = generic_plate_points_for_display_elements(&padded_plate, &elements);
                 if points.len() >= 2 {
                     draw_polyline(&mut canvas, &points, Rgba([0, 0, 0, 140]), 4);
                     draw_polyline(&mut canvas, &points, Rgba([255, 79, 207, 255]), 2);
@@ -2885,7 +2931,7 @@ mod tests {
         .expect("write overlay note");
         if emit_steps {
             for (index, (label, _, _)) in draw_steps.iter().enumerate() {
-                let mut frame = base_canvas.clone();
+                let mut frame = padded_canvas(&base_canvas, padding);
                 for (_, prior_points, prior_stroke) in draw_steps.iter().take(index + 1) {
                     draw_polyline(&mut frame, prior_points, Rgba([0, 0, 0, 140]), 4);
                     draw_polyline(&mut frame, prior_points, *prior_stroke, 2);
@@ -4304,6 +4350,12 @@ mod tests {
     #[ignore = "manual visual inspection overlay for KNVD VOR-A ROFBE"]
     fn writes_knvd_vora_rofbe_overlay_png() {
         render_procedure_overlay_to_paths("KNVD", "VOR-A", "ROFBE", "KNVD_VOR-A_ROFBE", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KVLD L36 GEF"]
+    fn writes_kvld_l36_gef_overlay_png() {
+        render_procedure_overlay_to_paths("KVLD", "L36", "GEF", "KVLD_L36_GEF", true);
     }
 
     #[test]

@@ -10,6 +10,7 @@ import type {
   FlightPlanUiState,
   LatLon,
   MaterializedProcedure,
+  NavElementUiView,
   NavRef,
   ProcedureOptions,
   ProcedureLoadOption,
@@ -286,6 +287,12 @@ export default function App() {
       last_content_requirements: [],
       last_content_report: null,
     },
+    app_ui_state: {
+      active_plan: null,
+      content_policy: "PreferLocal",
+      last_content_requirements: [],
+      last_content_report: null,
+    },
     chart_page_state: {
       ordered_airport_ids: initialChartPageState.airports.map((airport) => airport.id),
       recent_airport_ids: initialChartPageState.recent_airport_ids,
@@ -294,6 +301,7 @@ export default function App() {
     },
   });
   const appState: AppState = sessionSnapshot.app_state;
+  const appUiState = sessionSnapshot.app_ui_state;
   const chartCatalog: ChartPageData = uiSession?.chartCatalog ?? chartPage;
   const chartAirportById = useMemo(
     () => new Map(chartCatalog.airports.map((airport) => [airport.id, airport])),
@@ -408,12 +416,22 @@ export default function App() {
         initialChartPageState.selected_airport_id,
         initialChartPageState.selected_chart_id,
       );
+      const createdSnapshot = await created.snapshot();
+      debugLog("session.create.snapshot", {
+        app_state_active_plan: createdSnapshot.app_state.active_plan?.id ?? null,
+        app_ui_state_nav_element: createdSnapshot.app_ui_state.active_plan?.guidance?.nav_element ?? null,
+      });
       nextSession = created;
       if (!cancelled) {
         setUiSession(created);
         setPlanUiState(initialPlan.uiState);
       }
       const snapshot = await created.setSituation(demoSituation());
+      debugLog("session.set_situation.snapshot", {
+        app_state_active_plan: snapshot.app_state.active_plan?.id ?? null,
+        app_ui_state_active_plan: snapshot.app_ui_state.active_plan?.guidance?.nav_element ?? null,
+        situation: snapshot.app_state.situation,
+      });
       if (!cancelled) {
         setSessionSnapshot(snapshot);
       }
@@ -637,6 +655,7 @@ export default function App() {
           situation={appState.situation}
           plan={currentPlan}
           planUiState={planUiState}
+          sessionPlanUiState={appUiState.active_plan}
           uiSession={uiSession}
           adapterBackend={adapterBackend}
           adapterDetail={adapterDetail}
@@ -652,6 +671,7 @@ export default function App() {
           legSummary={legSummary}
           plan={currentPlan}
           planUiState={planUiState}
+          sessionPlanUiState={appUiState.active_plan}
           onSelectPage={navigateToPage}
           onOpenCharts={(airportId, chartId) => {
             if (!airportId) {
@@ -798,6 +818,7 @@ export default function App() {
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
           plan={currentPlan}
+          sessionPlanUiState={appUiState.active_plan}
           airports={orderedChartAirports}
           selectedAirport={selectedAirport}
           selectedChart={selectedChart}
@@ -874,6 +895,7 @@ function MapPage(props: {
   situation: Situation;
   plan: typeof samplePlan;
   planUiState: FlightPlanUiState | null;
+  sessionPlanUiState: FlightPlanUiState | null;
   uiSession: UiSession | null;
   adapterBackend: AdapterBackendKind;
   adapterDetail: string;
@@ -898,6 +920,7 @@ function MapPage(props: {
     situation,
     plan,
     planUiState,
+    sessionPlanUiState,
     uiSession,
     adapterBackend,
     adapterDetail,
@@ -975,6 +998,15 @@ function MapPage(props: {
       to: worldToScreen(viewport, latLonToWorld(segment.to.lat, segment.to.lon), surfaceSize.width, surfaceSize.height),
     }));
   }, [flightPlanRoute, surfaceSize.height, surfaceSize.width, viewport]);
+
+  useEffect(() => {
+    debugLog("map.nav_element.render", {
+      app_state_active_plan: plan?.id ?? null,
+      session_nav_element: sessionPlanUiState?.guidance?.nav_element ?? null,
+      local_plan_guidance: planUiState?.guidance?.nav_element ?? null,
+      situation,
+    });
+  }, [plan, planUiState, sessionPlanUiState, situation]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1550,8 +1582,7 @@ function MapPage(props: {
           onDoubleClick={stopDoubleClick}
           onClick={onOpenPlan}
         >
-          <span className="navElementTop">{legSummary}</span>
-          <span className="navElementBottom">° ° ^| ° °</span>
+          <NavElementView navElement={sessionPlanUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
         </button>
 
         <div className="debugDock">
@@ -1584,6 +1615,42 @@ function MapPage(props: {
   );
 }
 
+function NavElementView(props: { navElement: NavElementUiView }) {
+  const { navElement } = props;
+  const width = 180;
+  const height = 24;
+  const unit = width / 4.5;
+  const dotXs = [0.25, 1.25, 3.25, 4.25].map((value) => value * unit);
+  const centerX = 2.25 * unit;
+  const baselineY = height * 0.75;
+  const dotRadius = 2.8;
+  const triangleHalfWidth = 7;
+  const triangleTopY = height * 0.5;
+  const triangleBottomY = height - 2;
+  const pointerPosition = navElement.cdi_indicator_dots;
+  const pointerX =
+    pointerPosition === null
+      ? null
+      : Math.max(0.25, Math.min(4.25, pointerPosition + 2.25)) * unit;
+  return (
+    <>
+      <span className="navElementTop">{navElement.active_leg_summary}</span>
+      <svg className="navElementBottom" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+        {pointerX !== null ? (
+          <path
+            className="navElementCdiPointer"
+            d={`M ${pointerX - triangleHalfWidth} ${triangleBottomY} L ${pointerX + triangleHalfWidth} ${triangleBottomY} L ${pointerX} ${triangleTopY} Z`}
+          />
+        ) : null}
+        <line className="navElementCdiBar" x1={centerX} y1={height * 0.5} x2={centerX} y2={height} />
+        {dotXs.map((x, index) => (
+          <circle key={index} className="navElementCdiDot" cx={x} cy={baselineY} r={dotRadius} />
+        ))}
+      </svg>
+    </>
+  );
+}
+
 function FlightPlanPage(props: {
   appCoreAdapter: AppCoreAdapter | null;
   page: AppPage;
@@ -1592,6 +1659,7 @@ function FlightPlanPage(props: {
   legSummary: string;
   plan: typeof samplePlan;
   planUiState: FlightPlanUiState | null;
+  sessionPlanUiState: FlightPlanUiState | null;
   onSelectPage: (page: AppPage) => void;
   onOpenCharts: (airportId: string | null, chartId?: string | null) => void;
   onMoveComponent: (componentIndex: number, delta: number) => void | Promise<void>;
@@ -2231,13 +2299,9 @@ function FlightPlanPage(props: {
       </div>
 
       <div className="planFooter">
-        <div>{props.legSummary}</div>
-        {guidance ? (
-          <div className="planGuidanceSummary">
-            {guidance.sequencing_mode.toUpperCase()}
-            {guidance.active_leg ? ` · ${navRefLabel(guidance.active_leg.from)} -> ${navRefLabel(guidance.active_leg.to)}` : ""}
-          </div>
-        ) : null}
+        <div className="navElement navElementStatic">
+          <NavElementView navElement={props.sessionPlanUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
+        </div>
       </div>
 
       <div className="debugDock">
@@ -2675,6 +2739,7 @@ function ChartsPage(props: {
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
   plan: typeof samplePlan;
+  sessionPlanUiState: FlightPlanUiState | null;
   airports: ChartPageData["airports"];
   selectedAirport: ChartPageData["airports"][number] | null;
   selectedChart: ChartAsset | null;
@@ -2688,7 +2753,7 @@ function ChartsPage(props: {
   onApplyMutation: (mutation: FlightPlanUiMutation) => void | Promise<void>;
   situation: Situation;
 }) {
-  const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onSelectAirport, onSelectChart, onApplyMutation, situation } = props;
+  const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, sessionPlanUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onSelectAirport, onSelectChart, onApplyMutation, situation } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -3181,6 +3246,17 @@ function ChartsPage(props: {
             <span className="chartButtonLabel">FLDR</span>
           </button>
         </div>
+
+        <button
+          type="button"
+          className="navElement"
+          onPointerDown={stopPointer}
+          onPointerUp={stopPointer}
+          onDoubleClick={stopDoubleClick}
+          onClick={() => onSelectPage("plan")}
+        >
+          <NavElementView navElement={sessionPlanUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
+        </button>
 
         <div className="debugDock">
           <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>

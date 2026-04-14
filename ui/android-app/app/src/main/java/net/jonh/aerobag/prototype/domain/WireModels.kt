@@ -27,6 +27,14 @@ data class WireAppState(
 )
 
 @Serializable
+data class WireAppUiState(
+    val active_plan: WireFlightPlanUiState? = null,
+    val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
+    val last_content_requirements: List<WireContentRequirement> = emptyList(),
+    val last_content_report: WireContentReport? = null,
+)
+
+@Serializable
 data class WireSituation(
     val position: WireSituationPosition = WireSituationPosition.Unknown,
     val orientation_deg: Double? = null,
@@ -772,12 +780,19 @@ data class WireGuidanceUiView(
     val display_split_leg_index: Int? = null,
     val active_component_index: Int? = null,
     val active_leg: WirePlanLeg? = null,
+    val nav_element: WireNavElementUiView = WireNavElementUiView(),
     val direct_to: WireDirectToUiView? = null,
     val can_sequence_active_leg: Boolean = false,
     val can_activate_next_leg: Boolean = false,
     val can_suspend: Boolean = false,
     val can_unsuspend: Boolean = false,
     val suspend_boundary_after_active_leg: Boolean = false,
+)
+
+@Serializable
+data class WireNavElementUiView(
+    val active_leg_summary: String = "",
+    val cdi_indicator_dots: Float? = null,
 )
 
 @Serializable

@@ -296,12 +296,18 @@ export type GuidanceUiView = {
   display_split_leg_index: number | null;
   active_component_index: number | null;
   active_leg: PlanLeg | null;
+  nav_element: NavElementUiView;
   direct_to: DirectToUiView | null;
   can_sequence_active_leg: boolean;
   can_activate_next_leg: boolean;
   can_suspend: boolean;
   can_unsuspend: boolean;
   suspend_boundary_after_active_leg: boolean;
+};
+
+export type NavElementUiView = {
+  active_leg_summary: string;
+  cdi_indicator_dots: number | null;
 };
 
 export type FlightPlanUiState = {
@@ -502,6 +508,13 @@ export type AppState = {
       };
     }>;
   } | null;
+};
+
+export type AppUiState = {
+  active_plan: FlightPlanUiState | null;
+  content_policy: ContentPolicy;
+  last_content_requirements: AppState["last_content_requirements"];
+  last_content_report: AppState["last_content_report"];
 };
 
 export type Situation = {

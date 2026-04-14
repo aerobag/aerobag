@@ -621,6 +621,34 @@ private fun WireAppState.toUi() = AppState(
     },
 )
 
+private fun WireAppUiState.toUi() = AppUiState(
+    activePlan = active_plan?.toUi(),
+    contentPolicy = content_policy.toUi(),
+    lastContentRequirements = last_content_requirements.map { requirement ->
+        ContentRequirement(
+            packageIds = requirement.package_ids.map { it.toUi() },
+        )
+    },
+    lastContentReport = last_content_report?.let { report ->
+        ContentReport(
+            fullySatisfied = report.fully_satisfied,
+            items = report.items.map { item ->
+                ContentReportItem(
+                    label = item.label,
+                    availability =
+                        ContentAvailabilityDetail(
+                            availability = item.availability.availability.toUi(),
+                            cycleCurrent = item.availability.cycle_current,
+                            integrityOk = item.availability.integrity_ok,
+                            cached = item.availability.cached,
+                            offlineUsable = item.availability.offline_usable,
+                        ),
+                )
+            },
+        )
+    },
+)
+
 private fun Situation.toWire() = WireSituation(
     position = position.toWire(),
     orientation_deg = orientationDeg,
@@ -685,6 +713,7 @@ private data class WireUiChartPageState(
 @kotlinx.serialization.Serializable
 private data class WireUiSessionSnapshot(
     val app_state: WireAppState,
+    val app_ui_state: WireAppUiState = WireAppUiState(),
     val chart_page_state: WireUiChartPageState,
 )
 
@@ -731,6 +760,7 @@ data class DerivedChartPageState(
 
 data class UiSessionSnapshot(
     val appState: AppState,
+    val appUiState: AppUiState,
     val chartPageState: UiChartPageState,
 )
 
@@ -757,6 +787,7 @@ private fun WireUiChartPageState.toUi() = UiChartPageState(
 
 private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     appState = app_state.toUi(),
+    appUiState = app_ui_state.toUi(),
     chartPageState = chart_page_state.toUi(),
 )
 
@@ -1177,12 +1208,18 @@ private fun WireGuidanceUiView.toUi() = GuidanceUiView(
     displaySplitLegIndex = display_split_leg_index,
     activeComponentIndex = active_component_index,
     activeLeg = active_leg?.toUiPlanLeg(),
+    navElement = nav_element.toUi(),
     directTo = direct_to?.toUi(),
     canSequenceActiveLeg = can_sequence_active_leg,
     canActivateNextLeg = can_activate_next_leg,
     canSuspend = can_suspend,
     canUnsuspend = can_unsuspend,
     suspendBoundaryAfterActiveLeg = suspend_boundary_after_active_leg,
+)
+
+private fun WireNavElementUiView.toUi() = NavElementUiView(
+    activeLegSummary = active_leg_summary,
+    cdiIndicatorDots = cdi_indicator_dots,
 )
 
 private fun WireSequencingMode.toUi() = when (this) {

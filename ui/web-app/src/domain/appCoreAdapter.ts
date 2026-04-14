@@ -1,5 +1,6 @@
 import type {
   AppState,
+  AppUiState,
   AirwayAutoSelection,
   AirwayBranch,
   AirwayEntryCandidate,
@@ -63,6 +64,7 @@ export type DerivedChartPageState = {
 
 export type UiSessionSnapshot = {
   app_state: AppState;
+  app_ui_state: AppUiState;
   chart_page_state: UiChartPageState;
 };
 
@@ -292,10 +294,20 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
       selectedAirportId,
       selectedChartId,
     ));
+    const snapshotWithUi = async (): Promise<UiSessionSnapshot> => ({
+      app_state: appState,
+      app_ui_state: {
+        active_plan: appState.active_plan ? await adapter.buildFlightPlanUi(appState.active_plan) : null,
+        content_policy: appState.content_policy,
+        last_content_requirements: appState.last_content_requirements,
+        last_content_report: appState.last_content_report,
+      },
+      chart_page_state: chartPageState,
+    });
 
     return {
       chartCatalog,
-      snapshot: async () => ({ app_state: appState, chart_page_state: chartPageState }),
+      snapshot: async () => snapshotWithUi(),
       replaceFlightPlan: async (nextPlan) => {
         appState = await adapter.replaceFlightPlanState(appState, sampleCatalogLike(resourceIndex), nextPlan);
         chartPageState = compactChartPageState(await adapter.deriveChartPageState(
@@ -305,7 +317,7 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
           chartPageState.selected_airport_id,
           chartPageState.selected_chart_id,
         ));
-        return { app_state: appState, chart_page_state: chartPageState };
+        return snapshotWithUi();
       },
       removeLeg: async (index) => {
         const nextPlan = await adapter.removeFlightPlanLeg(appState.active_plan ?? plan, index);
@@ -317,7 +329,7 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
           chartPageState.selected_airport_id,
           chartPageState.selected_chart_id,
         ));
-        return { app_state: appState, chart_page_state: chartPageState };
+        return snapshotWithUi();
       },
       moveWaypoint: async (index, delta) => {
         const nextPlan = moveWaypointInPlan(appState.active_plan ?? plan, index, delta);
@@ -329,11 +341,11 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
           chartPageState.selected_airport_id,
           chartPageState.selected_chart_id,
         ));
-        return { app_state: appState, chart_page_state: chartPageState };
+        return snapshotWithUi();
       },
       setSituation: async (situation) => {
         appState = { ...appState, situation };
-        return { app_state: appState, chart_page_state: chartPageState };
+        return snapshotWithUi();
       },
       selectAirport: async (airportId) => {
         chartPageState = compactChartPageState(await adapter.deriveChartPageState(
@@ -343,7 +355,7 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
           airportId,
           undefined,
         ));
-        return { app_state: appState, chart_page_state: chartPageState };
+        return snapshotWithUi();
       },
       selectChart: async (chartId) => {
         chartPageState = compactChartPageState(await adapter.deriveChartPageState(
@@ -353,7 +365,7 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
           chartPageState.selected_airport_id,
           chartId,
         ));
-        return { app_state: appState, chart_page_state: chartPageState };
+        return snapshotWithUi();
       },
       ingestPointTiles: async () => {},
       queryMapOverlay: async () => ({
@@ -369,7 +381,7 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
           nextSelectedAirportId,
           nextSelectedChartId,
         ));
-        return { app_state: appState, chart_page_state: chartPageState };
+        return snapshotWithUi();
       },
       destroy: async () => {},
     };

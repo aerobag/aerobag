@@ -357,11 +357,19 @@ pub struct GuidanceUiView {
     pub display_split_leg_index: Option<usize>,
     pub active_component_index: Option<usize>,
     pub active_leg: Option<PlanLeg>,
+    #[serde(default)]
+    pub nav_element: NavElementUiView,
     pub direct_to: Option<DirectToUiView>,
     pub can_activate_next_leg: bool,
     pub can_suspend: bool,
     pub can_unsuspend: bool,
     pub suspend_boundary_after_active_leg: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NavElementUiView {
+    pub active_leg_summary: String,
+    pub cdi_indicator_dots: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -807,6 +815,7 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         },
         active_component_index,
         active_leg: active_guidance_leg(&plan),
+        nav_element: project_nav_element_ui(&plan),
         direct_to: guidance.direct_to.as_ref().map(|direct_to| DirectToUiView {
             start: direct_to.start.clone(),
             target: direct_to.target.clone(),
@@ -825,6 +834,17 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         components,
         resolved_legs,
         guidance,
+    }
+}
+
+fn project_nav_element_ui(plan: &FlightPlan) -> NavElementUiView {
+    let active_leg = active_guidance_leg(plan);
+    NavElementUiView {
+        active_leg_summary: active_leg
+            .as_ref()
+            .map(|leg| format!("{} -> {} CRS 342", nav_ref_label(&leg.from), nav_ref_label(&leg.to)))
+            .unwrap_or_default(),
+        cdi_indicator_dots: active_leg.as_ref().map(|_| -0.2_f32),
     }
 }
 
@@ -4116,6 +4136,26 @@ mod tests {
         ));
         assert_eq!(ui.guidance.as_ref().unwrap().active_component_index, Some(1));
         assert_eq!(ui.guidance.as_ref().unwrap().active_leg_index, Some(2));
+    }
+
+    #[test]
+    fn project_ui_state_exposes_stub_nav_element_for_active_leg() {
+        let guided = FlightPlan {
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            ..sample_waypoint_only_plan()
+        };
+
+        let ui = project_ui_state(&guided);
+        let nav_element = &ui.guidance.as_ref().unwrap().nav_element;
+
+        assert_eq!(nav_element.active_leg_summary, "KRNT -> KUAO CRS 342");
+        assert_eq!(nav_element.cdi_indicator_dots, Some(-0.2));
     }
 
     #[test]

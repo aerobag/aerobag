@@ -318,12 +318,18 @@ data class GuidanceUiView(
     val displaySplitLegIndex: Int?,
     val activeComponentIndex: Int?,
     val activeLeg: PlanLeg?,
+    val navElement: NavElementUiView,
     val directTo: DirectToUiView?,
     val canSequenceActiveLeg: Boolean,
     val canActivateNextLeg: Boolean,
     val canSuspend: Boolean,
     val canUnsuspend: Boolean,
     val suspendBoundaryAfterActiveLeg: Boolean,
+)
+
+data class NavElementUiView(
+    val activeLegSummary: String,
+    val cdiIndicatorDots: Float?,
 )
 
 data class FlightPlanUiState(
@@ -534,6 +540,13 @@ data class ContentReport(
 data class AppState(
     val activePlan: FlightPlan? = null,
     val situation: Situation = Situation(),
+    val contentPolicy: ContentPolicy = ContentPolicy.PreferLocal,
+    val lastContentRequirements: List<ContentRequirement> = emptyList(),
+    val lastContentReport: ContentReport? = null,
+)
+
+data class AppUiState(
+    val activePlan: FlightPlanUiState? = null,
     val contentPolicy: ContentPolicy = ContentPolicy.PreferLocal,
     val lastContentRequirements: List<ContentRequirement> = emptyList(),
     val lastContentReport: ContentReport? = null,

@@ -532,20 +532,27 @@ button {
   height: calc(var(--thumb) * 0.67);
   margin-left: calc(var(--thumb) * -1.5);
   padding: calc(var(--thumb) * 0.08) calc(var(--thumb) * 0.14);
-  border: 1px solid rgba(19, 33, 41, 0.18);
+  border: 1px solid var(--theme-panel-border);
   border-radius: calc(var(--thumb-radius) * 0.9);
-  background: rgba(252, 248, 241, 0.94);
+  background: var(--theme-panel-fg);
   box-shadow: var(--shadow);
-  color: var(--ink);
+  color: white;
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: stretch;
   text-align: center;
-  backdrop-filter: blur(10px);
+}
+
+.navElementStatic {
+  position: static;
+  left: auto;
+  bottom: auto;
+  margin-left: 0;
 }
 
 .navElementTop {
+  min-height: calc(var(--thumb) * 0.18);
   font-size: calc(var(--thumb) * 0.18);
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -553,11 +560,26 @@ button {
 }
 
 .navElementBottom {
-  font-size: calc(var(--thumb) * 0.18);
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  line-height: 1;
-  font-family: "IBM Plex Mono", monospace;
+  width: 100%;
+  height: calc(var(--thumb) * 0.26);
+  overflow: visible;
+  display: block;
+}
+
+.navElementCdiBar {
+  stroke: white;
+  stroke-width: 2.8;
+  stroke-linecap: round;
+}
+
+.navElementCdiDot {
+  fill: none;
+  stroke: white;
+  stroke-width: 2.2;
+}
+
+.navElementCdiPointer {
+  fill: #d45a7a;
 }
 
 .pageChrome {

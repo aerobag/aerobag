@@ -1822,6 +1822,10 @@ mod tests {
         bytes
     }
 
+    // TODO: if you touch this test, you need to refactor away the synthetic
+    // legacy sidecar/work-layout fixture. It still models a loose plate `.tif`
+    // beside the PNG and hand-built package/work roots instead of relying
+    // purely on package-assets manifests and the current published contract.
     #[test]
     fn builds_index_from_realistic_inputs() {
         let temp = tempdir().expect("temp dir");

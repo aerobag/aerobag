@@ -236,7 +236,7 @@ button {
 .trayScrim {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 6;
   border: 0;
   padding: 0;
   background: rgba(10, 16, 20, 0.24);
@@ -351,18 +351,9 @@ button {
     );
 }
 
-.chartButton.isBlocked,
 .chartButton.isDisabled {
   filter: saturate(0.7);
   box-shadow: none;
-}
-
-.chartButton.isBlocked::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.26);
-  pointer-events: none;
 }
 
 .chartButton.isDisabled,
@@ -409,9 +400,6 @@ button {
 }
 
 .chartTray {
-  position: absolute;
-  top: calc(var(--thumb) + var(--thumb-gap));
-  left: 0;
   display: flex;
   flex-direction: column;
   gap: var(--thumb-gap);
@@ -428,6 +416,11 @@ button {
   opacity: 0;
   pointer-events: none;
   transition: transform 160ms ease, opacity 160ms ease;
+}
+
+.chartTrayPortal {
+  position: fixed;
+  z-index: 8;
 }
 
 .chartTray.isOpen {
@@ -864,7 +857,7 @@ button {
 }
 
 .waypointModal {
-  z-index: 4;
+  z-index: 8;
   display: flex;
   flex-direction: column;
   gap: var(--thumb-gap);
@@ -1082,8 +1075,6 @@ button {
   }
 
   .chartTray {
-    top: calc(var(--thumb) + var(--thumb-gap));
-    left: 0;
     transform: translateY(calc(var(--thumb) * -0.2));
   }
 

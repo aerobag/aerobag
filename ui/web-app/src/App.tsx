@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
+import { createPortal } from "react-dom";
 import { chartPage, mapViews, resourceIndex, sampleCatalog, samplePlan } from "./domain/sampleData";
 import type {
   AirwayPresentationPlan,
@@ -1551,7 +1552,6 @@ function MapPage(props: {
           <TrayDock
             launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "CHT"}
             open={trayGroup.isOpen("page")}
-            blocked={trayGroup.blocked("page")}
             onToggle={() => trayGroup.toggle("page")}
             ariaLabel="Page"
             options={pageOptions.map((option) => ({
@@ -1567,7 +1567,6 @@ function MapPage(props: {
           <TrayDock
             launcherLabel={selectedFamily.launcherLabel}
             open={trayGroup.isOpen("family")}
-            blocked={trayGroup.blocked("family")}
             onToggle={() => trayGroup.toggle("family")}
             ariaLabel="Chart family"
             options={chartFamilies.map((family) => {
@@ -2183,7 +2182,6 @@ function FlightPlanPage(props: {
         <TrayDock
           launcherLabel={pageOptions.find((option) => option.id === props.page)?.launcherLabel ?? "PLN"}
           open={trayGroup.isOpen("page")}
-          blocked={selectedWaypointIndex !== null}
           onToggle={() => trayGroup.toggle("page")}
           ariaLabel="Page"
           options={pageOptions.map((option) => ({
@@ -2700,52 +2698,108 @@ function TrayDock(props: {
   open: boolean;
   onToggle: () => void;
   ariaLabel: string;
-  blocked?: boolean;
   disabled?: boolean;
   style?: TrayDockStyle;
   launcherAccentColor?: string;
   options: TrayOption[];
 }) {
-  const { launcherLabel, open, onToggle, ariaLabel, blocked = false, disabled = false, style = "compact", launcherAccentColor, options } = props;
+  const { launcherLabel, open, onToggle, ariaLabel, disabled = false, style = "compact", launcherAccentColor, options } = props;
+  const launcherRef = useRef<HTMLButtonElement | null>(null);
+  const trayRef = useRef<HTMLElement | null>(null);
+  const [trayPosition, setTrayPosition] = useState<{ left: number; top: number } | null>(null);
+  const [trayThemeStyle, setTrayThemeStyle] = useState<CSSProperties | null>(null);
   const launcherWide = style === "plate_wide";
   const trayWide = style === "plate_narrow" || style === "plate_wide";
-  const launcherBlocked = blocked && !open;
   const launcherDisabled = disabled && !open;
+
+  useEffect(() => {
+    if (!open) {
+      setTrayPosition(null);
+      return;
+    }
+
+    function updatePosition() {
+      const launcher = launcherRef.current;
+      const tray = trayRef.current;
+      if (!launcher || !tray) {
+        return;
+      }
+      const launcherStyle = getComputedStyle(launcher);
+      const launcherRect = launcher.getBoundingClientRect();
+      const gap = thumbPixels(0.1);
+      const minInset = gap;
+      const maxLeft = Math.max(minInset, window.innerWidth - tray.offsetWidth - gap);
+      const maxTop = Math.max(minInset, window.innerHeight - tray.offsetHeight - gap);
+      setTrayPosition({
+        left: Math.min(Math.max(minInset, launcherRect.left), maxLeft),
+        top: Math.min(Math.max(minInset, launcherRect.bottom + gap), maxTop),
+      });
+      setTrayThemeStyle({
+        ["--theme-button-bg" as string]: launcherStyle.getPropertyValue("--theme-button-bg"),
+        ["--theme-disabled-button" as string]: launcherStyle.getPropertyValue("--theme-disabled-button"),
+        ["--theme-button-fg" as string]: launcherStyle.getPropertyValue("--theme-button-fg"),
+      });
+    }
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open, options.length, style]);
+
   return (
     <div className="chartDockColumn">
       <button
+        ref={launcherRef}
         type="button"
-        className={`chartButton${launcherWide ? " chartButtonWide" : ""}${open ? " isOpen" : ""}${launcherBlocked ? " isBlocked" : ""}${launcherDisabled ? " isDisabled" : ""}`}
-        aria-disabled={launcherBlocked || launcherDisabled}
-        tabIndex={launcherBlocked ? -1 : undefined}
+        className={`chartButton${launcherWide ? " chartButtonWide" : ""}${open ? " isOpen" : ""}${launcherDisabled ? " isDisabled" : ""}`}
+        aria-disabled={launcherDisabled}
         style={{
-          ...(launcherBlocked ? { pointerEvents: "none" } : undefined),
           ...(launcherAccentColor ? ({ ["--tray-accent" as string]: launcherAccentColor } as CSSProperties) : undefined),
         }}
-        onPointerDown={launcherBlocked ? undefined : stopPointer}
-        onPointerUp={launcherBlocked ? undefined : stopPointer}
-        onDoubleClick={launcherBlocked ? undefined : stopDoubleClick}
-        onClick={launcherBlocked || launcherDisabled ? undefined : onToggle}
+        onPointerDown={stopPointer}
+        onPointerUp={stopPointer}
+        onDoubleClick={stopDoubleClick}
+        onClick={launcherDisabled ? undefined : onToggle}
       >
         <span className={`chartButtonLabel${launcherWide ? " chartButtonLabelWide" : ""}`}>{launcherLabel}</span>
       </button>
-      <section className={`chartTray${trayWide ? " chartTrayWide" : ""}${open ? " isOpen" : ""}`} aria-label={ariaLabel} onPointerDown={stopPointer} onPointerUp={stopPointer}>
-        {options.map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            className={`trayButton${option.active ? " isActive" : ""}`}
-            disabled={option.disabled}
-            style={option.accentColor ? ({ ["--tray-accent" as string]: option.accentColor } as CSSProperties) : undefined}
-            onPointerDown={stopPointer}
-            onPointerUp={stopPointer}
-            onDoubleClick={stopDoubleClick}
-            onClick={option.onSelect}
-          >
-            {option.label}
-          </button>
-        ))}
-      </section>
+      {open && typeof document !== "undefined"
+        ? createPortal(
+            <section
+              ref={trayRef}
+              className={`chartTray chartTrayPortal${trayWide ? " chartTrayWide" : ""} isOpen`}
+              aria-label={ariaLabel}
+              style={
+                trayPosition
+                  ? { ...trayThemeStyle, left: `${trayPosition.left}px`, top: `${trayPosition.top}px` }
+                  : { ...trayThemeStyle, visibility: "hidden" }
+              }
+              onPointerDown={stopPointer}
+              onPointerUp={stopPointer}
+            >
+              {options.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={`trayButton${option.active ? " isActive" : ""}`}
+                  disabled={option.disabled}
+                  style={option.accentColor ? ({ ["--tray-accent" as string]: option.accentColor } as CSSProperties) : undefined}
+                  onPointerDown={stopPointer}
+                  onPointerUp={stopPointer}
+                  onDoubleClick={stopDoubleClick}
+                  onClick={option.onSelect}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </section>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
@@ -3190,7 +3244,6 @@ function ChartsPage(props: {
           <TrayDock
             launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "PLT"}
             open={trayGroup.isOpen("page")}
-            blocked={trayGroup.blocked("page")}
             onToggle={() => trayGroup.toggle("page")}
             ariaLabel="Page"
             options={pageOptions.map((option) => ({
@@ -3206,7 +3259,6 @@ function ChartsPage(props: {
           <TrayDock
             launcherLabel={selectedAirport?.label ?? "---"}
             open={trayGroup.isOpen("airport")}
-            blocked={trayGroup.blocked("airport")}
             onToggle={() => trayGroup.toggle("airport")}
             ariaLabel="Airport"
             style="plate_narrow"
@@ -3223,7 +3275,6 @@ function ChartsPage(props: {
           <TrayDock
             launcherLabel={selectedChart?.label ?? "---"}
             open={trayGroup.isOpen("chart")}
-            blocked={trayGroup.blocked("chart")}
             launcherAccentColor={selectedChart ? plateFolderColor(selectedChart.folder_category) : undefined}
             onToggle={() => trayGroup.toggle("chart")}
             ariaLabel="Chart"
@@ -3242,7 +3293,6 @@ function ChartsPage(props: {
           <TrayDock
             launcherLabel={"LOAD\nAPPCH"}
             open={trayGroup.isOpen("load")}
-            blocked={trayGroup.blocked("load")}
             disabled={!loadApproachEnabled}
             onToggle={() => trayGroup.toggle("load")}
             ariaLabel="Load procedure"
@@ -3250,10 +3300,9 @@ function ChartsPage(props: {
           />
           <button
             type="button"
-            className={`chartButton${folderOpen ? " isOpen" : ""}${trayOpen ? " isBlocked" : ""}`}
+            className={`chartButton${folderOpen ? " isOpen" : ""}`}
             aria-disabled={trayOpen || folderOpen}
             tabIndex={trayOpen ? -1 : undefined}
-            style={trayOpen ? { pointerEvents: "none" } : undefined}
             onPointerDown={trayOpen || folderOpen ? undefined : stopPointer}
             onPointerUp={trayOpen || folderOpen ? undefined : stopPointer}
             onDoubleClick={trayOpen || folderOpen ? undefined : stopDoubleClick}
@@ -3312,7 +3361,6 @@ function SettingsPage(props: {
         <TrayDock
           launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "STGS"}
           open={trayGroup.isOpen("page")}
-          blocked={false}
           onToggle={() => trayGroup.toggle("page")}
           ariaLabel="Page"
           options={pageOptions.map((option) => ({
@@ -3887,10 +3935,6 @@ function useModalTrayGroup<const T extends string>(ids: readonly T[]) {
     return openId === id;
   }
 
-  function blocked(id: T) {
-    return openId !== null && openId !== id;
-  }
-
   function toggle(id: T) {
     if (!allowedIds.has(id)) {
       return;
@@ -3909,7 +3953,6 @@ function useModalTrayGroup<const T extends string>(ids: readonly T[]) {
   return {
     close,
     closeAll,
-    blocked,
     isOpen,
     openId,
     scrimOpen: openId !== null,

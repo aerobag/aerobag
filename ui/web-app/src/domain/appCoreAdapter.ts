@@ -763,7 +763,6 @@ type WasmModule = {
     rowsJson: string,
     legsJson: string,
   ): Promise<string> | string;
-  infer_procedure_kind_from_rows(rowsJson: string): Promise<string> | string;
   select_preferred_cifp_tpp_match(rowsJson: string): Promise<string> | string;
   describe_show_plate_for_procedure(rowsJson: string): Promise<string> | string;
   describe_load_procedure_from_plate(
@@ -1364,7 +1363,6 @@ export async function loadBestAvailableAdapter(
     typeof mod.describe_procedure_options_from_rows !== "function" ||
     typeof mod.list_approach_procedures_from_match_rows !== "function" ||
     typeof mod.materialize_procedure_from_records !== "function" ||
-    typeof mod.infer_procedure_kind_from_rows !== "function" ||
     typeof mod.select_preferred_cifp_tpp_match !== "function" ||
     typeof mod.describe_show_plate_for_procedure !== "function" ||
     typeof mod.describe_load_procedure_from_plate !== "function" ||

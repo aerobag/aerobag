@@ -453,22 +453,6 @@ pub fn describe_procedure_options_from_rows(
     })
 }
 
-pub fn infer_procedure_kind_from_rows(rows: &[ProcedureDistinctRow]) -> AppResult<ProcedureKind> {
-    let route_type = rows
-        .first()
-        .map(|row| row.route_type.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: "cannot infer procedure kind from empty procedure rows".to_string(),
-        })?;
-    Ok(match route_type.as_str() {
-        "1" | "2" | "3" => ProcedureKind::Star,
-        "4" | "5" | "6" => ProcedureKind::Sid,
-        _ => ProcedureKind::Approach,
-    })
-}
-
 pub fn select_preferred_cifp_tpp_match(rows: Vec<CifpTppMatchRow>) -> Option<CifpTppMatch> {
     rows.into_iter()
         .map(|row| CifpTppMatch {

@@ -304,11 +304,6 @@ pub fn materialize_procedure_from_records(
 }
 
 #[wasm_bindgen]
-pub fn infer_procedure_kind_from_rows(rows_json: &str) -> Result<String, JsValue> {
-    infer_procedure_kind_from_rows_json(rows_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn select_preferred_cifp_tpp_match(rows_json: &str) -> Result<String, JsValue> {
     select_preferred_cifp_tpp_match_json(rows_json).map_err(|err| JsValue::from_str(&err))
 }
@@ -922,13 +917,6 @@ fn materialize_procedure_from_records_json(
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&built).map_err(|err| err.to_string())
-}
-
-fn infer_procedure_kind_from_rows_json(rows_json: &str) -> Result<String, String> {
-    let rows: Vec<app_core::ProcedureDistinctRow> =
-        serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
-    let kind = app_core::infer_procedure_kind_from_rows(&rows).map_err(|err| err.to_string())?;
-    serde_json::to_string(&kind).map_err(|err| err.to_string())
 }
 
 fn select_preferred_cifp_tpp_match_json(rows_json: &str) -> Result<String, String> {

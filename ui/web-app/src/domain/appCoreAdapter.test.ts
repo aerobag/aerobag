@@ -45,7 +45,6 @@ describe("loadBestAvailableAdapter", () => {
       describe_procedure_options_from_rows: async () => "{\"airport_id\":\"KAAA\",\"procedure_id\":\"PROC\",\"kind\":\"approach\",\"runway_transitions\":[],\"enroute_transitions\":[],\"has_common_segment\":false,\"valid_choices\":[]}",
       list_approach_procedures_from_match_rows: async () => "[]",
       materialize_procedure_from_records: async () => "{\"procedure\":{\"airport_id\":\"KAAA\",\"procedure_id\":\"PROC\",\"kind\":\"approach\",\"runway_transition\":null,\"enroute_transition\":null,\"terminal_discontinuity\":null},\"concretized_items\":[],\"resolved_legs\":[]}",
-      infer_procedure_kind_from_rows: async () => "\"approach\"",
       select_preferred_cifp_tpp_match: async () => "null",
       describe_show_plate_for_procedure: async () => "null",
       describe_load_procedure_from_plate: async () => "null",

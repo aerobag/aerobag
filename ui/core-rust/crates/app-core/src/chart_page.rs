@@ -304,7 +304,7 @@ fn chart_asset_for_csup(airport_id: &str, csup: &ResourceCsup) -> DerivedChartAs
         id: format!("csup:{airport_id}:{filename}"),
         airport_id: airport_id.to_string(),
         package_id: csup.package_id.clone(),
-        label: "CSup".to_string(),
+        label: csup.label.clone(),
         kind: "csup".to_string(),
         folder_category: "csup".to_string(),
         source_asset_path: csup.asset_path.clone(),
@@ -391,7 +391,7 @@ mod tests {
                 package_id: "NW_CSUP".to_string(),
                 asset_path: "csup/KPAE/page1.png".to_string(),
                 thumbnail_path: None,
-                label: "CSup".to_string(),
+                label: "Chart Supplement".to_string(),
                 asset_kind: "csup".to_string(),
             }],
         };

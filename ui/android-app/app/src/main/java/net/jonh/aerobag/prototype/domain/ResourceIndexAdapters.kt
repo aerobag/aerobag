@@ -373,7 +373,7 @@ private fun chartAsset(
         id = "$kind:$airportId:${assetPath.substringAfterLast('/')}",
         airportId = airportId,
         packageId = packageId,
-        label = if (kind == "csup") "CSup" else label,
+        label = label,
         kind = kind,
         folderCategory = folderCategory(if (kind == "csup") "csup" else documentType),
         sourceAssetPath = assetPath,

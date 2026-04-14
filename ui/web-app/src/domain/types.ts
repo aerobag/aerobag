@@ -484,7 +484,7 @@ export type ContentInventory = {
 
 export type AppState = {
   active_plan: FlightPlan | null;
-  situation: Situation;
+  ownship: OwnshipState;
   content_policy: ContentPolicy;
   last_content_requirements: Array<{
     package_ids: Array<{
@@ -517,16 +517,114 @@ export type AppUiState = {
   last_content_report: AppState["last_content_report"];
 };
 
-export type Situation = {
-  position: SituationPosition;
+export type OwnshipMode = "none" | "live" | "replay" | "simulated";
+
+export type OwnshipBannerSeverity = "info" | "caution" | "warning";
+
+export type OwnshipSourceKind =
+  | "device_gps"
+  | "external_gps"
+  | "external_ahrs"
+  | "gpx_playback"
+  | "adsb_track_playback"
+  | "live_network_track"
+  | "flight_plan_simulator";
+
+export type SourceConnectionState = "unavailable" | "searching" | "connected" | "stale" | "failed";
+
+export type OwnshipSelectionPolicy =
+  | { selection: "auto" }
+  | { selection: "manual"; source_id: { 0: string } | string };
+
+export type OwnshipPolicy = {
+  selection: { kind: "auto" } | { kind: "manual"; source_id: { 0: string } | string };
+  source_priority: Array<{ 0: string } | string>;
+  allow_auto_replay: boolean;
+  allow_auto_simulated: boolean;
+};
+
+export type SituationSample = {
+  source_id: { 0: string } | string;
+  source_kind: OwnshipSourceKind;
+  event_time_epoch_ms: number;
+  received_time_epoch_ms: number;
+  position: LatLon | null;
+  track_deg_true: number | null;
+  heading_deg_true: number | null;
+  ground_speed_kt: number | null;
+  altitude_msl_ft: number | null;
+  pressure_altitude_ft: number | null;
+};
+
+export type OwnshipSourceRegistration = {
+  source_id: { 0: string } | string;
+  source_kind: OwnshipSourceKind;
+  display_name: string;
+  selectable: boolean;
+  auto_eligible: boolean;
+};
+
+export type OwnshipSourceStatusUpdate = {
+  source_id: { 0: string } | string;
+  connection_state: SourceConnectionState;
+  enabled: boolean;
+  status_label: string;
+};
+
+export type OwnshipRenderState = {
+  mode: OwnshipMode;
+  banner_text: string;
+  banner_severity: OwnshipBannerSeverity;
+  draw_aircraft: boolean;
+  draw_predictor: boolean;
+  draw_cdi: boolean;
+  position: LatLon | null;
   orientation_deg: number | null;
   speed_kt: number | null;
 };
 
-export type SituationPosition =
-  | { kind: "unknown" }
-  | { kind: "lat_lon"; lat: number; lon: number }
-  | { kind: "flight_plan_location"; leg_index: number; lat: number; lon: number };
+export type OwnshipControlModel = {
+  mode: OwnshipMode;
+  policy: { kind: "auto" } | { kind: "manual"; source_id: { 0: string } | string };
+  sources: Array<{
+    source_id: { 0: string } | string;
+    label: string;
+    kind: OwnshipSourceKind;
+    enabled: boolean;
+    active: boolean;
+    selectable: boolean;
+    status_label: string;
+  }>;
+};
+
+export type OwnshipState = {
+  policy: OwnshipPolicy;
+  resolved: {
+    mode: OwnshipMode;
+    active_source_id: ({ 0: string } | string) | null;
+    active_source_kind: OwnshipSourceKind | null;
+    banner_text: string;
+    banner_severity: OwnshipBannerSeverity;
+    guidance_enabled: boolean;
+    sequencing_enabled: boolean;
+  };
+  render: OwnshipRenderState;
+  controls: OwnshipControlModel;
+  sources: Array<{
+    source_id: { 0: string } | string;
+    source_kind: OwnshipSourceKind;
+    display_name: string;
+    connection_state: SourceConnectionState;
+    last_event_time_epoch_ms: number | null;
+    last_received_time_epoch_ms: number | null;
+    stale_after_ms: number;
+    selectable: boolean;
+    enabled: boolean;
+    auto_eligible: boolean;
+    active: boolean;
+    status_label: string;
+  }>;
+};
 
 export type MapViewJson = {
   chart_family: ChartFamilyId;

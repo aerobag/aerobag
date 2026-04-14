@@ -20,7 +20,7 @@ import kotlinx.serialization.json.jsonPrimitive
 @Serializable
 data class WireAppState(
     val active_plan: WireFlightPlan? = null,
-    val situation: WireSituation = WireSituation(),
+    val ownship: WireOwnshipState = WireOwnshipState(),
     val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
     val last_content_requirements: List<WireContentRequirement> = emptyList(),
     val last_content_report: WireContentReport? = null,
@@ -35,20 +35,85 @@ data class WireAppUiState(
 )
 
 @Serializable
-data class WireSituation(
-    val position: WireSituationPosition = WireSituationPosition.Unknown,
+data class WireOwnshipState(
+    val policy: WireOwnshipPolicy = WireOwnshipPolicy(),
+    val resolved: WireResolvedOwnshipState = WireResolvedOwnshipState(),
+    val render: WireOwnshipRenderState = WireOwnshipRenderState(),
+    val controls: WireOwnshipControlModel = WireOwnshipControlModel(),
+    val sources: List<WireOwnshipSourceStatus> = emptyList(),
+)
+
+@Serializable
+data class WireOwnshipPolicy(
+    val selection: WireOwnshipSelection = WireOwnshipSelection.Auto,
+    val source_priority: List<String> = emptyList(),
+    val allow_auto_replay: Boolean = false,
+    val allow_auto_simulated: Boolean = false,
+)
+
+@Serializable(with = WireOwnshipSelectionSerializer::class)
+sealed interface WireOwnshipSelection {
+    data object Auto : WireOwnshipSelection
+    data class Manual(val source_id: String) : WireOwnshipSelection
+}
+
+@Serializable
+data class WireResolvedOwnshipState(
+    val mode: WireOwnshipMode = WireOwnshipMode.None,
+    val active_source_id: String? = null,
+    val active_source_kind: WireOwnshipSourceKind? = null,
+    val banner_text: String = "NO GPS POSITION",
+    val banner_severity: WireOwnshipBannerSeverity = WireOwnshipBannerSeverity.Warning,
+    val guidance_enabled: Boolean = false,
+    val sequencing_enabled: Boolean = false,
+)
+
+@Serializable
+data class WireOwnshipRenderState(
+    val mode: WireOwnshipMode = WireOwnshipMode.None,
+    val banner_text: String = "NO GPS POSITION",
+    val banner_severity: WireOwnshipBannerSeverity = WireOwnshipBannerSeverity.Warning,
+    val draw_aircraft: Boolean = false,
+    val draw_predictor: Boolean = false,
+    val draw_cdi: Boolean = false,
+    val position: WireLatLon? = null,
     val orientation_deg: Double? = null,
     val speed_kt: Double? = null,
 )
 
-@Serializable(with = WireSituationPositionSerializer::class)
-sealed interface WireSituationPosition {
-    data object Unknown : WireSituationPosition
+@Serializable
+data class WireOwnshipControlModel(
+    val mode: WireOwnshipMode = WireOwnshipMode.None,
+    val policy: WireOwnshipSelection = WireOwnshipSelection.Auto,
+    val sources: List<WireOwnshipSourceMenuItem> = emptyList(),
+)
 
-    data class LatLon(val lat: Double, val lon: Double) : WireSituationPosition
+@Serializable
+data class WireOwnshipSourceMenuItem(
+    val source_id: String,
+    val label: String,
+    val kind: WireOwnshipSourceKind,
+    val enabled: Boolean,
+    val active: Boolean,
+    val selectable: Boolean,
+    val status_label: String,
+)
 
-    data class FlightPlanLocation(val leg_index: Int, val lat: Double, val lon: Double) : WireSituationPosition
-}
+@Serializable
+data class WireOwnshipSourceStatus(
+    val source_id: String,
+    val source_kind: WireOwnshipSourceKind,
+    val display_name: String,
+    val connection_state: WireSourceConnectionState,
+    val last_event_time_epoch_ms: Long? = null,
+    val last_received_time_epoch_ms: Long? = null,
+    val stale_after_ms: Long = 0,
+    val selectable: Boolean = true,
+    val enabled: Boolean = true,
+    val auto_eligible: Boolean = true,
+    val active: Boolean = false,
+    val status_label: String = "",
+)
 
 @Serializable
 data class WireFlightPlan(
@@ -128,49 +193,33 @@ object WireNavRefSerializer : KSerializer<WireNavRef> {
     }
 }
 
-object WireSituationPositionSerializer : KSerializer<WireSituationPosition> {
+object WireOwnshipSelectionSerializer : KSerializer<WireOwnshipSelection> {
     override val descriptor: SerialDescriptor =
-        PrimitiveSerialDescriptor("WireSituationPosition", PrimitiveKind.STRING)
+        PrimitiveSerialDescriptor("WireOwnshipSelection", PrimitiveKind.STRING)
 
-    override fun serialize(encoder: Encoder, value: WireSituationPosition) {
-        require(encoder is JsonEncoder) { "WireSituationPosition is JSON-only" }
+    override fun serialize(encoder: Encoder, value: WireOwnshipSelection) {
+        require(encoder is JsonEncoder) { "WireOwnshipSelection is JSON-only" }
         val element = when (value) {
-            WireSituationPosition.Unknown -> JsonObject(mapOf("kind" to JsonPrimitive("unknown")))
-            is WireSituationPosition.LatLon -> JsonObject(
+            WireOwnshipSelection.Auto -> JsonObject(mapOf("kind" to JsonPrimitive("auto")))
+            is WireOwnshipSelection.Manual -> JsonObject(
                 mapOf(
-                    "kind" to JsonPrimitive("lat_lon"),
-                    "lat" to JsonPrimitive(value.lat),
-                    "lon" to JsonPrimitive(value.lon),
-                ),
-            )
-            is WireSituationPosition.FlightPlanLocation -> JsonObject(
-                mapOf(
-                    "kind" to JsonPrimitive("flight_plan_location"),
-                    "leg_index" to JsonPrimitive(value.leg_index),
-                    "lat" to JsonPrimitive(value.lat),
-                    "lon" to JsonPrimitive(value.lon),
+                    "kind" to JsonPrimitive("manual"),
+                    "source_id" to JsonPrimitive(value.source_id),
                 ),
             )
         }
         encoder.encodeJsonElement(element)
     }
 
-    override fun deserialize(decoder: Decoder): WireSituationPosition {
-        require(decoder is JsonDecoder) { "WireSituationPosition is JSON-only" }
-        val json = decoder.decodeJsonElement()
-        val obj = json as? JsonObject ?: error("WireSituationPosition must be an object")
+    override fun deserialize(decoder: Decoder): WireOwnshipSelection {
+        require(decoder is JsonDecoder) { "WireOwnshipSelection is JSON-only" }
+        val obj = decoder.decodeJsonElement() as? JsonObject ?: error("WireOwnshipSelection must be an object")
         return when (obj["kind"]?.jsonPrimitive?.content) {
-            "unknown" -> WireSituationPosition.Unknown
-            "lat_lon" -> WireSituationPosition.LatLon(
-                lat = obj["lat"]?.jsonPrimitive?.content?.toDouble() ?: error("lat required"),
-                lon = obj["lon"]?.jsonPrimitive?.content?.toDouble() ?: error("lon required"),
+            "auto" -> WireOwnshipSelection.Auto
+            "manual" -> WireOwnshipSelection.Manual(
+                source_id = obj["source_id"]?.jsonPrimitive?.content ?: error("source_id required"),
             )
-            "flight_plan_location" -> WireSituationPosition.FlightPlanLocation(
-                leg_index = obj["leg_index"]?.jsonPrimitive?.content?.toInt() ?: error("leg_index required"),
-                lat = obj["lat"]?.jsonPrimitive?.content?.toDouble() ?: error("lat required"),
-                lon = obj["lon"]?.jsonPrimitive?.content?.toDouble() ?: error("lon required"),
-            )
-            else -> error("Unsupported WireSituationPosition")
+            else -> error("Unsupported WireOwnshipSelection")
         }
     }
 }
@@ -182,6 +231,75 @@ enum class WireContentPolicy {
     PreferLocal,
 
     StreamAllowed,
+}
+
+@Serializable
+enum class WireOwnshipMode {
+    @SerialName("none")
+    None,
+
+    @SerialName("live")
+    Live,
+
+    @SerialName("replay")
+    Replay,
+
+    @SerialName("simulated")
+    Simulated,
+}
+
+@Serializable
+enum class WireOwnshipBannerSeverity {
+    @SerialName("info")
+    Info,
+
+    @SerialName("caution")
+    Caution,
+
+    @SerialName("warning")
+    Warning,
+}
+
+@Serializable
+enum class WireOwnshipSourceKind {
+    @SerialName("device_gps")
+    DeviceGps,
+
+    @SerialName("external_gps")
+    ExternalGps,
+
+    @SerialName("external_ahrs")
+    ExternalAhrs,
+
+    @SerialName("gpx_playback")
+    GpxPlayback,
+
+    @SerialName("adsb_track_playback")
+    AdsbTrackPlayback,
+
+    @SerialName("live_network_track")
+    LiveNetworkTrack,
+
+    @SerialName("flight_plan_simulator")
+    FlightPlanSimulator,
+}
+
+@Serializable
+enum class WireSourceConnectionState {
+    @SerialName("unavailable")
+    Unavailable,
+
+    @SerialName("searching")
+    Searching,
+
+    @SerialName("connected")
+    Connected,
+
+    @SerialName("stale")
+    Stale,
+
+    @SerialName("failed")
+    Failed,
 }
 
 @Serializable

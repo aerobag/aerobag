@@ -178,15 +178,57 @@ pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<UiSessi
     Ok(snapshot_for_session(session))
 }
 
-pub fn set_situation_in_session(
+pub fn register_ownship_source_in_session(
     handle: u32,
-    situation: crate::Situation,
+    registration: crate::OwnshipSourceRegistration,
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     session.app_state = state::reduce(
         &session.app_state,
-        AppEvent::SetSituation(situation),
+        AppEvent::RegisterOwnshipSource(registration),
+        &session.catalog,
+    )?;
+    Ok(snapshot_for_session(session))
+}
+
+pub fn update_ownship_source_status_in_session(
+    handle: u32,
+    update: crate::OwnshipSourceStatusUpdate,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::UpdateOwnshipSourceStatus(update),
+        &session.catalog,
+    )?;
+    Ok(snapshot_for_session(session))
+}
+
+pub fn push_situation_sample_in_session(
+    handle: u32,
+    sample: crate::SituationSample,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::PushSituationSample(sample),
+        &session.catalog,
+    )?;
+    Ok(snapshot_for_session(session))
+}
+
+pub fn set_ownship_policy_in_session(
+    handle: u32,
+    policy: crate::OwnshipPolicy,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::SetOwnshipPolicy(policy),
         &session.catalog,
     )?;
     Ok(snapshot_for_session(session))

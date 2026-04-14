@@ -24,6 +24,9 @@ import type {
   LatLon,
   MaterializedProcedure,
   NavRef,
+  OwnshipPolicy,
+  OwnshipSourceRegistration,
+  OwnshipSourceStatusUpdate,
   PlanLeg,
   PlateProcedureLoadCandidateInput,
   ProcedureLoadOption,
@@ -33,7 +36,7 @@ import type {
   ResolvedLegUiView,
   RouteComponentUiView,
   SequencingMode,
-  Situation,
+  SituationSample,
 } from "./types";
 import { deriveChartPage as deriveChartCatalog } from "./resourceIndexAdapters";
 import {
@@ -134,7 +137,10 @@ export interface UiSession {
   replaceFlightPlan(plan: FlightPlan): Promise<UiSessionSnapshot>;
   removeLeg(index: number): Promise<UiSessionSnapshot>;
   moveWaypoint(index: number, delta: number): Promise<UiSessionSnapshot>;
-  setSituation(situation: Situation): Promise<UiSessionSnapshot>;
+  registerOwnshipSource(registration: OwnshipSourceRegistration): Promise<UiSessionSnapshot>;
+  updateOwnshipSourceStatus(update: OwnshipSourceStatusUpdate): Promise<UiSessionSnapshot>;
+  pushSituationSample(sample: SituationSample): Promise<UiSessionSnapshot>;
+  setOwnshipPolicy(policy: OwnshipPolicy): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
@@ -275,7 +281,40 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
     let appState = await this.replaceFlightPlanState(
       {
         active_plan: null,
-        situation: { position: { kind: "unknown" }, orientation_deg: null, speed_kt: null },
+        ownship: {
+          policy: {
+            selection: { kind: "auto" },
+            source_priority: [],
+            allow_auto_replay: false,
+            allow_auto_simulated: false,
+          },
+          resolved: {
+            mode: "none",
+            active_source_id: null,
+            active_source_kind: null,
+            banner_text: "NO GPS POSITION",
+            banner_severity: "warning",
+            guidance_enabled: false,
+            sequencing_enabled: false,
+          },
+          render: {
+            mode: "none",
+            banner_text: "NO GPS POSITION",
+            banner_severity: "warning",
+            draw_aircraft: false,
+            draw_predictor: false,
+            draw_cdi: false,
+            position: null,
+            orientation_deg: null,
+            speed_kt: null,
+          },
+          controls: {
+            mode: "none",
+            policy: { kind: "auto" },
+            sources: [],
+          },
+          sources: [],
+        },
         content_policy: "PreferLocal",
         last_content_requirements: [],
         last_content_report: null,
@@ -343,10 +382,10 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
         ));
         return snapshotWithUi();
       },
-      setSituation: async (situation) => {
-        appState = { ...appState, situation };
-        return snapshotWithUi();
-      },
+      registerOwnshipSource: async () => ({ app_state: appState, chart_page_state: chartPageState }),
+      updateOwnshipSourceStatus: async () => ({ app_state: appState, chart_page_state: chartPageState }),
+      pushSituationSample: async () => ({ app_state: appState, chart_page_state: chartPageState }),
+      setOwnshipPolicy: async () => ({ app_state: appState, chart_page_state: chartPageState }),
       selectAirport: async (airportId) => {
         chartPageState = compactChartPageState(await adapter.deriveChartPageState(
           resourceIndex,
@@ -687,7 +726,10 @@ type WasmModule = {
   create_ui_session(catalogJson: string, chartCatalogJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   remove_leg_in_session(handle: number, index: number): Promise<string> | string;
   move_waypoint_in_session(handle: number, waypointIndex: number, delta: number): Promise<string> | string;
-  set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
+  register_ownship_source_in_session(handle: number, registrationJson: string): Promise<string> | string;
+  update_ownship_source_status_in_session(handle: number, updateJson: string): Promise<string> | string;
+  push_situation_sample_in_session(handle: number, sampleJson: string): Promise<string> | string;
+  set_ownship_policy_in_session(handle: number, policyJson: string): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
@@ -864,9 +906,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       );
       handle = restored.handle;
       snapshot = restored.snapshot;
-      snapshot = JSON.parse(
-        await this.module.set_situation_in_session(handle, JSON.stringify(snapshot.app_state.situation)),
-      ) as UiSessionSnapshot;
     };
     const withSessionRetry = async <T>(operation: () => Promise<T>) => {
       try {
@@ -905,10 +944,28 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
-      setSituation: async (situation) => {
-        snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.set_situation_in_session(handle, JSON.stringify(situation))) as UiSessionSnapshot,
-        );
+      registerOwnshipSource: async (registration) => {
+        snapshot = JSON.parse(
+          await this.module.register_ownship_source_in_session(handle, JSON.stringify(registration)),
+        ) as UiSessionSnapshot;
+        return snapshot;
+      },
+      updateOwnshipSourceStatus: async (update) => {
+        snapshot = JSON.parse(
+          await this.module.update_ownship_source_status_in_session(handle, JSON.stringify(update)),
+        ) as UiSessionSnapshot;
+        return snapshot;
+      },
+      pushSituationSample: async (sample) => {
+        snapshot = JSON.parse(
+          await this.module.push_situation_sample_in_session(handle, JSON.stringify(sample)),
+        ) as UiSessionSnapshot;
+        return snapshot;
+      },
+      setOwnshipPolicy: async (policy) => {
+        snapshot = JSON.parse(
+          await this.module.set_ownship_policy_in_session(handle, JSON.stringify(policy)),
+        ) as UiSessionSnapshot;
         return snapshot;
       },
       selectAirport: async (airportId) => {
@@ -1335,7 +1392,10 @@ export async function loadBestAvailableAdapter(
     typeof mod.create_ui_session !== "function" ||
     typeof mod.remove_leg_in_session !== "function" ||
     typeof mod.move_waypoint_in_session !== "function" ||
-    typeof mod.set_situation_in_session !== "function" ||
+    typeof mod.register_ownship_source_in_session !== "function" ||
+    typeof mod.update_ownship_source_status_in_session !== "function" ||
+    typeof mod.push_situation_sample_in_session !== "function" ||
+    typeof mod.set_ownship_policy_in_session !== "function" ||
     typeof mod.replace_flight_plan_in_session !== "function" ||
     typeof mod.select_airport_in_session !== "function" ||
     typeof mod.select_chart_in_session !== "function" ||

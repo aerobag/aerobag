@@ -13,10 +13,10 @@ import type {
   MaterializedProcedure,
   NavElementUiView,
   NavRef,
+  OwnshipRenderState,
   ProcedureOptions,
   ProcedureLoadOption,
   ProcedureSummary,
-  Situation,
 } from "./domain/types";
 import uiTheme from "@shared-ui-theme";
 import planViewIcon from "./assets/plan-view-icon.svg";
@@ -235,15 +235,28 @@ const airportFuelTabsPath = [
   "M -17 -4 H -11 V 4 H -17 Z",
 ].join(" ");
 
-function demoSituation(): Situation {
+function demoOwnshipSourceRegistration() {
   return {
-    position: {
-      kind: "lat_lon",
-      lat: VAMPS_POSITION.lat,
-      lon: VAMPS_POSITION.lon,
-    },
-    orientation_deg: 135,
-    speed_kt: 105,
+    source_id: "demo-gps",
+    source_kind: "device_gps" as const,
+    display_name: "Demo GPS",
+    selectable: true,
+    auto_eligible: true,
+  };
+}
+
+function demoSituationSample() {
+  return {
+    source_id: "demo-gps",
+    source_kind: "device_gps" as const,
+    event_time_epoch_ms: Date.now(),
+    received_time_epoch_ms: Date.now(),
+    position: VAMPS_POSITION,
+    track_deg_true: 135,
+    heading_deg_true: 135,
+    ground_speed_kt: 105,
+    altitude_msl_ft: null,
+    pressure_altitude_ft: null,
   };
 }
 
@@ -285,7 +298,40 @@ export default function App() {
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
     app_state: {
       active_plan: null,
-      situation: demoSituation(),
+      ownship: {
+        policy: {
+          selection: { kind: "auto" },
+          source_priority: [],
+          allow_auto_replay: false,
+          allow_auto_simulated: false,
+        },
+        resolved: {
+          mode: "none",
+          active_source_id: null,
+          active_source_kind: null,
+          banner_text: "NO GPS POSITION",
+          banner_severity: "warning",
+          guidance_enabled: false,
+          sequencing_enabled: false,
+        },
+        render: {
+          mode: "none",
+          banner_text: "NO GPS POSITION",
+          banner_severity: "warning",
+          draw_aircraft: false,
+          draw_predictor: false,
+          draw_cdi: false,
+          position: null,
+          orientation_deg: null,
+          speed_kt: null,
+        },
+        controls: {
+          mode: "none",
+          policy: { kind: "auto" },
+          sources: [],
+        },
+        sources: [],
+      },
       content_policy: "PreferLocal",
       last_content_requirements: [],
       last_content_report: null,
@@ -429,12 +475,14 @@ export default function App() {
         setUiSession(created);
         setPlanUiState(initialPlan.uiState);
       }
-      const snapshot = await created.setSituation(demoSituation());
-      debugLog("session.set_situation.snapshot", {
-        app_state_active_plan: snapshot.app_state.active_plan?.id ?? null,
-        app_ui_state_active_plan: snapshot.app_ui_state.active_plan?.guidance?.nav_element ?? null,
-        situation: snapshot.app_state.situation,
+      await created.registerOwnshipSource(demoOwnshipSourceRegistration());
+      await created.updateOwnshipSourceStatus({
+        source_id: "demo-gps",
+        connection_state: "connected",
+        enabled: true,
+        status_label: "Connected",
       });
+      const snapshot = await created.pushSituationSample(demoSituationSample());
       if (!cancelled) {
         setSessionSnapshot(snapshot);
       }
@@ -656,7 +704,7 @@ export default function App() {
           onOpenPlan={() => navigateToPage("plan")}
           legSummary={legSummary}
           locationSearch={locationSearch}
-          situation={appState.situation}
+          ownship={appState.ownship.render}
           plan={currentPlan}
           planUiState={planUiState}
           sessionPlanUiState={appUiState.active_plan}
@@ -870,10 +918,10 @@ export default function App() {
               chartFolderOpen: false,
             });
           }}
+          ownship={appState.ownship.render}
           onApplyMutation={async (mutation) => {
             await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
-          situation={appState.situation}
         />
       </div>
 
@@ -909,7 +957,7 @@ function MapPage(props: {
   onOpenPlan: () => void;
   legSummary: string;
   locationSearch: string;
-  situation: Situation;
+  ownship: OwnshipRenderState;
   plan: typeof samplePlan;
   planUiState: FlightPlanUiState | null;
   sessionPlanUiState: FlightPlanUiState | null;
@@ -934,7 +982,7 @@ function MapPage(props: {
     onOpenPlan,
     legSummary,
     locationSearch,
-    situation,
+    ownship,
     plan,
     planUiState,
     sessionPlanUiState,
@@ -1002,8 +1050,8 @@ function MapPage(props: {
     };
   }, [selectedFamilyMapViews, tiles]);
   const situationOverlay = useMemo(
-    () => resolveSituationOverlay(situation, viewport, surfaceSize.width, surfaceSize.height),
-    [situation, viewport, surfaceSize.height, surfaceSize.width],
+    () => resolveSituationOverlay(ownship, viewport, surfaceSize.width, surfaceSize.height),
+    [ownship, viewport, surfaceSize.height, surfaceSize.width],
   );
   const routeScreenSegments = useMemo(() => {
     if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -1021,9 +1069,11 @@ function MapPage(props: {
       app_state_active_plan: plan?.id ?? null,
       session_nav_element: sessionPlanUiState?.guidance?.nav_element ?? null,
       local_plan_guidance: planUiState?.guidance?.nav_element ?? null,
-      situation,
+      ownship_mode: ownship.mode,
+      ownship_draw_cdi: ownship.draw_cdi,
+      ownship_position: ownship.position,
     });
-  }, [plan, planUiState, sessionPlanUiState, situation]);
+  }, [ownship.draw_cdi, ownship.mode, ownship.position, plan, planUiState, sessionPlanUiState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1426,7 +1476,7 @@ function MapPage(props: {
             })}
           </svg>
         ) : null}
-        <SituationStatusBadge situation={situation} />
+        <SituationStatusBadge ownship={ownship} />
         {situationOverlay ? (
           <>
             <svg className="situationOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
@@ -2823,9 +2873,9 @@ function ChartsPage(props: {
   onSelectAirport: (airportId: string) => void;
   onSelectChart: (chartId: string) => void;
   onApplyMutation: (mutation: FlightPlanUiMutation) => void | Promise<void>;
-  situation: Situation;
+  ownship: OwnshipRenderState;
 }) {
-  const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, sessionPlanUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, onApplyMutation, situation } = props;
+  const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, sessionPlanUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, onApplyMutation, ownship } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -3189,7 +3239,7 @@ function ChartsPage(props: {
         onDoubleClick={handleDoubleClick}
       >
         <div className="mapBackdrop" />
-        <SituationStatusBadge situation={situation} />
+        <SituationStatusBadge ownship={ownship} />
         {trayOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
 
         {folderOpen ? (
@@ -3609,19 +3659,14 @@ function formatPageStack(pageHistory: AppViewSnapshot[], currentSnapshot: Pick<A
   return [currentSnapshot, ...pageHistory.slice().reverse()].map(formatSnapshot).join(" > ");
 }
 
-function SituationStatusBadge(props: { situation: Situation }) {
+function SituationStatusBadge(props: { ownship: OwnshipRenderState }) {
   const tone =
-    props.situation.position.kind === "unknown"
+    props.ownship.mode === "none"
       ? "unknown"
-      : props.situation.position.kind === "flight_plan_location"
+      : props.ownship.mode === "simulated"
         ? "simulated"
         : "live";
-  const label =
-    tone === "unknown"
-      ? "Location Unknown"
-      : tone === "simulated"
-        ? "Simulated Position"
-        : "Live Position";
+  const label = props.ownship.banner_text;
   return <div className={`situationStatus situationStatus-${tone}`}>{label}</div>;
 }
 
@@ -3646,20 +3691,20 @@ function SituationAircraft(props: {
 }
 
 function resolveSituationOverlay(
-  situation: Situation,
+  ownship: OwnshipRenderState,
   viewport: MapViewportState,
   width: number,
   height: number,
 ) {
-  if (width <= 0 || height <= 0 || situation.position.kind === "unknown") {
+  if (width <= 0 || height <= 0 || !ownship.draw_aircraft || !ownship.position) {
     return null;
   }
-  const point = latLonToScreen(situation.position.lat, situation.position.lon, viewport, width, height);
-  const headingDeg = situation.orientation_deg ?? 0;
-  const ring = selectSituationRing(situation.position.lat, situation.position.lon, viewport, width, height);
+  const point = latLonToScreen(ownship.position.lat, ownship.position.lon, viewport, width, height);
+  const headingDeg = ownship.orientation_deg ?? 0;
+  const ring = selectSituationRing(ownship.position.lat, ownship.position.lon, viewport, width, height);
   const ahead =
-    situation.speed_kt !== null
-      ? projectAhead(situation.position.lat, situation.position.lon, headingDeg, situation.speed_kt / 60)
+    ownship.draw_predictor && ownship.speed_kt !== null
+      ? projectAhead(ownship.position.lat, ownship.position.lon, headingDeg, ownship.speed_kt / 60)
       : null;
   const predictor = ahead ? latLonToScreen(ahead.lat, ahead.lon, viewport, width, height) : null;
   return { point, predictor, headingDeg, ring };

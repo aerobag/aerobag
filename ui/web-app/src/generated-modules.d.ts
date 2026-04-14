@@ -44,7 +44,10 @@ declare module "@generated/app_wasm.js" {
   export const create_ui_session: (...args: unknown[]) => string;
   export const remove_leg_in_session: (...args: unknown[]) => string;
   export const move_waypoint_in_session: (...args: unknown[]) => string;
-  export const set_situation_in_session: (...args: unknown[]) => string;
+  export const register_ownship_source_in_session: (...args: unknown[]) => string;
+  export const update_ownship_source_status_in_session: (...args: unknown[]) => string;
+  export const push_situation_sample_in_session: (...args: unknown[]) => string;
+  export const set_ownship_policy_in_session: (...args: unknown[]) => string;
   export const replace_flight_plan_in_session: (...args: unknown[]) => string;
   export const select_airport_in_session: (...args: unknown[]) => string;
   export const select_chart_in_session: (...args: unknown[]) => string;

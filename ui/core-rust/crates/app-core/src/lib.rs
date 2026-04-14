@@ -10,10 +10,10 @@ pub mod ids;
 pub mod navdb;
 pub mod navdb_types;
 pub mod map_overlay;
+pub mod ownship;
 pub mod planning;
 pub mod procedure_geometry;
 pub mod procedure_legs;
-pub mod situation;
 pub mod session;
 pub mod state;
 
@@ -38,6 +38,14 @@ pub use map_overlay::{
     query_map_overlay, tile_key, visible_point_tile_window, MapOverlayQueryResult,
     MapOverlayWarning, PointTilePayload, PointVectorRecord, VectorTileRequest,
     VisibleMapFeature, VECTOR_DISPLAY_FEATURE_LIMIT,
+};
+pub use ownship::{
+    push_sample, register_source, set_policy, update_source_status,
+    OwnshipBannerSeverity, OwnshipControlModel, OwnshipMode, OwnshipPolicy,
+    OwnshipRenderState, OwnshipSelectionPolicy, OwnshipSourceId, OwnshipSourceKind,
+    OwnshipSourceMenuItem, OwnshipSourceRegistration, OwnshipSourceStatus,
+    OwnshipSourceStatusUpdate, OwnshipState, ResolvedOwnshipState,
+    SituationKinematics, SituationSample, SourceConnectionState,
 };
 pub use navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
@@ -80,13 +88,14 @@ pub use procedure_legs::{
     parse_airport_magnetic_variation, parse_cifp_altitude_ft, parse_cifp_tenths_value,
     terminal_procedure_discontinuity,
 };
-pub use situation::{Situation, SituationPosition};
 pub use session::{
     create_ui_session, destroy_session, get_map_overlay_in_session, get_session_snapshot,
     ingest_point_tiles_in_session, move_waypoint_in_session, remove_leg_in_session,
+    push_situation_sample_in_session, register_ownship_source_in_session,
     replace_flight_plan_in_session,
     restore_chart_page_state_in_session, select_airport_in_session, select_chart_in_session,
-    set_situation_in_session,
+    set_ownship_policy_in_session,
+    update_ownship_source_status_in_session,
     UiChartPageState, UiSessionInitResult, UiSessionSnapshot,
 };
 pub use state::{project_app_ui_state, AppEvent, AppState, AppUiState};

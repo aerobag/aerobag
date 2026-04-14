@@ -451,8 +451,23 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
-    fun setSituation(situation: Situation): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.setSituationInSessionJson(handle, json.encodeToString(situation.toWire())))
+    fun registerOwnshipSource(registration: OwnshipSourceRegistration): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.registerOwnshipSourceInSessionJson(handle, registration.toCoreJson(json)))
+        return snapshot
+    }
+
+    fun updateOwnshipSourceStatus(update: OwnshipSourceStatusUpdate): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.updateOwnshipSourceStatusInSessionJson(handle, update.toCoreJson(json)))
+        return snapshot
+    }
+
+    fun pushSituationSample(sample: SituationSample): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.pushSituationSampleInSessionJson(handle, sample.toCoreJson(json)))
+        return snapshot
+    }
+
+    fun setOwnshipPolicy(policy: OwnshipPolicy): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.setOwnshipPolicyInSessionJson(handle, policy.toCoreJson(json)))
         return snapshot
     }
 
@@ -567,7 +582,7 @@ private fun ContentInventory.toWire() = WireContentInventory(
 
 private fun AppState.toWire() = WireAppState(
     active_plan = activePlan?.toWire(),
-    situation = situation.toWire(),
+    ownship = ownship.toWire(),
     content_policy = contentPolicy.toWire(),
     last_content_requirements = lastContentRequirements.map { requirement ->
         WireContentRequirement(
@@ -593,9 +608,82 @@ private fun AppState.toWire() = WireAppState(
     },
 )
 
+private fun OwnshipState.toWire() = WireOwnshipState(
+    policy = policy.toWire(),
+    resolved = resolved.toWire(),
+    render = render.toWire(),
+    controls = controls.toWire(),
+    sources = sources.map { it.toWire() },
+)
+
+private fun OwnshipPolicy.toWire() = WireOwnshipPolicy(
+    selection = selection.toWire(),
+    source_priority = sourcePriority,
+    allow_auto_replay = allowAutoReplay,
+    allow_auto_simulated = allowAutoSimulated,
+)
+
+private fun OwnshipSelection.toWire(): WireOwnshipSelection = when (this) {
+    OwnshipSelection.Auto -> WireOwnshipSelection.Auto
+    is OwnshipSelection.Manual -> WireOwnshipSelection.Manual(sourceId)
+}
+
+private fun ResolvedOwnshipState.toWire() = WireResolvedOwnshipState(
+    mode = mode.toWire(),
+    active_source_id = activeSourceId,
+    active_source_kind = activeSourceKind?.toWire(),
+    banner_text = bannerText,
+    banner_severity = bannerSeverity.toWire(),
+    guidance_enabled = guidanceEnabled,
+    sequencing_enabled = sequencingEnabled,
+)
+
+private fun OwnshipRenderState.toWire() = WireOwnshipRenderState(
+    mode = mode.toWire(),
+    banner_text = bannerText,
+    banner_severity = bannerSeverity.toWire(),
+    draw_aircraft = drawAircraft,
+    draw_predictor = drawPredictor,
+    draw_cdi = drawCdi,
+    position = position?.toWire(),
+    orientation_deg = orientationDeg,
+    speed_kt = speedKt,
+)
+
+private fun OwnshipControlModel.toWire() = WireOwnshipControlModel(
+    mode = mode.toWire(),
+    policy = policy.toWire(),
+    sources = sources.map { it.toWire() },
+)
+
+private fun OwnshipSourceMenuItem.toWire() = WireOwnshipSourceMenuItem(
+    source_id = sourceId,
+    label = label,
+    kind = kind.toWire(),
+    enabled = enabled,
+    active = active,
+    selectable = selectable,
+    status_label = statusLabel,
+)
+
+private fun OwnshipSourceStatus.toWire() = WireOwnshipSourceStatus(
+    source_id = sourceId,
+    source_kind = sourceKind.toWire(),
+    display_name = displayName,
+    connection_state = connectionState.toWire(),
+    last_event_time_epoch_ms = lastEventTimeEpochMs,
+    last_received_time_epoch_ms = lastReceivedTimeEpochMs,
+    stale_after_ms = staleAfterMs,
+    selectable = selectable,
+    enabled = enabled,
+    auto_eligible = autoEligible,
+    active = active,
+    status_label = statusLabel,
+)
+
 private fun WireAppState.toUi() = AppState(
     activePlan = active_plan?.toUiFlightPlan(),
-    situation = situation.toUi(),
+    ownship = ownship.toUi(),
     contentPolicy = content_policy.toUi(),
     lastContentRequirements = last_content_requirements.map { requirement ->
         ContentRequirement(
@@ -649,28 +737,218 @@ private fun WireAppUiState.toUi() = AppUiState(
     },
 )
 
-private fun Situation.toWire() = WireSituation(
-    position = position.toWire(),
-    orientation_deg = orientationDeg,
-    speed_kt = speedKt,
+private fun WireOwnshipState.toUi() = OwnshipState(
+    policy = policy.toUi(),
+    resolved = resolved.toUi(),
+    render = render.toUi(),
+    controls = controls.toUi(),
+    sources = sources.map { it.toUi() },
 )
 
-private fun WireSituation.toUi() = Situation(
-    position = position.toUi(),
+private fun WireOwnshipPolicy.toUi() = OwnshipPolicy(
+    selection = selection.toUi(),
+    sourcePriority = source_priority,
+    allowAutoReplay = allow_auto_replay,
+    allowAutoSimulated = allow_auto_simulated,
+)
+
+private fun WireOwnshipSelection.toUi(): OwnshipSelection = when (this) {
+    WireOwnshipSelection.Auto -> OwnshipSelection.Auto
+    is WireOwnshipSelection.Manual -> OwnshipSelection.Manual(source_id)
+}
+
+private fun WireResolvedOwnshipState.toUi() = ResolvedOwnshipState(
+    mode = mode.toUi(),
+    activeSourceId = active_source_id,
+    activeSourceKind = active_source_kind?.toUi(),
+    bannerText = banner_text,
+    bannerSeverity = banner_severity.toUi(),
+    guidanceEnabled = guidance_enabled,
+    sequencingEnabled = sequencing_enabled,
+)
+
+private fun WireOwnshipRenderState.toUi() = OwnshipRenderState(
+    mode = mode.toUi(),
+    bannerText = banner_text,
+    bannerSeverity = banner_severity.toUi(),
+    drawAircraft = draw_aircraft,
+    drawPredictor = draw_predictor,
+    drawCdi = draw_cdi,
+    position = position?.toUi(),
     orientationDeg = orientation_deg,
     speedKt = speed_kt,
 )
 
-private fun SituationPosition.toWire(): WireSituationPosition = when (this) {
-    SituationPosition.Unknown -> WireSituationPosition.Unknown
-    is SituationPosition.LatLon -> WireSituationPosition.LatLon(lat = lat, lon = lon)
-    is SituationPosition.FlightPlanLocation -> WireSituationPosition.FlightPlanLocation(leg_index = legIndex, lat = lat, lon = lon)
+private fun WireOwnshipControlModel.toUi() = OwnshipControlModel(
+    mode = mode.toUi(),
+    policy = policy.toUi(),
+    sources = sources.map { it.toUi() },
+)
+
+private fun WireOwnshipSourceMenuItem.toUi() = OwnshipSourceMenuItem(
+    sourceId = source_id,
+    label = label,
+    kind = kind.toUi(),
+    enabled = enabled,
+    active = active,
+    selectable = selectable,
+    statusLabel = status_label,
+)
+
+private fun WireOwnshipSourceStatus.toUi() = OwnshipSourceStatus(
+    sourceId = source_id,
+    sourceKind = source_kind.toUi(),
+    displayName = display_name,
+    connectionState = connection_state.toUi(),
+    lastEventTimeEpochMs = last_event_time_epoch_ms,
+    lastReceivedTimeEpochMs = last_received_time_epoch_ms,
+    staleAfterMs = stale_after_ms,
+    selectable = selectable,
+    enabled = enabled,
+    autoEligible = auto_eligible,
+    active = active,
+    statusLabel = status_label,
+)
+
+private fun WireOwnshipMode.toUi(): OwnshipMode = when (this) {
+    WireOwnshipMode.None -> OwnshipMode.None
+    WireOwnshipMode.Live -> OwnshipMode.Live
+    WireOwnshipMode.Replay -> OwnshipMode.Replay
+    WireOwnshipMode.Simulated -> OwnshipMode.Simulated
 }
 
-private fun WireSituationPosition.toUi(): SituationPosition = when (this) {
-    WireSituationPosition.Unknown -> SituationPosition.Unknown
-    is WireSituationPosition.LatLon -> SituationPosition.LatLon(lat = lat, lon = lon)
-    is WireSituationPosition.FlightPlanLocation -> SituationPosition.FlightPlanLocation(legIndex = leg_index, lat = lat, lon = lon)
+private fun OwnshipMode.toWire(): WireOwnshipMode = when (this) {
+    OwnshipMode.None -> WireOwnshipMode.None
+    OwnshipMode.Live -> WireOwnshipMode.Live
+    OwnshipMode.Replay -> WireOwnshipMode.Replay
+    OwnshipMode.Simulated -> WireOwnshipMode.Simulated
+}
+
+private fun WireOwnshipBannerSeverity.toUi(): OwnshipBannerSeverity = when (this) {
+    WireOwnshipBannerSeverity.Info -> OwnshipBannerSeverity.Info
+    WireOwnshipBannerSeverity.Caution -> OwnshipBannerSeverity.Caution
+    WireOwnshipBannerSeverity.Warning -> OwnshipBannerSeverity.Warning
+}
+
+private fun OwnshipBannerSeverity.toWire(): WireOwnshipBannerSeverity = when (this) {
+    OwnshipBannerSeverity.Info -> WireOwnshipBannerSeverity.Info
+    OwnshipBannerSeverity.Caution -> WireOwnshipBannerSeverity.Caution
+    OwnshipBannerSeverity.Warning -> WireOwnshipBannerSeverity.Warning
+}
+
+private fun WireOwnshipSourceKind.toUi(): OwnshipSourceKind = when (this) {
+    WireOwnshipSourceKind.DeviceGps -> OwnshipSourceKind.DeviceGps
+    WireOwnshipSourceKind.ExternalGps -> OwnshipSourceKind.ExternalGps
+    WireOwnshipSourceKind.ExternalAhrs -> OwnshipSourceKind.ExternalAhrs
+    WireOwnshipSourceKind.GpxPlayback -> OwnshipSourceKind.GpxPlayback
+    WireOwnshipSourceKind.AdsbTrackPlayback -> OwnshipSourceKind.AdsbTrackPlayback
+    WireOwnshipSourceKind.LiveNetworkTrack -> OwnshipSourceKind.LiveNetworkTrack
+    WireOwnshipSourceKind.FlightPlanSimulator -> OwnshipSourceKind.FlightPlanSimulator
+}
+
+private fun OwnshipSourceKind.toWire(): WireOwnshipSourceKind = when (this) {
+    OwnshipSourceKind.DeviceGps -> WireOwnshipSourceKind.DeviceGps
+    OwnshipSourceKind.ExternalGps -> WireOwnshipSourceKind.ExternalGps
+    OwnshipSourceKind.ExternalAhrs -> WireOwnshipSourceKind.ExternalAhrs
+    OwnshipSourceKind.GpxPlayback -> WireOwnshipSourceKind.GpxPlayback
+    OwnshipSourceKind.AdsbTrackPlayback -> WireOwnshipSourceKind.AdsbTrackPlayback
+    OwnshipSourceKind.LiveNetworkTrack -> WireOwnshipSourceKind.LiveNetworkTrack
+    OwnshipSourceKind.FlightPlanSimulator -> WireOwnshipSourceKind.FlightPlanSimulator
+}
+
+private fun WireSourceConnectionState.toUi(): SourceConnectionState = when (this) {
+    WireSourceConnectionState.Unavailable -> SourceConnectionState.Unavailable
+    WireSourceConnectionState.Searching -> SourceConnectionState.Searching
+    WireSourceConnectionState.Connected -> SourceConnectionState.Connected
+    WireSourceConnectionState.Stale -> SourceConnectionState.Stale
+    WireSourceConnectionState.Failed -> SourceConnectionState.Failed
+}
+
+private fun SourceConnectionState.toWire(): WireSourceConnectionState = when (this) {
+    SourceConnectionState.Unavailable -> WireSourceConnectionState.Unavailable
+    SourceConnectionState.Searching -> WireSourceConnectionState.Searching
+    SourceConnectionState.Connected -> WireSourceConnectionState.Connected
+    SourceConnectionState.Stale -> WireSourceConnectionState.Stale
+    SourceConnectionState.Failed -> WireSourceConnectionState.Failed
+}
+
+private fun OwnshipSourceRegistration.toCoreJson(json: Json): String =
+    kotlinx.serialization.json.buildJsonObject {
+        put("source_id", kotlinx.serialization.json.JsonPrimitive(sourceId))
+        put("source_kind", kotlinx.serialization.json.JsonPrimitive(sourceKind.toWireName()))
+        put("display_name", kotlinx.serialization.json.JsonPrimitive(displayName))
+        put("selectable", kotlinx.serialization.json.JsonPrimitive(selectable))
+        put("auto_eligible", kotlinx.serialization.json.JsonPrimitive(autoEligible))
+    }.toString()
+
+private fun OwnshipSourceStatusUpdate.toCoreJson(json: Json): String =
+    kotlinx.serialization.json.buildJsonObject {
+        put("source_id", kotlinx.serialization.json.JsonPrimitive(sourceId))
+        put("connection_state", kotlinx.serialization.json.JsonPrimitive(connectionState.toWireName()))
+        put("enabled", kotlinx.serialization.json.JsonPrimitive(enabled))
+        put("status_label", kotlinx.serialization.json.JsonPrimitive(statusLabel))
+    }.toString()
+
+private fun SituationSample.toCoreJson(json: Json): String =
+    kotlinx.serialization.json.buildJsonObject {
+        put("source_id", kotlinx.serialization.json.JsonPrimitive(sourceId))
+        put("source_kind", kotlinx.serialization.json.JsonPrimitive(sourceKind.toWireName()))
+        put("event_time_epoch_ms", kotlinx.serialization.json.JsonPrimitive(eventTimeEpochMs))
+        put("received_time_epoch_ms", kotlinx.serialization.json.JsonPrimitive(receivedTimeEpochMs))
+        put(
+            "position",
+            position?.let { json.encodeToJsonElement(WireLatLon.serializer(), it.toWire()) }
+                ?: kotlinx.serialization.json.JsonNull,
+        )
+        put("track_deg_true", trackDegTrue?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
+        put("heading_deg_true", headingDegTrue?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
+        put("ground_speed_kt", groundSpeedKt?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
+        put("altitude_msl_ft", altitudeMslFt?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
+        put("pressure_altitude_ft", pressureAltitudeFt?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
+    }.toString()
+
+private fun OwnshipPolicy.toCoreJson(json: Json): String =
+    kotlinx.serialization.json.buildJsonObject {
+        put(
+            "selection",
+            when (val current = selection) {
+                OwnshipSelection.Auto -> kotlinx.serialization.json.JsonPrimitive("auto")
+                is OwnshipSelection.Manual -> kotlinx.serialization.json.buildJsonObject {
+                    put(
+                        "manual",
+                        kotlinx.serialization.json.buildJsonObject {
+                            put("source_id", kotlinx.serialization.json.JsonPrimitive(current.sourceId))
+                        },
+                    )
+                }
+            },
+        )
+        put(
+            "source_priority",
+            kotlinx.serialization.json.buildJsonArray {
+                sourcePriority.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) }
+            },
+        )
+        put("allow_auto_replay", kotlinx.serialization.json.JsonPrimitive(allowAutoReplay))
+        put("allow_auto_simulated", kotlinx.serialization.json.JsonPrimitive(allowAutoSimulated))
+    }.toString()
+
+private fun OwnshipSourceKind.toWireName(): String = when (this) {
+    OwnshipSourceKind.DeviceGps -> "device_gps"
+    OwnshipSourceKind.ExternalGps -> "external_gps"
+    OwnshipSourceKind.ExternalAhrs -> "external_ahrs"
+    OwnshipSourceKind.GpxPlayback -> "gpx_playback"
+    OwnshipSourceKind.AdsbTrackPlayback -> "adsb_track_playback"
+    OwnshipSourceKind.LiveNetworkTrack -> "live_network_track"
+    OwnshipSourceKind.FlightPlanSimulator -> "flight_plan_simulator"
+}
+
+private fun SourceConnectionState.toWireName(): String = when (this) {
+    SourceConnectionState.Unavailable -> "unavailable"
+    SourceConnectionState.Searching -> "searching"
+    SourceConnectionState.Connected -> "connected"
+    SourceConnectionState.Stale -> "stale"
+    SourceConnectionState.Failed -> "failed"
 }
 
 internal fun WireFlightPlan.toUiFlightPlan() = FlightPlan(

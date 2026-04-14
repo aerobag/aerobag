@@ -1110,6 +1110,7 @@ struct DisplayElementHeadingSignature {
     end_label: String,
     end_magnetic_variation_deg: Option<f64>,
     hold_fix_position: Option<LatLon>,
+    starts_procedure_turn: bool,
     element_kind: DisplayElementKind,
 }
 
@@ -1165,6 +1166,7 @@ fn heading_signatures_for_leg(
                     hold_fix_position: matches!(path_termination, "HF" | "HM")
                         .then_some(hold_fix_position)
                         .flatten(),
+                    starts_procedure_turn: path_termination == "PI" && index == 0,
                     element_kind: display_element_kind(element),
                 })
             })
@@ -1190,6 +1192,7 @@ fn heading_signatures_for_leg(
         hold_fix_position: matches!(path_termination, "HF" | "HM")
             .then_some(hold_fix_position)
             .flatten(),
+        starts_procedure_turn: path_termination == "PI",
         element_kind: DisplayElementKind::Segment,
     }]
 }
@@ -1267,6 +1270,9 @@ fn continuity_heading_tolerance_deg(
         {
             return 120.0;
         }
+    }
+    if current.starts_procedure_turn {
+        return 160.0;
     }
     if previous.element_kind == DisplayElementKind::Segment
         && current.element_kind == DisplayElementKind::Segment
@@ -4384,6 +4390,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual visual inspection overlay for KIAD I19R RUBNZ"]
+    fn writes_kiad_i19r_rubnz_overlay_png() {
+        render_procedure_overlay_to_paths("KIAD", "I19R", "RUBNZ", "KIAD_I19R_RUBNZ", true);
+    }
+
+    #[test]
     #[ignore = "exhaustive approach materialization sweep over a supplied nav database"]
     fn materializes_all_approaches_without_crashing() {
         let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
@@ -5277,8 +5289,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual batch overlay generation for 100 random procedures"]
+    #[ignore = "manual batch overlay generation for 200 random procedures"]
     fn writes_random_procedure_plots_batch() {
+        const TARGET_PLOTS: usize = 200;
         let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
         let unpacked_root = latest_snapshot_unpacked_root();
         let georef_plates = collect_georeferenced_plates_from_packages(&unpacked_root);
@@ -5318,8 +5331,9 @@ mod tests {
         candidates.sort_by_key(|entry| entry.0);
         eprintln!("found {} mappable procedure candidates", candidates.len());
         assert!(
-            candidates.len() >= 100,
-            "expected at least 100 mappable procedure plots, found {}",
+            candidates.len() >= TARGET_PLOTS,
+            "expected at least {} mappable procedure plots, found {}",
+            TARGET_PLOTS,
             candidates.len()
         );
 
@@ -5340,7 +5354,7 @@ mod tests {
         let mut materialize_failed = 0usize;
         let mut failed_examples = Vec::new();
         for (_, airport_id, procedure_id, plate_path) in candidates.into_iter() {
-            if written >= 100 {
+            if written >= TARGET_PLOTS {
                 break;
             }
             attempted += 1;
@@ -5412,7 +5426,7 @@ mod tests {
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "none".to_string());
             let stem = format!(
-                "{:02}_{}_{}_{}",
+                "{:03}_{}_{}_{}",
                 written + 1,
                 sanitize_filename_component(airport_id.trim()),
                 sanitize_filename_component(procedure_id.trim()),
@@ -5564,8 +5578,8 @@ mod tests {
         for example in failed_examples {
             eprintln!("example: {example}");
         }
-        assert_eq!(written, 100, "expected to write exactly 100 procedure plots");
-        eprintln!("wrote 100 procedure plots to {}", output_dir.display());
+        assert_eq!(written, TARGET_PLOTS, "expected to write exactly {} procedure plots", TARGET_PLOTS);
+        eprintln!("wrote {} procedure plots to {}", TARGET_PLOTS, output_dir.display());
     }
 
     #[test]

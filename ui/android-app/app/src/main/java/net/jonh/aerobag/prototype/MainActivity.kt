@@ -1050,7 +1050,6 @@ private fun AerobagApp() {
         )
     }
     var pageHistory by remember { mutableStateOf<List<AppViewSnapshot>>(emptyList()) }
-    var planFocusRequest by remember { mutableStateOf(0) }
     var selectedMapId by remember { mutableStateOf(initialMapId(fixture)) }
     val uiSession = remember(appCore, fixture.resourceIndexJson) {
         appCore.createUiSession(
@@ -1143,11 +1142,6 @@ private fun AerobagApp() {
         page = nextPage
     }
 
-    fun openPlanAndFocusActiveLeg() {
-        planFocusRequest += 1
-        navigateToPage(AppPage.Plan)
-    }
-
     fun openChartsForAirport(airportId: String) {
         sessionSnapshot = uiSession.selectAirport(airportId)
         val airport = chartAirportById[airportId]
@@ -1197,7 +1191,7 @@ private fun AerobagApp() {
                         )
                     },
                     onSelectPage = ::navigateToPage,
-                    onOpenPlan = ::openPlanAndFocusActiveLeg,
+                    onOpenPlan = { navigateToPage(AppPage.Plan) },
                     navElement = navElement,
                     plan = currentPlan,
                     planUiState = sessionPlanUiState,
@@ -1211,13 +1205,12 @@ private fun AerobagApp() {
                     pageHistory = pageHistory,
                     uptimeLabel = uptimeLabel,
                     navElement = navElement,
-                    focusActiveLegRequest = planFocusRequest,
                     samplePlan = currentPlan,
                     planUiState = sessionPlanUiState,
                     planListState = planListState,
                     uiTheme = uiTheme,
                     onSelectPage = ::navigateToPage,
-                    onOpenPlan = ::openPlanAndFocusActiveLeg,
+                    onOpenPlan = { navigateToPage(AppPage.Plan) },
                     onOpenCharts = { airportId -> if (airportId != null) openChartsForAirport(airportId) },
                     onApplyMutation = { mutation ->
                         sessionSnapshot = uiSession.replaceFlightPlan(mutation.plan)
@@ -1249,7 +1242,7 @@ private fun AerobagApp() {
                         )
                     },
                     onSelectPage = ::navigateToPage,
-                    onOpenPlan = ::openPlanAndFocusActiveLeg,
+                    onOpenPlan = { navigateToPage(AppPage.Plan) },
                     onSelectAirport = { airportId ->
                         sessionSnapshot = uiSession.selectAirport(airportId)
                         val airport = chartAirportById[airportId]
@@ -2167,7 +2160,6 @@ private fun FlightPlanPage(
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
     navElement: NavElementUiView,
-    focusActiveLegRequest: Int,
     samplePlan: net.jonh.aerobag.prototype.domain.FlightPlan,
     planUiState: FlightPlanUiState?,
     planListState: LazyListState,
@@ -2417,39 +2409,6 @@ private fun FlightPlanPage(
 
     LaunchedEffect(topLevelOrderSummary) {
         Log.d("AerobagReorder", "topLevelOrder $topLevelOrderSummary")
-    }
-
-    LaunchedEffect(focusActiveLegRequest, rows, guidance?.activeLeg) {
-        if (focusActiveLegRequest <= 0) {
-            return@LaunchedEffect
-        }
-        val activeLeg = guidance?.activeLeg ?: return@LaunchedEffect
-        val fromIndex =
-            rows.indexOfFirst { row ->
-                row.rowKind == "waypoint" && navRefsEqual(row.navRef, activeLeg.from)
-            }
-        if (fromIndex < 0) {
-            return@LaunchedEffect
-        }
-        val targetIndex =
-            ((fromIndex + 1) until rows.size).firstOrNull { index ->
-                val row = rows[index]
-                row.rowKind == "waypoint" && navRefsEqual(row.navRef, activeLeg.to)
-            } ?: rows.indexOfFirst { row ->
-                row.rowKind == "waypoint" && navRefsEqual(row.navRef, activeLeg.to)
-            }
-        if (targetIndex >= 0) {
-            val visibleItem = planListState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == targetIndex }
-            val viewportStart = planListState.layoutInfo.viewportStartOffset
-            val viewportEnd = planListState.layoutInfo.viewportEndOffset
-            val fullyVisible =
-                visibleItem != null &&
-                    visibleItem.offset >= viewportStart &&
-                    visibleItem.offset + visibleItem.size <= viewportEnd
-            if (!fullyVisible) {
-                planListState.animateScrollToItem(targetIndex)
-            }
-        }
     }
 
     Box(

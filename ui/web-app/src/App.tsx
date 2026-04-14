@@ -256,7 +256,6 @@ export default function App() {
   const persistedUiState = useMemo(readPersistedWebUiState, []);
   const [page, setPage] = useState<AppPage>(persistedUiState.page ?? "map");
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
-  const [planFocusRequest, setPlanFocusRequest] = useState(0);
   const [appCoreAdapter, setAppCoreAdapter] = useState<AppCoreAdapter | null>(null);
   const [adapterBackend, setAdapterBackend] = useState<AdapterBackendKind>("wasm");
   const [adapterDetail, setAdapterDetail] = useState<string>("loading");
@@ -572,11 +571,6 @@ export default function App() {
     }
   }
 
-  function openPlanAndFocusActiveLeg() {
-    setPlanFocusRequest((value) => value + 1);
-    navigateToPage("plan");
-  }
-
   function pushViewSnapshot(next: Partial<AppViewSnapshot> & Pick<AppViewSnapshot, "page">) {
     const nextHistory = boundedHistory([...pageHistory, currentSnapshot()]);
     const nextCurrent: AppViewSnapshot = {
@@ -655,7 +649,7 @@ export default function App() {
             });
           }}
           onSelectPage={navigateToPage}
-          onOpenPlan={openPlanAndFocusActiveLeg}
+          onOpenPlan={() => navigateToPage("plan")}
           legSummary={legSummary}
           locationSearch={locationSearch}
           situation={appState.situation}
@@ -678,8 +672,7 @@ export default function App() {
           plan={currentPlan}
           planUiState={planUiState}
           sessionPlanUiState={appUiState.active_plan}
-          focusActiveLegRequest={planFocusRequest}
-          onOpenPlan={openPlanAndFocusActiveLeg}
+          onOpenPlan={() => navigateToPage("plan")}
           onSelectPage={navigateToPage}
           onOpenCharts={(airportId, chartId) => {
             if (!airportId) {
@@ -840,7 +833,7 @@ export default function App() {
             });
           }}
           onSelectPage={navigateToPage}
-          onOpenPlan={openPlanAndFocusActiveLeg}
+          onOpenPlan={() => navigateToPage("plan")}
           onSelectAirport={(airportId) => {
             const airport = chartPageData.airports.find((entry) => entry.id === airportId);
             if (uiSession) {
@@ -1669,7 +1662,6 @@ function FlightPlanPage(props: {
   plan: typeof samplePlan;
   planUiState: FlightPlanUiState | null;
   sessionPlanUiState: FlightPlanUiState | null;
-  focusActiveLegRequest: number;
   onOpenPlan: () => void;
   onSelectPage: (page: AppPage) => void;
   onOpenCharts: (airportId: string | null, chartId?: string | null) => void;
@@ -2031,38 +2023,6 @@ function FlightPlanPage(props: {
       table.removeEventListener("transitionend", handleTransitionEnd);
     };
   }, [displayRows, reorderOpen, showComponentViews]);
-
-  useEffect(() => {
-    if (props.focusActiveLegRequest <= 0 || !guidance?.active_leg) {
-      return;
-    }
-    const activeLeg = guidance.active_leg;
-    const targetIndex = (() => {
-      const fromIndex = displayRows.findIndex((row) => row.rowKind === "waypoint" && navRefsEqual(row.navRef, activeLeg.from));
-      if (fromIndex < 0) {
-        return -1;
-      }
-      for (let index = fromIndex + 1; index < displayRows.length; index += 1) {
-        const row = displayRows[index];
-        if (row.rowKind === "waypoint" && navRefsEqual(row.navRef, activeLeg.to)) {
-          return index;
-        }
-      }
-      return displayRows.findIndex((row) => row.rowKind === "waypoint" && navRefsEqual(row.navRef, activeLeg.to));
-    })();
-    if (targetIndex < 0) {
-      return;
-    }
-    const targetRow = displayRows[targetIndex];
-    const targetElement = targetRow ? structuredRowRefs.current.get(targetRow.refKey) : null;
-    if (!targetElement) {
-      return;
-    }
-    const handle = window.requestAnimationFrame(() => {
-      targetElement.scrollIntoView({ block: "center", inline: "nearest" });
-    });
-    return () => window.cancelAnimationFrame(handle);
-  }, [displayRows, guidance?.active_leg, props.focusActiveLegRequest]);
 
   useEffect(() => {
     if (!showComponentViews || !guidance?.active_leg) {

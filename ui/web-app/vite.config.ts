@@ -31,10 +31,10 @@ const configuredArtifactRoot = fs.readFileSync(artifactReadPathConfigFile, "utf8
 const configuredArtifactPath = path.isAbsolute(configuredArtifactRoot)
   ? configuredArtifactRoot
   : path.resolve(repoRoot, configuredArtifactRoot);
-const packagedProductionDir = path.join("published-packaged", "production");
-const unpackedProductionDir = path.join("published-unpacked", "production");
+const packagedDir = "published-packaged";
+const unpackedDir = "published-unpacked";
 function latestCurrentArtifacts(root: string): string | null {
-  const manifestDir = path.join(root, packagedProductionDir);
+  const manifestDir = path.join(root, packagedDir);
   if (!fs.existsSync(manifestDir) || !fs.statSync(manifestDir).isDirectory()) {
     return null;
   }
@@ -44,26 +44,22 @@ function latestCurrentArtifacts(root: string): string | null {
   return manifests.length > 0 ? path.join(manifestDir, manifests[manifests.length - 1]) : null;
 }
 const artifactReadRoot = configuredArtifactPath;
-const currentArtifactsPath = latestCurrentArtifacts(artifactReadRoot) ?? path.join(artifactReadRoot, packagedProductionDir, "current_artifacts_missing.json");
+const currentArtifactsPath = latestCurrentArtifacts(artifactReadRoot) ?? path.join(artifactReadRoot, packagedDir, "current_artifacts_missing.json");
 const currentArtifacts = JSON.parse(fs.readFileSync(currentArtifactsPath, "utf8")) as { bundles?: Array<{ filename?: string }> };
 const activeBundleFilename = currentArtifacts.bundles?.[currentArtifacts.bundles.length - 1]?.filename ?? "bundle_missing.json";
-const activeCycle = activeBundleFilename.replace(/^bundle_/, "").replace(/\.json$/, "");
-const artifactCycleRoot = path.join(artifactReadRoot, unpackedProductionDir, activeCycle);
 const productBuildPath = path.join(
   artifactReadRoot,
-  packagedProductionDir,
+  packagedDir,
   activeBundleFilename,
 );
-const buildManifestPath = path.join(
-  artifactReadRoot,
-  packagedProductionDir,
-  `build-manifest_${activeCycle}.json`,
-);
-
-function resolveManifestRelativePath(rawPath: string): string {
-  return rawPath.startsWith("published-packaged/")
-    ? path.join(artifactReadRoot, rawPath)
-    : path.join(artifactCycleRoot, rawPath);
+function resolvePublishedFilename(rawPath: string): string {
+  if (path.isAbsolute(rawPath)) {
+    throw new Error(`expected published filename, got absolute path ${rawPath}`);
+  }
+  if (rawPath.includes("/") || rawPath.includes("\\")) {
+    throw new Error(`expected flat published filename, got ${rawPath}`);
+  }
+  return path.join(artifactReadRoot, packagedDir, rawPath);
 }
 
 function resolveProductBuildOutput(nodeName: string, outputName: string): string {
@@ -72,7 +68,7 @@ function resolveProductBuildOutput(nodeName: string, outputName: string): string
   if (topLevel && typeof topLevel === "object") {
     const rawPath = (topLevel as Record<string, unknown>).relative_path;
     if (typeof rawPath === "string" && rawPath.length > 0) {
-      return resolveManifestRelativePath(rawPath);
+      return resolvePublishedFilename(rawPath);
     }
   }
   for (const node of payload.nodes ?? []) {
@@ -87,28 +83,9 @@ function resolveProductBuildOutput(nodeName: string, outputName: string): string
     if (typeof rawPath !== "string" || rawPath.length === 0) {
       break;
     }
-    return resolveManifestRelativePath(rawPath);
+    return resolvePublishedFilename(rawPath);
   }
   throw new Error(`missing product build output ${nodeName}.${outputName}`);
-}
-
-const productBuildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf8")) as { nodes?: Array<Record<string, unknown>> };
-function resolveBuildManifestOutput(nodeName: string, outputName: string): string {
-  for (const node of productBuildManifest.nodes ?? []) {
-    if (node.name !== nodeName) {
-      continue;
-    }
-    const outputs = node.outputs;
-    if (!outputs || typeof outputs !== "object") {
-      break;
-    }
-    const rawPath = (outputs as Record<string, unknown>)[outputName];
-    if (typeof rawPath !== "string" || rawPath.length === 0) {
-      break;
-    }
-    return resolveManifestRelativePath(rawPath);
-  }
-  throw new Error(`missing build manifest output ${nodeName}.${outputName}`);
 }
 const resourceIndexPath = resolveProductBuildOutput("resource_index", "resource_index");
 const catalogPath = resolveProductBuildOutput("catalog", "catalog");
@@ -298,7 +275,7 @@ export default defineConfig({
         path.dirname(resourceIndexPath),
         path.dirname(catalogPath),
         artifactReadRoot,
-        artifactCycleRoot,
+        path.join(artifactReadRoot, unpackedDir),
       ],
     },
   },

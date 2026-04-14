@@ -2,6 +2,7 @@ import org.gradle.api.tasks.Exec
 import groovy.json.JsonSlurper
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.zip.ZipFile
 
 plugins {
     id("com.android.application")
@@ -45,130 +46,68 @@ val artifactRoot = File(
         ?: defaultArtifactRoot.absolutePath,
 )
 fun latestCurrentArtifacts(root: File): File? =
-    root.resolve("published-packaged/production")
+    root.resolve("published-packaged")
         .listFiles()
         ?.filter { it.isFile && it.name.startsWith("current_artifacts_") && it.name.endsWith(".json") }
         ?.maxByOrNull { it.name }
 
 val resolvedArtifactRoot = artifactRoot
 val currentArtifactsFile = latestCurrentArtifacts(resolvedArtifactRoot)
-    ?: throw GradleException("missing current_artifacts_*.json under ${resolvedArtifactRoot.resolve("published-packaged/production").absolutePath}")
+    ?: throw GradleException("missing current_artifacts_*.json under ${resolvedArtifactRoot.resolve("published-packaged").absolutePath}")
 val currentArtifactsPayload by lazy { JsonSlurper().parse(currentArtifactsFile) as Map<*, *> }
 val bundleFilename = ((currentArtifactsPayload["bundles"] as? List<*>)?.lastOrNull() as? Map<*, *>)?.get("filename") as? String
     ?: throw GradleException("missing bundles[-1].filename in ${currentArtifactsFile.absolutePath}")
-val productBuildFile = resolvedArtifactRoot.resolve("published-packaged/production").resolve(bundleFilename)
+val productBuildFile = resolvedArtifactRoot.resolve("published-packaged").resolve(bundleFilename)
 val productBuildPayload by lazy { JsonSlurper().parse(productBuildFile) as Map<*, *> }
 val productCycle = productBuildPayload["cycle"] as? String
     ?: throw GradleException("missing cycle in ${productBuildFile.absolutePath}")
+
+fun resolvePublishedFilename(rawPath: String): File {
+    val relative = File(rawPath)
+    if (relative.isAbsolute) {
+        throw GradleException("expected published filename, got absolute path $rawPath")
+    }
+    if (relative.toPath().nameCount != 1) {
+        throw GradleException("expected flat published filename, got $rawPath")
+    }
+    return resolvedArtifactRoot.resolve("published-packaged").resolve(rawPath)
+}
 
 fun resolveProductBuildOutput(nodeName: String, outputName: String): File {
     val topLevel = productBuildPayload[nodeName] as? Map<*, *>
     if (topLevel != null) {
         val rawPath = topLevel["relative_path"] as? String
         if (!rawPath.isNullOrBlank()) {
-            val relative =
-                if (
-                    rawPath.startsWith("published-packaged/") ||
-                    rawPath.startsWith("published-unpacked/") ||
-                    rawPath.startsWith("cache/") ||
-                    rawPath.startsWith("private-work/")
-                ) {
-                    rawPath
-                } else {
-                    "published-packaged/$rawPath"
-                }
-            val resolved = resolvedArtifactRoot.resolve(relative)
+            val resolved = resolvePublishedFilename(rawPath)
             if (resolved.isFile) {
                 return resolved
             }
             throw GradleException("missing product build output $nodeName at ${resolved.absolutePath}")
         }
     }
-    val nodes = productBuildPayload["nodes"] as? List<*> ?: error("invalid product build manifest ${productBuildFile.absolutePath}")
-    for (node in nodes) {
-        val nodeMap = node as? Map<*, *> ?: continue
-        if (nodeMap["name"] != nodeName) continue
-        val outputs = nodeMap["outputs"] as? Map<*, *> ?: break
-        val rawPath = outputs[outputName] as? String ?: break
-        val resolved = resolvedArtifactRoot.resolve(rawPath)
-        if (resolved.isFile) {
-            return resolved
-        }
-        throw GradleException("missing product build output ${nodeName}.${outputName} at ${resolved.absolutePath}")
-    }
-    throw GradleException("missing product build output ${nodeName}.${outputName} in ${productBuildFile.absolutePath}")
-}
-
-fun resolveProductBuildRelativePath(nodeName: String, outputName: String): String {
-    val topLevel = productBuildPayload[nodeName] as? Map<*, *>
-    if (topLevel != null) {
-        val rawPath = topLevel["relative_path"] as? String
-        if (!rawPath.isNullOrBlank()) {
-            return rawPath
-        }
-    }
-    val nodes = productBuildPayload["nodes"] as? List<*> ?: error("invalid product build manifest ${productBuildFile.absolutePath}")
+    val nodes = productBuildPayload["nodes"] as? List<*> ?: emptyList<Any?>()
     for (node in nodes) {
         val nodeMap = node as? Map<*, *> ?: continue
         if (nodeMap["name"] != nodeName) continue
         val outputs = nodeMap["outputs"] as? Map<*, *> ?: break
         val rawPath = outputs[outputName] as? String
         if (!rawPath.isNullOrBlank()) {
-            return rawPath
+            val resolved = resolvePublishedFilename(rawPath)
+            if (resolved.isFile) {
+                return resolved
+            }
+            throw GradleException("missing product build output ${nodeName}.${outputName} at ${resolved.absolutePath}")
         }
         break
     }
-    throw GradleException("missing product build relative path ${nodeName}.${outputName} in ${productBuildFile.absolutePath}")
-}
-
-fun resolvePublishedUnpackedZipRoot(relativePath: String): File {
-    require(relativePath.endsWith(".zip")) { "expected zip artifact path, got $relativePath" }
-    val unpackedRoot = resolvedArtifactRoot.resolve("published-unpacked/production").resolve(productCycle)
-    return unpackedRoot.resolve(relativePath.removeSuffix(".zip"))
+    throw GradleException("missing product build output ${nodeName}.${outputName} in ${productBuildFile.absolutePath}")
 }
 
 val resourceIndexFile = resolveProductBuildOutput("resource_index", "resource_index")
+val dataZipFile = resolveProductBuildOutput("data", "zip")
 val vectorsZipFile = resolveProductBuildOutput("vectors", "zip")
-val mainDbRelativePath = resolveProductBuildRelativePath("data", "main_db")
-val mainDbFile = resolvePublishedUnpackedZipRoot(mainDbRelativePath).resolve("main.db").also {
-    if (!it.isFile) {
-        throw GradleException("missing unpacked main.db for $mainDbRelativePath at ${it.absolutePath}")
-    }
-}
 val uiThemeFile = file("../../shared-fixtures/ui-theme.json")
 val devBootstrapFile = file("../../shared/dev-bootstrap.json")
-
-fun resolveArtifactPath(rawPath: String): File {
-    val source = file(rawPath)
-    if (source.isFile) {
-        return source
-    }
-    val raw = rawPath.replace('\\', File.separatorChar)
-    val normalizedRelative = raw.removePrefix(".${File.separator}")
-    fun rebasedCandidate(relativePath: String): File =
-        resolvedArtifactRoot.resolve(relativePath.replace('\\', '/'))
-    if (
-        normalizedRelative.startsWith("published-packaged${File.separator}") ||
-        normalizedRelative.startsWith("published-unpacked${File.separator}") ||
-        normalizedRelative.startsWith("cache${File.separator}") ||
-        normalizedRelative.startsWith("private-work${File.separator}")
-    ) {
-        val rebased = rebasedCandidate(normalizedRelative)
-        if (rebased.isFile) {
-            return rebased
-        }
-    }
-    val marker = "${File.separator}published-packaged${File.separator}"
-    val markerIndex = raw.indexOf(marker)
-    if (markerIndex >= 0) {
-        val relative = raw.substring(markerIndex + marker.length)
-        val rebased = resolvedArtifactRoot.resolve("published-packaged").resolve(relative)
-        if (rebased.isFile) {
-            return rebased
-        }
-    }
-    return source
-}
 
 val buildRustX86_64Android by tasks.registering(Exec::class) {
     workingDir = rustProjectDir
@@ -209,7 +148,13 @@ val stageCanonicalAndroidAssets by tasks.registering {
         Files.copy(vectorsZipFile.toPath(), fixturesDir.resolve("vectors.zip").toPath(), StandardCopyOption.REPLACE_EXISTING)
         Files.copy(uiThemeFile.toPath(), fixturesDir.resolve("ui-theme.json").toPath(), StandardCopyOption.REPLACE_EXISTING)
         Files.copy(devBootstrapFile.toPath(), fixturesDir.resolve("dev-bootstrap.json").toPath(), StandardCopyOption.REPLACE_EXISTING)
-        Files.copy(mainDbFile.toPath(), navDbDir.resolve("main.db").toPath(), StandardCopyOption.REPLACE_EXISTING)
+        ZipFile(dataZipFile).use { zip ->
+            val entry = zip.getEntry("main.db")
+                ?: throw GradleException("missing main.db in packaged data zip ${dataZipFile.absolutePath}")
+            zip.getInputStream(entry).use { input ->
+                Files.copy(input, navDbDir.resolve("main.db").toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        }
     }
 }
 
@@ -224,17 +169,23 @@ val stagePrototypeSectionalPackages by tasks.registering {
                 val familyId = it["family_id"] as? String
                 familyId in setOf("sec", "tac", "enr-l", "enr-h")
             }
-            .map { resolveArtifactPath(it["artifact_path"] as String) }
+            .map {
+                val packageId = it["id"] as? String
+                    ?: throw GradleException("missing package id in ${resourceIndexFile.absolutePath}")
+                val artifactPath = it["artifact_path"] as? String
+                    ?: throw GradleException("missing artifact_path for $packageId in ${resourceIndexFile.absolutePath}")
+                resolvePublishedFilename(artifactPath) to "$packageId.zip"
+            }
         val outputDir = generatedPrototypeSeedPackagesDir.get().dir("sectional-packages").asFile
         delete(outputDir)
         outputDir.mkdirs()
-        packages.forEach { source ->
+        packages.forEach { (source, targetName) ->
             if (!source.isFile) {
                 throw GradleException("missing staged package ${source.absolutePath}")
             }
             Files.copy(
                 source.toPath(),
-                outputDir.resolve(source.name).toPath(),
+                outputDir.resolve(targetName).toPath(),
                 StandardCopyOption.REPLACE_EXISTING,
             )
         }
@@ -252,6 +203,9 @@ val seedPrototypeSectionalPackages by tasks.registering {
         val tempDir = "/data/local/tmp/aerobag-packages"
         exec {
             commandLine("adb", "shell", "mkdir", "-p", tempDir)
+        }
+        exec {
+            commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "rm", "-rf", "files/sectional-packages")
         }
         exec {
             commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "mkdir", "-p", "files/sectional-packages")
@@ -287,17 +241,23 @@ val stagePrototypeChartPackages by tasks.registering {
                 val packageId = it["id"] as? String ?: return@filter false
                 packageId.startsWith("NW_TPP") || packageId.startsWith("NW_CSUP")
             }
-            .map { resolveArtifactPath(it["artifact_path"] as String) }
+            .map {
+                val packageId = it["id"] as? String
+                    ?: throw GradleException("missing package id in ${resourceIndexFile.absolutePath}")
+                val artifactPath = it["artifact_path"] as? String
+                    ?: throw GradleException("missing artifact_path for $packageId in ${resourceIndexFile.absolutePath}")
+                resolvePublishedFilename(artifactPath) to "$packageId.zip"
+            }
         val outputDir = generatedPrototypeSeedChartPackagesDir.get().dir("chart-packages").asFile
         delete(outputDir)
         outputDir.mkdirs()
-        packages.forEach { source ->
+        packages.forEach { (source, targetName) ->
             if (!source.isFile) {
                 throw GradleException("missing staged chart package ${source.absolutePath}")
             }
             Files.copy(
                 source.toPath(),
-                outputDir.resolve(source.name).toPath(),
+                outputDir.resolve(targetName).toPath(),
                 StandardCopyOption.REPLACE_EXISTING,
             )
         }

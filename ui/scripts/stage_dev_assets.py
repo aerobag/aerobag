@@ -11,8 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TARGET_ROOT_FILE = ROOT / "ui" / "target-root.txt"
 ARTIFACT_READ_PATH_CONFIG = ROOT / ".aerobag-artifact-read-path"
-PACKAGED_PRODUCTION_DIR = Path("published-packaged") / "production"
-UNPACKED_PRODUCTION_DIR = Path("published-unpacked") / "production"
+PACKAGED_DIR = Path("published-packaged")
+UNPACKED_DIR = Path("published-unpacked")
 
 
 def resolve_ui_target_root() -> Path:
@@ -26,20 +26,20 @@ def resolve_artifact_root() -> Path:
     env_value = os.environ.get("AEROBAG_ARTIFACT_READ_PATH")
     if env_value:
         candidate = Path(env_value).expanduser()
-        if not any(candidate.joinpath(PACKAGED_PRODUCTION_DIR).glob("current_artifacts_*.json")):
+        if not any(candidate.joinpath(PACKAGED_DIR).glob("current_artifacts_*.json")):
             raise RuntimeError(
                 f"AEROBAG_ARTIFACT_READ_PATH does not contain current_artifacts_*.json under "
-                f"{candidate.joinpath(PACKAGED_PRODUCTION_DIR)}"
+                f"{candidate.joinpath(PACKAGED_DIR)}"
             )
         return candidate
     configured = ARTIFACT_READ_PATH_CONFIG.read_text().strip()
     candidate = Path(configured)
     if not candidate.is_absolute():
         candidate = (ROOT / candidate).resolve()
-    if not any(candidate.joinpath(PACKAGED_PRODUCTION_DIR).glob("current_artifacts_*.json")):
+    if not any(candidate.joinpath(PACKAGED_DIR).glob("current_artifacts_*.json")):
         raise RuntimeError(
             f"configured artifact root does not contain current_artifacts_*.json under "
-            f"{candidate.joinpath(PACKAGED_PRODUCTION_DIR)}"
+            f"{candidate.joinpath(PACKAGED_DIR)}"
         )
     return candidate
 
@@ -51,61 +51,56 @@ STAGE_STAMP_PATH = WEB_STATIC_ROOT / ".stage-stamp.json"
 
 
 def latest_current_artifacts(root: Path) -> Path:
-    manifests = sorted(root.joinpath(PACKAGED_PRODUCTION_DIR).glob("current_artifacts_*.json"))
+    manifests = sorted(root.joinpath(PACKAGED_DIR).glob("current_artifacts_*.json"))
     if not manifests:
-        raise RuntimeError(f"missing current_artifacts_*.json under {root.joinpath(PACKAGED_PRODUCTION_DIR)}")
+        raise RuntimeError(f"missing current_artifacts_*.json under {root.joinpath(PACKAGED_DIR)}")
     return manifests[-1]
 
 CURRENT_ARTIFACTS_FILE = latest_current_artifacts(ARTIFACT_ROOT)
 CURRENT_ARTIFACTS = json.loads(CURRENT_ARTIFACTS_FILE.read_text())
 bundle_filename = CURRENT_ARTIFACTS["bundles"][-1]["filename"]
-PRODUCT_BUILD_FILE = ARTIFACT_ROOT / PACKAGED_PRODUCTION_DIR / bundle_filename
-CYCLE = PRODUCT_BUILD_FILE.stem.split("_", 1)[1]
-BUILD_MANIFEST_FILE = ARTIFACT_ROOT / PACKAGED_PRODUCTION_DIR / f"build-manifest_{CYCLE}.json"
-PUBLISHED_ROOT = ARTIFACT_ROOT / UNPACKED_PRODUCTION_DIR / CYCLE
+PRODUCT_BUILD_FILE = ARTIFACT_ROOT / PACKAGED_DIR / bundle_filename
+PACKAGED_ROOT = ARTIFACT_ROOT / PACKAGED_DIR
+UNPACKED_ROOT = ARTIFACT_ROOT / UNPACKED_DIR
 
 
 def load_product_build() -> dict:
     return json.loads(PRODUCT_BUILD_FILE.read_text())
 
-
-def load_build_manifest() -> dict:
-    return json.loads(BUILD_MANIFEST_FILE.read_text())
-
-
 PRODUCT_BUILD = load_product_build()
-BUILD_MANIFEST = load_build_manifest()
 
 
-def resolve_manifest_relative_path(raw_path: str) -> Path:
+def resolve_published_filename(raw_path: str) -> Path:
     relative = Path(raw_path)
-    if relative.parts[:2] == ("published-packaged", "production"):
-        return ARTIFACT_ROOT / relative
-    return PUBLISHED_ROOT / relative
+    if relative.is_absolute():
+        raise RuntimeError(f"expected published filename, got absolute path: {raw_path}")
+    if len(relative.parts) != 1:
+        raise RuntimeError(f"expected flat published filename, got {raw_path}")
+    return PACKAGED_ROOT / relative
 
 
 def resolve_product_build_output(node_name: str, output_name: str) -> Path:
-    for node in BUILD_MANIFEST.get("nodes", []):
+    if isinstance(PRODUCT_BUILD.get(node_name), dict):
+        record = PRODUCT_BUILD[node_name]
+        raw_path = record.get("relative_path")
+        if isinstance(raw_path, str) and raw_path:
+            resolved = resolve_published_filename(raw_path)
+            if resolved.exists():
+                return resolved
+            raise RuntimeError(f"missing product build output {node_name}: {resolved}")
+    for node in PRODUCT_BUILD.get("nodes", []):
         if not isinstance(node, dict) or node.get("name") != node_name:
             continue
         outputs = node.get("outputs")
         if not isinstance(outputs, dict):
             break
         raw_path = outputs.get(output_name)
-        if not isinstance(raw_path, str) or not raw_path:
-            break
-        resolved = resolve_manifest_relative_path(raw_path)
-        if resolved.exists():
-            return resolved
-        raise RuntimeError(f"missing product build output {node_name}.{output_name}: {resolved}")
-    if isinstance(PRODUCT_BUILD.get(node_name), dict):
-        record = PRODUCT_BUILD[node_name]
-        raw_path = record.get("relative_path")
         if isinstance(raw_path, str) and raw_path:
-            resolved = resolve_manifest_relative_path(raw_path)
+            resolved = resolve_published_filename(raw_path)
             if resolved.exists():
                 return resolved
-            raise RuntimeError(f"missing product build output {node_name}: {resolved}")
+            raise RuntimeError(f"missing product build output {node_name}.{output_name}: {resolved}")
+        break
     raise RuntimeError(f"missing product build output {node_name}.{output_name} in {PRODUCT_BUILD_FILE}")
 
 
@@ -115,7 +110,7 @@ def resolve_product_build_relative_path(node_name: str, output_name: str) -> str
         raw_path = record.get("relative_path")
         if isinstance(raw_path, str) and raw_path:
             return raw_path
-    for node in BUILD_MANIFEST.get("nodes", []):
+    for node in PRODUCT_BUILD.get("nodes", []):
         if not isinstance(node, dict) or node.get("name") != node_name:
             continue
         outputs = node.get("outputs")
@@ -128,23 +123,9 @@ def resolve_product_build_relative_path(node_name: str, output_name: str) -> str
     raise RuntimeError(f"missing product build relative path {node_name}.{output_name} in {PRODUCT_BUILD_FILE}")
 
 
-def resolve_build_manifest_output_relative_path(node_name: str, output_name: str) -> str:
-    for node in BUILD_MANIFEST.get("nodes", []):
-        if not isinstance(node, dict) or node.get("name") != node_name:
-            continue
-        outputs = node.get("outputs")
-        if not isinstance(outputs, dict):
-            break
-        raw_path = outputs.get(output_name)
-        if isinstance(raw_path, str) and raw_path:
-            return raw_path
-        break
-    raise RuntimeError(f"missing build manifest output path {node_name}.{output_name} in {BUILD_MANIFEST_FILE}")
-
-
 RESOURCE_INDEX_PATH = resolve_product_build_output("resource_index", "resource_index")
-VECTOR_ZIP_RELATIVE_PATH = resolve_build_manifest_output_relative_path("vectors", "zip")
-DATA_ZIP_RELATIVE_PATH = resolve_product_build_relative_path("data", "main_db")
+VECTOR_ZIP_RELATIVE_PATH = resolve_product_build_relative_path("vectors", "zip")
+DATA_ZIP_RELATIVE_PATH = resolve_product_build_relative_path("data", "zip")
 
 
 def reset_dir(path: Path) -> None:
@@ -201,14 +182,16 @@ RESOURCE_INDEX = load_resource_index()
 
 
 def published_path_from_relative(relative_path: str) -> Path:
-    return resolve_manifest_relative_path(relative_path)
+    return resolve_published_filename(relative_path)
 
 
 def unpacked_dir_from_relative_zip(relative_zip_path: str) -> Path:
     relative = Path(relative_zip_path)
     if relative.suffix != ".zip":
         raise RuntimeError(f"expected zip path, got {relative_zip_path}")
-    return published_path_from_relative(str(relative.with_suffix("")))
+    if len(relative.parts) != 1:
+        raise RuntimeError(f"expected flat published zip filename, got {relative_zip_path}")
+    return UNPACKED_ROOT / relative.with_suffix("")
 
 
 NAV_DB_PATH = unpacked_dir_from_relative_zip(DATA_ZIP_RELATIVE_PATH) / "main.db"
@@ -238,7 +221,7 @@ def family_tiles_roots() -> dict[str, Path]:
     }
     missing = expected - set(roots)
     if missing:
-        raise RuntimeError(f"missing tiles roots for packages {sorted(missing)} in {PUBLISHED_ROOT}")
+        raise RuntimeError(f"missing tiles roots for packages {sorted(missing)} in {UNPACKED_ROOT}")
     return roots
 
 
@@ -246,7 +229,7 @@ def unpacked_package_dirs_by_id() -> dict[str, Path]:
     directories: dict[str, Path] = {}
     for package in RESOURCE_INDEX.get("packages", []):
         package_id = package.get("id")
-        artifact_path = package.get("artifact_path") or package.get("relative_path")
+        artifact_path = package.get("artifact_path")
         if isinstance(package_id, str) and isinstance(artifact_path, str):
             directories[package_id] = unpacked_dir_from_relative_zip(artifact_path)
     return directories

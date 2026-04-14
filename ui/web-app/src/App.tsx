@@ -79,6 +79,7 @@ type UiThemeJson = {
   controls: {
     button_bg: string;
     header_button: string;
+    disabled_button: string;
     button_fg: string;
     panel_bg: string;
     panel_border: string;
@@ -597,6 +598,7 @@ export default function App() {
       ({
         "--theme-button-bg": controlTheme.button_bg,
         "--theme-header-button": controlTheme.header_button,
+        "--theme-disabled-button": controlTheme.disabled_button,
         "--theme-button-fg": controlTheme.button_fg,
         "--theme-panel-bg": controlTheme.panel_bg,
         "--theme-panel-border": controlTheme.panel_border,
@@ -2713,7 +2715,7 @@ function TrayDock(props: {
     <div className="chartDockColumn">
       <button
         type="button"
-        className={`chartButton${launcherWide ? " chartButtonWide" : ""}${open ? " isOpen" : ""}${launcherBlocked || launcherDisabled ? " isBlocked" : ""}`}
+        className={`chartButton${launcherWide ? " chartButtonWide" : ""}${open ? " isOpen" : ""}${launcherBlocked ? " isBlocked" : ""}${launcherDisabled ? " isDisabled" : ""}`}
         aria-disabled={launcherBlocked || launcherDisabled}
         tabIndex={launcherBlocked ? -1 : undefined}
         style={{
@@ -3323,6 +3325,14 @@ function SettingsPage(props: {
             },
           }))}
         />
+      </div>
+
+      <div className="settingsGrid" aria-label="Settings placeholders">
+        {Array.from({ length: 9 }, (_, index) => (
+          <button key={index} type="button" className="chartButton chartButtonDouble settingsButton" disabled>
+            <span className="chartButtonLabel chartButtonLabelDouble">{`S${index + 1}`}</span>
+          </button>
+        ))}
       </div>
 
       <button

@@ -2,6 +2,7 @@
   "controls": {
     "button_bg": "#234f77",
     "header_button": "#4a6d8e",
+    "disabled_button": "#8da1b3",
     "button_fg": "#f7fbff",
     "panel_bg": "#fefcf7",
     "panel_border": "#d7d1c5",

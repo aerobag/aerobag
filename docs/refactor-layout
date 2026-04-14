@@ -1,54 +1,119 @@
-  - Make package-relative assets first-class, not inferred from legacy filenames and directories.
-      - The resource index is already moving this way.
-      - Keep pushing toward explicit metadata instead of “discover files by path convention.”
+x   - Make package-relative assets first-class, not inferred from legacy filenames and directories.
+x       - The resource index is already moving this way.
+x       - Keep pushing toward explicit metadata instead of “discover files by path convention.”
+x
+x * The only way to tell if we're inferring from filenames is to read the UI code, right? Do you see
+x evidence that we're doing such inference rather than using metadata?
+x
+x   - Replace mutable workdirs with more content-addressed outputs.
+x       - We fixed several bugs that were really “stale intermediate reused accidentally.”
+x       - Per-plate / per-page / per-package fingerprints should gradually replace “if file exists, trust it.”
+x
+x * Oh, what's left that's not content-addressed?
+x
+x   1. make more downstream steps consume fingerprinted node outputs directly instead of private-work/...
+x   2. reduce private-work to a pure convenience/materialization layer
+x   3. optionally key unpacked publish outputs directly by zip hash rather than source path + marker
 
-* The only way to tell if we're inferring from filenames is to read the UI code, right? Do you see
-evidence that we're doing such inference rather than using metadata?
-
-  - Replace mutable workdirs with more content-addressed outputs.
-      - We fixed several bugs that were really “stale intermediate reused accidentally.”
-      - Per-plate / per-page / per-package fingerprints should gradually replace “if file exists, trust it.”
-
-* Oh, what's left that's not content-addressed?
 
 x   - Split build nodes at the true reuse boundaries.
 x       - We improved this for shared chart/CSUP work and per-region TPP.
 x       - More of the pipeline should work like that, especially expensive sub-artifacts.
-x 
+x
 x * That would have made the last build a lot faster, wouldn't it? Since we'd have been able to reuse
 x all the TPPs. Or not, because the code that builds TPPs was touched, so the TPPs were gonna get poisoned
 x anyway?
+x
+x   - Stop encoding semantics in filenames when better metadata exists.
+x       - Plate type from prefixes like IAP-, DP-, STAR-, MIN- is workable, but brittle.
+x       - Same for region inference from CSUP-NE_... and similar conventions.
+x       - Long-term, prefer explicit typed records in manifests/indexes.
+x
+x * is the code (ui code, I guess) *using* the filename encodings,
 
-  - Stop encoding semantics in filenames when better metadata exists.
-      - Plate type from prefixes like IAP-, DP-, STAR-, MIN- is workable, but brittle.
-      - Same for region inference from CSUP-NE_... and similar conventions.
-      - Long-term, prefer explicit typed records in manifests/indexes.
+x  - Formalize “intentional divergence from baseline.”
+x      - Baseline should stay parity-first and weird where needed.
+x      - Product should document where it deliberately improves behavior: merged continued pages, thumbnails, richer metadata,
+x        shared-node caching.
+x      - That boundary should stay explicit.
+x  - Reduce dependency on ambient tool behavior.
+x      - A lot of parity pain came from GDAL/ImageMagick/Python glob ordering / resume semantics / process-count behavior.
+x      - In production, prefer pinning explicit flags, explicit ordering, explicit invalidation, and fewer hidden filesystem-order
+x        assumptions.
 
-* is the code (ui code, I guess) *using* the filename encodings,
+x   - Treat the resource index as the contract.
+x       - Not just a byproduct.
+x       - If the UI needs folders, thumbnails, types, temporal validity, package membership, route relevance later, that belongs
+x         there.
+x       - The more complete the index gets, the less brittle the rest of the system becomes.
 
-  - Formalize “intentional divergence from baseline.”
-      - Baseline should stay parity-first and weird where needed.
-      - Product should document where it deliberately improves behavior: merged continued pages, thumbnails, richer metadata,
-        shared-node caching.
-      - That boundary should stay explicit.
-  - Reduce dependency on ambient tool behavior.
-      - A lot of parity pain came from GDAL/ImageMagick/Python glob ordering / resume semantics / process-count behavior.
-      - In production, prefer pinning explicit flags, explicit ordering, explicit invalidation, and fewer hidden filesystem-order
-        assumptions.
-  - Treat the resource index as the contract.
-      - Not just a byproduct.
-      - If the UI needs folders, thumbnails, types, temporal validity, package membership, route relevance later, that belongs
-        there.
-      - The more complete the index gets, the less brittle the rest of the system becomes.
-  - Add invariant checks aggressively.
-      - The best recent changes were assertions:
-          - index matches filesystem
-          - multipage georef weirdness doesn’t silently flatten wrong
-      - I’d keep doing that. Fail loudly beats silently “compatible” garbage.
-  - Eventually replace the remaining legacy-shaped glue inputs.
-      - Examples:
-          - filename-prefix classification
-          - some source discovery logic
-          - odd geotag sidecar conventions
-      - Not immediately, but those are good long-term cleanup targets.
+x   - Add invariant checks aggressively.
+x       - The best recent changes were assertions:
+x           - index matches filesystem
+x           - multipage georef weirdness doesn’t silently flatten wrong
+x       - I’d keep doing that. Fail loudly beats silently “compatible” garbage.
 
+x  - Eventually replace the remaining legacy-shaped glue inputs.
+x      - Examples:
+x          - filename-prefix classification
+x          - some source discovery logic
+x          - odd geotag sidecar conventions
+x      - Not immediately, but those are good long-term cleanup targets.
+
+x   1. TPP document-type and filename-prefix classification
+x 
+x   - aerobag/product/preprocessor/preprocessor-tpp/src/package.rs
+x   - still classifies by label prefixes like APD-, MIN-, IAP-, DP-, ODP-, STAR-
+x   - aerobag/product/preprocessor/preprocessor-tpp/src/lib.rs
+x   - also uses prefix tests for pipeline choice and filtering
+x   - This works, but it’s string-convention glue, not a typed FAA model.
+
+  2. Avare/Outer World Apps geotag compatibility
+
+  - aerobag/product/preprocessor/preprocessor-tpp/src/lib.rs
+  - still fetches avare_aptdiags.php
+  - still writes EXIF UserComment for Avare parity
+  - We added typed JSON georef, but the legacy EXIF/Outer World Apps path is still present.
+
+x  3. Heuristic CIFP↔TPP matching itself
+x  - aerobag/product/preprocessor/preprocessor-data/src/tpp_cifp_matching.rs
+x  - this is intentionally a large regex/prefix/substring ruleset:
+x      - ILS OR LOC ...
+x      - RNAV (GPS) ...
+x      - VOR OR TACAN ...
+x      - COPTER, SA CAT, CAT II, etc.
+x  - It’s good enough to ship, but it is still “legacy-shaped glue” by definition.
+
+x   4. Source discovery date/cycle extraction from FAA URL shapes
+x 
+x   - aerobag/product/preprocessor/preprocessor-resource-index/src/lib.rs
+x   - extract_between() / extract_suffix_between() parse dates and cycle codes out of URL patterns like:
+x       - /visual/<date>/
+x       - DCS_<compact>.zip
+x       - CIFP_<compact>.zip
+x       - DDTPP...
+x   - That is brittle source-layout knowledge, not a typed upstream manifest.
+
+x   5. Legacy family aliases still in metadata surfaces
+x 
+x   - aerobag/product/preprocessor/preprocessor-resource-index/src/lib.rs
+x   - still emits/accepts family ids like:
+x       - sectional
+x       - ifr_low
+x       - ifr_high
+x   - Docs call these transitional too:
+x       - aerobag/UI_DEPENDENCIES.md
+x       - aerobag/UI_NEXT_SESSION.md
+
+x  6. artifact_path still exists inside resource-index
+x
+x  - aerobag/product/preprocessor/preprocessor-resource-index/src/lib.rs
+x  - We stopped treating it as public fetch authority, but the field still exists and is still populated from internal artifact
+x    roots.
+x  - That’s now less dangerous, but still legacy-ish schema baggage.
+x
+x  7. Some tests still reflect old sidecar/work-layout assumptions
+x
+x  - Example in aerobag/product/preprocessor/preprocessor-resource-index/src/lib.rs
+x  - test fixture still drops a .tif sidecar next to a plate PNG
+x  - That may be fine for tests, but it’s another sign of older producer assumptions hanging around.

@@ -1,48 +1,48 @@
-First thing we're going to do is reproduce and clean up the preprocessing
-pipeline. The current one is janky and has no tests or anything to keep it out
-of trouble.
-
-Here's what I think happens:
-
-- Certain image data layers are rendered as tiles for dynamic fetching. This includes the WAC, Sectionals, TACs, IFR High & Low, a few specialty charts (like the
-Portland inset and the Grand Canyon). I assume these all use the standard
-mercator quadtree. (whenever I make assumptions, correct me if they're wrong!)
-
-- Other image data are small enough that they're standalone, like approach plates,
-af/d ("chart supplement" as the kids call them these days). Some of these
-have georeferencing data, but rather than squish the chart to a standard geo
-layout, the client goes the opposite direction from the tiling approach: it
-renders the chart roughly in its original pixels, and draws a little airplane
-by mapping geo coordinates to plate coordinates.
-    - Some of the georeference data is collected by the Avare folks. Can we
-    fetch it from a database they provide?
-
-
-We're going to write our preprocessor in Rust.
-It will have an intelligent fetching-and-caching layer so we're not hitting the
-upstream image sources over-and-over during testing.
-It will organize its work in a way that reveals a lot of parallelism, since the
-tile rendering task is pretty parallelizable. We want to get a lot of benefit
-from the 20 cores on my server.
-
-One thing we should do is run a copy of the original preprocessor and collect
-logs of all the tiles it made, and figure out how to use that info to write
-tests to ensure that our version doesn't introduce new gaps.
-
-We can do some quick prototypes here, but once we really start chewing through
-data, we'll move that work onto a container on my server to exploit its many
-cores. If you think we can exploit a GPU, I can give you one of those too.
-
-I think our first cut should reproduce the layout & data format of the original
-tool directly, so we can compare their output straight across and confirm
-that the tiles match: all the same tiles selected, and sample a bunch to confirm
-they basically match visually.
-
-I understand the original code is a hodge-podge of scripts. I'd like our thing
-to be as clean and orderly as possible for maintenance going forward.
-
-Considering what you've read already and the goals I've stated here, make a
-plan and discuss.
+x First thing we're going to do is reproduce and clean up the preprocessing
+x pipeline. The current one is janky and has no tests or anything to keep it out
+x of trouble.
+x 
+x Here's what I think happens:
+x 
+x - Certain image data layers are rendered as tiles for dynamic fetching. This includes the WAC, Sectionals, TACs, IFR High & Low, a few specialty charts (like the
+x Portland inset and the Grand Canyon). I assume these all use the standard
+x mercator quadtree. (whenever I make assumptions, correct me if they're wrong!)
+x 
+x - Other image data are small enough that they're standalone, like approach plates,
+x af/d ("chart supplement" as the kids call them these days). Some of these
+x have georeferencing data, but rather than squish the chart to a standard geo
+x layout, the client goes the opposite direction from the tiling approach: it
+x renders the chart roughly in its original pixels, and draws a little airplane
+x by mapping geo coordinates to plate coordinates.
+x     - Some of the georeference data is collected by the Avare folks. Can we
+x     fetch it from a database they provide?
+x 
+x 
+x We're going to write our preprocessor in Rust.
+x It will have an intelligent fetching-and-caching layer so we're not hitting the
+x upstream image sources over-and-over during testing.
+x It will organize its work in a way that reveals a lot of parallelism, since the
+x tile rendering task is pretty parallelizable. We want to get a lot of benefit
+x from the 20 cores on my server.
+x 
+x One thing we should do is run a copy of the original preprocessor and collect
+x logs of all the tiles it made, and figure out how to use that info to write
+x tests to ensure that our version doesn't introduce new gaps.
+x 
+x We can do some quick prototypes here, but once we really start chewing through
+x data, we'll move that work onto a container on my server to exploit its many
+x cores. If you think we can exploit a GPU, I can give you one of those too.
+x 
+x I think our first cut should reproduce the layout & data format of the original
+x tool directly, so we can compare their output straight across and confirm
+x that the tiles match: all the same tiles selected, and sample a bunch to confirm
+x they basically match visually.
+x 
+x I understand the original code is a hodge-podge of scripts. I'd like our thing
+x to be as clean and orderly as possible for maintenance going forward.
+x 
+x Considering what you've read already and the goals I've stated here, make a
+x plan and discuss.
 
 ------------------------------------------------------------------------------
 
@@ -339,6 +339,39 @@ one top-level build (scons?) with options to:
 - build the android app
 - launch the x11fb-vnc+emulator+android app for interactive UI testing
 
+add pink dashed strokes at the cutline borders of charts, so when two charts
+overlap it's *really* obvious there's a seam in the stitched image.
+(This will also help with the boundary at the edge of a TAF rendered over
+a sectional.)
+
+  - core owns:
+      - tile request planning
+      - tile fetch/load policy
+      - caching
+      - visible-feature assembly
+  - platform bridge provides:
+      - a tile source implementation
+      - local zip mode
+      - remote URL mode
+  - UI only receives:
+      - visible features
+      - warnings/status
+
+At Seattle there's SEATTLE 116.80 -- that's the VOR. It should render "SEA 116.80".
+Then there's "SEATTLE-TACOMA 117.50". What is that, the ILS? We don't want to render
+those. Is a failure of labeling/filtering on the preprocessor end that generated
+the tiles?
+
+  - preprocessor should split or filter the nav layer so the “VOR” overlay only contains VOR-family
+    navaids:
+      - vor
+      - vor/dme
+      - vortac
+  - and excludes:
+      - vot
+      - ndb
+      - anything else non-VOR
+
 
 ------------------------------------------------------------------------------
 
@@ -388,15 +421,108 @@ x clicking on them moves the waypoint in the list (via the core, obvs!).
 x Clickout outside the reorder tray commits the change. (although I guess it just closes
 x the tray; each click is a commit to the core)
 
-Back when you rebased, you had conflicts with the preprocessor code. Tell me
-about them. Is he gonna need to rebuild anything? Are the resolutions likely to
-break the legacy-parity check and require a re-run?
+x Add Airway doesn't need a Cancel button; the menu tray cancels when you click outside it.
 
+Add Airway doesn't needs to indicate "entry" vs "exit". Maybe, when you select
+an entry, it becomes the top thing in the list, deactivated color, then a
+half-thumb label "Select exit" separates it from the list of exit choices.
 
-If you havn't already, write tests for removing and reordering interacting
-sensibly with airways & procedures.  Last remove inside a procedure should
-delete it.  Reorder of top-level waypoints should skip over procedures.  I'm
-thinking we shouldn't allow reordoring inside procedure/airway blocks.
+x What I'd like to see in the ui for the structured flight plans:
+x If we have [KRNT V2(params)[NEEDL, FESUS, VAMPS] KUAO], I want to see a table:
+x KRNT
+x V2
+x  NEEDL
+x  FESUS
+x  VAMPS
+x KUAO
+x 
+x -- so the logical structure is expressed with indentation. Ideally, we'd draw a nesting
+x box around V2 and its contents, to really emphasize their groupedness.
+x 
+x Let's leave a 0.5thumb left margen.
+x When a leg is active, we draw in the left margin a magenta arrow: starts at the left center
+x of the from waypoint, moves to the center of the margin, drops to the centerline of the end
+x waypoint, moves to the right edge of the margin, and ends in an arrowhead. So KRNT->NEEDL
+x would have an arrowhead that went a little farther in to meet the indented NEEDL waypoint.
+
+x Does it make sense to "add airway" to a waypoint that is followed by an airway already?
+x Maybe "change airway", that implies deleting the existing airway if the new selection completes?
+x 
+x The menu for a waypoint used to have ~7 items, most disabled. Now it *only* has the enabled
+x items. That's not quite the right ui (driven by core). Instead, the set of visible items
+x should be driven by the *type* of the button that popped the menu. The set of enabled
+x items should be driven by the state. So I'm not saying "I swore I saw that option before,
+x but now I can't find it" -- it's right there, just deliberately not enabled.
+
+x Why can't i add an airway to the last waypoint in a plan? I can imagine a user flow:
+x 	* Add the first airport.
+x 	* Add an airway (before the system knows "where we're headed").
+x In this style, the airway UI won't be able to "guess" the exit; that'll be the user's
+x problem to scroll.
+
+x When we bring up the select-airway-entry or -exit lists, and there's a recommended entry/exit,
+x scroll it to be in view.
+
+x plain-waypoint Remove and reorder are disabled.
+
+The last waypoint inside the V23 airway is "KUAO", but that's not a part of the airway. That's
+the next waypoint *after* the airway (where it also appears).
+x 
+x With the current initial state: If I first V23->remove, then the remaining three waypoints
+x allow both Remove and Reorder. If I first KRDD->remove, then V23->remove, then for some reason KRNT and KUAO don't support Remove and Reoder. o
+x 
+x I think we need to change what valid means. Users are gonna construct 1-waypoint flight plans;
+x that's how you get from an empty flight plan to a 2-waypoint flight plan.
+x Gut instinct: No matter the flight plan contents,
+x - Every top-level object (waypoint, airway block, procedure block) can be removed or reordered.
+x - Such reordering may cause a flight plan to start with an airway, or end with an airway, or
+x only have an airway, or have an airway before an airway. I don't care. There are still
+x a clearly defined set of legs: materialize all the waypoints on the airways, and the legs
+x are the pairwise edges.
+x This route is "Let the user move their legos; we'll find some sort of meaning for it afterward."
+x Can we make this work? What are some corner cases I need to pass judgment on?
+
+x dedupe is yes. If the airway ends with UBG and UBG is also a top-level waypoint, remove
+x the trailing UBG atom from the airway's materialization. But the airway spec is still
+x V23(-, UBG), so that if the flight plan changes around it, the terminal UBG atom will pop
+x into exstince. This approach just keeps there from being a confusing duplicate on the FP
+x view, or from having a 0-length active leg.
+x 
+x zero components-- yep, I think you'd have the container (V23), but no atoms, and the active
+x leg would jut hop right over it.
+x 
+x #4 guidance -- sounds right.
+x 
+x #5 YES that's right. Keep the intent.
+x 
+x #6 Reordering: if a flight plan has only one top-level thing, Reorder is disabled for that
+x thing because it would bring up a menu where both up and down buttons are disabled.
+x 
+x #8 And to pile on: if you have airway-before-airway, and the materialized end of the first
+x matches the materialized beginning of the second, we hide the end of the first (following the
+x dedup-as-hiding rule above).
+x Hmm. If you have PAE before an airway that starts at PAE, we should also hide the first atom
+x in the airway to dedupe. But we have to be careful (write a test!) that airway-airway doesn't
+x hide *both*!
+x 
+x A big change indeed, but an important one.
+
+Interactions between containers (airways/procedures) and top-level waypoints:
+Reorder of top-level waypoints should skip over procedures -- that is, we're
+reordiring among the list of top-level things.
+Reorder is not available inside containers.
+
+Removing the first or last point of an airway should be allowed, because it's
+well-defined: just redefine the airway spec to start one stop later / end earlier.
+If an airway has degenerated to V23(PAE,PAE) (which materializes to PAE), then
+removing the waypoint deletes the container, too.
+
+Should we allow other removing inside a container? Hmm, but how would we represent this intent?
+With tombstones? Eewww. No, let's defer this idea. Maybe we'll add a "flatten" action
+the user can do if they really must break a procedure. But not for now.
+
+Write tests for this stuff.
+
 
 "- guidance geometry - the flight-plan core now knows more semantics, but it still mostly resolves to fix-to-fix pathing plus discontinuities"
 
@@ -426,6 +552,38 @@ And the test case dots plotted in their respective locations in red or white dep
 on whether they're "in" or "out."
 And then I can flip through a bunch of these "screenshots" (or HTML pages) and
 see if they look about right.
+
+x The PLN/Waypoint/"charts" button should say "Plates", and take you to the folder
+x for that airport.
+x 
+x Procedure select entry tray doesn't need a "back" button.
+
+x Procedures should have a menu tray option "change procedure" analogous to "change airway"
+
+x These two are probably related:
+x 
+x RDD Procs have names like "I34" and "B16", which are too terse. Does the database provide
+x better names for the UI that match the plate, like "ILS OR LOC RWY 34"?
+x 
+x Container objects should have a "View Plate" button that whisks us to the right
+x PLT / airport / plate selection.
+
+Hotspots (UAO HOT_OR_HOT SPOT-0) should be concatenated visually like continued procedures
+
+iap-matching-handoff.md
+
+Hotspots (UAO HOT_OR_HOT SPOT-0) should be grouped with blue stuff, sorted last after minimums.
+IAPs should sort first, then DPs & STARs, then blue stuff.
+
+
+  Raw PI distance-field histogram from the current DB:
+
+  - 0100: 1023
+  - 0150: 110
+  - 0010: 5
+  - 0050: 5
+  - 0120: 3
+  - 0015: 1
 
 
 ------------------------------------------------------------------------------
@@ -499,6 +657,41 @@ x file. That ... kind of defeats the purpose of tiles. What I expected was a zip
 x named in quadtrees just like the tiled charts, but instead of a PNG, each file in a json with
 x the records for just that region.
 
+Database plotting
+
+x Okay, let's talk about drawing points (airports, intersections) (and eventually, but not
+x now, nonpoint features like airspace boundaries, TFRs) on the chart in the UI.
+x 
+x   Point vectors are now available as a first-cut side artifact under <source-root>/../aerobag-artifacts/product-builds/shared/work/
+x   vectors-2604/output/ . The current zip is vectors_2604.zip and contains separate tiled point files by layer:
+x   point_tiles_airport_z9.json, point_tiles_fix_z10.json, point_tiles_nav_z9.json, point_tiles_awos_z9.json, and
+x   point_tiles_obstacle_z12.json, plus stats.json and a small vectors manifest. Each tile file is a simple JSON object with
+x   schema_version, zoom, and a tiles[] array; each tile has z/x/y and records[], and each record has id, kind, lat, lon, label, and
+x   style_class. Current measured maxima are airport 107, fix 128, nav 9, awos 10, obstacle 286. This is also wired into the product
+x   build graph, so the next successful build-product run will materialize the same vectors node in the normal shared outputs.
+
+x Let's start on the web side and get that how we want it first.
+x Let's start drawing intersections. Cyan solid triangle, name in all caps.
+
+x Let's draw airports. For now, a magenta circle with the airport code adjacent. Clip off the ICAO K prefix.
+x (but don't clip it off of a 3-letter airport code that happens to start with K!) Airport detection & string trimming happens in core, only the ui appearange happens in split UI code!
+
+x Let's draw the airports twice the diameter so we can add features:
+x 	With control tower? It's blue.
+x 	With fuel? It gets little square protrusions on the four cardinal edges.
+x 	Draw the a white bar in the orientation of the biggest runway.
+x 	I have updated the vectors tiles to include fuel & long-runway info.
+
+Approaches:
+CEC ILS or LOC RWY 12: 10 nm from SLAMM. We good?
+x BDR ILS or LOC RWY 6: funky
+x HIO ILS or LOC RWY 13R: sharp left at turn BTG-DUCKA-COUVE
+x BHM RNAV RWY 36: BASKN teleports to hold (track 281)
+X CYS RNAV RWY 13: sharp turn at EMOTY -- hold for PT?
+HYR ILS 21: GRASS 250 hdg ; presently jumps direct DAIVE
+
+Let's draw airspace boundaries.
+
   On FAA boundary sources: I found official FAA indications that boundary-ish data is available as services, but not yet a clean
   static polygon product I’d build against.
 
@@ -513,30 +706,6 @@ x the records for just that region.
         (https://www.faa.gov/air_traffic/publications/atpubs/aim_html/chap3_section_4.html)
 
 
-Database plotting
-
-Okay, let's talk about drawing points (airports, intersections) (and eventually, but not
-now, nonpoint features like airspace boundaries, TFRs) on the chart in the UI.
-
-  Point vectors are now available as a first-cut side artifact under <source-root>/../aerobag-artifacts/product-builds/shared/work/
-  vectors-2604/output/ . The current zip is vectors_2604.zip and contains separate tiled point files by layer:
-  point_tiles_airport_z9.json, point_tiles_fix_z10.json, point_tiles_nav_z9.json, point_tiles_awos_z9.json, and
-  point_tiles_obstacle_z12.json, plus stats.json and a small vectors manifest. Each tile file is a simple JSON object with
-  schema_version, zoom, and a tiles[] array; each tile has z/x/y and records[], and each record has id, kind, lat, lon, label, and
-  style_class. Current measured maxima are airport 107, fix 128, nav 9, awos 10, obstacle 286. This is also wired into the product
-  build graph, so the next successful build-product run will materialize the same vectors node in the normal shared outputs.
-
-Let's start on the web side and get that how we want it first.
-Let's start drawing intersections. Cyan solid triangle, name in all caps.
-
-Let's draw airports. For now, a magenta circle with the airport code adjacent. Clip off the ICAO K prefix.
-(but don't clip it off of a 3-letter airport code that happens to start with K!)
-Now variations for types of airports:
-	With control tower? It's blue.
-	With fuel? It gets dashes.
-	Draw the biggest runway orientation as a white bar.
-
-Let's draw airspace boundaries.
 
 Let's draw TFRs! We need a data source.
 
@@ -544,9 +713,75 @@ VORs & rings? NDBs? Probably not.
 
 ------------------------------------------------------------------------------
 
+Refactoring & Cleanups
+
+Go looking through the source tree for dead code or plumbing for features we
+don't have. Surface it all and let's discuss eliminating it.
+Divide this task into: ui-core, ui-web, ui-android, and preprocessor.
+
 Look through the source tree to find leftover development fixtures and cruft.
 What can we clean out?
 
 Look through the source tree with an eye towards cleanup. Are there things
 we're doing k times that might be candidates for factoring into a common
 place?
+
+clean up a name
+
+  - we did not invent recommended_navaid in app-core
+  - it is inherited from the raw CIFP import table schema in preprocessor:
+      - aerobag/product/preprocessor/preprocessor-data/src/lib.rs
+      - aerobag/baseline/avare_equivalent/preprocessor-data/src/lib.rs
+  - those importers preserve the fixed-width FAA/ARINC-style field layout
+    directly into cifp_sid_star_app
+
+** clean up web db accesses
+
+  1. aerobag/ui/web-app/src/domain/airwayPlanner.ts
+
+  - suggest nearby airways
+  - load airway branches/points
+  - resolve point names to NavRef
+  - resolve NavRef -> lat/lon
+  - materialize airway selections
+
+  2. aerobag/ui/web-app/src/domain/procedurePlanner.ts
+
+  - identify whether a token is airport/nav/fix
+  - list procedures
+  - load distinct procedure rows
+  - load procedure materialization rows
+
+  And then aerobag/ui/web-app/src/App.tsx uses that resolver for chart route drawing.
+
+  So the bad architectural truth is:
+
+  - web still has a browser-side mini nav-db application layer
+  - Android mostly calls core instead
+  - that is duplicated policy/data access
+
+  I think the right target is:
+
+  - UI never touches nav DB directly
+  - core owns:
+      - airway suggestion/planning
+      - procedure listing/options/materialization
+      - NavRef -> position
+      - chart route projection
+  - UI just renders projected results and sends user selections back
+
+  The only web-specific thing that should remain is:
+
+  - opening the SQLite file itself in the browser, if core stays in WASM and needs JS to hand it bytes or a
+    virtual file handle
+
+  But SQL queries and interpretation should not live in TS long-term.
+
+  So the cleanup direction is clear:
+
+  1. move airwayPlanner.ts logic into core/FFI
+  2. move procedurePlanner.ts logic into core/FFI
+  3. delete browser-side nav DB querying from the UI layer
+  4. keep webNavDb.ts only if it remains necessary as a transport/bootstrap layer for WASM SQLite access
+
+

@@ -338,6 +338,24 @@ export default function App() {
     },
     app_ui_state: {
       active_plan: null,
+      ownship: {
+        render: {
+          mode: "none",
+          banner_text: "NO GPS POSITION",
+          banner_severity: "warning",
+          draw_aircraft: false,
+          draw_predictor: false,
+          draw_cdi: false,
+          position: null,
+          orientation_deg: null,
+          speed_kt: null,
+        },
+        controls: {
+          mode: "none",
+          selection: { kind: "auto" },
+          sources: [],
+        },
+      },
       content_policy: "PreferLocal",
       last_content_requirements: [],
       last_content_report: null,
@@ -349,7 +367,7 @@ export default function App() {
       selected_chart_id: initialChartPageState.selected_chart_id,
     },
   });
-  const appState: AppState = sessionSnapshot.app_state;
+  const appState = sessionSnapshot.app_state;
   const appUiState = sessionSnapshot.app_ui_state;
   const chartCatalog: ChartPageData = uiSession?.chartCatalog ?? chartPage;
   const chartAirportById = useMemo(
@@ -704,7 +722,7 @@ export default function App() {
           onOpenPlan={() => navigateToPage("plan")}
           legSummary={legSummary}
           locationSearch={locationSearch}
-          ownship={appState.ownship.render}
+          ownship={appUiState.ownship.render}
           plan={currentPlan}
           planUiState={planUiState}
           sessionPlanUiState={appUiState.active_plan}
@@ -918,7 +936,7 @@ export default function App() {
               chartFolderOpen: false,
             });
           }}
-          ownship={appState.ownship.render}
+          ownship={appUiState.ownship.render}
           onApplyMutation={async (mutation) => {
             await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}

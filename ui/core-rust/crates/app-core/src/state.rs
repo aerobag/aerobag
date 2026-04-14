@@ -4,9 +4,10 @@ use crate::catalog::CatalogHandle;
 use crate::content::{ContentInventory, ContentPolicy, ContentReport, ContentRequirement};
 use crate::errors::AppResult;
 use crate::ownship::{
-    push_sample, register_source, set_policy, update_source_status, OwnshipPolicy,
-    OwnshipRenderState, OwnshipSourceRegistration, OwnshipSourceStatusUpdate,
-    OwnshipState, SituationSample,
+    push_sample, register_source, select_source, set_policy, update_source_status, OwnshipPolicy,
+    OwnshipSelectionCommand,
+    OwnshipSourceRegistration, OwnshipSourceStatusUpdate, OwnshipState, OwnshipUiState,
+    SituationSample,
 };
 use crate::planning::{project_ui_state, FlightPlan, FlightPlanUiState};
 
@@ -22,7 +23,15 @@ pub struct AppState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppUiState {
     pub active_plan: Option<FlightPlanUiState>,
-    pub ownship: OwnshipRenderState,
+    pub ownship: OwnshipUiState,
+    pub content_policy: ContentPolicy,
+    pub last_content_requirements: Vec<ContentRequirement>,
+    pub last_content_report: Option<ContentReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiSnapshotAppState {
+    pub active_plan: Option<FlightPlan>,
     pub content_policy: ContentPolicy,
     pub last_content_requirements: Vec<ContentRequirement>,
     pub last_content_report: Option<ContentReport>,
@@ -47,6 +56,7 @@ pub enum AppEvent {
     UpdateOwnshipSourceStatus(OwnshipSourceStatusUpdate),
     PushSituationSample(SituationSample),
     SetOwnshipPolicy(OwnshipPolicy),
+    SelectOwnshipSource(OwnshipSelectionCommand),
     ReplaceFlightPlan(FlightPlan),
     RefreshContent {
         inventory: ContentInventory,
@@ -79,6 +89,9 @@ pub fn reduce(
         }
         AppEvent::SetOwnshipPolicy(policy) => {
             next.ownship = set_policy(&next.ownship, policy);
+        }
+        AppEvent::SelectOwnshipSource(selection) => {
+            next.ownship = select_source(&next.ownship, selection);
         }
         AppEvent::ReplaceFlightPlan(plan) => {
             let plan = crate::build_flight_plan(plan)?;
@@ -121,7 +134,19 @@ fn refresh_report_if_possible(
 pub fn project_app_ui_state(state: &AppState) -> AppUiState {
     AppUiState {
         active_plan: state.active_plan.as_ref().map(project_ui_state),
-        ownship: state.ownship.render.clone(),
+        ownship: OwnshipUiState {
+            render: state.ownship.render.clone(),
+            controls: state.ownship.controls.clone(),
+        },
+        content_policy: state.content_policy,
+        last_content_requirements: state.last_content_requirements.clone(),
+        last_content_report: state.last_content_report.clone(),
+    }
+}
+
+pub fn project_ui_snapshot_app_state(state: &AppState) -> UiSnapshotAppState {
+    UiSnapshotAppState {
+        active_plan: state.active_plan.clone(),
         content_policy: state.content_policy,
         last_content_requirements: state.last_content_requirements.clone(),
         last_content_report: state.last_content_report.clone(),

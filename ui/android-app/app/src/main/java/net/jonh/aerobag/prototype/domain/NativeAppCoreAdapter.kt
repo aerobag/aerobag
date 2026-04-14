@@ -466,8 +466,8 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
-    fun setOwnshipPolicy(policy: OwnshipPolicy): UiSessionSnapshot {
-        snapshot = decodeSnapshot(bridge.setOwnshipPolicyInSessionJson(handle, policy.toCoreJson(json)))
+    fun selectOwnshipSource(selection: OwnshipSelection): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.selectOwnshipSourceInSessionJson(handle, selection.toCoreJson(json)))
         return snapshot
     }
 
@@ -652,17 +652,15 @@ private fun OwnshipRenderState.toWire() = WireOwnshipRenderState(
 
 private fun OwnshipControlModel.toWire() = WireOwnshipControlModel(
     mode = mode.toWire(),
-    policy = policy.toWire(),
+    selection = selection.toWire(),
     sources = sources.map { it.toWire() },
 )
 
 private fun OwnshipSourceMenuItem.toWire() = WireOwnshipSourceMenuItem(
     source_id = sourceId,
     label = label,
-    kind = kind.toWire(),
     enabled = enabled,
     active = active,
-    selectable = selectable,
     status_label = statusLabel,
 )
 
@@ -711,6 +709,35 @@ private fun WireAppState.toUi() = AppState(
 
 private fun WireAppUiState.toUi() = AppUiState(
     activePlan = active_plan?.toUi(),
+    ownship = ownship.toUi(),
+    contentPolicy = content_policy.toUi(),
+    lastContentRequirements = last_content_requirements.map { requirement ->
+        ContentRequirement(
+            packageIds = requirement.package_ids.map { it.toUi() },
+        )
+    },
+    lastContentReport = last_content_report?.let { report ->
+        ContentReport(
+            fullySatisfied = report.fully_satisfied,
+            items = report.items.map { item ->
+                ContentReportItem(
+                    label = item.label,
+                    availability =
+                        AvailabilityDetail(
+                            availability = item.availability.availability.toUi(),
+                            cycleCurrent = item.availability.cycle_current,
+                            integrityOk = item.availability.integrity_ok,
+                            cached = item.availability.cached,
+                            offlineUsable = item.availability.offline_usable,
+                        ),
+                )
+            },
+        )
+    },
+)
+
+private fun WireUiSnapshotAppState.toUi() = UiSnapshotAppState(
+    activePlan = active_plan?.toUiFlightPlan(),
     contentPolicy = content_policy.toUi(),
     lastContentRequirements = last_content_requirements.map { requirement ->
         ContentRequirement(
@@ -781,17 +808,20 @@ private fun WireOwnshipRenderState.toUi() = OwnshipRenderState(
 
 private fun WireOwnshipControlModel.toUi() = OwnshipControlModel(
     mode = mode.toUi(),
-    policy = policy.toUi(),
+    selection = selection.toUi(),
     sources = sources.map { it.toUi() },
+)
+
+private fun WireOwnshipUiState.toUi() = OwnshipUiState(
+    render = render.toUi(),
+    controls = controls.toUi(),
 )
 
 private fun WireOwnshipSourceMenuItem.toUi() = OwnshipSourceMenuItem(
     sourceId = source_id,
     label = label,
-    kind = kind.toUi(),
     enabled = enabled,
     active = active,
-    selectable = selectable,
     statusLabel = status_label,
 )
 
@@ -907,31 +937,8 @@ private fun SituationSample.toCoreJson(json: Json): String =
         put("pressure_altitude_ft", pressureAltitudeFt?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
     }.toString()
 
-private fun OwnshipPolicy.toCoreJson(json: Json): String =
-    kotlinx.serialization.json.buildJsonObject {
-        put(
-            "selection",
-            when (val current = selection) {
-                OwnshipSelection.Auto -> kotlinx.serialization.json.JsonPrimitive("auto")
-                is OwnshipSelection.Manual -> kotlinx.serialization.json.buildJsonObject {
-                    put(
-                        "manual",
-                        kotlinx.serialization.json.buildJsonObject {
-                            put("source_id", kotlinx.serialization.json.JsonPrimitive(current.sourceId))
-                        },
-                    )
-                }
-            },
-        )
-        put(
-            "source_priority",
-            kotlinx.serialization.json.buildJsonArray {
-                sourcePriority.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) }
-            },
-        )
-        put("allow_auto_replay", kotlinx.serialization.json.JsonPrimitive(allowAutoReplay))
-        put("allow_auto_simulated", kotlinx.serialization.json.JsonPrimitive(allowAutoSimulated))
-    }.toString()
+private fun OwnshipSelection.toCoreJson(json: Json): String =
+    json.encodeToString(WireOwnshipSelectionSerializer, toWire())
 
 private fun OwnshipSourceKind.toWireName(): String = when (this) {
     OwnshipSourceKind.DeviceGps -> "device_gps"
@@ -990,7 +997,7 @@ private data class WireUiChartPageState(
 
 @kotlinx.serialization.Serializable
 private data class WireUiSessionSnapshot(
-    val app_state: WireAppState,
+    val app_state: WireUiSnapshotAppState,
     val app_ui_state: WireAppUiState = WireAppUiState(),
     val chart_page_state: WireUiChartPageState,
 )
@@ -1037,7 +1044,7 @@ data class DerivedChartPageState(
 )
 
 data class UiSessionSnapshot(
-    val appState: AppState,
+    val appState: UiSnapshotAppState,
     val appUiState: AppUiState,
     val chartPageState: UiChartPageState,
 )

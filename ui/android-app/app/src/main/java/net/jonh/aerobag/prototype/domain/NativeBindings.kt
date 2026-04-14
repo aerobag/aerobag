@@ -189,9 +189,9 @@ interface NativeBridge {
         sampleJson: String,
     ): String
 
-    fun setOwnshipPolicyInSessionJson(
+    fun selectOwnshipSourceInSessionJson(
         handle: Long,
-        policyJson: String,
+        selectionJson: String,
     ): String
 
     fun selectAirportInSessionJson(
@@ -462,9 +462,9 @@ object NativeBindings : NativeBridge {
         sampleJson: String,
     ): String
 
-    external override fun setOwnshipPolicyInSessionJson(
+    external override fun selectOwnshipSourceInSessionJson(
         handle: Long,
-        policyJson: String,
+        selectionJson: String,
     ): String
 
     external override fun selectAirportInSessionJson(

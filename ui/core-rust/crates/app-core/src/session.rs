@@ -12,7 +12,7 @@ use crate::{
     derive_chart_page_state_from_catalog, load_catalog, move_flight_plan_waypoint, remove_flight_plan_leg,
     query_map_overlay, state, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
     CatalogHandle, DerivedChartCatalog, DerivedChartPageState, FlightPlan, MapOverlayQueryResult,
-    MapViewport, PointTilePayload,
+    MapViewport, PointTilePayload, UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -25,7 +25,7 @@ pub struct UiChartPageState {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionSnapshot {
-    pub app_state: AppState,
+    pub app_state: UiSnapshotAppState,
     pub app_ui_state: AppUiState,
     pub chart_page_state: UiChartPageState,
 }
@@ -75,7 +75,7 @@ pub fn create_ui_session(
         selected_chart_id,
     );
     let snapshot = UiSessionSnapshot {
-        app_state: app_state.clone(),
+        app_state: state::project_ui_snapshot_app_state(&app_state),
         app_ui_state: state::project_app_ui_state(&app_state),
         chart_page_state: compact_chart_page_state(&chart_page_state),
     };
@@ -234,6 +234,20 @@ pub fn set_ownship_policy_in_session(
     Ok(snapshot_for_session(session))
 }
 
+pub fn select_ownship_source_in_session(
+    handle: u32,
+    selection: crate::OwnshipSelectionCommand,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::SelectOwnshipSource(selection),
+        &session.catalog,
+    )?;
+    Ok(snapshot_for_session(session))
+}
+
 pub fn replace_flight_plan_in_session(
     handle: u32,
     plan: FlightPlan,
@@ -340,7 +354,7 @@ fn session_plan(session: &UiSession) -> AppResult<FlightPlan> {
 
 fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
     UiSessionSnapshot {
-        app_state: session.app_state.clone(),
+        app_state: state::project_ui_snapshot_app_state(&session.app_state),
         app_ui_state: state::project_app_ui_state(&session.app_state),
         chart_page_state: compact_chart_page_state(&session.chart_page_state),
     }

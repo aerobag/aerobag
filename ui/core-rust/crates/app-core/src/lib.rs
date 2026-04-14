@@ -42,9 +42,9 @@ pub use map_overlay::{
 pub use ownship::{
     push_sample, register_source, set_policy, update_source_status,
     OwnshipBannerSeverity, OwnshipControlModel, OwnshipMode, OwnshipPolicy,
-    OwnshipRenderState, OwnshipSelectionPolicy, OwnshipSourceId, OwnshipSourceKind,
+    OwnshipRenderState, OwnshipSelectionCommand, OwnshipSelectionPolicy, OwnshipSourceId, OwnshipSourceKind,
     OwnshipSourceMenuItem, OwnshipSourceRegistration, OwnshipSourceStatus,
-    OwnshipSourceStatusUpdate, OwnshipState, ResolvedOwnshipState,
+    OwnshipSourceStatusUpdate, OwnshipState, OwnshipUiState, ResolvedOwnshipState,
     SituationKinematics, SituationSample, SourceConnectionState,
 };
 pub use navdb_types::{
@@ -94,11 +94,11 @@ pub use session::{
     push_situation_sample_in_session, register_ownship_source_in_session,
     replace_flight_plan_in_session,
     restore_chart_page_state_in_session, select_airport_in_session, select_chart_in_session,
-    set_ownship_policy_in_session,
+    select_ownship_source_in_session,
     update_ownship_source_status_in_session,
     UiChartPageState, UiSessionInitResult, UiSessionSnapshot,
 };
-pub use state::{project_app_ui_state, AppEvent, AppState, AppUiState};
+pub use state::{project_app_ui_state, project_ui_snapshot_app_state, AppEvent, AppState, AppUiState, UiSnapshotAppState};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirwayPlanMutation {

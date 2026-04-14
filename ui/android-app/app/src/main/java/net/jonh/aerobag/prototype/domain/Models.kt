@@ -547,6 +547,14 @@ data class AppState(
 
 data class AppUiState(
     val activePlan: FlightPlanUiState? = null,
+    val ownship: OwnshipUiState = OwnshipUiState(),
+    val contentPolicy: ContentPolicy = ContentPolicy.PreferLocal,
+    val lastContentRequirements: List<ContentRequirement> = emptyList(),
+    val lastContentReport: ContentReport? = null,
+)
+
+data class UiSnapshotAppState(
+    val activePlan: FlightPlan? = null,
     val contentPolicy: ContentPolicy = ContentPolicy.PreferLocal,
     val lastContentRequirements: List<ContentRequirement> = emptyList(),
     val lastContentReport: ContentReport? = null,
@@ -617,17 +625,20 @@ data class OwnshipRenderState(
 
 data class OwnshipControlModel(
     val mode: OwnshipMode = OwnshipMode.None,
-    val policy: OwnshipSelection = OwnshipSelection.Auto,
+    val selection: OwnshipSelection = OwnshipSelection.Auto,
     val sources: List<OwnshipSourceMenuItem> = emptyList(),
+)
+
+data class OwnshipUiState(
+    val render: OwnshipRenderState = OwnshipRenderState(),
+    val controls: OwnshipControlModel = OwnshipControlModel(),
 )
 
 data class OwnshipSourceMenuItem(
     val sourceId: String,
     val label: String,
-    val kind: OwnshipSourceKind,
     val enabled: Boolean,
     val active: Boolean,
-    val selectable: Boolean,
     val statusLabel: String,
 )
 

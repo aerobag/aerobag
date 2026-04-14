@@ -1,6 +1,45 @@
 import { describe, expect, it } from "vitest";
 import { loadBestAvailableAdapter } from "./appCoreAdapter";
 
+const snapshotJson = JSON.stringify({
+  app_state: {
+    active_plan: null,
+    content_policy: "PreferLocal",
+    last_content_requirements: [],
+    last_content_report: null,
+  },
+  app_ui_state: {
+    active_plan: null,
+    ownship: {
+      render: {
+        mode: "none",
+        banner_text: "NO GPS POSITION",
+        banner_severity: "warning",
+        draw_aircraft: false,
+        draw_predictor: false,
+        draw_cdi: false,
+        position: null,
+        orientation_deg: null,
+        speed_kt: null,
+      },
+      controls: {
+        mode: "none",
+        policy: { kind: "auto" },
+        sources: [],
+      },
+    },
+    content_policy: "PreferLocal",
+    last_content_requirements: [],
+    last_content_report: null,
+  },
+  chart_page_state: {
+    ordered_airport_ids: [],
+    recent_airport_ids: [],
+    selected_airport_id: "",
+    selected_chart_id: "",
+  },
+});
+
 describe("loadBestAvailableAdapter", () => {
   it("fails loudly when the generated wasm module is missing", async () => {
     await expect(loadBestAvailableAdapter(async () => {
@@ -10,20 +49,20 @@ describe("loadBestAvailableAdapter", () => {
 
   it("uses the wasm adapter when the generated module exports the expected API", async () => {
     const loaded = await loadBestAvailableAdapter(async () => ({
-      create_ui_session: async () => "{\"handle\":1,\"chart_catalog\":{\"airports\":[]},\"snapshot\":{\"app_state\":{\"active_plan\":null,\"ownship\":{\"policy\":{\"selection\":{\"kind\":\"auto\"},\"source_priority\":[],\"allow_auto_replay\":false,\"allow_auto_simulated\":false},\"resolved\":{\"mode\":\"none\",\"active_source_id\":null,\"active_source_kind\":null,\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"guidance_enabled\":false,\"sequencing_enabled\":false},\"render\":{\"mode\":\"none\",\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"draw_aircraft\":false,\"draw_predictor\":false,\"draw_cdi\":false,\"position\":null,\"orientation_deg\":null,\"speed_kt\":null},\"controls\":{\"mode\":\"none\",\"policy\":{\"kind\":\"auto\"},\"sources\":[]},\"sources\":[]},\"content_policy\":\"PreferLocal\",\"last_content_requirements\":[],\"last_content_report\":null},\"chart_page_state\":{\"ordered_airport_ids\":[],\"recent_airport_ids\":[],\"selected_airport_id\":\"\",\"selected_chart_id\":\"\"}}}",
-      remove_leg_in_session: async () => "{\"app_state\":{\"active_plan\":null,\"ownship\":{\"policy\":{\"selection\":{\"kind\":\"auto\"},\"source_priority\":[],\"allow_auto_replay\":false,\"allow_auto_simulated\":false},\"resolved\":{\"mode\":\"none\",\"active_source_id\":null,\"active_source_kind\":null,\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"guidance_enabled\":false,\"sequencing_enabled\":false},\"render\":{\"mode\":\"none\",\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"draw_aircraft\":false,\"draw_predictor\":false,\"draw_cdi\":false,\"position\":null,\"orientation_deg\":null,\"speed_kt\":null},\"controls\":{\"mode\":\"none\",\"policy\":{\"kind\":\"auto\"},\"sources\":[]},\"sources\":[]},\"content_policy\":\"PreferLocal\",\"last_content_requirements\":[],\"last_content_report\":null},\"chart_page_state\":{\"ordered_airport_ids\":[],\"recent_airport_ids\":[],\"selected_airport_id\":\"\",\"selected_chart_id\":\"\"}}",
-      move_waypoint_in_session: async () => "{\"app_state\":{\"active_plan\":null,\"ownship\":{\"policy\":{\"selection\":{\"kind\":\"auto\"},\"source_priority\":[],\"allow_auto_replay\":false,\"allow_auto_simulated\":false},\"resolved\":{\"mode\":\"none\",\"active_source_id\":null,\"active_source_kind\":null,\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"guidance_enabled\":false,\"sequencing_enabled\":false},\"render\":{\"mode\":\"none\",\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"draw_aircraft\":false,\"draw_predictor\":false,\"draw_cdi\":false,\"position\":null,\"orientation_deg\":null,\"speed_kt\":null},\"controls\":{\"mode\":\"none\",\"policy\":{\"kind\":\"auto\"},\"sources\":[]},\"sources\":[]},\"content_policy\":\"PreferLocal\",\"last_content_requirements\":[],\"last_content_report\":null},\"chart_page_state\":{\"ordered_airport_ids\":[],\"recent_airport_ids\":[],\"selected_airport_id\":\"\",\"selected_chart_id\":\"\"}}",
-      register_ownship_source_in_session: async () => "{\"app_state\":{\"active_plan\":null,\"ownship\":{\"policy\":{\"selection\":{\"kind\":\"auto\"},\"source_priority\":[],\"allow_auto_replay\":false,\"allow_auto_simulated\":false},\"resolved\":{\"mode\":\"none\",\"active_source_id\":null,\"active_source_kind\":null,\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"guidance_enabled\":false,\"sequencing_enabled\":false},\"render\":{\"mode\":\"none\",\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"draw_aircraft\":false,\"draw_predictor\":false,\"draw_cdi\":false,\"position\":null,\"orientation_deg\":null,\"speed_kt\":null},\"controls\":{\"mode\":\"none\",\"policy\":{\"kind\":\"auto\"},\"sources\":[]},\"sources\":[]},\"content_policy\":\"PreferLocal\",\"last_content_requirements\":[],\"last_content_report\":null},\"chart_page_state\":{\"ordered_airport_ids\":[],\"recent_airport_ids\":[],\"selected_airport_id\":\"\",\"selected_chart_id\":\"\"}}",
-      update_ownship_source_status_in_session: async () => "{\"app_state\":{\"active_plan\":null,\"ownship\":{\"policy\":{\"selection\":{\"kind\":\"auto\"},\"source_priority\":[],\"allow_auto_replay\":false,\"allow_auto_simulated\":false},\"resolved\":{\"mode\":\"none\",\"active_source_id\":null,\"active_source_kind\":null,\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"guidance_enabled\":false,\"sequencing_enabled\":false},\"render\":{\"mode\":\"none\",\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"draw_aircraft\":false,\"draw_predictor\":false,\"draw_cdi\":false,\"position\":null,\"orientation_deg\":null,\"speed_kt\":null},\"controls\":{\"mode\":\"none\",\"policy\":{\"kind\":\"auto\"},\"sources\":[]},\"sources\":[]},\"content_policy\":\"PreferLocal\",\"last_content_requirements\":[],\"last_content_report\":null},\"chart_page_state\":{\"ordered_airport_ids\":[],\"recent_airport_ids\":[],\"selected_airport_id\":\"\",\"selected_chart_id\":\"\"}}",
-      push_situation_sample_in_session: async () => "{\"app_state\":{\"active_plan\":null,\"ownship\":{\"policy\":{\"selection\":{\"kind\":\"auto\"},\"source_priority\":[],\"allow_auto_replay\":false,\"allow_auto_simulated\":false},\"resolved\":{\"mode\":\"none\",\"active_source_id\":null,\"active_source_kind\":null,\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"guidance_enabled\":false,\"sequencing_enabled\":false},\"render\":{\"mode\":\"none\",\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"draw_aircraft\":false,\"draw_predictor\":false,\"draw_cdi\":false,\"position\":null,\"orientation_deg\":null,\"speed_kt\":null},\"controls\":{\"mode\":\"none\",\"policy\":{\"kind\":\"auto\"},\"sources\":[]},\"sources\":[]},\"content_policy\":\"PreferLocal\",\"last_content_requirements\":[],\"last_content_report\":null},\"chart_page_state\":{\"ordered_airport_ids\":[],\"recent_airport_ids\":[],\"selected_airport_id\":\"\",\"selected_chart_id\":\"\"}}",
-      set_ownship_policy_in_session: async () => "{\"app_state\":{\"active_plan\":null,\"ownship\":{\"policy\":{\"selection\":{\"kind\":\"auto\"},\"source_priority\":[],\"allow_auto_replay\":false,\"allow_auto_simulated\":false},\"resolved\":{\"mode\":\"none\",\"active_source_id\":null,\"active_source_kind\":null,\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"guidance_enabled\":false,\"sequencing_enabled\":false},\"render\":{\"mode\":\"none\",\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"draw_aircraft\":false,\"draw_predictor\":false,\"draw_cdi\":false,\"position\":null,\"orientation_deg\":null,\"speed_kt\":null},\"controls\":{\"mode\":\"none\",\"policy\":{\"kind\":\"auto\"},\"sources\":[]},\"sources\":[]},\"content_policy\":\"PreferLocal\",\"last_content_requirements\":[],\"last_content_report\":null},\"chart_page_state\":{\"ordered_airport_ids\":[],\"recent_airport_ids\":[],\"selected_airport_id\":\"\",\"selected_chart_id\":\"\"}}",
-      replace_flight_plan_in_session: async () => "{\"app_state\":{\"active_plan\":null,\"ownship\":{\"policy\":{\"selection\":{\"kind\":\"auto\"},\"source_priority\":[],\"allow_auto_replay\":false,\"allow_auto_simulated\":false},\"resolved\":{\"mode\":\"none\",\"active_source_id\":null,\"active_source_kind\":null,\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"guidance_enabled\":false,\"sequencing_enabled\":false},\"render\":{\"mode\":\"none\",\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"draw_aircraft\":false,\"draw_predictor\":false,\"draw_cdi\":false,\"position\":null,\"orientation_deg\":null,\"speed_kt\":null},\"controls\":{\"mode\":\"none\",\"policy\":{\"kind\":\"auto\"},\"sources\":[]},\"sources\":[]},\"content_policy\":\"PreferLocal\",\"last_content_requirements\":[],\"last_content_report\":null},\"chart_page_state\":{\"ordered_airport_ids\":[],\"recent_airport_ids\":[],\"selected_airport_id\":\"\",\"selected_chart_id\":\"\"}}",
-      select_airport_in_session: async () => "{\"app_state\":{\"active_plan\":null,\"ownship\":{\"policy\":{\"selection\":{\"kind\":\"auto\"},\"source_priority\":[],\"allow_auto_replay\":false,\"allow_auto_simulated\":false},\"resolved\":{\"mode\":\"none\",\"active_source_id\":null,\"active_source_kind\":null,\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"guidance_enabled\":false,\"sequencing_enabled\":false},\"render\":{\"mode\":\"none\",\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"draw_aircraft\":false,\"draw_predictor\":false,\"draw_cdi\":false,\"position\":null,\"orientation_deg\":null,\"speed_kt\":null},\"controls\":{\"mode\":\"none\",\"policy\":{\"kind\":\"auto\"},\"sources\":[]},\"sources\":[]},\"content_policy\":\"PreferLocal\",\"last_content_requirements\":[],\"last_content_report\":null},\"chart_page_state\":{\"ordered_airport_ids\":[],\"recent_airport_ids\":[],\"selected_airport_id\":\"\",\"selected_chart_id\":\"\"}}",
-      select_chart_in_session: async () => "{\"app_state\":{\"active_plan\":null,\"ownship\":{\"policy\":{\"selection\":{\"kind\":\"auto\"},\"source_priority\":[],\"allow_auto_replay\":false,\"allow_auto_simulated\":false},\"resolved\":{\"mode\":\"none\",\"active_source_id\":null,\"active_source_kind\":null,\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"guidance_enabled\":false,\"sequencing_enabled\":false},\"render\":{\"mode\":\"none\",\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"draw_aircraft\":false,\"draw_predictor\":false,\"draw_cdi\":false,\"position\":null,\"orientation_deg\":null,\"speed_kt\":null},\"controls\":{\"mode\":\"none\",\"policy\":{\"kind\":\"auto\"},\"sources\":[]},\"sources\":[]},\"content_policy\":\"PreferLocal\",\"last_content_requirements\":[],\"last_content_report\":null},\"chart_page_state\":{\"ordered_airport_ids\":[],\"recent_airport_ids\":[],\"selected_airport_id\":\"\",\"selected_chart_id\":\"\"}}",
+      create_ui_session: async () => JSON.stringify({ handle: 1, chart_catalog: { airports: [] }, snapshot: JSON.parse(snapshotJson) }),
+      remove_leg_in_session: async () => snapshotJson,
+      move_waypoint_in_session: async () => snapshotJson,
+      register_ownship_source_in_session: async () => snapshotJson,
+      update_ownship_source_status_in_session: async () => snapshotJson,
+      push_situation_sample_in_session: async () => snapshotJson,
+      select_ownship_source_in_session: async () => snapshotJson,
+      replace_flight_plan_in_session: async () => snapshotJson,
+      select_airport_in_session: async () => snapshotJson,
+      select_chart_in_session: async () => snapshotJson,
       ingest_point_tiles_in_session: async () => {},
       get_map_overlay_in_session: async () => "{\"visible_features\":[],\"needed_point_tiles\":[],\"warnings\":[]}",
-      get_session_snapshot: async () => "{\"app_state\":{\"active_plan\":null,\"ownship\":{\"policy\":{\"selection\":{\"kind\":\"auto\"},\"source_priority\":[],\"allow_auto_replay\":false,\"allow_auto_simulated\":false},\"resolved\":{\"mode\":\"none\",\"active_source_id\":null,\"active_source_kind\":null,\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"guidance_enabled\":false,\"sequencing_enabled\":false},\"render\":{\"mode\":\"none\",\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"draw_aircraft\":false,\"draw_predictor\":false,\"draw_cdi\":false,\"position\":null,\"orientation_deg\":null,\"speed_kt\":null},\"controls\":{\"mode\":\"none\",\"policy\":{\"kind\":\"auto\"},\"sources\":[]},\"sources\":[]},\"content_policy\":\"PreferLocal\",\"last_content_requirements\":[],\"last_content_report\":null},\"app_ui_state\":{\"active_plan\":null,\"content_policy\":\"PreferLocal\",\"last_content_requirements\":[],\"last_content_report\":null},\"chart_page_state\":{\"ordered_airport_ids\":[],\"recent_airport_ids\":[],\"selected_airport_id\":\"\",\"selected_chart_id\":\"\"}}",
-      restore_chart_page_state_in_session: async () => "{\"app_state\":{\"active_plan\":null,\"ownship\":{\"policy\":{\"selection\":{\"kind\":\"auto\"},\"source_priority\":[],\"allow_auto_replay\":false,\"allow_auto_simulated\":false},\"resolved\":{\"mode\":\"none\",\"active_source_id\":null,\"active_source_kind\":null,\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"guidance_enabled\":false,\"sequencing_enabled\":false},\"render\":{\"mode\":\"none\",\"banner_text\":\"NO GPS POSITION\",\"banner_severity\":\"warning\",\"draw_aircraft\":false,\"draw_predictor\":false,\"draw_cdi\":false,\"position\":null,\"orientation_deg\":null,\"speed_kt\":null},\"controls\":{\"mode\":\"none\",\"policy\":{\"kind\":\"auto\"},\"sources\":[]},\"sources\":[]},\"content_policy\":\"PreferLocal\",\"last_content_requirements\":[],\"last_content_report\":null},\"app_ui_state\":{\"active_plan\":null,\"content_policy\":\"PreferLocal\",\"last_content_requirements\":[],\"last_content_report\":null},\"chart_page_state\":{\"ordered_airport_ids\":[],\"recent_airport_ids\":[],\"selected_airport_id\":\"\",\"selected_chart_id\":\"\"}}",
+      get_session_snapshot: async () => snapshotJson,
+      restore_chart_page_state_in_session: async () => snapshotJson,
       destroy_session: () => {},
       remove_flight_plan_leg: async () => "{}",
       derive_chart_page: async () => "{\"airports\":[]}",

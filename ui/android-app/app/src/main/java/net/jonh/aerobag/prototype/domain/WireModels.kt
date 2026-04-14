@@ -29,6 +29,15 @@ data class WireAppState(
 @Serializable
 data class WireAppUiState(
     val active_plan: WireFlightPlanUiState? = null,
+    val ownship: WireOwnshipUiState = WireOwnshipUiState(),
+    val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
+    val last_content_requirements: List<WireContentRequirement> = emptyList(),
+    val last_content_report: WireContentReport? = null,
+)
+
+@Serializable
+data class WireUiSnapshotAppState(
+    val active_plan: WireFlightPlan? = null,
     val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
     val last_content_requirements: List<WireContentRequirement> = emptyList(),
     val last_content_report: WireContentReport? = null,
@@ -84,18 +93,22 @@ data class WireOwnshipRenderState(
 @Serializable
 data class WireOwnshipControlModel(
     val mode: WireOwnshipMode = WireOwnshipMode.None,
-    val policy: WireOwnshipSelection = WireOwnshipSelection.Auto,
+    val selection: WireOwnshipSelection = WireOwnshipSelection.Auto,
     val sources: List<WireOwnshipSourceMenuItem> = emptyList(),
+)
+
+@Serializable
+data class WireOwnshipUiState(
+    val render: WireOwnshipRenderState = WireOwnshipRenderState(),
+    val controls: WireOwnshipControlModel = WireOwnshipControlModel(),
 )
 
 @Serializable
 data class WireOwnshipSourceMenuItem(
     val source_id: String,
     val label: String,
-    val kind: WireOwnshipSourceKind,
     val enabled: Boolean,
     val active: Boolean,
-    val selectable: Boolean,
     val status_label: String,
 )
 

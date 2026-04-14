@@ -510,8 +510,16 @@ export type AppState = {
   } | null;
 };
 
+export type UiSnapshotAppState = {
+  active_plan: FlightPlan | null;
+  content_policy: ContentPolicy;
+  last_content_requirements: AppState["last_content_requirements"];
+  last_content_report: AppState["last_content_report"];
+};
+
 export type AppUiState = {
   active_plan: FlightPlanUiState | null;
+  ownship: OwnshipUiState;
   content_policy: ContentPolicy;
   last_content_requirements: AppState["last_content_requirements"];
   last_content_report: AppState["last_content_report"];
@@ -532,16 +540,9 @@ export type OwnshipSourceKind =
 
 export type SourceConnectionState = "unavailable" | "searching" | "connected" | "stale" | "failed";
 
-export type OwnshipSelectionPolicy =
-  | { selection: "auto" }
-  | { selection: "manual"; source_id: { 0: string } | string };
-
-export type OwnshipPolicy = {
-  selection: { kind: "auto" } | { kind: "manual"; source_id: { 0: string } | string };
-  source_priority: Array<{ 0: string } | string>;
-  allow_auto_replay: boolean;
-  allow_auto_simulated: boolean;
-};
+export type OwnshipSelectionCommand =
+  | { kind: "auto" }
+  | { kind: "source"; source_id: { 0: string } | string };
 
 export type SituationSample = {
   source_id: { 0: string } | string;
@@ -585,46 +586,22 @@ export type OwnshipRenderState = {
 
 export type OwnshipControlModel = {
   mode: OwnshipMode;
-  policy: { kind: "auto" } | { kind: "manual"; source_id: { 0: string } | string };
+  selection: OwnshipSelectionCommand;
   sources: Array<{
     source_id: { 0: string } | string;
     label: string;
-    kind: OwnshipSourceKind;
     enabled: boolean;
     active: boolean;
-    selectable: boolean;
     status_label: string;
   }>;
 };
 
-export type OwnshipState = {
-  policy: OwnshipPolicy;
-  resolved: {
-    mode: OwnshipMode;
-    active_source_id: ({ 0: string } | string) | null;
-    active_source_kind: OwnshipSourceKind | null;
-    banner_text: string;
-    banner_severity: OwnshipBannerSeverity;
-    guidance_enabled: boolean;
-    sequencing_enabled: boolean;
-  };
+export type OwnshipUiState = {
   render: OwnshipRenderState;
   controls: OwnshipControlModel;
-  sources: Array<{
-    source_id: { 0: string } | string;
-    source_kind: OwnshipSourceKind;
-    display_name: string;
-    connection_state: SourceConnectionState;
-    last_event_time_epoch_ms: number | null;
-    last_received_time_epoch_ms: number | null;
-    stale_after_ms: number;
-    selectable: boolean;
-    enabled: boolean;
-    auto_eligible: boolean;
-    active: boolean;
-    status_label: string;
-  }>;
 };
+
+export type OwnshipState = unknown;
 
 export type MapViewJson = {
   chart_family: ChartFamilyId;

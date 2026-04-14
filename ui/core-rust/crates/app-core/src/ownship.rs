@@ -101,6 +101,13 @@ pub enum OwnshipSelectionPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OwnshipSelectionCommand {
+    Auto,
+    Source { source_id: OwnshipSourceId },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OwnshipPolicy {
     pub selection: OwnshipSelectionPolicy,
     pub source_priority: Vec<OwnshipSourceId>,
@@ -169,18 +176,22 @@ pub struct OwnshipRenderState {
 pub struct OwnshipSourceMenuItem {
     pub source_id: OwnshipSourceId,
     pub label: String,
-    pub kind: OwnshipSourceKind,
     pub enabled: bool,
     pub active: bool,
-    pub selectable: bool,
     pub status_label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OwnshipControlModel {
     pub mode: OwnshipMode,
-    pub policy: OwnshipSelectionPolicy,
+    pub selection: OwnshipSelectionCommand,
     pub sources: Vec<OwnshipSourceMenuItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OwnshipUiState {
+    pub render: OwnshipRenderState,
+    pub controls: OwnshipControlModel,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -200,7 +211,7 @@ impl Default for OwnshipState {
             render: project_render_state(&resolved),
             controls: OwnshipControlModel {
                 mode: resolved.mode,
-                policy: OwnshipSelectionPolicy::Auto,
+                selection: OwnshipSelectionCommand::Auto,
                 sources: Vec::new(),
             },
             resolved,
@@ -278,6 +289,15 @@ pub fn update_source_status(state: &OwnshipState, update: OwnshipSourceStatusUpd
 pub fn set_policy(state: &OwnshipState, policy: OwnshipPolicy) -> OwnshipState {
     let mut next = state.clone();
     next.policy = policy;
+    refresh(&next)
+}
+
+pub fn select_source(state: &OwnshipState, selection: OwnshipSelectionCommand) -> OwnshipState {
+    let mut next = state.clone();
+    next.policy.selection = match selection {
+        OwnshipSelectionCommand::Auto => OwnshipSelectionPolicy::Auto,
+        OwnshipSelectionCommand::Source { source_id } => OwnshipSelectionPolicy::Manual { source_id },
+    };
     refresh(&next)
 }
 
@@ -492,16 +512,20 @@ fn project_controls(
 ) -> OwnshipControlModel {
     OwnshipControlModel {
         mode,
-        policy: policy.selection.clone(),
+        selection: match &policy.selection {
+            OwnshipSelectionPolicy::Auto => OwnshipSelectionCommand::Auto,
+            OwnshipSelectionPolicy::Manual { source_id } => OwnshipSelectionCommand::Source {
+                source_id: source_id.clone(),
+            },
+        },
         sources: sources
             .iter()
+            .filter(|source| source.selectable)
             .map(|source| OwnshipSourceMenuItem {
                 source_id: source.source_id.clone(),
                 label: source.display_name.clone(),
-                kind: source.source_kind,
                 enabled: source.enabled,
                 active: source.active,
-                selectable: source.selectable,
                 status_label: source.status_label.clone(),
             })
             .collect(),

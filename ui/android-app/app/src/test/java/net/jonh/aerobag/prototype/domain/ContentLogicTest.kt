@@ -463,7 +463,7 @@ private class FakeNativeBridge(
     override fun pushSituationSampleInSessionJson(handle: Long, sampleJson: String): String =
         getSessionSnapshotJson(handle)
 
-    override fun setOwnshipPolicyInSessionJson(handle: Long, policyJson: String): String =
+    override fun selectOwnshipSourceInSessionJson(handle: Long, selectionJson: String): String =
         getSessionSnapshotJson(handle)
 
     override fun selectAirportInSessionJson(handle: Long, airportIdJson: String): String = getSessionSnapshotJson(handle)

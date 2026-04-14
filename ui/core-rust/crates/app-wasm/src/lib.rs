@@ -485,11 +485,11 @@ pub fn push_situation_sample_in_session(
 }
 
 #[wasm_bindgen]
-pub fn set_ownship_policy_in_session(
+pub fn select_ownship_source_in_session(
     handle: u32,
-    policy_json: &str,
+    selection_json: &str,
 ) -> Result<String, JsValue> {
-    set_ownship_policy_in_session_json(handle, policy_json)
+    select_ownship_source_in_session_json(handle, selection_json)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -1247,10 +1247,10 @@ fn push_situation_sample_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn set_ownship_policy_in_session_json(handle: u32, policy_json: &str) -> Result<String, String> {
-    let policy: app_core::OwnshipPolicy =
-        serde_json::from_str(policy_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_ownship_policy_in_session(handle, policy)
+fn select_ownship_source_in_session_json(handle: u32, selection_json: &str) -> Result<String, String> {
+    let selection: app_core::OwnshipSelectionCommand =
+        serde_json::from_str(selection_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::select_ownship_source_in_session(handle, selection)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }

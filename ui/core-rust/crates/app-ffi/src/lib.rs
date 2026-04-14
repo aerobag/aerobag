@@ -826,13 +826,13 @@ pub fn push_situation_sample_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-pub fn set_ownship_policy_in_session_json(
+pub fn select_ownship_source_in_session_json(
     handle: u64,
-    policy_json: &str,
+    selection_json: &str,
 ) -> Result<String, String> {
-    let policy: app_core::OwnshipPolicy =
-        serde_json::from_str(policy_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_ownship_policy_in_session(handle as u32, policy)
+    let selection: app_core::OwnshipSelectionCommand =
+        serde_json::from_str(selection_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::select_ownship_source_in_session(handle as u32, selection)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
@@ -1725,15 +1725,15 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pus
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setOwnshipPolicyInSessionJson(
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectOwnshipSourceInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
-    policy_json: JString,
+    selection_json: JString,
 ) -> jstring {
     let result = (|| {
-        let policy_json = get_java_string(&mut env, policy_json)?;
-        set_ownship_policy_in_session_json(handle as u64, &policy_json)
+        let selection_json = get_java_string(&mut env, selection_json)?;
+        select_ownship_source_in_session_json(handle as u64, &selection_json)
     })();
     return_string(&mut env, result)
 }

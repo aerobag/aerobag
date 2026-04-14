@@ -1,5 +1,6 @@
 import type {
   AppState,
+  UiSnapshotAppState,
   AppUiState,
   AirwayAutoSelection,
   AirwayBranch,
@@ -24,7 +25,7 @@ import type {
   LatLon,
   MaterializedProcedure,
   NavRef,
-  OwnshipPolicy,
+  OwnshipSelectionCommand,
   OwnshipSourceRegistration,
   OwnshipSourceStatusUpdate,
   PlanLeg,
@@ -66,7 +67,7 @@ export type DerivedChartPageState = {
 };
 
 export type UiSessionSnapshot = {
-  app_state: AppState;
+  app_state: UiSnapshotAppState;
   app_ui_state: AppUiState;
   chart_page_state: UiChartPageState;
 };
@@ -140,7 +141,7 @@ export interface UiSession {
   registerOwnshipSource(registration: OwnshipSourceRegistration): Promise<UiSessionSnapshot>;
   updateOwnshipSourceStatus(update: OwnshipSourceStatusUpdate): Promise<UiSessionSnapshot>;
   pushSituationSample(sample: SituationSample): Promise<UiSessionSnapshot>;
-  setOwnshipPolicy(policy: OwnshipPolicy): Promise<UiSessionSnapshot>;
+  selectOwnshipSource(selection: OwnshipSelectionCommand): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
@@ -310,7 +311,7 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
           },
           controls: {
             mode: "none",
-            policy: { kind: "auto" },
+            selection: { kind: "auto" },
             sources: [],
           },
           sources: [],
@@ -334,9 +335,18 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
       selectedChartId,
     ));
     const snapshotWithUi = async (): Promise<UiSessionSnapshot> => ({
-      app_state: appState,
+      app_state: {
+        active_plan: appState.active_plan,
+        content_policy: appState.content_policy,
+        last_content_requirements: appState.last_content_requirements,
+        last_content_report: appState.last_content_report,
+      },
       app_ui_state: {
         active_plan: appState.active_plan ? await adapter.buildFlightPlanUi(appState.active_plan) : null,
+        ownship: {
+          render: appState.ownship.render,
+          controls: appState.ownship.controls,
+        },
         content_policy: appState.content_policy,
         last_content_requirements: appState.last_content_requirements,
         last_content_report: appState.last_content_report,
@@ -382,10 +392,10 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
         ));
         return snapshotWithUi();
       },
-      registerOwnshipSource: async () => ({ app_state: appState, chart_page_state: chartPageState }),
-      updateOwnshipSourceStatus: async () => ({ app_state: appState, chart_page_state: chartPageState }),
-      pushSituationSample: async () => ({ app_state: appState, chart_page_state: chartPageState }),
-      setOwnshipPolicy: async () => ({ app_state: appState, chart_page_state: chartPageState }),
+      registerOwnshipSource: async () => snapshotWithUi(),
+      updateOwnshipSourceStatus: async () => snapshotWithUi(),
+      pushSituationSample: async () => snapshotWithUi(),
+      selectOwnshipSource: async () => snapshotWithUi(),
       selectAirport: async (airportId) => {
         chartPageState = compactChartPageState(await adapter.deriveChartPageState(
           resourceIndex,
@@ -729,7 +739,7 @@ type WasmModule = {
   register_ownship_source_in_session(handle: number, registrationJson: string): Promise<string> | string;
   update_ownship_source_status_in_session(handle: number, updateJson: string): Promise<string> | string;
   push_situation_sample_in_session(handle: number, sampleJson: string): Promise<string> | string;
-  set_ownship_policy_in_session(handle: number, policyJson: string): Promise<string> | string;
+  select_ownship_source_in_session(handle: number, selectionJson: string): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
@@ -962,9 +972,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ) as UiSessionSnapshot;
         return snapshot;
       },
-      setOwnshipPolicy: async (policy) => {
+      selectOwnshipSource: async (selection) => {
         snapshot = JSON.parse(
-          await this.module.set_ownship_policy_in_session(handle, JSON.stringify(policy)),
+          await this.module.select_ownship_source_in_session(handle, JSON.stringify(selection)),
         ) as UiSessionSnapshot;
         return snapshot;
       },
@@ -1395,7 +1405,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.register_ownship_source_in_session !== "function" ||
     typeof mod.update_ownship_source_status_in_session !== "function" ||
     typeof mod.push_situation_sample_in_session !== "function" ||
-    typeof mod.set_ownship_policy_in_session !== "function" ||
+    typeof mod.select_ownship_source_in_session !== "function" ||
     typeof mod.replace_flight_plan_in_session !== "function" ||
     typeof mod.select_airport_in_session !== "function" ||
     typeof mod.select_chart_in_session !== "function" ||

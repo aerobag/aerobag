@@ -1086,6 +1086,7 @@ private fun AerobagApp() {
     var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
     var planUiState by remember(uiSession) { mutableStateOf(initialPlanMutation.uiState) }
     val appState = sessionSnapshot.appState
+    val appUiState = sessionSnapshot.appUiState
     val currentPlan = appState.activePlan ?: initialPlanMutation.plan
     val chartCatalog = uiSession.chartCatalog
     val derivedChartPageState = sessionSnapshot.chartPageState
@@ -1207,7 +1208,7 @@ private fun AerobagApp() {
                     fixture = fixture,
                     uiSession = uiSession,
                     uiTheme = uiTheme,
-                    ownship = appState.ownship.render,
+                    ownship = appUiState.ownship.render,
                     selectedMapId = selectedMapId,
                     viewport = mapViewport,
                     onViewportChange = { mapViewport = it },
@@ -1257,7 +1258,7 @@ private fun AerobagApp() {
                     selectedAirport = selectedAirport,
                     selectedChart = selectedChart,
                     uiTheme = uiTheme,
-                    ownship = appState.ownship.render,
+                    ownship = appUiState.ownship.render,
                     navElement = navElement,
                     folderOpen = chartFolderOpen,
                     viewport = chartViewport,

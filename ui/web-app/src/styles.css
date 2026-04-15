@@ -626,6 +626,110 @@ button {
   fill: #d45a7a;
 }
 
+.playbackWidget {
+  position: absolute;
+  right: var(--thumb-gap);
+  bottom: var(--thumb-gap);
+  z-index: 4;
+  min-width: calc(var(--thumb) * 2.8);
+  padding: calc(var(--thumb) * 0.12);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: calc(var(--thumb-radius) * 0.9);
+  background: rgba(252, 248, 241, 0.94);
+  box-shadow: var(--shadow);
+  color: var(--theme-panel-fg);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--thumb) * 0.08);
+  backdrop-filter: blur(10px);
+}
+
+.playbackWidgetTop,
+.playbackWidgetRow,
+.playbackWidgetSeekRow {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--thumb) * 0.08);
+}
+
+.playbackWidgetTop {
+  justify-content: space-between;
+}
+
+.playbackWidgetTitle,
+.playbackWidgetMeta,
+.playbackWidgetClock,
+.playbackWidgetRateLabel {
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.playbackWidgetTitle {
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.playbackWidgetMeta,
+.playbackWidgetClock {
+  color: var(--theme-panel-muted);
+  flex: 0 0 auto;
+}
+
+.playbackWidgetInput,
+.playbackWidgetSeek,
+.playbackWidgetRate {
+  width: 100%;
+  margin: 0;
+}
+
+.playbackWidgetInput {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: calc(var(--thumb) * 0.42);
+  padding: 0 calc(var(--thumb) * 0.1);
+  border: 1px solid rgba(19, 33, 41, 0.14);
+  border-radius: calc(var(--thumb-radius) * 0.6);
+  background: white;
+  color: var(--theme-panel-fg);
+  font-size: calc(var(--thumb) * 0.16);
+}
+
+.playbackWidgetButton {
+  height: calc(var(--thumb) * 0.42);
+  padding: 0 calc(var(--thumb) * 0.14);
+  border: 1px solid rgba(19, 33, 41, 0.14);
+  border-radius: calc(var(--thumb-radius) * 0.6);
+  background: var(--theme-panel-fg);
+  color: white;
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.playbackWidgetButton:disabled {
+  opacity: 0.45;
+}
+
+.playbackWidgetRateLabel {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--thumb) * 0.08);
+}
+
+.playbackWidgetSeekRow {
+  gap: calc(var(--thumb) * 0.06);
+}
+
+.playbackWidgetSeek {
+  flex: 1 1 auto;
+}
+
 .pageChrome {
   position: absolute;
   top: var(--thumb-gap);

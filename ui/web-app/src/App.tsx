@@ -13,6 +13,7 @@ import type {
   MaterializedProcedure,
   NavElementUiView,
   NavRef,
+  PlaybackUiState,
   ProcedureOptions,
   ProcedureLoadOption,
   ProcedureSummary,
@@ -118,6 +119,7 @@ const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
 const plateFolderCategoryOrder: PlateFolderCategory[] = ["airport-diagram", "csup", "takeoff-mins", "approach", "departure", "star"];
 const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
+const defaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json";
 const situationRingSizesNm = [0.25, 0.5, 0.8, 1, 1.5, 2, 3, 5, 8, 10, 15, 20, 30, 50, 100, 150, 200] as const;
 const vorOuterHexPoints = [
   { x: -8, y: 0 },
@@ -174,8 +176,15 @@ function thumbPixels(multiplier: number) {
     return 0;
   }
   const raw = getComputedStyle(document.documentElement).getPropertyValue("--thumb").trim();
-  const parsed = Number.parseFloat(raw.replace("px", ""));
-  return (Number.isFinite(parsed) ? parsed : 0) * multiplier;
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  if (raw.endsWith("rem")) {
+    const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+    return parsed * (Number.isFinite(rootFontSize) ? rootFontSize : 16) * multiplier;
+  }
+  return parsed * multiplier;
 }
 
 function intersectLines(originA: VorPoint, directionA: VorPoint, originB: VorPoint, directionB: VorPoint): VorPoint {
@@ -247,6 +256,20 @@ function demoSituation(): Situation {
   };
 }
 
+function emptyPlaybackUiState(): PlaybackUiState {
+  return {
+    status: "empty",
+    source_path: null,
+    registration: null,
+    icao: null,
+    aircraft_type: null,
+    point_count: 0,
+    duration_seconds: 0,
+    cursor_seconds: 0,
+    rate: 1,
+  };
+}
+
 function initialMapId() {
   return mapViews.find((view) => view.map_view.chart_family === "tac")?.id ?? mapViews[0].id;
 }
@@ -296,6 +319,7 @@ export default function App() {
       last_content_requirements: [],
       last_content_report: null,
     },
+    playback_ui_state: emptyPlaybackUiState(),
     chart_page_state: {
       ordered_airport_ids: initialChartPageState.airports.map((airport) => airport.id),
       recent_airport_ids: initialChartPageState.recent_airport_ids,
@@ -303,8 +327,10 @@ export default function App() {
       selected_chart_id: initialChartPageState.selected_chart_id,
     },
   });
+  const [playbackSourcePath, setPlaybackSourcePath] = useState(defaultPlaybackTracePath);
   const appState: AppState = sessionSnapshot.app_state;
   const appUiState = sessionSnapshot.app_ui_state;
+  const playbackUiState = sessionSnapshot.playback_ui_state;
   const chartCatalog: ChartPageData = uiSession?.chartCatalog ?? chartPage;
   const chartAirportById = useMemo(
     () => new Map(chartCatalog.airports.map((airport) => [airport.id, airport])),
@@ -318,6 +344,32 @@ export default function App() {
     }),
     [chartAirportById, sessionSnapshot.chart_page_state.ordered_airport_ids],
   );
+
+  useEffect(() => {
+    if (playbackUiState.source_path) {
+      setPlaybackSourcePath(playbackUiState.source_path);
+    }
+  }, [playbackUiState.source_path]);
+
+  useEffect(() => {
+    if (!uiSession || playbackUiState.status !== "playing") {
+      return;
+    }
+    let cancelled = false;
+    const tick = () => {
+      void uiSession.tickPlayback(Date.now()).then((nextSnapshot) => {
+        if (!cancelled) {
+          setSessionSnapshot(nextSnapshot);
+        }
+      }).catch(() => {});
+    };
+    tick();
+    const timer = window.setInterval(tick, 250);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [playbackUiState.status, uiSession]);
   const currentPlan = appState.active_plan;
   const [planUiState, setPlanUiState] = useState<FlightPlanUiState | null>(null);
   const recentAirportIds = sessionSnapshot.chart_page_state.recent_airport_ids;
@@ -660,6 +712,10 @@ export default function App() {
           plan={currentPlan}
           planUiState={planUiState}
           sessionPlanUiState={appUiState.active_plan}
+          playbackUiState={playbackUiState}
+          playbackSourcePath={playbackSourcePath}
+          onPlaybackSourcePathChange={setPlaybackSourcePath}
+          onPlaybackSnapshotChange={setSessionSnapshot}
           uiSession={uiSession}
           adapterBackend={adapterBackend}
           adapterDetail={adapterDetail}
@@ -874,6 +930,11 @@ export default function App() {
             await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
           situation={appState.situation}
+          playbackUiState={playbackUiState}
+          playbackSourcePath={playbackSourcePath}
+          onPlaybackSourcePathChange={setPlaybackSourcePath}
+          onPlaybackSnapshotChange={setSessionSnapshot}
+          uiSession={uiSession}
         />
       </div>
 
@@ -913,6 +974,10 @@ function MapPage(props: {
   plan: typeof samplePlan;
   planUiState: FlightPlanUiState | null;
   sessionPlanUiState: FlightPlanUiState | null;
+  playbackUiState: PlaybackUiState;
+  playbackSourcePath: string;
+  onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
+  onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
   uiSession: UiSession | null;
   adapterBackend: AdapterBackendKind;
   adapterDetail: string;
@@ -1600,6 +1665,15 @@ function MapPage(props: {
           <NavElementView navElement={sessionPlanUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
         </button>
 
+        <PlaybackWidget
+          uiSession={uiSession}
+          playbackUiState={props.playbackUiState}
+          sourcePath={props.playbackSourcePath}
+          onSourcePathChange={props.onPlaybackSourcePathChange}
+          onSnapshotChange={props.onPlaybackSnapshotChange}
+          surfaceWidth={surfaceSize.width}
+        />
+
         <div className="debugDock">
           <DebugDock
             open={debugOpen}
@@ -1663,6 +1737,165 @@ function NavElementView(props: { navElement: NavElementUiView }) {
         ))}
       </svg>
     </>
+  );
+}
+
+function playbackWidgetMaxWidthPx(surfaceWidth: number) {
+  if (surfaceWidth <= 0) {
+    return 0;
+  }
+  const thumb = thumbPixels(1);
+  const gap = thumbPixels(0.1);
+  const navWidth = thumb * 3;
+  const navRightEdge = surfaceWidth / 2 + navWidth / 2;
+  return Math.max(thumb * 2.8, surfaceWidth - navRightEdge - gap * 2);
+}
+
+function formatPlaybackClock(seconds: number) {
+  const clampedSeconds = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(clampedSeconds / 3600);
+  const minutes = Math.floor((clampedSeconds % 3600) / 60);
+  const remainder = clampedSeconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+function PlaybackWidget(props: {
+  uiSession: UiSession | null;
+  playbackUiState: PlaybackUiState;
+  sourcePath: string;
+  onSourcePathChange: Dispatch<SetStateAction<string>>;
+  onSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
+  surfaceWidth: number;
+}) {
+  const {
+    uiSession,
+    playbackUiState,
+    sourcePath,
+    onSourcePathChange,
+    onSnapshotChange,
+    surfaceWidth,
+  } = props;
+  const [isBusy, setIsBusy] = useState(false);
+  const maxWidthPx = playbackWidgetMaxWidthPx(surfaceWidth);
+  const durationSeconds = Math.max(playbackUiState.duration_seconds, 0);
+  const cursorSeconds = Math.min(Math.max(playbackUiState.cursor_seconds, 0), durationSeconds || 0);
+  const canControl = uiSession !== null;
+  const canSeek = durationSeconds > 0;
+  const label = playbackUiState.registration ?? playbackUiState.icao ?? "Trace";
+  const summary = playbackUiState.point_count > 0
+    ? `${label} ${formatPlaybackClock(cursorSeconds)} / ${formatPlaybackClock(durationSeconds)}`
+    : "Playback";
+
+  async function loadTrace() {
+    if (!uiSession || !sourcePath.trim()) {
+      return;
+    }
+    setIsBusy(true);
+    try {
+      const response = await fetch(sourcePath);
+      if (!response.ok) {
+        throw new Error(`trace load failed: ${response.status}`);
+      }
+      const traceJson = await response.text();
+      const nextSnapshot = await uiSession.loadPlaybackTrace(sourcePath, traceJson);
+      onSnapshotChange(nextSnapshot);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function playPause() {
+    if (!uiSession) {
+      return;
+    }
+    try {
+      const nextSnapshot =
+        playbackUiState.status === "playing"
+          ? await uiSession.pausePlayback(Date.now())
+          : await uiSession.playPlayback(Date.now());
+      onSnapshotChange(nextSnapshot);
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  return (
+    <section
+      className="playbackWidget"
+      onPointerDown={stopPointer}
+      onPointerUp={stopPointer}
+      onDoubleClick={stopDoubleClick}
+      style={maxWidthPx > 0 ? ({ width: `${maxWidthPx}px` } as CSSProperties) : undefined}
+    >
+      <div className="playbackWidgetTop">
+        <span className="playbackWidgetTitle">{summary}</span>
+        <span className="playbackWidgetMeta">{playbackUiState.rate.toFixed(1)}x</span>
+      </div>
+      <div className="playbackWidgetRow">
+        <input
+          className="playbackWidgetInput"
+          value={sourcePath}
+          onChange={(event) => onSourcePathChange(event.target.value)}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+        />
+        <button type="button" className="playbackWidgetButton" disabled={!canControl || isBusy} onClick={() => void loadTrace()}>
+          LOAD
+        </button>
+      </div>
+      <div className="playbackWidgetRow">
+        <button type="button" className="playbackWidgetButton" disabled={!canControl || playbackUiState.status === "empty"} onClick={() => void playPause()}>
+          {playbackUiState.status === "playing" ? "PAUSE" : "PLAY"}
+        </button>
+        <label className="playbackWidgetRateLabel">
+          SPD
+          <input
+            className="playbackWidgetRate"
+            type="range"
+            min={0.25}
+            max={11}
+            step={0.25}
+            value={playbackUiState.rate}
+            disabled={!canControl || playbackUiState.status === "empty"}
+            onChange={(event) => {
+              if (!uiSession) {
+                return;
+              }
+              void uiSession.setPlaybackRate(Number(event.target.value), Date.now()).then(onSnapshotChange).catch((error) => {
+                console.error(error);
+              });
+            }}
+          />
+        </label>
+      </div>
+      <div className="playbackWidgetSeekRow">
+        <span className="playbackWidgetClock">{formatPlaybackClock(cursorSeconds)}</span>
+        <input
+          className="playbackWidgetSeek"
+          type="range"
+          min={0}
+          max={durationSeconds || 1}
+          step={Math.max(durationSeconds / Math.max(playbackUiState.point_count, 1), 1)}
+          value={cursorSeconds}
+          disabled={!canControl || !canSeek}
+          onChange={(event) => {
+            if (!uiSession) {
+              return;
+            }
+            void uiSession.seekPlayback(Number(event.target.value), Date.now()).then(onSnapshotChange).catch((error) => {
+              console.error(error);
+            });
+          }}
+        />
+        <span className="playbackWidgetClock">{formatPlaybackClock(durationSeconds)}</span>
+      </div>
+    </section>
   );
 }
 
@@ -2824,6 +3057,11 @@ function ChartsPage(props: {
   onSelectChart: (chartId: string) => void;
   onApplyMutation: (mutation: FlightPlanUiMutation) => void | Promise<void>;
   situation: Situation;
+  playbackUiState: PlaybackUiState;
+  playbackSourcePath: string;
+  onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
+  onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
+  uiSession: UiSession | null;
 }) {
   const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, sessionPlanUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, onApplyMutation, situation } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -3324,6 +3562,15 @@ function ChartsPage(props: {
         >
           <NavElementView navElement={sessionPlanUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
         </button>
+
+        <PlaybackWidget
+          uiSession={props.uiSession}
+          playbackUiState={props.playbackUiState}
+          sourcePath={props.playbackSourcePath}
+          onSourcePathChange={props.onPlaybackSourcePathChange}
+          onSnapshotChange={props.onPlaybackSnapshotChange}
+          surfaceWidth={surfaceSize.width}
+        />
 
         <div className="debugDock">
           <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>

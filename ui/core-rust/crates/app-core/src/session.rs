@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     derive_chart_page_state_from_catalog, load_catalog, move_flight_plan_waypoint, remove_flight_plan_leg,
-    query_map_overlay, state, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
+    playback::PlaybackSessionState, query_map_overlay, state, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
     CatalogHandle, DerivedChartCatalog, DerivedChartPageState, FlightPlan, MapOverlayQueryResult,
-    MapViewport, PointTilePayload,
+    MapViewport, PlaybackUiState, PointTilePayload,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -27,6 +27,7 @@ pub struct UiChartPageState {
 pub struct UiSessionSnapshot {
     pub app_state: AppState,
     pub app_ui_state: AppUiState,
+    pub playback_ui_state: PlaybackUiState,
     pub chart_page_state: UiChartPageState,
 }
 
@@ -41,6 +42,7 @@ struct UiSession {
     catalog: CatalogHandle,
     chart_catalog: DerivedChartCatalog,
     app_state: AppState,
+    playback: PlaybackSessionState,
     chart_page_state: DerivedChartPageState,
     point_tile_cache: HashMap<String, PointTilePayload>,
 }
@@ -77,6 +79,7 @@ pub fn create_ui_session(
     let snapshot = UiSessionSnapshot {
         app_state: app_state.clone(),
         app_ui_state: state::project_app_ui_state(&app_state),
+        playback_ui_state: PlaybackUiState::default(),
         chart_page_state: compact_chart_page_state(&chart_page_state),
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
@@ -86,6 +89,7 @@ pub fn create_ui_session(
             catalog,
             chart_catalog: chart_catalog.clone(),
             app_state,
+            playback: PlaybackSessionState::default(),
             chart_page_state,
             point_tile_cache: HashMap::new(),
         },
@@ -189,6 +193,97 @@ pub fn set_situation_in_session(
         AppEvent::SetSituation(situation),
         &session.catalog,
     )?;
+    Ok(snapshot_for_session(session))
+}
+
+pub fn load_playback_trace_in_session(
+    handle: u32,
+    source_path: &str,
+    trace_json: &str,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let situation = session
+        .playback
+        .load_trace_json(source_path.to_string(), trace_json)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::SetSituation(situation),
+        &session.catalog,
+    )?;
+    Ok(snapshot_for_session(session))
+}
+
+pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    if let Some(situation) = session.playback.play(now_epoch_ms) {
+        session.app_state = state::reduce(
+            &session.app_state,
+            AppEvent::SetSituation(situation),
+            &session.catalog,
+        )?;
+    }
+    Ok(snapshot_for_session(session))
+}
+
+pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    if let Some(situation) = session.playback.pause(now_epoch_ms) {
+        session.app_state = state::reduce(
+            &session.app_state,
+            AppEvent::SetSituation(situation),
+            &session.catalog,
+        )?;
+    }
+    Ok(snapshot_for_session(session))
+}
+
+pub fn seek_playback_in_session(
+    handle: u32,
+    cursor_seconds: f64,
+    now_epoch_ms: f64,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    if let Some(situation) = session.playback.seek(cursor_seconds, now_epoch_ms) {
+        session.app_state = state::reduce(
+            &session.app_state,
+            AppEvent::SetSituation(situation),
+            &session.catalog,
+        )?;
+    }
+    Ok(snapshot_for_session(session))
+}
+
+pub fn set_playback_rate_in_session(
+    handle: u32,
+    rate: f64,
+    now_epoch_ms: f64,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    if let Some(situation) = session.playback.set_rate(rate, now_epoch_ms) {
+        session.app_state = state::reduce(
+            &session.app_state,
+            AppEvent::SetSituation(situation),
+            &session.catalog,
+        )?;
+    }
+    Ok(snapshot_for_session(session))
+}
+
+pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    if let Some(situation) = session.playback.tick(now_epoch_ms) {
+        session.app_state = state::reduce(
+            &session.app_state,
+            AppEvent::SetSituation(situation),
+            &session.catalog,
+        )?;
+    }
     Ok(snapshot_for_session(session))
 }
 
@@ -300,6 +395,7 @@ fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
     UiSessionSnapshot {
         app_state: session.app_state.clone(),
         app_ui_state: state::project_app_ui_state(&session.app_state),
+        playback_ui_state: session.playback.ui_state(),
         chart_page_state: compact_chart_page_state(&session.chart_page_state),
     }
 }

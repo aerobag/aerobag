@@ -11,6 +11,7 @@ pub mod navdb;
 pub mod navdb_types;
 pub mod map_overlay;
 pub mod planning;
+pub mod playback;
 pub mod procedure_geometry;
 pub mod procedure_legs;
 pub mod situation;
@@ -74,6 +75,7 @@ pub use planning::{
     RouteComponentUiView, RouteComponentViewKind, SequencingMode, DirectToUiView,
     LegDisplayElement, LegDisplayPath,
 };
+pub use playback::{PlaybackStatus, PlaybackUiState};
 pub use procedure_geometry::display_path_for_procedure_leg;
 pub use procedure_legs::{
     interpret_path_termination, leading_procedure_discontinuity,
@@ -85,8 +87,10 @@ pub use session::{
     create_ui_session, destroy_session, get_map_overlay_in_session, get_session_snapshot,
     ingest_point_tiles_in_session, move_waypoint_in_session, remove_leg_in_session,
     replace_flight_plan_in_session,
+    load_playback_trace_in_session, pause_playback_in_session, play_playback_in_session,
     restore_chart_page_state_in_session, select_airport_in_session, select_chart_in_session,
-    set_situation_in_session,
+    seek_playback_in_session, set_playback_rate_in_session, set_situation_in_session,
+    tick_playback_in_session,
     UiChartPageState, UiSessionInitResult, UiSessionSnapshot,
 };
 pub use state::{project_app_ui_state, AppEvent, AppState, AppUiState};

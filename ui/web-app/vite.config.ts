@@ -22,6 +22,7 @@ const csupRoot = path.join(staticRoot, "afd");
 const thumbnailRoot = path.join(staticRoot, "thumbnails");
 const navDbRoot = path.join(staticRoot, "nav-db");
 const vectorRoot = path.join(staticRoot, "vectors");
+const adsbTraceRoot = path.resolve(repoRoot, "..", "adsb-traces");
 const sharedRoot = path.join(repoRoot, "ui", "shared");
 const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
 const debugLogPath = path.join("/tmp", "aerobag-web-debug.log");
@@ -224,6 +225,7 @@ function aerobagStaticPlugin(): Plugin {
       server.middlewares.use("/thumbnails", mountStaticTree(thumbnailRoot));
       server.middlewares.use("/nav-db", mountStaticTree(navDbRoot));
       server.middlewares.use("/vectors", mountStaticTree(vectorRoot));
+      server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot));
     },
     writeBundle(outputOptions) {
       const outputDir = outputOptions.dir;
@@ -237,6 +239,7 @@ function aerobagStaticPlugin(): Plugin {
         [thumbnailRoot, "thumbnails"],
         [navDbRoot, "nav-db"],
         [vectorRoot, "vectors"],
+        [adsbTraceRoot, "adsb-traces"],
       ] as const) {
         if (!fs.existsSync(sourceRoot)) {
           continue;
@@ -276,6 +279,7 @@ export default defineConfig({
         path.dirname(catalogPath),
         artifactReadRoot,
         path.join(artifactReadRoot, unpackedDir),
+        adsbTraceRoot,
       ],
     },
   },

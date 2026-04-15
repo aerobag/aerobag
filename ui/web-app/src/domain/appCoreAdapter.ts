@@ -25,6 +25,7 @@ import type {
   MaterializedProcedure,
   NavRef,
   PlanLeg,
+  PlaybackUiState,
   PlateProcedureLoadCandidateInput,
   ProcedureLoadOption,
   ProcedureOptions,
@@ -65,6 +66,7 @@ export type DerivedChartPageState = {
 export type UiSessionSnapshot = {
   app_state: AppState;
   app_ui_state: AppUiState;
+  playback_ui_state: PlaybackUiState;
   chart_page_state: UiChartPageState;
 };
 
@@ -135,6 +137,12 @@ export interface UiSession {
   removeLeg(index: number): Promise<UiSessionSnapshot>;
   moveWaypoint(index: number, delta: number): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
+  loadPlaybackTrace(sourcePath: string, traceJson: string): Promise<UiSessionSnapshot>;
+  playPlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
+  pausePlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
+  seekPlayback(cursorSeconds: number, nowEpochMs: number): Promise<UiSessionSnapshot>;
+  setPlaybackRate(rate: number, nowEpochMs: number): Promise<UiSessionSnapshot>;
+  tickPlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
@@ -294,6 +302,17 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
       selectedAirportId,
       selectedChartId,
     ));
+    let playbackUiState: PlaybackUiState = {
+      status: "empty",
+      source_path: null,
+      registration: null,
+      icao: null,
+      aircraft_type: null,
+      point_count: 0,
+      duration_seconds: 0,
+      cursor_seconds: 0,
+      rate: 1,
+    };
     const snapshotWithUi = async (): Promise<UiSessionSnapshot> => ({
       app_state: appState,
       app_ui_state: {
@@ -302,6 +321,7 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
         last_content_requirements: appState.last_content_requirements,
         last_content_report: appState.last_content_report,
       },
+      playback_ui_state: playbackUiState,
       chart_page_state: chartPageState,
     });
 
@@ -347,6 +367,17 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
         appState = { ...appState, situation };
         return snapshotWithUi();
       },
+      loadPlaybackTrace: async () => {
+        throw new Error("playback trace loading requires wasm adapter");
+      },
+      playPlayback: async () => snapshotWithUi(),
+      pausePlayback: async () => snapshotWithUi(),
+      seekPlayback: async () => snapshotWithUi(),
+      setPlaybackRate: async (rate) => {
+        playbackUiState = { ...playbackUiState, rate };
+        return snapshotWithUi();
+      },
+      tickPlayback: async () => snapshotWithUi(),
       selectAirport: async (airportId) => {
         chartPageState = compactChartPageState(await adapter.deriveChartPageState(
           resourceIndex,
@@ -688,6 +719,12 @@ type WasmModule = {
   remove_leg_in_session(handle: number, index: number): Promise<string> | string;
   move_waypoint_in_session(handle: number, waypointIndex: number, delta: number): Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
+  load_playback_trace_in_session(handle: number, sourcePathJson: string, traceJson: string): Promise<string> | string;
+  play_playback_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
+  pause_playback_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
+  seek_playback_in_session(handle: number, cursorSeconds: number, nowEpochMs: number): Promise<string> | string;
+  set_playback_rate_in_session(handle: number, rate: number, nowEpochMs: number): Promise<string> | string;
+  tick_playback_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
@@ -908,6 +945,42 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       setSituation: async (situation) => {
         snapshot = await withSessionRetry(async () =>
           JSON.parse(await this.module.set_situation_in_session(handle, JSON.stringify(situation))) as UiSessionSnapshot,
+        );
+        return snapshot;
+      },
+      loadPlaybackTrace: async (sourcePath, traceJson) => {
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(await this.module.load_playback_trace_in_session(handle, JSON.stringify(sourcePath), traceJson)) as UiSessionSnapshot,
+        );
+        return snapshot;
+      },
+      playPlayback: async (nowEpochMs) => {
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(await this.module.play_playback_in_session(handle, nowEpochMs)) as UiSessionSnapshot,
+        );
+        return snapshot;
+      },
+      pausePlayback: async (nowEpochMs) => {
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(await this.module.pause_playback_in_session(handle, nowEpochMs)) as UiSessionSnapshot,
+        );
+        return snapshot;
+      },
+      seekPlayback: async (cursorSeconds, nowEpochMs) => {
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(await this.module.seek_playback_in_session(handle, cursorSeconds, nowEpochMs)) as UiSessionSnapshot,
+        );
+        return snapshot;
+      },
+      setPlaybackRate: async (rate, nowEpochMs) => {
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(await this.module.set_playback_rate_in_session(handle, rate, nowEpochMs)) as UiSessionSnapshot,
+        );
+        return snapshot;
+      },
+      tickPlayback: async (nowEpochMs) => {
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(await this.module.tick_playback_in_session(handle, nowEpochMs)) as UiSessionSnapshot,
         );
         return snapshot;
       },
@@ -1336,6 +1409,12 @@ export async function loadBestAvailableAdapter(
     typeof mod.remove_leg_in_session !== "function" ||
     typeof mod.move_waypoint_in_session !== "function" ||
     typeof mod.set_situation_in_session !== "function" ||
+    typeof mod.load_playback_trace_in_session !== "function" ||
+    typeof mod.play_playback_in_session !== "function" ||
+    typeof mod.pause_playback_in_session !== "function" ||
+    typeof mod.seek_playback_in_session !== "function" ||
+    typeof mod.set_playback_rate_in_session !== "function" ||
+    typeof mod.tick_playback_in_session !== "function" ||
     typeof mod.replace_flight_plan_in_session !== "function" ||
     typeof mod.select_airport_in_session !== "function" ||
     typeof mod.select_chart_in_session !== "function" ||

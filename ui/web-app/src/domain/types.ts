@@ -517,6 +517,20 @@ export type AppUiState = {
   last_content_report: AppState["last_content_report"];
 };
 
+export type PlaybackStatus = "empty" | "paused" | "playing";
+
+export type PlaybackUiState = {
+  status: PlaybackStatus;
+  source_path: string | null;
+  registration: string | null;
+  icao: string | null;
+  aircraft_type: string | null;
+  point_count: number;
+  duration_seconds: number;
+  cursor_seconds: number;
+  rate: number;
+};
+
 export type Situation = {
   position: SituationPosition;
   orientation_deg: number | null;

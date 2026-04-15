@@ -22,6 +22,7 @@ import type {
   ContentAvailability,
   GuidanceState,
   LatLon,
+  MapFollowUiState,
   MaterializedProcedure,
   NavRef,
   PlanLeg,
@@ -67,6 +68,13 @@ export type UiSessionSnapshot = {
   app_state: AppState;
   app_ui_state: AppUiState;
   playback_ui_state: PlaybackUiState;
+  map_follow_ui_state: MapFollowUiState;
+  map_follow_target_viewport: {
+    center: LatLon;
+    zoom: number;
+    rotation_deg: number;
+    pitch_deg: number;
+  } | null;
   chart_page_state: UiChartPageState;
 };
 
@@ -143,6 +151,9 @@ export interface UiSession {
   seekPlayback(cursorSeconds: number, nowEpochMs: number): Promise<UiSessionSnapshot>;
   setPlaybackRate(rate: number, nowEpochMs: number): Promise<UiSessionSnapshot>;
   tickPlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
+  engageMapFollow(viewport: MapViewportState): Promise<UiSessionSnapshot>;
+  disengageMapFollow(viewport: MapViewportState): Promise<UiSessionSnapshot>;
+  setMapFollowOffset(viewport: MapViewportState, offsetXPx: number, offsetYPx: number): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
@@ -313,6 +324,10 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
       cursor_seconds: 0,
       rate: 1,
     };
+    let mapFollowUiState: MapFollowUiState = {
+      can_center_here: appState.situation.position.kind !== "unknown",
+      following: false,
+    };
     const snapshotWithUi = async (): Promise<UiSessionSnapshot> => ({
       app_state: appState,
       app_ui_state: {
@@ -322,6 +337,8 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
         last_content_report: appState.last_content_report,
       },
       playback_ui_state: playbackUiState,
+      map_follow_ui_state: mapFollowUiState,
+      map_follow_target_viewport: null,
       chart_page_state: chartPageState,
     });
 
@@ -378,6 +395,15 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
         return snapshotWithUi();
       },
       tickPlayback: async () => snapshotWithUi(),
+      engageMapFollow: async () => {
+        mapFollowUiState = { ...mapFollowUiState, following: true };
+        return snapshotWithUi();
+      },
+      disengageMapFollow: async () => {
+        mapFollowUiState = { ...mapFollowUiState, following: false };
+        return snapshotWithUi();
+      },
+      setMapFollowOffset: async () => snapshotWithUi(),
       selectAirport: async (airportId) => {
         chartPageState = compactChartPageState(await adapter.deriveChartPageState(
           resourceIndex,
@@ -719,6 +745,9 @@ type WasmModule = {
   remove_leg_in_session(handle: number, index: number): Promise<string> | string;
   move_waypoint_in_session(handle: number, waypointIndex: number, delta: number): Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
+  engage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
+  disengage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
+  set_map_follow_offset_in_session(handle: number, viewportJson: string, offsetXPx: number, offsetYPx: number): Promise<string> | string;
   load_playback_trace_in_session(handle: number, sourcePathJson: string, traceJson: string): Promise<string> | string;
   play_playback_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
   pause_playback_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
@@ -945,6 +974,41 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       setSituation: async (situation) => {
         snapshot = await withSessionRetry(async () =>
           JSON.parse(await this.module.set_situation_in_session(handle, JSON.stringify(situation))) as UiSessionSnapshot,
+        );
+        return snapshot;
+      },
+      engageMapFollow: async (viewport) => {
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(
+            await this.module.engage_map_follow_in_session(
+              handle,
+              JSON.stringify(coreViewportForMap(viewport)),
+            ),
+          ) as UiSessionSnapshot,
+        );
+        return snapshot;
+      },
+      disengageMapFollow: async (viewport) => {
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(
+            await this.module.disengage_map_follow_in_session(
+              handle,
+              JSON.stringify(coreViewportForMap(viewport)),
+            ),
+          ) as UiSessionSnapshot,
+        );
+        return snapshot;
+      },
+      setMapFollowOffset: async (viewport, offsetXPx, offsetYPx) => {
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(
+            await this.module.set_map_follow_offset_in_session(
+              handle,
+              JSON.stringify(coreViewportForMap(viewport)),
+              offsetXPx,
+              offsetYPx,
+            ),
+          ) as UiSessionSnapshot,
         );
         return snapshot;
       },
@@ -1409,6 +1473,9 @@ export async function loadBestAvailableAdapter(
     typeof mod.remove_leg_in_session !== "function" ||
     typeof mod.move_waypoint_in_session !== "function" ||
     typeof mod.set_situation_in_session !== "function" ||
+    typeof mod.engage_map_follow_in_session !== "function" ||
+    typeof mod.disengage_map_follow_in_session !== "function" ||
+    typeof mod.set_map_follow_offset_in_session !== "function" ||
     typeof mod.load_playback_trace_in_session !== "function" ||
     typeof mod.play_playback_in_session !== "function" ||
     typeof mod.pause_playback_in_session !== "function" ||

@@ -644,6 +644,11 @@ button {
   backdrop-filter: blur(10px);
 }
 
+.playbackWidget.isLeftDocked {
+  left: var(--thumb-gap);
+  right: auto;
+}
+
 .playbackWidgetTop,
 .playbackWidgetRow,
 .playbackWidgetSeekRow {
@@ -728,6 +733,35 @@ button {
 
 .playbackWidgetSeek {
   flex: 1 1 auto;
+}
+
+.centerHereButton {
+  position: absolute;
+  right: var(--thumb-gap);
+  bottom: var(--thumb-gap);
+  z-index: 4;
+  width: var(--thumb);
+  height: var(--thumb);
+  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
+  border-radius: var(--thumb-radius);
+  background: var(--theme-button-bg);
+  box-shadow: var(--shadow);
+  color: var(--theme-button-fg);
+  font-size: calc(var(--thumb) * 0.2);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.centerHereButton.isActive {
+  background: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 72%, black);
+  color: #fff;
+}
+
+.centerHereButton:disabled {
+  background: var(--theme-disabled-button);
+  border-color: color-mix(in srgb, var(--theme-disabled-button) 72%, black);
+  color: var(--theme-button-fg);
 }
 
 .pageChrome {

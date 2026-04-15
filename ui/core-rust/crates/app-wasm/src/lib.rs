@@ -463,6 +463,27 @@ pub fn set_situation_in_session(handle: u32, situation_json: &str) -> Result<Str
 }
 
 #[wasm_bindgen]
+pub fn engage_map_follow_in_session(handle: u32, viewport_json: &str) -> Result<String, JsValue> {
+    engage_map_follow_in_session_json(handle, viewport_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn disengage_map_follow_in_session(handle: u32, viewport_json: &str) -> Result<String, JsValue> {
+    disengage_map_follow_in_session_json(handle, viewport_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn set_map_follow_offset_in_session(
+    handle: u32,
+    viewport_json: &str,
+    offset_x_px: f64,
+    offset_y_px: f64,
+) -> Result<String, JsValue> {
+    set_map_follow_offset_in_session_json(handle, viewport_json, offset_x_px, offset_y_px)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn load_playback_trace_in_session(
     handle: u32,
     source_path_json: &str,
@@ -1233,6 +1254,36 @@ fn set_situation_in_session_json(handle: u32, situation_json: &str) -> Result<St
         serde_json::from_str(situation_json).map_err(|err| err.to_string())?;
     let snapshot =
         app_core::set_situation_in_session(handle, situation).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn engage_map_follow_in_session_json(handle: u32, viewport_json: &str) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let update =
+        app_core::engage_map_follow_in_session(handle, viewport).map_err(|err| err.to_string())?;
+    serde_json::to_string(&update).map_err(|err| err.to_string())
+}
+
+fn disengage_map_follow_in_session_json(handle: u32, viewport_json: &str) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::disengage_map_follow_in_session(handle, viewport)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn set_map_follow_offset_in_session_json(
+    handle: u32,
+    viewport_json: &str,
+    offset_x_px: f64,
+    offset_y_px: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::set_map_follow_offset_in_session(handle, viewport, offset_x_px, offset_y_px)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 

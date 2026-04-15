@@ -14,6 +14,7 @@ import type {
   NavElementUiView,
   NavRef,
   PlaybackUiState,
+  MapFollowUiState,
   ProcedureOptions,
   ProcedureLoadOption,
   ProcedureSummary,
@@ -270,6 +271,13 @@ function emptyPlaybackUiState(): PlaybackUiState {
   };
 }
 
+function emptyMapFollowUiState(): MapFollowUiState {
+  return {
+    can_center_here: false,
+    following: false,
+  };
+}
+
 function initialMapId() {
   return mapViews.find((view) => view.map_view.chart_family === "tac")?.id ?? mapViews[0].id;
 }
@@ -320,6 +328,8 @@ export default function App() {
       last_content_report: null,
     },
     playback_ui_state: emptyPlaybackUiState(),
+    map_follow_ui_state: emptyMapFollowUiState(),
+    map_follow_target_viewport: null,
     chart_page_state: {
       ordered_airport_ids: initialChartPageState.airports.map((airport) => airport.id),
       recent_airport_ids: initialChartPageState.recent_airport_ids,
@@ -331,6 +341,7 @@ export default function App() {
   const appState: AppState = sessionSnapshot.app_state;
   const appUiState = sessionSnapshot.app_ui_state;
   const playbackUiState = sessionSnapshot.playback_ui_state;
+  const mapFollowUiState = sessionSnapshot.map_follow_ui_state;
   const chartCatalog: ChartPageData = uiSession?.chartCatalog ?? chartPage;
   const chartAirportById = useMemo(
     () => new Map(chartCatalog.airports.map((airport) => [airport.id, airport])),
@@ -713,6 +724,8 @@ export default function App() {
           planUiState={planUiState}
           sessionPlanUiState={appUiState.active_plan}
           playbackUiState={playbackUiState}
+          mapFollowUiState={mapFollowUiState}
+          mapFollowTargetViewport={sessionSnapshot.map_follow_target_viewport}
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
           onPlaybackSnapshotChange={setSessionSnapshot}
@@ -975,6 +988,8 @@ function MapPage(props: {
   planUiState: FlightPlanUiState | null;
   sessionPlanUiState: FlightPlanUiState | null;
   playbackUiState: PlaybackUiState;
+  mapFollowUiState: MapFollowUiState;
+  mapFollowTargetViewport: { center: LatLon; zoom: number; rotation_deg: number; pitch_deg: number } | null;
   playbackSourcePath: string;
   onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
@@ -1004,6 +1019,8 @@ function MapPage(props: {
     planUiState,
     sessionPlanUiState,
     uiSession,
+    mapFollowUiState,
+    mapFollowTargetViewport,
     adapterBackend,
     adapterDetail,
   } = props;
@@ -1248,6 +1265,36 @@ function MapPage(props: {
     onViewportChange(next);
   }
 
+  function syncFollowStateForViewport(nextViewport: MapViewportState) {
+    if (!uiSession || !mapFollowUiState.following || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      return;
+    }
+    const overlay = resolveSituationOverlay(situation, nextViewport, surfaceSize.width, surfaceSize.height);
+    if (!overlay) {
+      void uiSession.disengageMapFollow(nextViewport).then(props.onPlaybackSnapshotChange).catch(() => {});
+      return;
+    }
+    const point = overlay.point;
+    if (!point || point.x < 0 || point.x > surfaceSize.width || point.y < 0 || point.y > surfaceSize.height) {
+      void uiSession.disengageMapFollow(nextViewport).then(props.onPlaybackSnapshotChange).catch(() => {});
+      return;
+    }
+    void uiSession
+      .setMapFollowOffset(nextViewport, point.x - surfaceSize.width / 2, point.y - surfaceSize.height / 2)
+      .then(props.onPlaybackSnapshotChange)
+      .catch(() => {});
+  }
+
+  useEffect(() => {
+    if (!mapFollowUiState.following || !mapFollowTargetViewport) {
+      return;
+    }
+    const nextViewport = mapViewportFromCore(mapFollowTargetViewport);
+    if (!sameMapViewport(nextViewport, viewport)) {
+      updateViewport(nextViewport);
+    }
+  }, [mapFollowTargetViewport, mapFollowUiState.following, viewport]);
+
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
     if (trayGroup.scrimOpen) {
       return;
@@ -1284,7 +1331,9 @@ function MapPage(props: {
     if (pointers.length === 1 && dragRef.current?.id === event.pointerId) {
       const dx = point.x - dragRef.current.last.x;
       const dy = point.y - dragRef.current.last.y;
-      updateViewport(dragViewport(viewportRef.current, dx, dy));
+      const nextViewport = dragViewport(viewportRef.current, dx, dy);
+      updateViewport(nextViewport);
+      syncFollowStateForViewport(nextViewport);
       dragRef.current = { id: event.pointerId, last: point };
       return;
     }
@@ -1299,16 +1348,16 @@ function MapPage(props: {
           surfaceSize.height,
         );
       }
-      updateViewport(
-        applyPinchGesture(
-          pinchRef.current,
-          first[1],
-          second[1],
-          selectedMap.map_view,
-          surfaceSize.width,
-          surfaceSize.height,
-        ),
+      const nextViewport = applyPinchGesture(
+        pinchRef.current,
+        first[1],
+        second[1],
+        selectedMap.map_view,
+        surfaceSize.width,
+        surfaceSize.height,
       );
+      updateViewport(nextViewport);
+      syncFollowStateForViewport(nextViewport);
     }
   }
 
@@ -1329,32 +1378,32 @@ function MapPage(props: {
       return;
     }
     event.preventDefault();
-    updateViewport(
-      zoomAroundPoint(
-        viewportRef.current,
-        selectedMap.map_view,
-        { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY },
-        surfaceSize.width,
-        surfaceSize.height,
-        viewportRef.current.zoom - event.deltaY / 360,
-      ),
+    const nextViewport = zoomAroundPoint(
+      viewportRef.current,
+      selectedMap.map_view,
+      { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY },
+      surfaceSize.width,
+      surfaceSize.height,
+      viewportRef.current.zoom - event.deltaY / 360,
     );
+    updateViewport(nextViewport);
+    syncFollowStateForViewport(nextViewport);
   }
 
   function handleDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
     if (trayGroup.scrimOpen || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
-    updateViewport(
-      zoomAroundPoint(
-        viewportRef.current,
-        selectedMap.map_view,
-        { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY },
-        surfaceSize.width,
-        surfaceSize.height,
-        viewportRef.current.zoom + 0.75,
-      ),
+    const nextViewport = zoomAroundPoint(
+      viewportRef.current,
+      selectedMap.map_view,
+      { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY },
+      surfaceSize.width,
+      surfaceSize.height,
+      viewportRef.current.zoom + 0.75,
     );
+    updateViewport(nextViewport);
+    syncFollowStateForViewport(nextViewport);
   }
 
   return (
@@ -1672,9 +1721,27 @@ function MapPage(props: {
           onSourcePathChange={props.onPlaybackSourcePathChange}
           onSnapshotChange={props.onPlaybackSnapshotChange}
           surfaceWidth={surfaceSize.width}
+          dock="left"
         />
 
-        <div className="debugDock">
+        <button
+          type="button"
+          className={`centerHereButton${mapFollowUiState.following ? " isActive" : ""}`}
+          disabled={!mapFollowUiState.can_center_here}
+          onPointerDown={stopPointer}
+          onPointerUp={stopPointer}
+          onDoubleClick={stopDoubleClick}
+          onClick={() => {
+            if (!uiSession) {
+              return;
+            }
+            void uiSession.engageMapFollow(viewport).then(props.onPlaybackSnapshotChange).catch(() => {});
+          }}
+        >
+          CTR
+        </button>
+
+        <div className="debugDock" style={{ left: "auto", right: "calc(var(--thumb) + (var(--thumb-gap) * 2))" }}>
           <DebugDock
             open={debugOpen}
             warn={mapOverlay.warnings.length > 0}
@@ -1769,6 +1836,7 @@ function PlaybackWidget(props: {
   onSourcePathChange: Dispatch<SetStateAction<string>>;
   onSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
   surfaceWidth: number;
+  dock?: "left" | "right";
 }) {
   const {
     uiSession,
@@ -1777,6 +1845,7 @@ function PlaybackWidget(props: {
     onSourcePathChange,
     onSnapshotChange,
     surfaceWidth,
+    dock = "right",
   } = props;
   const [isBusy, setIsBusy] = useState(false);
   const maxWidthPx = playbackWidgetMaxWidthPx(surfaceWidth);
@@ -1826,7 +1895,7 @@ function PlaybackWidget(props: {
 
   return (
     <section
-      className="playbackWidget"
+      className={`playbackWidget${dock === "left" ? " isLeftDocked" : ""}`}
       onPointerDown={stopPointer}
       onPointerUp={stopPointer}
       onDoubleClick={stopDoubleClick}
@@ -3570,6 +3639,7 @@ function ChartsPage(props: {
           onSourcePathChange={props.onPlaybackSourcePathChange}
           onSnapshotChange={props.onPlaybackSnapshotChange}
           surfaceWidth={surfaceSize.width}
+          dock="left"
         />
 
         <div className="debugDock">
@@ -3919,6 +3989,26 @@ function latLonToScreen(lat: number, lon: number, viewport: MapViewportState, wi
     x: ((world.x - viewport.centerWorldX) * scale) + width / 2,
     y: ((world.y - viewport.centerWorldY) * scale) + height / 2,
   };
+}
+
+function mapViewportFromCore(viewport: {
+  center: LatLon;
+  zoom: number;
+}) {
+  const centerWorld = latLonToWorld(viewport.center.lat, viewport.center.lon);
+  return {
+    centerWorldX: centerWorld.x,
+    centerWorldY: centerWorld.y,
+    zoom: viewport.zoom,
+  } satisfies MapViewportState;
+}
+
+function sameMapViewport(left: MapViewportState, right: MapViewportState) {
+  return (
+    Math.abs(left.centerWorldX - right.centerWorldX) < 1e-9 &&
+    Math.abs(left.centerWorldY - right.centerWorldY) < 1e-9 &&
+    Math.abs(left.zoom - right.zoom) < 1e-9
+  );
 }
 
 function projectAhead(lat: number, lon: number, bearingDeg: number, distanceNm: number) {

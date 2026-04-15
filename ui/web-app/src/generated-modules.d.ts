@@ -45,6 +45,9 @@ declare module "@generated/app_wasm.js" {
   export const remove_leg_in_session: (...args: unknown[]) => string;
   export const move_waypoint_in_session: (...args: unknown[]) => string;
   export const set_situation_in_session: (...args: unknown[]) => string;
+  export const engage_map_follow_in_session: (...args: unknown[]) => string;
+  export const disengage_map_follow_in_session: (...args: unknown[]) => string;
+  export const set_map_follow_offset_in_session: (...args: unknown[]) => string;
   export const load_playback_trace_in_session: (...args: unknown[]) => string;
   export const play_playback_in_session: (...args: unknown[]) => string;
   export const pause_playback_in_session: (...args: unknown[]) => string;

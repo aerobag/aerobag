@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     derive_chart_page_state_from_catalog, load_catalog, move_flight_plan_waypoint, remove_flight_plan_leg,
+    map_follow::{MapFollowSessionState, MapFollowUiState},
     playback::PlaybackSessionState, query_map_overlay, state, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
     CatalogHandle, DerivedChartCatalog, DerivedChartPageState, FlightPlan, MapOverlayQueryResult,
     MapViewport, PlaybackUiState, PointTilePayload,
@@ -28,6 +29,8 @@ pub struct UiSessionSnapshot {
     pub app_state: AppState,
     pub app_ui_state: AppUiState,
     pub playback_ui_state: PlaybackUiState,
+    pub map_follow_ui_state: MapFollowUiState,
+    pub map_follow_target_viewport: Option<MapViewport>,
     pub chart_page_state: UiChartPageState,
 }
 
@@ -43,6 +46,7 @@ struct UiSession {
     chart_catalog: DerivedChartCatalog,
     app_state: AppState,
     playback: PlaybackSessionState,
+    map_follow: MapFollowSessionState,
     chart_page_state: DerivedChartPageState,
     point_tile_cache: HashMap<String, PointTilePayload>,
 }
@@ -80,6 +84,8 @@ pub fn create_ui_session(
         app_state: app_state.clone(),
         app_ui_state: state::project_app_ui_state(&app_state),
         playback_ui_state: PlaybackUiState::default(),
+        map_follow_ui_state: MapFollowUiState::default(),
+        map_follow_target_viewport: None,
         chart_page_state: compact_chart_page_state(&chart_page_state),
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
@@ -90,6 +96,7 @@ pub fn create_ui_session(
             chart_catalog: chart_catalog.clone(),
             app_state,
             playback: PlaybackSessionState::default(),
+            map_follow: MapFollowSessionState::default(),
             chart_page_state,
             point_tile_cache: HashMap::new(),
         },
@@ -308,6 +315,40 @@ pub fn replace_flight_plan_in_session(
     Ok(snapshot_for_session(session))
 }
 
+pub fn engage_map_follow_in_session(
+    handle: u32,
+    viewport: MapViewport,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.map_follow.engage(viewport);
+    Ok(snapshot_for_session(session))
+}
+
+pub fn disengage_map_follow_in_session(
+    handle: u32,
+    viewport: MapViewport,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.map_follow.disengage(viewport);
+    Ok(snapshot_for_session(session))
+}
+
+pub fn set_map_follow_offset_in_session(
+    handle: u32,
+    viewport: MapViewport,
+    offset_x_px: f64,
+    offset_y_px: f64,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session
+        .map_follow
+        .set_anchor_offset(viewport, offset_x_px, offset_y_px);
+    Ok(snapshot_for_session(session))
+}
+
 pub fn restore_chart_page_state_in_session(
     handle: u32,
     recent_airport_ids: &[String],
@@ -396,6 +437,8 @@ fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
         app_state: session.app_state.clone(),
         app_ui_state: state::project_app_ui_state(&session.app_state),
         playback_ui_state: session.playback.ui_state(),
+        map_follow_ui_state: session.map_follow.ui_state(&session.app_state.situation),
+        map_follow_target_viewport: session.map_follow.target_viewport(&session.app_state.situation),
         chart_page_state: compact_chart_page_state(&session.chart_page_state),
     }
 }

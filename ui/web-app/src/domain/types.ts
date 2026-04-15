@@ -531,6 +531,11 @@ export type PlaybackUiState = {
   rate: number;
 };
 
+export type MapFollowUiState = {
+  can_center_here: boolean;
+  following: boolean;
+};
+
 export type Situation = {
   position: SituationPosition;
   orientation_deg: number | null;

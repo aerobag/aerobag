@@ -10,6 +10,7 @@ pub mod ids;
 pub mod navdb;
 pub mod navdb_types;
 pub mod map_overlay;
+pub mod map_follow;
 pub mod planning;
 pub mod playback;
 pub mod procedure_geometry;
@@ -40,6 +41,7 @@ pub use map_overlay::{
     MapOverlayWarning, PointTilePayload, PointVectorRecord, VectorTileRequest,
     VisibleMapFeature, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
+pub use map_follow::MapFollowUiState;
 pub use navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
     AirwayExitSelection, AirwayFixPoint, AirwayPoint, AirwaySuggestion, MaterializedProcedure,
@@ -90,7 +92,8 @@ pub use session::{
     load_playback_trace_in_session, pause_playback_in_session, play_playback_in_session,
     restore_chart_page_state_in_session, select_airport_in_session, select_chart_in_session,
     seek_playback_in_session, set_playback_rate_in_session, set_situation_in_session,
-    tick_playback_in_session,
+    tick_playback_in_session, disengage_map_follow_in_session, engage_map_follow_in_session,
+    set_map_follow_offset_in_session,
     UiChartPageState, UiSessionInitResult, UiSessionSnapshot,
 };
 pub use state::{project_app_ui_state, AppEvent, AppState, AppUiState};

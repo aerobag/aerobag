@@ -114,6 +114,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.window.Popup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -2115,13 +2116,6 @@ private fun MapExplorerPage(
                 .padding(top = ThumbGap, end = ThumbGap),
         )
 
-        if (topLeftTrayOpen) {
-            Scrim {
-                pageTrayOpen = false
-                chartTrayOpen = false
-            }
-        }
-
         MapTopLeftControls(
             modifier = Modifier.align(Alignment.TopStart),
             currentPage = page,
@@ -2143,6 +2137,13 @@ private fun MapExplorerPage(
                 pageTrayOpen = false
             },
         )
+
+        if (topLeftTrayOpen) {
+            Scrim {
+                pageTrayOpen = false
+                chartTrayOpen = false
+            }
+        }
 
         NavElementDock(
             navElement = navElement,
@@ -2447,23 +2448,13 @@ private fun FlightPlanPage(
             .fillMaxSize()
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
-        if (pageTrayOpen) {
-            Scrim { pageTrayOpen = false }
-        }
-
         MenuDock(
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .padding(ThumbGap)
-                .zIndex(4f),
+                .padding(ThumbGap),
             launcherLabel = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: "PLN",
             open = pageTrayOpen,
             onToggle = { pageTrayOpen = !pageTrayOpen },
-            blocked = selectedWaypointIndex != null,
-            onBlockedClick = {
-                selectedWaypointIndex = null
-                reorderOpen = false
-            },
             style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
                 MenuDockOption(option.page.name, option.label, active = option.page == page) {
@@ -2673,6 +2664,10 @@ private fun FlightPlanPage(
             Text("stack ${formatPageStack(pageHistory, page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("components ${componentViews.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("rows ${rows.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+        }
+
+        if (pageTrayOpen) {
+            Scrim { pageTrayOpen = false }
         }
 
         if (selectedWaypointIndex != null && selectedRow != null) {
@@ -3325,14 +3320,6 @@ private fun ChartsPage(
             }
         }
 
-        if (trayOpen) {
-            Scrim {
-                pageTrayOpen = false
-                airportTrayOpen = false
-                chartTrayOpen = false
-            }
-        }
-
         SituationStatusBadge(
             ownship = ownship,
             modifier = Modifier
@@ -3387,6 +3374,14 @@ private fun ChartsPage(
             },
         )
 
+        if (trayOpen) {
+            Scrim {
+                pageTrayOpen = false
+                airportTrayOpen = false
+                chartTrayOpen = false
+            }
+        }
+
         NavElementDock(
             navElement = navElement,
             onClick = onOpenPlan,
@@ -3427,14 +3422,6 @@ private fun MapTopLeftControls(
     trayOpen: Boolean,
     onToggle: () -> Unit,
 ) {
-    val anyTrayOpen = pageTrayOpen || trayOpen
-    val dismissOpenTray = {
-        if (pageTrayOpen) {
-            onTogglePageTray()
-        } else if (trayOpen) {
-            onToggle()
-        }
-    }
     Row(
         modifier = modifier.padding(ThumbGap),
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
@@ -3444,8 +3431,6 @@ private fun MapTopLeftControls(
             launcherLabel = PageOptions.firstOrNull { it.page == currentPage }?.launcherLabel ?: "CHT",
             open = pageTrayOpen,
             onToggle = onTogglePageTray,
-            blocked = anyTrayOpen && !pageTrayOpen,
-            onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
                 MenuDockOption(option.page.name, option.label, active = option.page == currentPage) { onSelectPage(option.page) }
@@ -3455,8 +3440,6 @@ private fun MapTopLeftControls(
             launcherLabel = selectedLabel,
             open = trayOpen,
             onToggle = onToggle,
-            blocked = anyTrayOpen && !trayOpen,
-            onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.Compact,
             options = trayOptions.map { option ->
                 MenuDockOption(option.id, option.label, active = option.launcherLabel == selectedLabel, enabled = option.available) { option.select?.invoke() }
@@ -3486,13 +3469,6 @@ private fun ChartViewerSelectors(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val trayOpen = pageTrayOpen || airportTrayOpen || chartTrayOpen
-    val dismissOpenTray = {
-        when {
-            pageTrayOpen -> onTogglePageTray()
-            airportTrayOpen -> onToggleAirportTray()
-            chartTrayOpen -> onToggleChartTray()
-        }
-    }
     Row(
         modifier = modifier.padding(ThumbGap),
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
@@ -3502,8 +3478,6 @@ private fun ChartViewerSelectors(
             launcherLabel = PageOptions.firstOrNull { it.page == currentPage }?.launcherLabel ?: "PLT",
             open = pageTrayOpen,
             onToggle = onTogglePageTray,
-            blocked = trayOpen && !pageTrayOpen,
-            onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
                 MenuDockOption(option.page.name, option.label, active = option.page == currentPage) { onSelectPage(option.page) }
@@ -3514,8 +3488,6 @@ private fun ChartViewerSelectors(
             launcherLabel = selectedAirport?.label ?: "---",
             open = airportTrayOpen,
             onToggle = onToggleAirportTray,
-            blocked = trayOpen && !airportTrayOpen,
-            onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.PlateAirport,
             options = airports.map { airport ->
                 MenuDockOption(airport.id, airport.label, active = airport.id == selectedAirport?.id) { onSelectAirport(airport.id) }
@@ -3526,8 +3498,6 @@ private fun ChartViewerSelectors(
             launcherLabel = selectedChart?.label ?: "---",
             open = chartTrayOpen,
             onToggle = onToggleChartTray,
-            blocked = trayOpen && !chartTrayOpen,
-            onBlockedClick = dismissOpenTray,
             style = MenuDockStyle.PlateWide,
             options = sortChartsForFolder(selectedAirport?.charts ?: emptyList()).map { chart ->
                 MenuDockOption(
@@ -3543,7 +3513,6 @@ private fun ChartViewerSelectors(
             label = "FLDR",
             modifier = Modifier.size(ThumbSize),
             enabled = !trayOpen && !folderOpen,
-            onDisabledClick = if (trayOpen) dismissOpenTray else null,
             onClick = onToggleFolder,
         )
     }
@@ -3624,12 +3593,9 @@ private fun MenuDock(
     launcherLabel: String,
     open: Boolean,
     onToggle: () -> Unit,
-    blocked: Boolean = false,
-    onBlockedClick: (() -> Unit)? = null,
     style: MenuDockStyle,
     options: List<MenuDockOption>,
 ) {
-    val uiTheme = LocalAerobagUiTheme.current
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
     var anchorTopPx by remember { mutableStateOf(0f) }
@@ -3649,9 +3615,8 @@ private fun MenuDock(
         CompactSquareButton(
             label = launcherLabel,
             maxLines = style.launcherMaxLines,
-            enabled = !blocked || open,
+            enabled = true,
             accentColor = launcherAccentColor,
-            onDisabledClick = if (blocked && !open) onBlockedClick else null,
             modifier = Modifier
                 .width(style.buttonWidth)
                 .height(ThumbSize)
@@ -3662,24 +3627,25 @@ private fun MenuDock(
             onClick = onToggle,
         )
         if (open) {
-            MenuPanel(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(top = ThumbSize + ThumbGap)
-                    .width(style.trayWidth)
-                    .heightIn(max = trayMaxHeight)
-                    .zIndex(10f),
+            Popup(
+                offset = IntOffset(0, trayOffsetPx.roundToInt()),
             ) {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    lazyColumnItems(options) { option ->
-                        MenuPanelRow(
-                            label = option.label,
-                            active = option.active,
-                            enabled = option.enabled,
-                            accentColor = option.accentColor,
-                            width = style.trayWidth,
-                            onSelect = option.onSelect,
-                        )
+                MenuPanel(
+                    modifier = Modifier
+                        .width(style.trayWidth)
+                        .heightIn(max = trayMaxHeight),
+                ) {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        lazyColumnItems(options) { option ->
+                            MenuPanelRow(
+                                label = option.label,
+                                active = option.active,
+                                enabled = option.enabled,
+                                accentColor = option.accentColor,
+                                width = style.trayWidth,
+                                onSelect = option.onSelect,
+                            )
+                        }
                     }
                 }
             }

@@ -276,6 +276,7 @@ export default function App() {
   const [adapterBackend, setAdapterBackend] = useState<AdapterBackendKind>("wasm");
   const [adapterDetail, setAdapterDetail] = useState<string>("loading");
   const [sessionInitError, setSessionInitError] = useState<string | null>(null);
+  const [startupVisualReady, setStartupVisualReady] = useState(false);
   const [selectedMapId, setSelectedMapId] = useState<string>(initialMapId());
   const initialRecentAirportIds = useMemo(
     () => mergeRecentAirportIds(chartPage.airports, persistedUiState.recentAirportIds ?? []),
@@ -676,6 +677,21 @@ export default function App() {
     [],
   );
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const shouldHideStartupShell =
+      sessionInitError !== null ||
+      (appReady &&
+        currentPlan !== null &&
+        planUiState !== null &&
+        ((page === "map" || page === "charts") ? startupVisualReady : true));
+    if (shouldHideStartupShell) {
+      window.__aerobag_hide_startup_shell?.();
+    }
+  }, [appReady, currentPlan, page, planUiState, sessionInitError, startupVisualReady]);
+
   if (sessionInitError) {
     return (
       <main className="appFrame">
@@ -687,13 +703,7 @@ export default function App() {
   }
 
   if (!appReady || !currentPlan || !planUiState) {
-    return (
-      <main className="appFrame">
-        <section className="appPage planPage">
-          <div className="planGuidanceSummary">INITIALIZING CORE…</div>
-        </section>
-      </main>
-    );
+    return null;
   }
 
   return (
@@ -729,6 +739,7 @@ export default function App() {
           uiSession={uiSession}
           adapterBackend={adapterBackend}
           adapterDetail={adapterDetail}
+          onFirstVisualReady={() => setStartupVisualReady(true)}
         />
       </div>
 
@@ -940,6 +951,7 @@ export default function App() {
           onApplyMutation={async (mutation) => {
             await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
+          onFirstVisualReady={() => setStartupVisualReady(true)}
         />
       </div>
 
@@ -982,6 +994,7 @@ function MapPage(props: {
   uiSession: UiSession | null;
   adapterBackend: AdapterBackendKind;
   adapterDetail: string;
+  onFirstVisualReady: () => void;
 }) {
   const {
     appCoreAdapter,
@@ -1007,6 +1020,7 @@ function MapPage(props: {
     uiSession,
     adapterBackend,
     adapterDetail,
+    onFirstVisualReady,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const trayGroup = useModalTrayGroup(["page", "family"] as const);
@@ -1023,6 +1037,7 @@ function MapPage(props: {
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<ReturnType<typeof createPinchSnapshot> | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
+  const firstVisualReadyRef = useRef(false);
 
   useEffect(() => {
     if (activePointersRef.current.size > 0) {
@@ -1360,6 +1375,14 @@ function MapPage(props: {
     );
   }
 
+  function reportFirstVisualReady() {
+    if (firstVisualReadyRef.current) {
+      return;
+    }
+    firstVisualReadyRef.current = true;
+    onFirstVisualReady();
+  }
+
   return (
     <section className="pageSurface">
       <div
@@ -1386,7 +1409,7 @@ function MapPage(props: {
               height: `${tile.size}px`,
             }}
           >
-            <img className="mapTileImage" src={tile.src} alt="" draggable={false} />
+            <img className="mapTileImage" src={tile.src} alt="" draggable={false} onLoad={reportFirstVisualReady} />
             {debugTileLabels ? (
               <div className="tileLabel">
                 z{tile.zoom} x{tile.x} y{tile.yTms}
@@ -2892,8 +2915,9 @@ function ChartsPage(props: {
   onSelectChart: (chartId: string) => void;
   onApplyMutation: (mutation: FlightPlanUiMutation) => void | Promise<void>;
   ownship: OwnshipRenderState;
+  onFirstVisualReady: () => void;
 }) {
-  const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, sessionPlanUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, onApplyMutation, ownship } = props;
+  const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, sessionPlanUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, onApplyMutation, ownship, onFirstVisualReady } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -2905,6 +2929,7 @@ function ChartsPage(props: {
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<{ zoom: number; distance: number; midpoint: ScreenPoint } | null>(null);
   const lastChartLayoutKeyRef = useRef("");
+  const firstVisualReadyRef = useRef(false);
   const trayGroup = useModalTrayGroup(["page", "airport", "chart", "load"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
   const [plateProcedureLoads, setPlateProcedureLoads] = useState<ProcedureLoadOption[]>([]);
@@ -3243,6 +3268,14 @@ function ChartsPage(props: {
     );
   }
 
+  function reportFirstVisualReady() {
+    if (firstVisualReadyRef.current) {
+      return;
+    }
+    firstVisualReadyRef.current = true;
+    onFirstVisualReady();
+  }
+
   return (
     <section className="pageSurface">
       <div
@@ -3292,11 +3325,14 @@ function ChartsPage(props: {
             alt={selectedChart.label}
             draggable={false}
             onLoad={(event) =>
-              setImageSize({
-                chartId: selectedChart.id,
-                width: event.currentTarget.naturalWidth,
-                height: event.currentTarget.naturalHeight,
-              })
+              {
+                setImageSize({
+                  chartId: selectedChart.id,
+                  width: event.currentTarget.naturalWidth,
+                  height: event.currentTarget.naturalHeight,
+                });
+                reportFirstVisualReady();
+              }
             }
             style={{
               left: `${selectedImageSize && effectiveViewport ? effectiveViewport.left : 0}px`,

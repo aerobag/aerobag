@@ -21,7 +21,6 @@ import type {
 import uiTheme from "@shared-ui-theme";
 import planViewIcon from "./assets/plan-view-icon.svg";
 import {
-  loadBestAvailableAdapter,
   type AdapterBackendKind,
   type AppCoreAdapter,
   type DerivedChartPageState,
@@ -383,7 +382,7 @@ export default function App() {
     }),
     [chartAirportById, sessionSnapshot.chart_page_state.ordered_airport_ids],
   );
-  const currentPlan = appState.active_plan;
+  const currentPlan = appState.active_plan ?? samplePlan;
   const [planUiState, setPlanUiState] = useState<FlightPlanUiState | null>(null);
   const recentAirportIds = sessionSnapshot.chart_page_state.recent_airport_ids;
   const selectedAirportId = sessionSnapshot.chart_page_state.selected_airport_id;
@@ -439,36 +438,47 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    loadBestAvailableAdapter().then((loaded) => {
-      if (!cancelled) {
-        setAppCoreAdapter(loaded.adapter);
-        setAdapterBackend(loaded.backend);
-        setAdapterDetail(loaded.detail);
-        setSessionInitError(null);
+    let timeoutId: number | null = null;
+    let frameId: number | null = null;
+    const startLazyAdapterLoad = async () => {
+      try {
+        const { loadBestAvailableAdapter } = await import("./domain/appCoreAdapter");
+        const loaded = await loadBestAvailableAdapter();
+        if (!cancelled) {
+          setAppCoreAdapter(loaded.adapter);
+          setAdapterBackend(loaded.backend);
+          setAdapterDetail(loaded.detail);
+          setSessionInitError(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          const message = error instanceof Error ? error.message : String(error);
+          setSessionInitError(`WASM adapter init failed: ${message}`);
+          setAdapterDetail(`adapter init failed: ${message}`);
+        }
       }
-    }).catch((error) => {
-      if (!cancelled) {
-        const message = error instanceof Error ? error.message : String(error);
-        setSessionInitError(`WASM adapter init failed: ${message}`);
-        setAdapterDetail(`adapter init failed: ${message}`);
-      }
-    });
+    };
+    if (typeof window !== "undefined") {
+      frameId = window.requestAnimationFrame(() => {
+        timeoutId = window.setTimeout(() => {
+          void startLazyAdapterLoad();
+        }, 0);
+      });
+    } else {
+      void startLazyAdapterLoad();
+    }
     return () => {
       cancelled = true;
+      if (typeof window !== "undefined") {
+        if (frameId != null) {
+          window.cancelAnimationFrame(frameId);
+        }
+        if (timeoutId != null) {
+          window.clearTimeout(timeoutId);
+        }
+      }
     };
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    void appCoreAdapter?.prewarm().catch((error) => {
-      if (!cancelled) {
-        console.error("failed to prewarm web adapter", error);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [appCoreAdapter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -540,11 +550,7 @@ export default function App() {
     };
   }, [appCoreAdapter, currentPlan]);
 
-  const appReady =
-    appCoreAdapter !== null &&
-    uiSession !== null &&
-    currentPlan !== null &&
-    planUiState !== null;
+  const appReady = appCoreAdapter !== null && uiSession !== null && planUiState !== null;
 
   useEffect(() => {
     writePersistedWebUiState({
@@ -683,10 +689,7 @@ export default function App() {
     }
     const shouldHideStartupShell =
       sessionInitError !== null ||
-      (appReady &&
-        currentPlan !== null &&
-        planUiState !== null &&
-        ((page === "map" || page === "charts") ? startupVisualReady : true));
+      ((page === "map" || page === "charts") ? startupVisualReady : true);
     if (shouldHideStartupShell) {
       window.__aerobag_hide_startup_shell?.();
     }
@@ -700,10 +703,6 @@ export default function App() {
         </section>
       </main>
     );
-  }
-
-  if (!appReady || !currentPlan || !planUiState) {
-    return null;
   }
 
   return (
@@ -744,153 +743,159 @@ export default function App() {
       </div>
 
       <div className={`pageLayer${page === "plan" ? " isActive" : ""}`} aria-hidden={page !== "plan"}>
-        <FlightPlanPage
-          appCoreAdapter={appCoreAdapter}
-          page={page}
-          pageHistory={pageHistory}
-          uptimeLabel={uptimeLabel}
-          legSummary={legSummary}
-          plan={currentPlan}
-          planUiState={planUiState}
-          sessionPlanUiState={appUiState.active_plan}
-          onOpenPlan={() => navigateToPage("plan")}
-          onSelectPage={navigateToPage}
-          onOpenCharts={(airportId, chartId) => {
-            if (!airportId) {
-              return;
-            }
-            const airport = chartPageData.airports.find((entry) => entry.id === airportId);
-            const resolvedChartId =
-              (chartId && airport?.charts.find((chart) => chart.id === chartId)?.id) ??
-              airport?.charts[0]?.id ??
-              "";
-            const resolvedChartLabel = airport?.charts.find((chart) => chart.id === resolvedChartId)?.label ?? airport?.charts[0]?.label ?? "";
-            if (uiSession) {
-              debugLog("charts.open.request", {
-                airport_id: airportId,
-                chart_id: resolvedChartId,
-                chart_label: resolvedChartLabel,
-              });
-              void uiSession.restoreChartPageState(
-                moveAirportToFront(recentAirportIds, airportId, chartPageData.airports),
-                airportId,
-                resolvedChartId || undefined,
-              ).then((nextSnapshot) => {
-                debugLog("charts.open.snapshot", {
-                  requested_airport_id: airportId,
-                  requested_chart_id: resolvedChartId,
-                  selected_airport_id: nextSnapshot.chart_page_state.selected_airport_id,
-                  selected_chart_id: nextSnapshot.chart_page_state.selected_chart_id,
+        {planUiState ? (
+          <FlightPlanPage
+            appCoreAdapter={appCoreAdapter}
+            page={page}
+            pageHistory={pageHistory}
+            uptimeLabel={uptimeLabel}
+            legSummary={legSummary}
+            plan={currentPlan}
+            planUiState={planUiState}
+            sessionPlanUiState={appUiState.active_plan}
+            onOpenPlan={() => navigateToPage("plan")}
+            onSelectPage={navigateToPage}
+            onOpenCharts={(airportId, chartId) => {
+              if (!airportId) {
+                return;
+              }
+              const airport = chartPageData.airports.find((entry) => entry.id === airportId);
+              const resolvedChartId =
+                (chartId && airport?.charts.find((chart) => chart.id === chartId)?.id) ??
+                airport?.charts[0]?.id ??
+                "";
+              const resolvedChartLabel = airport?.charts.find((chart) => chart.id === resolvedChartId)?.label ?? airport?.charts[0]?.label ?? "";
+              if (uiSession) {
+                debugLog("charts.open.request", {
+                  airport_id: airportId,
+                  chart_id: resolvedChartId,
+                  chart_label: resolvedChartLabel,
                 });
-                setSessionSnapshot(nextSnapshot);
-              }).catch(() => {});
-            }
-            pushViewSnapshot({
-              page: "charts",
-              selectedAirportId: airportId,
-              selectedChartId: resolvedChartId,
-              selectedChartLabel: resolvedChartLabel,
-              recentAirportIds: moveAirportToFront(recentAirportIds, airportId, chartPageData.airports),
-              chartViewport: null,
-              chartFolderOpen: !chartId,
-            });
-          }}
-          onMoveComponent={async (componentIndex, delta) => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.moveComponentUi(currentPlan, componentIndex, delta);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
-          }}
-          onActivateLeg={async (legIndex) => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.activateLegUi(currentPlan, legIndex);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
-          }}
-          onDeleteComponent={async (componentIndex) => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.deleteComponentUi(currentPlan, componentIndex);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
-          }}
-          onActivateNextLeg={async () => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.activateNextLegUi(currentPlan);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
-          }}
-          onSuspendSequencing={async () => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.suspendSequencingUi(currentPlan);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
-          }}
-          onUnsuspendSequencing={async () => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.unsuspendSequencingUi(currentPlan);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
-          }}
-          onSequenceActiveLeg={async () => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.sequenceActiveLegUi(currentPlan);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
-          }}
-          onInsertAirway={async (startComponentIndex, endComponentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
-            if (!appCoreAdapter) return;
-            const entry = airwayEntryCandidateFromPresentation(presentation, entryIndex);
-            const exit = airwayExitCandidatesFromPresentation(presentation, entryIndex)[exitIndex];
-            const materialized = await appCoreAdapter.materializeAirwaySelection(
-              startComponentIndex,
-              entry,
-              exit,
-              originAnchor,
-              destinationAnchor,
-            );
-            const mutation = await appCoreAdapter.insertAirwayMaterializedUi(
-              currentPlan,
-              startComponentIndex,
-              endComponentIndex,
-              materialized.selection,
-              materialized.airway,
-              materialized.resolvedLegs,
-            );
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
-          }}
-          onReplaceAirway={async (componentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
-            if (!appCoreAdapter) return;
-            const entry = airwayEntryCandidateFromPresentation(presentation, entryIndex);
-            const exit = airwayExitCandidatesFromPresentation(presentation, entryIndex)[exitIndex];
-            const materialized = await appCoreAdapter.materializeAirwaySelection(
-              componentIndex,
-              entry,
-              exit,
-              originAnchor,
-              destinationAnchor,
-            );
-            const mutation = await appCoreAdapter.replaceAirwayMaterializedUi(
-              currentPlan,
-              componentIndex,
-              materialized.selection,
-              materialized.airway,
-              materialized.resolvedLegs,
-            );
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
-          }}
-          onInsertProcedure={async (startComponentIndex, endComponentIndex, built) => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.insertProcedureMaterializedUi(
-              currentPlan,
-              startComponentIndex,
-              endComponentIndex,
-              built,
-            );
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
-          }}
-          onReplaceProcedure={async (componentIndex, built) => {
-            if (!appCoreAdapter) return;
-            const mutation = await appCoreAdapter.replaceProcedureMaterializedUi(
-              currentPlan,
-              componentIndex,
-              built,
-            );
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
-          }}
-        />
+                void uiSession.restoreChartPageState(
+                  moveAirportToFront(recentAirportIds, airportId, chartPageData.airports),
+                  airportId,
+                  resolvedChartId || undefined,
+                ).then((nextSnapshot) => {
+                  debugLog("charts.open.snapshot", {
+                    requested_airport_id: airportId,
+                    requested_chart_id: resolvedChartId,
+                    selected_airport_id: nextSnapshot.chart_page_state.selected_airport_id,
+                    selected_chart_id: nextSnapshot.chart_page_state.selected_chart_id,
+                  });
+                  setSessionSnapshot(nextSnapshot);
+                }).catch(() => {});
+              }
+              pushViewSnapshot({
+                page: "charts",
+                selectedAirportId: airportId,
+                selectedChartId: resolvedChartId,
+                selectedChartLabel: resolvedChartLabel,
+                recentAirportIds: moveAirportToFront(recentAirportIds, airportId, chartPageData.airports),
+                chartViewport: null,
+                chartFolderOpen: !chartId,
+              });
+            }}
+            onMoveComponent={async (componentIndex, delta) => {
+              if (!appCoreAdapter) return;
+              const mutation = await appCoreAdapter.moveComponentUi(currentPlan, componentIndex, delta);
+              await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            }}
+            onActivateLeg={async (legIndex) => {
+              if (!appCoreAdapter) return;
+              const mutation = await appCoreAdapter.activateLegUi(currentPlan, legIndex);
+              await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            }}
+            onDeleteComponent={async (componentIndex) => {
+              if (!appCoreAdapter) return;
+              const mutation = await appCoreAdapter.deleteComponentUi(currentPlan, componentIndex);
+              await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            }}
+            onActivateNextLeg={async () => {
+              if (!appCoreAdapter) return;
+              const mutation = await appCoreAdapter.activateNextLegUi(currentPlan);
+              await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            }}
+            onSuspendSequencing={async () => {
+              if (!appCoreAdapter) return;
+              const mutation = await appCoreAdapter.suspendSequencingUi(currentPlan);
+              await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            }}
+            onUnsuspendSequencing={async () => {
+              if (!appCoreAdapter) return;
+              const mutation = await appCoreAdapter.unsuspendSequencingUi(currentPlan);
+              await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            }}
+            onSequenceActiveLeg={async () => {
+              if (!appCoreAdapter) return;
+              const mutation = await appCoreAdapter.sequenceActiveLegUi(currentPlan);
+              await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            }}
+            onInsertAirway={async (startComponentIndex, endComponentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
+              if (!appCoreAdapter) return;
+              const entry = airwayEntryCandidateFromPresentation(presentation, entryIndex);
+              const exit = airwayExitCandidatesFromPresentation(presentation, entryIndex)[exitIndex];
+              const materialized = await appCoreAdapter.materializeAirwaySelection(
+                startComponentIndex,
+                entry,
+                exit,
+                originAnchor,
+                destinationAnchor,
+              );
+              const mutation = await appCoreAdapter.insertAirwayMaterializedUi(
+                currentPlan,
+                startComponentIndex,
+                endComponentIndex,
+                materialized.selection,
+                materialized.airway,
+                materialized.resolvedLegs,
+              );
+              await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            }}
+            onReplaceAirway={async (componentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
+              if (!appCoreAdapter) return;
+              const entry = airwayEntryCandidateFromPresentation(presentation, entryIndex);
+              const exit = airwayExitCandidatesFromPresentation(presentation, entryIndex)[exitIndex];
+              const materialized = await appCoreAdapter.materializeAirwaySelection(
+                componentIndex,
+                entry,
+                exit,
+                originAnchor,
+                destinationAnchor,
+              );
+              const mutation = await appCoreAdapter.replaceAirwayMaterializedUi(
+                currentPlan,
+                componentIndex,
+                materialized.selection,
+                materialized.airway,
+                materialized.resolvedLegs,
+              );
+              await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            }}
+            onInsertProcedure={async (startComponentIndex, endComponentIndex, built) => {
+              if (!appCoreAdapter) return;
+              const mutation = await appCoreAdapter.insertProcedureMaterializedUi(
+                currentPlan,
+                startComponentIndex,
+                endComponentIndex,
+                built,
+              );
+              await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            }}
+            onReplaceProcedure={async (componentIndex, built) => {
+              if (!appCoreAdapter) return;
+              const mutation = await appCoreAdapter.replaceProcedureMaterializedUi(
+                currentPlan,
+                componentIndex,
+                built,
+              );
+              await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            }}
+          />
+        ) : (
+          <section className="appPage planPage">
+            <div className="planGuidanceSummary">Plan data loading…</div>
+          </section>
+        )}
       </div>
 
       <div className={`pageLayer${page === "charts" ? " isActive" : ""}`} aria-hidden={page !== "charts"}>
@@ -970,7 +975,7 @@ export default function App() {
 }
 
 function MapPage(props: {
-  appCoreAdapter: AppCoreAdapter;
+  appCoreAdapter: AppCoreAdapter | null;
   page: AppPage;
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
@@ -1112,7 +1117,7 @@ function MapPage(props: {
     let cancelled = false;
 
     async function resolveFlightPlanRoute() {
-      if ((plan.resolved_legs ?? []).length === 0 || (planUiState?.resolved_legs ?? []).length === 0) {
+      if (!appCoreAdapter || (plan.resolved_legs ?? []).length === 0 || (planUiState?.resolved_legs ?? []).length === 0) {
         setFlightPlanRoute([]);
         return;
       }
@@ -1836,9 +1841,6 @@ function FlightPlanPage(props: {
   const waypointModalRef = useRef<HTMLElement | null>(null);
   const trayOpen = trayGroup.scrimOpen;
   const planUiState = props.planUiState;
-  if (!planUiState) {
-    throw new Error("FlightPlanPage requires core-projected FlightPlanUiState");
-  }
   const guidance = planUiState.guidance ?? null;
   const structuredSurfaceRef = useRef<HTMLDivElement | null>(null);
   const structuredTableRef = useRef<HTMLDivElement | null>(null);

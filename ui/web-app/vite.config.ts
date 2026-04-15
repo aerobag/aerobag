@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import zlib from "node:zlib";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -130,11 +131,29 @@ function mountStaticTree(sourceRoot: string) {
         ? "image/webp"
         : extension === ".png"
           ? "image/png"
+          : extension === ".db"
+            ? "application/vnd.sqlite3"
           : extension === ".json"
             ? "application/json"
             : "application/octet-stream";
+    const acceptEncoding = req.headers?.["accept-encoding"] ?? "";
+    const shouldCompress = extension === ".db" || extension === ".json";
+    const supportsBrotli = typeof acceptEncoding === "string" && /\bbr\b/.test(acceptEncoding);
+    const supportsGzip = typeof acceptEncoding === "string" && /\bgzip\b/.test(acceptEncoding);
     res.setHeader("Content-Type", contentType);
-    fs.createReadStream(filePath).pipe(res);
+    res.setHeader("Vary", "Accept-Encoding");
+    const stream = fs.createReadStream(filePath);
+    if (shouldCompress && supportsBrotli) {
+      res.setHeader("Content-Encoding", "br");
+      stream.pipe(zlib.createBrotliCompress()).pipe(res);
+      return;
+    }
+    if (shouldCompress && supportsGzip) {
+      res.setHeader("Content-Encoding", "gzip");
+      stream.pipe(zlib.createGzip()).pipe(res);
+      return;
+    }
+    stream.pipe(res);
   };
 }
 

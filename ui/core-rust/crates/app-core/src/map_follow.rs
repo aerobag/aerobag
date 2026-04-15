@@ -14,12 +14,23 @@ pub struct MapFollowUiState {
     pub following: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MapFollowSessionState {
     following: bool,
     anchor_offset_x_px: f64,
     anchor_offset_y_px: f64,
     current_viewport: Option<MapViewport>,
+}
+
+impl Default for MapFollowSessionState {
+    fn default() -> Self {
+        Self {
+            following: true,
+            anchor_offset_x_px: 0.0,
+            anchor_offset_y_px: 0.0,
+            current_viewport: None,
+        }
+    }
 }
 
 impl MapFollowSessionState {

@@ -276,7 +276,7 @@ function emptyPlaybackUiState(): PlaybackUiState {
 function emptyMapFollowUiState(): MapFollowUiState {
   return {
     can_center_here: false,
-    following: false,
+    following: true,
   };
 }
 
@@ -1286,6 +1286,21 @@ function MapPage(props: {
       .then(props.onPlaybackSnapshotChange)
       .catch(() => {});
   }
+
+  useEffect(() => {
+    if (!uiSession || !mapFollowUiState.following || mapFollowTargetViewport) {
+      return;
+    }
+    let cancelled = false;
+    void uiSession.engageMapFollow(viewport).then((nextSnapshot) => {
+      if (!cancelled) {
+        props.onPlaybackSnapshotChange(nextSnapshot);
+      }
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [mapFollowTargetViewport, mapFollowUiState.following, props.onPlaybackSnapshotChange, uiSession, viewport]);
 
   useEffect(() => {
     if (!mapFollowUiState.following || !mapFollowTargetViewport) {

@@ -80,12 +80,14 @@ pub fn create_ui_session(
         selected_airport_id,
         selected_chart_id,
     );
+    let playback = PlaybackSessionState::default();
+    let map_follow = MapFollowSessionState::default();
     let snapshot = UiSessionSnapshot {
         app_state: app_state.clone(),
         app_ui_state: state::project_app_ui_state(&app_state),
-        playback_ui_state: PlaybackUiState::default(),
-        map_follow_ui_state: MapFollowUiState::default(),
-        map_follow_target_viewport: None,
+        playback_ui_state: playback.ui_state(),
+        map_follow_ui_state: map_follow.ui_state(&app_state.situation),
+        map_follow_target_viewport: map_follow.target_viewport(&app_state.situation),
         chart_page_state: compact_chart_page_state(&chart_page_state),
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
@@ -95,8 +97,8 @@ pub fn create_ui_session(
             catalog,
             chart_catalog: chart_catalog.clone(),
             app_state,
-            playback: PlaybackSessionState::default(),
-            map_follow: MapFollowSessionState::default(),
+            playback,
+            map_follow,
             chart_page_state,
             point_tile_cache: HashMap::new(),
         },

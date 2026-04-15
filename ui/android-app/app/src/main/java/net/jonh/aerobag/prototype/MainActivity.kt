@@ -2467,7 +2467,7 @@ private fun FlightPlanPage(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = ThumbSize + ThumbGap * 2, start = ThumbGap, end = ThumbGap, bottom = ThumbSize * 1.35f),
+                .padding(top = ThumbSize + ThumbGap * 2, start = ThumbGap, end = ThumbGap, bottom = ThumbSize * 2.15f),
             verticalArrangement = Arrangement.spacedBy(PlanGridGap),
         ) {
             Box(

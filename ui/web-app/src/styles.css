@@ -657,6 +657,50 @@ button {
   gap: calc(var(--thumb) * 0.08);
 }
 
+.playbackWidgetOverview {
+  width: 100%;
+  height: calc(var(--thumb) * 0.56);
+  border: 1px solid rgba(19, 33, 41, 0.12);
+  border-radius: calc(var(--thumb-radius) * 0.45);
+  background: rgba(255, 255, 255, 0.82);
+  overflow: hidden;
+  touch-action: none;
+  cursor: pointer;
+}
+
+.playbackWidgetOverviewSvg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.playbackWidgetAltitudeProfile,
+.playbackWidgetSpeedProfile {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+}
+
+.playbackWidgetAltitudeProfile {
+  stroke: rgba(13, 111, 103, 0.8);
+}
+
+.playbackWidgetSpeedProfile {
+  stroke: rgba(212, 90, 122, 0.92);
+}
+
+.playbackWidgetCursorLine {
+  stroke: rgba(19, 33, 41, 0.52);
+  stroke-width: 1;
+}
+
+.playbackWidgetCursorKnob {
+  fill: #132129;
+  stroke: rgba(252, 248, 241, 0.94);
+  stroke-width: 1.5;
+}
+
 .playbackWidgetTop {
   justify-content: space-between;
 }
@@ -728,11 +772,7 @@ button {
 }
 
 .playbackWidgetSeekRow {
-  gap: calc(var(--thumb) * 0.06);
-}
-
-.playbackWidgetSeek {
-  flex: 1 1 auto;
+  justify-content: space-between;
 }
 
 .centerHereButton {

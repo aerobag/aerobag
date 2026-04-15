@@ -323,6 +323,8 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
       duration_seconds: 0,
       cursor_seconds: 0,
       rate: 1,
+      speed_profile_norm: [],
+      altitude_profile_norm: [],
     };
     let mapFollowUiState: MapFollowUiState = {
       can_center_here: appState.situation.position.kind !== "unknown",

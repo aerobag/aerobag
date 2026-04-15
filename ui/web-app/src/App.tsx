@@ -268,6 +268,8 @@ function emptyPlaybackUiState(): PlaybackUiState {
     duration_seconds: 0,
     cursor_seconds: 0,
     rate: 1,
+    speed_profile_norm: [],
+    altitude_profile_norm: [],
   };
 }
 
@@ -1829,6 +1831,30 @@ function formatPlaybackClock(seconds: number) {
   return `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
+function profilePathData(
+  samples: Array<number | null>,
+  width: number,
+  height: number,
+  leftInset: number,
+  rightInset: number,
+) {
+  const usable = samples
+    .map((value, index) => ({ value, index }))
+    .filter((entry): entry is { value: number; index: number } => typeof entry.value === "number");
+  if (usable.length === 0) {
+    return "";
+  }
+  const lastIndex = Math.max(samples.length - 1, 1);
+  const usableWidth = Math.max(width - leftInset - rightInset, 0);
+  return usable
+    .map(({ value, index }, pointIndex) => {
+      const x = leftInset + (index / lastIndex) * usableWidth;
+      const y = height - value * height;
+      return `${pointIndex === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
 function PlaybackWidget(props: {
   uiSession: UiSession | null;
   playbackUiState: PlaybackUiState;
@@ -1848,15 +1874,53 @@ function PlaybackWidget(props: {
     dock = "right",
   } = props;
   const [isBusy, setIsBusy] = useState(false);
+  const [scrubCursorSeconds, setScrubCursorSeconds] = useState<number | null>(null);
+  const seekRequestIdRef = useRef(0);
+  const scrubRef = useRef<HTMLDivElement | null>(null);
   const maxWidthPx = playbackWidgetMaxWidthPx(surfaceWidth);
   const durationSeconds = Math.max(playbackUiState.duration_seconds, 0);
-  const cursorSeconds = Math.min(Math.max(playbackUiState.cursor_seconds, 0), durationSeconds || 0);
+  const committedCursorSeconds = Math.min(Math.max(playbackUiState.cursor_seconds, 0), durationSeconds || 0);
+  const cursorSeconds =
+    scrubCursorSeconds === null
+      ? committedCursorSeconds
+      : Math.min(Math.max(scrubCursorSeconds, 0), durationSeconds || 0);
   const canControl = uiSession !== null;
   const canSeek = durationSeconds > 0;
   const label = playbackUiState.registration ?? playbackUiState.icao ?? "Trace";
   const summary = playbackUiState.point_count > 0
     ? `${label} ${formatPlaybackClock(cursorSeconds)} / ${formatPlaybackClock(durationSeconds)}`
     : "Playback";
+  const overviewWidth = 320;
+  const overviewHeight = 34;
+  const knobRadius = 7;
+  const scrubSurfaceHeight = 50;
+  const cursorRatio = durationSeconds > 0 ? cursorSeconds / durationSeconds : 0;
+  const cursorX = knobRadius + cursorRatio * Math.max(overviewWidth - knobRadius * 2, 0);
+  const speedPath = profilePathData(playbackUiState.speed_profile_norm, overviewWidth, overviewHeight, knobRadius, knobRadius);
+  const altitudePath = profilePathData(playbackUiState.altitude_profile_norm, overviewWidth, overviewHeight, knobRadius, knobRadius);
+
+  useEffect(() => {
+    if (scrubCursorSeconds === null) {
+      return;
+    }
+    if (Math.abs(scrubCursorSeconds - committedCursorSeconds) < 1e-6) {
+      debugLog("playback.seek.scrub_cleared", {
+        scrub_cursor_seconds: scrubCursorSeconds,
+        committed_cursor_seconds: committedCursorSeconds,
+      });
+      setScrubCursorSeconds(null);
+    }
+  }, [committedCursorSeconds, scrubCursorSeconds]);
+
+  useEffect(() => {
+    debugLog("playback.seek.state", {
+      committed_cursor_seconds: committedCursorSeconds,
+      scrub_cursor_seconds: scrubCursorSeconds,
+      displayed_cursor_seconds: cursorSeconds,
+      duration_seconds: durationSeconds,
+      status: playbackUiState.status,
+    });
+  }, [committedCursorSeconds, cursorSeconds, durationSeconds, playbackUiState.status, scrubCursorSeconds]);
 
   async function loadTrace() {
     if (!uiSession || !sourcePath.trim()) {
@@ -1891,6 +1955,66 @@ function PlaybackWidget(props: {
     } catch (error) {
       console.error(error);
     }
+  }
+
+  async function commitSeek(nextCursorSeconds: number, options?: { clearScrub?: boolean }) {
+    if (!uiSession) {
+      return;
+    }
+    const clearScrub = options?.clearScrub ?? true;
+    const requestId = seekRequestIdRef.current + 1;
+    seekRequestIdRef.current = requestId;
+    debugLog("playback.seek.commit_start", {
+      request_id: requestId,
+      requested_cursor_seconds: nextCursorSeconds,
+      committed_cursor_seconds: committedCursorSeconds,
+      scrub_cursor_seconds: scrubCursorSeconds,
+    });
+    try {
+      const nextSnapshot = await uiSession.seekPlayback(nextCursorSeconds, Date.now());
+      debugLog("playback.seek.commit_done", {
+        request_id: requestId,
+        requested_cursor_seconds: nextCursorSeconds,
+        returned_cursor_seconds: nextSnapshot.playback_ui_state.cursor_seconds,
+        current_request_id: seekRequestIdRef.current,
+      });
+      if (seekRequestIdRef.current === requestId) {
+        onSnapshotChange(nextSnapshot);
+        if (clearScrub) {
+          setScrubCursorSeconds(null);
+        }
+      }
+    } catch (error) {
+      debugLog("playback.seek.commit_error", {
+        request_id: requestId,
+        requested_cursor_seconds: nextCursorSeconds,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      console.error(error);
+    }
+  }
+
+  function cursorSecondsForPointer(clientX: number) {
+    const rect = scrubRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || durationSeconds <= 0) {
+      return 0;
+    }
+    const usableWidth = Math.max(rect.width - knobRadius * 2, 1);
+    const rawX = clientX - rect.left;
+    const clampedX = Math.min(Math.max(rawX - knobRadius, 0), usableWidth);
+    return (clampedX / usableWidth) * durationSeconds;
+  }
+
+  function beginScrub(clientX: number) {
+    const nextCursorSeconds = cursorSecondsForPointer(clientX);
+    debugLog("playback.seek.pointer_move", {
+      pointer_x: clientX,
+      next_cursor_seconds: nextCursorSeconds,
+      committed_cursor_seconds: committedCursorSeconds,
+      scrub_cursor_seconds: scrubCursorSeconds,
+    });
+    setScrubCursorSeconds(nextCursorSeconds);
+    void commitSeek(nextCursorSeconds, { clearScrub: false });
   }
 
   return (
@@ -1943,25 +2067,42 @@ function PlaybackWidget(props: {
           />
         </label>
       </div>
+      <div
+        ref={scrubRef}
+        className="playbackWidgetOverview"
+        onPointerDown={(event) => {
+          stopPointer(event);
+          event.currentTarget.setPointerCapture(event.pointerId);
+          beginScrub(event.clientX);
+        }}
+        onPointerMove={(event) => {
+          if ((event.buttons & 1) !== 1) {
+            return;
+          }
+          beginScrub(event.clientX);
+        }}
+        onPointerUp={(event) => {
+          stopPointer(event);
+          const nextCursorSeconds = cursorSecondsForPointer(event.clientX);
+          debugLog("playback.seek.pointer_up_custom", {
+            pointer_x: event.clientX,
+            next_cursor_seconds: nextCursorSeconds,
+            committed_cursor_seconds: committedCursorSeconds,
+            scrub_cursor_seconds: scrubCursorSeconds,
+          });
+          setScrubCursorSeconds(nextCursorSeconds);
+          void commitSeek(nextCursorSeconds, { clearScrub: true });
+        }}
+      >
+        <svg className="playbackWidgetOverviewSvg" viewBox={`0 0 ${overviewWidth} ${overviewHeight}`} preserveAspectRatio="none" aria-hidden="true">
+          {altitudePath ? <path className="playbackWidgetAltitudeProfile" d={altitudePath} /> : null}
+          {speedPath ? <path className="playbackWidgetSpeedProfile" d={speedPath} /> : null}
+          <line className="playbackWidgetCursorLine" x1={cursorX} y1={0} x2={cursorX} y2={overviewHeight} />
+          <circle className="playbackWidgetCursorKnob" cx={cursorX} cy={overviewHeight - 1} r={knobRadius} />
+        </svg>
+      </div>
       <div className="playbackWidgetSeekRow">
         <span className="playbackWidgetClock">{formatPlaybackClock(cursorSeconds)}</span>
-        <input
-          className="playbackWidgetSeek"
-          type="range"
-          min={0}
-          max={durationSeconds || 1}
-          step={Math.max(durationSeconds / Math.max(playbackUiState.point_count, 1), 1)}
-          value={cursorSeconds}
-          disabled={!canControl || !canSeek}
-          onChange={(event) => {
-            if (!uiSession) {
-              return;
-            }
-            void uiSession.seekPlayback(Number(event.target.value), Date.now()).then(onSnapshotChange).catch((error) => {
-              console.error(error);
-            });
-          }}
-        />
         <span className="playbackWidgetClock">{formatPlaybackClock(durationSeconds)}</span>
       </div>
     </section>

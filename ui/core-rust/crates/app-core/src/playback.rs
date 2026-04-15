@@ -8,6 +8,7 @@ use crate::{
 };
 
 const DEFAULT_PLAYBACK_RATE: f64 = 1.0;
+const PLAYBACK_PREVIEW_BINS: usize = 160;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,6 +29,8 @@ pub struct PlaybackUiState {
     pub duration_seconds: f64,
     pub cursor_seconds: f64,
     pub rate: f64,
+    pub speed_profile_norm: Vec<Option<f64>>,
+    pub altitude_profile_norm: Vec<Option<f64>>,
 }
 
 impl Default for PlaybackUiState {
@@ -42,6 +45,8 @@ impl Default for PlaybackUiState {
             duration_seconds: 0.0,
             cursor_seconds: 0.0,
             rate: DEFAULT_PLAYBACK_RATE,
+            speed_profile_norm: Vec::new(),
+            altitude_profile_norm: Vec::new(),
         }
     }
 }
@@ -50,6 +55,7 @@ impl Default for PlaybackUiState {
 pub struct PlaybackPoint {
     pub elapsed_seconds: f64,
     pub position: LatLon,
+    pub altitude_ft: Option<f64>,
     pub speed_kt: Option<f64>,
     pub orientation_deg: Option<f64>,
 }
@@ -176,6 +182,8 @@ impl PlaybackSessionState {
             duration_seconds: duration_seconds(trace),
             cursor_seconds: self.cursor_seconds,
             rate: self.rate,
+            speed_profile_norm: build_profile(trace, |point| point.speed_kt),
+            altitude_profile_norm: build_profile(trace, |point| point.altitude_ft),
         }
     }
 
@@ -234,6 +242,7 @@ fn parse_trace_json(trace_json: &str) -> AppResult<PlaybackTrace> {
         points.push(PlaybackPoint {
             elapsed_seconds,
             position: LatLon { lat, lon },
+            altitude_ft: items[3].as_f64(),
             speed_kt: items[4].as_f64(),
             orientation_deg: items[5].as_f64(),
         });
@@ -258,6 +267,47 @@ fn duration_seconds(trace: &PlaybackTrace) -> f64 {
 
 fn clamp_cursor(trace: &PlaybackTrace, cursor_seconds: f64) -> f64 {
     cursor_seconds.clamp(0.0, duration_seconds(trace))
+}
+
+fn build_profile(
+    trace: &PlaybackTrace,
+    value_for_point: impl Fn(&PlaybackPoint) -> Option<f64>,
+) -> Vec<Option<f64>> {
+    let duration = duration_seconds(trace);
+    if trace.points.is_empty() || duration <= 0.0 {
+        return Vec::new();
+    }
+    let values: Vec<f64> = trace
+        .points
+        .iter()
+        .filter_map(&value_for_point)
+        .filter(|value| value.is_finite())
+        .collect();
+    if values.is_empty() {
+        return vec![None; PLAYBACK_PREVIEW_BINS];
+    }
+    let max_value = values
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !max_value.is_finite() || max_value <= 0.0 {
+        return vec![None; PLAYBACK_PREVIEW_BINS];
+    }
+    let mut bins: Vec<Option<f64>> = vec![None; PLAYBACK_PREVIEW_BINS];
+    for point in &trace.points {
+        let Some(value) = value_for_point(point).filter(|value| value.is_finite()) else {
+            continue;
+        };
+        let bin_index = ((point.elapsed_seconds / duration) * ((PLAYBACK_PREVIEW_BINS - 1) as f64))
+            .round()
+            .clamp(0.0, (PLAYBACK_PREVIEW_BINS - 1) as f64) as usize;
+        let normalized = (value / max_value).clamp(0.0, 1.0);
+        bins[bin_index] = Some(match bins[bin_index] {
+            Some(existing) => existing.max(normalized),
+            None => normalized,
+        });
+    }
+    bins
 }
 
 fn situation_at_cursor(trace: &PlaybackTrace, cursor_seconds: f64) -> Option<Situation> {

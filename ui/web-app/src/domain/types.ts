@@ -529,6 +529,8 @@ export type PlaybackUiState = {
   duration_seconds: number;
   cursor_seconds: number;
   rate: number;
+  speed_profile_norm: Array<number | null>;
+  altitude_profile_norm: Array<number | null>;
 };
 
 export type MapFollowUiState = {

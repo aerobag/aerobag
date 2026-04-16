@@ -415,17 +415,14 @@ fn prefetch_one(
     recorder: Option<&PrefetchProvenanceRecorder>,
 ) -> anyhow::Result<()> {
     let parsed = parse_logical_download(url)?;
-    let file_name = parsed
-        .logical_file_name
-        .as_deref()
-        .unwrap_or_else(|| {
-            parsed
-                .network_url
-                .rsplit('/')
-                .next()
-                .filter(|value| !value.is_empty())
-                .expect("network url should have a filename")
-        });
+    let file_name = parsed.logical_file_name.as_deref().unwrap_or_else(|| {
+        parsed
+            .network_url
+            .rsplit('/')
+            .next()
+            .filter(|value| !value.is_empty())
+            .expect("network url should have a filename")
+    });
     let archive_path = dest_dir.join(file_name);
     let mut source = "local";
 
@@ -441,15 +438,21 @@ fn prefetch_one(
     if !archive_path.is_file() {
         if let Some(fetch_cache) = fetch_cache {
             let layout = CacheLayout::new(&fetch_cache.root);
-            if restore_cached_download(&layout, &parsed.cache_key, file_name, &archive_path)? {
-                source = "cache";
-            } else {
-                if fetch_cache.mode.is_offline() {
+            if fetch_cache.mode.is_offline() {
+                if restore_cached_download(&layout, &parsed.cache_key, file_name, &archive_path)? {
+                    source = "cache";
+                } else {
                     bail!("cache miss in offline mode for {url}");
                 }
-                fetch_network(&parsed.network_url, file_name, dest_dir)?;
-                store_cached_download(&layout, &parsed.cache_key, file_name, &archive_path)?;
-                source = "network";
+            } else {
+                source = fetch_network_with_cache(
+                    &layout,
+                    &parsed.cache_key,
+                    &parsed.network_url,
+                    file_name,
+                    dest_dir,
+                    &archive_path,
+                )?;
             }
         } else {
             fetch_network(&parsed.network_url, file_name, dest_dir)?;
@@ -489,6 +492,90 @@ fn prefetch_one(
     Ok(())
 }
 
+fn fetch_network_with_cache(
+    layout: &CacheLayout,
+    cache_key: &str,
+    network_url: &str,
+    file_name: &str,
+    dest_dir: &Path,
+    archive_path: &Path,
+) -> anyhow::Result<&'static str> {
+    let metadata = read_cache_metadata(layout, cache_key)?;
+    let temp_path = temporary_download_path(archive_path);
+    let headers_path = temp_path.with_extension("headers");
+    let mut command = Command::new("curl");
+    command
+        .arg("-L")
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--retry")
+        .arg("3")
+        .arg("--retry-all-errors")
+        .arg("--dump-header")
+        .arg(&headers_path)
+        .arg("--output")
+        .arg(&temp_path)
+        .arg("--write-out")
+        .arg("%{http_code}")
+        .arg(network_url)
+        .current_dir(dest_dir);
+    if let Some(etag) = metadata
+        .as_ref()
+        .and_then(|value| value.get("etag"))
+        .and_then(|value| value.as_str())
+    {
+        command.arg("-H").arg(format!("If-None-Match: {etag}"));
+    }
+    if let Some(last_modified) = metadata
+        .as_ref()
+        .and_then(|value| value.get("last_modified"))
+        .and_then(|value| value.as_str())
+    {
+        command
+            .arg("-H")
+            .arg(format!("If-Modified-Since: {last_modified}"));
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("failed to fetch {network_url}"))?;
+    let status_text = String::from_utf8_lossy(&output.stdout);
+    let http_status = status_text.trim().parse::<u16>().with_context(|| {
+        format!("curl returned non-numeric HTTP status for {network_url}: {status_text:?}")
+    })?;
+    if !output.status.success() || !(http_status == 304 || (200..300).contains(&http_status)) {
+        let _ = fs::remove_file(&temp_path);
+        let _ = fs::remove_file(&headers_path);
+        bail!(
+            "curl failed for {network_url} with HTTP {http_status}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    if http_status == 304 {
+        let _ = fs::remove_file(&temp_path);
+        let _ = fs::remove_file(&headers_path);
+        if restore_cached_download(layout, cache_key, file_name, archive_path)? {
+            return Ok("validated-cache");
+        }
+        bail!("HTTP 304 for {network_url}, but cached blob was unavailable");
+    }
+    fs::rename(&temp_path, archive_path).with_context(|| {
+        format!(
+            "failed to move downloaded file {} into place at {}",
+            temp_path.display(),
+            archive_path.display()
+        )
+    })?;
+    store_cached_download_with_headers(
+        layout,
+        cache_key,
+        file_name,
+        archive_path,
+        parse_http_validators(&headers_path)?,
+    )?;
+    let _ = fs::remove_file(&headers_path);
+    Ok("network")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LogicalDownload {
     cache_key: String,
@@ -504,9 +591,7 @@ fn parse_logical_download(url: &str) -> anyhow::Result<LogicalDownload> {
     let logical_file_name = fragment
         .and_then(|value| value.strip_prefix("logical_name="))
         .map(ToOwned::to_owned);
-    let file_name_source = logical_file_name
-        .as_deref()
-        .unwrap_or(&network_url);
+    let file_name_source = logical_file_name.as_deref().unwrap_or(&network_url);
     file_name_source
         .rsplit('/')
         .next()
@@ -527,6 +612,9 @@ fn fetch_network(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Result<
         .arg("--fail")
         .arg("--silent")
         .arg("--show-error")
+        .arg("--retry")
+        .arg("3")
+        .arg("--retry-all-errors")
         .arg("--output")
         .arg(&temp_path)
         .arg(url)
@@ -591,11 +679,12 @@ fn restore_cached_download(
     Ok(true)
 }
 
-fn store_cached_download(
+fn store_cached_download_with_headers(
     layout: &CacheLayout,
     url: &str,
     file_name: &str,
     archive_path: &Path,
+    validators: HttpValidators,
 ) -> anyhow::Result<()> {
     fs::create_dir_all(layout.blobs_dir())
         .with_context(|| format!("failed to create {}", layout.blobs_dir().display()))?;
@@ -616,7 +705,9 @@ fn store_cached_download(
         .with_context(|| format!("failed to stat {}", archive_path.display()))?
         .len();
     let metadata = serde_json::json!({
+        "etag": validators.etag,
         "file": file_name,
+        "last_modified": validators.last_modified,
         "sha256": sha256,
         "size": size,
         "url": url,
@@ -627,6 +718,47 @@ fn store_cached_download(
     )
     .with_context(|| format!("failed to write cache metadata for {url}"))?;
     Ok(())
+}
+
+fn read_cache_metadata(
+    layout: &CacheLayout,
+    url: &str,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let metadata_path = layout.http_metadata_path(url);
+    if !metadata_path.is_file() {
+        return Ok(None);
+    }
+    let metadata_bytes = fs::read(&metadata_path)
+        .with_context(|| format!("failed to read {}", metadata_path.display()))?;
+    serde_json::from_slice(&metadata_bytes)
+        .map(Some)
+        .context("failed to parse cache metadata")
+}
+
+#[derive(Debug, Default, Clone)]
+struct HttpValidators {
+    etag: Option<String>,
+    last_modified: Option<String>,
+}
+
+fn parse_http_validators(headers_path: &Path) -> anyhow::Result<HttpValidators> {
+    if !headers_path.is_file() {
+        return Ok(HttpValidators::default());
+    }
+    let text = fs::read_to_string(headers_path)
+        .with_context(|| format!("failed to read {}", headers_path.display()))?;
+    let mut validators = HttpValidators::default();
+    for line in text.lines() {
+        if let Some((name, value)) = line.split_once(':') {
+            let value = value.trim();
+            if name.eq_ignore_ascii_case("etag") {
+                validators.etag = Some(value.to_string());
+            } else if name.eq_ignore_ascii_case("last-modified") {
+                validators.last_modified = Some(value.to_string());
+            }
+        }
+    }
+    Ok(validators)
 }
 
 fn list_zip_members(path: &Path) -> anyhow::Result<Vec<String>> {

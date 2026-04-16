@@ -19,30 +19,29 @@ use preprocessor_charts::{
 };
 use preprocessor_core::{ChartFamily, Region};
 use preprocessor_csup::{
-    package_csup_region_versioned, prepare_csup_inputs, render_csup_region, stage_work_dir_for_product,
+    package_csup_region_versioned, prepare_csup_inputs, render_csup_region,
+    stage_work_dir_for_product,
 };
 use preprocessor_data::{
     build_data_package, build_data_package_with_tpp_matches, DataBuildMode, DataBuildRequest,
     DataTppMatchRequest,
+};
+use preprocessor_fast::{
+    build_metar_dataset, build_nexrad_dataset, build_tfr_dataset, load_tfr_notam_ids,
+    metar_content_fingerprint, sanitize_notam_id, BuildMetarRequest, BuildNexradRequest,
+    BuildTfrRequest,
 };
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
     read_source_urls_jsonl, write_package_outputs_jsonl, FetchCacheConfig, FetchCacheMode,
     PackageOutputRecord,
 };
-use preprocessor_fast::{
-    build_metar_dataset, build_nexrad_dataset, build_tfr_dataset, load_tfr_notam_ids,
-    sanitize_notam_id, BuildMetarRequest, BuildNexradRequest, BuildTfrRequest,
-};
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, ResourceIndex,
 };
-use preprocessor_tpp::{
-    package_native_tpp_versioned, render_native_tpp, NativeTppRunRequest,
-};
+use preprocessor_tpp::{package_native_tpp_versioned, render_native_tpp, NativeTppRunRequest};
 use preprocessor_vectors::{
-    build_obstacle_dataset, build_vectors_dataset, BuildObstacleDatasetRequest,
-    BuildVectorsRequest,
+    build_obstacle_dataset, build_vectors_dataset, BuildObstacleDatasetRequest, BuildVectorsRequest,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -279,12 +278,24 @@ struct ScheduledTask {
 #[derive(Debug, Clone)]
 enum TaskValue {
     None,
-    CsupStage { record: NodeRecord, work_dir: PathBuf },
+    CsupStage {
+        record: NodeRecord,
+        work_dir: PathBuf,
+    },
     ChartSource(ChartSource),
     CsupSource(AssetSource),
-    FingerprintedData { main_db: PathBuf, zip: PathBuf, fingerprint: String },
-    FingerprintedZip { zip: PathBuf },
-    FingerprintedTppSource { source: AssetSource, fingerprint: String },
+    FingerprintedData {
+        main_db: PathBuf,
+        zip: PathBuf,
+        fingerprint: String,
+    },
+    FingerprintedZip {
+        zip: PathBuf,
+    },
+    FingerprintedTppSource {
+        source: AssetSource,
+        fingerprint: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -298,13 +309,27 @@ enum ProductTaskValue {
         data_version: String,
         bundle_cycle: String,
     },
-    CsupStage { record: NodeRecord, work_dir: PathBuf },
+    CsupStage {
+        record: NodeRecord,
+        work_dir: PathBuf,
+    },
     ChartSource(ChartSource),
     CsupSource(AssetSource),
-    FingerprintedData { main_db: PathBuf, zip: PathBuf, fingerprint: String },
-    FingerprintedZip { zip: PathBuf },
-    FingerprintedTppSource { source: AssetSource, fingerprint: String },
-    CycleManifest { path: PathBuf },
+    FingerprintedData {
+        main_db: PathBuf,
+        zip: PathBuf,
+        fingerprint: String,
+    },
+    FingerprintedZip {
+        zip: PathBuf,
+    },
+    FingerprintedTppSource {
+        source: AssetSource,
+        fingerprint: String,
+    },
+    CycleManifest {
+        path: PathBuf,
+    },
     ObstaclesBuilt {
         manifest_path: PathBuf,
         stats_path: PathBuf,
@@ -328,7 +353,9 @@ enum ProductTaskValue {
         size_bytes: u64,
         source_generated_at_utc: String,
     },
-    CurrentArtifacts { path: PathBuf },
+    CurrentArtifacts {
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -367,7 +394,9 @@ impl TaskCompletionGuard {
     }
 
     fn send(mut self, result: anyhow::Result<TaskCompletion>) {
-        let _ = self.tx.send((self.task_id.clone(), self.task_weight, result));
+        let _ = self
+            .tx
+            .send((self.task_id.clone(), self.task_weight, result));
         self.sent = true;
     }
 }
@@ -410,7 +439,9 @@ impl ProductCompletionGuard {
     }
 
     fn send(mut self, result: anyhow::Result<ProductTaskCompletion>) {
-        let _ = self.tx.send((self.task_id.clone(), self.task_weight, result));
+        let _ = self
+            .tx
+            .send((self.task_id.clone(), self.task_weight, result));
         self.sent = true;
     }
 }
@@ -441,8 +472,14 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
     let mut lines = Vec::new();
     lines.push(format!("profile {}", config.profile.as_str()));
     lines.push(format!("build_root {}", config.build_root.display()));
-    lines.push(format!("chart_cutline_root {}", config.chart_cutline_root.display()));
-    lines.push(format!("fetch_cache_root {}", config.fetch_cache_root.display()));
+    lines.push(format!(
+        "chart_cutline_root {}",
+        config.chart_cutline_root.display()
+    ));
+    lines.push(format!(
+        "fetch_cache_root {}",
+        config.fetch_cache_root.display()
+    ));
     lines.push(format!("fetch_cache_mode {}", config.fetch_cache_mode));
     lines.push(format!("max_heavy_jobs {}", config.max_heavy_jobs));
     lines.push("nodes".to_string());
@@ -489,24 +526,69 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
 
     #[derive(Debug, Clone)]
     enum ProductScheduledTaskKind {
-        SourceUrls { cycle: String },
-        ChartRender { cycle: String, family: ChartFamily },
-        ChartPackage { cycle: String, family: ChartFamily },
-        ChartUnpack { cycle: String, family: ChartFamily, region: Region },
-        CsupStage { cycle: String },
-        CsupRender { cycle: String, region: Region },
-        CsupPackage { cycle: String },
-        CsupUnpack { cycle: String, region: Region },
-        TppRender { cycle: String, region: Region },
-        TppPackage { cycle: String, region: Region },
-        TppUnpack { cycle: String, region: Region },
-        DataBase { cycle: String },
-        DataMatch { cycle: String },
-        Vectors { cycle: String },
-        DataUnpack { cycle: String },
-        VectorsUnpack { cycle: String },
-        ResourceIndex { cycle: String },
-        BundleManifest { cycle: String },
+        SourceUrls {
+            cycle: String,
+        },
+        ChartRender {
+            cycle: String,
+            family: ChartFamily,
+        },
+        ChartPackage {
+            cycle: String,
+            family: ChartFamily,
+        },
+        ChartUnpack {
+            cycle: String,
+            family: ChartFamily,
+            region: Region,
+        },
+        CsupStage {
+            cycle: String,
+        },
+        CsupRender {
+            cycle: String,
+            region: Region,
+        },
+        CsupPackage {
+            cycle: String,
+        },
+        CsupUnpack {
+            cycle: String,
+            region: Region,
+        },
+        TppRender {
+            cycle: String,
+            region: Region,
+        },
+        TppPackage {
+            cycle: String,
+            region: Region,
+        },
+        TppUnpack {
+            cycle: String,
+            region: Region,
+        },
+        DataBase {
+            cycle: String,
+        },
+        DataMatch {
+            cycle: String,
+        },
+        Vectors {
+            cycle: String,
+        },
+        DataUnpack {
+            cycle: String,
+        },
+        VectorsUnpack {
+            cycle: String,
+        },
+        ResourceIndex {
+            cycle: String,
+        },
+        BundleManifest {
+            cycle: String,
+        },
         ObstaclesBuild,
         ObstaclesPublish,
         TfrsBuild,
@@ -606,8 +688,10 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             });
             let mut csup_render_ids = Vec::new();
             for region in Region::ALL {
-                let task_id =
-                    cycle_task_id(cycle, &format!("csup-render-{}", region.code().to_ascii_lowercase()));
+                let task_id = cycle_task_id(
+                    cycle,
+                    &format!("csup-render-{}", region.code().to_ascii_lowercase()),
+                );
                 csup_render_ids.push(task_id.clone());
                 pending_tasks.push(ProductScheduledTask {
                     id: task_id,
@@ -723,7 +807,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             });
             let mut resource_index_deps = chart_families
                 .iter()
-                .map(|family| cycle_task_id(cycle, &format!("charts-{}-package", family_slug(*family))))
+                .map(|family| {
+                    cycle_task_id(cycle, &format!("charts-{}-package", family_slug(*family)))
+                })
                 .collect::<Vec<_>>();
             resource_index_deps.push(cycle_task_id(cycle, "csup-package"));
             resource_index_deps.extend(tpp_package_ids.iter().cloned());
@@ -844,11 +930,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             total_tasks, work_unit_budget, TPP_RENDER_WEIGHT, TPP_RENDER_JOBS_PER_RUN
         ))?;
 
-        let (tx, rx) = crossbeam_channel::unbounded::<(
-            String,
-            usize,
-            anyhow::Result<ProductTaskCompletion>,
-        )>();
+        let (tx, rx) =
+            crossbeam_channel::unbounded::<(String, usize, anyhow::Result<ProductTaskCompletion>)>(
+            );
         let mut running_jobs = 0_usize;
         let mut running_units = 0_usize;
         let mut launched_tasks = 0_usize;
@@ -856,8 +940,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         let mut completed_ids = std::collections::BTreeSet::<String>::new();
         let mut task_values = BTreeMap::<String, ProductTaskValue>::new();
         let mut task_node_records = BTreeMap::<String, Vec<NodeRecord>>::new();
-        let mut worker_threads =
-            BTreeMap::<String, thread::JoinHandle<anyhow::Result<()>>>::new();
+        let mut worker_threads = BTreeMap::<String, thread::JoinHandle<anyhow::Result<()>>>::new();
 
         while running_jobs > 0 || !pending_tasks.is_empty() {
             let mut launched_any = false;
@@ -1590,39 +1673,42 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             })
                         }
                         ProductScheduledTaskKind::TfrsBuild => {
-                            let (zip_path, source_generated_at_utc) =
+                            let (zip_path, source_generated_at_utc, record) =
                                 build_tfrs_product(&config)?;
+                            let cache_hit = record.cache_hit;
                             Ok(ProductTaskCompletion {
-                                node_records: vec![],
+                                node_records: vec![record],
                                 value: ProductTaskValue::TfrsBuilt {
                                     zip_path,
                                     source_generated_at_utc,
                                 },
-                                completion_detail: "rebuilt".to_string(),
+                                completion_detail: format!("cache_hit={cache_hit}"),
                             })
                         }
                         ProductScheduledTaskKind::MetarsBuild => {
-                            let (zip_path, source_generated_at_utc) =
+                            let (zip_path, source_generated_at_utc, record) =
                                 build_metars_product(&config)?;
+                            let cache_hit = record.cache_hit;
                             Ok(ProductTaskCompletion {
-                                node_records: vec![],
+                                node_records: vec![record],
                                 value: ProductTaskValue::TfrsBuilt {
                                     zip_path,
                                     source_generated_at_utc,
                                 },
-                                completion_detail: "rebuilt".to_string(),
+                                completion_detail: format!("cache_hit={cache_hit}"),
                             })
                         }
                         ProductScheduledTaskKind::NexradBuild => {
-                            let (zip_path, source_generated_at_utc) =
+                            let (zip_path, source_generated_at_utc, record) =
                                 build_nexrad_product(&config)?;
+                            let cache_hit = record.cache_hit;
                             Ok(ProductTaskCompletion {
-                                node_records: vec![],
+                                node_records: vec![record],
                                 value: ProductTaskValue::TfrsBuilt {
                                     zip_path,
                                     source_generated_at_utc,
                                 },
-                                completion_detail: "rebuilt".to_string(),
+                                completion_detail: format!("cache_hit={cache_hit}"),
                             })
                         }
                         ProductScheduledTaskKind::TfrsPublish => {
@@ -1893,10 +1979,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
 
         let mut cycle_manifest_paths = cycles
             .iter()
-            .map(|cycle| match task_values.get(&cycle_task_id(cycle, "bundle-manifest")) {
-                Some(ProductTaskValue::CycleManifest { path }) => Ok(path.clone()),
-                _ => bail!("missing cycle manifest for {cycle}"),
-            })
+            .map(
+                |cycle| match task_values.get(&cycle_task_id(cycle, "bundle-manifest")) {
+                    Some(ProductTaskValue::CycleManifest { path }) => Ok(path.clone()),
+                    _ => bail!("missing cycle manifest for {cycle}"),
+                },
+            )
             .collect::<anyhow::Result<Vec<_>>>()?;
         cycle_manifest_paths.sort();
         let (obstacle_manifest_path, obstacle_stats_path, obstacle_zip_path) =
@@ -1909,7 +1997,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 _ => bail!("missing obstacle build outputs"),
             };
         let published_obstacle_zip = match task_values.get("publish-obstacles") {
-            Some(ProductTaskValue::PublishedObstacle { published_zip, .. }) => published_zip.clone(),
+            Some(ProductTaskValue::PublishedObstacle { published_zip, .. }) => {
+                published_zip.clone()
+            }
             _ => bail!("missing published obstacle output"),
         };
         let current_artifacts_path = match task_values.get("current-artifacts") {
@@ -1974,13 +2064,28 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             "complete source-urls cache_hit={}",
             source_urls_record.cache_hit
         ))?;
-        node_records.push(normalize_node_record_paths(source_urls_record, &config.build_root));
+        node_records.push(normalize_node_record_paths(
+            source_urls_record,
+            &config.build_root,
+        ));
 
         let chart_versions = [
-            ("sec".to_string(), chart_family_version_label(&source_urls_dir, ChartFamily::Sec)?),
-            ("tac".to_string(), chart_family_version_label(&source_urls_dir, ChartFamily::Tac)?),
-            ("enr-l".to_string(), chart_family_version_label(&source_urls_dir, ChartFamily::EnrL)?),
-            ("enr-h".to_string(), chart_family_version_label(&source_urls_dir, ChartFamily::EnrH)?),
+            (
+                "sec".to_string(),
+                chart_family_version_label(&source_urls_dir, ChartFamily::Sec)?,
+            ),
+            (
+                "tac".to_string(),
+                chart_family_version_label(&source_urls_dir, ChartFamily::Tac)?,
+            ),
+            (
+                "enr-l".to_string(),
+                chart_family_version_label(&source_urls_dir, ChartFamily::EnrL)?,
+            ),
+            (
+                "enr-h".to_string(),
+                chart_family_version_label(&source_urls_dir, ChartFamily::EnrH)?,
+            ),
         ]
         .into_iter()
         .collect::<BTreeMap<_, _>>();
@@ -2164,19 +2269,15 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             "scheduler-ready tasks={} work_unit_budget={} chart_and_data_weight=4 csup_weight=2 tpp_weight={} tpp_render_jobs_per_run={} light_weight=1 resource_index_weight=2",
             total_tasks, work_unit_budget, TPP_RENDER_WEIGHT, TPP_RENDER_JOBS_PER_RUN
         ))?;
-        let (tx, rx) = crossbeam_channel::unbounded::<(
-            String,
-            usize,
-            anyhow::Result<TaskCompletion>,
-        )>();
+        let (tx, rx) =
+            crossbeam_channel::unbounded::<(String, usize, anyhow::Result<TaskCompletion>)>();
         let mut running_jobs = 0_usize;
         let mut running_units = 0_usize;
         let mut launched_tasks = 0_usize;
         let mut completed_tasks = 0_usize;
         let mut completed_ids = std::collections::BTreeSet::<String>::new();
         let mut task_values = BTreeMap::<String, TaskValue>::new();
-        let mut worker_threads =
-            BTreeMap::<String, thread::JoinHandle<anyhow::Result<()>>>::new();
+        let mut worker_threads = BTreeMap::<String, thread::JoinHandle<anyhow::Result<()>>>::new();
 
         while running_jobs > 0 || !pending_tasks.is_empty() {
             let mut launched_any = false;
@@ -2226,7 +2327,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 &config,
                                 family,
                                 &config.chart_cutline_root,
-                                &source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl")),
+                                &source_urls_dir
+                                    .join(format!("charts-{family_id}/source_urls.jsonl")),
                                 config.fetch_jobs,
                                 config.cpu_jobs.min(8).max(1),
                             )
@@ -2245,7 +2347,10 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 config.fetch_jobs,
                             )
                             .and_then(|record| {
-                                let work_dir = resolve_artifact_path(&config, output_path(&record, "work_dir")?);
+                                let work_dir = resolve_artifact_path(
+                                    &config,
+                                    output_path(&record, "work_dir")?,
+                                );
                                 Ok(TaskCompletion {
                                     node_records: vec![record.clone()],
                                     value: TaskValue::CsupStage { record, work_dir },
@@ -2256,7 +2361,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         }
                         ScheduledTaskKind::CsupRender { region } => {
                             let stage = match task_values_snapshot.get("csup-stage") {
-                                Some(TaskValue::CsupStage { record, work_dir }) => (record, work_dir),
+                                Some(TaskValue::CsupStage { record, work_dir }) => {
+                                    (record, work_dir)
+                                }
                                 _ => unreachable!("csup-stage dependency should have completed"),
                             };
                             build_csup_render_node(
@@ -2280,7 +2387,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 source_repo: PathBuf::new(),
                                 run_root: PathBuf::new(),
                                 prefetch_source_urls: Some(
-                                    source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
+                                    source_urls_dir
+                                        .join(format!("tpp-{region_id}/source_urls.jsonl")),
                                 ),
                                 fetch_jobs: config.fetch_jobs,
                                 render_jobs: TPP_RENDER_JOBS_PER_RUN,
@@ -2292,14 +2400,23 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 completion_detail: "cache_or_rebuild".to_string(),
                             })
                         }
-                        ScheduledTaskKind::DataBase => build_data_nodes(&config, &source_urls_dir, "data-base").and_then(|records| {
+                        ScheduledTaskKind::DataBase => build_data_nodes(
+                            &config,
+                            &source_urls_dir,
+                            "data-base",
+                        )
+                        .and_then(|records| {
                             let data_record = records
                                 .iter()
                                 .find(|record| record.name == "data-base")
                                 .cloned()
                                 .context("data-base task missing data node record")?;
-                            let zip = resolve_artifact_path(&config, output_path(&data_record, "zip")?);
-                            let main_db = resolve_artifact_path(&config, output_path(&data_record, "main_db")?);
+                            let zip =
+                                resolve_artifact_path(&config, output_path(&data_record, "zip")?);
+                            let main_db = resolve_artifact_path(
+                                &config,
+                                output_path(&data_record, "main_db")?,
+                            );
                             Ok(TaskCompletion {
                                 node_records: records,
                                 value: TaskValue::FingerprintedData {
@@ -2312,9 +2429,11 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         }),
                         ScheduledTaskKind::DataMatch => {
                             let raw_data = match task_values_snapshot.get("data-base") {
-                                Some(TaskValue::FingerprintedData { main_db, zip, fingerprint }) => {
-                                    (main_db.clone(), zip.clone(), fingerprint.clone())
-                                }
+                                Some(TaskValue::FingerprintedData {
+                                    main_db,
+                                    zip,
+                                    fingerprint,
+                                }) => (main_db.clone(), zip.clone(), fingerprint.clone()),
                                 _ => unreachable!("data-base dependency should have completed"),
                             };
                             let tpp_sources = config
@@ -2325,9 +2444,10 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                     let region_id = region.code().to_ascii_lowercase();
                                     let key = format!("tpp-{region_id}-package");
                                     match task_values_snapshot.get(&key) {
-                                        Some(TaskValue::FingerprintedTppSource { source, fingerprint }) => {
-                                            Ok((*region, source.clone(), fingerprint.clone()))
-                                        }
+                                        Some(TaskValue::FingerprintedTppSource {
+                                            source,
+                                            fingerprint,
+                                        }) => Ok((*region, source.clone(), fingerprint.clone())),
                                         _ => bail!("missing tpp package source for {region_id}"),
                                     }
                                 })
@@ -2342,7 +2462,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             )?;
                             let cache_hit = record.cache_hit;
                             let zip = resolve_artifact_path(&config, output_path(&record, "zip")?);
-                            let main_db = resolve_artifact_path(&config, output_path(&record, "main_db")?);
+                            let main_db =
+                                resolve_artifact_path(&config, output_path(&record, "main_db")?);
                             let fingerprint = record.fingerprint.clone();
                             Ok(TaskCompletion {
                                 node_records: vec![record],
@@ -2423,12 +2544,15 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         }
                         ScheduledTaskKind::Vectors => {
                             let (data, data_fingerprint) = match task_values_snapshot.get("data") {
-                                Some(TaskValue::FingerprintedData { main_db, fingerprint, .. }) => {
-                                    (main_db, fingerprint)
-                                }
+                                Some(TaskValue::FingerprintedData {
+                                    main_db,
+                                    fingerprint,
+                                    ..
+                                }) => (main_db, fingerprint),
                                 _ => unreachable!("data dependency should have completed"),
                             };
-                            let record = build_vectors_node(&config, data, data_fingerprint, &data_version)?;
+                            let record =
+                                build_vectors_node(&config, data, data_fingerprint, &data_version)?;
                             let cache_hit = record.cache_hit;
                             let zip = resolve_artifact_path(&config, output_path(&record, "zip")?);
                             Ok(TaskCompletion {
@@ -2439,9 +2563,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         }
                         ScheduledTaskKind::ResourceIndex => {
                             let data_zip = match task_values_snapshot.get("data") {
-                                Some(TaskValue::FingerprintedData { main_db: _, zip, .. }) => {
-                                    zip.clone()
-                                }
+                                Some(TaskValue::FingerprintedData {
+                                    main_db: _, zip, ..
+                                }) => zip.clone(),
                                 _ => unreachable!("data dependency should have completed"),
                             };
                             let chart_sources = ["sec", "tac", "enr-l", "enr-h"]
@@ -2454,10 +2578,11 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                     }
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
-                            let csup_sources = vec![match task_values_snapshot.get("csup-package") {
-                                Some(TaskValue::CsupSource(source)) => source.clone(),
-                                _ => bail!("missing csup package source"),
-                            }];
+                            let csup_sources =
+                                vec![match task_values_snapshot.get("csup-package") {
+                                    Some(TaskValue::CsupSource(source)) => source.clone(),
+                                    _ => bail!("missing csup package source"),
+                                }];
                             let tpp_sources = config
                                 .profile
                                 .tpp_regions()
@@ -2466,21 +2591,20 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                     let region_id = region.code().to_ascii_lowercase();
                                     let key = format!("tpp-{region_id}-package");
                                     match task_values_snapshot.get(&key) {
-                                        Some(TaskValue::FingerprintedTppSource { source, .. }) => {
-                                            Ok(source.clone())
-                                        }
+                                        Some(TaskValue::FingerprintedTppSource {
+                                            source, ..
+                                        }) => Ok(source.clone()),
                                         _ => bail!("missing tpp package source for {region_id}"),
                                     }
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
-                            let record =
-                                build_resource_index_node(
-                                    &config,
-                                    &data_zip,
-                                    chart_sources,
-                                    tpp_sources,
-                                    csup_sources,
-                                )?;
+                            let record = build_resource_index_node(
+                                &config,
+                                &data_zip,
+                                chart_sources,
+                                tpp_sources,
+                                csup_sources,
+                            )?;
                             let cache_hit = record.cache_hit;
                             Ok(TaskCompletion {
                                 node_records: vec![record],
@@ -2495,7 +2619,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 Some(TaskValue::ChartSource(source)) => source.clone(),
                                 _ => bail!("missing chart source for {family_id}"),
                             };
-                            let package = package_record_for_region(&source.package_outputs_path, region)?;
+                            let package =
+                                package_record_for_region(&source.package_outputs_path, region)?;
                             let zip_path = source.package_root.join(&package.zip);
                             let unpacked_root = published_unpacked_root(&config)?;
                             let published_filename = canonical_package_filename(
@@ -2524,7 +2649,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 Some(TaskValue::CsupSource(source)) => source.clone(),
                                 _ => bail!("missing csup package source"),
                             };
-                            let package = package_record_for_region(&source.package_outputs_path, region)?;
+                            let package =
+                                package_record_for_region(&source.package_outputs_path, region)?;
                             let zip_path = source.package_root.join(&package.zip);
                             let unpacked_root = published_unpacked_root(&config)?;
                             let published_filename = canonical_package_filename(
@@ -2552,10 +2678,13 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             let region_id = region.code().to_ascii_lowercase();
                             let key = format!("tpp-{region_id}-package");
                             let source = match task_values_snapshot.get(&key) {
-                                Some(TaskValue::FingerprintedTppSource { source, .. }) => source.clone(),
+                                Some(TaskValue::FingerprintedTppSource { source, .. }) => {
+                                    source.clone()
+                                }
                                 _ => bail!("missing tpp package source for {region_id}"),
                             };
-                            let package = package_record_for_region(&source.package_outputs_path, region)?;
+                            let package =
+                                package_record_for_region(&source.package_outputs_path, region)?;
                             let zip_path = source.package_root.join(&package.zip);
                             let unpacked_root = published_unpacked_root(&config)?;
                             let published_filename = canonical_package_filename(
@@ -2581,9 +2710,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         }
                         ScheduledTaskKind::DataUnpack => {
                             let zip = match task_values_snapshot.get("data") {
-                                Some(TaskValue::FingerprintedData { main_db: _, zip, .. }) => {
-                                    zip.clone()
-                                }
+                                Some(TaskValue::FingerprintedData {
+                                    main_db: _, zip, ..
+                                }) => zip.clone(),
                                 _ => bail!("missing data zip"),
                             };
                             let unpacked_root = published_unpacked_root(&config)?;
@@ -2634,7 +2763,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         } else {
                             "unknown panic payload".to_string()
                         };
-                        Err(anyhow::anyhow!("task thread panicked: {task_label}: {panic_text}"))
+                        Err(anyhow::anyhow!(
+                            "task thread panicked: {task_label}: {panic_text}"
+                        ))
                     });
                     completion_guard.send(result);
                     Ok(())
@@ -2706,17 +2837,16 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                     return Err(err);
                                 }
                                 Err(panic_payload) => {
-                                    let panic_text = if let Some(text) =
-                                        panic_payload.downcast_ref::<&str>()
-                                    {
-                                        (*text).to_string()
-                                    } else if let Some(text) =
-                                        panic_payload.downcast_ref::<String>()
-                                    {
-                                        text.clone()
-                                    } else {
-                                        "unknown panic payload".to_string()
-                                    };
+                                    let panic_text =
+                                        if let Some(text) = panic_payload.downcast_ref::<&str>() {
+                                            (*text).to_string()
+                                        } else if let Some(text) =
+                                            panic_payload.downcast_ref::<String>()
+                                        {
+                                            text.clone()
+                                        } else {
+                                            "unknown panic payload".to_string()
+                                        };
                                     let err = anyhow::anyhow!(
                                         "worker thread join observed panic: {finished_task_id}: {panic_text}"
                                     );
@@ -2828,7 +2958,10 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
 
     match result {
         Ok(manifest_path) => {
-            master_log.log(format!("complete PASS manifest={}", manifest_path.display()))?;
+            master_log.log(format!(
+                "complete PASS manifest={}",
+                manifest_path.display()
+            ))?;
             Ok(manifest_path)
         }
         Err(err) => {
@@ -2858,8 +2991,12 @@ fn build_bundle_manifest(
         .find(|node| node.name == "vectors")
         .context("build manifest missing vectors node")?;
 
-    let resource_index_path = resolve_artifact_path(config, output_path(resource_index_record, "resource_index")?);
-    let catalog_path = resolve_artifact_path(config, output_path(resource_index_record, "catalog")?);
+    let resource_index_path = resolve_artifact_path(
+        config,
+        output_path(resource_index_record, "resource_index")?,
+    );
+    let catalog_path =
+        resolve_artifact_path(config, output_path(resource_index_record, "catalog")?);
     let data_zip_path = resolve_artifact_path(config, output_path(data_record, "zip")?);
     let vectors_zip_path = resolve_artifact_path(config, output_path(vectors_record, "zip")?);
     let index: ResourceIndex = serde_json::from_slice(
@@ -2913,13 +3050,12 @@ fn build_bundle_manifest(
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    let public_resource_index = rewrite_public_resource_index(
-        &index,
-        &data_filename,
-        &package_artifacts,
-    );
+    let public_resource_index =
+        rewrite_public_resource_index(&index, &data_filename, &package_artifacts);
     let published_resource_index_path = write_published_json(
-        &config.build_root.join(format!("resource_index_{cycle}.json")),
+        &config
+            .build_root
+            .join(format!("resource_index_{cycle}.json")),
         &public_resource_index,
     )?;
 
@@ -2929,21 +3065,13 @@ fn build_bundle_manifest(
         generated_at_utc: build_manifest.generated_at_utc.clone(),
         start_valid,
         end_valid,
-        catalog: publish_bundle_artifact(
-            config,
-            &catalog_path,
-            &format!("catalog_{cycle}.json"),
-        )?,
+        catalog: publish_bundle_artifact(config, &catalog_path, &format!("catalog_{cycle}.json"))?,
         resource_index: bundle_artifact(
             &published_resource_index_path,
             &format!("resource_index_{cycle}.json"),
         )?,
         data: publish_bundle_artifact(config, &data_zip_path, &data_filename)?,
-        vectors: publish_bundle_artifact(
-            config,
-            &vectors_zip_path,
-            &vectors_filename,
-        )?,
+        vectors: publish_bundle_artifact(config, &vectors_zip_path, &vectors_filename)?,
         packages: package_artifacts,
     })
 }
@@ -2997,8 +3125,7 @@ fn internal_build_manifest_path(
         .join("private-work")
         .join("build-manifests")
         .join(build_root_name);
-    fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create {}", dir.display()))?;
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     Ok(dir.join(format!("build-manifest_{bundle_cycle}.json")))
 }
 
@@ -3022,7 +3149,9 @@ fn unpacked_target_dir(unpacked_root: &Path, published_filename: &str) -> anyhow
     let stem = Path::new(published_filename)
         .file_stem()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("failed to derive unpacked target from {published_filename}"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("failed to derive unpacked target from {published_filename}")
+        })?;
     Ok(unpacked_root.join(stem))
 }
 
@@ -3076,12 +3205,16 @@ fn hardlink_zip_members_from_source_root(
     source_root: &Path,
     output_dir: &Path,
 ) -> anyhow::Result<()> {
-    let file = File::open(zip_path).with_context(|| format!("failed to open {}", zip_path.display()))?;
+    let file =
+        File::open(zip_path).with_context(|| format!("failed to open {}", zip_path.display()))?;
     let mut archive = ZipArchive::new(file)
         .with_context(|| format!("failed to open zip {}", zip_path.display()))?;
     for index in 0..archive.len() {
         let entry = archive.by_index(index).with_context(|| {
-            format!("failed to read zip member #{index} from {}", zip_path.display())
+            format!(
+                "failed to read zip member #{index} from {}",
+                zip_path.display()
+            )
         })?;
         let member = entry.name().to_string();
         let outpath = output_dir.join(&member);
@@ -3107,7 +3240,11 @@ fn hardlink_zip_members_from_source_root(
             Ok(()) => {}
             Err(_) => {
                 fs::copy(&source, &outpath).with_context(|| {
-                    format!("failed to copy {} to {}", source.display(), outpath.display())
+                    format!(
+                        "failed to copy {} to {}",
+                        source.display(),
+                        outpath.display()
+                    )
                 })?;
             }
         }
@@ -3151,9 +3288,14 @@ fn sync_unpacked_metadata(
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
     sync_unpacked_file(bundle_manifest_path, &unpacked_root)?;
-    sync_unpacked_file(&config.build_root.join(&bundle_manifest.catalog.filename), &unpacked_root)?;
     sync_unpacked_file(
-        &config.build_root.join(&bundle_manifest.resource_index.filename),
+        &config.build_root.join(&bundle_manifest.catalog.filename),
+        &unpacked_root,
+    )?;
+    sync_unpacked_file(
+        &config
+            .build_root
+            .join(&bundle_manifest.resource_index.filename),
         &unpacked_root,
     )?;
     Ok(())
@@ -3163,7 +3305,9 @@ fn sync_unpacked_file(source_path: &Path, unpacked_root: &Path) -> anyhow::Resul
     let filename = source_path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("failed to determine filename for {}", source_path.display()))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("failed to determine filename for {}", source_path.display())
+        })?;
     let published_path = unpacked_root.join(filename);
     publish_flat_artifact(source_path, &published_path)
 }
@@ -3217,12 +3361,10 @@ fn product_cycles_to_build(config: &ProductBuildConfig) -> anyhow::Result<Vec<St
 }
 
 fn obstacle_snapshot_label(value: &str) -> anyhow::Result<String> {
-    Ok(
-        NaiveDate::parse_from_str(value, "%Y-%m-%d")
-            .with_context(|| format!("failed to parse obstacle snapshot date {value}"))?
-            .format("%Y.%m.%d")
-            .to_string(),
-    )
+    Ok(NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .with_context(|| format!("failed to parse obstacle snapshot date {value}"))?
+        .format("%Y.%m.%d")
+        .to_string())
 }
 
 fn build_obstacles_product(
@@ -3288,7 +3430,7 @@ fn build_obstacles_product(
 
 fn build_tfrs_product(
     config: &ProductBuildConfig,
-) -> anyhow::Result<(PathBuf, String)> {
+) -> anyhow::Result<(PathBuf, String, NodeRecord)> {
     let artifact_root = artifact_root_from_build_root(&config.build_root).to_path_buf();
     let generated_at_utc = Utc::now()
         .with_second(0)
@@ -3296,10 +3438,12 @@ fn build_tfrs_product(
         .with_nanosecond(0)
         .expect("zero nanos should be valid");
     let version_label = generated_at_utc.format("%Y%m%dT%H%MZ").to_string();
-    let build_root = artifact_root.join("private-work").join("tfrs").join(&version_label);
+    let build_root = artifact_root
+        .join("private-work")
+        .join("tfrs")
+        .join(&version_label);
     let input_dir = build_root.join("input");
     let details_dir = input_dir.join("details");
-    let output_dir = build_root.join("output");
 
     if build_root.exists() {
         fs::remove_dir_all(&build_root)
@@ -3319,7 +3463,10 @@ fn build_tfrs_product(
     let list_url = "https://tfr.faa.gov/tfrapi/getTfrList#logical_name=list.json".to_string();
     fs::write(
         provenance_dir.join("source_urls.jsonl"),
-        format!("{{\"event\":\"source_url\",\"label\":\"tfrs\",\"url\":\"{}\"}}\n", list_url),
+        format!(
+            "{{\"event\":\"source_url\",\"label\":\"tfrs\",\"url\":\"{}\"}}\n",
+            list_url
+        ),
     )
     .with_context(|| {
         format!(
@@ -3370,16 +3517,75 @@ fn build_tfrs_product(
         "tfrs-detail",
     )?;
 
+    let source_fingerprint = hash_tree(&input_dir)?;
+    let version_label = fast_product_version_label(&source_fingerprint);
+    let inputs = fast_product_node_inputs("tfrs", &source_fingerprint)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "fast-tfrs")?,
+        "fast-tfrs",
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let structured_json_path = output_dir.join("tfrs.json");
+    let manifest_path = output_dir.join(format!("tfrs_{version_label}.manifest.json"));
+    let zip_path = output_dir.join(format!("tfrs_{version_label}.zip"));
+    let _build_lock = match claim_or_wait_for_node(
+        &prepared,
+        &[
+            structured_json_path.clone(),
+            manifest_path.clone(),
+            zip_path.clone(),
+        ],
+    )? {
+        NodeCacheState::CacheHit(record) => {
+            let source_generated_at_utc =
+                fast_product_source_generated_at("tfrs", &structured_json_path, &manifest_path)?;
+            return Ok((zip_path, source_generated_at_utc, record));
+        }
+        NodeCacheState::Build(lock) => lock,
+    };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
     let result = build_tfr_dataset(&BuildTfrRequest {
         input_dir,
         output_dir,
         version_label,
         generated_at_utc,
     })?;
-    Ok((result.zip_path, generated_at_utc.to_rfc3339()))
+    let source_generated_at_utc = fast_product_source_generated_at(
+        "tfrs",
+        &result.structured_json_path,
+        &result.manifest_path,
+    )?;
+    let outputs = BTreeMap::from([
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&result.manifest_path, &config.build_root),
+        ),
+        (
+            "structured_json".to_string(),
+            relative_artifact_path(&result.structured_json_path, &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&result.zip_path, &config.build_root),
+        ),
+    ]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((result.zip_path, source_generated_at_utc, record))
 }
 
-fn build_metars_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf, String)> {
+fn build_metars_product(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<(PathBuf, String, NodeRecord)> {
     let artifact_root = artifact_root_from_build_root(&config.build_root).to_path_buf();
     let generated_at_utc = Utc::now()
         .with_second(0)
@@ -3387,9 +3593,11 @@ fn build_metars_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf,
         .with_nanosecond(0)
         .expect("zero nanos should be valid");
     let version_label = generated_at_utc.format("%Y%m%dT%H%MZ").to_string();
-    let build_root = artifact_root.join("private-work").join("metars").join(&version_label);
+    let build_root = artifact_root
+        .join("private-work")
+        .join("metars")
+        .join(&version_label);
     let input_dir = build_root.join("input");
-    let output_dir = build_root.join("output");
 
     if build_root.exists() {
         fs::remove_dir_all(&build_root)
@@ -3411,7 +3619,10 @@ fn build_metars_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf,
             .to_string();
     fs::write(
         provenance_dir.join("source_urls.jsonl"),
-        format!("{{\"event\":\"source_url\",\"label\":\"metars\",\"url\":\"{}\"}}\n", url),
+        format!(
+            "{{\"event\":\"source_url\",\"label\":\"metars\",\"url\":\"{}\"}}\n",
+            url
+        ),
     )
     .with_context(|| {
         format!(
@@ -3430,16 +3641,77 @@ fn build_metars_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf,
 
     let gz_path = input_dir.join("metars.cache.xml.gz");
     run_status_command("gzip", &["-d", gz_path.to_str().unwrap()])?;
+    let input_xml_path = input_dir.join("metars.cache.xml");
+    let source_fingerprint = hash_tree(&input_dir)?;
+    let content_fingerprint = metar_content_fingerprint(&input_xml_path)?;
+    let version_label = fast_product_version_label(&content_fingerprint);
+    let inputs = fast_product_node_inputs("metars", &source_fingerprint)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "fast-metars")?,
+        "fast-metars",
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let structured_json_path = output_dir.join("metars.json");
+    let manifest_path = output_dir.join(format!("metars_{version_label}.manifest.json"));
+    let zip_path = output_dir.join(format!("metars_{version_label}.zip"));
+    let _build_lock = match claim_or_wait_for_node(
+        &prepared,
+        &[
+            structured_json_path.clone(),
+            manifest_path.clone(),
+            zip_path.clone(),
+        ],
+    )? {
+        NodeCacheState::CacheHit(record) => {
+            let source_generated_at_utc =
+                fast_product_source_generated_at("metars", &structured_json_path, &manifest_path)?;
+            return Ok((zip_path, source_generated_at_utc, record));
+        }
+        NodeCacheState::Build(lock) => lock,
+    };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
     let result = build_metar_dataset(&BuildMetarRequest {
-        input_xml_path: input_dir.join("metars.cache.xml"),
+        input_xml_path,
         output_dir,
         version_label,
         generated_at_utc,
     })?;
-    Ok((result.zip_path, generated_at_utc.to_rfc3339()))
+    let source_generated_at_utc = fast_product_source_generated_at(
+        "metars",
+        &result.structured_json_path,
+        &result.manifest_path,
+    )?;
+    let outputs = BTreeMap::from([
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&result.manifest_path, &config.build_root),
+        ),
+        (
+            "structured_json".to_string(),
+            relative_artifact_path(&result.structured_json_path, &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&result.zip_path, &config.build_root),
+        ),
+    ]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((result.zip_path, source_generated_at_utc, record))
 }
 
-fn build_nexrad_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf, String)> {
+fn build_nexrad_product(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<(PathBuf, String, NodeRecord)> {
     let artifact_root = artifact_root_from_build_root(&config.build_root).to_path_buf();
     let generated_at_utc = Utc::now()
         .with_second(0)
@@ -3447,9 +3719,11 @@ fn build_nexrad_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf,
         .with_nanosecond(0)
         .expect("zero nanos should be valid");
     let version_label = generated_at_utc.format("%Y%m%dT%H%MZ").to_string();
-    let build_root = artifact_root.join("private-work").join("nexrad").join(&version_label);
+    let build_root = artifact_root
+        .join("private-work")
+        .join("nexrad")
+        .join(&version_label);
     let input_dir = build_root.join("input");
-    let output_dir = build_root.join("output");
 
     if build_root.exists() {
         fs::remove_dir_all(&build_root)
@@ -3471,7 +3745,10 @@ fn build_nexrad_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf,
             .to_string();
     fs::write(
         provenance_dir.join("source_urls.jsonl"),
-        format!("{{\"event\":\"source_url\",\"label\":\"nexrad-index\",\"url\":\"{}\"}}\n", index_url),
+        format!(
+            "{{\"event\":\"source_url\",\"label\":\"nexrad-index\",\"url\":\"{}\"}}\n",
+            index_url
+        ),
     )
     .with_context(|| {
         format!(
@@ -3490,7 +3767,10 @@ fn build_nexrad_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf,
 
     let listings = parse_nexrad_index_for_product(&input_dir.join("index.html"))?;
     if listings.len() < 11 {
-        bail!("expected at least 11 radar listings, found {}", listings.len());
+        bail!(
+            "expected at least 11 radar listings, found {}",
+            listings.len()
+        );
     }
     let selected_urls = [0usize, 5usize, 10usize]
         .into_iter()
@@ -3525,13 +3805,153 @@ fn build_nexrad_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf,
         "nexrad-frame",
     )?;
 
+    let source_fingerprint = hash_tree(&input_dir)?;
+    let version_label = fast_product_version_label(&source_fingerprint);
+    let inputs = fast_product_node_inputs("nexrad", &source_fingerprint)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "fast-nexrad")?,
+        "fast-nexrad",
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let structured_json_path = output_dir.join("nexrad.json");
+    let manifest_path = output_dir.join(format!("nexrad_{version_label}.manifest.json"));
+    let zip_path = output_dir.join(format!("nexrad_{version_label}.zip"));
+    let _build_lock = match claim_or_wait_for_node(
+        &prepared,
+        &[
+            structured_json_path.clone(),
+            manifest_path.clone(),
+            zip_path.clone(),
+        ],
+    )? {
+        NodeCacheState::CacheHit(record) => {
+            let source_generated_at_utc =
+                fast_product_source_generated_at("nexrad", &structured_json_path, &manifest_path)?;
+            return Ok((zip_path, source_generated_at_utc, record));
+        }
+        NodeCacheState::Build(lock) => lock,
+    };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
     let result = build_nexrad_dataset(&BuildNexradRequest {
         input_dir,
         output_dir,
         version_label,
         generated_at_utc,
     })?;
-    Ok((result.zip_path, generated_at_utc.to_rfc3339()))
+    let source_generated_at_utc = fast_product_source_generated_at(
+        "nexrad",
+        &result.structured_json_path,
+        &result.manifest_path,
+    )?;
+    let outputs = BTreeMap::from([
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&result.manifest_path, &config.build_root),
+        ),
+        (
+            "structured_json".to_string(),
+            relative_artifact_path(&result.structured_json_path, &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&result.zip_path, &config.build_root),
+        ),
+    ]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((result.zip_path, source_generated_at_utc, record))
+}
+
+fn fast_product_version_label(source_fingerprint: &str) -> String {
+    source_fingerprint.chars().take(16).collect()
+}
+
+fn fast_product_node_inputs(
+    product_id: &str,
+    source_fingerprint: &str,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    Ok(BTreeMap::from([
+        ("product_id".to_string(), product_id.to_string()),
+        (
+            "source_fingerprint".to_string(),
+            source_fingerprint.to_string(),
+        ),
+        (
+            "fast_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-fast/src/lib.rs"),
+            )?,
+        ),
+    ]))
+}
+
+fn fast_product_source_generated_at(
+    product_id: &str,
+    structured_json_path: &Path,
+    manifest_path: &Path,
+) -> anyhow::Result<String> {
+    let value: serde_json::Value = serde_json::from_slice(
+        &fs::read(structured_json_path)
+            .with_context(|| format!("failed to read {}", structured_json_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", structured_json_path.display()))?;
+    match product_id {
+        "metars" => value
+            .get("metars")
+            .and_then(|value| value.as_array())
+            .and_then(|records| {
+                records
+                    .iter()
+                    .filter_map(|record| {
+                        record
+                            .get("observation_time_utc")
+                            .and_then(|value| value.as_str())
+                    })
+                    .max()
+            })
+            .map(ToOwned::to_owned)
+            .context("METAR product had no observation_time_utc values"),
+        "nexrad" => value
+            .get("frames")
+            .and_then(|value| value.as_array())
+            .and_then(|frames| {
+                frames
+                    .iter()
+                    .filter_map(|frame| {
+                        frame
+                            .get("observed_at_utc")
+                            .and_then(|value| value.as_str())
+                    })
+                    .max()
+            })
+            .map(ToOwned::to_owned)
+            .context("NEXRAD product had no observed_at_utc values"),
+        "tfrs" => {
+            let manifest: serde_json::Value = serde_json::from_slice(
+                &fs::read(manifest_path)
+                    .with_context(|| format!("failed to read {}", manifest_path.display()))?,
+            )
+            .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+            manifest
+                .get("generated_at_utc")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+                .context("TFR product manifest had no generated_at_utc")
+        }
+        other => bail!("unsupported fast product id {other}"),
+    }
 }
 
 fn publish_content_addressed_obstacle_zip(
@@ -3583,7 +4003,8 @@ fn run_status_command(program: &str, args: &[&str]) -> anyhow::Result<()> {
 }
 
 fn parse_nexrad_index_for_product(path: &Path) -> anyhow::Result<Vec<String>> {
-    let html = fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let html =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut entries = html
         .lines()
         .filter_map(|line| {
@@ -3705,7 +4126,8 @@ fn write_current_artifacts_manifest(
     ));
     fs::write(
         &manifest_path,
-        serde_json::to_vec_pretty(&manifest).context("failed to encode current artifacts manifest")?,
+        serde_json::to_vec_pretty(&manifest)
+            .context("failed to encode current artifacts manifest")?,
     )
     .with_context(|| format!("failed to write {}", manifest_path.display()))?;
     Ok(manifest_path)
@@ -3752,7 +4174,12 @@ fn validate_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow:
     )
     .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
 
-    for artifact in [&bundle.catalog, &bundle.resource_index, &bundle.data, &bundle.vectors] {
+    for artifact in [
+        &bundle.catalog,
+        &bundle.resource_index,
+        &bundle.data,
+        &bundle.vectors,
+    ] {
         validate_bundle_artifact_ref(packaged_root, artifact)?;
     }
     for package in &bundle.packages {
@@ -3819,7 +4246,10 @@ fn validate_unpacked_contract(
     Ok(())
 }
 
-fn validate_bundle_artifact_ref(packaged_root: &Path, artifact: &BundleArtifact) -> anyhow::Result<()> {
+fn validate_bundle_artifact_ref(
+    packaged_root: &Path,
+    artifact: &BundleArtifact,
+) -> anyhow::Result<()> {
     validate_public_filename(&artifact.filename, "bundle artifact filename")?;
     validate_public_filename(&artifact.relative_path, "bundle artifact relative_path")?;
     if artifact.filename != artifact.relative_path {
@@ -3833,7 +4263,12 @@ fn validate_bundle_artifact_ref(packaged_root: &Path, artifact: &BundleArtifact)
 }
 
 fn validate_public_filename(value: &str, field: &str) -> anyhow::Result<()> {
-    if value != Path::new(value).file_name().and_then(|name| name.to_str()).unwrap_or_default() {
+    if value
+        != Path::new(value)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+    {
         bail!("{field} must be a basename, got {value}");
     }
     if value.contains('/') || value.contains('\\') {
@@ -3843,24 +4278,35 @@ fn validate_public_filename(value: &str, field: &str) -> anyhow::Result<()> {
 }
 
 fn ensure_public_file_exists(path: &Path) -> anyhow::Result<()> {
-    let meta = fs::metadata(path).with_context(|| format!("missing published file {}", path.display()))?;
+    let meta =
+        fs::metadata(path).with_context(|| format!("missing published file {}", path.display()))?;
     if !meta.is_file() {
-        bail!("expected published file, found non-file at {}", path.display());
+        bail!(
+            "expected published file, found non-file at {}",
+            path.display()
+        );
     }
     Ok(())
 }
 
 fn ensure_public_dir_exists(path: &Path) -> anyhow::Result<()> {
-    let meta = fs::metadata(path).with_context(|| format!("missing published dir {}", path.display()))?;
+    let meta =
+        fs::metadata(path).with_context(|| format!("missing published dir {}", path.display()))?;
     if !meta.is_dir() {
-        bail!("expected published dir, found non-dir at {}", path.display());
+        bail!(
+            "expected published dir, found non-dir at {}",
+            path.display()
+        );
     }
     Ok(())
 }
 
 fn zip_stem(filename: &str) -> anyhow::Result<String> {
     let path = Path::new(filename);
-    let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
     if extension != "zip" {
         bail!("expected zip filename, got {filename}");
     }
@@ -3886,7 +4332,12 @@ fn validate_no_internal_paths_in_value(
 ) -> anyhow::Result<()> {
     match value {
         serde_json::Value::String(text) => {
-            for forbidden in ["cache/", "private-work/", "work/", "published-packaged/production"] {
+            for forbidden in [
+                "cache/",
+                "private-work/",
+                "work/",
+                "published-packaged/production",
+            ] {
                 if text.contains(forbidden) {
                     bail!(
                         "{} contains forbidden internal path fragment at {}: {}",
@@ -4010,7 +4461,9 @@ fn canonical_package_filename(
         .and_then(|stem| stem.to_str())
         .and_then(|stem| stem.rsplit('_').next())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("failed to derive cycle from package filename {original_filename}"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("failed to derive cycle from package filename {original_filename}")
+        })?;
     Ok(format!(
         "{}_{}_{}.zip",
         family_id.replace('-', "_"),
@@ -4056,16 +4509,24 @@ impl ProductBuildConfig {
                         .ok_or_else(|| anyhow::anyhow!("unsupported profile: {value}"))?;
                     build_root = match profile {
                         ProductBuildProfile::Production => artifact_root.join("published-packaged"),
-                        ProductBuildProfile::Validation => artifact_root.join("published-packaged-validation"),
+                        ProductBuildProfile::Validation => {
+                            artifact_root.join("published-packaged-validation")
+                        }
                     };
                     index += 2;
                 }
                 "--chart-cutline-root" => {
-                    chart_cutline_root = PathBuf::from(args.get(index + 1).context("missing value for --chart-cutline-root")?);
+                    chart_cutline_root = PathBuf::from(
+                        args.get(index + 1)
+                            .context("missing value for --chart-cutline-root")?,
+                    );
                     index += 2;
                 }
                 "--build-root" => {
-                    build_root = PathBuf::from(args.get(index + 1).context("missing value for --build-root")?);
+                    build_root = PathBuf::from(
+                        args.get(index + 1)
+                            .context("missing value for --build-root")?,
+                    );
                     index += 2;
                 }
                 "--cycle" => {
@@ -4119,9 +4580,7 @@ impl ProductBuildConfig {
     }
 }
 
-fn build_source_urls_node(
-    config: &ProductBuildConfig,
-) -> anyhow::Result<(PathBuf, NodeRecord)> {
+fn build_source_urls_node(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf, NodeRecord)> {
     if let Some(override_root) = env_path("AEROBAG_SOURCE_URLS_ROOT") {
         return build_overridden_source_urls_node(config, &override_root);
     }
@@ -4162,8 +4621,15 @@ fn build_source_urls_node(
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     fs::create_dir_all(&output_dir)?;
-    emit_source_urls(&output_dir, Some(&resolved_cycle), Some(&fetch_cache_config(config)?))?;
-    let outputs = BTreeMap::from([("output_dir".to_string(), relative_artifact_path(&output_dir, &config.build_root))]);
+    emit_source_urls(
+        &output_dir,
+        Some(&resolved_cycle),
+        Some(&fetch_cache_config(config)?),
+    )?;
+    let outputs = BTreeMap::from([(
+        "output_dir".to_string(),
+        relative_artifact_path(&output_dir, &config.build_root),
+    )]);
     let record = write_node_record(
         prepared,
         inputs,
@@ -4219,8 +4685,10 @@ fn build_overridden_source_urls_node(
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     copy_dir_recursive(override_root, &output_dir)?;
-    let outputs =
-        BTreeMap::from([("output_dir".to_string(), relative_artifact_path(&output_dir, &config.build_root))]);
+    let outputs = BTreeMap::from([(
+        "output_dir".to_string(),
+        relative_artifact_path(&output_dir, &config.build_root),
+    )]);
     let record = write_node_record(
         prepared,
         inputs,
@@ -4244,7 +4712,11 @@ fn build_chart_render_node(
     let family_id = family_slug(family).to_string();
     let node_name = format!("charts-{family_id}-render");
     let inputs = chart_render_inputs(family, source_repo, source_urls, fetch_jobs, cpu_jobs)?;
-    let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, &node_name)?,
+        &node_name,
+        &inputs,
+    )?;
     let work_dir = prepared.dir.join("work").join(family.capture_label());
     let tiles_root = work_dir.join("tiles");
     let _build_lock = match claim_or_wait_for_node(&prepared, &[tiles_root.clone()])? {
@@ -4273,8 +4745,14 @@ fn build_chart_render_node(
     build_family_vrts(family, &work_dir, cpu_jobs)?;
     build_family_tiles(family, &work_dir, cpu_jobs)?;
     let outputs = BTreeMap::from([
-        ("work_dir".to_string(), relative_artifact_path(&work_dir, &config.build_root)),
-        ("tiles_root".to_string(), relative_artifact_path(&tiles_root, &config.build_root)),
+        (
+            "work_dir".to_string(),
+            relative_artifact_path(&work_dir, &config.build_root),
+        ),
+        (
+            "tiles_root".to_string(),
+            relative_artifact_path(&tiles_root, &config.build_root),
+        ),
     ]);
     write_node_record(
         prepared,
@@ -4303,8 +4781,11 @@ fn build_chart_package_nodes(
         config.fetch_jobs,
         config.cpu_jobs.min(8).max(1),
     )?;
-    let render_prepared =
-        prepare_node_at(&build_shared_node_dir(config, &render_node_name)?, &render_node_name, &render_inputs)?;
+    let render_prepared = prepare_node_at(
+        &build_shared_node_dir(config, &render_node_name)?,
+        &render_node_name,
+        &render_inputs,
+    )?;
     let render_record = load_existing_node_record(&render_prepared.record_path, &render_node_name)?;
     let work_dir = resolve_artifact_path(config, output_path(&render_record, "work_dir")?);
     let provenance_dir = render_prepared
@@ -4317,13 +4798,23 @@ fn build_chart_package_nodes(
     let mut node_records = Vec::new();
     let mut package_records = Vec::new();
     for region in Region::ALL {
-        let node_name = format!("charts-{family_id}-package-{}", region.code().to_ascii_lowercase());
+        let node_name = format!(
+            "charts-{family_id}-package-{}",
+            region.code().to_ascii_lowercase()
+        );
         let inputs = BTreeMap::from([
-            ("render_fingerprint".to_string(), render_record.fingerprint.clone()),
+            (
+                "render_fingerprint".to_string(),
+                render_record.fingerprint.clone(),
+            ),
             ("region".to_string(), region.code().to_string()),
             ("version_label".to_string(), version_label.to_string()),
         ]);
-        let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
+        let prepared = prepare_node_at(
+            &build_shared_node_dir(config, &node_name)?,
+            &node_name,
+            &inputs,
+        )?;
         let zip_path = work_dir.join(format!(
             "{}_{}_{}.zip",
             region.code(),
@@ -4336,10 +4827,15 @@ fn build_chart_package_nodes(
             manifest_chart_name(family),
             version_label
         ));
-        if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
+        if let Some(record) =
+            try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])?
+        {
             node_records.push(record);
         } else {
-            let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
+            let _build_lock = match claim_or_wait_for_node(
+                &prepared,
+                &[zip_path.clone(), manifest_path.clone()],
+            )? {
                 NodeCacheState::CacheHit(record) => {
                     node_records.push(record);
                     if let Some(existing) = existing_package_records.get(region.code()) {
@@ -4379,8 +4875,14 @@ fn build_chart_package_nodes(
                 version_label,
             )?;
             let outputs = BTreeMap::from([
-                ("zip".to_string(), relative_artifact_path(&zip_path, &config.build_root)),
-                ("manifest".to_string(), relative_artifact_path(&manifest_path, &config.build_root)),
+                (
+                    "zip".to_string(),
+                    relative_artifact_path(&zip_path, &config.build_root),
+                ),
+                (
+                    "manifest".to_string(),
+                    relative_artifact_path(&manifest_path, &config.build_root),
+                ),
             ]);
             let record = write_node_record(
                 prepared,
@@ -4449,8 +4951,15 @@ fn build_csup_render_node(
 ) -> anyhow::Result<NodeRecord> {
     let node_name = format!("csup-render-{}", region.code().to_ascii_lowercase());
     let inputs = csup_render_inputs(stage_fingerprint, region, render_jobs, version_label)?;
-    let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
-    let marker = work_dir.join(format!(".render-complete-{}", region.code().to_ascii_lowercase()));
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, &node_name)?,
+        &node_name,
+        &inputs,
+    )?;
+    let marker = work_dir.join(format!(
+        ".render-complete-{}",
+        region.code().to_ascii_lowercase()
+    ));
     let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&marker))? {
         NodeCacheState::CacheHit(record) => return Ok(record),
         NodeCacheState::Build(lock) => lock,
@@ -4458,11 +4967,16 @@ fn build_csup_render_node(
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     render_csup_region(work_dir, region, render_jobs)?;
-    fs::write(&marker, b"ok")
-        .with_context(|| format!("failed to write {}", marker.display()))?;
+    fs::write(&marker, b"ok").with_context(|| format!("failed to write {}", marker.display()))?;
     let outputs = BTreeMap::from([
-        ("work_dir".to_string(), relative_artifact_path(work_dir, &config.build_root)),
-        ("marker".to_string(), relative_artifact_path(&marker, &config.build_root)),
+        (
+            "work_dir".to_string(),
+            relative_artifact_path(work_dir, &config.build_root),
+        ),
+        (
+            "marker".to_string(),
+            relative_artifact_path(&marker, &config.build_root),
+        ),
     ]);
     write_node_record(
         prepared,
@@ -4482,7 +4996,11 @@ fn build_csup_stage_node(
     fetch_jobs: usize,
 ) -> anyhow::Result<NodeRecord> {
     let inputs = csup_stage_inputs(source_urls, fetch_jobs)?;
-    let prepared = prepare_node_at(&build_shared_node_dir(config, "csup-stage")?, "csup-stage", &inputs)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "csup-stage")?,
+        "csup-stage",
+        &inputs,
+    )?;
     let work_root = prepared.dir.clone();
     let marker = work_root.join(".stage-complete");
     let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&marker))? {
@@ -4505,15 +5023,20 @@ fn build_csup_stage_node(
         "csup",
     )?;
     prepare_csup_inputs(&work_dir)?;
-    fs::write(&marker, b"ok")
-        .with_context(|| format!("failed to write {}", marker.display()))?;
+    fs::write(&marker, b"ok").with_context(|| format!("failed to write {}", marker.display()))?;
     let outputs = BTreeMap::from([
-        ("work_dir".to_string(), relative_artifact_path(&work_dir, &config.build_root)),
+        (
+            "work_dir".to_string(),
+            relative_artifact_path(&work_dir, &config.build_root),
+        ),
         (
             "provenance_dir".to_string(),
             relative_artifact_path(&provenance_dir, &config.build_root),
         ),
-        ("marker".to_string(), relative_artifact_path(&marker, &config.build_root)),
+        (
+            "marker".to_string(),
+            relative_artifact_path(&marker, &config.build_root),
+        ),
     ]);
     write_node_record(
         prepared,
@@ -4533,25 +5056,40 @@ fn build_csup_package_nodes(
 ) -> anyhow::Result<(Vec<NodeRecord>, AssetSource)> {
     let source_urls_path = source_urls_dir.join("csup/source_urls.jsonl");
     let stage_inputs = csup_stage_inputs(&source_urls_path, config.fetch_jobs)?;
-    let stage_prepared = prepare_node_at(&build_shared_node_dir(config, "csup-stage")?, "csup-stage", &stage_inputs)?;
+    let stage_prepared = prepare_node_at(
+        &build_shared_node_dir(config, "csup-stage")?,
+        "csup-stage",
+        &stage_inputs,
+    )?;
     let stage_record = load_existing_node_record(&stage_prepared.record_path, "csup-stage")?;
     let work_dir = resolve_artifact_path(config, output_path(&stage_record, "work_dir")?);
-    let provenance_dir = resolve_artifact_path(config, output_path(&stage_record, "provenance_dir")?);
+    let provenance_dir =
+        resolve_artifact_path(config, output_path(&stage_record, "provenance_dir")?);
     let aggregate_path = provenance_dir.join("package_outputs.jsonl");
     let existing_package_records = read_package_outputs_by_region(&aggregate_path)?;
     let mut node_records = Vec::new();
     let mut package_records = Vec::new();
     for region in Region::ALL {
         let render_node_name = format!("csup-render-{}", region.code().to_ascii_lowercase());
-        let render_inputs =
-            csup_render_inputs(&stage_record.fingerprint, region, config.cpu_jobs.max(1), version_label)?;
-        let render_prepared =
-            prepare_node_at(&build_shared_node_dir(config, &render_node_name)?, &render_node_name, &render_inputs)?;
+        let render_inputs = csup_render_inputs(
+            &stage_record.fingerprint,
+            region,
+            config.cpu_jobs.max(1),
+            version_label,
+        )?;
+        let render_prepared = prepare_node_at(
+            &build_shared_node_dir(config, &render_node_name)?,
+            &render_node_name,
+            &render_inputs,
+        )?;
         let render_record =
             load_existing_node_record(&render_prepared.record_path, &render_node_name)?;
         let node_name = format!("csup-package-{}", region.code().to_ascii_lowercase());
         let inputs = BTreeMap::from([
-            ("render_fingerprint".to_string(), render_record.fingerprint.clone()),
+            (
+                "render_fingerprint".to_string(),
+                render_record.fingerprint.clone(),
+            ),
             ("region".to_string(), region.code().to_string()),
             ("version_label".to_string(), version_label.to_string()),
             (
@@ -4573,13 +5111,23 @@ fn build_csup_package_nodes(
                 )?,
             ),
         ]);
-        let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
+        let prepared = prepare_node_at(
+            &build_shared_node_dir(config, &node_name)?,
+            &node_name,
+            &inputs,
+        )?;
         let zip_path = work_dir.join(format!("{}_CSUP_{}.zip", region.code(), version_label));
-        let manifest_path = work_dir.join(format!("{}_CSUP_{}.manifest", region.code(), version_label));
-        if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
+        let manifest_path =
+            work_dir.join(format!("{}_CSUP_{}.manifest", region.code(), version_label));
+        if let Some(record) =
+            try_load_node_record(&prepared, &[zip_path.clone(), manifest_path.clone()])?
+        {
             node_records.push(record);
         } else {
-            let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path.clone()])? {
+            let _build_lock = match claim_or_wait_for_node(
+                &prepared,
+                &[zip_path.clone(), manifest_path.clone()],
+            )? {
                 NodeCacheState::CacheHit(record) => {
                     node_records.push(record);
                     if let Some(existing) = existing_package_records.get(region.code()) {
@@ -4604,8 +5152,14 @@ fn build_csup_package_nodes(
             let package_record =
                 package_csup_region_versioned(&work_dir, region, version_label, version_label)?;
             let outputs = BTreeMap::from([
-                ("zip".to_string(), relative_artifact_path(&zip_path, &config.build_root)),
-                ("manifest".to_string(), relative_artifact_path(&manifest_path, &config.build_root)),
+                (
+                    "zip".to_string(),
+                    relative_artifact_path(&zip_path, &config.build_root),
+                ),
+                (
+                    "manifest".to_string(),
+                    relative_artifact_path(&manifest_path, &config.build_root),
+                ),
             ]);
             let record = write_node_record(
                 prepared,
@@ -4665,7 +5219,11 @@ fn build_tpp_render_node(
         .context("tpp build requires source urls")?;
     let node_name = format!("tpp-{region_id}-render");
     let inputs = tpp_render_inputs(request, source_urls, &region_id)?;
-    let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, &node_name)?,
+        &node_name,
+        &inputs,
+    )?;
     let run_root = prepared.dir.clone();
     let plates_root = run_root.join(format!("work/tpp-{region_id}/plates"));
     let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&plates_root))? {
@@ -4678,12 +5236,18 @@ fn build_tpp_render_node(
     request.run_root = run_root;
     let result = render_native_tpp(&request)?;
     let outputs = BTreeMap::from([
-        ("work_dir".to_string(), relative_artifact_path(&result.work_dir, &config.build_root)),
+        (
+            "work_dir".to_string(),
+            relative_artifact_path(&result.work_dir, &config.build_root),
+        ),
         (
             "provenance_dir".to_string(),
             relative_artifact_path(&result.provenance_dir, &config.build_root),
         ),
-        ("plates_root".to_string(), relative_artifact_path(&plates_root, &config.build_root)),
+        (
+            "plates_root".to_string(),
+            relative_artifact_path(&plates_root, &config.build_root),
+        ),
     ]);
     write_node_record(
         prepared,
@@ -4722,7 +5286,10 @@ fn build_tpp_package_node(
     let render_record = load_existing_node_record(&render_prepared.record_path, &render_node_name)?;
     let asset_root = resolve_artifact_path(config, output_path(&render_record, "work_dir")?);
     let inputs = BTreeMap::from([
-        ("render_fingerprint".to_string(), render_record.fingerprint.clone()),
+        (
+            "render_fingerprint".to_string(),
+            render_record.fingerprint.clone(),
+        ),
         ("region".to_string(), region.code().to_string()),
         ("version_label".to_string(), version_label.to_string()),
         (
@@ -4749,15 +5316,28 @@ fn build_tpp_package_node(
         ),
     ]);
     let node_name = format!("tpp-{region_id}-package");
-    let prepared = prepare_node_at(&build_shared_node_dir(config, &node_name)?, &node_name, &inputs)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, &node_name)?,
+        &node_name,
+        &inputs,
+    )?;
     let package_root = prepared.dir.join("output");
-    let provenance_dir = prepared.dir.join("meta").join("provenance").join(format!("tpp-{region_id}"));
+    let provenance_dir = prepared
+        .dir
+        .join("meta")
+        .join("provenance")
+        .join(format!("tpp-{region_id}"));
     let package_outputs_path = provenance_dir.join("package_outputs.jsonl");
     let zip_path = package_root.join(format!("{}_TPP_{}.zip", region.code(), version_label));
-    let manifest_path = package_root.join(format!("{}_TPP_{}.manifest", region.code(), version_label));
+    let manifest_path =
+        package_root.join(format!("{}_TPP_{}.manifest", region.code(), version_label));
     let _build_lock = match claim_or_wait_for_node(
         &prepared,
-        &[package_outputs_path.clone(), zip_path.clone(), manifest_path.clone()],
+        &[
+            package_outputs_path.clone(),
+            zip_path.clone(),
+            manifest_path.clone(),
+        ],
     )? {
         NodeCacheState::CacheHit(record) => {
             return Ok((
@@ -4783,12 +5363,30 @@ fn build_tpp_package_node(
         version_label,
     )?;
     let outputs = BTreeMap::from([
-        ("asset_root".to_string(), relative_artifact_path(&asset_root, &config.build_root)),
-        ("package_root".to_string(), relative_artifact_path(&package_root, &config.build_root)),
-        ("package_outputs".to_string(), relative_artifact_path(&package_outputs_path, &config.build_root)),
-        ("zip".to_string(), relative_artifact_path(&zip_path, &config.build_root)),
-        ("manifest".to_string(), relative_artifact_path(&manifest_path, &config.build_root)),
-        ("package_count".to_string(), result.package_count.to_string()),
+        (
+            "asset_root".to_string(),
+            relative_artifact_path(&asset_root, &config.build_root),
+        ),
+        (
+            "package_root".to_string(),
+            relative_artifact_path(&package_root, &config.build_root),
+        ),
+        (
+            "package_outputs".to_string(),
+            relative_artifact_path(&package_outputs_path, &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&zip_path, &config.build_root),
+        ),
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&manifest_path, &config.build_root),
+        ),
+        (
+            "package_count".to_string(),
+            result.package_count.to_string(),
+        ),
     ]);
     let record = write_node_record(
         prepared,
@@ -4826,7 +5424,10 @@ fn chart_render_inputs(
     ]))
 }
 
-fn csup_stage_inputs(source_urls: &Path, fetch_jobs: usize) -> anyhow::Result<BTreeMap<String, String>> {
+fn csup_stage_inputs(
+    source_urls: &Path,
+    fetch_jobs: usize,
+) -> anyhow::Result<BTreeMap<String, String>> {
     Ok(BTreeMap::from([
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("fetch_jobs".to_string(), fetch_jobs.to_string()),
@@ -4858,7 +5459,10 @@ fn csup_render_inputs(
     version_label: &str,
 ) -> anyhow::Result<BTreeMap<String, String>> {
     Ok(BTreeMap::from([
-        ("stage_fingerprint".to_string(), stage_fingerprint.to_string()),
+        (
+            "stage_fingerprint".to_string(),
+            stage_fingerprint.to_string(),
+        ),
         ("region".to_string(), region.code().to_string()),
         ("render_jobs".to_string(), render_jobs.to_string()),
         ("version_label".to_string(), version_label.to_string()),
@@ -4929,16 +5533,26 @@ fn build_data_nodes(
 
     let artifact_stem = data_version.clone();
     let inputs = BTreeMap::from([
-        ("staged_input_dir".to_string(), relative_artifact_path(&staged_input_dir, &config.build_root)),
+        (
+            "staged_input_dir".to_string(),
+            relative_artifact_path(&staged_input_dir, &config.build_root),
+        ),
         (
             "staged_input_fingerprint".to_string(),
             staging_record.fingerprint.clone(),
         ),
         ("source_urls".to_string(), hash_file(&source_urls)?),
-        ("manifest_version".to_string(), data_manifest_version.clone()),
+        (
+            "manifest_version".to_string(),
+            data_manifest_version.clone(),
+        ),
         ("artifact_stem".to_string(), artifact_stem.clone()),
     ]);
-    let prepared = prepare_node_at(&build_shared_node_dir(config, node_name)?, node_name, &inputs)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, node_name)?,
+        node_name,
+        &inputs,
+    )?;
     let provenance_dir = prepared.dir.join(format!("meta/provenance/{node_name}"));
     fs::create_dir_all(&provenance_dir)?;
     copy_source_urls_provenance(&source_urls, &provenance_dir)?;
@@ -4950,23 +5564,35 @@ fn build_data_nodes(
         manifest_version: data_manifest_version.clone(),
         artifact_stem: Some(artifact_stem),
     };
-    let manifest_path = request
-        .output_dir
-        .join(format!("{}.manifest", request.artifact_stem.as_deref().unwrap_or("databases")));
-    let zip_path = request
-        .output_dir
-        .join(format!("{}.zip", request.artifact_stem.as_deref().unwrap_or("databases")));
-    let _build_lock = match claim_or_wait_for_node(&prepared, &[manifest_path.clone(), zip_path.clone()])? {
-        NodeCacheState::CacheHit(record) => return Ok(vec![staging_record, record]),
-        NodeCacheState::Build(lock) => lock,
-    };
+    let manifest_path = request.output_dir.join(format!(
+        "{}.manifest",
+        request.artifact_stem.as_deref().unwrap_or("databases")
+    ));
+    let zip_path = request.output_dir.join(format!(
+        "{}.zip",
+        request.artifact_stem.as_deref().unwrap_or("databases")
+    ));
+    let _build_lock =
+        match claim_or_wait_for_node(&prepared, &[manifest_path.clone(), zip_path.clone()])? {
+            NodeCacheState::CacheHit(record) => return Ok(vec![staging_record, record]),
+            NodeCacheState::Build(lock) => lock,
+        };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     let result = build_data_package(&request)?;
     let outputs = BTreeMap::from([
-        ("main_db".to_string(), relative_artifact_path(&result.main_db, &config.build_root)),
-        ("manifest".to_string(), relative_artifact_path(&result.manifest_path, &config.build_root)),
-        ("zip".to_string(), relative_artifact_path(&result.zip_path, &config.build_root)),
+        (
+            "main_db".to_string(),
+            relative_artifact_path(&result.main_db, &config.build_root),
+        ),
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&result.manifest_path, &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&result.zip_path, &config.build_root),
+        ),
     ]);
     let build_record = write_node_record(
         prepared,
@@ -4989,7 +5615,10 @@ fn build_data_match_node(
     tpp_sources: &[(Region, AssetSource, String)],
 ) -> anyhow::Result<NodeRecord> {
     let mut inputs = BTreeMap::from([
-        ("raw_data_fingerprint".to_string(), raw_data_fingerprint.to_string()),
+        (
+            "raw_data_fingerprint".to_string(),
+            raw_data_fingerprint.to_string(),
+        ),
         ("artifact_stem".to_string(), artifact_stem.to_string()),
         (
             "matching_lib".to_string(),
@@ -5036,7 +5665,11 @@ fn build_data_match_node(
     let main_db_path = output_dir.join("main.db");
     let _build_lock = match claim_or_wait_for_node(
         &prepared,
-        &[main_db_path.clone(), manifest_path.clone(), zip_path.clone()],
+        &[
+            main_db_path.clone(),
+            manifest_path.clone(),
+            zip_path.clone(),
+        ],
     )? {
         NodeCacheState::CacheHit(record) => return Ok(record),
         NodeCacheState::Build(lock) => lock,
@@ -5051,9 +5684,18 @@ fn build_data_match_node(
         tpp_package_zips: tpp_zips,
     })?;
     let outputs = BTreeMap::from([
-        ("main_db".to_string(), relative_artifact_path(&result.main_db, &config.build_root)),
-        ("manifest".to_string(), relative_artifact_path(&result.manifest_path, &config.build_root)),
-        ("zip".to_string(), relative_artifact_path(&result.zip_path, &config.build_root)),
+        (
+            "main_db".to_string(),
+            relative_artifact_path(&result.main_db, &config.build_root),
+        ),
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&result.manifest_path, &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&result.zip_path, &config.build_root),
+        ),
     ]);
     write_node_record(
         prepared,
@@ -5085,7 +5727,11 @@ fn build_vectors_node(
             )?,
         ),
     ]);
-    let prepared = prepare_node_at(&build_shared_node_dir(config, "vectors")?, "vectors", &inputs)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "vectors")?,
+        "vectors",
+        &inputs,
+    )?;
     let output_dir = prepared.dir.join("output");
     let request = BuildVectorsRequest {
         main_db: main_db.to_path_buf(),
@@ -5094,17 +5740,27 @@ fn build_vectors_node(
     };
     let zip_path = output_dir.join(format!("vectors_{version_label}.zip"));
     let stats_path = output_dir.join("stats.json");
-    let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone(), stats_path.clone()])? {
-        NodeCacheState::CacheHit(record) => return Ok(record),
-        NodeCacheState::Build(lock) => lock,
-    };
+    let _build_lock =
+        match claim_or_wait_for_node(&prepared, &[zip_path.clone(), stats_path.clone()])? {
+            NodeCacheState::CacheHit(record) => return Ok(record),
+            NodeCacheState::Build(lock) => lock,
+        };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     let result = build_vectors_dataset(&request)?;
     let outputs = BTreeMap::from([
-        ("manifest".to_string(), relative_artifact_path(&result.manifest_path, &config.build_root)),
-        ("stats".to_string(), relative_artifact_path(&result.stats_path, &config.build_root)),
-        ("zip".to_string(), relative_artifact_path(&result.zip_path, &config.build_root)),
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&result.manifest_path, &config.build_root),
+        ),
+        (
+            "stats".to_string(),
+            relative_artifact_path(&result.stats_path, &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&result.zip_path, &config.build_root),
+        ),
     ]);
     write_node_record(
         prepared,
@@ -5136,7 +5792,11 @@ fn build_data_input_node(
             )?,
         ),
     ]);
-    let prepared = prepare_node_at(&build_shared_node_dir(config, "data-input-staging")?, "data-input-staging", &inputs)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "data-input-staging")?,
+        "data-input-staging",
+        &inputs,
+    )?;
     let staged_root = prepared.dir.join("out");
     let marker = staged_root.join(".staged-complete");
     let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&marker))? {
@@ -5163,11 +5823,16 @@ fn build_data_input_node(
         &provenance_dir,
         "data",
     )?;
-    fs::write(&marker, b"ok")
-        .with_context(|| format!("failed to write {}", marker.display()))?;
+    fs::write(&marker, b"ok").with_context(|| format!("failed to write {}", marker.display()))?;
     let outputs = BTreeMap::from([
-        ("staged_input_dir".to_string(), relative_artifact_path(&staged_root, &config.build_root)),
-        ("provenance_dir".to_string(), relative_artifact_path(&provenance_dir, &config.build_root)),
+        (
+            "staged_input_dir".to_string(),
+            relative_artifact_path(&staged_root, &config.build_root),
+        ),
+        (
+            "provenance_dir".to_string(),
+            relative_artifact_path(&provenance_dir, &config.build_root),
+        ),
     ]);
     let record = write_node_record(
         prepared,
@@ -5332,11 +5997,14 @@ fn summarize_package_records(records: &[NodeRecord]) -> PackageSummary {
     }
 }
 
-fn read_package_outputs_by_region(path: &Path) -> anyhow::Result<BTreeMap<String, PackageOutputRecord>> {
+fn read_package_outputs_by_region(
+    path: &Path,
+) -> anyhow::Result<BTreeMap<String, PackageOutputRecord>> {
     if !path.is_file() {
         return Ok(BTreeMap::new());
     }
-    let text = fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let text =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut records = BTreeMap::new();
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         let value: serde_json::Value =
@@ -5350,7 +6018,10 @@ fn read_package_outputs_by_region(path: &Path) -> anyhow::Result<BTreeMap<String
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string(),
-            chart: value.get("chart").and_then(|v| v.as_str()).map(ToOwned::to_owned),
+            chart: value
+                .get("chart")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned),
             region: value
                 .get("region")
                 .and_then(|v| v.as_str())
@@ -5397,7 +6068,8 @@ fn try_load_node_record(
     }
     let bytes = fs::read(&prepared.record_path)
         .with_context(|| format!("failed to read {}", prepared.record_path.display()))?;
-    let record: NodeRecord = serde_json::from_slice(&bytes).context("failed to parse node record")?;
+    let record: NodeRecord =
+        serde_json::from_slice(&bytes).context("failed to parse node record")?;
     if record.fingerprint != prepared.fingerprint {
         return Ok(None);
     }
@@ -5441,8 +6113,9 @@ fn claim_or_wait_for_node(
                 thread::sleep(std::time::Duration::from_millis(250));
             }
             Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("failed to acquire {}", prepared.lock_path.display()));
+                return Err(err).with_context(|| {
+                    format!("failed to acquire {}", prepared.lock_path.display())
+                });
             }
         }
     }
@@ -5462,7 +6135,8 @@ fn reset_node_dir_for_rebuild(prepared: &PreparedNode) -> anyhow::Result<()> {
             fs::remove_dir_all(&path)
                 .with_context(|| format!("failed to remove {}", path.display()))?;
         } else {
-            fs::remove_file(&path).with_context(|| format!("failed to remove {}", path.display()))?;
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
         }
     }
     Ok(())
@@ -5473,7 +6147,9 @@ fn set_tree_readonly(root: &Path, readonly: bool) -> anyhow::Result<()> {
         return Ok(());
     }
     if readonly {
-        for entry in fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))? {
+        for entry in
+            fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))?
+        {
             let entry = entry?;
             let path = entry.path();
             if entry.file_type()?.is_dir() {
@@ -5485,7 +6161,9 @@ fn set_tree_readonly(root: &Path, readonly: bool) -> anyhow::Result<()> {
         set_path_readonly(root, true)?;
     } else {
         set_path_readonly(root, false)?;
-        for entry in fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))? {
+        for entry in
+            fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))?
+        {
             let entry = entry?;
             let path = entry.path();
             if entry.file_type()?.is_dir() {
@@ -5499,8 +6177,8 @@ fn set_tree_readonly(root: &Path, readonly: bool) -> anyhow::Result<()> {
 }
 
 fn set_path_readonly(path: &Path, readonly: bool) -> anyhow::Result<()> {
-    let metadata = fs::symlink_metadata(path)
-        .with_context(|| format!("failed to stat {}", path.display()))?;
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
     if metadata.file_type().is_symlink() {
         return Ok(());
     }
@@ -5531,7 +6209,9 @@ fn remove_stale_lock_if_needed(lock_path: &Path) -> anyhow::Result<()> {
     match fs::remove_file(lock_path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err).with_context(|| format!("failed to remove stale {}", lock_path.display())),
+        Err(err) => {
+            Err(err).with_context(|| format!("failed to remove stale {}", lock_path.display()))
+        }
     }
 }
 
@@ -5604,8 +6284,11 @@ fn write_node_record(
     )
     .with_context(|| format!("failed to write {}", prepared.record_path.display()))?;
     if !finalize_readonly {
-        fs::write(prepared.dir.join(".mutable-output-root"), b"legacy mutable output root\n")
-            .with_context(|| format!("failed to mark {} as mutable", prepared.dir.display()))?;
+        fs::write(
+            prepared.dir.join(".mutable-output-root"),
+            b"legacy mutable output root\n",
+        )
+        .with_context(|| format!("failed to mark {} as mutable", prepared.dir.display()))?;
     }
     Ok(record)
 }
@@ -5664,9 +6347,7 @@ fn artifact_root_from_build_root(build_root: &Path) -> &Path {
     if build_root
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            name == "published-packaged" || name == "published-packaged-validation"
-        })
+        .is_some_and(|name| name == "published-packaged" || name == "published-packaged-validation")
     {
         return build_root.parent().unwrap_or(build_root);
     }
@@ -5674,9 +6355,7 @@ fn artifact_root_from_build_root(build_root: &Path) -> &Path {
         .parent()
         .and_then(|value| value.file_name())
         .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            name == "published-packaged" || name == "published-packaged-validation"
-        })
+        .is_some_and(|name| name == "published-packaged" || name == "published-packaged-validation")
     {
         return build_root
             .parent()
@@ -5737,10 +6416,14 @@ fn build_shared_node_dir(config: &ProductBuildConfig, name: &str) -> anyhow::Res
     Ok(root)
 }
 
-fn load_existing_node_record(record_path: &Path, expected_name: &str) -> anyhow::Result<NodeRecord> {
+fn load_existing_node_record(
+    record_path: &Path,
+    expected_name: &str,
+) -> anyhow::Result<NodeRecord> {
     let bytes = fs::read(record_path)
         .with_context(|| format!("failed to read {}", record_path.display()))?;
-    let record: NodeRecord = serde_json::from_slice(&bytes).context("failed to parse node record")?;
+    let record: NodeRecord =
+        serde_json::from_slice(&bytes).context("failed to parse node record")?;
     if record.name != expected_name {
         bail!(
             "node record {} had unexpected name {}",
@@ -5768,13 +6451,18 @@ fn hash_tree(root: &Path) -> anyhow::Result<String> {
     for (relative, path) in entries {
         hasher.update(relative.as_bytes());
         hasher.update([0]);
-        hasher.update(fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?);
+        hasher
+            .update(fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?);
         hasher.update([0]);
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn collect_files(root: &Path, current: &Path, out: &mut Vec<(String, PathBuf)>) -> anyhow::Result<()> {
+fn collect_files(
+    root: &Path,
+    current: &Path,
+    out: &mut Vec<(String, PathBuf)>,
+) -> anyhow::Result<()> {
     let mut entries = fs::read_dir(current)
         .with_context(|| format!("failed to read {}", current.display()))?
         .collect::<Result<Vec<_>, _>>()
@@ -5827,7 +6515,9 @@ fn fingerprint_for_node(name: &str, inputs: &BTreeMap<String, String>) -> anyhow
         "node": name,
         "inputs": inputs,
     });
-    Ok(hash_text(&serde_json::to_string(&value).context("fingerprint json")?))
+    Ok(hash_text(
+        &serde_json::to_string(&value).context("fingerprint json")?,
+    ))
 }
 
 fn hash_text(text: &str) -> String {
@@ -5848,7 +6538,10 @@ fn current_nofile_limit() -> anyhow::Result<u64> {
     };
     let result = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) };
     if result != 0 {
-        anyhow::bail!("failed to read RLIMIT_NOFILE: {}", std::io::Error::last_os_error());
+        anyhow::bail!(
+            "failed to read RLIMIT_NOFILE: {}",
+            std::io::Error::last_os_error()
+        );
     }
     Ok(limits.rlim_cur)
 }
@@ -6016,18 +6709,17 @@ fn chart_family_version_label(
     source_urls_dir: &Path,
     family: ChartFamily,
 ) -> anyhow::Result<String> {
-    let source_urls = source_urls_dir.join(format!("charts-{}/source_urls.jsonl", family_slug(family)));
-    let effective =
-        find_effective_date_from_urls(&read_source_urls_jsonl(&source_urls)?)
-            .with_context(|| format!("missing chart effective date in {}", source_urls.display()))?;
+    let source_urls =
+        source_urls_dir.join(format!("charts-{}/source_urls.jsonl", family_slug(family)));
+    let effective = find_effective_date_from_urls(&read_source_urls_jsonl(&source_urls)?)
+        .with_context(|| format!("missing chart effective date in {}", source_urls.display()))?;
     cycle_code_from_effective_date(effective)
 }
 
 fn csup_version_label(source_urls_dir: &Path) -> anyhow::Result<String> {
     let source_urls = source_urls_dir.join("csup/source_urls.jsonl");
-    let effective =
-        find_effective_date_from_urls(&read_source_urls_jsonl(&source_urls)?)
-            .with_context(|| format!("missing csup effective date in {}", source_urls.display()))?;
+    let effective = find_effective_date_from_urls(&read_source_urls_jsonl(&source_urls)?)
+        .with_context(|| format!("missing csup effective date in {}", source_urls.display()))?;
     cycle_code_from_effective_date(effective)
 }
 
@@ -6038,9 +6730,8 @@ fn tpp_region_version_label(source_urls_dir: &Path, region: Region) -> anyhow::R
     // books and from our chart/CSUP 56-day windows, so TPP artifacts are labeled
     // from the DDTPP effective date in the source URLs rather than from the
     // surrounding 56-day bundle window.
-    let effective =
-        find_effective_date_from_urls(&read_source_urls_jsonl(&source_urls)?)
-            .with_context(|| format!("missing tpp effective date in {}", source_urls.display()))?;
+    let effective = find_effective_date_from_urls(&read_source_urls_jsonl(&source_urls)?)
+        .with_context(|| format!("missing tpp effective date in {}", source_urls.display()))?;
     cycle_code_from_effective_date(effective)
 }
 
@@ -6050,15 +6741,19 @@ fn data_version_label(source_urls_dir: &Path) -> anyhow::Result<String> {
 
 fn data_manifest_cycle(source_urls_dir: &Path) -> anyhow::Result<String> {
     let source_urls = source_urls_dir.join("data/source_urls.jsonl");
-    let effective =
-        find_effective_date_from_urls(&read_source_urls_jsonl(&source_urls)?)
-            .with_context(|| format!("missing data effective date in {}", source_urls.display()))?;
+    let effective = find_effective_date_from_urls(&read_source_urls_jsonl(&source_urls)?)
+        .with_context(|| format!("missing data effective date in {}", source_urls.display()))?;
     cycle_code_from_effective_date(effective)
 }
 
 fn cycle_data_urls(urls: Vec<String>) -> Vec<String> {
     urls.into_iter()
-        .filter(|url| !url.split('#').next().unwrap_or(url).ends_with("/DAILY_DOF_DAT.ZIP"))
+        .filter(|url| {
+            !url.split('#')
+                .next()
+                .unwrap_or(url)
+                .ends_with("/DAILY_DOF_DAT.ZIP")
+        })
         .collect()
 }
 
@@ -6069,7 +6764,7 @@ fn find_effective_date_from_urls(urls: &[String]) -> Option<NaiveDate> {
             .and_then(|value| parse_date(&value, "%m-%d-%Y").ok())
             .or_else(|| {
                 extract_between(url, "/enroute/", "/")
-            .and_then(|value| parse_date(&value, "%m-%d-%Y").ok())
+                    .and_then(|value| parse_date(&value, "%m-%d-%Y").ok())
             })
             .or_else(|| {
                 extract_suffix_between(url, "DCS_", ".zip")
@@ -6107,7 +6802,12 @@ fn find_effective_date_from_urls(urls: &[String]) -> Option<NaiveDate> {
                             && url.contains("DDTPP")
                         {
                             parse_date(
-                                &format!("20{}-{}-{}", &compact[0..2], &compact[2..4], &compact[4..6]),
+                                &format!(
+                                    "20{}-{}-{}",
+                                    &compact[0..2],
+                                    &compact[2..4],
+                                    &compact[4..6]
+                                ),
                                 "%Y-%m-%d",
                             )
                             .ok()
@@ -6136,8 +6836,8 @@ fn parse_date(value: &str, format: &str) -> anyhow::Result<NaiveDate> {
 
 fn cycle_code_from_effective_date(effective: NaiveDate) -> anyhow::Result<String> {
     let year = effective.year();
-    let first_date = first_cycle_day(year)
-        .ok_or_else(|| anyhow::anyhow!("unsupported cycle year {year}"))?;
+    let first_date =
+        first_cycle_day(year).ok_or_else(|| anyhow::anyhow!("unsupported cycle year {year}"))?;
     let first = NaiveDate::from_ymd_opt(year, 1, first_date)
         .ok_or_else(|| anyhow::anyhow!("invalid first cycle day for {year}"))?;
     let delta_days = effective.signed_duration_since(first).num_days();
@@ -6183,22 +6883,30 @@ mod tests {
         write_source_urls(
             temp.path(),
             "charts-sec/source_urls.jsonl",
-            &[r#"{"event":"list_crawl","results":["https://aeronav.faa.gov/visual/03-19-2026/sectional-files/Seattle.zip"]}"#],
+            &[
+                r#"{"event":"list_crawl","results":["https://aeronav.faa.gov/visual/03-19-2026/sectional-files/Seattle.zip"]}"#,
+            ],
         );
         write_source_urls(
             temp.path(),
             "charts-enr-l/source_urls.jsonl",
-            &[r#"{"event":"list_crawl","results":["https://aeronav.faa.gov/enroute/03-19-2026/enr_l01.zip"]}"#],
+            &[
+                r#"{"event":"list_crawl","results":["https://aeronav.faa.gov/enroute/03-19-2026/enr_l01.zip"]}"#,
+            ],
         );
         write_source_urls(
             temp.path(),
             "csup/source_urls.jsonl",
-            &[r#"{"event":"list_crawl","results":["https://aeronav.faa.gov/Upload_313-d/supplements/DCS_20260319.zip"]}"#],
+            &[
+                r#"{"event":"list_crawl","results":["https://aeronav.faa.gov/Upload_313-d/supplements/DCS_20260319.zip"]}"#,
+            ],
         );
         write_source_urls(
             temp.path(),
             "tpp-ne/source_urls.jsonl",
-            &[r#"{"event":"list_crawl","results":["https://aeronav.faa.gov/upload_313-d/terminal/DDTPPA_260416.zip"]}"#],
+            &[
+                r#"{"event":"list_crawl","results":["https://aeronav.faa.gov/upload_313-d/terminal/DDTPPA_260416.zip"]}"#,
+            ],
         );
         write_source_urls(
             temp.path(),
@@ -6217,7 +6925,10 @@ mod tests {
             "2603"
         );
         assert_eq!(csup_version_label(temp.path()).unwrap(), "2603");
-        assert_eq!(tpp_region_version_label(temp.path(), Region::Ne).unwrap(), "2604");
+        assert_eq!(
+            tpp_region_version_label(temp.path(), Region::Ne).unwrap(),
+            "2604"
+        );
         assert_eq!(data_manifest_cycle(temp.path()).unwrap(), "2604");
         assert_eq!(data_version_label(temp.path()).unwrap(), "data_2604");
     }
@@ -6229,7 +6940,9 @@ mod tests {
             "https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_260416.zip".to_string(),
         ];
         let filtered = cycle_data_urls(urls);
-        assert_eq!(filtered, vec!["https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_260416.zip"]);
+        assert_eq!(
+            filtered,
+            vec!["https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_260416.zip"]
+        );
     }
-
 }

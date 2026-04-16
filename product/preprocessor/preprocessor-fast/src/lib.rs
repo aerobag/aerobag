@@ -10,7 +10,8 @@ use image::ImageReader;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use serde::{Deserialize, Serialize};
-use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+use sha2::{Digest, Sha256};
+use zip::{write::SimpleFileOptions, CompressionMethod, DateTime as ZipDateTime, ZipWriter};
 
 #[derive(Debug, Clone)]
 pub struct BuildTfrRequest {
@@ -192,7 +193,6 @@ struct RadarListingEntry {
 pub struct StructuredMetarDataset {
     schema_version: u32,
     version_label: String,
-    generated_at_utc: String,
     metar_count: usize,
     metars: Vec<StructuredMetarRecord>,
 }
@@ -221,7 +221,6 @@ struct ParsedMetarRecord {
 pub struct StructuredNexradDataset {
     schema_version: u32,
     version_label: String,
-    generated_at_utc: String,
     frame_count: usize,
     projection: String,
     frames: Vec<StructuredNexradFrame>,
@@ -248,7 +247,6 @@ pub struct StructuredNexradBounds {
 pub struct StructuredTfrDataset {
     schema_version: u32,
     version_label: String,
-    generated_at_utc: String,
     notam_count: usize,
     area_group_count: usize,
     areas: Vec<StructuredTfrArea>,
@@ -316,22 +314,20 @@ pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrRe
     let structured_areas = parsed_areas
         .iter()
         .cloned()
-        .map(|area| {
-            StructuredTfrArea {
-                notam_id: area.notam_id,
-                area_index: area.area_index,
-                schedule_fragments: area.schedule_fragments,
-                upper_limit: StructuredTfrLimit {
-                    value_text: area.upper_value_text,
-                    unit: area.upper_unit,
-                },
-                lower_limit: StructuredTfrLimit {
-                    value_text: area.lower_value_text,
-                    unit: area.lower_unit,
-                },
-                polygon: area.polygon.clone(),
-                avare_text: area.avare_text,
-            }
+        .map(|area| StructuredTfrArea {
+            notam_id: area.notam_id,
+            area_index: area.area_index,
+            schedule_fragments: area.schedule_fragments,
+            upper_limit: StructuredTfrLimit {
+                value_text: area.upper_value_text,
+                unit: area.upper_unit,
+            },
+            lower_limit: StructuredTfrLimit {
+                value_text: area.lower_value_text,
+                unit: area.lower_unit,
+            },
+            polygon: area.polygon.clone(),
+            avare_text: area.avare_text,
         })
         .collect::<Vec<_>>();
     let structured_json_path = request.output_dir.join("tfrs.json");
@@ -347,7 +343,6 @@ pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrRe
         &StructuredTfrDataset {
             schema_version: 1,
             version_label: request.version_label.clone(),
-            generated_at_utc: request.generated_at_utc.to_rfc3339(),
             notam_count: entries.len(),
             area_group_count: structured_areas.len(),
             areas: structured_areas,
@@ -476,11 +471,7 @@ pub fn build_metar_avare_parity_artifacts(
                     in_metar = false;
                     mode = None;
                 }
-                b"raw_text"
-                | b"observation_time"
-                | b"latitude"
-                | b"longitude"
-                | b"station_id"
+                b"raw_text" | b"observation_time" | b"latitude" | b"longitude" | b"station_id"
                 | b"flight_category" => mode = None,
                 _ => {}
             },
@@ -542,19 +533,7 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
     fs::create_dir_all(&request.output_dir)
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
 
-    let metars = parse_metar_records(&request.input_xml_path)?
-        .into_iter()
-        .map(|record| -> anyhow::Result<StructuredMetarRecord> {
-            Ok(StructuredMetarRecord {
-                raw_text: record.raw_text,
-                observation_time_utc: record.observation_time,
-                station_id: record.station_id,
-                flight_category: empty_to_none(record.flight_category),
-                longitude: parse_optional_f64(&record.longitude)?,
-                latitude: parse_optional_f64(&record.latitude)?,
-            })
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    let metars = structured_metar_records(&request.input_xml_path)?;
     let metar_count = metars.len();
 
     let structured_json_path = request.output_dir.join("metars.json");
@@ -570,7 +549,6 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
         &StructuredMetarDataset {
             schema_version: 1,
             version_label: request.version_label.clone(),
-            generated_at_utc: request.generated_at_utc.to_rfc3339(),
             metar_count: metars.len(),
             metars,
         },
@@ -589,7 +567,9 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
                     .unwrap_or_default()
                     .to_string(),
             },
-            counts: MetarManifestCounts { metars: metar_count },
+            counts: MetarManifestCounts {
+                metars: metar_count,
+            },
         },
     )?;
     write_zip(&zip_path, &[("metars.json", &structured_json_path)])?;
@@ -600,6 +580,47 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
         zip_path,
         metar_count,
     })
+}
+
+pub fn metar_content_fingerprint(input_xml_path: &Path) -> anyhow::Result<String> {
+    let records = structured_metar_records(input_xml_path)?;
+    let bytes = serde_json::to_vec(&records).context("failed to encode canonical METAR records")?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+fn structured_metar_records(input_xml_path: &Path) -> anyhow::Result<Vec<StructuredMetarRecord>> {
+    let mut records = parse_metar_records(input_xml_path)?;
+    records.sort_by(|left, right| {
+        (
+            &left.station_id,
+            &left.observation_time,
+            &left.raw_text,
+            &left.flight_category,
+            &left.longitude,
+            &left.latitude,
+        )
+            .cmp(&(
+                &right.station_id,
+                &right.observation_time,
+                &right.raw_text,
+                &right.flight_category,
+                &right.longitude,
+                &right.latitude,
+            ))
+    });
+    records
+        .into_iter()
+        .map(|record| -> anyhow::Result<StructuredMetarRecord> {
+            Ok(StructuredMetarRecord {
+                raw_text: record.raw_text,
+                observation_time_utc: record.observation_time,
+                station_id: record.station_id,
+                flight_category: empty_to_none(record.flight_category),
+                longitude: parse_optional_f64(&record.longitude)?,
+                latitude: parse_optional_f64(&record.latitude)?,
+            })
+        })
+        .collect()
 }
 
 pub fn build_nexrad_avare_parity_artifacts(
@@ -614,7 +635,10 @@ pub fn build_nexrad_avare_parity_artifacts(
 
     let listings = parse_radar_listing(&request.input_dir.join("index.html"))?;
     if listings.len() < 11 {
-        bail!("expected at least 11 radar listings, found {}", listings.len());
+        bail!(
+            "expected at least 11 radar listings, found {}",
+            listings.len()
+        );
     }
 
     let selected = [0usize, 5usize, 10usize]
@@ -678,10 +702,8 @@ pub fn build_nexrad_avare_parity_artifacts(
             ],
         )?;
 
-        let gdalinfo_output = run_command_capture(
-            "gdalinfo",
-            &[warped_tif_path.to_str().unwrap(), "-noct"],
-        )?;
+        let gdalinfo_output =
+            run_command_capture("gdalinfo", &[warped_tif_path.to_str().unwrap(), "-noct"])?;
         for label in corner_labels {
             let line = gdalinfo_output
                 .lines()
@@ -708,7 +730,10 @@ pub fn build_nexrad_avare_parity_artifacts(
     fs::write(&latest_txt_path, latest_txt)
         .with_context(|| format!("failed to write {}", latest_txt_path.display()))?;
 
-    let mut members = vec![("conus", manifest_path.as_path()), ("latest.txt", latest_txt_path.as_path())];
+    let mut members = vec![
+        ("conus", manifest_path.as_path()),
+        ("latest.txt", latest_txt_path.as_path()),
+    ];
     for png_path in &png_paths {
         let name = png_path.file_name().and_then(|name| name.to_str()).unwrap();
         members.push((name, png_path.as_path()));
@@ -733,7 +758,10 @@ pub fn build_nexrad_dataset(request: &BuildNexradRequest) -> anyhow::Result<Buil
 
     let listings = parse_radar_listing(&request.input_dir.join("index.html"))?;
     if listings.len() < 11 {
-        bail!("expected at least 11 radar listings, found {}", listings.len());
+        bail!(
+            "expected at least 11 radar listings, found {}",
+            listings.len()
+        );
     }
 
     let selected = [0usize, 5usize, 10usize]
@@ -751,7 +779,8 @@ pub fn build_nexrad_dataset(request: &BuildNexradRequest) -> anyhow::Result<Buil
 
     let frame_names = ["frame_0.png", "frame_1.png", "frame_2.png"];
     let mut frames = Vec::new();
-    let mut zip_members: Vec<(String, PathBuf)> = vec![("nexrad.json".to_string(), structured_json_path.clone())];
+    let mut zip_members: Vec<(String, PathBuf)> =
+        vec![("nexrad.json".to_string(), structured_json_path.clone())];
 
     for (entry, frame_name) in selected.iter().zip(frame_names) {
         let copied_gz_path = request.output_dir.join(&entry.file_name);
@@ -808,10 +837,7 @@ pub fn build_nexrad_dataset(request: &BuildNexradRequest) -> anyhow::Result<Buil
             .with_context(|| format!("failed to decode {}", png_path.display()))?;
         frames.push(StructuredNexradFrame {
             filename: frame_name.to_string(),
-            observed_at_utc: entry
-                .observed_at_utc
-                .and_utc()
-                .to_rfc3339(),
+            observed_at_utc: entry.observed_at_utc.and_utc().to_rfc3339(),
             width: image.width(),
             height: image.height(),
             bounds: StructuredNexradBounds {
@@ -829,7 +855,6 @@ pub fn build_nexrad_dataset(request: &BuildNexradRequest) -> anyhow::Result<Buil
         &StructuredNexradDataset {
             schema_version: 1,
             version_label: request.version_label.clone(),
-            generated_at_utc: request.generated_at_utc.to_rfc3339(),
             frame_count: frames.len(),
             projection: "EPSG:3857".to_string(),
             frames,
@@ -849,7 +874,9 @@ pub fn build_nexrad_dataset(request: &BuildNexradRequest) -> anyhow::Result<Buil
                     .unwrap_or_default()
                     .to_string(),
             },
-            counts: NexradManifestCounts { frames: zip_members.len() - 1 },
+            counts: NexradManifestCounts {
+                frames: zip_members.len() - 1,
+            },
         },
     )?;
     let member_refs = zip_members
@@ -880,7 +907,8 @@ fn load_tfr_list_entries(input_dir: &Path) -> anyhow::Result<Vec<TfrListEntry>> 
 }
 
 fn parse_radar_listing(path: &Path) -> anyhow::Result<Vec<RadarListingEntry>> {
-    let html = fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let html =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut entries = html
         .lines()
         .filter_map(|line| {
@@ -906,7 +934,8 @@ fn parse_radar_listing(path: &Path) -> anyhow::Result<Vec<RadarListingEntry>> {
 }
 
 fn parse_metar_records(path: &Path) -> anyhow::Result<Vec<ParsedMetarRecord>> {
-    let xml = fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let xml =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut reader = Reader::from_str(&xml);
     let mut buffer = Vec::new();
     let mut records = Vec::new();
@@ -952,11 +981,7 @@ fn parse_metar_records(path: &Path) -> anyhow::Result<Vec<ParsedMetarRecord>> {
                     in_metar = false;
                     mode = None;
                 }
-                b"raw_text"
-                | b"observation_time"
-                | b"latitude"
-                | b"longitude"
-                | b"station_id"
+                b"raw_text" | b"observation_time" | b"latitude" | b"longitude" | b"station_id"
                 | b"flight_category" => mode = None,
                 _ => {}
             },
@@ -1012,11 +1037,9 @@ fn parse_optional_f64(value: &str) -> anyhow::Result<Option<f64>> {
     if trimmed.is_empty() {
         return Ok(None);
     }
-    Ok(Some(
-        trimmed
-            .parse::<f64>()
-            .with_context(|| format!("failed to parse float {trimmed}"))?,
-    ))
+    Ok(Some(trimmed.parse::<f64>().with_context(|| {
+        format!("failed to parse float {trimmed}")
+    })?))
 }
 
 fn warped_bounds(path: &Path) -> anyhow::Result<(f64, f64, f64, f64)> {
@@ -1038,8 +1061,16 @@ fn warped_bounds(path: &Path) -> anyhow::Result<(f64, f64, f64, f64)> {
         let (x, y) = coords
             .split_once(',')
             .ok_or_else(|| anyhow::anyhow!("missing comma in gdalinfo coords: {coords}"))?;
-        xs.push(x.trim().parse::<f64>().with_context(|| format!("failed to parse x {x}"))?);
-        ys.push(y.trim().parse::<f64>().with_context(|| format!("failed to parse y {y}"))?);
+        xs.push(
+            x.trim()
+                .parse::<f64>()
+                .with_context(|| format!("failed to parse x {x}"))?,
+        );
+        ys.push(
+            y.trim()
+                .parse::<f64>()
+                .with_context(|| format!("failed to parse y {y}"))?,
+        );
     }
     Ok((
         xs.iter().copied().fold(f64::INFINITY, f64::min),
@@ -1049,7 +1080,9 @@ fn warped_bounds(path: &Path) -> anyhow::Result<(f64, f64, f64, f64)> {
     ))
 }
 
-fn load_parsed_tfr_areas(input_dir: &Path) -> anyhow::Result<(Vec<TfrListEntry>, Vec<ParsedTfrArea>)> {
+fn load_parsed_tfr_areas(
+    input_dir: &Path,
+) -> anyhow::Result<(Vec<TfrListEntry>, Vec<ParsedTfrArea>)> {
     let entries = load_tfr_list_entries(input_dir)?;
     let mut parsed_areas = Vec::new();
     for entry in &entries {
@@ -1062,7 +1095,8 @@ fn load_parsed_tfr_areas(input_dir: &Path) -> anyhow::Result<(Vec<TfrListEntry>,
 }
 
 fn parse_detail_xml_groups(path: &Path, notam_id: &str) -> anyhow::Result<Vec<ParsedTfrArea>> {
-    let xml = fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let xml =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut reader = Reader::from_str(&xml);
     let mut buffer = Vec::new();
     let mut groups = Vec::new();
@@ -1125,14 +1159,8 @@ fn parse_detail_xml_groups(path: &Path, notam_id: &str) -> anyhow::Result<Vec<Pa
                     in_area = false;
                     pending_lat = None;
                 }
-                b"dateEffective"
-                | b"dateExpire"
-                | b"valDistVerUpper"
-                | b"valDistVerLower"
-                | b"uomDistVerUpper"
-                | b"uomDistVerLower"
-                | b"geoLat"
-                | b"geoLong" => mode = None,
+                b"dateEffective" | b"dateExpire" | b"valDistVerUpper" | b"valDistVerLower"
+                | b"uomDistVerUpper" | b"uomDistVerLower" | b"geoLat" | b"geoLong" => mode = None,
                 _ => {}
             },
             Ok(Event::Text(event)) if in_area_group => {
@@ -1150,19 +1178,23 @@ fn parse_detail_xml_groups(path: &Path, notam_id: &str) -> anyhow::Result<Vec<Pa
                         current_group.avare_text.push_str("Eff ");
                         current_group.avare_text.push_str(&text);
                         current_group.avare_text.push(' ');
-                        current_group.schedule_fragments.push(StructuredTfrScheduleFragment {
-                            kind: "effective".to_string(),
-                            value_utc: text,
-                        });
+                        current_group
+                            .schedule_fragments
+                            .push(StructuredTfrScheduleFragment {
+                                kind: "effective".to_string(),
+                                value_utc: text,
+                            });
                     }
                     Some(TextMode::DateExpire) => {
                         current_group.avare_text.push_str("Exp ");
                         current_group.avare_text.push_str(&text);
                         current_group.avare_text.push(' ');
-                        current_group.schedule_fragments.push(StructuredTfrScheduleFragment {
-                            kind: "expires".to_string(),
-                            value_utc: text,
-                        });
+                        current_group
+                            .schedule_fragments
+                            .push(StructuredTfrScheduleFragment {
+                                kind: "expires".to_string(),
+                                value_utc: text,
+                            });
                     }
                     Some(TextMode::Upper) => {
                         current_group.avare_text.push_str("Top ");
@@ -1200,7 +1232,10 @@ fn parse_detail_xml_groups(path: &Path, notam_id: &str) -> anyhow::Result<Vec<Pa
                             .avare_text
                             .push_str(&normalize_geo_number_string(&text)?);
                         let lat = pending_lat.take().ok_or_else(|| {
-                            anyhow::anyhow!("encountered geoLong before geoLat in {}", path.display())
+                            anyhow::anyhow!(
+                                "encountered geoLong before geoLat in {}",
+                                path.display()
+                            )
                         })?;
                         current_group.polygon.push(StructuredTfrPoint { lat, lon });
                     }
@@ -1232,7 +1267,10 @@ fn parse_detail_xml_groups(path: &Path, notam_id: &str) -> anyhow::Result<Vec<Pa
                             .avare_text
                             .push_str(&normalize_geo_number_string(&text)?);
                         let lat = pending_lat.take().ok_or_else(|| {
-                            anyhow::anyhow!("encountered geoLong before geoLat in {}", path.display())
+                            anyhow::anyhow!(
+                                "encountered geoLong before geoLat in {}",
+                                path.display()
+                            )
                         })?;
                         current_group.polygon.push(StructuredTfrPoint { lat, lon });
                     }
@@ -1242,8 +1280,7 @@ fn parse_detail_xml_groups(path: &Path, notam_id: &str) -> anyhow::Result<Vec<Pa
             Ok(Event::Eof) => break,
             Ok(_) => {}
             Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("failed to parse {}", path.display()));
+                return Err(error).with_context(|| format!("failed to parse {}", path.display()));
             }
         }
         buffer.clear();
@@ -1308,9 +1345,12 @@ fn write_json_pretty(path: &Path, value: &impl Serialize) -> anyhow::Result<()> 
 }
 
 fn write_zip(path: &Path, members: &[(&str, &Path)]) -> anyhow::Result<()> {
-    let file = File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
+    let file =
+        File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
     let mut writer = ZipWriter::new(file);
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .last_modified_time(ZipDateTime::default());
     for (name, source_path) in members {
         writer
             .start_file(name, options)
@@ -1412,6 +1452,57 @@ mod tests {
             fs::read_to_string(&result.output_path)?,
         );
         assert!(result.metar_count > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn metar_dataset_is_stable_across_source_reordering() -> anyhow::Result<()> {
+        let temp = TempDir::new().context("failed to create temp dir")?;
+        let first = temp.path().join("first.xml");
+        let second = temp.path().join("second.xml");
+        let record_a = r#"<METAR><raw_text>METAR KAAA 160400Z 00000KT 10SM CLR 10/08 A3000</raw_text><station_id>KAAA</station_id><observation_time>2026-04-16T04:00:00.000Z</observation_time><latitude>1.0</latitude><longitude>2.0</longitude><flight_category>VFR</flight_category></METAR>"#;
+        let record_b = r#"<METAR><raw_text>METAR KBBB 160355Z 18005KT 10SM SCT020 12/09 A3001</raw_text><station_id>KBBB</station_id><observation_time>2026-04-16T03:55:00.000Z</observation_time><latitude>3.0</latitude><longitude>4.0</longitude><flight_category>VFR</flight_category></METAR>"#;
+        fs::write(
+            &first,
+            format!(
+                r#"<?xml version="1.0"?><response><data>{record_b}{record_a}</data></response>"#
+            ),
+        )?;
+        fs::write(
+            &second,
+            format!(
+                r#"<?xml version="1.0"?><response><data>{record_a}{record_b}</data></response>"#
+            ),
+        )?;
+
+        let first_fingerprint = metar_content_fingerprint(&first)?;
+        let second_fingerprint = metar_content_fingerprint(&second)?;
+        assert_eq!(first_fingerprint, second_fingerprint);
+        let version_label = first_fingerprint.chars().take(16).collect::<String>();
+        let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-16T04:00:00Z")
+            .expect("valid fixture timestamp")
+            .with_timezone(&Utc);
+        let first_result = build_metar_dataset(&BuildMetarRequest {
+            input_xml_path: first,
+            output_dir: temp.path().join("first-out"),
+            version_label: version_label.clone(),
+            generated_at_utc,
+        })?;
+        let second_result = build_metar_dataset(&BuildMetarRequest {
+            input_xml_path: second,
+            output_dir: temp.path().join("second-out"),
+            version_label,
+            generated_at_utc,
+        })?;
+
+        assert_eq!(
+            fs::read(&first_result.structured_json_path)?,
+            fs::read(&second_result.structured_json_path)?,
+        );
+        assert_eq!(
+            fs::read(&first_result.zip_path)?,
+            fs::read(&second_result.zip_path)?,
+        );
         Ok(())
     }
 

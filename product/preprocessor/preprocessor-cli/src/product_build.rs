@@ -30,7 +30,8 @@ use preprocessor_fetch::{
     PackageOutputRecord,
 };
 use preprocessor_fast::{
-    build_tfr_dataset, load_tfr_notam_ids, sanitize_notam_id, BuildTfrRequest,
+    build_metar_dataset, build_nexrad_dataset, build_tfr_dataset, load_tfr_notam_ids,
+    sanitize_notam_id, BuildMetarRequest, BuildNexradRequest, BuildTfrRequest,
 };
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, ResourceIndex,
@@ -493,6 +494,10 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         ObstaclesPublish,
         TfrsBuild,
         TfrsPublish,
+        MetarsBuild,
+        MetarsPublish,
+        NexradBuild,
+        NexradPublish,
         CurrentArtifacts,
         ProductUnpack,
         ValidatePackagedContract,
@@ -752,12 +757,38 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             kind: ProductScheduledTaskKind::TfrsPublish,
         });
         pending_tasks.push(ProductScheduledTask {
+            id: "build-metars".to_string(),
+            deps: vec![],
+            weight: 1,
+            kind: ProductScheduledTaskKind::MetarsBuild,
+        });
+        pending_tasks.push(ProductScheduledTask {
+            id: "publish-metars".to_string(),
+            deps: vec!["build-metars".to_string()],
+            weight: 1,
+            kind: ProductScheduledTaskKind::MetarsPublish,
+        });
+        pending_tasks.push(ProductScheduledTask {
+            id: "build-nexrad".to_string(),
+            deps: vec![],
+            weight: 1,
+            kind: ProductScheduledTaskKind::NexradBuild,
+        });
+        pending_tasks.push(ProductScheduledTask {
+            id: "publish-nexrad".to_string(),
+            deps: vec!["build-nexrad".to_string()],
+            weight: 1,
+            kind: ProductScheduledTaskKind::NexradPublish,
+        });
+        pending_tasks.push(ProductScheduledTask {
             id: "current-artifacts".to_string(),
             deps: cycles
                 .iter()
                 .map(|cycle| cycle_task_id(cycle, "bundle-manifest"))
                 .chain(std::iter::once("publish-obstacles".to_string()))
                 .chain(std::iter::once("publish-tfrs".to_string()))
+                .chain(std::iter::once("publish-metars".to_string()))
+                .chain(std::iter::once("publish-nexrad".to_string()))
                 .collect(),
             weight: 1,
             kind: ProductScheduledTaskKind::CurrentArtifacts,
@@ -768,6 +799,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 "current-artifacts".to_string(),
                 "publish-obstacles".to_string(),
                 "publish-tfrs".to_string(),
+                "publish-metars".to_string(),
+                "publish-nexrad".to_string(),
             ],
             weight: 1,
             kind: ProductScheduledTaskKind::ProductUnpack,
@@ -1533,6 +1566,30 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 completion_detail: "rebuilt".to_string(),
                             })
                         }
+                        ProductScheduledTaskKind::MetarsBuild => {
+                            let (zip_path, source_generated_at_utc) =
+                                build_metars_product(&config)?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::TfrsBuilt {
+                                    zip_path,
+                                    source_generated_at_utc,
+                                },
+                                completion_detail: "rebuilt".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::NexradBuild => {
+                            let (zip_path, source_generated_at_utc) =
+                                build_nexrad_product(&config)?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::TfrsBuilt {
+                                    zip_path,
+                                    source_generated_at_utc,
+                                },
+                                completion_detail: "rebuilt".to_string(),
+                            })
+                        }
                         ProductScheduledTaskKind::TfrsPublish => {
                             let built = match task_values_snapshot.get("build-tfrs") {
                                 Some(ProductTaskValue::TfrsBuilt {
@@ -1557,6 +1614,54 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 completion_detail: "published".to_string(),
                             })
                         }
+                        ProductScheduledTaskKind::MetarsPublish => {
+                            let built = match task_values_snapshot.get("build-metars") {
+                                Some(ProductTaskValue::TfrsBuilt {
+                                    zip_path,
+                                    source_generated_at_utc,
+                                    ..
+                                }) => (zip_path.clone(), source_generated_at_utc.clone()),
+                                _ => bail!("missing METAR build output"),
+                            };
+                            let (published_zip, sha256, size_bytes) =
+                                publish_content_addressed_fast_product_zip(&config.build_root, "metars", &built.0)?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::PublishedFastProduct {
+                                    id: "metars".to_string(),
+                                    source_zip_path: built.0,
+                                    published_zip,
+                                    sha256,
+                                    size_bytes,
+                                    source_generated_at_utc: built.1,
+                                },
+                                completion_detail: "published".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::NexradPublish => {
+                            let built = match task_values_snapshot.get("build-nexrad") {
+                                Some(ProductTaskValue::TfrsBuilt {
+                                    zip_path,
+                                    source_generated_at_utc,
+                                    ..
+                                }) => (zip_path.clone(), source_generated_at_utc.clone()),
+                                _ => bail!("missing NEXRAD build output"),
+                            };
+                            let (published_zip, sha256, size_bytes) =
+                                publish_content_addressed_fast_product_zip(&config.build_root, "nexrad", &built.0)?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::PublishedFastProduct {
+                                    id: "nexrad".to_string(),
+                                    source_zip_path: built.0,
+                                    published_zip,
+                                    sha256,
+                                    size_bytes,
+                                    source_generated_at_utc: built.1,
+                                },
+                                completion_detail: "published".to_string(),
+                            })
+                        }
                         ProductScheduledTaskKind::CurrentArtifacts => {
                             let published_obstacle = match task_values_snapshot.get("publish-obstacles") {
                                 Some(ProductTaskValue::PublishedObstacle {
@@ -1567,28 +1672,31 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 }) => (published_zip.clone(), sha256.clone(), *size_bytes),
                                 _ => bail!("missing published obstacle output"),
                             };
-                            let fast_products = match task_values_snapshot.get("publish-tfrs") {
-                                Some(ProductTaskValue::PublishedFastProduct {
-                                    id,
-                                    published_zip,
-                                    sha256,
-                                    size_bytes,
-                                    source_generated_at_utc,
-                                    ..
-                                }) => vec![CurrentFastProductEntry {
-                                    id: id.clone(),
-                                    filename: published_zip
-                                        .file_name()
-                                        .and_then(|name| name.to_str())
-                                        .unwrap_or_default()
-                                        .to_string(),
-                                    published_at_utc: utc_now_string(),
-                                    source_generated_at_utc: source_generated_at_utc.clone(),
-                                    checksum_sha256: sha256.clone(),
-                                    size_bytes: *size_bytes,
-                                }],
-                                _ => vec![],
-                            };
+                            let fast_products = ["publish-tfrs", "publish-metars", "publish-nexrad"]
+                                .iter()
+                                .map(|task_id| match task_values_snapshot.get(*task_id) {
+                                    Some(ProductTaskValue::PublishedFastProduct {
+                                        id,
+                                        published_zip,
+                                        sha256,
+                                        size_bytes,
+                                        source_generated_at_utc,
+                                        ..
+                                    }) => Ok(CurrentFastProductEntry {
+                                        id: id.clone(),
+                                        filename: published_zip
+                                            .file_name()
+                                            .and_then(|name| name.to_str())
+                                            .unwrap_or_default()
+                                            .to_string(),
+                                        published_at_utc: utc_now_string(),
+                                        source_generated_at_utc: source_generated_at_utc.clone(),
+                                        checksum_sha256: sha256.clone(),
+                                        size_bytes: *size_bytes,
+                                    }),
+                                    _ => bail!("missing published fast product output for {}", task_id),
+                                })
+                                .collect::<anyhow::Result<Vec<_>>>()?;
                             let current_artifacts_path = write_current_artifacts_manifest(
                                 &config.build_root,
                                 Utc::now().date_naive(),
@@ -1618,18 +1726,23 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 }) => (source_zip_path.clone(), published_zip.clone()),
                                 _ => bail!("missing published obstacle output"),
                             };
-                            let tfrs = match task_values_snapshot.get("publish-tfrs") {
-                                Some(ProductTaskValue::PublishedFastProduct {
-                                    source_zip_path,
-                                    published_zip,
-                                    ..
-                                }) => (source_zip_path.clone(), published_zip.clone()),
-                                _ => bail!("missing published TFR output"),
-                            };
+                            let fast_products = ["publish-tfrs", "publish-metars", "publish-nexrad"]
+                                .iter()
+                                .map(|task_id| match task_values_snapshot.get(*task_id) {
+                                    Some(ProductTaskValue::PublishedFastProduct {
+                                        source_zip_path,
+                                        published_zip,
+                                        ..
+                                    }) => Ok((source_zip_path.clone(), published_zip.clone())),
+                                    _ => bail!("missing published fast product output for {}", task_id),
+                                })
+                                .collect::<anyhow::Result<Vec<_>>>()?;
+                            let mut zip_artifacts = vec![obstacle];
+                            zip_artifacts.extend(fast_products);
                             sync_product_level_unpacked(
                                 &config.build_root,
                                 &current_artifacts_path,
-                                &[obstacle, tfrs],
+                                &zip_artifacts,
                             )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
@@ -3205,6 +3318,161 @@ fn build_tfrs_product(
     Ok((result.zip_path, generated_at_utc.to_rfc3339()))
 }
 
+fn build_metars_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf, String)> {
+    let artifact_root = artifact_root_from_build_root(&config.build_root).to_path_buf();
+    let generated_at_utc = Utc::now()
+        .with_second(0)
+        .expect("zero seconds should be valid")
+        .with_nanosecond(0)
+        .expect("zero nanos should be valid");
+    let version_label = generated_at_utc.format("%Y%m%dT%H%MZ").to_string();
+    let build_root = artifact_root.join("private-work").join("metars").join(&version_label);
+    let input_dir = build_root.join("input");
+    let output_dir = build_root.join("output");
+
+    if build_root.exists() {
+        fs::remove_dir_all(&build_root)
+            .with_context(|| format!("failed to clear {}", build_root.display()))?;
+    }
+    fs::create_dir_all(&input_dir)
+        .with_context(|| format!("failed to create {}", input_dir.display()))?;
+
+    let fetch_cache = FetchCacheConfig {
+        root: config.fetch_cache_root.clone(),
+        mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
+    };
+    let provenance_dir = build_root.join("meta").join("provenance").join("metars");
+    fs::create_dir_all(&provenance_dir)
+        .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
+
+    let url =
+        "https://aviationweather.gov/data/cache/metars.cache.xml.gz#logical_name=metars.cache.xml.gz"
+            .to_string();
+    fs::write(
+        provenance_dir.join("source_urls.jsonl"),
+        format!("{{\"event\":\"source_url\",\"label\":\"metars\",\"url\":\"{}\"}}\n", url),
+    )
+    .with_context(|| {
+        format!(
+            "failed to write {}",
+            provenance_dir.join("source_urls.jsonl").display()
+        )
+    })?;
+    prefetch_archives_with_provenance(
+        std::slice::from_ref(&url),
+        &input_dir,
+        config.fetch_jobs,
+        Some(&fetch_cache),
+        &provenance_dir,
+        "metars",
+    )?;
+
+    let gz_path = input_dir.join("metars.cache.xml.gz");
+    run_status_command("gzip", &["-d", gz_path.to_str().unwrap()])?;
+    let result = build_metar_dataset(&BuildMetarRequest {
+        input_xml_path: input_dir.join("metars.cache.xml"),
+        output_dir,
+        version_label,
+        generated_at_utc,
+    })?;
+    Ok((result.zip_path, generated_at_utc.to_rfc3339()))
+}
+
+fn build_nexrad_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf, String)> {
+    let artifact_root = artifact_root_from_build_root(&config.build_root).to_path_buf();
+    let generated_at_utc = Utc::now()
+        .with_second(0)
+        .expect("zero seconds should be valid")
+        .with_nanosecond(0)
+        .expect("zero nanos should be valid");
+    let version_label = generated_at_utc.format("%Y%m%dT%H%MZ").to_string();
+    let build_root = artifact_root.join("private-work").join("nexrad").join(&version_label);
+    let input_dir = build_root.join("input");
+    let output_dir = build_root.join("output");
+
+    if build_root.exists() {
+        fs::remove_dir_all(&build_root)
+            .with_context(|| format!("failed to clear {}", build_root.display()))?;
+    }
+    fs::create_dir_all(&input_dir)
+        .with_context(|| format!("failed to create {}", input_dir.display()))?;
+
+    let fetch_cache = FetchCacheConfig {
+        root: config.fetch_cache_root.clone(),
+        mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
+    };
+    let provenance_dir = build_root.join("meta").join("provenance").join("nexrad");
+    fs::create_dir_all(&provenance_dir)
+        .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
+
+    let index_url =
+        "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/#logical_name=index.html"
+            .to_string();
+    fs::write(
+        provenance_dir.join("source_urls.jsonl"),
+        format!("{{\"event\":\"source_url\",\"label\":\"nexrad-index\",\"url\":\"{}\"}}\n", index_url),
+    )
+    .with_context(|| {
+        format!(
+            "failed to write {}",
+            provenance_dir.join("source_urls.jsonl").display()
+        )
+    })?;
+    prefetch_archives_with_provenance(
+        std::slice::from_ref(&index_url),
+        &input_dir,
+        config.fetch_jobs,
+        Some(&fetch_cache),
+        &provenance_dir,
+        "nexrad-index",
+    )?;
+
+    let listings = parse_nexrad_index_for_product(&input_dir.join("index.html"))?;
+    if listings.len() < 11 {
+        bail!("expected at least 11 radar listings, found {}", listings.len());
+    }
+    let selected_urls = [0usize, 5usize, 10usize]
+        .into_iter()
+        .map(|index| {
+            let file_name = &listings[index];
+            format!(
+                "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/{}#logical_name={}",
+                file_name, file_name
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut source_urls_jsonl =
+        String::from("{\"event\":\"source_url\",\"label\":\"nexrad-index\",\"url\":\"https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/#logical_name=index.html\"}\n");
+    for url in &selected_urls {
+        source_urls_jsonl.push_str(&format!(
+            "{{\"event\":\"source_url\",\"label\":\"nexrad-frame\",\"url\":\"{}\"}}\n",
+            url
+        ));
+    }
+    fs::write(provenance_dir.join("source_urls.jsonl"), source_urls_jsonl).with_context(|| {
+        format!(
+            "failed to write {}",
+            provenance_dir.join("source_urls.jsonl").display()
+        )
+    })?;
+    prefetch_archives_with_provenance(
+        &selected_urls,
+        &input_dir,
+        config.fetch_jobs,
+        Some(&fetch_cache),
+        &provenance_dir,
+        "nexrad-frame",
+    )?;
+
+    let result = build_nexrad_dataset(&BuildNexradRequest {
+        input_dir,
+        output_dir,
+        version_label,
+        generated_at_utc,
+    })?;
+    Ok((result.zip_path, generated_at_utc.to_rfc3339()))
+}
+
 fn publish_content_addressed_obstacle_zip(
     build_root: &Path,
     obstacle_zip_path: &Path,
@@ -3240,6 +3508,34 @@ fn publish_content_addressed_zip(
         })?;
     }
     Ok((published_path, sha256, size_bytes))
+}
+
+fn run_status_command(program: &str, args: &[&str]) -> anyhow::Result<()> {
+    let status = Command::new(program)
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to execute {program}"))?;
+    if !status.success() {
+        bail!("{program} exited with status {status}");
+    }
+    Ok(())
+}
+
+fn parse_nexrad_index_for_product(path: &Path) -> anyhow::Result<Vec<String>> {
+    let html = fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut entries = html
+        .lines()
+        .filter_map(|line| {
+            let start = line.find("CONUS_L2_CREF_QCD_")?;
+            let tail = &line[start..];
+            let end = tail.find(".tif.gz")?;
+            Some(tail[..end + ".tif.gz".len()].to_string())
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries.reverse();
+    entries.dedup();
+    Ok(entries)
 }
 
 fn build_current_bundle_entries(

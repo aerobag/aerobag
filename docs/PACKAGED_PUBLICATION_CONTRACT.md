@@ -58,6 +58,8 @@ Standalone artifacts:
 
 - `obstacles_<sha256>.zip`
 - `tfrs_<sha256>.zip`
+- `metars_<sha256>.zip`
+- `nexrad_<sha256>.zip`
 
 Operational files:
 
@@ -84,7 +86,9 @@ current_artifacts_YYYYMMDD.json
 │   ├── bundle_2603.json
 │   └── bundle_2604.json
 ├── fast_products[]
-│   └── tfrs_<sha256>.zip
+│   ├── tfrs_<sha256>.zip
+│   ├── metars_<sha256>.zip
+│   └── nexrad_<sha256>.zip
 └── obstacles
     └── obstacles_<sha256>.zip
 

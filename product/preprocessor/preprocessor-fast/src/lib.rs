@@ -6,9 +6,10 @@ use std::process::Command;
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, NaiveDateTime, Utc};
+use image::ImageReader;
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 #[derive(Debug, Clone)]
@@ -61,6 +62,38 @@ pub struct BuildNexradParityResult {
     pub zip_path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct BuildMetarRequest {
+    pub input_xml_path: PathBuf,
+    pub output_dir: PathBuf,
+    pub version_label: String,
+    pub generated_at_utc: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildMetarResult {
+    pub manifest_path: PathBuf,
+    pub structured_json_path: PathBuf,
+    pub zip_path: PathBuf,
+    pub metar_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildNexradRequest {
+    pub input_dir: PathBuf,
+    pub output_dir: PathBuf,
+    pub version_label: String,
+    pub generated_at_utc: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildNexradResult {
+    pub manifest_path: PathBuf,
+    pub structured_json_path: PathBuf,
+    pub zip_path: PathBuf,
+    pub frame_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct TfrManifest {
     schema_version: u32,
@@ -82,7 +115,47 @@ struct TfrManifestCounts {
     area_groups: usize,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize)]
+struct MetarManifest {
+    schema_version: u32,
+    version_label: String,
+    generated_at_utc: String,
+    files: MetarManifestFiles,
+    counts: MetarManifestCounts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MetarManifestFiles {
+    structured_json: String,
+    zip: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MetarManifestCounts {
+    metars: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct NexradManifest {
+    schema_version: u32,
+    version_label: String,
+    generated_at_utc: String,
+    files: NexradManifestFiles,
+    counts: NexradManifestCounts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct NexradManifestFiles {
+    structured_json: String,
+    zip: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct NexradManifestCounts {
+    frames: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct TfrListEntry {
     notam_id: String,
 }
@@ -113,6 +186,62 @@ enum MetarTextMode {
 struct RadarListingEntry {
     file_name: String,
     observed_at_utc: NaiveDateTime,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StructuredMetarDataset {
+    schema_version: u32,
+    version_label: String,
+    generated_at_utc: String,
+    metar_count: usize,
+    metars: Vec<StructuredMetarRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StructuredMetarRecord {
+    raw_text: String,
+    observation_time_utc: String,
+    station_id: String,
+    flight_category: Option<String>,
+    longitude: Option<f64>,
+    latitude: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedMetarRecord {
+    raw_text: String,
+    observation_time: String,
+    station_id: String,
+    flight_category: String,
+    longitude: String,
+    latitude: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StructuredNexradDataset {
+    schema_version: u32,
+    version_label: String,
+    generated_at_utc: String,
+    frame_count: usize,
+    projection: String,
+    frames: Vec<StructuredNexradFrame>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StructuredNexradFrame {
+    filename: String,
+    observed_at_utc: String,
+    width: u32,
+    height: u32,
+    bounds: StructuredNexradBounds,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StructuredNexradBounds {
+    west: f64,
+    south: f64,
+    east: f64,
+    north: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -405,6 +534,74 @@ pub fn build_metar_avare_parity_artifacts(
     })
 }
 
+pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildMetarResult> {
+    if request.output_dir.exists() {
+        fs::remove_dir_all(&request.output_dir)
+            .with_context(|| format!("failed to clear {}", request.output_dir.display()))?;
+    }
+    fs::create_dir_all(&request.output_dir)
+        .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
+
+    let metars = parse_metar_records(&request.input_xml_path)?
+        .into_iter()
+        .map(|record| -> anyhow::Result<StructuredMetarRecord> {
+            Ok(StructuredMetarRecord {
+                raw_text: record.raw_text,
+                observation_time_utc: record.observation_time,
+                station_id: record.station_id,
+                flight_category: empty_to_none(record.flight_category),
+                longitude: parse_optional_f64(&record.longitude)?,
+                latitude: parse_optional_f64(&record.latitude)?,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let metar_count = metars.len();
+
+    let structured_json_path = request.output_dir.join("metars.json");
+    let manifest_path = request
+        .output_dir
+        .join(format!("metars_{}.manifest.json", request.version_label));
+    let zip_path = request
+        .output_dir
+        .join(format!("metars_{}.zip", request.version_label));
+
+    write_json_pretty(
+        &structured_json_path,
+        &StructuredMetarDataset {
+            schema_version: 1,
+            version_label: request.version_label.clone(),
+            generated_at_utc: request.generated_at_utc.to_rfc3339(),
+            metar_count: metars.len(),
+            metars,
+        },
+    )?;
+    write_json_pretty(
+        &manifest_path,
+        &MetarManifest {
+            schema_version: 1,
+            version_label: request.version_label.clone(),
+            generated_at_utc: request.generated_at_utc.to_rfc3339(),
+            files: MetarManifestFiles {
+                structured_json: "metars.json".to_string(),
+                zip: zip_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            },
+            counts: MetarManifestCounts { metars: metar_count },
+        },
+    )?;
+    write_zip(&zip_path, &[("metars.json", &structured_json_path)])?;
+
+    Ok(BuildMetarResult {
+        manifest_path,
+        structured_json_path,
+        zip_path,
+        metar_count,
+    })
+}
+
 pub fn build_nexrad_avare_parity_artifacts(
     request: &BuildNexradParityRequest,
 ) -> anyhow::Result<BuildNexradParityResult> {
@@ -526,6 +723,149 @@ pub fn build_nexrad_avare_parity_artifacts(
     })
 }
 
+pub fn build_nexrad_dataset(request: &BuildNexradRequest) -> anyhow::Result<BuildNexradResult> {
+    if request.output_dir.exists() {
+        fs::remove_dir_all(&request.output_dir)
+            .with_context(|| format!("failed to clear {}", request.output_dir.display()))?;
+    }
+    fs::create_dir_all(&request.output_dir)
+        .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
+
+    let listings = parse_radar_listing(&request.input_dir.join("index.html"))?;
+    if listings.len() < 11 {
+        bail!("expected at least 11 radar listings, found {}", listings.len());
+    }
+
+    let selected = [0usize, 5usize, 10usize]
+        .into_iter()
+        .map(|index| listings[index].clone())
+        .collect::<Vec<_>>();
+
+    let structured_json_path = request.output_dir.join("nexrad.json");
+    let manifest_path = request
+        .output_dir
+        .join(format!("nexrad_{}.manifest.json", request.version_label));
+    let zip_path = request
+        .output_dir
+        .join(format!("nexrad_{}.zip", request.version_label));
+
+    let frame_names = ["frame_0.png", "frame_1.png", "frame_2.png"];
+    let mut frames = Vec::new();
+    let mut zip_members: Vec<(String, PathBuf)> = vec![("nexrad.json".to_string(), structured_json_path.clone())];
+
+    for (entry, frame_name) in selected.iter().zip(frame_names) {
+        let copied_gz_path = request.output_dir.join(&entry.file_name);
+        let source_gz_path = request.input_dir.join(&entry.file_name);
+        fs::copy(&source_gz_path, &copied_gz_path).with_context(|| {
+            format!(
+                "failed to copy {} to {}",
+                source_gz_path.display(),
+                copied_gz_path.display()
+            )
+        })?;
+        run_command("gzip", &["-d", copied_gz_path.to_str().unwrap()])?;
+
+        let source_tif_name = entry.file_name.trim_end_matches(".gz");
+        let source_tif_path = request.output_dir.join(source_tif_name);
+        let warped_tif_path = request
+            .output_dir
+            .join(frame_name.trim_end_matches(".png").to_string() + ".tif");
+        let png_path = request.output_dir.join(frame_name);
+
+        run_command(
+            "gdalwarp",
+            &[
+                "-r",
+                "near",
+                "-s_srs",
+                "EPSG:4326",
+                "-t_srs",
+                "EPSG:3857",
+                "-of",
+                "gtiff",
+                source_tif_path.to_str().unwrap(),
+                warped_tif_path.to_str().unwrap(),
+            ],
+        )?;
+        run_command(
+            "convert",
+            &[
+                warped_tif_path.to_str().unwrap(),
+                "-transparent",
+                "black",
+                "-resize",
+                "25%",
+                png_path.to_str().unwrap(),
+            ],
+        )?;
+
+        let (west, south, east, north) = warped_bounds(&warped_tif_path)?;
+        let image = ImageReader::open(&png_path)
+            .with_context(|| format!("failed to open {}", png_path.display()))?
+            .with_guessed_format()
+            .context("failed to guess png format")?
+            .decode()
+            .with_context(|| format!("failed to decode {}", png_path.display()))?;
+        frames.push(StructuredNexradFrame {
+            filename: frame_name.to_string(),
+            observed_at_utc: entry
+                .observed_at_utc
+                .and_utc()
+                .to_rfc3339(),
+            width: image.width(),
+            height: image.height(),
+            bounds: StructuredNexradBounds {
+                west,
+                south,
+                east,
+                north,
+            },
+        });
+        zip_members.push((frame_name.to_string(), png_path));
+    }
+
+    write_json_pretty(
+        &structured_json_path,
+        &StructuredNexradDataset {
+            schema_version: 1,
+            version_label: request.version_label.clone(),
+            generated_at_utc: request.generated_at_utc.to_rfc3339(),
+            frame_count: frames.len(),
+            projection: "EPSG:3857".to_string(),
+            frames,
+        },
+    )?;
+    write_json_pretty(
+        &manifest_path,
+        &NexradManifest {
+            schema_version: 1,
+            version_label: request.version_label.clone(),
+            generated_at_utc: request.generated_at_utc.to_rfc3339(),
+            files: NexradManifestFiles {
+                structured_json: "nexrad.json".to_string(),
+                zip: zip_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            },
+            counts: NexradManifestCounts { frames: zip_members.len() - 1 },
+        },
+    )?;
+    let member_refs = zip_members
+        .iter()
+        .map(|(name, path)| (name.as_str(), path.as_path()))
+        .collect::<Vec<_>>();
+    write_zip(&zip_path, &member_refs)?;
+
+    Ok(BuildNexradResult {
+        manifest_path,
+        structured_json_path,
+        zip_path,
+        frame_count: zip_members.len() - 1,
+    })
+}
+
 pub fn load_tfr_notam_ids(input_dir: &Path) -> anyhow::Result<Vec<String>> {
     Ok(load_tfr_list_entries(input_dir)?
         .into_iter()
@@ -563,6 +903,150 @@ fn parse_radar_listing(path: &Path) -> anyhow::Result<Vec<RadarListingEntry>> {
         .collect::<Vec<_>>();
     entries.sort_by(|left, right| right.observed_at_utc.cmp(&left.observed_at_utc));
     Ok(entries)
+}
+
+fn parse_metar_records(path: &Path) -> anyhow::Result<Vec<ParsedMetarRecord>> {
+    let xml = fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut reader = Reader::from_str(&xml);
+    let mut buffer = Vec::new();
+    let mut records = Vec::new();
+    let mut in_metar = false;
+    let mut mode = None;
+    let mut current = ParsedMetarRecord {
+        raw_text: String::new(),
+        observation_time: String::new(),
+        station_id: String::new(),
+        flight_category: String::new(),
+        longitude: String::new(),
+        latitude: String::new(),
+    };
+
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(event)) => match event.name().as_ref() {
+                b"METAR" => {
+                    in_metar = true;
+                    current = ParsedMetarRecord {
+                        raw_text: String::new(),
+                        observation_time: String::new(),
+                        station_id: String::new(),
+                        flight_category: String::new(),
+                        longitude: String::new(),
+                        latitude: String::new(),
+                    };
+                    mode = None;
+                }
+                b"raw_text" if in_metar => mode = Some(MetarTextMode::RawText),
+                b"observation_time" if in_metar => mode = Some(MetarTextMode::ObservationTime),
+                b"latitude" if in_metar => mode = Some(MetarTextMode::Latitude),
+                b"longitude" if in_metar => mode = Some(MetarTextMode::Longitude),
+                b"station_id" if in_metar => mode = Some(MetarTextMode::StationId),
+                b"flight_category" if in_metar => mode = Some(MetarTextMode::FlightCategory),
+                _ => {}
+            },
+            Ok(Event::End(event)) => match event.name().as_ref() {
+                b"METAR" if in_metar => {
+                    if !current.raw_text.is_empty() && !current.station_id.is_empty() {
+                        records.push(current.clone());
+                    }
+                    in_metar = false;
+                    mode = None;
+                }
+                b"raw_text"
+                | b"observation_time"
+                | b"latitude"
+                | b"longitude"
+                | b"station_id"
+                | b"flight_category" => mode = None,
+                _ => {}
+            },
+            Ok(Event::Text(event)) if in_metar => {
+                let text = event
+                    .xml_content()
+                    .context("failed to decode METAR XML text")?
+                    .into_owned();
+                push_metar_text(&mut current, mode, &text);
+            }
+            Ok(Event::CData(event)) if in_metar => {
+                let text = event
+                    .xml_content()
+                    .context("failed to decode METAR XML cdata")?
+                    .into_owned();
+                push_metar_text(&mut current, mode, &text);
+            }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to parse {}", path.display()));
+            }
+        }
+        buffer.clear();
+    }
+
+    Ok(records)
+}
+
+fn push_metar_text(current: &mut ParsedMetarRecord, mode: Option<MetarTextMode>, text: &str) {
+    match mode {
+        Some(MetarTextMode::RawText) => current.raw_text.push_str(text),
+        Some(MetarTextMode::ObservationTime) => current.observation_time.push_str(text),
+        Some(MetarTextMode::Latitude) => current.latitude.push_str(text),
+        Some(MetarTextMode::Longitude) => current.longitude.push_str(text),
+        Some(MetarTextMode::StationId) => current.station_id.push_str(text),
+        Some(MetarTextMode::FlightCategory) => current.flight_category.push_str(text),
+        None => {}
+    }
+}
+
+fn empty_to_none(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn parse_optional_f64(value: &str) -> anyhow::Result<Option<f64>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(
+        trimmed
+            .parse::<f64>()
+            .with_context(|| format!("failed to parse float {trimmed}"))?,
+    ))
+}
+
+fn warped_bounds(path: &Path) -> anyhow::Result<(f64, f64, f64, f64)> {
+    let output = run_command_capture("gdalinfo", &[path.to_str().unwrap(), "-noct"])?;
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    for label in ["Upper Left", "Lower Left", "Upper Right", "Lower Right"] {
+        let line = output
+            .lines()
+            .find(|line| line.trim_start().starts_with(label))
+            .ok_or_else(|| anyhow::anyhow!("missing {label} in gdalinfo output"))?;
+        let start = line
+            .find('(')
+            .ok_or_else(|| anyhow::anyhow!("missing '(' in gdalinfo output line: {line}"))?;
+        let end = line[start + 1..]
+            .find(')')
+            .ok_or_else(|| anyhow::anyhow!("missing ')' in gdalinfo output line: {line}"))?;
+        let coords = &line[start + 1..start + 1 + end];
+        let (x, y) = coords
+            .split_once(',')
+            .ok_or_else(|| anyhow::anyhow!("missing comma in gdalinfo coords: {coords}"))?;
+        xs.push(x.trim().parse::<f64>().with_context(|| format!("failed to parse x {x}"))?);
+        ys.push(y.trim().parse::<f64>().with_context(|| format!("failed to parse y {y}"))?);
+    }
+    Ok((
+        xs.iter().copied().fold(f64::INFINITY, f64::min),
+        ys.iter().copied().fold(f64::INFINITY, f64::min),
+        xs.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        ys.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+    ))
 }
 
 fn load_parsed_tfr_areas(input_dir: &Path) -> anyhow::Result<(Vec<TfrListEntry>, Vec<ParsedTfrArea>)> {

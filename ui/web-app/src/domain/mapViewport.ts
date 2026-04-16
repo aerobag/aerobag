@@ -193,7 +193,13 @@ export function renderTiles(
   for (const mapView of mapViews) {
     tiles.push(...renderTilesForMapView(mapView, viewport, width, height));
   }
-  return dedupeTiles(tiles).sort((left, right) => left.zoom - right.zoom);
+  return dedupeTiles(tiles).sort((left, right) => {
+    const zoomDelta = left.zoom - right.zoom;
+    if (zoomDelta !== 0) {
+      return zoomDelta;
+    }
+    return chartFamilyRenderPriority(left.chartFamily) - chartFamilyRenderPriority(right.chartFamily);
+  });
 }
 
 function renderTilesForMapView(
@@ -204,6 +210,11 @@ function renderTilesForMapView(
 ): RenderTile[] {
   const tiles: RenderTile[] = [];
   const desiredLevel = pickLevel(mapView, viewport.zoom);
+  // Keep coarser levels as a fallback under the desired level.
+  // Do not collapse this back to "desired level only": that regresses real missing-tile
+  // gaps, notably IFR-L in SE Alaska, where lower-zoom tiles are needed to avoid holes.
+  // The TAC gray issue was caused by the per-tile background in App/styles, not by this
+  // multi-level fallback.
   const levels = mapView.levels
     .filter((level) => level.zoom <= desiredLevel.zoom)
     .sort((left, right) => left.zoom - right.zoom);
@@ -252,17 +263,23 @@ function renderTilesForMapView(
 function dedupeTiles(tiles: RenderTile[]): RenderTile[] {
   const byScreenKey = new Map<string, RenderTile>();
   for (const tile of tiles) {
-    const key = `${tile.zoom}:${tile.x}:${tile.yTms}`;
-    const existing = byScreenKey.get(key);
-    if (!existing) {
-      byScreenKey.set(key, tile);
-      continue;
-    }
-    if (existing.chartFamily !== "tac" && tile.chartFamily === "tac") {
+    const key = `${tile.zoom}:${tile.x}:${tile.yTms}:${tile.mapViewId}`;
+    if (!byScreenKey.has(key)) {
       byScreenKey.set(key, tile);
     }
   }
   return [...byScreenKey.values()];
+}
+
+function chartFamilyRenderPriority(chartFamily: MapView["chart_family"]): number {
+  switch (chartFamily) {
+    case "sec":
+      return 0;
+    case "tac":
+      return 1;
+    default:
+      return 0;
+  }
 }
 
 function pickLevel(mapView: MapView, zoom: number): MapView["levels"][number] {

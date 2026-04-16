@@ -106,6 +106,31 @@ const chartFamilies: Array<{ id: ChartFamilyId; label: string; launcherLabel: st
   { id: "enr-h", label: "IFR-HIGH", launcherLabel: "IFR H" },
 ];
 
+function mapViewsForDisplayedFamily(
+  allMapViews: typeof mapViews,
+  familyId: ChartFamilyId,
+): typeof mapViews {
+  if (familyId === "tac") {
+    return allMapViews.filter((view) => {
+      const chartFamily = view.map_view.chart_family;
+      return chartFamily === "sec" || chartFamily === "tac";
+    });
+  }
+  return allMapViews.filter((view) => view.map_view.chart_family === familyId);
+}
+
+function preferredFamilyMap(
+  allMapViews: typeof mapViews,
+  familyId: ChartFamilyId,
+  fallbackRegionId: string | null,
+): (typeof mapViews)[number] | undefined {
+  const familyMaps = allMapViews.filter((view) => view.map_view.chart_family === familyId);
+  return (
+    familyMaps.find((view) => view.region_id === fallbackRegionId)
+    ?? familyMaps[0]
+  );
+}
+
 const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> = [
   { id: "map", label: "CHART", launcherLabel: "CHT" },
   { id: "charts", label: "PLATE", launcherLabel: "PLT" },
@@ -121,6 +146,10 @@ const plateFolderTheme = loadedUiTheme.plate_folder;
 const plateFolderCategoryOrder: PlateFolderCategory[] = ["airport-diagram", "csup", "takeoff-mins", "approach", "departure", "star"];
 const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
 const defaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json";
+const rasterTileDebugTargets = [
+  { zoom: 8, x: 42, yTms: 166 },
+  { zoom: 8, x: 41, yTms: 166 },
+] as const;
 const situationRingSizesNm = [0.25, 0.5, 0.8, 1, 1.5, 2, 3, 5, 8, 10, 15, 20, 30, 50, 100, 150, 200] as const;
 const vorOuterHexPoints = [
   { x: -8, y: 0 },
@@ -131,6 +160,10 @@ const vorOuterHexPoints = [
   { x: -4, y: 7 },
 ] as const;
 const vorEdgeInsetDistances = [3.8, 1.9, 3.8, 1.9, 3.8, 1.9] as const;
+
+function isRasterTileDebugTarget(tile: { zoom: number; x: number; yTms: number }): boolean {
+  return rasterTileDebugTargets.some((target) => target.zoom === tile.zoom && target.x === tile.x && target.yTms === tile.yTms);
+}
 
 type PersistedWebUiState = {
   page?: AppPage;
@@ -281,7 +314,7 @@ function emptyMapFollowUiState(): MapFollowUiState {
 }
 
 function initialMapId() {
-  return mapViews.find((view) => view.map_view.chart_family === "tac")?.id ?? mapViews[0].id;
+  return preferredFamilyMap(mapViews, "tac", "nw")?.id ?? mapViews[0].id;
 }
 
 export default function App() {
@@ -412,7 +445,7 @@ export default function App() {
     [],
   );
   const selectedFamilyMapViews = useMemo(
-    () => mapViews.filter((view) => view.map_view.chart_family === selectedMap.map_view.chart_family),
+    () => mapViewsForDisplayedFamily(mapViews, selectedMap.map_view.chart_family),
     [selectedMap],
   );
   const selectedAirport = useMemo(
@@ -1085,6 +1118,24 @@ function MapPage(props: {
       tileCount: tiles.length,
     };
   }, [selectedFamilyMapViews, tiles]);
+  useEffect(() => {
+    const matchingTiles = tiles
+      .filter((tile) => isRasterTileDebugTarget(tile))
+      .map((tile) => ({
+        zoom: tile.zoom,
+        x: tile.x,
+        y_tms: tile.yTms,
+        family: tile.chartFamily,
+        map_view_id: tile.mapViewId,
+        package_name: tile.packageName,
+        src: tile.src,
+      }));
+    debugLog("map.raster.debug_tiles.selected", {
+      selected_map_id: selectedMap.id,
+      selected_family_id: selectedFamily.id,
+      matching_tiles: matchingTiles,
+    });
+  }, [selectedFamily.id, selectedMap.id, tiles]);
   const situationOverlay = useMemo(
     () => resolveSituationOverlay(situation, viewport, surfaceSize.width, surfaceSize.height),
     [situation, viewport, surfaceSize.height, surfaceSize.width],
@@ -1440,7 +1491,7 @@ function MapPage(props: {
         {trayGroup.scrimOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
         {tiles.map((tile) => (
           <div
-            key={`${tile.zoom}-${tile.x}-${tile.yTms}`}
+            key={`${tile.chartFamily}-${tile.packageName ?? tile.mapViewId}-${tile.zoom}-${tile.x}-${tile.yTms}`}
             className="mapTile"
             style={{
               left: `${tile.left}px`,
@@ -1449,7 +1500,40 @@ function MapPage(props: {
               height: `${tile.size}px`,
             }}
           >
-            <img className="mapTileImage" src={tile.src} alt="" draggable={false} />
+            <img
+              className="mapTileImage"
+              src={tile.src}
+              alt=""
+              draggable={false}
+              onLoad={() => {
+                if (!isRasterTileDebugTarget(tile)) {
+                  return;
+                }
+                debugLog("map.raster.debug_tile.load", {
+                  zoom: tile.zoom,
+                  x: tile.x,
+                  y_tms: tile.yTms,
+                  family: tile.chartFamily,
+                  map_view_id: tile.mapViewId,
+                  package_name: tile.packageName,
+                  src: tile.src,
+                });
+              }}
+              onError={() => {
+                if (!isRasterTileDebugTarget(tile)) {
+                  return;
+                }
+                debugLog("map.raster.debug_tile.error", {
+                  zoom: tile.zoom,
+                  x: tile.x,
+                  y_tms: tile.yTms,
+                  family: tile.chartFamily,
+                  map_view_id: tile.mapViewId,
+                  package_name: tile.packageName,
+                  src: tile.src,
+                });
+              }}
+            />
             {debugTileLabels ? (
               <div className="tileLabel">
                 z{tile.zoom} x{tile.x} y{tile.yTms}
@@ -1709,7 +1793,11 @@ function MapPage(props: {
                 active,
                 disabled: !available,
                 onSelect: () => {
-                  const nextMap = mapViews.find((view) => view.map_view.chart_family === family.id);
+                  const nextMap = preferredFamilyMap(
+                    mapViews,
+                    family.id,
+                    selectedMap.region_id,
+                  );
                   if (nextMap) {
                     onSelectMapId(nextMap.id);
                   }

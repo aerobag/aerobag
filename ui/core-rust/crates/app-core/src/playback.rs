@@ -227,6 +227,11 @@ fn parse_trace_json(trace_json: &str) -> AppResult<PlaybackTrace> {
         let Some(items) = entry.as_array() else {
             continue;
         };
+        // adsb.fi trace rows are positional tuples, not self-describing records.
+        // Our current field mapping is documented in docs/adsb_fi_trace_format.md:
+        //   [0]=elapsed_s [1]=lat [2]=lon [3]=alt_ft [4]=speed_kt [5]=track_deg
+        // Some rows also include a named object later in the tuple, but playback
+        // does not rely on that auxiliary payload.
         if items.len() < 6 {
             continue;
         }

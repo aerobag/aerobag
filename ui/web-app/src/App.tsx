@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { chartPage, mapViews, resourceIndex, sampleCatalog, samplePlan } from "./domain/sampleData";
 import type {
@@ -451,6 +451,11 @@ export default function App() {
     },
   });
   const [playbackSourcePath, setPlaybackSourcePath] = useState(defaultPlaybackTracePath);
+  const [debugWarningActive, setDebugWarningActive] = useState(false);
+  const logDebugWarning = useCallback((tag: string, data?: unknown) => {
+    debugLog(tag, data);
+    setDebugWarningActive(true);
+  }, []);
   const appState = sessionSnapshot.app_state;
   const appUiState = sessionSnapshot.app_ui_state;
   const playbackUiState = sessionSnapshot.playback_ui_state;
@@ -856,6 +861,8 @@ export default function App() {
           uiSession={uiSession}
           adapterBackend={adapterBackend}
           adapterDetail={adapterDetail}
+          debugWarningActive={debugWarningActive}
+          onDebugWarning={logDebugWarning}
           onFirstVisualReady={() => setStartupVisualReady(true)}
         />
       </div>
@@ -1007,6 +1014,7 @@ export default function App() {
             );
             await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
+          debugWarningActive={debugWarningActive}
         />
       </div>
 
@@ -1073,6 +1081,7 @@ export default function App() {
           onPlaybackSourcePathChange={setPlaybackSourcePath}
           onPlaybackSnapshotChange={setSessionSnapshot}
           uiSession={uiSession}
+          debugWarningActive={debugWarningActive}
           onFirstVisualReady={() => setStartupVisualReady(true)}
         />
       </div>
@@ -1085,6 +1094,7 @@ export default function App() {
           sessionPlanUiState={appUiState.active_plan}
           onSelectPage={navigateToPage}
           onOpenPlan={() => navigateToPage("plan")}
+          debugWarningActive={debugWarningActive}
         />
       </div>
     </main>
@@ -1122,6 +1132,8 @@ function MapPage(props: {
   uiSession: UiSession | null;
   adapterBackend: AdapterBackendKind;
   adapterDetail: string;
+  debugWarningActive: boolean;
+  onDebugWarning: (tag: string, data?: unknown) => void;
   onFirstVisualReady: () => void;
 }) {
   const {
@@ -1150,6 +1162,8 @@ function MapPage(props: {
     mapFollowTargetViewport,
     adapterBackend,
     adapterDetail,
+    debugWarningActive,
+    onDebugWarning,
     onFirstVisualReady,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1170,6 +1184,7 @@ function MapPage(props: {
   const pinchRef = useRef<ReturnType<typeof createPinchSnapshot> | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
   const firstVisualReadyRef = useRef(false);
+  const lastOverlayWarningKeyRef = useRef("");
 
   useEffect(() => {
     if (activePointersRef.current.size > 0) {
@@ -1214,6 +1229,7 @@ function MapPage(props: {
       tileCount: tiles.length,
     };
   }, [selectedFamilyMapViews, tiles]);
+  const mapIsVisible = page === "map";
   useEffect(() => {
     const matchingTiles = tiles
       .filter((tile) => isRasterTileDebugTarget(tile))
@@ -1369,6 +1385,9 @@ function MapPage(props: {
   }, [appCoreAdapter, plan, planUiState]);
 
   useEffect(() => {
+    if (!mapIsVisible) {
+      return;
+    }
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       setMapOverlay({
         needed_point_tiles: [],
@@ -1380,6 +1399,23 @@ function MapPage(props: {
     const session = uiSession;
     const controller = new AbortController();
     let cancelled = false;
+
+    function reportOverlayWarnings(overlay: MapOverlayQueryResult, phase: string) {
+      const warningKey = overlay.warnings.map((warning) => warning.code).sort().join(",");
+      if (!warningKey || warningKey === lastOverlayWarningKeyRef.current) {
+        if (!warningKey) {
+          lastOverlayWarningKeyRef.current = "";
+        }
+        return;
+      }
+      lastOverlayWarningKeyRef.current = warningKey;
+      onDebugWarning("map.overlay.warning", {
+        phase,
+        zoom: viewport.zoom,
+        visible_features: overlay.visible_features.length,
+        warnings: overlay.warnings,
+      });
+    }
 
     async function syncMapOverlay() {
       let overlay: MapOverlayQueryResult;
@@ -1398,6 +1434,7 @@ function MapPage(props: {
           visible_features: overlay.visible_features.length,
           warnings: overlay.warnings.map((warning) => warning.code),
         });
+        reportOverlayWarnings(overlay, "initial");
       } catch (error) {
         debugLog("map.overlay.query.error", {
           zoom: viewport.zoom,
@@ -1454,6 +1491,7 @@ function MapPage(props: {
           visible_features: overlay.visible_features.length,
           warnings: overlay.warnings.map((warning) => warning.code),
         });
+        reportOverlayWarnings(overlay, "refresh");
       }
       if (!cancelled) {
         setMapOverlay(overlay);
@@ -1472,7 +1510,7 @@ function MapPage(props: {
       cancelled = true;
       controller.abort();
     };
-  }, [surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+  }, [mapIsVisible, onDebugWarning, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
 
   const overlayTransform = useMemo(() => {
     if (!mapOverlayViewport) {
@@ -1706,7 +1744,7 @@ function MapPage(props: {
             </div>
           </div>
         ) : null}
-        {routeScreenSegments.length > 0 ? (
+        {mapIsVisible && routeScreenSegments.length > 0 ? (
           <svg className="vectorOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
             {routeScreenSegments.map((segment) => (
               <Fragment key={segment.id}>
@@ -1732,7 +1770,7 @@ function MapPage(props: {
             ))}
           </svg>
         ) : null}
-        {mapOverlay.visible_features.length > 0 ? (
+        {mapIsVisible && mapOverlay.visible_features.length > 0 ? (
           <svg
             className="vectorOverlay"
             viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
@@ -1807,7 +1845,7 @@ function MapPage(props: {
           </svg>
         ) : null}
         <SituationStatusBadge ownship={ownship} />
-        {situationOverlay ? (
+        {mapIsVisible && situationOverlay ? (
           <>
             <svg className="situationOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
               <circle
@@ -2014,7 +2052,7 @@ function MapPage(props: {
         <div className="debugDock" style={{ left: "auto", right: "calc(var(--thumb) + (var(--thumb-gap) * 2))" }}>
           <DebugDock
             open={debugOpen}
-            warn={mapOverlay.warnings.length > 0}
+            warn={debugWarningActive || mapOverlay.warnings.length > 0}
             onToggle={() => setDebugOpen((open) => !open)}
           >
             <div className="debugLine">page {pageLabel(page)}</div>
@@ -2450,6 +2488,7 @@ function FlightPlanPage(props: {
     built: MaterializedProcedure,
   ) => void | Promise<void>;
   onReplaceProcedure: (componentIndex: number, built: MaterializedProcedure) => void | Promise<void>;
+  debugWarningActive: boolean;
 }) {
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<number | null>(null);
   const [pendingSelectedComponentIndex, setPendingSelectedComponentIndex] = useState<number | null>(null);
@@ -3062,7 +3101,7 @@ function FlightPlanPage(props: {
       </div>
 
       <div className="debugDock">
-        <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>
+        <DebugDock open={debugOpen} warn={props.debugWarningActive} onToggle={() => setDebugOpen((open) => !open)}>
           <div className="debugLine">page {pageLabel(props.page)}</div>
           <div className="debugLine">up {props.uptimeLabel}</div>
           <div className="debugLine">stack {formatPageStack(props.pageHistory, { page: props.page, selectedMapId: "", selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
@@ -3571,6 +3610,7 @@ function ChartsPage(props: {
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
   uiSession: UiSession | null;
   ownship: OwnshipRenderState;
+  debugWarningActive: boolean;
   onFirstVisualReady: () => void;
 }) {
   const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, sessionPlanUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, onApplyMutation, ownship, onFirstVisualReady } = props;
@@ -4096,7 +4136,7 @@ function ChartsPage(props: {
         />
 
         <div className="debugDock">
-          <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>
+          <DebugDock open={debugOpen} warn={props.debugWarningActive} onToggle={() => setDebugOpen((open) => !open)}>
             <div className="debugLine">page {pageLabel(page)}</div>
             <div className="debugLine">up {uptimeLabel}</div>
             <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: "", selectedChartId: selectedChart?.id ?? "", selectedChartLabel: selectedChart?.label ?? "", chartFolderOpen: folderOpen })}</div>
@@ -4118,8 +4158,9 @@ function SettingsPage(props: {
   sessionPlanUiState: FlightPlanUiState | null;
   onSelectPage: (page: AppPage) => void;
   onOpenPlan: () => void;
+  debugWarningActive: boolean;
 }) {
-  const { page, pageHistory, uptimeLabel, sessionPlanUiState, onSelectPage, onOpenPlan } = props;
+  const { page, pageHistory, uptimeLabel, sessionPlanUiState, onSelectPage, onOpenPlan, debugWarningActive } = props;
   const trayGroup = useModalTrayGroup(["page"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
 
@@ -4165,7 +4206,7 @@ function SettingsPage(props: {
       </button>
 
       <div className="debugDock">
-        <DebugDock open={debugOpen} onToggle={() => setDebugOpen((open) => !open)}>
+        <DebugDock open={debugOpen} warn={debugWarningActive} onToggle={() => setDebugOpen((open) => !open)}>
           <div className="debugLine">page {pageLabel(page)}</div>
           <div className="debugLine">up {uptimeLabel}</div>
           <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: "", selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>

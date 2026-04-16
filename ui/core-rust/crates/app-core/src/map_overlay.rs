@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{geometry::LatLon, MapViewport};
 
-pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 1000;
+pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 300;
 const POINT_TILE_ZOOM: u32 = 9;
 const AIRPORT_MIN_DISPLAY_ZOOM: f64 = 8.0;
 const FIX_MIN_DISPLAY_ZOOM: f64 = 9.0;

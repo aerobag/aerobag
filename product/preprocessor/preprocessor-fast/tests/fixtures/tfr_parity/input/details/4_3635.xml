@@ -1,0 +1,646 @@
+﻿<XNOTAM-Update xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="0.1" origin="" created="2026-03-10T04:23:42">
+  <Group>
+    <Add>
+      <Not>
+        <NotUid>
+          <txtNameAcctFac>FDC</txtNameAcctFac>
+          <dateIndexYear>2024</dateIndexYear>
+          <noSeqNo>3635</noSeqNo>
+          <dateIssued>2014-10-27T15:50:00</dateIssued>
+          <txtLocalName>4/3635</txtLocalName>
+          <codeGUID>0a2b2400-8ebe-418e-8891-fe4b704f985d</codeGUID>
+        </NotUid>
+        <codeDailyOper>false</codeDailyOper>
+        <codeTimeZone>UTC</codeTimeZone>
+        <codeExpirationTimeZone>UTC</codeExpirationTimeZone>
+        <AffLocGroup>
+          <txtNameCity>DISNEYLAND THEME PARK, ANAHEIM</txtNameCity>
+          <txtNameUSState>CALIFORNIA</txtNameUSState>
+        </AffLocGroup>
+        <codeFacility>ZLA</codeFacility>
+        <TfrNot>
+          <codeType>99.7</codeType>
+          <TFRAreaGroup>
+            <aseTFRArea>
+              <AseUid>
+                <codeType>RAS</codeType>
+                <codeId>879</codeId>
+              </AseUid>
+              <txtName>Area</txtName>
+              <codeDistVerUpper>HEI</codeDistVerUpper>
+              <valDistVerUpper>3000</valDistVerUpper>
+              <uomDistVerUpper>FT</uomDistVerUpper>
+              <codeDistVerLower>HEI</codeDistVerLower>
+              <valDistVerLower>0</valDistVerLower>
+              <uomDistVerLower>FT</uomDistVerLower>
+              <Att>
+                <codeWorkHr>NOTAM</codeWorkHr>
+              </Att>
+              <codeExclVerUpper>INCLUDE</codeExclVerUpper>
+              <codeExclVerLower>INCLUDE</codeExclVerLower>
+              <isScheduledTfrArea>FALSE</isScheduledTfrArea>
+            </aseTFRArea>
+            <Aac>
+              <AacUid>
+                <AseUidChi>
+                  <codeType>RAS</codeType>
+                  <codeId>879</codeId>
+                </AseUidChi>
+                <AseUidPar>
+                  <codeType>PART</codeType>
+                  <codeId>880</codeId>
+                </AseUidPar>
+              </AacUid>
+              <codeType>BOM</codeType>
+              <codeOpr>BASE</codeOpr>
+            </Aac>
+            <abdMergedArea>
+              <AbdUid>
+                <AseUid>
+                  <codeType>RAS</codeType>
+                  <codeId>879</codeId>
+                </AseUid>
+              </AbdUid>
+              <txtRmk>879</txtRmk>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.85147938N</geoLat>
+                <geoLong>117.92138889W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.85071796N</geoLat>
+                <geoLong>117.91096393W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.84845686N</geoLat>
+                <geoLong>117.90085627W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.8447649N</geoLat>
+                <geoLong>117.8913735W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.83975443N</geoLat>
+                <geoLong>117.88280409W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.83357792N</geoLat>
+                <geoLong>117.87540863W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.82642324N</geoLat>
+                <geoLong>117.8694118W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.818508N</geoLat>
+                <geoLong>117.86499564W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.81007289N</geoLat>
+                <geoLong>117.86229397W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.8013743N</geoLat>
+                <geoLong>117.86138841W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.79267658N</geoLat>
+                <geoLong>117.86230592W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.78424396N</geoLat>
+                <geoLong>117.86501811W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.77633256N</geoLat>
+                <geoLong>117.86944208W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.76918257N</geoLat>
+                <geoLong>117.87544305W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.76301105N</geoLat>
+                <geoLong>117.88283852W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75800528N</geoLat>
+                <geoLong>117.89140377W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75431715N</geoLat>
+                <geoLong>117.90087874W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75205855N</geoLat>
+                <geoLong>117.91097589W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75129799N</geoLat>
+                <geoLong>117.92138889W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75205855N</geoLat>
+                <geoLong>117.93180189W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75431715N</geoLat>
+                <geoLong>117.94189904W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75800528N</geoLat>
+                <geoLong>117.95137401W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.76301105N</geoLat>
+                <geoLong>117.95993926W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.76918257N</geoLat>
+                <geoLong>117.96733473W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.77633256N</geoLat>
+                <geoLong>117.9733357W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.78424396N</geoLat>
+                <geoLong>117.97775967W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.79267658N</geoLat>
+                <geoLong>117.98047186W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.8013743N</geoLat>
+                <geoLong>117.98138937W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.81007289N</geoLat>
+                <geoLong>117.98048381W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.818508N</geoLat>
+                <geoLong>117.97778214W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.82642324N</geoLat>
+                <geoLong>117.97336598W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.83357792N</geoLat>
+                <geoLong>117.96736915W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.83975443N</geoLat>
+                <geoLong>117.95997369W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.8447649N</geoLat>
+                <geoLong>117.95140428W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.84845686N</geoLat>
+                <geoLong>117.94192151W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.85071796N</geoLat>
+                <geoLong>117.93181385W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.85147938N</geoLat>
+                <geoLong>117.92138889W</geoLong>
+              </Avx>
+            </abdMergedArea>
+            <aseShapes>
+              <AseUid>
+                <codeType>PART</codeType>
+                <codeId>880</codeId>
+              </AseUid>
+              <Att>
+                <codeWorkHr>NOTAM</codeWorkHr>
+              </Att>
+              <Abd>
+                <AbdUid>
+                  <AseUid>
+                    <codeType>PART</codeType>
+                    <codeId>880</codeId>
+                  </AseUid>
+                </AbdUid>
+                <txtRmk>880</txtRmk>
+                <Avx>
+                  <codeType>CIR</codeType>
+                  <geoLat>33.80138889N</geoLat>
+                  <geoLong>117.92138889W</geoLong>
+                  <codeDatum>WGE</codeDatum>
+                  <valRadiusArc>3.0</valRadiusArc>
+                  <uomRadiusArc>NM</uomRadiusArc>
+                  <Frd>
+                    <FrdUid>
+                      <DpnUid>
+                        <codeId>SLI06</codeId>
+                        <geoLat>33.80138889N</geoLat>
+                        <geoLong>117.92138889W</geoLong>
+                      </DpnUid>
+                    </FrdUid>
+                    <Ain>
+                      <VorUid>
+                        <codeId>SLI</codeId>
+                        <geoLat>33.78330108N</geoLat>
+                        <geoLong>118.05475844W</geoLong>
+                      </VorUid>
+                      <valAngleBrg>066.0</valAngleBrg>
+                    </Ain>
+                    <Din>
+                      <TcnUid>
+                        <codeId>SLI</codeId>
+                        <geoLat>33.78330108N</geoLat>
+                        <geoLong>118.05475844W</geoLong>
+                      </TcnUid>
+                      <valDist>6.8</valDist>
+                      <uomDist>NM</uomDist>
+                    </Din>
+                    <txtRmk>SEAL BEACH</txtRmk>
+                  </Frd>
+                </Avx>
+              </Abd>
+            </aseShapes>
+            <InstructionsGroup>
+              <txtInstr>FLIGHT RESTRICTIONS IN THIS NOTAM COMPLY WITH STATUTORY MANDATES DETAILED IN SECTION 352 OF PUBLIC LAW 108-7 AS AMENDED BY SECTION 521 OF PUBLIC LAW 108-199. PURSUANT TO 49 USC 40103(B), THE FEDERAL AVIATION ADMINISTRATION (FAA) CLASSIFIES THE AIRSPACE DEFINED IN THIS NOTAM AS 'NATIONAL DEFENSE AIRSPACE'. ANY PERSON WHO KNOWINGLY OR WILLFULLY VIOLATES THE RULES PERTAINING TO OPERATIONS IN THIS AIRSPACE MAY BE SUBJECT TO CERTAIN CRIMINAL PENALTIES UNDER 49 USC 46307. PILOTS WHO DO NOT ADHERE TO THE FOLLOWING PROCEDURES MAY BE INTERCEPTED, DETAINED AND INTERVIEWED BY LAW ENFORCEMENT/SECURITY PERSONNEL. PURSUANT TO 14 CFR SECTION 99.7, SPECIAL SECURITY INSTRUCTIONS; ALL AIRCRAFT FLIGHT OPERATIONS, INCLUDING UNMANNED AND REMOTE CONTROLLED AIRCRAFT, ARE PROHIBITED</txtInstr>
+              <txtInstr>THE RESTRICTIONS DO NOT APPLY TO THOSE AIRCRAFT AUTHORIZED BY AND IN CONTACT WITH ATC FOR OPERATIONAL OR SAFETY OF FLIGHT PURPOSES, DEPARTMENT OF DEFENSE, LAW ENFORCEMENT, AND AIR AMBULANCE FLIGHT OPERATIONS. FLIGHTS CONDUCTED FOR OPERATIONAL PURPOSES OF ANY DISNEYLAND EVENT AND VENUE ARE AUTHORIZED WITH AN APPROVED WAIVER. AN FAA AIRSPACE WAIVER DOES NOT RELIEVE OPERATORS FROM OBTAINING ALL OTHER NECESSARY AUTHORIZATIONS AND COMPLYING WITH ALL APPLICABLE FEDERAL AVIATION REGULATIONS. ALL PREVIOUSLY ISSUED WAIVERS TO FDC NOTAM 9/5145 REMAIN VALID UNTIL THE SPECIFIED END DATE BUT NOT TO EXCEED 90 DAYS FOLLOWING THE EFFECTIVE DATE OF THIS NOTAM. INFORMATION ABOUT AIRSPACE WAIVER APPLICATIONS AND TSA SECURITY AUTHORIZATIONS CAN BE FOUND AT HTTP://WWW.TSA.GOV/STAKEHOLDERS/AIRSPACE-WAIVERS-0 OR BY CALLING TSA AT 571-227-2071. SUBMIT REQUESTS FOR FAA AIRSPACE WAIVERS AT HTTPS://WAIVERS.FAA.GOV</txtInstr>
+            </InstructionsGroup>
+            <codeIncFRD>TRUE</codeIncFRD>
+            <codeShpPrt>COMPOSITE</codeShpPrt>
+            <codeLclTime>TRUE</codeLclTime>
+            <codeAuthATC>FALSE</codeAuthATC>
+          </TFRAreaGroup>
+          <TemplateType>BigThreatLanguage</TemplateType>
+          <codeCtrlFacilityType>ARTCC</codeCtrlFacilityType>
+        </TfrNot>
+        <codeCoordFacilityType>ARTCC</codeCoordFacilityType>
+        <txtDescrUSNS>!FDC 4/3635 ZLA PART 1 OF 2 SPECIAL SECURITY NOTICE. DISNEYLAND 
+THEME 
+PARK, 
+ANAHEIM, CA. THIS NOTAM REPLACES NOTAM 9/5145 TO REFLECT A 
+TRANSPORTATION SECURITY ADMINISTRATION (TSA)WEBSITE UPDATE AND 
+ADDITIONAL INFORMATION CONCERNING AIRSPACE WAIVERS. FLIGHT 
+RESTRICTIONS IN THIS NOTAM COMPLY WITH STATUTORY MANDATES DETAILED IN
+SECTION 352 OF PUBLIC LAW 108-7 AS AMENDED BY SECTION 521 OF PUBLIC 
+LAW 108-199. PURSUANT TO 49 USC 40103(B), THE 
+FEDERAL AVIATION ADMINISTRATION (FAA) CLASSIFIES THE AIRSPACE DEFINED
+IN THIS NOTAM AS 'NATIONAL DEFENSE AIRSPACE'. ANY PERSON WHO 
+KNOWINGLY OR WILLFULLY VIOLATES THE RULES PERTAINING TO OPERATIONS IN
+THIS AIRSPACE MAY BE SUBJECT TO CERTAIN CRIMINAL PENALTIES UNDER 49 
+USC 46307. PILOTS WHO DO NOT ADHERE TO THE FOLLOWING PROCEDURES MAY 
+BE INTERCEPTED, DETAINED AND INTERVIEWED BY LAW ENFORCEMENT/SECURITY 
+PERSONNEL. PURSUANT TO 14 CFR SECTION 99.7, SPECIAL SECURITY 
+INSTRUCTIONS; ALL AIRCRAFT FLIGHT OPERATIONS, INCLUDING UNMANNED AND 
+REMOTE CONTROLLED AIRCRAFT, ARE PROHIBITED WITHIN A 3 NMR OF 
+334805N/1175517W OR THE SLI066006.8 UP TO AND INCLUDING 3000FT AGL. 
+1410271500-PERM
+END PART 1 OF 2
+
+
+
+!FDC 4/3635 ZLA PART 2 OF 2 SPECIAL
+THE RESTRICTIONS DO NOT APPLY TO THOSE AIRCRAFT AUTHORIZED BY AND IN 
+CONTACT WITH ATC FOR OPERATIONAL OR SAFETY OF FLIGHT PURPOSES, 
+DEPARTMENT OF DEFENSE, LAW ENFORCEMENT, AND AIR AMBULANCE FLIGHT 
+OPERATIONS. FLIGHTS CONDUCTED FOR OPERATIONAL PURPOSES OF ANY 
+DISNEYLAND EVENT AND VENUE ARE AUTHORIZED WITH AN APPROVED WAIVER. AN
+FAA AIRSPACE WAIVER DOES NOT RELIEVE OPERATORS FROM OBTAINING ALL 
+OTHER NECESSARY AUTHORIZATIONS AND COMPLYING WITH ALL APPLICABLE 
+FEDERAL AVIATION REGULATIONS. ALL PREVIOUSLY ISSUED WAIVERS TO FDC 
+NOTAM 9/5145 REMAIN VALID UNTIL THE SPECIFIED END DATE BUT NOT TO 
+EXCEED 90 DAYS FOLLOWING THE EFFECTIVE DATE OF THIS NOTAM. 
+INFORMATION ABOUT AIRSPACE WAIVER APPLICATIONS AND TSA SECURITY 
+AUTHORIZATIONS CAN BE FOUND AT 
+HTTP://WWW.TSA.GOV/STAKEHOLDERS/AIRSPACE-WAIVERS-0 OR BY CALLING TSA 
+AT 571-227-2071. SUBMIT REQUESTS FOR FAA AIRSPACE WAIVERS AT 
+HTTPS://WAIVERS.FAA.GOV
+1410271500-PERM
+END PART 2 OF 2</txtDescrUSNS>
+        <txtDescrTraditional>!FDC 4/3635 ZLA CA..AIRSPACE DISNEYLAND THEME PARK, ANAHEIM, CA..TEMPORARY FLIGHT RESTRICTIONS. THIS NOTAM REPLACES NOTAM 9/5145 TO REFLECT A TRANSPORTATION SECURITY ADMINISTRATION (TSA)WEBSITE UPDATE AND ADDITIONAL INFORMATION CONCERNING AIRSPACE WAIVERS. . PURSUANT TO 49 USC 40103(B)(3), THE FEDERAL AVIATION ADMINISTRATION (FAA) CLASSIFIES THE AIRSPACE DEFINED IN THIS NOTAM AS 'NTL DEFENSE AIRSPACE'. PILOTS WHO DO NOT ADHERE TO THE FOLLOWING PROC MAY BE INTERCEPTED, DETAINED AND INTERVIEWED BY LAW ENFORCEMENT/SECURITY PERSONNEL. ANY OF THE FOLLOWING ADDITIONAL ACTIONS MAY ALSO BE TAKEN AGAINST A PILOT WHO DOES NOT COMPLY WITH THE RQMNTS OR ANY SPECIAL INSTRUCTIONS OR PROC ANNOUNCED IN THIS NOTAM:
+A) THE FAA MAY TAKE ADMINISTRATIVE ACTION, INCLUDING IMPOSING CIVIL PENALTIES AND THE SUSPENSION OR REVOCATION OF AIRMEN CERTIFICATES; OR 
+B) THE UNITED STATES GOVERNMENT MAY PURSUE CRIMINAL CHARGES, INCLUDING CHARGES UNDER 49 USC SECTION 46307; OR 
+C) THE UNITED STATES GOVERNMENT MAY USE DEADLY FORCE AGAINST THE AIRBORNE ACFT, IF IT IS DETERMINED THAT THE ACFT POSES AN IMMINENT SECURITY THREAT. 
+PURSUANT TO 14 CFR 99.7, SPECIAL SECURITY INSTRUCTIONS, ALL ACFT FLT OPS ARE PROHIBITED: WI AN AREA DEFINED AS 3NM RADIUS OF 334805N1175517W (SLI066006.8) SFC-3000FT AGL EFFECTIVE IMMEDIATELY UNTIL FURTHER NOTICE. FLIGHT RESTRICTIONS IN THIS NOTAM COMPLY WITH STATUTORY MANDATES DETAILED IN SECTION 352 OF PUBLIC LAW 108-7 AS AMENDED BY SECTION 521 OF PUBLIC LAW 108-199. PURSUANT TO 49 USC 40103(B), THE FEDERAL AVIATION ADMINISTRATION (FAA) CLASSIFIES THE AIRSPACE DEFINED IN THIS NOTAM AS 'NATIONAL DEFENSE AIRSPACE'. ANY PERSON WHO KNOWINGLY OR WILLFULLY VIOLATES THE RULES PERTAINING TO OPERATIONS IN THIS AIRSPACE MAY BE SUBJECT TO CERTAIN CRIMINAL PENALTIES UNDER 49 USC 46307. PILOTS WHO DO NOT ADHERE TO THE FOLLOWING PROCEDURES MAY BE INTERCEPTED, DETAINED AND INTERVIEWED BY LAW ENFORCEMENT/SECURITY PERSONNEL. PURSUANT TO 14 CFR SECTION 99.7, SPECIAL SECURITY INSTRUCTIONS; ALL AIRCRAFT FLIGHT OPERATIONS, INCLUDING UNMANNED AND REMOTE CONTROLLED AIRCRAFT, ARE PROHIBITED THE RESTRICTIONS DO NOT APPLY TO THOSE AIRCRAFT AUTHORIZED BY AND IN CONTACT WITH ATC FOR OPERATIONAL OR SAFETY OF FLIGHT PURPOSES, DEPARTMENT OF DEFENSE, LAW ENFORCEMENT, AND AIR AMBULANCE FLIGHT OPERATIONS. FLIGHTS CONDUCTED FOR OPERATIONAL PURPOSES OF ANY DISNEYLAND EVENT AND VENUE ARE AUTHORIZED WITH AN APPROVED WAIVER. AN FAA AIRSPACE WAIVER DOES NOT RELIEVE OPERATORS FROM OBTAINING ALL OTHER NECESSARY AUTHORIZATIONS AND COMPLYING WITH ALL APPLICABLE FEDERAL AVIATION REGULATIONS. ALL PREVIOUSLY ISSUED WAIVERS TO FDC NOTAM 9/5145 REMAIN VALID UNTIL THE SPECIFIED END DATE BUT NOT TO EXCEED 90 DAYS FOLLOWING THE EFFECTIVE DATE OF THIS NOTAM. INFORMATION ABOUT AIRSPACE WAIVER APPLICATIONS AND TSA SECURITY AUTHORIZATIONS CAN BE FOUND AT HTTP://WWW.TSA.GOV/STAKEHOLDERS/AIRSPACE-WAIVERS-0 OR BY CALLING TSA AT 571-227-2071. SUBMIT REQUESTS FOR FAA AIRSPACE WAIVERS AT HTTPS://WAIVERS.FAA.GOV 2603100923-PERM</txtDescrTraditional>
+        <txtDescrModern>&lt;html&gt;
+  &lt;span style="Arial" valign="Top"&gt;
+    &lt;Body&gt;
+      &lt;Table cellpadding="1" cellspacing="0"&gt;
+        &lt;TR bgcolor="#1E90FF"&gt;
+          &lt;TD colspan="3" align="left" valign="bottom" width="250"&gt;
+            &lt;b&gt;
+              &lt;font color="#FFFFFF" size="3" face="Arial"&gt;NOTAM Number     :&lt;/font&gt;
+            &lt;/b&gt;
+          &lt;/TD&gt;
+          &lt;TD valign="bottom" align="left" width="320"&gt;
+            &lt;b&gt;
+              &lt;font color="#FFFFFF" size="3" face="Arial"&gt;FDC 4/3635&lt;/font&gt;
+            &lt;/b&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="left" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;Issue Date     :&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;October 27, 2014 at 1550 UTC&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="left" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;Location     :&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;DISNEYLAND THEME PARK, ANAHEIM, California near SEAL BEACH VORTAC (SLI)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="left" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;Beginning Date and Time     :&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;Effective Immediately &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="left" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;Ending Date and Time     :&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;Permanent&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="left" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;Reason for NOTAM     :&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;Temporary flight restrictions for Special Security Reasons&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="left" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;Type     :&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;Security&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="left" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;Replaced NOTAM(s)     :&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;9/5145: TO REFLECT A TRANSPORTATION SECURITY ADMINISTRATION (TSA)WEBSITE UPDATE AND ADDITIONAL INFORMATION CONCERNING AIRSPACE WAIVERS. &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="20"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="right" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Jump To: &amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;
+                &lt;a href="#areas" class="internal"&gt; Affected Areas &lt;/a&gt;&lt;br/&gt;&lt;a href="#restrictions" class="internal"&gt; Operating Restrictions and Requirements &lt;/a&gt;&lt;br/&gt;&lt;a href="#other" class="internal"&gt; Other Information &lt;/a&gt;&lt;br/&gt;&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="20"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+      &lt;/Table&gt;
+      &lt;Table cellpadding="1" cellspacing="0"&gt;
+        &lt;TR bgcolor="#1E90FF"&gt;
+          &lt;TD colspan="5"&gt;
+            &lt;a name="areas"&gt;
+              &lt;b&gt;
+                &lt;font color="#FFFFFF" size="3" face="Arial"&gt;Affected Area(s)&lt;/font&gt;
+              &lt;/b&gt;
+            &lt;/a&gt;
+          &lt;/TD&gt;
+          &lt;TD colspan="1" align="right"&gt;
+            &lt;a href="#"&gt;
+              &lt;font color="#FFFFFF" face="Arial"&gt;
+                &lt;b&gt;Top&lt;/b&gt;
+              &lt;/font&gt;
+            &lt;/a&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="10"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" width="200"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Airspace Definition:&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Center:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; On the SEAL BEACH VORTAC (SLI) 066 degree radial at 6.8 nautical miles. (Latitude: 33&amp;#xBA;48'05"N, Longitude: 117&amp;#xBA;55'17"W)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Radius:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; 3 nautical miles&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Altitude:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; From the surface  up to and including 3000 feet AGL &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="20"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+      &lt;/Table&gt;
+      &lt;b&gt;ENDSECTION1&lt;/b&gt;
+      &lt;Table cellpadding="1" cellspacing="0"&gt;
+        &lt;TR bgcolor="#1E90FF"&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;a name="restrictions"&gt;
+              &lt;b&gt;
+                &lt;font color="#FFFFFF" face="Arial" size="3"&gt;Operating Restrictions and Requirements&lt;/font&gt;
+              &lt;/b&gt;
+            &lt;/a&gt;
+          &lt;/TD&gt;
+          &lt;TD colspan="1" align="right"&gt;
+            &lt;a href="#"&gt;
+              &lt;font color="#FFFFFF" face="Arial"&gt;
+                &lt;b&gt;Top&lt;/b&gt;
+              &lt;/font&gt;
+            &lt;/a&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="20"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;No pilots may operate an aircraft in the areas covered by this NOTAM (except as described).&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="20"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;DL&gt;
+                &lt;DT&gt;FLIGHT RESTRICTIONS IN THIS NOTAM COMPLY WITH STATUTORY MANDATES DETAILED IN SECTION 352 OF PUBLIC LAW 108-7 AS AMENDED BY SECTION 521 OF PUBLIC LAW 108-199. PURSUANT TO 49 USC 40103(B), THE FEDERAL AVIATION ADMINISTRATION (FAA) CLASSIFIES THE AIRSPACE DEFINED IN THIS NOTAM AS 'NATIONAL DEFENSE AIRSPACE'. ANY PERSON WHO KNOWINGLY OR WILLFULLY VIOLATES THE RULES PERTAINING TO OPERATIONS IN THIS AIRSPACE MAY BE SUBJECT TO CERTAIN CRIMINAL PENALTIES UNDER 49 USC 46307. PILOTS WHO DO NOT ADHERE TO THE FOLLOWING PROCEDURES MAY BE INTERCEPTED, DETAINED AND INTERVIEWED BY LAW ENFORCEMENT/SECURITY PERSONNEL. PURSUANT TO 14 CFR SECTION 99.7, SPECIAL SECURITY INSTRUCTIONS; ALL AIRCRAFT FLIGHT OPERATIONS, INCLUDING UNMANNED AND REMOTE CONTROLLED AIRCRAFT, ARE PROHIBITED&lt;/DT&gt;&lt;br/&gt;&lt;DT&gt;THE RESTRICTIONS DO NOT APPLY TO THOSE AIRCRAFT AUTHORIZED BY AND IN CONTACT WITH ATC FOR OPERATIONAL OR SAFETY OF FLIGHT PURPOSES, DEPARTMENT OF DEFENSE, LAW ENFORCEMENT, AND AIR AMBULANCE FLIGHT OPERATIONS. FLIGHTS CONDUCTED FOR OPERATIONAL PURPOSES OF ANY DISNEYLAND EVENT AND VENUE ARE AUTHORIZED WITH AN APPROVED WAIVER. AN FAA AIRSPACE WAIVER DOES NOT RELIEVE OPERATORS FROM OBTAINING ALL OTHER NECESSARY AUTHORIZATIONS AND COMPLYING WITH ALL APPLICABLE FEDERAL AVIATION REGULATIONS. ALL PREVIOUSLY ISSUED WAIVERS TO FDC NOTAM 9/5145 REMAIN VALID UNTIL THE SPECIFIED END DATE BUT NOT TO EXCEED 90 DAYS FOLLOWING THE EFFECTIVE DATE OF THIS NOTAM. INFORMATION ABOUT AIRSPACE WAIVER APPLICATIONS AND TSA SECURITY AUTHORIZATIONS CAN BE FOUND AT HTTP://WWW.TSA.GOV/STAKEHOLDERS/AIRSPACE-WAIVERS-0 OR BY CALLING TSA AT 571-227-2071. SUBMIT REQUESTS FOR FAA AIRSPACE WAIVERS AT HTTPS://WAIVERS.FAA.GOV&lt;/DT&gt;&lt;br/&gt;&lt;/DL&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="10"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+      &lt;/Table&gt;
+      &lt;Table cellpadding="1" cellspacing="0"&gt;
+        &lt;TR bgcolor="#1E90FF"&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;a name="other"&gt;
+              &lt;b&gt;
+                &lt;font color="#FFFFFF" face="Arial" size="3"&gt;Other Information:&lt;/font&gt;
+              &lt;/b&gt;
+            &lt;/a&gt;
+          &lt;/TD&gt;
+          &lt;TD colspan="1" align="right"&gt;
+            &lt;a href="#"&gt;
+              &lt;font color="#FFFFFF" face="Arial"&gt;
+                &lt;b&gt;Top&lt;/b&gt;
+              &lt;/font&gt;
+            &lt;/a&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2"&gt;
+            &lt;font face="Arial" size="2"&gt;ARTCC:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;ZLA - Los Angeles Center&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2"&gt;
+            &lt;font face="Arial" size="2"&gt;Authority:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;Title 14 CFR section 99.7&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD Width="40" /&gt;
+          &lt;TD Width="152" /&gt;
+          &lt;TD Width="318" /&gt;
+        &lt;/TR&gt;
+      &lt;/Table&gt;
+    &lt;/Body&gt;
+  &lt;/span&gt;
+&lt;/html&gt;</txtDescrModern>
+        <codeFreeformText>false</codeFreeformText>
+        <NotUidMod>
+          <dateIndexYear>9</dateIndexYear>
+          <noSeqNo>5145</noSeqNo>
+        </NotUidMod>
+        <txtDescrMod>TO REFLECT A TRANSPORTATION SECURITY ADMINISTRATION (TSA)WEBSITE UPDATE AND ADDITIONAL INFORMATION CONCERNING AIRSPACE WAIVERS. </txtDescrMod>
+      </Not>
+    </Add>
+  </Group>
+</XNOTAM-Update>

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     geometry::{LatLon, MapViewport},
-    situation::Situation,
+    ownship::OwnshipRenderState,
 };
 
 const WORLD_SIZE: f64 = 256.0;
@@ -34,9 +34,9 @@ impl Default for MapFollowSessionState {
 }
 
 impl MapFollowSessionState {
-    pub fn ui_state(&self, situation: &Situation) -> MapFollowUiState {
+    pub fn ui_state(&self, ownship: &OwnshipRenderState) -> MapFollowUiState {
         MapFollowUiState {
-            can_center_here: situation.position.lat_lon().is_some(),
+            can_center_here: ownship.position.is_some(),
             following: self.following,
         }
     }
@@ -61,16 +61,16 @@ impl MapFollowSessionState {
         }
     }
 
-    pub fn target_viewport(&self, situation: &Situation) -> Option<MapViewport> {
+    pub fn target_viewport(&self, ownship: &OwnshipRenderState) -> Option<MapViewport> {
         self.current_viewport
-            .map(|viewport| self.resolve_viewport(situation, viewport))
+            .map(|viewport| self.resolve_viewport(ownship, viewport))
     }
 
-    fn resolve_viewport(&self, situation: &Situation, viewport: MapViewport) -> MapViewport {
+    fn resolve_viewport(&self, ownship: &OwnshipRenderState, viewport: MapViewport) -> MapViewport {
         if !self.following {
             return viewport;
         }
-        let Some(position) = situation.position.lat_lon() else {
+        let Some(position) = ownship.position else {
             return viewport;
         };
         let scale = 2.0_f64.powf(viewport.zoom);
@@ -111,11 +111,17 @@ fn world_to_lat_lon(x: f64, y: f64) -> LatLon {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::situation::SituationPosition;
+    use crate::ownship::{OwnshipBannerSeverity, OwnshipMode};
 
-    fn situation(lat: f64, lon: f64) -> Situation {
-        Situation {
-            position: SituationPosition::LatLon { lat, lon },
+    fn ownship(lat: f64, lon: f64) -> OwnshipRenderState {
+        OwnshipRenderState {
+            mode: OwnshipMode::Live,
+            banner_text: String::new(),
+            banner_severity: OwnshipBannerSeverity::Info,
+            draw_aircraft: true,
+            draw_predictor: false,
+            draw_cdi: true,
+            position: Some(LatLon { lat, lon }),
             orientation_deg: None,
             speed_kt: None,
         }
@@ -131,7 +137,7 @@ mod tests {
             pitch_deg: 0.0,
         };
         state.engage(viewport);
-        let update = state.target_viewport(&situation(47.5, -122.3)).unwrap();
+        let update = state.target_viewport(&ownship(47.5, -122.3)).unwrap();
         assert!((update.center.lat - 47.5).abs() < 1e-6);
         assert!((update.center.lon + 122.3).abs() < 1e-6);
     }
@@ -139,7 +145,7 @@ mod tests {
     #[test]
     fn anchor_offset_keeps_ownship_off_center() {
         let mut state = MapFollowSessionState::default();
-        let situation = situation(47.5, -122.3);
+        let ownship = ownship(47.5, -122.3);
         let viewport = MapViewport {
             center: LatLon { lat: 47.5, lon: -122.3 },
             zoom: 8.0,
@@ -148,7 +154,7 @@ mod tests {
         };
         state.engage(viewport);
         state.set_anchor_offset(viewport, 128.0, 64.0);
-        let update = state.target_viewport(&situation).unwrap();
+        let update = state.target_viewport(&ownship).unwrap();
         assert_ne!(update.center, viewport.center);
     }
 }

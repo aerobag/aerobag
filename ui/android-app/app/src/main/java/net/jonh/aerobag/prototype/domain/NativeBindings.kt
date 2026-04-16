@@ -174,9 +174,24 @@ interface NativeBridge {
         delta: Int,
     ): String
 
-    fun setSituationInSessionJson(
+    fun registerOwnshipSourceInSessionJson(
         handle: Long,
-        situationJson: String,
+        registrationJson: String,
+    ): String
+
+    fun updateOwnshipSourceStatusInSessionJson(
+        handle: Long,
+        updateJson: String,
+    ): String
+
+    fun pushSituationSampleInSessionJson(
+        handle: Long,
+        sampleJson: String,
+    ): String
+
+    fun selectOwnshipSourceInSessionJson(
+        handle: Long,
+        selectionJson: String,
     ): String
 
     fun selectAirportInSessionJson(
@@ -432,9 +447,24 @@ object NativeBindings : NativeBridge {
         delta: Int,
     ): String
 
-    external override fun setSituationInSessionJson(
+    external override fun registerOwnshipSourceInSessionJson(
         handle: Long,
-        situationJson: String,
+        registrationJson: String,
+    ): String
+
+    external override fun updateOwnshipSourceStatusInSessionJson(
+        handle: Long,
+        updateJson: String,
+    ): String
+
+    external override fun pushSituationSampleInSessionJson(
+        handle: Long,
+        sampleJson: String,
+    ): String
+
+    external override fun selectOwnshipSourceInSessionJson(
+        handle: Long,
+        selectionJson: String,
     ): String
 
     external override fun selectAirportInSessionJson(

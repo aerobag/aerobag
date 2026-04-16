@@ -3,13 +3,18 @@ use serde::{Deserialize, Serialize};
 use crate::catalog::CatalogHandle;
 use crate::content::{ContentInventory, ContentPolicy, ContentReport, ContentRequirement};
 use crate::errors::AppResult;
+use crate::ownship::{
+    push_sample, register_source, select_source, set_policy, update_source_status, OwnshipPolicy,
+    OwnshipSelectionCommand,
+    OwnshipSourceRegistration, OwnshipSourceStatusUpdate, OwnshipState, OwnshipUiState,
+    SituationSample,
+};
 use crate::planning::{project_ui_state, FlightPlan, FlightPlanUiState};
-use crate::situation::Situation;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppState {
     pub active_plan: Option<FlightPlan>,
-    pub situation: Situation,
+    pub ownship: OwnshipState,
     pub content_policy: ContentPolicy,
     pub last_content_requirements: Vec<ContentRequirement>,
     pub last_content_report: Option<ContentReport>,
@@ -18,6 +23,15 @@ pub struct AppState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppUiState {
     pub active_plan: Option<FlightPlanUiState>,
+    pub ownship: OwnshipUiState,
+    pub content_policy: ContentPolicy,
+    pub last_content_requirements: Vec<ContentRequirement>,
+    pub last_content_report: Option<ContentReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiSnapshotAppState {
+    pub active_plan: Option<FlightPlan>,
     pub content_policy: ContentPolicy,
     pub last_content_requirements: Vec<ContentRequirement>,
     pub last_content_report: Option<ContentReport>,
@@ -27,7 +41,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             active_plan: None,
-            situation: Situation::default(),
+            ownship: OwnshipState::default(),
             content_policy: ContentPolicy::PreferLocal,
             last_content_requirements: Vec::new(),
             last_content_report: None,
@@ -38,7 +52,11 @@ impl Default for AppState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AppEvent {
     SetContentPolicy(ContentPolicy),
-    SetSituation(Situation),
+    RegisterOwnshipSource(OwnshipSourceRegistration),
+    UpdateOwnshipSourceStatus(OwnshipSourceStatusUpdate),
+    PushSituationSample(SituationSample),
+    SetOwnshipPolicy(OwnshipPolicy),
+    SelectOwnshipSource(OwnshipSelectionCommand),
     ReplaceFlightPlan(FlightPlan),
     RefreshContent {
         inventory: ContentInventory,
@@ -60,8 +78,20 @@ pub fn reduce(
                 next.last_content_report = Some(report);
             }
         }
-        AppEvent::SetSituation(situation) => {
-            next.situation = situation;
+        AppEvent::RegisterOwnshipSource(registration) => {
+            next.ownship = register_source(&next.ownship, registration);
+        }
+        AppEvent::UpdateOwnshipSourceStatus(update) => {
+            next.ownship = update_source_status(&next.ownship, update);
+        }
+        AppEvent::PushSituationSample(sample) => {
+            next.ownship = push_sample(&next.ownship, sample);
+        }
+        AppEvent::SetOwnshipPolicy(policy) => {
+            next.ownship = set_policy(&next.ownship, policy);
+        }
+        AppEvent::SelectOwnshipSource(selection) => {
+            next.ownship = select_source(&next.ownship, selection);
         }
         AppEvent::ReplaceFlightPlan(plan) => {
             let plan = crate::build_flight_plan(plan)?;
@@ -104,6 +134,19 @@ fn refresh_report_if_possible(
 pub fn project_app_ui_state(state: &AppState) -> AppUiState {
     AppUiState {
         active_plan: state.active_plan.as_ref().map(project_ui_state),
+        ownship: OwnshipUiState {
+            render: state.ownship.render.clone(),
+            controls: state.ownship.controls.clone(),
+        },
+        content_policy: state.content_policy,
+        last_content_requirements: state.last_content_requirements.clone(),
+        last_content_report: state.last_content_report.clone(),
+    }
+}
+
+pub fn project_ui_snapshot_app_state(state: &AppState) -> UiSnapshotAppState {
+    UiSnapshotAppState {
+        active_plan: state.active_plan.clone(),
         content_policy: state.content_policy,
         last_content_requirements: state.last_content_requirements.clone(),
         last_content_report: state.last_content_report.clone(),
@@ -229,31 +272,33 @@ mod tests {
     }
 
     #[test]
-    fn set_situation_updates_state() {
+    fn push_situation_sample_updates_ownship() {
         let catalog = sample_catalog();
         let next = reduce(
             &AppState::default(),
-            AppEvent::SetSituation(Situation {
-                position: crate::SituationPosition::LatLon {
+            AppEvent::PushSituationSample(crate::SituationSample {
+                source_id: crate::OwnshipSourceId("gps".to_string()),
+                source_kind: crate::OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(crate::LatLon {
                     lat: 47.5,
                     lon: -122.3,
-                },
-                orientation_deg: Some(90.0),
-                speed_kt: Some(120.0),
+                }),
+                track_deg_true: Some(90.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: None,
+                pressure_altitude_ft: None,
             }),
             &catalog,
         )
         .unwrap();
 
-        assert_eq!(
-            next.situation.position,
-            crate::SituationPosition::LatLon {
-                lat: 47.5,
-                lon: -122.3,
-            }
-        );
-        assert_eq!(next.situation.orientation_deg, Some(90.0));
-        assert_eq!(next.situation.speed_kt, Some(120.0));
+        assert_eq!(next.ownship.resolved.mode, crate::OwnshipMode::Live);
+        assert_eq!(next.ownship.render.position, Some(crate::LatLon { lat: 47.5, lon: -122.3 }));
+        assert_eq!(next.ownship.render.orientation_deg, Some(90.0));
+        assert_eq!(next.ownship.render.speed_kt, Some(120.0));
     }
 
     #[test]
@@ -399,6 +444,7 @@ mod tests {
         let ui = project_app_ui_state(&with_plan);
 
         assert!(ui.active_plan.is_some());
+        assert_eq!(ui.ownship.mode, crate::OwnshipMode::None);
         assert_eq!(ui.content_policy, with_plan.content_policy);
         assert_eq!(
             ui.active_plan.as_ref().unwrap().components.len(),

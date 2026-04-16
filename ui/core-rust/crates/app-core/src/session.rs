@@ -13,7 +13,7 @@ use crate::{
     map_follow::{MapFollowSessionState, MapFollowUiState},
     playback::PlaybackSessionState, query_map_overlay, state, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
     CatalogHandle, DerivedChartCatalog, DerivedChartPageState, FlightPlan, MapOverlayQueryResult,
-    MapViewport, PlaybackUiState, PointTilePayload,
+    MapViewport, PlaybackUiState, PointTilePayload, UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -26,7 +26,7 @@ pub struct UiChartPageState {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionSnapshot {
-    pub app_state: AppState,
+    pub app_state: UiSnapshotAppState,
     pub app_ui_state: AppUiState,
     pub playback_ui_state: PlaybackUiState,
     pub map_follow_ui_state: MapFollowUiState,
@@ -50,6 +50,9 @@ struct UiSession {
     chart_page_state: DerivedChartPageState,
     point_tile_cache: HashMap<String, PointTilePayload>,
 }
+
+const DIRECT_SITUATION_SOURCE_ID: &str = "__direct_situation__";
+const PLAYBACK_SOURCE_ID: &str = "__playback_trace__";
 
 static NEXT_HANDLE: AtomicU32 = AtomicU32::new(1);
 static SESSIONS: OnceLock<Mutex<HashMap<u32, UiSession>>> = OnceLock::new();
@@ -83,11 +86,11 @@ pub fn create_ui_session(
     let playback = PlaybackSessionState::default();
     let map_follow = MapFollowSessionState::default();
     let snapshot = UiSessionSnapshot {
-        app_state: app_state.clone(),
+        app_state: state::project_ui_snapshot_app_state(&app_state),
         app_ui_state: state::project_app_ui_state(&app_state),
         playback_ui_state: playback.ui_state(),
-        map_follow_ui_state: map_follow.ui_state(&app_state.situation),
-        map_follow_target_viewport: map_follow.target_viewport(&app_state.situation),
+        map_follow_ui_state: map_follow.ui_state(&app_state.ownship.render),
+        map_follow_target_viewport: map_follow.target_viewport(&app_state.ownship.render),
         chart_page_state: compact_chart_page_state(&chart_page_state),
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
@@ -191,15 +194,71 @@ pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<UiSessi
     Ok(snapshot_for_session(session))
 }
 
-pub fn set_situation_in_session(
+pub fn register_ownship_source_in_session(
     handle: u32,
-    situation: crate::Situation,
+    registration: crate::OwnshipSourceRegistration,
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     session.app_state = state::reduce(
         &session.app_state,
-        AppEvent::SetSituation(situation),
+        AppEvent::RegisterOwnshipSource(registration),
+        &session.catalog,
+    )?;
+    Ok(snapshot_for_session(session))
+}
+
+pub fn update_ownship_source_status_in_session(
+    handle: u32,
+    update: crate::OwnshipSourceStatusUpdate,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::UpdateOwnshipSourceStatus(update),
+        &session.catalog,
+    )?;
+    Ok(snapshot_for_session(session))
+}
+
+pub fn push_situation_sample_in_session(
+    handle: u32,
+    sample: crate::SituationSample,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::PushSituationSample(sample),
+        &session.catalog,
+    )?;
+    Ok(snapshot_for_session(session))
+}
+
+pub fn set_ownship_policy_in_session(
+    handle: u32,
+    policy: crate::OwnshipPolicy,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::SetOwnshipPolicy(policy),
+        &session.catalog,
+    )?;
+    Ok(snapshot_for_session(session))
+}
+
+pub fn select_ownship_source_in_session(
+    handle: u32,
+    selection: crate::OwnshipSelectionCommand,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::SelectOwnshipSource(selection),
         &session.catalog,
     )?;
     Ok(snapshot_for_session(session))
@@ -215,10 +274,13 @@ pub fn load_playback_trace_in_session(
     let situation = session
         .playback
         .load_trace_json(source_path.to_string(), trace_json)?;
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::SetSituation(situation),
-        &session.catalog,
+    apply_situation_to_ownship(
+        session,
+        PLAYBACK_SOURCE_ID,
+        crate::OwnshipSourceKind::AdsbTrackPlayback,
+        "ADS-B Trace Playback",
+        situation,
+        0,
     )?;
     Ok(snapshot_for_session(session))
 }
@@ -227,10 +289,13 @@ pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiS
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     if let Some(situation) = session.playback.play(now_epoch_ms) {
-        session.app_state = state::reduce(
-            &session.app_state,
-            AppEvent::SetSituation(situation),
-            &session.catalog,
+        apply_situation_to_ownship(
+            session,
+            PLAYBACK_SOURCE_ID,
+            crate::OwnshipSourceKind::AdsbTrackPlayback,
+            "ADS-B Trace Playback",
+            situation,
+            now_epoch_ms as i64,
         )?;
     }
     Ok(snapshot_for_session(session))
@@ -240,10 +305,13 @@ pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<Ui
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     if let Some(situation) = session.playback.pause(now_epoch_ms) {
-        session.app_state = state::reduce(
-            &session.app_state,
-            AppEvent::SetSituation(situation),
-            &session.catalog,
+        apply_situation_to_ownship(
+            session,
+            PLAYBACK_SOURCE_ID,
+            crate::OwnshipSourceKind::AdsbTrackPlayback,
+            "ADS-B Trace Playback",
+            situation,
+            now_epoch_ms as i64,
         )?;
     }
     Ok(snapshot_for_session(session))
@@ -257,10 +325,13 @@ pub fn seek_playback_in_session(
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     if let Some(situation) = session.playback.seek(cursor_seconds, now_epoch_ms) {
-        session.app_state = state::reduce(
-            &session.app_state,
-            AppEvent::SetSituation(situation),
-            &session.catalog,
+        apply_situation_to_ownship(
+            session,
+            PLAYBACK_SOURCE_ID,
+            crate::OwnshipSourceKind::AdsbTrackPlayback,
+            "ADS-B Trace Playback",
+            situation,
+            now_epoch_ms as i64,
         )?;
     }
     Ok(snapshot_for_session(session))
@@ -274,10 +345,13 @@ pub fn set_playback_rate_in_session(
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     if let Some(situation) = session.playback.set_rate(rate, now_epoch_ms) {
-        session.app_state = state::reduce(
-            &session.app_state,
-            AppEvent::SetSituation(situation),
-            &session.catalog,
+        apply_situation_to_ownship(
+            session,
+            PLAYBACK_SOURCE_ID,
+            crate::OwnshipSourceKind::AdsbTrackPlayback,
+            "ADS-B Trace Playback",
+            situation,
+            now_epoch_ms as i64,
         )?;
     }
     Ok(snapshot_for_session(session))
@@ -287,12 +361,32 @@ pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiS
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     if let Some(situation) = session.playback.tick(now_epoch_ms) {
-        session.app_state = state::reduce(
-            &session.app_state,
-            AppEvent::SetSituation(situation),
-            &session.catalog,
+        apply_situation_to_ownship(
+            session,
+            PLAYBACK_SOURCE_ID,
+            crate::OwnshipSourceKind::AdsbTrackPlayback,
+            "ADS-B Trace Playback",
+            situation,
+            now_epoch_ms as i64,
         )?;
     }
+    Ok(snapshot_for_session(session))
+}
+
+pub fn set_situation_in_session(
+    handle: u32,
+    situation: crate::Situation,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    apply_situation_to_ownship(
+        session,
+        DIRECT_SITUATION_SOURCE_ID,
+        crate::OwnshipSourceKind::LiveNetworkTrack,
+        "Direct Situation",
+        situation,
+        0,
+    )?;
     Ok(snapshot_for_session(session))
 }
 
@@ -436,13 +530,64 @@ fn session_plan(session: &UiSession) -> AppResult<FlightPlan> {
 
 fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
     UiSessionSnapshot {
-        app_state: session.app_state.clone(),
+        app_state: state::project_ui_snapshot_app_state(&session.app_state),
         app_ui_state: state::project_app_ui_state(&session.app_state),
         playback_ui_state: session.playback.ui_state(),
-        map_follow_ui_state: session.map_follow.ui_state(&session.app_state.situation),
-        map_follow_target_viewport: session.map_follow.target_viewport(&session.app_state.situation),
+        map_follow_ui_state: session.map_follow.ui_state(&session.app_state.ownship.render),
+        map_follow_target_viewport: session.map_follow.target_viewport(&session.app_state.ownship.render),
         chart_page_state: compact_chart_page_state(&session.chart_page_state),
     }
+}
+
+fn apply_situation_to_ownship(
+    session: &mut UiSession,
+    source_id: &str,
+    source_kind: crate::OwnshipSourceKind,
+    display_name: &str,
+    situation: crate::Situation,
+    timestamp_epoch_ms: i64,
+) -> AppResult<()> {
+    let source_id = crate::OwnshipSourceId(source_id.to_string());
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::RegisterOwnshipSource(crate::OwnshipSourceRegistration {
+            source_id: source_id.clone(),
+            source_kind,
+            display_name: display_name.to_string(),
+            selectable: true,
+            auto_eligible: true,
+        }),
+        &session.catalog,
+    )?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::SetOwnshipPolicy(crate::OwnshipPolicy {
+            selection: crate::OwnshipSelectionPolicy::Manual {
+                source_id: source_id.clone(),
+            },
+            source_priority: vec![source_id.clone()],
+            allow_auto_replay: true,
+            allow_auto_simulated: true,
+        }),
+        &session.catalog,
+    )?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::PushSituationSample(crate::SituationSample {
+            source_id,
+            source_kind,
+            event_time_epoch_ms: timestamp_epoch_ms,
+            received_time_epoch_ms: timestamp_epoch_ms,
+            position: situation.position.lat_lon(),
+            track_deg_true: situation.orientation_deg,
+            heading_deg_true: None,
+            ground_speed_kt: situation.speed_kt,
+            altitude_msl_ft: None,
+            pressure_altitude_ft: None,
+        }),
+        &session.catalog,
+    )?;
+    Ok(())
 }
 
 fn compact_chart_page_state(state: &DerivedChartPageState) -> UiChartPageState {

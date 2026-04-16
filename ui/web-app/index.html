@@ -4,9 +4,122 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Aerobag</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --startup-bg-top: #071521;
+        --startup-bg-bottom: #10273b;
+        --startup-ink: #d8e7f3;
+        --startup-accent: #89d0ff;
+        --startup-muted: rgba(216, 231, 243, 0.72);
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: linear-gradient(180deg, var(--startup-bg-top), var(--startup-bg-bottom));
+      }
+
+      body {
+        color: var(--startup-ink);
+        font-family: "Inter", "Segoe UI", sans-serif;
+      }
+
+      #startup-shell {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        color: var(--startup-ink);
+        background:
+          radial-gradient(circle at top, rgba(137, 208, 255, 0.14), transparent 38%),
+          linear-gradient(180deg, var(--startup-bg-top), var(--startup-bg-bottom));
+        z-index: 9999;
+      }
+
+      #startup-shell,
+      #startup-shell * {
+        box-sizing: border-box;
+      }
+
+      #startup-shell.is-hidden {
+        display: none;
+        pointer-events: none;
+      }
+
+      .startup-card {
+        display: grid;
+        gap: 14px;
+        justify-items: center;
+        padding: 28px 32px;
+      }
+
+      .startup-spinner {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        border: 3px solid rgba(216, 231, 243, 0.18);
+        border-top-color: var(--startup-accent);
+        animation: startup-spin 880ms linear infinite;
+      }
+
+      .startup-title {
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--startup-ink);
+      }
+
+      .startup-copy {
+        font-size: 13px;
+        color: var(--startup-muted);
+        letter-spacing: 0.04em;
+      }
+
+      .startup-elapsed {
+        position: fixed;
+        right: 18px;
+        bottom: 14px;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.08em;
+        color: rgba(216, 231, 243, 0.62);
+      }
+
+      @keyframes startup-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
   </head>
   <body>
+    <div id="startup-shell" aria-hidden="true">
+      <div class="startup-card">
+        <div class="startup-spinner"></div>
+        <div class="startup-title">Aerobag</div>
+        <div class="startup-copy">Loading charts and navigation data…</div>
+      </div>
+      <div id="startup-elapsed" class="startup-elapsed">0.0s</div>
+    </div>
     <div id="root"></div>
+    <script>
+      window.__aerobag_html_start = performance.now();
+      (function () {
+        const elapsedNode = document.getElementById("startup-elapsed");
+        if (!elapsedNode) {
+          return;
+        }
+        function renderElapsed() {
+          const elapsedSeconds = Math.max(0, (performance.now() - window.__aerobag_html_start) / 1000);
+          elapsedNode.textContent = elapsedSeconds.toFixed(1) + "s";
+        }
+        renderElapsed();
+        window.__aerobag_startup_elapsed_interval = window.setInterval(renderElapsed, 100);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
   </html>

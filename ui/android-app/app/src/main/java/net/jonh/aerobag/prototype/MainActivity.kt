@@ -142,6 +142,11 @@ import net.jonh.aerobag.prototype.domain.NativeAppCoreAdapter
 import net.jonh.aerobag.prototype.domain.NativeUiSession
 import net.jonh.aerobag.prototype.domain.NavRef
 import net.jonh.aerobag.prototype.domain.NavElementUiView
+import net.jonh.aerobag.prototype.domain.OwnshipMode
+import net.jonh.aerobag.prototype.domain.OwnshipRenderState
+import net.jonh.aerobag.prototype.domain.OwnshipSourceKind
+import net.jonh.aerobag.prototype.domain.OwnshipSourceRegistration
+import net.jonh.aerobag.prototype.domain.OwnshipSourceStatusUpdate
 import net.jonh.aerobag.prototype.domain.PointTilePayload
 import net.jonh.aerobag.prototype.domain.ProcedureKind
 import net.jonh.aerobag.prototype.domain.ProcedureOptions
@@ -152,8 +157,8 @@ import net.jonh.aerobag.prototype.domain.RouteComponentViewKind
 import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
 import net.jonh.aerobag.prototype.domain.SampleData
-import net.jonh.aerobag.prototype.domain.Situation
-import net.jonh.aerobag.prototype.domain.SituationPosition
+import net.jonh.aerobag.prototype.domain.SituationSample
+import net.jonh.aerobag.prototype.domain.SourceConnectionState
 import net.jonh.aerobag.prototype.domain.TileStorageKind
 import net.jonh.aerobag.prototype.domain.UiTheme
 import net.jonh.aerobag.prototype.domain.UiThemeLoader
@@ -563,11 +568,27 @@ private fun sortChartsForFolder(charts: List<ChartAsset>): List<ChartAsset> =
 private fun plateFolderColor(uiTheme: UiTheme, category: String): Color =
     uiTheme.plateFolder.labelColors[category] ?: uiTheme.plateFolder.labelColors["other"] ?: Color(0xFF52656D)
 
-private fun demoSituation(): Situation =
-    Situation(
-        position = SituationPosition.LatLon(VampsPosition.lat, VampsPosition.lon),
-        orientationDeg = 135.0,
-        speedKt = 105.0,
+private fun demoOwnshipSourceRegistration() =
+    OwnshipSourceRegistration(
+        sourceId = "demo-gps",
+        sourceKind = OwnshipSourceKind.DeviceGps,
+        displayName = "Demo GPS",
+        selectable = true,
+        autoEligible = true,
+    )
+
+private fun demoSituationSample() =
+    SituationSample(
+        sourceId = "demo-gps",
+        sourceKind = OwnshipSourceKind.DeviceGps,
+        eventTimeEpochMs = System.currentTimeMillis(),
+        receivedTimeEpochMs = System.currentTimeMillis(),
+        position = LatLonPoint(lat = VampsPosition.lat, lon = VampsPosition.lon),
+        trackDegTrue = 135.0,
+        headingDegTrue = 135.0,
+        groundSpeedKt = 105.0,
+        altitudeMslFt = null,
+        pressureAltitudeFt = null,
     )
 
 private fun ensureNavDbPath(context: Context): String {
@@ -689,13 +710,15 @@ private fun createInitialSituationViewport(mapView: MapView): MapViewportState {
 
 @Composable
 private fun SituationStatusBadge(
-    situation: Situation,
+    ownship: OwnshipRenderState,
     modifier: Modifier = Modifier,
 ) {
-    val tone = when (situation.position) {
-        SituationPosition.Unknown -> Triple("Location Unknown", Color(0xFFB3261E), "unknown")
-        is SituationPosition.FlightPlanLocation -> Triple("Simulated Position", Color(0xFFB1591A), "simulated")
-        is SituationPosition.LatLon -> Triple("Live Position", Color(0xFF2A4F66), "live")
+    val tone = when (ownship.mode) {
+        OwnshipMode.None -> Triple(ownship.bannerText, Color(0xFFB3261E), "unknown")
+        OwnshipMode.Simulated -> Triple(ownship.bannerText, Color(0xFFB1591A), "simulated")
+        OwnshipMode.Live,
+        OwnshipMode.Replay,
+        -> Triple(ownship.bannerText, Color(0xFF2A4F66), "live")
     }
     Surface(
         modifier = modifier,
@@ -714,20 +737,18 @@ private fun SituationStatusBadge(
 }
 
 private fun resolveSituationOverlay(
-    situation: Situation,
+    ownship: OwnshipRenderState,
     viewport: MapViewportState,
     widthUnits: Float,
     heightUnits: Float,
 ): SituationOverlay? {
     if (widthUnits <= 0f || heightUnits <= 0f) return null
-    val position = when (val current = situation.position) {
-        SituationPosition.Unknown -> return null
-        is SituationPosition.LatLon -> LatLon(current.lat, current.lon)
-        is SituationPosition.FlightPlanLocation -> LatLon(current.lat, current.lon)
-    }
+    if (!ownship.drawAircraft) return null
+    val current = ownship.position ?: return null
+    val position = LatLon(current.lat, current.lon)
     val point = latLonToScreen(position.lat, position.lon, viewport, widthUnits, heightUnits)
-    val heading = (situation.orientationDeg ?: 0.0).toFloat()
-    val predictor = situation.speedKt?.let { speedKt ->
+    val heading = (ownship.orientationDeg ?: 0.0).toFloat()
+    val predictor = ownship.speedKt?.takeIf { ownship.drawPredictor }?.let { speedKt ->
         val ahead = projectAhead(position.lat, position.lon, heading.toDouble(), speedKt / 60.0)
         latLonToScreen(ahead.lat, ahead.lon, viewport, widthUnits, heightUnits)
     }
@@ -1065,6 +1086,7 @@ private fun AerobagApp() {
     var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
     var planUiState by remember(uiSession) { mutableStateOf(initialPlanMutation.uiState) }
     val appState = sessionSnapshot.appState
+    val appUiState = sessionSnapshot.appUiState
     val currentPlan = appState.activePlan ?: initialPlanMutation.plan
     val chartCatalog = uiSession.chartCatalog
     val derivedChartPageState = sessionSnapshot.chartPageState
@@ -1093,7 +1115,16 @@ private fun AerobagApp() {
         writeUiPrefs(context.applicationContext, page, selectedAirportId, selectedChartId, recentAirportIds)
     }
     LaunchedEffect(uiSession) {
-        sessionSnapshot = uiSession.setSituation(demoSituation())
+        uiSession.registerOwnshipSource(demoOwnshipSourceRegistration())
+        uiSession.updateOwnshipSourceStatus(
+            OwnshipSourceStatusUpdate(
+                sourceId = "demo-gps",
+                connectionState = SourceConnectionState.Connected,
+                enabled = true,
+                statusLabel = "Connected",
+            ),
+        )
+        sessionSnapshot = uiSession.pushSituationSample(demoSituationSample())
     }
     LaunchedEffect(appCore, currentPlan) {
         planUiState = appCore.buildFlightPlanUi(currentPlan)
@@ -1177,7 +1208,7 @@ private fun AerobagApp() {
                     fixture = fixture,
                     uiSession = uiSession,
                     uiTheme = uiTheme,
-                    situation = appState.situation,
+                    ownship = appUiState.ownship.render,
                     selectedMapId = selectedMapId,
                     viewport = mapViewport,
                     onViewportChange = { mapViewport = it },
@@ -1227,7 +1258,7 @@ private fun AerobagApp() {
                     selectedAirport = selectedAirport,
                     selectedChart = selectedChart,
                     uiTheme = uiTheme,
-                    situation = appState.situation,
+                    ownship = appUiState.ownship.render,
                     navElement = navElement,
                     folderOpen = chartFolderOpen,
                     viewport = chartViewport,
@@ -1294,7 +1325,7 @@ private fun MapExplorerPage(
     fixture: net.jonh.aerobag.prototype.domain.ContentFixture,
     uiSession: NativeUiSession,
     uiTheme: UiTheme,
-    situation: Situation,
+    ownship: OwnshipRenderState,
     selectedMapId: String,
     viewport: MapViewportState,
     onViewportChange: (MapViewportState) -> Unit,
@@ -1410,9 +1441,9 @@ private fun MapExplorerPage(
             )
         }
     }
-    val situationOverlay = remember(situation, viewport, surfaceWidthUnits, surfaceHeightUnits) {
+    val situationOverlay = remember(ownship, viewport, surfaceWidthUnits, surfaceHeightUnits) {
         resolveSituationOverlay(
-            situation = situation,
+            ownship = ownship,
             viewport = viewport,
             widthUnits = surfaceWidthUnits,
             heightUnits = surfaceHeightUnits,
@@ -2078,7 +2109,7 @@ private fun MapExplorerPage(
             }
         }
         SituationStatusBadge(
-            situation = situation,
+            ownship = ownship,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(top = ThumbGap, end = ThumbGap),
@@ -3050,7 +3081,7 @@ private fun ChartsPage(
     selectedAirport: ChartAirport?,
     selectedChart: ChartAsset?,
     uiTheme: UiTheme,
-    situation: Situation,
+    ownship: OwnshipRenderState,
     navElement: NavElementUiView,
     folderOpen: Boolean,
     viewport: net.jonh.aerobag.prototype.domain.ImageViewportState?,
@@ -3303,7 +3334,7 @@ private fun ChartsPage(
         }
 
         SituationStatusBadge(
-            situation = situation,
+            ownship = ownship,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(top = ThumbGap, end = ThumbGap),

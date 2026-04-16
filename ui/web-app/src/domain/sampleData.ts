@@ -55,10 +55,39 @@ export const installedInventory: ContentInventory = {
 
 export const emptyState: AppState = {
   active_plan: null,
-  situation: {
-    position: { kind: "unknown" },
-    orientation_deg: null,
-    speed_kt: null,
+  ownship: {
+    policy: {
+      selection: { kind: "auto" },
+      source_priority: [],
+      allow_auto_replay: false,
+      allow_auto_simulated: false,
+    },
+    resolved: {
+      mode: "none",
+      active_source_id: null,
+      active_source_kind: null,
+      banner_text: "NO GPS POSITION",
+      banner_severity: "warning",
+      guidance_enabled: false,
+      sequencing_enabled: false,
+    },
+    render: {
+      mode: "none",
+      banner_text: "NO GPS POSITION",
+      banner_severity: "warning",
+      draw_aircraft: false,
+      draw_predictor: false,
+      draw_cdi: false,
+      position: null,
+      orientation_deg: null,
+      speed_kt: null,
+    },
+    controls: {
+      mode: "none",
+      policy: { kind: "auto" },
+      sources: [],
+    },
+    sources: [],
   },
   content_policy: bootstrap.content_policy,
   last_content_requirements: [],

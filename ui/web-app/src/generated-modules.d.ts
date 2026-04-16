@@ -54,6 +54,10 @@ declare module "@generated/app_wasm.js" {
   export const seek_playback_in_session: (...args: unknown[]) => string;
   export const set_playback_rate_in_session: (...args: unknown[]) => string;
   export const tick_playback_in_session: (...args: unknown[]) => string;
+  export const register_ownship_source_in_session: (...args: unknown[]) => string;
+  export const update_ownship_source_status_in_session: (...args: unknown[]) => string;
+  export const push_situation_sample_in_session: (...args: unknown[]) => string;
+  export const select_ownship_source_in_session: (...args: unknown[]) => string;
   export const replace_flight_plan_in_session: (...args: unknown[]) => string;
   export const select_airport_in_session: (...args: unknown[]) => string;
   export const select_chart_in_session: (...args: unknown[]) => string;

@@ -44,6 +44,10 @@ def collect_packed_artifacts(source_root: pathlib.Path) -> set[pathlib.Path]:
     obstacle_path = packaged_root / current["obstacles"]["filename"]
     if obstacle_path.exists():
         files_to_copy.add(obstacle_path)
+    for product in current.get("fast_products", []):
+        product_path = packaged_root / product["filename"]
+        if product_path.exists():
+            files_to_copy.add(product_path)
 
     return files_to_copy
 

@@ -57,6 +57,7 @@ Per-cycle regional packages:
 Standalone artifacts:
 
 - `obstacles_<sha256>.zip`
+- `tfrs_<sha256>.zip`
 
 Operational files:
 
@@ -82,6 +83,8 @@ current_artifacts_YYYYMMDD.json
 ├── bundles[]
 │   ├── bundle_2603.json
 │   └── bundle_2604.json
+├── fast_products[]
+│   └── tfrs_<sha256>.zip
 └── obstacles
     └── obstacles_<sha256>.zip
 
@@ -175,6 +178,7 @@ It answers:
 - what date this publication set represents
 - which bundle manifests are current
 - which obstacle zip is current
+- which standalone fast products are current
 
 It does not replace `bundle_YYCC.json`.
 

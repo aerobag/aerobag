@@ -294,6 +294,22 @@ def stage_nav_db() -> None:
     ensure_hard_link(NAV_DB_PATH, nav_root / "main.db")
 
 
+def stage_fast_products() -> None:
+    target = WEB_STATIC_ROOT / "fast-products"
+    reset_dir(target)
+    for product in CURRENT_ARTIFACTS.get("fast_products", []):
+        if not isinstance(product, dict):
+            continue
+        product_id = product.get("id")
+        filename = product.get("filename")
+        if not isinstance(product_id, str) or not isinstance(filename, str):
+            continue
+        product_root = unpacked_dir_from_relative_zip(filename)
+        if not product_root.is_dir():
+            raise RuntimeError(f"missing unpacked fast product {product_id}: {product_root}")
+        ensure_symlink(product_root, target / product_id)
+
+
 def current_stage_stamp() -> dict:
     def file_stamp(path: Path) -> dict:
         stat = path.stat()
@@ -309,7 +325,16 @@ def current_stage_stamp() -> dict:
         "nav_db": file_stamp(NAV_DB_PATH),
         "current_artifacts": file_stamp(CURRENT_ARTIFACTS_FILE),
         "bundle_manifest": file_stamp(PRODUCT_BUILD_FILE),
-        "version": 2,
+        "fast_products": [
+            {
+                "id": product.get("id"),
+                "filename": product.get("filename"),
+                "checksum_sha256": product.get("checksum_sha256"),
+            }
+            for product in CURRENT_ARTIFACTS.get("fast_products", [])
+            if isinstance(product, dict)
+        ],
+        "version": 3,
     }
 
 
@@ -335,6 +360,7 @@ def main() -> None:
     stage_chart_assets()
     stage_vectors()
     stage_nav_db()
+    stage_fast_products()
     write_stage_stamp()
 
 

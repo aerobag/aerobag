@@ -1,0 +1,45 @@
+# Fast Product Handoff
+
+## Snapshot products
+
+The current packaged artifact manifest includes three fast products:
+
+- `nexrad`: animated radar frames.
+- `metars`: station observations with flight category and lat/lon.
+- `tfrs`: TFR boundary polygons and schedule/altitude text.
+
+Web stages these from the current artifact snapshot into `generated-static/fast-products/<product-id>` and serves them at `/fast-products/<product-id>`. Android should use the same current artifact manifest entries and product ids, but it does not need to mirror the web staging layout exactly.
+
+## NEXRAD web prototype
+
+The NEXRAD product is a zip containing `nexrad.json` plus PNG frames (`frame_0.png`, `frame_1.png`, ...). The manifest fields currently used by web are:
+
+- `projection`: must be `EPSG:3857`.
+- `frames[].filename`: PNG frame path relative to the NEXRAD product root.
+- `frames[].observed_at_utc`: frame timestamp.
+- `frames[].bounds`: Web Mercator meter bounds with `west`, `south`, `east`, `north`.
+
+Because the radar bounds are already in Web Mercator, web renders each frame as an image overlay on the chart surface. The conversion is:
+
+```ts
+const halfWorldM = 20037508.342789244;
+const worldSize = 256;
+
+function mercatorMetersToWorld(xMeters: number, yMeters: number) {
+  const spanM = halfWorldM * 2;
+  return {
+    x: ((xMeters + halfWorldM) / spanM) * worldSize,
+    y: ((halfWorldM - yMeters) / spanM) * worldSize,
+  };
+}
+```
+
+Convert northwest (`west`, `north`) and southeast (`east`, `south`) to the map's normalized world coordinates, then use the existing map viewport projection to produce screen `left/top/width/height`.
+
+The web prototype reverses the manifest frame order and loops oldest-to-newest. It has no controls yet; it is just validating that the product can be slapped over the existing Web Mercator chart tiles.
+
+## Android parity notes
+
+Android can use the same model: load `nexrad.json`, decode the PNG frames, convert EPSG:3857 meter bounds into the map's Web Mercator world coordinates, and draw the current frame as a bitmap overlay under route/ownship symbology. Keep the radar layer pointer-transparent and treat absence or unsupported projection as "no radar layer", not as a fatal map error.
+
+METAR and TFR are not wired in web yet. METAR records have `station_id`, `raw_text`, `observation_time_utc`, `flight_category`, `longitude`, and `latitude`. TFR records are grouped as `areas`, with NOTAM metadata, schedule fragments, altitude limits, `avare_text`, and lat/lon polygon points.

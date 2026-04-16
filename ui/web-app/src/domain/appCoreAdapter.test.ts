@@ -24,7 +24,7 @@ const snapshotJson = JSON.stringify({
       },
       controls: {
         mode: "none",
-        policy: { kind: "auto" },
+        selection: { kind: "auto" },
         sources: [],
       },
     },

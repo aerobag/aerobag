@@ -97,6 +97,35 @@ type UiThemeJson = {
 type TrayDockStyle = "compact" | "plate_narrow" | "plate_wide";
 type PlateFolderCategory = ChartAsset["folder_category"];
 
+type NexradManifest = {
+  schema_version: number;
+  version_label: string;
+  frame_count: number;
+  projection: string;
+  frames: NexradFrame[];
+};
+
+type NexradFrame = {
+  filename: string;
+  observed_at_utc: string;
+  width: number;
+  height: number;
+  bounds: {
+    west: number;
+    south: number;
+    east: number;
+    north: number;
+  };
+};
+
+type NexradOverlayFrame = NexradFrame & {
+  url: string;
+};
+
+const WEB_MERCATOR_WORLD_SIZE = 256;
+const WEB_MERCATOR_HALF_WORLD_M = 20037508.342789244;
+const NEXRAD_FRAME_INTERVAL_MS = 900;
+
 const chartFamilies: Array<{ id: ChartFamilyId; label: string; launcherLabel: string }> = [
   { id: "sec", label: "SECTIONAL", launcherLabel: "SEC" },
   { id: "tac", label: "TAC", launcherLabel: "TAC" },
@@ -127,6 +156,22 @@ function preferredFamilyMap(
     familyMaps.find((view) => view.region_id === fallbackRegionId)
     ?? familyMaps[0]
   );
+}
+
+function mercatorMetersToWorld(xMeters: number, yMeters: number): { x: number; y: number } {
+  const worldSpanMeters = WEB_MERCATOR_HALF_WORLD_M * 2;
+  return {
+    x: ((xMeters + WEB_MERCATOR_HALF_WORLD_M) / worldSpanMeters) * WEB_MERCATOR_WORLD_SIZE,
+    y: ((WEB_MERCATOR_HALF_WORLD_M - yMeters) / worldSpanMeters) * WEB_MERCATOR_WORLD_SIZE,
+  };
+}
+
+function formatNexradObservedTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toISOString().slice(11, 16);
 }
 
 const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> = [
@@ -1115,6 +1160,8 @@ function MapPage(props: {
     visible_features: [],
     warnings: [],
   });
+  const [nexradFrames, setNexradFrames] = useState<NexradOverlayFrame[]>([]);
+  const [nexradFrameIndex, setNexradFrameIndex] = useState(0);
   const [flightPlanRoute, setFlightPlanRoute] = useState<FlightPlanRouteSegment[]>([]);
   const [mapOverlayViewport, setMapOverlayViewport] = useState<MapViewportState | null>(null);
   const viewportRef = useRef<MapViewportState>(viewport);
@@ -1189,6 +1236,25 @@ function MapPage(props: {
     () => resolveSituationOverlay(ownship, viewport, surfaceSize.width, surfaceSize.height),
     [ownship, viewport, surfaceSize.height, surfaceSize.width],
   );
+  const nexradOverlay = useMemo(() => {
+    const frame = nexradFrames[nexradFrameIndex];
+    if (!frame || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      return null;
+    }
+    const northwestWorld = mercatorMetersToWorld(frame.bounds.west, frame.bounds.north);
+    const southeastWorld = mercatorMetersToWorld(frame.bounds.east, frame.bounds.south);
+    const northwest = worldToScreen(viewport, northwestWorld, surfaceSize.width, surfaceSize.height);
+    const southeast = worldToScreen(viewport, southeastWorld, surfaceSize.width, surfaceSize.height);
+    return {
+      frame,
+      style: {
+        left: `${northwest.x}px`,
+        top: `${northwest.y}px`,
+        width: `${southeast.x - northwest.x}px`,
+        height: `${southeast.y - northwest.y}px`,
+      } satisfies CSSProperties,
+    };
+  }, [nexradFrameIndex, nexradFrames, surfaceSize.height, surfaceSize.width, viewport]);
   const routeScreenSegments = useMemo(() => {
     if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return [];
@@ -1199,6 +1265,62 @@ function MapPage(props: {
       to: worldToScreen(viewport, latLonToWorld(segment.to.lat, segment.to.lon), surfaceSize.width, surfaceSize.height),
     }));
   }, [flightPlanRoute, surfaceSize.height, surfaceSize.width, viewport]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+
+    async function loadNexrad() {
+      const response = await fetch("/fast-products/nexrad/nexrad.json", { signal: controller.signal });
+      if (response.status === 404) {
+        return [];
+      }
+      if (!response.ok) {
+        throw new Error(`failed to load NEXRAD manifest: ${response.status}`);
+      }
+      const manifest = (await response.json()) as NexradManifest;
+      if (manifest.projection !== "EPSG:3857") {
+        throw new Error(`unsupported NEXRAD projection: ${manifest.projection}`);
+      }
+      return [...manifest.frames]
+        .reverse()
+        .map((frame) => ({
+          ...frame,
+          url: `/fast-products/nexrad/${frame.filename}`,
+        }));
+    }
+
+    loadNexrad().then((frames) => {
+      if (!cancelled) {
+        setNexradFrames(frames);
+        setNexradFrameIndex(0);
+      }
+    }).catch((error: unknown) => {
+      if ((error as { name?: string } | null)?.name === "AbortError") {
+        return;
+      }
+      console.error(error);
+      if (!cancelled) {
+        setNexradFrames([]);
+        setNexradFrameIndex(0);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (nexradFrames.length <= 1) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      setNexradFrameIndex((index) => (index + 1) % nexradFrames.length);
+    }, NEXRAD_FRAME_INTERVAL_MS);
+    return () => window.clearInterval(intervalId);
+  }, [nexradFrames.length]);
 
   useEffect(() => {
     debugLog("map.nav_element.render", {
@@ -1580,6 +1702,20 @@ function MapPage(props: {
             ) : null}
           </div>
         ))}
+        {nexradOverlay ? (
+          <div className="nexradOverlay" aria-hidden="true">
+            <img
+              className="nexradFrame"
+              src={nexradOverlay.frame.url}
+              alt=""
+              draggable={false}
+              style={nexradOverlay.style}
+            />
+            <div className="nexradBadge">
+              NEXRAD {formatNexradObservedTime(nexradOverlay.frame.observed_at_utc)}Z {nexradFrameIndex + 1}/{nexradFrames.length}
+            </div>
+          </div>
+        ) : null}
         {routeScreenSegments.length > 0 ? (
           <svg className="vectorOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
             {routeScreenSegments.map((segment) => (
@@ -1899,6 +2035,7 @@ function MapPage(props: {
             <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: selectedMap.id, selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
             <div className="debugLine">family {selectedFamily.launcherLabel}</div>
             <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
+            <div className="debugLine">nexrad {nexradFrames.length > 0 ? `${nexradFrameIndex + 1}/${nexradFrames.length}` : "(none)"}</div>
             <div className="debugLine">vec pts={mapOverlay.visible_features.length} need={mapOverlay.needed_point_tiles.length} warn={mapOverlay.warnings.length}</div>
             {mapOverlay.warnings.map((warning) => (
               <div key={warning.code} className="debugLine">warn {warning.code}</div>

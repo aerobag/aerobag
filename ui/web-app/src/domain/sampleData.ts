@@ -84,7 +84,7 @@ export const emptyState: AppState = {
     },
     controls: {
       mode: "none",
-      policy: { kind: "auto" },
+      selection: { kind: "auto" },
       sources: [],
     },
     sources: [],

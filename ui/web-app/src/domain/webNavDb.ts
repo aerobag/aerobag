@@ -11,6 +11,9 @@ const DEFAULT_DB_FILENAME = "/nav-main.db";
 const IGNORED_SQLITE_INIT_WARNINGS = [
   "Ignoring inability to install OPFS sqlite3_vfs",
 ];
+const sqlite3InitWithConfig = sqlite3InitModule as unknown as (config: {
+  printErr: (message: unknown) => void;
+}) => Promise<Sqlite3Static>;
 
 export class BrowserNavDb {
   private constructor(
@@ -22,7 +25,15 @@ export class BrowserNavDb {
   static async open(sourceUrl = DEFAULT_NAV_DB_URL): Promise<BrowserNavDb> {
     const startMs = performance.now();
     debugLog("navdb.open.start", { sourceUrl });
-    const sqlite3 = await sqlite3InitModule();
+    const sqlite3 = await sqlite3InitWithConfig({
+      printErr(message) {
+        const rendered = String(message);
+        if (IGNORED_SQLITE_INIT_WARNINGS.some((warning) => rendered.includes(warning))) {
+          return;
+        }
+        console.error(rendered);
+      },
+    });
     debugLog("navdb.open.sqlite_ready", { elapsed_ms: Math.round(performance.now() - startMs) });
     const response = await fetch(sourceUrl);
     if (!response.ok) {

@@ -60,7 +60,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -2289,6 +2288,7 @@ private fun MapExplorerPage(
             open = debugPanelOpen,
             onToggle = { debugPanelOpen = !debugPanelOpen },
             highlight = committedMapOverlay.warnings.isNotEmpty() || mapOverlayError != null,
+            expandAbove = true,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = ThumbSize + (ThumbGap * 2f)),
@@ -3991,20 +3991,10 @@ private fun PlaybackWidget(
                 modifier =
                     Modifier
                         .matchParentSize()
-                        .pointerInput(Unit) {
-                            awaitEachGesture {
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    event.changes.forEach { it.consume() }
-                                    if (event.changes.none { it.pressed }) {
-                                        break
-                                    }
-                                }
-                            }
-                        },
+                        .consumePointerGestures(),
             )
             Column(
-                modifier = Modifier.padding(ThumbSize * 0.12f).zIndex(1f),
+                modifier = Modifier.padding(ThumbSize * 0.12f),
                 verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
             ) {
                 Row(
@@ -4099,8 +4089,10 @@ private fun PlaybackWidget(
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF52656D),
                     )
-                    Slider(
+                    PlaybackRateRail(
                         value = playbackUiState.rate.toFloat().coerceIn(0.25f, 11f),
+                        enabled = playbackUiState.status != PlaybackStatus.Empty,
+                        modifier = Modifier.weight(1f).height(ThumbSize * 0.42f),
                         onValueChange = { nextRate ->
                             scope.launch {
                                 runCatching {
@@ -4109,10 +4101,6 @@ private fun PlaybackWidget(
                                     .onFailure { Log.e("AerobagPlayback", "rate change failed", it) }
                             }
                         },
-                        enabled = playbackUiState.status != PlaybackStatus.Empty,
-                        valueRange = 0.25f..11f,
-                        steps = 42,
-                        modifier = Modifier.weight(1f).height(ThumbSize * 0.42f),
                     )
                 }
                 PlaybackOverview(
@@ -4187,6 +4175,101 @@ private fun PlaybackSmallButton(
     }
 }
 
+private fun Modifier.consumePointerGestures(): Modifier =
+    pointerInput(Unit) {
+        awaitEachGesture {
+            while (true) {
+                val event = awaitPointerEvent()
+                event.changes.forEach { it.consume() }
+                if (event.changes.none { it.pressed }) {
+                    break
+                }
+            }
+        }
+    }
+
+@Composable
+private fun PlaybackRateRail(
+    value: Float,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onValueChange: (Float) -> Unit,
+) {
+    val shape = RoundedCornerShape(ThumbRadius * 0.55f)
+    var railSize by remember { mutableStateOf(IntSize.Zero) }
+    fun rateForX(x: Float): Float {
+        val width = railSize.width.toFloat().coerceAtLeast(1f)
+        val ratio = x.coerceIn(0f, width) / width
+        val rawRate = 0.25f + ratio * (11f - 0.25f)
+        return (kotlin.math.round(rawRate / 0.25f) * 0.25f).coerceIn(0.25f, 11f)
+    }
+    Surface(
+        modifier =
+            modifier
+                .clip(shape)
+                .background(Color.White)
+                .border(1.dp, Color(0x24132129), shape)
+                .alpha(if (enabled) 1f else 0.45f)
+                .onSizeChanged { railSize = it }
+                .pointerInput(enabled, railSize) {
+                    awaitEachGesture {
+                        var activePointer: PointerId? = null
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change =
+                                if (activePointer == null) {
+                                    event.changes.firstOrNull { it.pressed }?.also { activePointer = it.id }
+                                } else {
+                                    event.changes.firstOrNull { it.id == activePointer }
+                                } ?: break
+                            if (enabled && railSize.width > 0) {
+                                onValueChange(rateForX(change.position.x))
+                            }
+                            change.consume()
+                            if (!change.pressed) {
+                                break
+                            }
+                        }
+                    }
+                },
+        shape = shape,
+        color = Color.White,
+        contentColor = Color(0xFF132129),
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize().padding(horizontal = ThumbSize * 0.09f, vertical = ThumbSize * 0.12f)) {
+            val centerY = size.height * 0.5f
+            val trackHeight = 3.dp.toPx()
+            val knobRadius = 6.dp.toPx()
+            val progress = ((value - 0.25f) / (11f - 0.25f)).coerceIn(0f, 1f)
+            val knobX = knobRadius + progress * (size.width - knobRadius * 2f).coerceAtLeast(1f)
+            drawLine(
+                color = Color(0x26132129),
+                start = Offset(knobRadius, centerY),
+                end = Offset(size.width - knobRadius, centerY),
+                strokeWidth = trackHeight,
+                cap = StrokeCap.Round,
+            )
+            drawLine(
+                color = Color(0xFF132129),
+                start = Offset(knobRadius, centerY),
+                end = Offset(knobX, centerY),
+                strokeWidth = trackHeight,
+                cap = StrokeCap.Round,
+            )
+            drawCircle(
+                color = Color(0xFF132129),
+                radius = knobRadius,
+                center = Offset(knobX, centerY),
+            )
+            drawCircle(
+                color = Color.White,
+                radius = knobRadius * 0.45f,
+                center = Offset(knobX, centerY),
+            )
+        }
+    }
+}
+
 @Composable
 private fun PlaybackOverview(
     playbackUiState: PlaybackUiState,
@@ -4206,9 +4289,6 @@ private fun PlaybackOverview(
                 .border(1.dp, Color(0x1F132129), shape)
                 .onSizeChanged { overviewSize = it }
                 .pointerInput(durationSeconds, overviewSize) {
-                    if (durationSeconds <= 0.0 || overviewSize.width <= 0) {
-                        return@pointerInput
-                    }
                     awaitEachGesture {
                         var activePointer: PointerId? = null
                         val width = overviewSize.width.toFloat().coerceAtLeast(1f)
@@ -4220,9 +4300,11 @@ private fun PlaybackOverview(
                                 } else {
                                     event.changes.firstOrNull { it.id == activePointer }
                                 } ?: break
-                            val nextCursorSeconds = (change.position.x.coerceIn(0f, width) / width.toDouble()) * durationSeconds
                             val finished = !change.pressed
-                            onScrub(nextCursorSeconds, finished)
+                            if (durationSeconds > 0.0 && overviewSize.width > 0) {
+                                val nextCursorSeconds = (change.position.x.coerceIn(0f, width) / width.toDouble()) * durationSeconds
+                                onScrub(nextCursorSeconds, finished)
+                            }
                             change.consume()
                             if (finished) {
                                 break
@@ -4620,6 +4702,7 @@ private fun DebugDock(
     open: Boolean,
     onToggle: () -> Unit,
     highlight: Boolean = false,
+    expandAbove: Boolean = false,
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -4627,7 +4710,7 @@ private fun DebugDock(
         CompactSquareButton(
             label = "DBG",
             modifier = Modifier
-                .align(Alignment.BottomStart)
+                .align(if (expandAbove) Alignment.BottomEnd else Alignment.BottomStart)
                 .size(ThumbSize),
             selected = highlight,
             selectedColor = Color(0xFFB85C00),
@@ -4637,8 +4720,11 @@ private fun DebugDock(
         AnimatedVisibility(
             visible = open,
             modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(start = ThumbSize + ThumbGap, bottom = 0.dp),
+                .align(if (expandAbove) Alignment.BottomEnd else Alignment.BottomStart)
+                .padding(
+                    start = if (expandAbove) 0.dp else ThumbSize + ThumbGap,
+                    bottom = if (expandAbove) ThumbSize + ThumbGap else 0.dp,
+                ),
             enter = slideInHorizontally(initialOffsetX = { -it / 3 }) + fadeIn(),
             exit = slideOutHorizontally(targetOffsetX = { -it / 3 }) + fadeOut(),
         ) {

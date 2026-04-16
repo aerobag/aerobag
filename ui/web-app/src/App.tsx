@@ -1367,6 +1367,11 @@ function MapPage(props: {
     if (trayGroup.scrimOpen) {
       return;
     }
+    if (event.pointerType === "mouse") {
+      activePointersRef.current.clear();
+      dragRef.current = null;
+      pinchRef.current = null;
+    }
     const point = { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY };
     activePointersRef.current.set(event.pointerId, point);
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -1440,6 +1445,13 @@ function MapPage(props: {
     }
   }
 
+  function handleLostPointerCapture(event: React.PointerEvent<HTMLDivElement>) {
+    activePointersRef.current.delete(event.pointerId);
+    pinchRef.current = null;
+    const remaining = Array.from(activePointersRef.current.entries());
+    dragRef.current = remaining.length === 1 ? { id: remaining[0][0], last: remaining[0][1] } : null;
+  }
+
   function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
     if (trayGroup.scrimOpen || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       event.preventDefault();
@@ -1484,6 +1496,7 @@ function MapPage(props: {
         onPointerUp={handlePointerRelease}
         onPointerCancel={handlePointerRelease}
         onPointerLeave={handlePointerRelease}
+        onLostPointerCapture={handleLostPointerCapture}
         onWheel={handleWheel}
         onDoubleClick={handleDoubleClick}
       >

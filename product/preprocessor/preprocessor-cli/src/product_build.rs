@@ -3,6 +3,7 @@ use std::{
     env, fs,
     fs::{File, OpenOptions},
     io::Write,
+    os::unix::fs::PermissionsExt,
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::Command,
@@ -102,6 +103,15 @@ struct NodeRecord {
     cache_hit: bool,
     inputs: BTreeMap<String, String>,
     outputs: BTreeMap<String, String>,
+    #[serde(default)]
+    output_details: BTreeMap<String, NodeOutputDetail>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NodeOutputDetail {
+    path: String,
+    sha256: Option<String>,
+    size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,11 +228,18 @@ struct PackageSummary {
 #[derive(Debug)]
 struct BuildLockGuard {
     path: PathBuf,
+    node_dir: PathBuf,
 }
 
 impl Drop for BuildLockGuard {
     fn drop(&mut self) {
+        let _ = set_tree_readonly(&self.node_dir, false);
         let _ = fs::remove_file(&self.path);
+        if self.node_dir.join("build-record.json").is_file()
+            && !self.node_dir.join(".mutable-output-root").exists()
+        {
+            let _ = set_tree_readonly(&self.node_dir, true);
+        }
     }
 }
 
@@ -265,9 +282,9 @@ enum TaskValue {
     CsupStage { record: NodeRecord, work_dir: PathBuf },
     ChartSource(ChartSource),
     CsupSource(AssetSource),
-    TppSource(AssetSource),
-    Data { main_db: PathBuf, zip: PathBuf },
-    ZipArtifact { zip: PathBuf },
+    FingerprintedData { main_db: PathBuf, zip: PathBuf, fingerprint: String },
+    FingerprintedZip { zip: PathBuf },
+    FingerprintedTppSource { source: AssetSource, fingerprint: String },
 }
 
 #[derive(Debug, Clone)]
@@ -284,9 +301,9 @@ enum ProductTaskValue {
     CsupStage { record: NodeRecord, work_dir: PathBuf },
     ChartSource(ChartSource),
     CsupSource(AssetSource),
-    TppSource(AssetSource),
-    Data { main_db: PathBuf, zip: PathBuf },
-    ZipArtifact { zip: PathBuf },
+    FingerprintedData { main_db: PathBuf, zip: PathBuf, fingerprint: String },
+    FingerprintedZip { zip: PathBuf },
+    FingerprintedTppSource { source: AssetSource, fingerprint: String },
     CycleManifest { path: PathBuf },
     ObstaclesBuilt {
         manifest_path: PathBuf,
@@ -1064,7 +1081,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     .into_iter()
                                     .map(|record| normalize_node_record_paths(record, &cycle_config.build_root))
                                     .collect(),
-                                value: ProductTaskValue::Data { main_db, zip },
+                                value: ProductTaskValue::FingerprintedData {
+                                    main_db,
+                                    zip,
+                                    fingerprint: data_record.fingerprint,
+                                },
                                 completion_detail: "cache_or_rebuild".to_string(),
                             })
                         }
@@ -1168,9 +1189,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     .expect("tpp region version should exist"),
                             )?;
                             let cache_hit = record.cache_hit;
+                            let fingerprint = record.fingerprint.clone();
                             Ok(ProductTaskCompletion {
                                 node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
-                                value: ProductTaskValue::TppSource(source),
+                                value: ProductTaskValue::FingerprintedTppSource {
+                                    source,
+                                    fingerprint,
+                                },
                                 completion_detail: format!(
                                     "elapsed_ms={} cache_hit={}",
                                     started.elapsed().as_millis(),
@@ -1188,8 +1213,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 _ => bail!("missing source urls for cycle {cycle}"),
                             };
                             let raw_data = match task_values_snapshot.get(&cycle_task_id(&cycle, "data-base")) {
-                                Some(ProductTaskValue::Data { main_db, zip }) => {
-                                    (main_db.clone(), zip.clone())
+                                Some(ProductTaskValue::FingerprintedData { main_db, zip, fingerprint }) => {
+                                    (main_db.clone(), zip.clone(), fingerprint.clone())
                                 }
                                 _ => bail!("missing data-base output for cycle {cycle}"),
                             };
@@ -1203,7 +1228,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                         &format!("tpp-{}-package", region.code().to_ascii_lowercase()),
                                     );
                                     match task_values_snapshot.get(&key) {
-                                        Some(ProductTaskValue::TppSource(source)) => Ok((*region, source.clone())),
+                                        Some(ProductTaskValue::FingerprintedTppSource { source, fingerprint }) => {
+                                            Ok((*region, source.clone(), fingerprint.clone()))
+                                        }
                                         _ => bail!("missing tpp package source for {}", region.code()),
                                     }
                                 })
@@ -1215,20 +1242,28 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 &raw_data.0,
                                 &raw_data.1,
                                 &source_urls,
+                                &raw_data.2,
                                 &tpp_sources,
                             )?;
                             let cache_hit = record.cache_hit;
                             let zip = resolve_artifact_path(&cycle_config, output_path(&record, "zip")?);
                             let main_db = resolve_artifact_path(&cycle_config, output_path(&record, "main_db")?);
+                            let fingerprint = record.fingerprint.clone();
                             Ok(ProductTaskCompletion {
                                 node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
-                                value: ProductTaskValue::Data { main_db, zip },
+                                value: ProductTaskValue::FingerprintedData {
+                                    main_db,
+                                    zip,
+                                    fingerprint,
+                                },
                                 completion_detail: format!("cache_hit={}", cache_hit),
                             })
                         }
                         ProductScheduledTaskKind::Vectors { cycle } => {
-                            let data = match task_values_snapshot.get(&cycle_task_id(&cycle, "data")) {
-                                Some(ProductTaskValue::Data { main_db, .. }) => main_db.clone(),
+                            let (data, data_fingerprint) = match task_values_snapshot.get(&cycle_task_id(&cycle, "data")) {
+                                Some(ProductTaskValue::FingerprintedData { main_db, fingerprint, .. }) => {
+                                    (main_db.clone(), fingerprint.clone())
+                                }
                                 _ => bail!("missing data output for cycle {cycle}"),
                             };
                             let data_version = match task_values_snapshot
@@ -1241,18 +1276,18 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             };
                             let mut cycle_config = config.clone();
                             cycle_config.target_cycle = Some(cycle);
-                            let record = build_vectors_node(&cycle_config, &data, &data_version)?;
+                            let record = build_vectors_node(&cycle_config, &data, &data_fingerprint, &data_version)?;
                             let cache_hit = record.cache_hit;
                             let zip = resolve_artifact_path(&cycle_config, output_path(&record, "zip")?);
                             Ok(ProductTaskCompletion {
                                 node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
-                                value: ProductTaskValue::ZipArtifact { zip },
+                                value: ProductTaskValue::FingerprintedZip { zip },
                                 completion_detail: format!("cache_hit={}", cache_hit),
                             })
                         }
                         ProductScheduledTaskKind::ResourceIndex { cycle } => {
                             let data_zip = match task_values_snapshot.get(&cycle_task_id(&cycle, "data")) {
-                                Some(ProductTaskValue::Data { zip, .. }) => zip.clone(),
+                                Some(ProductTaskValue::FingerprintedData { zip, .. }) => zip.clone(),
                                 _ => bail!("missing data output for cycle {cycle}"),
                             };
                             let chart_sources = ["sec", "tac", "enr-l", "enr-h"]
@@ -1279,7 +1314,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                         &format!("tpp-{}-package", region.code().to_ascii_lowercase()),
                                     );
                                     match task_values_snapshot.get(&key) {
-                                        Some(ProductTaskValue::TppSource(source)) => Ok(source.clone()),
+                                        Some(ProductTaskValue::FingerprintedTppSource { source, .. }) => Ok(source.clone()),
                                         _ => bail!("missing tpp package source for cycle {cycle} {}", region.code()),
                                     }
                                 })
@@ -1372,7 +1407,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             let source = match task_values_snapshot
                                 .get(&cycle_task_id(&cycle, &format!("tpp-{region_id}-package")))
                             {
-                                Some(ProductTaskValue::TppSource(source)) => source.clone(),
+                                Some(ProductTaskValue::FingerprintedTppSource { source, .. }) => source.clone(),
                                 _ => bail!("missing tpp source for cycle {cycle}"),
                             };
                             let package = package_record_for_region(&source.package_outputs_path, region)?;
@@ -1403,7 +1438,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         }
                         ProductScheduledTaskKind::DataUnpack { cycle } => {
                             let zip = match task_values_snapshot.get(&cycle_task_id(&cycle, "data")) {
-                                Some(ProductTaskValue::Data { zip, .. }) => zip.clone(),
+                                Some(ProductTaskValue::FingerprintedData { zip, .. }) => zip.clone(),
                                 _ => bail!("missing data zip for cycle {cycle}"),
                             };
                             let bundle_cycle = match task_values_snapshot
@@ -1433,7 +1468,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         }
                         ProductScheduledTaskKind::VectorsUnpack { cycle } => {
                             let zip = match task_values_snapshot.get(&cycle_task_id(&cycle, "vectors")) {
-                                Some(ProductTaskValue::ZipArtifact { zip }) => zip.clone(),
+                                Some(ProductTaskValue::FingerprintedZip { zip, .. }) => zip.clone(),
                                 _ => bail!("missing vectors zip for cycle {cycle}"),
                             };
                             let bundle_cycle = match task_values_snapshot
@@ -2267,13 +2302,19 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             let main_db = resolve_artifact_path(&config, output_path(&data_record, "main_db")?);
                             Ok(TaskCompletion {
                                 node_records: records,
-                                value: TaskValue::Data { main_db, zip },
+                                value: TaskValue::FingerprintedData {
+                                    main_db,
+                                    zip,
+                                    fingerprint: data_record.fingerprint,
+                                },
                                 completion_detail: "cache_or_rebuild".to_string(),
                             })
                         }),
                         ScheduledTaskKind::DataMatch => {
                             let raw_data = match task_values_snapshot.get("data-base") {
-                                Some(TaskValue::Data { main_db, zip }) => (main_db.clone(), zip.clone()),
+                                Some(TaskValue::FingerprintedData { main_db, zip, fingerprint }) => {
+                                    (main_db.clone(), zip.clone(), fingerprint.clone())
+                                }
                                 _ => unreachable!("data-base dependency should have completed"),
                             };
                             let tpp_sources = config
@@ -2284,7 +2325,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                     let region_id = region.code().to_ascii_lowercase();
                                     let key = format!("tpp-{region_id}-package");
                                     match task_values_snapshot.get(&key) {
-                                        Some(TaskValue::TppSource(source)) => Ok((*region, source.clone())),
+                                        Some(TaskValue::FingerprintedTppSource { source, fingerprint }) => {
+                                            Ok((*region, source.clone(), fingerprint.clone()))
+                                        }
                                         _ => bail!("missing tpp package source for {region_id}"),
                                     }
                                 })
@@ -2294,14 +2337,20 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 &raw_data.0,
                                 &raw_data.1,
                                 &data_version,
+                                &raw_data.2,
                                 &tpp_sources,
                             )?;
                             let cache_hit = record.cache_hit;
                             let zip = resolve_artifact_path(&config, output_path(&record, "zip")?);
                             let main_db = resolve_artifact_path(&config, output_path(&record, "main_db")?);
+                            let fingerprint = record.fingerprint.clone();
                             Ok(TaskCompletion {
                                 node_records: vec![record],
-                                value: TaskValue::Data { main_db, zip },
+                                value: TaskValue::FingerprintedData {
+                                    main_db,
+                                    zip,
+                                    fingerprint,
+                                },
                                 completion_detail: format!("cache_hit={}", cache_hit),
                             })
                         }
@@ -2358,9 +2407,13 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                     .expect("tpp region version should exist"),
                             )?;
                             let cache_hit = record.cache_hit;
+                            let fingerprint = record.fingerprint.clone();
                             Ok(TaskCompletion {
                                 node_records: vec![record],
-                                value: TaskValue::TppSource(source),
+                                value: TaskValue::FingerprintedTppSource {
+                                    source,
+                                    fingerprint,
+                                },
                                 completion_detail: format!(
                                     "elapsed_ms={} cache_hit={}",
                                     started.elapsed().as_millis(),
@@ -2369,22 +2422,26 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             })
                         }
                         ScheduledTaskKind::Vectors => {
-                            let data = match task_values_snapshot.get("data") {
-                                Some(TaskValue::Data { main_db, zip: _ }) => main_db,
+                            let (data, data_fingerprint) = match task_values_snapshot.get("data") {
+                                Some(TaskValue::FingerprintedData { main_db, fingerprint, .. }) => {
+                                    (main_db, fingerprint)
+                                }
                                 _ => unreachable!("data dependency should have completed"),
                             };
-                            let record = build_vectors_node(&config, data, &data_version)?;
+                            let record = build_vectors_node(&config, data, data_fingerprint, &data_version)?;
                             let cache_hit = record.cache_hit;
                             let zip = resolve_artifact_path(&config, output_path(&record, "zip")?);
                             Ok(TaskCompletion {
                                 node_records: vec![record],
-                                value: TaskValue::ZipArtifact { zip },
+                                value: TaskValue::FingerprintedZip { zip },
                                 completion_detail: format!("cache_hit={}", cache_hit),
                             })
                         }
                         ScheduledTaskKind::ResourceIndex => {
                             let data_zip = match task_values_snapshot.get("data") {
-                                Some(TaskValue::Data { main_db: _, zip }) => zip.clone(),
+                                Some(TaskValue::FingerprintedData { main_db: _, zip, .. }) => {
+                                    zip.clone()
+                                }
                                 _ => unreachable!("data dependency should have completed"),
                             };
                             let chart_sources = ["sec", "tac", "enr-l", "enr-h"]
@@ -2409,7 +2466,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                     let region_id = region.code().to_ascii_lowercase();
                                     let key = format!("tpp-{region_id}-package");
                                     match task_values_snapshot.get(&key) {
-                                        Some(TaskValue::TppSource(source)) => Ok(source.clone()),
+                                        Some(TaskValue::FingerprintedTppSource { source, .. }) => {
+                                            Ok(source.clone())
+                                        }
                                         _ => bail!("missing tpp package source for {region_id}"),
                                     }
                                 })
@@ -2493,7 +2552,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             let region_id = region.code().to_ascii_lowercase();
                             let key = format!("tpp-{region_id}-package");
                             let source = match task_values_snapshot.get(&key) {
-                                Some(TaskValue::TppSource(source)) => source.clone(),
+                                Some(TaskValue::FingerprintedTppSource { source, .. }) => source.clone(),
                                 _ => bail!("missing tpp package source for {region_id}"),
                             };
                             let package = package_record_for_region(&source.package_outputs_path, region)?;
@@ -2522,7 +2581,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         }
                         ScheduledTaskKind::DataUnpack => {
                             let zip = match task_values_snapshot.get("data") {
-                                Some(TaskValue::Data { main_db: _, zip }) => zip.clone(),
+                                Some(TaskValue::FingerprintedData { main_db: _, zip, .. }) => {
+                                    zip.clone()
+                                }
                                 _ => bail!("missing data zip"),
                             };
                             let unpacked_root = published_unpacked_root(&config)?;
@@ -2544,7 +2605,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         }
                         ScheduledTaskKind::VectorsUnpack => {
                             let zip = match task_values_snapshot.get("vectors") {
-                                Some(TaskValue::ZipArtifact { zip }) => zip.clone(),
+                                Some(TaskValue::FingerprintedZip { zip, .. }) => zip.clone(),
                                 _ => bail!("missing vectors zip"),
                             };
                             let unpacked_root = published_unpacked_root(&config)?;
@@ -4924,11 +4985,11 @@ fn build_data_match_node(
     raw_main_db: &Path,
     raw_zip: &Path,
     artifact_stem: &str,
-    tpp_sources: &[(Region, AssetSource)],
+    raw_data_fingerprint: &str,
+    tpp_sources: &[(Region, AssetSource, String)],
 ) -> anyhow::Result<NodeRecord> {
     let mut inputs = BTreeMap::from([
-        ("raw_main_db".to_string(), hash_file(raw_main_db)?),
-        ("raw_zip".to_string(), hash_file(raw_zip)?),
+        ("raw_data_fingerprint".to_string(), raw_data_fingerprint.to_string()),
         ("artifact_stem".to_string(), artifact_stem.to_string()),
         (
             "matching_lib".to_string(),
@@ -4957,21 +5018,14 @@ fn build_data_match_node(
                     .join("preprocessor-core/src/lib.rs"),
             )?,
         ),
-        (
-            "product_build_cli".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("src/product_build.rs"),
-            )?,
-        ),
     ]);
     let mut tpp_zips = Vec::new();
-    for (region, source) in tpp_sources {
+    for (region, source, fingerprint) in tpp_sources {
         let package = package_record_for_region(&source.package_outputs_path, *region)?;
         let zip_path = source.package_root.join(&package.zip);
         inputs.insert(
-            format!("tpp_{}", region.code().to_ascii_lowercase()),
-            hash_file(&zip_path)?,
+            format!("tpp_{}_fingerprint", region.code().to_ascii_lowercase()),
+            fingerprint.clone(),
         );
         tpp_zips.push(zip_path);
     }
@@ -5015,10 +5069,11 @@ fn build_data_match_node(
 fn build_vectors_node(
     config: &ProductBuildConfig,
     main_db: &Path,
+    data_fingerprint: &str,
     version_label: &str,
 ) -> anyhow::Result<NodeRecord> {
     let inputs = BTreeMap::from([
-        ("main_db".to_string(), hash_file(main_db)?),
+        ("data_fingerprint".to_string(), data_fingerprint.to_string()),
         ("version_label".to_string(), version_label.to_string()),
         (
             "vectors_lib".to_string(),
@@ -5363,6 +5418,7 @@ fn claim_or_wait_for_node(
             return Ok(NodeCacheState::CacheHit(record));
         }
 
+        set_tree_readonly(&prepared.dir, false)?;
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -5377,6 +5433,7 @@ fn claim_or_wait_for_node(
                 reset_node_dir_for_rebuild(prepared)?;
                 return Ok(NodeCacheState::Build(BuildLockGuard {
                     path: prepared.lock_path.clone(),
+                    node_dir: prepared.dir.clone(),
                 }));
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -5392,6 +5449,7 @@ fn claim_or_wait_for_node(
 }
 
 fn reset_node_dir_for_rebuild(prepared: &PreparedNode) -> anyhow::Result<()> {
+    set_tree_readonly(&prepared.dir, false)?;
     for entry in fs::read_dir(&prepared.dir)
         .with_context(|| format!("failed to read {}", prepared.dir.display()))?
     {
@@ -5408,6 +5466,56 @@ fn reset_node_dir_for_rebuild(prepared: &PreparedNode) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn set_tree_readonly(root: &Path, readonly: bool) -> anyhow::Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    if readonly {
+        for entry in fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                set_tree_readonly(&path, true)?;
+            } else {
+                set_path_readonly(&path, true)?;
+            }
+        }
+        set_path_readonly(root, true)?;
+    } else {
+        set_path_readonly(root, false)?;
+        for entry in fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                set_tree_readonly(&path, false)?;
+            } else {
+                set_path_readonly(&path, false)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn set_path_readonly(path: &Path, readonly: bool) -> anyhow::Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to stat {}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    let mut permissions = metadata.permissions();
+    let mut mode = permissions.mode();
+    if readonly {
+        mode &= !0o222;
+    } else if metadata.is_dir() {
+        mode |= 0o700;
+    } else {
+        mode |= 0o600;
+    }
+    permissions.set_mode(mode);
+    fs::set_permissions(path, permissions)
+        .with_context(|| format!("failed to chmod {}", path.display()))
 }
 
 fn remove_stale_lock_if_needed(lock_path: &Path) -> anyhow::Result<()> {
@@ -5455,6 +5563,16 @@ fn normalize_node_record_paths(mut record: NodeRecord, build_root: &Path) -> Nod
             (key, normalized)
         })
         .collect();
+    record.output_details = record
+        .output_details
+        .into_iter()
+        .map(|(key, mut detail)| {
+            if detail.path.starts_with('/') {
+                detail.path = relative_artifact_path(Path::new(&detail.path), build_root);
+            }
+            (key, detail)
+        })
+        .collect();
     record
 }
 
@@ -5467,6 +5585,8 @@ fn write_node_record(
     finished_at_utc: String,
     elapsed_ms: u64,
 ) -> anyhow::Result<NodeRecord> {
+    let finalize_readonly = !legacy_mutable_output_node(&prepared.name);
+    let output_details = node_output_details(&prepared.dir, &outputs)?;
     let record = NodeRecord {
         name: prepared.name,
         fingerprint: prepared.fingerprint,
@@ -5476,13 +5596,68 @@ fn write_node_record(
         cache_hit,
         inputs,
         outputs,
+        output_details,
     };
     fs::write(
         &prepared.record_path,
         serde_json::to_vec_pretty(&record).context("failed to encode node record")?,
     )
     .with_context(|| format!("failed to write {}", prepared.record_path.display()))?;
+    if !finalize_readonly {
+        fs::write(prepared.dir.join(".mutable-output-root"), b"legacy mutable output root\n")
+            .with_context(|| format!("failed to mark {} as mutable", prepared.dir.display()))?;
+    }
     Ok(record)
+}
+
+fn legacy_mutable_output_node(name: &str) -> bool {
+    // Chart packaging still writes region zips/manifests into chart render work dirs, and
+    // CSUP render/package still writes markers/thumbnails/manifests into the CSUP stage dir.
+    // Those are legacy glue boundaries; keep them writable until those package outputs move
+    // into their own node dirs.
+    (name.starts_with("charts-") && name.ends_with("-render")) || name == "csup-stage"
+}
+
+fn node_output_details(
+    node_dir: &Path,
+    outputs: &BTreeMap<String, String>,
+) -> anyhow::Result<BTreeMap<String, NodeOutputDetail>> {
+    outputs
+        .iter()
+        .map(|(key, value)| {
+            let resolved = resolve_recorded_output_path(node_dir, value);
+            let (sha256, size_bytes) = match resolved.as_deref() {
+                Some(path) if path.is_file() => {
+                    let metadata = fs::metadata(path)
+                        .with_context(|| format!("failed to stat {}", path.display()))?;
+                    (Some(hash_file(path)?), Some(metadata.len()))
+                }
+                _ => (None, None),
+            };
+            Ok((
+                key.clone(),
+                NodeOutputDetail {
+                    path: value.clone(),
+                    sha256,
+                    size_bytes,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn resolve_recorded_output_path(node_dir: &Path, value: &str) -> Option<PathBuf> {
+    let path = Path::new(value);
+    if path.is_absolute() {
+        return path.exists().then(|| path.to_path_buf());
+    }
+    for ancestor in node_dir.ancestors() {
+        let candidate = ancestor.join(path);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn artifact_root_from_build_root(build_root: &Path) -> &Path {

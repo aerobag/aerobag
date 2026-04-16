@@ -208,6 +208,22 @@ pub struct ProductBuildResult {
     pub published_obstacle_zip: PathBuf,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct FastSubsetBuildResult {
+    pub current_artifacts_path: PathBuf,
+    pub fast_products: Vec<PublishedFastProductResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PublishedFastProductResult {
+    pub id: String,
+    pub source_zip_path: PathBuf,
+    pub published_zip: PathBuf,
+    pub checksum_sha256: String,
+    pub size_bytes: u64,
+    pub source_generated_at_utc: String,
+}
+
 #[derive(Debug)]
 struct PreparedNode {
     name: String,
@@ -2030,6 +2046,178 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             Err(err)
         }
     }
+}
+
+pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubsetBuildResult> {
+    fs::create_dir_all(&config.build_root)
+        .with_context(|| format!("failed to create {}", config.build_root.display()))?;
+    let current_artifacts_path = current_artifacts_path_for_fast_subset(config)?;
+    let mut current: CurrentArtifactsManifest = serde_json::from_slice(
+        &fs::read(&current_artifacts_path)
+            .with_context(|| format!("failed to read {}", current_artifacts_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", current_artifacts_path.display()))?;
+    let previous_fast_products = current.fast_products.clone();
+
+    let tfrs = publish_built_fast_product(config, "tfrs", build_tfrs_product(config)?)?;
+    let metars = publish_built_fast_product(config, "metars", build_metars_product(config)?)?;
+    let nexrad = publish_built_fast_product(config, "nexrad", build_nexrad_product(config)?)?;
+    let fast_products = vec![tfrs, metars, nexrad];
+    let published_at_utc = utc_now_string();
+    current.fast_products = fast_products
+        .iter()
+        .map(|product| CurrentFastProductEntry {
+            id: product.id.clone(),
+            filename: product
+                .published_zip
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            published_at_utc: published_at_utc.clone(),
+            source_generated_at_utc: product.source_generated_at_utc.clone(),
+            checksum_sha256: product.checksum_sha256.clone(),
+            size_bytes: product.size_bytes,
+        })
+        .collect();
+    current.as_of_date = Utc::now().date_naive().format("%Y-%m-%d").to_string();
+
+    let output_path = config.build_root.join(format!(
+        "current_artifacts_{}.json",
+        Utc::now().date_naive().format("%Y%m%d")
+    ));
+    fs::write(
+        &output_path,
+        serde_json::to_vec_pretty(&current)
+            .context("failed to encode current artifacts manifest")?,
+    )
+    .with_context(|| format!("failed to write {}", output_path.display()))?;
+
+    sync_fast_subset_unpacked(
+        &config.build_root,
+        &output_path,
+        &previous_fast_products,
+        &fast_products,
+    )?;
+    validate_packaged_contract(&config.build_root, &output_path)?;
+    let unpacked_root = published_unpacked_root(config)?;
+    validate_unpacked_contract(&config.build_root, &unpacked_root, &output_path)?;
+
+    Ok(FastSubsetBuildResult {
+        current_artifacts_path: output_path,
+        fast_products,
+    })
+}
+
+fn publish_built_fast_product(
+    config: &ProductBuildConfig,
+    id: &str,
+    built: (PathBuf, String, NodeRecord),
+) -> anyhow::Result<PublishedFastProductResult> {
+    let (source_zip_path, source_generated_at_utc, _record) = built;
+    let (published_zip, checksum_sha256, size_bytes) =
+        publish_content_addressed_fast_product_zip(&config.build_root, id, &source_zip_path)?;
+    Ok(PublishedFastProductResult {
+        id: id.to_string(),
+        source_zip_path,
+        published_zip,
+        checksum_sha256,
+        size_bytes,
+        source_generated_at_utc,
+    })
+}
+
+fn current_artifacts_path_for_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
+    let today_path = config.build_root.join(format!(
+        "current_artifacts_{}.json",
+        Utc::now().date_naive().format("%Y%m%d")
+    ));
+    if today_path.is_file() {
+        return Ok(today_path);
+    }
+
+    let mut candidates = fs::read_dir(&config.build_root)
+        .with_context(|| format!("failed to read {}", config.build_root.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to iterate {}", config.build_root.display()))?
+        .into_iter()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("current_artifacts_") && name.ends_with(".json")
+                })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.pop().with_context(|| {
+        format!(
+            "no current_artifacts_YYYYMMDD.json exists in {}; run build-product first",
+            config.build_root.display()
+        )
+    })
+}
+
+fn sync_fast_subset_unpacked(
+    build_root: &Path,
+    current_artifacts_path: &Path,
+    previous_fast_products: &[CurrentFastProductEntry],
+    fast_products: &[PublishedFastProductResult],
+) -> anyhow::Result<()> {
+    let unpacked_root = published_unpacked_root_from_build_root(build_root)?;
+    fs::create_dir_all(&unpacked_root)
+        .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
+    sync_unpacked_file(current_artifacts_path, &unpacked_root)?;
+    remove_stale_fast_unpacked_dirs(&unpacked_root, previous_fast_products, fast_products)?;
+    for product in fast_products {
+        let published_filename = product
+            .published_zip
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("failed to determine published fast filename"))?;
+        sync_unpacked_zip_from_source(
+            &product.published_zip,
+            product
+                .source_zip_path
+                .parent()
+                .unwrap_or_else(|| Path::new("/")),
+            &unpacked_root,
+            published_filename,
+        )?;
+    }
+    Ok(())
+}
+
+fn remove_stale_fast_unpacked_dirs(
+    unpacked_root: &Path,
+    previous_fast_products: &[CurrentFastProductEntry],
+    fast_products: &[PublishedFastProductResult],
+) -> anyhow::Result<()> {
+    let current_dirs = fast_products
+        .iter()
+        .map(|product| {
+            let filename = product
+                .published_zip
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| anyhow::anyhow!("failed to determine published fast filename"))?;
+            zip_stem(filename)
+        })
+        .collect::<anyhow::Result<std::collections::BTreeSet<_>>>()?;
+    for product in previous_fast_products {
+        let previous_dir = zip_stem(&product.filename)?;
+        if current_dirs.contains(&previous_dir) {
+            continue;
+        }
+        let path = unpacked_root.join(&previous_dir);
+        if path.exists() {
+            fs::remove_dir_all(&path).with_context(|| {
+                format!("failed to remove stale fast product {}", path.display())
+            })?;
+        }
+    }
+    Ok(())
 }
 
 pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {

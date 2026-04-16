@@ -24,8 +24,9 @@ use preprocessor_data::{
     DataBuildRequest,
 };
 use preprocessor_fetch::{
-    hash_text, manifest_path_for_run, manifest_summary, prefetch_archives_with_provenance, read_download_records,
-    read_extract_records, read_source_url_set, CacheLayout, FetchCacheConfig, FetchCacheMode,
+    hash_text, manifest_path_for_run, manifest_summary, prefetch_archives_with_provenance,
+    read_download_records, read_extract_records, read_source_url_set, CacheLayout,
+    FetchCacheConfig, FetchCacheMode,
 };
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource,
@@ -36,8 +37,8 @@ use preprocessor_vectors::{
     build_obstacle_dataset, build_vectors_dataset, BuildObstacleDatasetRequest, BuildVectorsRequest,
 };
 use product_build::{
-    build_cycle, build_product, default_artifact_write_path, explain_product_build,
-    maybe_reexec_build_cycle_under_cgroup, ProductBuildConfig,
+    build_cycle, build_fast_subset, build_product, default_artifact_write_path,
+    explain_product_build, maybe_reexec_build_cycle_under_cgroup, ProductBuildConfig,
 };
 use sha2::{Digest, Sha256};
 
@@ -59,6 +60,14 @@ fn print_partial_run_hint(run_root: &PathBuf) {
 }
 
 fn usage() -> &'static str {
+    "usage:
+  preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli build-fast-subset [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+
+Use --long-help to show internal/debug commands."
+}
+
+fn long_usage() -> &'static str {
     "usage:
   preprocessor-cli print-baseline
   preprocessor-cli inspect-run --run-root <path>
@@ -89,6 +98,7 @@ fn usage() -> &'static str {
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>]...
   preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli build-fast-subset [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli run-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
 }
@@ -195,18 +205,18 @@ fn ensure_binary_matches_workspace() -> anyhow::Result<()> {
 }
 
 fn obstacle_snapshot_label(value: &str) -> anyhow::Result<String> {
-    Ok(
-        NaiveDate::parse_from_str(value, "%Y-%m-%d")
-            .with_context(|| format!("failed to parse obstacle snapshot date {value}"))?
-            .format("%Y.%m.%d")
-            .to_string(),
-    )
+    Ok(NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .with_context(|| format!("failed to parse obstacle snapshot date {value}"))?
+        .format("%Y.%m.%d")
+        .to_string())
 }
 
 fn fetch_cache_config_from_root(root: PathBuf) -> anyhow::Result<FetchCacheConfig> {
     Ok(FetchCacheConfig {
         root,
-        mode: FetchCacheMode::parse(&env::var("FETCH_CACHE_MODE").unwrap_or_else(|_| "fill".to_string()))?,
+        mode: FetchCacheMode::parse(
+            &env::var("FETCH_CACHE_MODE").unwrap_or_else(|_| "fill".to_string()),
+        )?,
     })
 }
 
@@ -1193,16 +1203,25 @@ fn audit_cifp_tpp_matching_command(
         .cloned()
         .collect::<Vec<_>>();
     mismatches.sort_by_key(|(airport, plate_count, cifp_count)| {
-        (usize::MAX - plate_count.abs_diff(*cifp_count), airport.clone())
+        (
+            usize::MAX - plate_count.abs_diff(*cifp_count),
+            airport.clone(),
+        )
     });
     for (airport_id, plate_count, cifp_count) in mismatches.into_iter().take(limit) {
-        println!("  {}: plates={} cifp_iaps={}", airport_id, plate_count, cifp_count);
+        println!(
+            "  {}: plates={} cifp_iaps={}",
+            airport_id, plate_count, cifp_count
+        );
     }
     println!();
 
     println!("heuristic match audit:");
     println!("  matched_unique: {}", report.match_summary.matched_unique);
-    println!("  matched_partial: {}", report.match_summary.matched_partial);
+    println!(
+        "  matched_partial: {}",
+        report.match_summary.matched_partial
+    );
     println!("  matched_none: {}", report.match_summary.matched_none);
     println!("  no_heuristic: {}", report.match_summary.no_heuristic);
     println!(
@@ -1305,6 +1324,14 @@ fn work_kind_name(value: WorkKind) -> &'static str {
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
+    if matches!(args.get(1).map(String::as_str), Some("--help" | "-h")) {
+        println!("{}", usage());
+        return Ok(());
+    }
+    if args.get(1).map(String::as_str) == Some("--long-help") {
+        println!("{}", long_usage());
+        return Ok(());
+    }
     if matches!(
         args.get(1).map(String::as_str),
         Some(
@@ -1319,6 +1346,7 @@ fn main() -> anyhow::Result<()> {
                 | "build-vectors"
                 | "build-obstacles"
                 | "build-cycle"
+                | "build-fast-subset"
                 | "build-product"
                 | "run-chart"
         )
@@ -2202,14 +2230,35 @@ fn main() -> anyhow::Result<()> {
             for cycle_manifest_path in result.cycle_manifest_paths {
                 println!("cycle_manifest {}", cycle_manifest_path.display());
             }
-            println!("current_artifacts {}", result.current_artifacts_path.display());
-            println!("obstacle_manifest {}", result.obstacle_manifest_path.display());
+            println!(
+                "current_artifacts {}",
+                result.current_artifacts_path.display()
+            );
+            println!(
+                "obstacle_manifest {}",
+                result.obstacle_manifest_path.display()
+            );
             println!("obstacle_stats {}", result.obstacle_stats_path.display());
             println!("obstacle_zip {}", result.obstacle_zip_path.display());
             println!(
                 "published_obstacle_zip {}",
                 result.published_obstacle_zip.display()
             );
+        }
+        Some("build-fast-subset") => {
+            let config = ProductBuildConfig::from_env_and_args(&args[2..])?;
+            let result = build_fast_subset(&config)?;
+            println!(
+                "current_artifacts {}",
+                result.current_artifacts_path.display()
+            );
+            for product in result.fast_products {
+                println!(
+                    "fast_product {} {}",
+                    product.id,
+                    product.published_zip.display()
+                );
+            }
         }
         Some("explain-product-build") => {
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;

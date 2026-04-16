@@ -739,6 +739,19 @@ button {
   stroke: rgba(212, 90, 122, 0.92);
 }
 
+.playbackWidgetGapSpan {
+  opacity: 0.88;
+}
+
+.playbackWidgetGapPatternBase {
+  fill: rgba(19, 33, 41, 0.12);
+}
+
+.playbackWidgetGapPatternLine {
+  stroke: rgba(19, 33, 41, 0.55);
+  stroke-width: 2;
+}
+
 .playbackWidgetCursorLine {
   stroke: rgba(19, 33, 41, 0.52);
   stroke-width: 1;

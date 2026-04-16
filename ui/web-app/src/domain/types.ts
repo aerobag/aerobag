@@ -534,14 +534,10 @@ export type PlaybackUiState = {
   rate: number;
   speed_profile_norm: Array<number | null>;
   altitude_profile_norm: Array<number | null>;
-  gap_spans: Array<PlaybackGapSpan>;
-};
-
-export type PlaybackGapSpan = {
-  start_seconds: number;
-  end_seconds: number;
-  start_ratio: number;
-  end_ratio: number;
+  gap_spans: Array<{
+    start_seconds: number;
+    end_seconds: number;
+  }>;
 };
 
 export type MapFollowUiState = {

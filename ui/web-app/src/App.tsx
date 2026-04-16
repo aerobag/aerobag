@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { chartPage, mapViews, resourceIndex, sampleCatalog, samplePlan } from "./domain/sampleData";
 import type {
@@ -2133,6 +2133,7 @@ function PlaybackWidget(props: {
   const [scrubCursorSeconds, setScrubCursorSeconds] = useState<number | null>(null);
   const seekRequestIdRef = useRef(0);
   const scrubRef = useRef<HTMLDivElement | null>(null);
+  const gapPatternId = useId();
   const maxWidthPx = playbackWidgetMaxWidthPx(surfaceWidth);
   const durationSeconds = Math.max(playbackUiState.duration_seconds, 0);
   const committedCursorSeconds = Math.min(Math.max(playbackUiState.cursor_seconds, 0), durationSeconds || 0);
@@ -2151,7 +2152,19 @@ function PlaybackWidget(props: {
   const cursorX = knobRadius + cursorRatio * Math.max(overviewWidth - knobRadius * 2, 0);
   const speedPath = profilePathData(playbackUiState.speed_profile_norm, overviewWidth, overviewHeight, knobRadius, knobRadius);
   const altitudePath = profilePathData(playbackUiState.altitude_profile_norm, overviewWidth, overviewHeight, knobRadius, knobRadius);
-  const gapSpans = playbackUiState.gap_spans ?? [];
+  const gapRects = playbackUiState.gap_spans
+    .map((gap, index) => {
+      if (durationSeconds <= 0 || gap.end_seconds <= gap.start_seconds) {
+        return null;
+      }
+      const usableWidth = Math.max(overviewWidth - knobRadius * 2, 0);
+      const startRatio = Math.min(Math.max(gap.start_seconds / durationSeconds, 0), 1);
+      const endRatio = Math.min(Math.max(gap.end_seconds / durationSeconds, 0), 1);
+      const x = knobRadius + startRatio * usableWidth;
+      const width = Math.max((endRatio - startRatio) * usableWidth, 1);
+      return { key: `${gap.start_seconds}:${gap.end_seconds}:${index}`, x, width };
+    })
+    .filter((rect): rect is { key: string; x: number; width: number } => rect !== null);
 
   useEffect(() => {
     if (scrubCursorSeconds === null) {
@@ -2365,19 +2378,24 @@ function PlaybackWidget(props: {
       >
         <svg className="playbackWidgetOverviewSvg" viewBox={`0 0 ${overviewWidth} ${overviewHeight}`} preserveAspectRatio="none" aria-hidden="true">
           <defs>
-            <pattern id="playback-gap-hatch" patternUnits="userSpaceOnUse" width="6" height="6">
-              <rect width="6" height="6" className="playbackWidgetGapSpanBg" />
-              <path d="M -6 6 L 6 -6 M 0 12 L 12 0" className="playbackWidgetGapSpanLine" />
+            <pattern id={gapPatternId} patternUnits="userSpaceOnUse" width="8" height="8" patternTransform="rotate(45)">
+              <rect width="8" height="8" className="playbackWidgetGapPatternBase" />
+              <line x1="0" y1="0" x2="0" y2="8" className="playbackWidgetGapPatternLine" />
             </pattern>
           </defs>
-          {durationSeconds > 0 ? gapSpans.map((gap, index) => {
-            const startX = knobRadius + Math.min(Math.max(gap.start_ratio, 0), 1) * Math.max(overviewWidth - knobRadius * 2, 0);
-            const endX = knobRadius + Math.min(Math.max(gap.end_ratio, 0), 1) * Math.max(overviewWidth - knobRadius * 2, 0);
-            const width = Math.max(endX - startX, 0);
-            return width > 0 ? <rect key={index} className="playbackWidgetGapSpan" x={startX} y={0} width={width} height={overviewHeight} fill="url(#playback-gap-hatch)" /> : null;
-          }) : null}
           {altitudePath ? <path className="playbackWidgetAltitudeProfile" d={altitudePath} /> : null}
           {speedPath ? <path className="playbackWidgetSpeedProfile" d={speedPath} /> : null}
+          {gapRects.map((gap) => (
+            <rect
+              key={gap.key}
+              className="playbackWidgetGapSpan"
+              fill={`url(#${gapPatternId})`}
+              x={gap.x}
+              y={0}
+              width={gap.width}
+              height={overviewHeight}
+            />
+          ))}
           <line className="playbackWidgetCursorLine" x1={cursorX} y1={0} x2={cursorX} y2={overviewHeight} />
           <circle className="playbackWidgetCursorKnob" cx={cursorX} cy={overviewHeight - 1} r={knobRadius} />
         </svg>

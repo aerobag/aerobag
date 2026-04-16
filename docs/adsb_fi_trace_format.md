@@ -31,7 +31,8 @@ So in that file every row is length-14 and carries the positional fields below.
 
 The playback parser uses only the first six positions:
 
-- `items[0]`: elapsed seconds since the start of the trace
+- `items[0]`: seconds after the root `timestamp`, which is normally UTC
+  midnight for historical daily trace files
 - `items[1]`: latitude
 - `items[2]`: longitude
 - `items[3]`: altitude feet
@@ -65,6 +66,14 @@ the primary schema contract.
 - `trace` is an array
 - each usable row is an array with at least 6 elements
 - the first 6 elements mean what is listed above
+
+For playback, the parser normalizes `items[0]` by subtracting the first usable
+row's timestamp, so UI clocks are relative to the first trace point rather than
+UTC midnight. The original wall-clock gaps are preserved as relative gaps.
+
+Rows separated by more than two minutes are treated as ADS-B reception gaps.
+Those spans are exposed to the UI so it can draw a no-reception hash pattern,
+and playback skips across them instead of interpolating fake aircraft motion.
 
 If upstream trace shape changes, this document and the parser comment in
 `playback.rs` should be updated together.

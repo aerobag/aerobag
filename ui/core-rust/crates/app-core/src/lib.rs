@@ -86,7 +86,7 @@ pub use planning::{
     RouteComponentUiView, RouteComponentViewKind, SequencingMode, DirectToUiView,
     LegDisplayElement, LegDisplayPath,
 };
-pub use playback::{PlaybackStatus, PlaybackUiState};
+pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use procedure_geometry::display_path_for_procedure_leg;
 pub use procedure_legs::{
     interpret_path_termination, leading_procedure_discontinuity,

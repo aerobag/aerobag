@@ -1,11 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PORT="${1:-8080}"
 HOST="${HOST:-0.0.0.0}"
 DEV_SCRIPT="${AEROBAG_DEV_SCRIPT:-inner:dev}"
+ONLY_TEAR_DOWN=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --only-tear-down|--teardown-only)
+      ONLY_TEAR_DOWN=1
+      ;;
+    *)
+      echo "usage: $0 [--only-tear-down]" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
 
 REPO_ROOT="${AEROBAG_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
+INSTANCE_CONFIG="$REPO_ROOT/../INSTANCE_CONFIG"
+if [ ! -f "$INSTANCE_CONFIG" ]; then
+  echo "missing instance config: $INSTANCE_CONFIG" >&2
+  exit 1
+fi
+
+# shellcheck source=/dev/null
+source "$INSTANCE_CONFIG"
+
+if [ -z "${WEB_PORT:-}" ]; then
+  echo "WEB_PORT must be defined in $INSTANCE_CONFIG" >&2
+  exit 1
+fi
+
+PORT="$WEB_PORT"
 TARGET_ROOT_FILE="$REPO_ROOT/ui/target-root.txt"
 DEFAULT_UI_TARGET_ROOT="$(python3 - <<'PY' "$REPO_ROOT" "$TARGET_ROOT_FILE"
 from pathlib import Path
@@ -77,6 +105,10 @@ while read -r pid; do
 done < <(list_workspace_pids || true)
 
 wait_for_shutdown
+
+if [ "$ONLY_TEAR_DOWN" -eq 1 ]; then
+  exit 0
+fi
 
 exec env \
   AEROBAG_REPO_ROOT="$REPO_ROOT" \

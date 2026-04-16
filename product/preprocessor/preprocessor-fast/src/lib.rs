@@ -1407,12 +1407,19 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn avare_parity_fixture_root(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("preprocessor-fast crate should live under product/preprocessor")
+            .join("test_fixtures")
+            .join("avare_parity")
+            .join(name)
+    }
+
     #[test]
     fn avare_fixture_parity() -> anyhow::Result<()> {
-        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures")
-            .join("tfr_parity");
+        let fixture_root = avare_parity_fixture_root("tfr_parity");
         let output_dir = TempDir::new().context("failed to create temp dir")?;
         let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-15T03:30:00Z")
             .expect("valid fixture timestamp")
@@ -1437,10 +1444,7 @@ mod tests {
 
     #[test]
     fn metar_fixture_parity() -> anyhow::Result<()> {
-        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures")
-            .join("metar_parity");
+        let fixture_root = avare_parity_fixture_root("metar_parity");
         let output_dir = TempDir::new().context("failed to create temp dir")?;
         let result = build_metar_avare_parity_artifacts(&BuildMetarParityRequest {
             input_xml_path: fixture_root.join("input").join("metars.cache.xml"),
@@ -1508,10 +1512,7 @@ mod tests {
 
     #[test]
     fn nexrad_fixture_parity() -> anyhow::Result<()> {
-        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures")
-            .join("nexrad_parity");
+        let fixture_root = avare_parity_fixture_root("nexrad_parity");
         let output_dir = TempDir::new().context("failed to create temp dir")?;
         let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-16T01:29:00Z")
             .expect("valid fixture timestamp")

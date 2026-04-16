@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MockAppCoreAdapter } from "./appCoreAdapter";
 import { ContentViewModel } from "./contentViewModel";
-import type { CatalogJson, ContentInventory, FlightPlan } from "./types";
+import type { AppState, CatalogJson, ContentAvailability, ContentInventory, ContentPolicy, FlightPlan } from "./types";
 
 const catalog: CatalogJson = {
   schema_version: 1,
@@ -98,9 +97,98 @@ const installedInventory: ContentInventory = {
   cached_plates: [],
 };
 
+class FakeContentAdapter {
+  async replaceFlightPlanState(state: AppState, catalog: CatalogJson, nextPlan: FlightPlan): Promise<AppState> {
+    if (nextPlan.legs.length === 0) {
+      throw new Error("InvalidFlightPlan: flight plan must contain at least one leg");
+    }
+    const packageIds = new Map<string, CatalogJson["packages"][number]["id"]>();
+    for (const leg of nextPlan.legs) {
+      for (const ref of [leg.from, leg.to]) {
+        if (!ref || !("Airport" in ref)) continue;
+        const airportCode = ref.Airport.toUpperCase();
+        for (const plate of catalog.plates) {
+          if (plate.airport_id.toUpperCase() !== airportCode) continue;
+          const pkg = catalog.packages.find((entry) => entry.region_id === plate.region_id);
+          if (pkg) {
+            packageIds.set(JSON.stringify(pkg.id), pkg.id);
+          }
+        }
+      }
+    }
+    return {
+      ...state,
+      active_plan: nextPlan,
+      last_content_requirements: [
+        {
+          package_ids: [...packageIds.values()],
+          chart_ids: [],
+          plate_ids: [],
+        },
+      ],
+      last_content_report: null,
+    };
+  }
+
+  async setContentPolicyState(state: AppState, _catalog: CatalogJson, policy: ContentPolicy): Promise<AppState> {
+    return {
+      ...state,
+      content_policy: policy,
+    };
+  }
+
+  async refreshContentState(state: AppState, _catalog: CatalogJson, inventory: ContentInventory): Promise<AppState> {
+    const items = state.last_content_requirements.flatMap((requirement) =>
+      requirement.package_ids.map((pkg) => {
+        const installed = inventory.installed_packages.some(
+          (entry) =>
+            entry.integrity_ok &&
+            entry.package_id.region === pkg.region &&
+            entry.package_id.family === pkg.family &&
+            entry.package_id.cycle === pkg.cycle,
+        );
+
+        const availability: ContentAvailability =
+          installed
+            ? state.content_policy === "StreamAllowed"
+              ? "LocalAndRemote"
+              : "LocalOnly"
+            : state.content_policy === "StreamAllowed"
+              ? "RemoteOnly"
+              : "Unavailable";
+
+        return {
+          label: `${pkg.region.toUpperCase()}_${pkg.family === "sec" ? "SEC" : pkg.family.toUpperCase()}`,
+          availability: {
+            availability,
+            cycle_current: true,
+            integrity_ok: installed,
+            cached: installed,
+            offline_usable: installed,
+          },
+        };
+      }),
+    );
+
+    const fullySatisfied = items.every((item) =>
+      state.content_policy === "StreamAllowed"
+        ? item.availability.availability !== "Unavailable"
+        : item.availability.availability === "LocalOnly" || item.availability.availability === "LocalAndRemote",
+    );
+
+    return {
+      ...state,
+      last_content_report: {
+        fully_satisfied: fullySatisfied,
+        items,
+      },
+    };
+  }
+}
+
 describe("ContentViewModel", () => {
   it("treats remote-only availability as satisfied for web streaming mode", async () => {
-    const model = new ContentViewModel(new MockAppCoreAdapter(), undefined, catalog);
+    const model = new ContentViewModel(new FakeContentAdapter(), undefined, catalog);
     await model.loadPlan(plan);
     await model.setPolicy("StreamAllowed");
     const state = await model.refresh(remoteOnlyInventory);
@@ -110,7 +198,7 @@ describe("ContentViewModel", () => {
   });
 
   it("treats installed content as offline-usable for local-first mode", async () => {
-    const model = new ContentViewModel(new MockAppCoreAdapter(), undefined, catalog);
+    const model = new ContentViewModel(new FakeContentAdapter(), undefined, catalog);
     await model.loadPlan(plan);
     await model.setPolicy("OfflineRequired");
     const state = await model.refresh(installedInventory);

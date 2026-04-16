@@ -3,9 +3,14 @@ import type { AppCoreAdapter } from "./appCoreAdapter";
 import { emptyState, sampleCatalog } from "./sampleData";
 import type { CatalogJson } from "./types";
 
+type ContentStateAdapter = Pick<
+  AppCoreAdapter,
+  "replaceFlightPlanState" | "setContentPolicyState" | "refreshContentState"
+>;
+
 export class ContentViewModel {
   constructor(
-    private readonly adapter: AppCoreAdapter,
+    private readonly adapter: ContentStateAdapter,
     private state: AppState = emptyState,
     private readonly catalog: CatalogJson = sampleCatalog,
   ) {}

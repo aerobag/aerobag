@@ -110,6 +110,21 @@ data class WireMapFollowUiState(
 )
 
 @Serializable
+data class WirePlaybackUiState(
+    val status: WirePlaybackStatus = WirePlaybackStatus.Empty,
+    val source_path: String? = null,
+    val registration: String? = null,
+    val icao: String? = null,
+    val aircraft_type: String? = null,
+    val point_count: Int = 0,
+    val duration_seconds: Double = 0.0,
+    val cursor_seconds: Double = 0.0,
+    val rate: Double = 1.0,
+    val speed_profile_norm: List<Double?> = emptyList(),
+    val altitude_profile_norm: List<Double?> = emptyList(),
+)
+
+@Serializable
 data class WireOwnshipSourceMenuItem(
     val source_id: String,
     val label: String,
@@ -274,6 +289,18 @@ enum class WireOwnshipMode {
 
     @SerialName("simulated")
     Simulated,
+}
+
+@Serializable
+enum class WirePlaybackStatus {
+    @SerialName("empty")
+    Empty,
+
+    @SerialName("paused")
+    Paused,
+
+    @SerialName("playing")
+    Playing,
 }
 
 @Serializable

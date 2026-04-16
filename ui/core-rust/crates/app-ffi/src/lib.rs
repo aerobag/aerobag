@@ -877,6 +877,56 @@ pub fn set_map_follow_offset_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn load_playback_trace_in_session_json(
+    handle: u64,
+    source_path_json: &str,
+    trace_json: &str,
+) -> Result<String, String> {
+    let source_path: String =
+        serde_json::from_str(source_path_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::load_playback_trace_in_session(handle as u32, &source_path, trace_json)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn play_playback_in_session_json(handle: u64, now_epoch_ms: f64) -> Result<String, String> {
+    let snapshot =
+        app_core::play_playback_in_session(handle as u32, now_epoch_ms).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn pause_playback_in_session_json(handle: u64, now_epoch_ms: f64) -> Result<String, String> {
+    let snapshot =
+        app_core::pause_playback_in_session(handle as u32, now_epoch_ms).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn seek_playback_in_session_json(
+    handle: u64,
+    cursor_seconds: f64,
+    now_epoch_ms: f64,
+) -> Result<String, String> {
+    let snapshot = app_core::seek_playback_in_session(handle as u32, cursor_seconds, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn set_playback_rate_in_session_json(
+    handle: u64,
+    rate: f64,
+    now_epoch_ms: f64,
+) -> Result<String, String> {
+    let snapshot = app_core::set_playback_rate_in_session(handle as u32, rate, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn tick_playback_in_session_json(handle: u64, now_epoch_ms: f64) -> Result<String, String> {
+    let snapshot =
+        app_core::tick_playback_in_session(handle as u32, now_epoch_ms).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn select_chart_in_session_json(handle: u64, chart_id_json: &str) -> Result<String, String> {
     let chart_id: String = serde_json::from_str(chart_id_json).map_err(|err| err.to_string())?;
     let snapshot =
@@ -1825,6 +1875,89 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
         )
     })();
     return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_loadPlaybackTraceInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    source_path_json: JString,
+    trace_json: JString,
+) -> jstring {
+    let result = (|| {
+        let source_path_json = get_java_string(&mut env, source_path_json)?;
+        let trace_json = get_java_string(&mut env, trace_json)?;
+        load_playback_trace_in_session_json(handle as u64, &source_path_json, &trace_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_playPlaybackInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    now_epoch_ms: f64,
+) -> jstring {
+    return_string(
+        &mut env,
+        play_playback_in_session_json(handle as u64, now_epoch_ms),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_pausePlaybackInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    now_epoch_ms: f64,
+) -> jstring {
+    return_string(
+        &mut env,
+        pause_playback_in_session_json(handle as u64, now_epoch_ms),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_seekPlaybackInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    cursor_seconds: f64,
+    now_epoch_ms: f64,
+) -> jstring {
+    return_string(
+        &mut env,
+        seek_playback_in_session_json(handle as u64, cursor_seconds, now_epoch_ms),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setPlaybackRateInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    rate: f64,
+    now_epoch_ms: f64,
+) -> jstring {
+    return_string(
+        &mut env,
+        set_playback_rate_in_session_json(handle as u64, rate, now_epoch_ms),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_tickPlaybackInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    now_epoch_ms: f64,
+) -> jstring {
+    return_string(
+        &mut env,
+        tick_playback_in_session_json(handle as u64, now_epoch_ms),
+    )
 }
 
 #[unsafe(no_mangle)]

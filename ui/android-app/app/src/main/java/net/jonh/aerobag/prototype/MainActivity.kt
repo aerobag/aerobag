@@ -28,6 +28,7 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -59,6 +60,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -70,6 +72,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -113,11 +116,13 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.window.Popup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.jonh.aerobag.prototype.domain.ChartAirport
 import net.jonh.aerobag.prototype.domain.ChartAsset
@@ -150,6 +155,8 @@ import net.jonh.aerobag.prototype.domain.OwnshipRenderState
 import net.jonh.aerobag.prototype.domain.OwnshipSourceKind
 import net.jonh.aerobag.prototype.domain.OwnshipSourceRegistration
 import net.jonh.aerobag.prototype.domain.OwnshipSourceStatusUpdate
+import net.jonh.aerobag.prototype.domain.PlaybackStatus
+import net.jonh.aerobag.prototype.domain.PlaybackUiState
 import net.jonh.aerobag.prototype.domain.PointTilePayload
 import net.jonh.aerobag.prototype.domain.ProcedureKind
 import net.jonh.aerobag.prototype.domain.ProcedureOptions
@@ -165,6 +172,7 @@ import net.jonh.aerobag.prototype.domain.SourceConnectionState
 import net.jonh.aerobag.prototype.domain.TileStorageKind
 import net.jonh.aerobag.prototype.domain.UiTheme
 import net.jonh.aerobag.prototype.domain.UiThemeLoader
+import net.jonh.aerobag.prototype.domain.UiSessionSnapshot
 import net.jonh.aerobag.prototype.domain.applyPinchGesture
 import net.jonh.aerobag.prototype.domain.clampZoom
 import net.jonh.aerobag.prototype.domain.createInitialImageViewport
@@ -184,6 +192,7 @@ import net.jonh.aerobag.prototype.domain.zoomAroundPoint
 import net.jonh.aerobag.prototype.domain.zoomImageAroundPoint
 import kotlinx.serialization.json.Json
 import java.io.BufferedInputStream
+import java.net.URL
 import java.util.zip.ZipInputStream
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -199,6 +208,8 @@ private val LocalAerobagUiTheme = staticCompositionLocalOf<UiTheme> {
 private val ThumbSize = 56.dp
 private val ThumbGap = 5.6.dp
 private val PlanGridGap = 2.dp
+private const val DefaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json"
+private const val AndroidDevServerBaseUrl = "http://10.0.2.2:8082"
 private val VampsPosition = LatLon(47.3648944444444, -121.980275)
 private val SituationRingSizesNm = listOf(0.25, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 150.0, 200.0)
 
@@ -1114,6 +1125,7 @@ private fun AerobagApp() {
     var mapViewport by remember { mutableStateOf(createInitialSituationViewport(selectedMap.mapView)) }
     var chartViewport by remember { mutableStateOf<net.jonh.aerobag.prototype.domain.ImageViewportState?>(null) }
     var chartFolderOpen by remember { mutableStateOf(false) }
+    var playbackSourcePath by remember { mutableStateOf(DefaultPlaybackTracePath) }
     val planListState = rememberLazyListState()
     val chartAirportById = remember(chartCatalog.airports) { chartCatalog.airports.associateBy { it.id } }
     val orderedChartAirports = remember(chartCatalog.airports, derivedChartPageState.orderedAirportIds) {
@@ -1146,6 +1158,14 @@ private fun AerobagApp() {
     }
     LaunchedEffect(appCore, currentPlan) {
         planUiState = appCore.buildFlightPlanUi(currentPlan)
+    }
+    LaunchedEffect(uiSession, sessionSnapshot.playbackUiState.status) {
+        while (sessionSnapshot.playbackUiState.status == PlaybackStatus.Playing) {
+            delay(250)
+            runCatching { uiSession.tickPlayback(System.currentTimeMillis().toDouble()) }
+                .onSuccess { sessionSnapshot = it }
+                .onFailure { Log.e("AerobagPlayback", "tick failed", it) }
+        }
     }
     val sessionPlanUiState = sessionSnapshot.appUiState.activePlan ?: planUiState
     val navElement = sessionPlanUiState?.guidance?.navElement ?: NavElementUiView("", null)
@@ -1227,12 +1247,15 @@ private fun AerobagApp() {
                     uiSession = uiSession,
                     uiTheme = uiTheme,
                     ownship = appUiState.ownship.render,
+                    playbackUiState = sessionSnapshot.playbackUiState,
+                    playbackSourcePath = playbackSourcePath,
                     mapFollowUiState = sessionSnapshot.mapFollowUiState,
                     mapFollowTargetViewport = sessionSnapshot.mapFollowTargetViewport,
                     selectedMapId = selectedMapId,
                     viewport = mapViewport,
                     onViewportChange = { mapViewport = it },
                     onSessionSnapshotChange = { sessionSnapshot = it },
+                    onPlaybackSourcePathChange = { playbackSourcePath = it },
                     onSelectMapId = {
                         restoreSnapshot(
                             currentSnapshot().copy(
@@ -1347,12 +1370,15 @@ private fun MapExplorerPage(
     uiSession: NativeUiSession,
     uiTheme: UiTheme,
     ownship: OwnshipRenderState,
+    playbackUiState: PlaybackUiState,
+    playbackSourcePath: String,
     mapFollowUiState: MapFollowUiState,
     mapFollowTargetViewport: CoreMapViewport?,
     selectedMapId: String,
     viewport: MapViewportState,
     onViewportChange: (MapViewportState) -> Unit,
-    onSessionSnapshotChange: (net.jonh.aerobag.prototype.domain.UiSessionSnapshot) -> Unit,
+    onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
+    onPlaybackSourcePathChange: (String) -> Unit,
     onSelectMapId: (String) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
@@ -2210,6 +2236,17 @@ private fun MapExplorerPage(
             },
         )
 
+        PlaybackWidget(
+            uiSession = uiSession,
+            playbackUiState = playbackUiState,
+            sourcePath = playbackSourcePath,
+            onSourcePathChange = onPlaybackSourcePathChange,
+            onSnapshotChange = onSessionSnapshotChange,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = ThumbGap, bottom = ThumbGap),
+        )
+
         CompactSquareButton(
             label = "CTR",
             modifier = Modifier
@@ -2243,7 +2280,9 @@ private fun MapExplorerPage(
             open = debugPanelOpen,
             onToggle = { debugPanelOpen = !debugPanelOpen },
             highlight = committedMapOverlay.warnings.isNotEmpty() || mapOverlayError != null,
-            modifier = Modifier.align(Alignment.BottomStart),
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = ThumbSize + (ThumbGap * 2f)),
         ) {
             Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
@@ -3907,6 +3946,318 @@ private fun NavElementDock(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun PlaybackWidget(
+    uiSession: NativeUiSession,
+    playbackUiState: PlaybackUiState,
+    sourcePath: String,
+    onSourcePathChange: (String) -> Unit,
+    onSnapshotChange: (UiSessionSnapshot) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scope = rememberCoroutineScope()
+    var isBusy by remember { mutableStateOf(false) }
+    var scrubCursorSeconds by remember { mutableStateOf<Double?>(null) }
+    val durationSeconds = playbackUiState.durationSeconds.coerceAtLeast(0.0)
+    val committedCursorSeconds = playbackUiState.cursorSeconds.coerceIn(0.0, durationSeconds.takeIf { it > 0.0 } ?: 0.0)
+    val cursorSeconds = (scrubCursorSeconds ?: committedCursorSeconds).coerceIn(0.0, durationSeconds.takeIf { it > 0.0 } ?: 0.0)
+    val label = playbackUiState.registration ?: playbackUiState.icao ?: "Trace"
+    val summary =
+        if (playbackUiState.pointCount > 0) {
+            "$label ${formatPlaybackClock(cursorSeconds)} / ${formatPlaybackClock(durationSeconds)}"
+        } else {
+            "Playback"
+        }
+    val panelShape = RoundedCornerShape(ThumbRadius * 0.9f)
+    Surface(
+        modifier = modifier.widthIn(min = ThumbSize * 2.8f, max = ThumbSize * 5.2f),
+        shape = panelShape,
+        color = Color(0xF0FCF8F1),
+        contentColor = Color(0xFF132129),
+        border = BorderStroke(1.dp, Color(0x334E626C)),
+        shadowElevation = 6.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(ThumbSize * 0.12f),
+            verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = summary,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF132129),
+                )
+                Text(
+                    text = "${String.format("%.1f", playbackUiState.rate)}x",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF52656D),
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BasicTextField(
+                    value = sourcePath,
+                    onValueChange = onSourcePathChange,
+                    singleLine = true,
+                    textStyle =
+                        MaterialTheme.typography.labelSmall.copy(
+                            color = Color(0xFF132129),
+                            fontSize = 11.sp,
+                        ),
+                    modifier =
+                        Modifier
+                            .weight(1f)
+                            .height(ThumbSize * 0.42f)
+                            .clip(RoundedCornerShape(ThumbRadius * 0.55f))
+                            .background(Color.White)
+                            .border(1.dp, Color(0x24132129), RoundedCornerShape(ThumbRadius * 0.55f))
+                            .padding(horizontal = ThumbSize * 0.1f, vertical = ThumbSize * 0.11f),
+                )
+                PlaybackSmallButton(
+                    label = "LOAD",
+                    enabled = !isBusy && sourcePath.isNotBlank(),
+                    onClick = {
+                        scope.launch {
+                            isBusy = true
+                            try {
+                                val traceJson =
+                                    withContext(Dispatchers.IO) {
+                                        URL(resolvePlaybackTraceUrl(sourcePath)).readText()
+                                    }
+                                onSnapshotChange(uiSession.loadPlaybackTrace(sourcePath, traceJson))
+                            } catch (error: Throwable) {
+                                Log.e("AerobagPlayback", "trace load failed: $sourcePath", error)
+                            } finally {
+                                isBusy = false
+                            }
+                        }
+                    },
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PlaybackSmallButton(
+                    label = if (playbackUiState.status == PlaybackStatus.Playing) "PAUSE" else "PLAY",
+                    enabled = playbackUiState.status != PlaybackStatus.Empty,
+                    onClick = {
+                        scope.launch {
+                            runCatching {
+                                if (playbackUiState.status == PlaybackStatus.Playing) {
+                                    uiSession.pausePlayback(System.currentTimeMillis().toDouble())
+                                } else {
+                                    uiSession.playPlayback(System.currentTimeMillis().toDouble())
+                                }
+                            }.onSuccess(onSnapshotChange)
+                                .onFailure { Log.e("AerobagPlayback", "play/pause failed", it) }
+                        }
+                    },
+                )
+                Text(
+                    text = "SPD",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF52656D),
+                )
+                Slider(
+                    value = playbackUiState.rate.toFloat().coerceIn(0.25f, 11f),
+                    onValueChange = { nextRate ->
+                        scope.launch {
+                            runCatching {
+                                uiSession.setPlaybackRate(nextRate.toDouble(), System.currentTimeMillis().toDouble())
+                            }.onSuccess(onSnapshotChange)
+                                .onFailure { Log.e("AerobagPlayback", "rate change failed", it) }
+                        }
+                    },
+                    enabled = playbackUiState.status != PlaybackStatus.Empty,
+                    valueRange = 0.25f..11f,
+                    steps = 42,
+                    modifier = Modifier.weight(1f).height(ThumbSize * 0.42f),
+                )
+            }
+            PlaybackOverview(
+                playbackUiState = playbackUiState,
+                cursorSeconds = cursorSeconds,
+                durationSeconds = durationSeconds,
+                onScrub = { nextCursorSeconds ->
+                    scrubCursorSeconds = nextCursorSeconds
+                    scope.launch {
+                        runCatching {
+                            uiSession.seekPlayback(nextCursorSeconds, System.currentTimeMillis().toDouble())
+                        }.onSuccess {
+                            onSnapshotChange(it)
+                            scrubCursorSeconds = null
+                        }.onFailure { Log.e("AerobagPlayback", "seek failed", it) }
+                    }
+                },
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(formatPlaybackClock(cursorSeconds), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = Color(0xFF52656D))
+                Text(formatPlaybackClock(durationSeconds), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = Color(0xFF52656D))
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaybackSmallButton(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier =
+            Modifier
+                .height(ThumbSize * 0.42f)
+                .widthIn(min = ThumbSize * 0.86f)
+                .then(
+                    if (enabled) {
+                        Modifier.clickable(
+                            indication = null,
+                            interactionSource = remember { MutableInteractionSource() },
+                        ) { onClick() }
+                    } else {
+                        Modifier.alpha(0.45f)
+                    },
+                ),
+        shape = RoundedCornerShape(ThumbRadius * 0.55f),
+        color = Color(0xFF132129),
+        contentColor = Color.White,
+        border = BorderStroke(1.dp, Color(0x24132129)),
+    ) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = ThumbSize * 0.14f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.ExtraBold,
+                color = Color.White,
+            )
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalComposeUiApi::class)
+private fun PlaybackOverview(
+    playbackUiState: PlaybackUiState,
+    cursorSeconds: Double,
+    durationSeconds: Double,
+    onScrub: (Double) -> Unit,
+) {
+    val shape = RoundedCornerShape(ThumbRadius * 0.45f)
+    var overviewSize by remember { mutableStateOf(IntSize.Zero) }
+    Box(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .height(ThumbSize * 0.56f)
+                .clip(shape)
+                .background(Color(0xD1FFFFFF))
+                .border(1.dp, Color(0x1F132129), shape)
+                .onSizeChanged { overviewSize = it }
+                .pointerInteropFilter { event ->
+                    if (durationSeconds <= 0.0) {
+                        return@pointerInteropFilter false
+                    }
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN,
+                        MotionEvent.ACTION_MOVE,
+                        MotionEvent.ACTION_UP -> {
+                            val width = overviewSize.width.toFloat().coerceAtLeast(1f)
+                            val x = event.x.coerceIn(0f, width)
+                            onScrub((x / width.toDouble()) * durationSeconds)
+                            true
+                        }
+                        else -> false
+                    }
+                },
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val knobRadius = 7.dp.toPx()
+            val usableWidth = (size.width - knobRadius * 2f).coerceAtLeast(1f)
+            fun drawProfile(samples: List<Double?>, color: Color) {
+                val usable = samples.mapIndexedNotNull { index, value -> value?.let { index to it } }
+                if (usable.isEmpty()) {
+                    return
+                }
+                val lastIndex = (samples.size - 1).coerceAtLeast(1)
+                val path = Path()
+                usable.forEachIndexed { pointIndex, (sampleIndex, value) ->
+                    val x = knobRadius + (sampleIndex.toFloat() / lastIndex.toFloat()) * usableWidth
+                    val y = size.height - (value.toFloat().coerceIn(0f, 1f) * size.height)
+                    if (pointIndex == 0) {
+                        path.moveTo(x, y)
+                    } else {
+                        path.lineTo(x, y)
+                    }
+                }
+                drawPath(
+                    path = path,
+                    color = color,
+                    style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round),
+                )
+            }
+            drawProfile(playbackUiState.altitudeProfileNorm, Color(0xCC0D6F67))
+            drawProfile(playbackUiState.speedProfileNorm, Color(0xEBD45A7A))
+            val ratio = if (durationSeconds > 0.0) (cursorSeconds / durationSeconds).coerceIn(0.0, 1.0).toFloat() else 0f
+            val cursorX = knobRadius + ratio * usableWidth
+            drawLine(
+                color = Color(0x85132129),
+                start = Offset(cursorX, 0f),
+                end = Offset(cursorX, size.height),
+                strokeWidth = 1.dp.toPx(),
+            )
+            drawCircle(
+                color = Color(0xFF132129),
+                radius = knobRadius,
+                center = Offset(cursorX, size.height - 1.dp.toPx()),
+            )
+            drawCircle(
+                color = Color(0xF0FCF8F1),
+                radius = knobRadius,
+                center = Offset(cursorX, size.height - 1.dp.toPx()),
+                style = Stroke(width = 1.5.dp.toPx()),
+            )
+        }
+    }
+}
+
+private fun resolvePlaybackTraceUrl(sourcePath: String): String =
+    when {
+        sourcePath.startsWith("http://") || sourcePath.startsWith("https://") -> sourcePath
+        sourcePath.startsWith("/") -> "$AndroidDevServerBaseUrl$sourcePath"
+        else -> "$AndroidDevServerBaseUrl/$sourcePath"
+    }
+
+private fun formatPlaybackClock(seconds: Double): String {
+    val totalSeconds = seconds.toInt().coerceAtLeast(0)
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val remainder = totalSeconds % 60
+    return if (hours > 0) {
+        "%d:%02d:%02d".format(hours, minutes, remainder)
+    } else {
+        "%d:%02d".format(minutes, remainder)
     }
 }
 

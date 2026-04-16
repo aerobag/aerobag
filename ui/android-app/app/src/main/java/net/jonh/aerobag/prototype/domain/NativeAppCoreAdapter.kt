@@ -494,6 +494,43 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun loadPlaybackTrace(sourcePath: String, traceJson: String): UiSessionSnapshot {
+        snapshot =
+            decodeSnapshot(
+                bridge.loadPlaybackTraceInSessionJson(
+                    handle,
+                    json.encodeToString(sourcePath),
+                    traceJson,
+                ),
+            )
+        return snapshot
+    }
+
+    fun playPlayback(nowEpochMs: Double): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.playPlaybackInSessionJson(handle, nowEpochMs))
+        return snapshot
+    }
+
+    fun pausePlayback(nowEpochMs: Double): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.pausePlaybackInSessionJson(handle, nowEpochMs))
+        return snapshot
+    }
+
+    fun seekPlayback(cursorSeconds: Double, nowEpochMs: Double): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.seekPlaybackInSessionJson(handle, cursorSeconds, nowEpochMs))
+        return snapshot
+    }
+
+    fun setPlaybackRate(rate: Double, nowEpochMs: Double): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.setPlaybackRateInSessionJson(handle, rate, nowEpochMs))
+        return snapshot
+    }
+
+    fun tickPlayback(nowEpochMs: Double): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.tickPlaybackInSessionJson(handle, nowEpochMs))
+        return snapshot
+    }
+
     fun selectAirport(airportId: String): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.selectAirportInSessionJson(handle, json.encodeToString(airportId)))
         return snapshot
@@ -779,6 +816,20 @@ private fun WireMapFollowUiState.toUi() = MapFollowUiState(
     following = following,
 )
 
+private fun WirePlaybackUiState.toUi() = PlaybackUiState(
+    status = status.toUi(),
+    sourcePath = source_path,
+    registration = registration,
+    icao = icao,
+    aircraftType = aircraft_type,
+    pointCount = point_count,
+    durationSeconds = duration_seconds,
+    cursorSeconds = cursor_seconds,
+    rate = rate,
+    speedProfileNorm = speed_profile_norm,
+    altitudeProfileNorm = altitude_profile_norm,
+)
+
 private fun WireOwnshipSourceMenuItem.toUi() = OwnshipSourceMenuItem(
     sourceId = source_id,
     label = label,
@@ -799,6 +850,12 @@ private fun OwnshipMode.toWire(): WireOwnshipMode = when (this) {
     OwnshipMode.Live -> WireOwnshipMode.Live
     OwnshipMode.Replay -> WireOwnshipMode.Replay
     OwnshipMode.Simulated -> WireOwnshipMode.Simulated
+}
+
+private fun WirePlaybackStatus.toUi(): PlaybackStatus = when (this) {
+    WirePlaybackStatus.Empty -> PlaybackStatus.Empty
+    WirePlaybackStatus.Paused -> PlaybackStatus.Paused
+    WirePlaybackStatus.Playing -> PlaybackStatus.Playing
 }
 
 private fun WireOwnshipBannerSeverity.toUi(): OwnshipBannerSeverity = when (this) {
@@ -949,6 +1006,7 @@ private data class WireUiChartPageState(
 private data class WireUiSessionSnapshot(
     val app_state: WireUiSnapshotAppState,
     val app_ui_state: WireAppUiState = WireAppUiState(),
+    val playback_ui_state: WirePlaybackUiState = WirePlaybackUiState(),
     val map_follow_ui_state: WireMapFollowUiState = WireMapFollowUiState(),
     val map_follow_target_viewport: WireMapViewport? = null,
     val chart_page_state: WireUiChartPageState,
@@ -998,6 +1056,7 @@ data class DerivedChartPageState(
 data class UiSessionSnapshot(
     val appState: UiSnapshotAppState,
     val appUiState: AppUiState,
+    val playbackUiState: PlaybackUiState,
     val mapFollowUiState: MapFollowUiState,
     val mapFollowTargetViewport: CoreMapViewport?,
     val chartPageState: UiChartPageState,
@@ -1027,6 +1086,7 @@ private fun WireUiChartPageState.toUi() = UiChartPageState(
 private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     appState = app_state.toUi(),
     appUiState = app_ui_state.toUi(),
+    playbackUiState = playback_ui_state.toUi(),
     mapFollowUiState = map_follow_ui_state.toUi(),
     mapFollowTargetViewport = map_follow_target_viewport?.toUi(),
     chartPageState = chart_page_state.toUi(),

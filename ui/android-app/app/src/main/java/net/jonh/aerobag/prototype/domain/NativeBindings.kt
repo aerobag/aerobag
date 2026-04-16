@@ -211,6 +211,39 @@ interface NativeBridge {
         offsetYPx: Double,
     ): String
 
+    fun loadPlaybackTraceInSessionJson(
+        handle: Long,
+        sourcePathJson: String,
+        traceJson: String,
+    ): String
+
+    fun playPlaybackInSessionJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
+    fun pausePlaybackInSessionJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
+    fun seekPlaybackInSessionJson(
+        handle: Long,
+        cursorSeconds: Double,
+        nowEpochMs: Double,
+    ): String
+
+    fun setPlaybackRateInSessionJson(
+        handle: Long,
+        rate: Double,
+        nowEpochMs: Double,
+    ): String
+
+    fun tickPlaybackInSessionJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
     fun selectAirportInSessionJson(
         handle: Long,
         airportIdJson: String,
@@ -499,6 +532,39 @@ object NativeBindings : NativeBridge {
         viewportJson: String,
         offsetXPx: Double,
         offsetYPx: Double,
+    ): String
+
+    external override fun loadPlaybackTraceInSessionJson(
+        handle: Long,
+        sourcePathJson: String,
+        traceJson: String,
+    ): String
+
+    external override fun playPlaybackInSessionJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
+    external override fun pausePlaybackInSessionJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
+    external override fun seekPlaybackInSessionJson(
+        handle: Long,
+        cursorSeconds: Double,
+        nowEpochMs: Double,
+    ): String
+
+    external override fun setPlaybackRateInSessionJson(
+        handle: Long,
+        rate: Double,
+        nowEpochMs: Double,
+    ): String
+
+    external override fun tickPlaybackInSessionJson(
+        handle: Long,
+        nowEpochMs: Double,
     ): String
 
     external override fun selectAirportInSessionJson(

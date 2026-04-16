@@ -665,3 +665,23 @@ data class CoreMapViewport(
     val rotationDeg: Double,
     val pitchDeg: Double,
 )
+
+enum class PlaybackStatus {
+    Empty,
+    Paused,
+    Playing,
+}
+
+data class PlaybackUiState(
+    val status: PlaybackStatus = PlaybackStatus.Empty,
+    val sourcePath: String? = null,
+    val registration: String? = null,
+    val icao: String? = null,
+    val aircraftType: String? = null,
+    val pointCount: Int = 0,
+    val durationSeconds: Double = 0.0,
+    val cursorSeconds: Double = 0.0,
+    val rate: Double = 1.0,
+    val speedProfileNorm: List<Double?> = emptyList(),
+    val altitudeProfileNorm: List<Double?> = emptyList(),
+)

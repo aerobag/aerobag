@@ -479,6 +479,24 @@ private class FakeNativeBridge(
         offsetYPx: Double,
     ): String = getSessionSnapshotJson(handle)
 
+    override fun loadPlaybackTraceInSessionJson(handle: Long, sourcePathJson: String, traceJson: String): String =
+        getSessionSnapshotJson(handle)
+
+    override fun playPlaybackInSessionJson(handle: Long, nowEpochMs: Double): String =
+        getSessionSnapshotJson(handle)
+
+    override fun pausePlaybackInSessionJson(handle: Long, nowEpochMs: Double): String =
+        getSessionSnapshotJson(handle)
+
+    override fun seekPlaybackInSessionJson(handle: Long, cursorSeconds: Double, nowEpochMs: Double): String =
+        getSessionSnapshotJson(handle)
+
+    override fun setPlaybackRateInSessionJson(handle: Long, rate: Double, nowEpochMs: Double): String =
+        getSessionSnapshotJson(handle)
+
+    override fun tickPlaybackInSessionJson(handle: Long, nowEpochMs: Double): String =
+        getSessionSnapshotJson(handle)
+
     override fun selectAirportInSessionJson(handle: Long, airportIdJson: String): String = getSessionSnapshotJson(handle)
 
     override fun selectChartInSessionJson(handle: Long, chartIdJson: String): String = getSessionSnapshotJson(handle)

@@ -617,7 +617,8 @@ export type OwnshipRenderState = {
 
 export type OwnshipControlModel = {
   mode: OwnshipMode;
-  selection: OwnshipSelectionCommand;
+  selection?: OwnshipSelectionCommand;
+  policy?: OwnshipSelectionCommand;
   sources: Array<{
     source_id: { 0: string } | string;
     label: string;
@@ -632,7 +633,26 @@ export type OwnshipUiState = {
   controls: OwnshipControlModel;
 };
 
-export type OwnshipState = unknown;
+export type OwnshipState = {
+  policy: {
+    selection: OwnshipSelectionCommand;
+    source_priority: Array<{ 0: string } | string>;
+    allow_auto_replay: boolean;
+    allow_auto_simulated: boolean;
+  };
+  resolved: {
+    mode: OwnshipMode;
+    active_source_id: { 0: string } | string | null;
+    active_source_kind: OwnshipSourceKind | null;
+    banner_text: string;
+    banner_severity: OwnshipBannerSeverity;
+    guidance_enabled: boolean;
+    sequencing_enabled: boolean;
+  };
+  render: OwnshipRenderState;
+  controls: OwnshipControlModel;
+  sources: Array<unknown>;
+};
 
 export type MapViewJson = {
   chart_family: ChartFamilyId;

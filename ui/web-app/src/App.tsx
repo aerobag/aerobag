@@ -4,8 +4,8 @@ import { chartPage, mapViews, resourceIndex, sampleCatalog, samplePlan } from ".
 import type {
   AirwayPresentationPlan,
   AirwaySuggestion,
-  AppState,
   ChartPageData,
+  ChartFamilyId,
   FlightPlanRouteSegment,
   FlightPlanUiMutation,
   FlightPlanUiState,
@@ -65,8 +65,6 @@ type SurfaceSize = {
 };
 
 type AppPage = "map" | "plan" | "charts" | "settings";
-
-type ChartFamilyId = "sec" | "tac" | "enr-l" | "enr-h";
 
 type ChartAsset = NonNullable<ChartPageData["airports"][number]>["charts"][number];
 type TrayOption = {
@@ -365,40 +363,6 @@ export default function App() {
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
     app_state: {
       active_plan: null,
-      ownship: {
-        policy: {
-          selection: { kind: "auto" },
-          source_priority: [],
-          allow_auto_replay: false,
-          allow_auto_simulated: false,
-        },
-        resolved: {
-          mode: "none",
-          active_source_id: null,
-          active_source_kind: null,
-          banner_text: "NO GPS POSITION",
-          banner_severity: "warning",
-          guidance_enabled: false,
-          sequencing_enabled: false,
-        },
-        render: {
-          mode: "none",
-          banner_text: "NO GPS POSITION",
-          banner_severity: "warning",
-          draw_aircraft: false,
-          draw_predictor: false,
-          draw_cdi: false,
-          position: null,
-          orientation_deg: null,
-          speed_kt: null,
-        },
-        controls: {
-          mode: "none",
-          policy: { kind: "auto" },
-          sources: [],
-        },
-        sources: [],
-      },
       content_policy: "PreferLocal",
       last_content_requirements: [],
       last_content_report: null,
@@ -438,8 +402,7 @@ export default function App() {
     },
   });
   const [playbackSourcePath, setPlaybackSourcePath] = useState(defaultPlaybackTracePath);
-  const appState: AppState = sessionSnapshot.app_state;
-  const appState = sessionSnapshot.app_state as AppState;
+  const appState = sessionSnapshot.app_state;
   const appUiState = sessionSnapshot.app_ui_state;
   const playbackUiState = sessionSnapshot.playback_ui_state;
   const mapFollowUiState = sessionSnapshot.map_follow_ui_state;
@@ -1957,9 +1920,9 @@ function NavElementView(props: { navElement: NavElementUiView }) {
   const centerX = 2.25 * unit;
   const baselineY = height * 0.5;
   const dotRadius = unit * 0.04375;
-  const triangleHalfWidth = unit * 0.25;
-  const triangleTopY = 0;
-  const triangleBottomY = height;
+  const centerTriangleHalfWidth = unit * 0.25;
+  const centerTriangleTopY = 0;
+  const centerTriangleBottomY = height + 1;
   const pointerPosition = navElement.cdi_indicator_dots;
   const pointerX =
     pointerPosition === null
@@ -1969,16 +1932,14 @@ function NavElementView(props: { navElement: NavElementUiView }) {
     <>
       <span className="navElementTop">{navElement.active_leg_summary}</span>
       <svg className="navElementBottom" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
-        {pointerX !== null ? (
-          <path
-            className="navElementCdiPointer"
-            d={`M ${pointerX - triangleHalfWidth} ${triangleBottomY} L ${pointerX + triangleHalfWidth} ${triangleBottomY} L ${pointerX} ${triangleTopY} Z`}
-          />
-        ) : null}
-        <line className="navElementCdiBar" x1={centerX} y1={0} x2={centerX} y2={height} />
+        <path
+          className="navElementCdiCenter"
+          d={`M ${centerX - centerTriangleHalfWidth} ${centerTriangleBottomY} L ${centerX + centerTriangleHalfWidth} ${centerTriangleBottomY} L ${centerX} ${centerTriangleTopY} Z`}
+        />
         {dotXs.map((x, index) => (
           <circle key={index} className="navElementCdiDot" cx={x} cy={baselineY} r={dotRadius} />
         ))}
+        {pointerX !== null ? <line className="navElementCdiPointer" x1={pointerX} y1={0} x2={pointerX} y2={height} /> : null}
       </svg>
     </>
   );

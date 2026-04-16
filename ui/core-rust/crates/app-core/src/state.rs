@@ -444,7 +444,7 @@ mod tests {
         let ui = project_app_ui_state(&with_plan);
 
         assert!(ui.active_plan.is_some());
-        assert_eq!(ui.ownship.mode, crate::OwnshipMode::None);
+        assert_eq!(ui.ownship.render.mode, crate::OwnshipMode::None);
         assert_eq!(ui.content_policy, with_plan.content_policy);
         assert_eq!(
             ui.active_plan.as_ref().unwrap().components.len(),

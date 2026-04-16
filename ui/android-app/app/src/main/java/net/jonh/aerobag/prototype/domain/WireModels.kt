@@ -226,7 +226,14 @@ object WireOwnshipSelectionSerializer : KSerializer<WireOwnshipSelection> {
 
     override fun deserialize(decoder: Decoder): WireOwnshipSelection {
         require(decoder is JsonDecoder) { "WireOwnshipSelection is JSON-only" }
-        val obj = decoder.decodeJsonElement() as? JsonObject ?: error("WireOwnshipSelection must be an object")
+        val element = decoder.decodeJsonElement()
+        if (element is JsonPrimitive) {
+            return when (element.content) {
+                "auto" -> WireOwnshipSelection.Auto
+                else -> WireOwnshipSelection.Manual(source_id = element.content)
+            }
+        }
+        val obj = element as? JsonObject ?: error("WireOwnshipSelection must be an object")
         return when (obj["kind"]?.jsonPrimitive?.content) {
             "auto" -> WireOwnshipSelection.Auto
             "manual" -> WireOwnshipSelection.Manual(

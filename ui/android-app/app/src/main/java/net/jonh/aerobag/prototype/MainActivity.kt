@@ -3791,27 +3791,16 @@ private fun NavElementDock(
                 val dotRadius = unit * 0.04375f
                 val pointerPosition = navElement.cdiIndicatorDots
                 val pointerX = pointerPosition?.let { ((it + 2.25f).coerceIn(0.25f, 4.25f)) * unit }
-                if (pointerX != null) {
-                    val triangleHalfWidth = unit * 0.25f
-                    val triangleTopY = 0f
-                    val triangleBottomY = size.height
-                    drawPath(
-                        path =
-                            Path().apply {
-                                moveTo(pointerX - triangleHalfWidth, triangleBottomY)
-                                lineTo(pointerX + triangleHalfWidth, triangleBottomY)
-                                lineTo(pointerX, triangleTopY)
-                                close()
-                            },
-                        color = Color(0xFFD45A7A),
-                    )
-                }
-                drawLine(
+                val triangleHalfWidth = unit * 0.25f
+                drawPath(
+                    path =
+                        Path().apply {
+                            moveTo(centerX - triangleHalfWidth, size.height)
+                            lineTo(centerX + triangleHalfWidth, size.height)
+                            lineTo(centerX, 0f)
+                            close()
+                        },
                     color = Color.White,
-                    start = Offset(centerX, 0f),
-                    end = Offset(centerX, size.height),
-                    strokeWidth = unit * 0.07f,
-                    cap = StrokeCap.Round,
                 )
                 dotXs.forEach { x ->
                     drawCircle(
@@ -3819,6 +3808,15 @@ private fun NavElementDock(
                         radius = dotRadius,
                         center = Offset(x, baselineY),
                         style = Stroke(width = unit * 0.05f),
+                    )
+                }
+                if (pointerX != null) {
+                    drawLine(
+                        color = Color(0xFFD45A7A),
+                        start = Offset(pointerX, 0f),
+                        end = Offset(pointerX, size.height),
+                        strokeWidth = unit * 0.14f,
+                        cap = StrokeCap.Round,
                     )
                 }
             }

@@ -300,7 +300,7 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
     selectedChartId?: string,
   ): Promise<UiSession> {
     const adapter = this;
-    let appState = await this.replaceFlightPlanState(
+    let appState: AppState = await this.replaceFlightPlanState(
       {
         active_plan: null,
         ownship: {

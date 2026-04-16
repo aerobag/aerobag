@@ -358,15 +358,19 @@ export class MockAppCoreAdapter implements AppCoreAdapter {
     let playbackUiState: PlaybackUiState = {
       status: "empty",
       source_path: null,
+      title_label: "Playback",
       registration: null,
       icao: null,
       aircraft_type: null,
       point_count: 0,
       duration_seconds: 0,
       cursor_seconds: 0,
+      cursor_label: "0:00",
+      duration_label: "0:00",
       rate: 1,
       speed_profile_norm: [],
       altitude_profile_norm: [],
+      gap_spans: [],
     };
     let mapFollowUiState: MapFollowUiState = {
       can_center_here: appState.ownship.render.position !== null,

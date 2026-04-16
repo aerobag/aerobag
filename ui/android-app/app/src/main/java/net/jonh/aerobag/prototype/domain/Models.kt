@@ -675,13 +675,24 @@ enum class PlaybackStatus {
 data class PlaybackUiState(
     val status: PlaybackStatus = PlaybackStatus.Empty,
     val sourcePath: String? = null,
+    val titleLabel: String = "Playback",
     val registration: String? = null,
     val icao: String? = null,
     val aircraftType: String? = null,
     val pointCount: Int = 0,
     val durationSeconds: Double = 0.0,
     val cursorSeconds: Double = 0.0,
+    val cursorLabel: String = "0:00",
+    val durationLabel: String = "0:00",
     val rate: Double = 1.0,
     val speedProfileNorm: List<Double?> = emptyList(),
     val altitudeProfileNorm: List<Double?> = emptyList(),
+    val gapSpans: List<PlaybackGapSpan> = emptyList(),
+)
+
+data class PlaybackGapSpan(
+    val startSeconds: Double,
+    val endSeconds: Double,
+    val startRatio: Double,
+    val endRatio: Double,
 )

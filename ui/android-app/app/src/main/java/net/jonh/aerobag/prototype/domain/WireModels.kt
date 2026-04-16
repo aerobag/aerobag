@@ -113,15 +113,27 @@ data class WireMapFollowUiState(
 data class WirePlaybackUiState(
     val status: WirePlaybackStatus = WirePlaybackStatus.Empty,
     val source_path: String? = null,
+    val title_label: String = "Playback",
     val registration: String? = null,
     val icao: String? = null,
     val aircraft_type: String? = null,
     val point_count: Int = 0,
     val duration_seconds: Double = 0.0,
     val cursor_seconds: Double = 0.0,
+    val cursor_label: String = "0:00",
+    val duration_label: String = "0:00",
     val rate: Double = 1.0,
     val speed_profile_norm: List<Double?> = emptyList(),
     val altitude_profile_norm: List<Double?> = emptyList(),
+    val gap_spans: List<WirePlaybackGapSpan> = emptyList(),
+)
+
+@Serializable
+data class WirePlaybackGapSpan(
+    val start_seconds: Double,
+    val end_seconds: Double,
+    val start_ratio: Double,
+    val end_ratio: Double,
 )
 
 @Serializable
@@ -234,11 +246,12 @@ object WireOwnshipSelectionSerializer : KSerializer<WireOwnshipSelection> {
     override fun serialize(encoder: Encoder, value: WireOwnshipSelection) {
         require(encoder is JsonEncoder) { "WireOwnshipSelection is JSON-only" }
         val element = when (value) {
-            WireOwnshipSelection.Auto -> JsonObject(mapOf("kind" to JsonPrimitive("auto")))
+            WireOwnshipSelection.Auto -> JsonPrimitive("auto")
             is WireOwnshipSelection.Source -> JsonObject(
                 mapOf(
-                    "kind" to JsonPrimitive("source"),
-                    "source_id" to JsonPrimitive(value.source_id),
+                    "source" to JsonObject(
+                        mapOf("source_id" to JsonPrimitive(value.source_id)),
+                    ),
                 ),
             )
         }
@@ -251,20 +264,22 @@ object WireOwnshipSelectionSerializer : KSerializer<WireOwnshipSelection> {
         if (element is JsonPrimitive) {
             return when (element.content) {
                 "auto" -> WireOwnshipSelection.Auto
-                else -> WireOwnshipSelection.Source(source_id = element.content)
+                else -> error("Unsupported WireOwnshipSelection")
             }
         }
         val obj = element as? JsonObject ?: error("WireOwnshipSelection must be an object")
-        return when (obj["kind"]?.jsonPrimitive?.content) {
-            "auto" -> WireOwnshipSelection.Auto
-            "source",
-            "manual",
-            -> WireOwnshipSelection.Source(
-                source_id = obj["source_id"]?.jsonPrimitive?.content ?: error("source_id required"),
-            )
+        val externallyTagged = obj.entries.singleOrNull()
+        return when (externallyTagged?.key) {
+            "source" -> WireOwnshipSelection.Source(source_id = decodeOwnshipSourceId(externallyTagged.value))
             else -> error("Unsupported WireOwnshipSelection")
         }
     }
+}
+
+private fun decodeOwnshipSourceId(element: kotlinx.serialization.json.JsonElement): String {
+    val obj = element as? JsonObject ?: error("source_id required")
+    val sourceId = obj["source_id"] ?: error("source_id required")
+    return sourceId.jsonPrimitive.content
 }
 
 @Serializable

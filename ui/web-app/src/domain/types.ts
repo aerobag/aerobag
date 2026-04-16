@@ -522,15 +522,26 @@ export type PlaybackStatus = "empty" | "paused" | "playing";
 export type PlaybackUiState = {
   status: PlaybackStatus;
   source_path: string | null;
+  title_label: string;
   registration: string | null;
   icao: string | null;
   aircraft_type: string | null;
   point_count: number;
   duration_seconds: number;
   cursor_seconds: number;
+  cursor_label: string;
+  duration_label: string;
   rate: number;
   speed_profile_norm: Array<number | null>;
   altitude_profile_norm: Array<number | null>;
+  gap_spans: Array<PlaybackGapSpan>;
+};
+
+export type PlaybackGapSpan = {
+  start_seconds: number;
+  end_seconds: number;
+  start_ratio: number;
+  end_ratio: number;
 };
 
 export type MapFollowUiState = {

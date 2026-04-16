@@ -305,15 +305,19 @@ function emptyPlaybackUiState(): PlaybackUiState {
   return {
     status: "empty",
     source_path: null,
+    title_label: "Playback",
     registration: null,
     icao: null,
     aircraft_type: null,
     point_count: 0,
     duration_seconds: 0,
     cursor_seconds: 0,
+    cursor_label: "0:00",
+    duration_label: "0:00",
     rate: 1,
     speed_profile_norm: [],
     altitude_profile_norm: [],
+    gap_spans: [],
   };
 }
 
@@ -1956,17 +1960,6 @@ function playbackWidgetMaxWidthPx(surfaceWidth: number) {
   return Math.max(thumb * 2.8, surfaceWidth - navRightEdge - gap * 2);
 }
 
-function formatPlaybackClock(seconds: number) {
-  const clampedSeconds = Math.max(0, Math.floor(seconds));
-  const hours = Math.floor(clampedSeconds / 3600);
-  const minutes = Math.floor((clampedSeconds % 3600) / 60);
-  const remainder = clampedSeconds % 60;
-  if (hours > 0) {
-    return `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
-  }
-  return `${minutes}:${String(remainder).padStart(2, "0")}`;
-}
-
 function profilePathData(
   samples: Array<number | null>,
   width: number,
@@ -2022,10 +2015,7 @@ function PlaybackWidget(props: {
       : Math.min(Math.max(scrubCursorSeconds, 0), durationSeconds || 0);
   const canControl = uiSession !== null;
   const canSeek = durationSeconds > 0;
-  const label = playbackUiState.registration ?? playbackUiState.icao ?? "Trace";
-  const summary = playbackUiState.point_count > 0
-    ? `${label} ${formatPlaybackClock(cursorSeconds)} / ${formatPlaybackClock(durationSeconds)}`
-    : "Playback";
+  const summary = playbackUiState.title_label;
   const overviewWidth = 320;
   const overviewHeight = 34;
   const knobRadius = 7;
@@ -2034,6 +2024,7 @@ function PlaybackWidget(props: {
   const cursorX = knobRadius + cursorRatio * Math.max(overviewWidth - knobRadius * 2, 0);
   const speedPath = profilePathData(playbackUiState.speed_profile_norm, overviewWidth, overviewHeight, knobRadius, knobRadius);
   const altitudePath = profilePathData(playbackUiState.altitude_profile_norm, overviewWidth, overviewHeight, knobRadius, knobRadius);
+  const gapSpans = playbackUiState.gap_spans ?? [];
 
   useEffect(() => {
     if (scrubCursorSeconds === null) {
@@ -2231,6 +2222,18 @@ function PlaybackWidget(props: {
         }}
       >
         <svg className="playbackWidgetOverviewSvg" viewBox={`0 0 ${overviewWidth} ${overviewHeight}`} preserveAspectRatio="none" aria-hidden="true">
+          <defs>
+            <pattern id="playback-gap-hatch" patternUnits="userSpaceOnUse" width="6" height="6">
+              <rect width="6" height="6" className="playbackWidgetGapSpanBg" />
+              <path d="M -6 6 L 6 -6 M 0 12 L 12 0" className="playbackWidgetGapSpanLine" />
+            </pattern>
+          </defs>
+          {durationSeconds > 0 ? gapSpans.map((gap, index) => {
+            const startX = knobRadius + Math.min(Math.max(gap.start_ratio, 0), 1) * Math.max(overviewWidth - knobRadius * 2, 0);
+            const endX = knobRadius + Math.min(Math.max(gap.end_ratio, 0), 1) * Math.max(overviewWidth - knobRadius * 2, 0);
+            const width = Math.max(endX - startX, 0);
+            return width > 0 ? <rect key={index} className="playbackWidgetGapSpan" x={startX} y={0} width={width} height={overviewHeight} fill="url(#playback-gap-hatch)" /> : null;
+          }) : null}
           {altitudePath ? <path className="playbackWidgetAltitudeProfile" d={altitudePath} /> : null}
           {speedPath ? <path className="playbackWidgetSpeedProfile" d={speedPath} /> : null}
           <line className="playbackWidgetCursorLine" x1={cursorX} y1={0} x2={cursorX} y2={overviewHeight} />
@@ -2238,8 +2241,8 @@ function PlaybackWidget(props: {
         </svg>
       </div>
       <div className="playbackWidgetSeekRow">
-        <span className="playbackWidgetClock">{formatPlaybackClock(cursorSeconds)}</span>
-        <span className="playbackWidgetClock">{formatPlaybackClock(durationSeconds)}</span>
+        <span className="playbackWidgetClock">{playbackUiState.cursor_label}</span>
+        <span className="playbackWidgetClock">{playbackUiState.duration_label}</span>
       </div>
     </section>
   );

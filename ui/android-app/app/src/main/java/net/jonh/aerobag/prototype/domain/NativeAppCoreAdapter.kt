@@ -819,15 +819,19 @@ private fun WireMapFollowUiState.toUi() = MapFollowUiState(
 private fun WirePlaybackUiState.toUi() = PlaybackUiState(
     status = status.toUi(),
     sourcePath = source_path,
+    titleLabel = title_label,
     registration = registration,
     icao = icao,
     aircraftType = aircraft_type,
     pointCount = point_count,
     durationSeconds = duration_seconds,
     cursorSeconds = cursor_seconds,
+    cursorLabel = cursor_label,
+    durationLabel = duration_label,
     rate = rate,
     speedProfileNorm = speed_profile_norm,
     altitudeProfileNorm = altitude_profile_norm,
+    gapSpans = gap_spans.map { PlaybackGapSpan(it.start_seconds, it.end_seconds, it.start_ratio, it.end_ratio) },
 )
 
 private fun WireOwnshipSourceMenuItem.toUi() = OwnshipSourceMenuItem(

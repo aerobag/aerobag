@@ -675,6 +675,20 @@ button {
   height: 100%;
 }
 
+.playbackWidgetGapSpan {
+  stroke: rgba(19, 33, 41, 0.18);
+  stroke-width: 1;
+}
+
+.playbackWidgetGapSpanBg {
+  fill: rgba(19, 33, 41, 0.08);
+}
+
+.playbackWidgetGapSpanLine {
+  stroke: rgba(19, 33, 41, 0.38);
+  stroke-width: 1;
+}
+
 .playbackWidgetAltitudeProfile,
 .playbackWidgetSpeedProfile {
   fill: none;

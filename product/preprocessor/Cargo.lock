@@ -520,6 +520,7 @@ dependencies = [
  "preprocessor-core",
  "preprocessor-csup",
  "preprocessor-data",
+ "preprocessor-fast",
  "preprocessor-fetch",
  "preprocessor-resource-index",
  "preprocessor-tools",
@@ -564,6 +565,19 @@ dependencies = [
  "quick-xml",
  "regex",
  "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
+name = "preprocessor-fast"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "quick-xml",
  "serde",
  "serde_json",
  "tempfile",

@@ -1,0 +1,3423 @@
+﻿<XNOTAM-Update xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="0.1" origin="" created="2026-04-14T20:08:18">
+  <Group>
+    <Add>
+      <Not>
+        <NotUid>
+          <txtNameAcctFac>FDC</txtNameAcctFac>
+          <dateIndexYear>2026</dateIndexYear>
+          <noSeqNo>2548</noSeqNo>
+          <dateIssued>2026-04-15T01:04:00</dateIssued>
+          <txtLocalName>260417 Phoenix AZ VIP</txtLocalName>
+          <codeGUID>aa17cef3-4f9a-4854-a027-b4227077c215</codeGUID>
+          <noUSNSWorkNo>26-006984</noUSNSWorkNo>
+        </NotUid>
+        <codeDailyOper>false</codeDailyOper>
+        <dateEffective>2026-04-17T19:45:00</dateEffective>
+        <dateExpire>2026-04-17T23:30:00</dateExpire>
+        <codeTimeZone>MST</codeTimeZone>
+        <codeExpirationTimeZone>MST</codeExpirationTimeZone>
+        <AffLocGroup>
+          <txtNameCity>Phoenix</txtNameCity>
+          <txtNameUSState>ARIZONA</txtNameUSState>
+        </AffLocGroup>
+        <codeFacility>ZAB</codeFacility>
+        <TfrNot>
+          <codeType>91.141</codeType>
+          <TFRAreaGroup>
+            <aseTFRArea>
+              <AseUid>
+                <codeType>RAS</codeType>
+                <codeId>4586</codeId>
+              </AseUid>
+              <txtName>Area A</txtName>
+              <codeDistVerUpper>ALT</codeDistVerUpper>
+              <valDistVerUpper>17999</valDistVerUpper>
+              <uomDistVerUpper>FT</uomDistVerUpper>
+              <codeDistVerLower>HEI</codeDistVerLower>
+              <valDistVerLower>0</valDistVerLower>
+              <uomDistVerLower>FT</uomDistVerLower>
+              <Att>
+                <codeWorkHr>NOTAM</codeWorkHr>
+              </Att>
+              <codeExclVerUpper>INCLUDE</codeExclVerUpper>
+              <codeExclVerLower>INCLUDE</codeExclVerLower>
+              <isScheduledTfrArea>FALSE</isScheduledTfrArea>
+              <ScheduleGroup>
+                <isTimeSeparate>FALSE</isTimeSeparate>
+                <dateEffective>2026-04-17T19:45:00</dateEffective>
+                <dateExpire>2026-04-17T21:00:00</dateExpire>
+              </ScheduleGroup>
+            </aseTFRArea>
+            <Aac>
+              <AacUid>
+                <AseUidChi>
+                  <codeType>RAS</codeType>
+                  <codeId>4586</codeId>
+                </AseUidChi>
+                <AseUidPar>
+                  <codeType>PART</codeType>
+                  <codeId>4587</codeId>
+                </AseUidPar>
+              </AacUid>
+              <codeType>BOM</codeType>
+              <codeOpr>BASE</codeOpr>
+            </Aac>
+            <abdMergedArea>
+              <AbdUid>
+                <AseUid>
+                  <codeType>RAS</codeType>
+                  <codeId>4586</codeId>
+                </AseUid>
+              </AbdUid>
+              <txtRmk>4586</txtRmk>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.9350831N</geoLat>
+                <geoLong>112.01166667W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.933166N</geoLat>
+                <geoLong>111.95929304W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.92742953N</geoLat>
+                <geoLong>111.90732496W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.91791811N</geoLat>
+                <geoLong>111.85616468W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.90470535N</geoLat>
+                <geoLong>111.80620785W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.88789347N</geoLat>
+                <geoLong>111.75784036W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.86761246N</geoLat>
+                <geoLong>111.7114352W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.84401903N</geoLat>
+                <geoLong>111.66734946W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.81729536N</geoLat>
+                <geoLong>111.62592153W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.78764761N</geoLat>
+                <geoLong>111.5874684W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75530425N</geoLat>
+                <geoLong>111.5522832W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.72051429N</geoLat>
+                <geoLong>111.52063299W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.68354523N</geoLat>
+                <geoLong>111.49275674W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.64468099N</geoLat>
+                <geoLong>111.46886355W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.60421966N</geoLat>
+                <geoLong>111.44913119W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.56247113N</geoLat>
+                <geoLong>111.43370487W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.51975472N</geoLat>
+                <geoLong>111.42269629W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.47639667N</geoLat>
+                <geoLong>111.41618294W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.43272763N</geoLat>
+                <geoLong>111.41420777W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.38908015N</geoLat>
+                <geoLong>111.41677899W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.3457861N</geoLat>
+                <geoLong>111.42387028W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.3031742N</geoLat>
+                <geoLong>111.43542114W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.26156751N</geoLat>
+                <geoLong>111.4513376W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.22128104N</geoLat>
+                <geoLong>111.47149307W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.18261938N</geoLat>
+                <geoLong>111.49572949W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.14587445N</geoLat>
+                <geoLong>111.52385865W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.11132336N</geoLat>
+                <geoLong>111.55566376W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.07922637N</geoLat>
+                <geoLong>111.59090116W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.04982498N</geoLat>
+                <geoLong>111.62930218W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.0233402N</geoLat>
+                <geoLong>111.67057528W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.99997092N</geoLat>
+                <geoLong>111.71440816W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.9798925N</geoLat>
+                <geoLong>111.76047012W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.9632555N</geoLat>
+                <geoLong>111.8084145W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.95018461N</geoLat>
+                <geoLong>111.85788116W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.94077771N</geoLat>
+                <geoLong>111.90849912W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.93510526N</geoLat>
+                <geoLong>111.95988918W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.93320972N</geoLat>
+                <geoLong>112.01166667W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.93510526N</geoLat>
+                <geoLong>112.06344416W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.94077771N</geoLat>
+                <geoLong>112.11483422W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.95018461N</geoLat>
+                <geoLong>112.16545218W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.9632555N</geoLat>
+                <geoLong>112.21491884W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.9798925N</geoLat>
+                <geoLong>112.26286322W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.99997092N</geoLat>
+                <geoLong>112.30892518W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.0233402N</geoLat>
+                <geoLong>112.35275806W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.04982498N</geoLat>
+                <geoLong>112.39403116W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.07922637N</geoLat>
+                <geoLong>112.43243218W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.11132336N</geoLat>
+                <geoLong>112.46766958W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.14587445N</geoLat>
+                <geoLong>112.49947469W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.18261938N</geoLat>
+                <geoLong>112.52760385W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.22128104N</geoLat>
+                <geoLong>112.55184027W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.26156751N</geoLat>
+                <geoLong>112.57199574W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.3031742N</geoLat>
+                <geoLong>112.5879122W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.3457861N</geoLat>
+                <geoLong>112.59946306W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.38908015N</geoLat>
+                <geoLong>112.60655435W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.43272763N</geoLat>
+                <geoLong>112.60912557W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.47639667N</geoLat>
+                <geoLong>112.6071504W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.51975472N</geoLat>
+                <geoLong>112.60063705W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.56247113N</geoLat>
+                <geoLong>112.58962847W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.60421966N</geoLat>
+                <geoLong>112.57420215W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.64468099N</geoLat>
+                <geoLong>112.55446979W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.68354523N</geoLat>
+                <geoLong>112.5305766W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.72051429N</geoLat>
+                <geoLong>112.50270035W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75530425N</geoLat>
+                <geoLong>112.47105014W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.78764761N</geoLat>
+                <geoLong>112.43586494W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.81729536N</geoLat>
+                <geoLong>112.39741181W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.84401903N</geoLat>
+                <geoLong>112.35598388W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.86761246N</geoLat>
+                <geoLong>112.31189814W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.88789347N</geoLat>
+                <geoLong>112.26549298W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.90470535N</geoLat>
+                <geoLong>112.21712549W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.91791811N</geoLat>
+                <geoLong>112.16716866W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.92742953N</geoLat>
+                <geoLong>112.11600838W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.933166N</geoLat>
+                <geoLong>112.0640403W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.9350831N</geoLat>
+                <geoLong>112.01166667W</geoLong>
+              </Avx>
+            </abdMergedArea>
+            <aseShapes>
+              <AseUid>
+                <codeType>PART</codeType>
+                <codeId>4587</codeId>
+              </AseUid>
+              <Att>
+                <codeWorkHr>NOTAM</codeWorkHr>
+              </Att>
+              <Abd>
+                <AbdUid>
+                  <AseUid>
+                    <codeType>PART</codeType>
+                    <codeId>4587</codeId>
+                  </AseUid>
+                </AbdUid>
+                <txtRmk>4587</txtRmk>
+                <Avx>
+                  <codeType>CIR</codeType>
+                  <geoLat>33.43416667N</geoLat>
+                  <geoLong>112.01166667W</geoLong>
+                  <codeDatum>WGE</codeDatum>
+                  <valRadiusArc>30.0</valRadiusArc>
+                  <uomRadiusArc>NM</uomRadiusArc>
+                  <Frd>
+                    <FrdUid>
+                      <DpnUid>
+                        <codeId>PXR02</codeId>
+                        <geoLat>33.43416667N</geoLat>
+                        <geoLong>112.01166667W</geoLong>
+                      </DpnUid>
+                    </FrdUid>
+                    <Ain>
+                      <VorUid>
+                        <codeId>PXR</codeId>
+                        <geoLat>33.43302058N</geoLat>
+                        <geoLong>111.97019889W</geoLong>
+                      </VorUid>
+                      <valAngleBrg>260.0</valAngleBrg>
+                    </Ain>
+                    <Din>
+                      <TcnUid>
+                        <codeId>PXR</codeId>
+                        <geoLat>33.43302058N</geoLat>
+                        <geoLong>111.97019889W</geoLong>
+                      </TcnUid>
+                      <valDist>2.1</valDist>
+                      <uomDist>NM</uomDist>
+                    </Din>
+                    <txtRmk>PHOENIX</txtRmk>
+                  </Frd>
+                </Avx>
+              </Abd>
+            </aseShapes>
+            <InstructionsGroup>
+              <txtInstr>EXC AS SPECIFIED BLW AND/OR UNLESS AUTH BY ATC IN CONSULTATION WITH THE AIR TFC SECURITY COORDINATOR VIA THE DOMESTIC EVENTS NETWORK (DEN): </txtInstr>
+              <txtInstr>A. ALL ACFT OPS WI THE 10NM RADIUS AREA(S) LISTED ABV, KNOWN AS THE INNER CORE(S), ARE PROHIBITED EXC FOR: APPROVED LAW ENFORCEMENT, MIL ACFT DIRECTLY SUPPORTING THE UNITED STATES SECRET SERVICE(USSS) AND THE OFFICE OF THE PRESIDENT OF THE UNITED STATES, APPROVED AIR AMBULANCE FLIGHTS, AND REGULARLY SCHEDULED COMMERCIAL PAX AND ALL - CARGO CARRIERS OPR UNDER ONE OF THE FOLLOWING TSA - APPROVED STANDARD SECURITY PROGRAMS / PROC AND ARE ARR INTO AND / OR DEP FM 14 CFR PART 139 AP: ACFT OPR STANDARD SECURITY PROGRAM(AOSSP), FULL ALL - CARGO ACFT OPR STANDARD SECURITY PROGRAM(FACAOSSP), MODEL SECURITY PROGRAM(MSP), TWELVE FIVE STANDARD SECURITY PROGRAM ALL CARGO(TFSSP - ALL CARGO), OR ALL - CARGO INTERNATIONAL SECURITY PROC(ACISP). ALL EMERGENCY / LIFE SAVING FLT(MEDICAL / LAW ENFORCEMENT / FIREFIGHTING) OPS MUST COORDINATE WITH ATC PRIOR TO THEIR DEP AT 602-306-2566 TO AVOID POTENTIAL DELAYS.</txtInstr>
+              <txtInstr>B. FOR OPS WI THE AIRSPACE BTN THE 10NM RADIUS AND 30NM RADIUS AREA(S) LISTED ABV, KNOWN AS THE OUTER RING(S): ALL ACFT OPR WI THE OUTER RING(S) LISTED ABV ARE LIMITED TO ACFT ARR OR DEP LOCAL AIRFIELDS, AND WORKLOAD PERMITTING, ATC MAY AUTHORIZE TRANSIT OPS. ACFT MAY NOT LOITER. ALL ACFT MUST BE ON AN ACT IFR OR FILED VFR FLT PLAN WITH A DISCRETE CODE ASSIGNED BY AN AIR TFC CTL (ATC) FAC. ACFT MUST BE SQUAWKING THE DISCRETE CODE PRIOR TO DEP AND AT ALL TIMES WHILE IN THE TFR AND MUST REMAIN IN TWO-WAY RADIO COM WITH ATC. </txtInstr>
+              <txtInstr>C. THE FOLLOWING OPS ARE NOT AUTH WI THIS TFR: FLT TRAINING, PRACTICE INSTRUMENT APCH, AEROBATIC FLT, GLIDER OPS, PARACHUTE OPS, ULTRALIGHT, HANG GLIDING, BALLOON OPS, AGRICULTURE/CROP DUSTING, ANIMAL POPULATION CTL FLT OPS, BANNER TOWING OPS, SIGHTSEEING OPS, MAINTENANCE TEST FLIGHTS, MODEL ACFT OPS, MODEL ROCKETRY, UNMANNED ACFT SYSTEMS (UAS), AND UTILITY AND PIPELINE SURVEY OPS. </txtInstr>
+              <txtInstr>D. UAS OPR WHO DO NOT COMPLY WITH APPLICABLE AIRSPACE RESTRICTIONS ARE WARNED THAT PURSUANT TO 10 U.S.C.SECTION 130I AND 6 U.S.C.SECTION 124N, THE DEPARTMENT OF DEFENSE(DOD), THE DEPARTMENT OF HOMELAND SECURITY(DHS) OR THE DEPARTMENT OF JUSTICE(DOJ) MAY TAKE SECURITY ACTION THAT RESULTS IN THE INTERFERENCE, DISRUPTION, SEIZURE, DAMAGING, OR DESTRUCTION OF UNMANNED ACFT DEEMED TO POSE A CREDIBLE SAFETY OR SECURITY THREAT TO PROTECTED PERSONNEL, FAC, OR ASSETS. </txtInstr>
+              <txtInstr>E. THE SYSTEM OPERATIONS SUPPORT CENTER (SOSC), IS THE CDN FAC FOR UAS OPS, SUBMIT SGI WAIVER REQUEST VIA HTTPS://WAIVERS.FAA.GOV, FIRST RESPONDERS EMGERGENCY OPS CTC THE SOSC AT 202-267-8276.</txtInstr>
+              <txtInstr>F. THE FAA RECOMMENDS THAT ALL ACFT OPR CK NOTAMS FREQUENTLY FOR POSSIBLE CHANGES TO THIS TFR PRIOR TO OPS. OPR MAY REVIEW THE TFR DETAILS AT HTTPS://TFR.FAA.GOV/ OR HTTPS://WWW.1800WXBRIEF.COM.</txtInstr>
+            </InstructionsGroup>
+            <codeIncFRD>TRUE</codeIncFRD>
+            <codeShpPrt>COMPOSITE</codeShpPrt>
+            <codeLclTime>TRUE</codeLclTime>
+            <codeAuthATC>FALSE</codeAuthATC>
+          </TFRAreaGroup>
+          <TFRAreaGroup>
+            <aseTFRArea>
+              <AseUid>
+                <codeType>RAS</codeType>
+                <codeId>4588</codeId>
+              </AseUid>
+              <txtName>Area B</txtName>
+              <codeDistVerUpper>ALT</codeDistVerUpper>
+              <valDistVerUpper>17999</valDistVerUpper>
+              <uomDistVerUpper>FT</uomDistVerUpper>
+              <codeDistVerLower>HEI</codeDistVerLower>
+              <valDistVerLower>0</valDistVerLower>
+              <uomDistVerLower>FT</uomDistVerLower>
+              <Att>
+                <codeWorkHr>NOTAM</codeWorkHr>
+              </Att>
+              <codeExclVerUpper>INCLUDE</codeExclVerUpper>
+              <codeExclVerLower>INCLUDE</codeExclVerLower>
+              <isScheduledTfrArea>FALSE</isScheduledTfrArea>
+              <ScheduleGroup>
+                <isTimeSeparate>FALSE</isTimeSeparate>
+                <dateEffective>2026-04-17T19:45:00</dateEffective>
+                <dateExpire>2026-04-17T21:00:00</dateExpire>
+              </ScheduleGroup>
+            </aseTFRArea>
+            <Aac>
+              <AacUid>
+                <AseUidChi>
+                  <codeType>RAS</codeType>
+                  <codeId>4588</codeId>
+                </AseUidChi>
+                <AseUidPar>
+                  <codeType>PART</codeType>
+                  <codeId>4589</codeId>
+                </AseUidPar>
+              </AacUid>
+              <codeType>BOM</codeType>
+              <codeOpr>BASE</codeOpr>
+            </Aac>
+            <abdMergedArea>
+              <AbdUid>
+                <AseUid>
+                  <codeType>RAS</codeType>
+                  <codeId>4588</codeId>
+                </AseUid>
+              </AbdUid>
+              <txtRmk>4588</txtRmk>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.60114333N</geoLat>
+                <geoLong>112.01166667W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.59860178N</geoLat>
+                <geoLong>111.9770183W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.59105477N</geoLat>
+                <geoLong>111.94342863W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.57873287N</geoLat>
+                <geoLong>111.91192348W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.56201238N</geoLat>
+                <geoLong>111.88346397W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.54140368N</geoLat>
+                <geoLong>111.85891686W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.51753544N</geoLat>
+                <geoLong>111.83902797W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.49113521N</geoLat>
+                <geoLong>111.82439951W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.46300702N</geoLat>
+                <geoLong>111.8154721W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.43400678N</geoLat>
+                <geoLong>111.81251176W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.40501604N</geoLat>
+                <geoLong>111.81560255W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.37691523N</geoLat>
+                <geoLong>111.82464468W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.35055693N</geoLat>
+                <geoLong>111.83935828W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.32674014N</geoLat>
+                <geoLong>111.85929248W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.30618619N</geoLat>
+                <geoLong>111.88383959W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.28951714N</geoLat>
+                <geoLong>111.91225379W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.27723719N</geoLat>
+                <geoLong>111.9436738W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.26971755N</geoLat>
+                <geoLong>111.97714875W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.26718551N</geoLat>
+                <geoLong>112.01166667W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.26971755N</geoLat>
+                <geoLong>112.04618459W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.27723719N</geoLat>
+                <geoLong>112.07965954W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.28951714N</geoLat>
+                <geoLong>112.11107955W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.30618619N</geoLat>
+                <geoLong>112.13949375W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.32674014N</geoLat>
+                <geoLong>112.16404086W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.35055693N</geoLat>
+                <geoLong>112.18397506W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.37691523N</geoLat>
+                <geoLong>112.19868866W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.40501604N</geoLat>
+                <geoLong>112.20773079W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.43400678N</geoLat>
+                <geoLong>112.21082158W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.46300702N</geoLat>
+                <geoLong>112.20786124W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.49113521N</geoLat>
+                <geoLong>112.19893383W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.51753544N</geoLat>
+                <geoLong>112.18430537W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.54140368N</geoLat>
+                <geoLong>112.16441648W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.56201238N</geoLat>
+                <geoLong>112.13986937W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.57873287N</geoLat>
+                <geoLong>112.11140986W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.59105477N</geoLat>
+                <geoLong>112.07990471W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.59860178N</geoLat>
+                <geoLong>112.04631504W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.60114333N</geoLat>
+                <geoLong>112.01166667W</geoLong>
+              </Avx>
+            </abdMergedArea>
+            <aseShapes>
+              <AseUid>
+                <codeType>PART</codeType>
+                <codeId>4589</codeId>
+              </AseUid>
+              <Att>
+                <codeWorkHr>NOTAM</codeWorkHr>
+              </Att>
+              <Abd>
+                <AbdUid>
+                  <AseUid>
+                    <codeType>PART</codeType>
+                    <codeId>4589</codeId>
+                  </AseUid>
+                </AbdUid>
+                <txtRmk>4589</txtRmk>
+                <Avx>
+                  <codeType>CIR</codeType>
+                  <geoLat>33.43416667N</geoLat>
+                  <geoLong>112.01166667W</geoLong>
+                  <codeDatum>WGE</codeDatum>
+                  <valRadiusArc>10.0</valRadiusArc>
+                  <uomRadiusArc>NM</uomRadiusArc>
+                  <Frd>
+                    <FrdUid>
+                      <DpnUid>
+                        <codeId>PXR02</codeId>
+                        <geoLat>33.43416667N</geoLat>
+                        <geoLong>112.01166667W</geoLong>
+                      </DpnUid>
+                    </FrdUid>
+                    <Ain>
+                      <VorUid>
+                        <codeId>PXR</codeId>
+                        <geoLat>33.43302058N</geoLat>
+                        <geoLong>111.97019889W</geoLong>
+                      </VorUid>
+                      <valAngleBrg>260.0</valAngleBrg>
+                    </Ain>
+                    <Din>
+                      <TcnUid>
+                        <codeId>PXR</codeId>
+                        <geoLat>33.43302058N</geoLat>
+                        <geoLong>111.97019889W</geoLong>
+                      </TcnUid>
+                      <valDist>2.1</valDist>
+                      <uomDist>NM</uomDist>
+                    </Din>
+                    <txtRmk>PHOENIX</txtRmk>
+                  </Frd>
+                </Avx>
+              </Abd>
+            </aseShapes>
+            <codeIncFRD>TRUE</codeIncFRD>
+            <codeShpPrt>COMPOSITE</codeShpPrt>
+            <codeLclTime>TRUE</codeLclTime>
+            <codeAuthATC>FALSE</codeAuthATC>
+          </TFRAreaGroup>
+          <TFRAreaGroup>
+            <aseTFRArea>
+              <AseUid>
+                <codeType>RAS</codeType>
+                <codeId>4590</codeId>
+              </AseUid>
+              <txtName>Area C</txtName>
+              <codeDistVerUpper>ALT</codeDistVerUpper>
+              <valDistVerUpper>17999</valDistVerUpper>
+              <uomDistVerUpper>FT</uomDistVerUpper>
+              <codeDistVerLower>HEI</codeDistVerLower>
+              <valDistVerLower>0</valDistVerLower>
+              <uomDistVerLower>FT</uomDistVerLower>
+              <Att>
+                <codeWorkHr>NOTAM</codeWorkHr>
+              </Att>
+              <codeExclVerUpper>INCLUDE</codeExclVerUpper>
+              <codeExclVerLower>INCLUDE</codeExclVerLower>
+              <isScheduledTfrArea>FALSE</isScheduledTfrArea>
+              <ScheduleGroup>
+                <isTimeSeparate>FALSE</isTimeSeparate>
+                <dateEffective>2026-04-17T20:15:00</dateEffective>
+                <dateExpire>2026-04-17T22:45:00</dateExpire>
+              </ScheduleGroup>
+            </aseTFRArea>
+            <Aac>
+              <AacUid>
+                <AseUidChi>
+                  <codeType>RAS</codeType>
+                  <codeId>4590</codeId>
+                </AseUidChi>
+                <AseUidPar>
+                  <codeType>PART</codeType>
+                  <codeId>4591</codeId>
+                </AseUidPar>
+              </AacUid>
+              <codeType>BOM</codeType>
+              <codeOpr>BASE</codeOpr>
+            </Aac>
+            <abdMergedArea>
+              <AbdUid>
+                <AseUid>
+                  <codeType>RAS</codeType>
+                  <codeId>4590</codeId>
+                </AseUid>
+              </AbdUid>
+              <txtRmk>4590</txtRmk>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.12728969N</geoLat>
+                <geoLong>112.03222222W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.12537257N</geoLat>
+                <geoLong>111.97973037W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.11963604N</geoLat>
+                <geoLong>111.92764503W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.11012453N</geoLat>
+                <geoLong>111.87636941W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.09691165N</geoLat>
+                <geoLong>111.8263001W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.08009964N</geoLat>
+                <geoLong>111.77782391W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.05981851N</geoLat>
+                <geoLong>111.7313147W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.03622499N</geoLat>
+                <geoLong>111.68713038W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.00950126N</geoLat>
+                <geoLong>111.64561012W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.97985351N</geoLat>
+                <geoLong>111.60707163W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.94751025N</geoLat>
+                <geoLong>111.5718087W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.91272049N</geoLat>
+                <geoLong>111.54008897W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.87575175N</geoLat>
+                <geoLong>111.51215192W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.83688798N</geoLat>
+                <geoLong>111.48820708W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.79642727N</geoLat>
+                <geoLong>111.46843258W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75467953N</geoLat>
+                <geoLong>111.4529739W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.71196407N</geoLat>
+                <geoLong>111.44194293W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.66860714N</geoLat>
+                <geoLong>111.43541729W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.62493939N</geoLat>
+                <geoLong>111.43343992W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.58129336N</geoLat>
+                <geoLong>111.43601902W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.5380009N</geoLat>
+                <geoLong>111.44312812W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.49539071N</geoLat>
+                <geoLong>111.45470654W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.45378585N</geoLat>
+                <geoLong>111.47066003W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.41350128N</geoLat>
+                <geoLong>111.49086167W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.37484157N</geoLat>
+                <geoLong>111.51515301W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.3380986N</geoLat>
+                <geoLong>111.54334538W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.30354947N</geoLat>
+                <geoLong>111.57522149W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.27145438N</geoLat>
+                <geoLong>111.61053712W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.24205481N</geoLat>
+                <geoLong>111.649023W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.21557172N</geoLat>
+                <geoLong>111.69038695W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.19220399N</geoLat>
+                <geoLong>111.734316W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.17212694N</geoLat>
+                <geoLong>111.78047875W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.1554911N</geoLat>
+                <geoLong>111.8285278W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.14242112N</geoLat>
+                <geoLong>111.87810226W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.1330149N</geoLat>
+                <geoLong>111.92883038W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.12734286N</geoLat>
+                <geoLong>111.98033219W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.12544745N</geoLat>
+                <geoLong>112.03222222W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.12734286N</geoLat>
+                <geoLong>112.08411225W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.1330149N</geoLat>
+                <geoLong>112.13561406W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.14242112N</geoLat>
+                <geoLong>112.18634218W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.1554911N</geoLat>
+                <geoLong>112.23591664W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.17212694N</geoLat>
+                <geoLong>112.28396569W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.19220399N</geoLat>
+                <geoLong>112.33012844W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.21557172N</geoLat>
+                <geoLong>112.37405749W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.24205481N</geoLat>
+                <geoLong>112.41542144W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.27145438N</geoLat>
+                <geoLong>112.45390732W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.30354947N</geoLat>
+                <geoLong>112.48922295W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.3380986N</geoLat>
+                <geoLong>112.52109906W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.37484157N</geoLat>
+                <geoLong>112.54929143W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.41350128N</geoLat>
+                <geoLong>112.57358277W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.45378585N</geoLat>
+                <geoLong>112.59378441W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.49539071N</geoLat>
+                <geoLong>112.6097379W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.5380009N</geoLat>
+                <geoLong>112.62131632W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.58129336N</geoLat>
+                <geoLong>112.62842542W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.62493939N</geoLat>
+                <geoLong>112.63100452W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.66860714N</geoLat>
+                <geoLong>112.62902715W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.71196407N</geoLat>
+                <geoLong>112.62250151W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75467953N</geoLat>
+                <geoLong>112.61147054W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.79642727N</geoLat>
+                <geoLong>112.59601186W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.83688798N</geoLat>
+                <geoLong>112.57623736W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.87575175N</geoLat>
+                <geoLong>112.55229252W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.91272049N</geoLat>
+                <geoLong>112.52435547W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.94751025N</geoLat>
+                <geoLong>112.49263574W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.97985351N</geoLat>
+                <geoLong>112.45737281W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.00950126N</geoLat>
+                <geoLong>112.41883432W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.03622499N</geoLat>
+                <geoLong>112.37731406W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.05981851N</geoLat>
+                <geoLong>112.33312974W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.08009964N</geoLat>
+                <geoLong>112.28662053W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.09691165N</geoLat>
+                <geoLong>112.23814434W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.11012453N</geoLat>
+                <geoLong>112.18807503W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.11963604N</geoLat>
+                <geoLong>112.13679941W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.12537257N</geoLat>
+                <geoLong>112.08471407W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>34.12728969N</geoLat>
+                <geoLong>112.03222222W</geoLong>
+              </Avx>
+            </abdMergedArea>
+            <aseShapes>
+              <AseUid>
+                <codeType>PART</codeType>
+                <codeId>4591</codeId>
+              </AseUid>
+              <Att>
+                <codeWorkHr>NOTAM</codeWorkHr>
+              </Att>
+              <Abd>
+                <AbdUid>
+                  <AseUid>
+                    <codeType>PART</codeType>
+                    <codeId>4591</codeId>
+                  </AseUid>
+                </AbdUid>
+                <txtRmk>4591</txtRmk>
+                <Avx>
+                  <codeType>CIR</codeType>
+                  <geoLat>33.62638889N</geoLat>
+                  <geoLong>112.03222222W</geoLong>
+                  <codeDatum>WGE</codeDatum>
+                  <valRadiusArc>30.0</valRadiusArc>
+                  <uomRadiusArc>NM</uomRadiusArc>
+                  <Frd>
+                    <FrdUid>
+                      <DpnUid>
+                        <codeId>PXR12</codeId>
+                        <geoLat>33.62638889N</geoLat>
+                        <geoLong>112.03222222W</geoLong>
+                      </DpnUid>
+                    </FrdUid>
+                    <Ain>
+                      <VorUid>
+                        <codeId>PXR</codeId>
+                        <geoLat>33.43301725N</geoLat>
+                        <geoLong>111.97020183W</geoLong>
+                      </VorUid>
+                      <valAngleBrg>333.0</valAngleBrg>
+                    </Ain>
+                    <Din>
+                      <TcnUid>
+                        <codeId>PXR</codeId>
+                        <geoLat>33.43301725N</geoLat>
+                        <geoLong>111.97020183W</geoLong>
+                      </TcnUid>
+                      <valDist>12.0</valDist>
+                      <uomDist>NM</uomDist>
+                    </Din>
+                    <txtRmk>PHOENIX</txtRmk>
+                  </Frd>
+                </Avx>
+              </Abd>
+            </aseShapes>
+            <codeIncFRD>TRUE</codeIncFRD>
+            <codeShpPrt>COMPOSITE</codeShpPrt>
+            <codeLclTime>TRUE</codeLclTime>
+            <codeAuthATC>FALSE</codeAuthATC>
+          </TFRAreaGroup>
+          <TFRAreaGroup>
+            <aseTFRArea>
+              <AseUid>
+                <codeType>RAS</codeType>
+                <codeId>4592</codeId>
+              </AseUid>
+              <txtName>Area D</txtName>
+              <codeDistVerUpper>ALT</codeDistVerUpper>
+              <valDistVerUpper>17999</valDistVerUpper>
+              <uomDistVerUpper>FT</uomDistVerUpper>
+              <codeDistVerLower>HEI</codeDistVerLower>
+              <valDistVerLower>0</valDistVerLower>
+              <uomDistVerLower>FT</uomDistVerLower>
+              <Att>
+                <codeWorkHr>NOTAM</codeWorkHr>
+              </Att>
+              <codeExclVerUpper>INCLUDE</codeExclVerUpper>
+              <codeExclVerLower>INCLUDE</codeExclVerLower>
+              <isScheduledTfrArea>FALSE</isScheduledTfrArea>
+              <ScheduleGroup>
+                <isTimeSeparate>FALSE</isTimeSeparate>
+                <dateEffective>2026-04-17T20:15:00</dateEffective>
+                <dateExpire>2026-04-17T22:45:00</dateExpire>
+              </ScheduleGroup>
+            </aseTFRArea>
+            <Aac>
+              <AacUid>
+                <AseUidChi>
+                  <codeType>RAS</codeType>
+                  <codeId>4592</codeId>
+                </AseUidChi>
+                <AseUidPar>
+                  <codeType>PART</codeType>
+                  <codeId>4593</codeId>
+                </AseUidPar>
+              </AacUid>
+              <codeType>BOM</codeType>
+              <codeOpr>BASE</codeOpr>
+            </Aac>
+            <abdMergedArea>
+              <AbdUid>
+                <AseUid>
+                  <codeType>RAS</codeType>
+                  <codeId>4592</codeId>
+                </AseUid>
+              </AbdUid>
+              <txtRmk>4592</txtRmk>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.79336035N</geoLat>
+                <geoLong>112.03222222W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.79081884N</geoLat>
+                <geoLong>111.99749662W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.78327197N</geoLat>
+                <geoLong>111.96383212W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.7709503N</geoLat>
+                <geoLong>111.93225687W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75423014N</geoLat>
+                <geoLong>111.90373415W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.73362188N</geoLat>
+                <geoLong>111.87913266W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.70975419N</geoLat>
+                <geoLong>111.85919988W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.68335462N</geoLat>
+                <geoLong>111.84453933W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.65522721N</geoLat>
+                <geoLong>111.83559256W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.62622783N</geoLat>
+                <geoLong>111.83262614W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.59723803N</geoLat>
+                <geoLong>111.83572425W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.5691382N</geoLat>
+                <geoLong>111.84478684W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.54278087N</geoLat>
+                <geoLong>111.85953334W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.51896501N</geoLat>
+                <geoLong>111.87951186W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.4984119N</geoLat>
+                <geoLong>111.90411335W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.48174356N</geoLat>
+                <geoLong>111.93259033W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.46946414N</geoLat>
+                <geoLong>111.96407962W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.46194484N</geoLat>
+                <geoLong>111.99762831W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.45941291N</geoLat>
+                <geoLong>112.03222222W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.46194484N</geoLat>
+                <geoLong>112.06681613W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.46946414N</geoLat>
+                <geoLong>112.10036482W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.48174356N</geoLat>
+                <geoLong>112.13185411W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.4984119N</geoLat>
+                <geoLong>112.16033109W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.51896501N</geoLat>
+                <geoLong>112.18493258W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.54278087N</geoLat>
+                <geoLong>112.2049111W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.5691382N</geoLat>
+                <geoLong>112.2196576W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.59723803N</geoLat>
+                <geoLong>112.22872019W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.62622783N</geoLat>
+                <geoLong>112.2318183W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.65522721N</geoLat>
+                <geoLong>112.22885188W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.68335462N</geoLat>
+                <geoLong>112.21990511W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.70975419N</geoLat>
+                <geoLong>112.20524456W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.73362188N</geoLat>
+                <geoLong>112.18531178W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75423014N</geoLat>
+                <geoLong>112.16071029W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.7709503N</geoLat>
+                <geoLong>112.13218757W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.78327197N</geoLat>
+                <geoLong>112.10061232W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.79081884N</geoLat>
+                <geoLong>112.06694782W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.79336035N</geoLat>
+                <geoLong>112.03222222W</geoLong>
+              </Avx>
+            </abdMergedArea>
+            <aseShapes>
+              <AseUid>
+                <codeType>PART</codeType>
+                <codeId>4593</codeId>
+              </AseUid>
+              <Att>
+                <codeWorkHr>NOTAM</codeWorkHr>
+              </Att>
+              <Abd>
+                <AbdUid>
+                  <AseUid>
+                    <codeType>PART</codeType>
+                    <codeId>4593</codeId>
+                  </AseUid>
+                </AbdUid>
+                <txtRmk>4593</txtRmk>
+                <Avx>
+                  <codeType>CIR</codeType>
+                  <geoLat>33.62638889N</geoLat>
+                  <geoLong>112.03222222W</geoLong>
+                  <codeDatum>WGE</codeDatum>
+                  <valRadiusArc>10.0</valRadiusArc>
+                  <uomRadiusArc>NM</uomRadiusArc>
+                  <Frd>
+                    <FrdUid>
+                      <DpnUid>
+                        <codeId>PXR12</codeId>
+                        <geoLat>33.62638889N</geoLat>
+                        <geoLong>112.03222222W</geoLong>
+                      </DpnUid>
+                    </FrdUid>
+                    <Ain>
+                      <VorUid>
+                        <codeId>PXR</codeId>
+                        <geoLat>33.43301725N</geoLat>
+                        <geoLong>111.97020183W</geoLong>
+                      </VorUid>
+                      <valAngleBrg>333.0</valAngleBrg>
+                    </Ain>
+                    <Din>
+                      <TcnUid>
+                        <codeId>PXR</codeId>
+                        <geoLat>33.43301725N</geoLat>
+                        <geoLong>111.97020183W</geoLong>
+                      </TcnUid>
+                      <valDist>12.0</valDist>
+                      <uomDist>NM</uomDist>
+                    </Din>
+                    <txtRmk>PHOENIX</txtRmk>
+                  </Frd>
+                </Avx>
+              </Abd>
+            </aseShapes>
+            <codeIncFRD>TRUE</codeIncFRD>
+            <codeShpPrt>COMPOSITE</codeShpPrt>
+            <codeLclTime>TRUE</codeLclTime>
+            <codeAuthATC>FALSE</codeAuthATC>
+          </TFRAreaGroup>
+          <TFRAreaGroup>
+            <aseTFRArea>
+              <AseUid>
+                <codeType>RAS</codeType>
+                <codeId>4594</codeId>
+              </AseUid>
+              <txtName>Area E</txtName>
+              <codeDistVerUpper>ALT</codeDistVerUpper>
+              <valDistVerUpper>17999</valDistVerUpper>
+              <uomDistVerUpper>FT</uomDistVerUpper>
+              <codeDistVerLower>HEI</codeDistVerLower>
+              <valDistVerLower>0</valDistVerLower>
+              <uomDistVerLower>FT</uomDistVerLower>
+              <Att>
+                <codeWorkHr>NOTAM</codeWorkHr>
+              </Att>
+              <codeExclVerUpper>INCLUDE</codeExclVerUpper>
+              <codeExclVerLower>INCLUDE</codeExclVerLower>
+              <isScheduledTfrArea>FALSE</isScheduledTfrArea>
+              <ScheduleGroup>
+                <isTimeSeparate>FALSE</isTimeSeparate>
+                <dateEffective>2026-04-17T21:45:00</dateEffective>
+                <dateExpire>2026-04-17T23:30:00</dateExpire>
+              </ScheduleGroup>
+            </aseTFRArea>
+            <Aac>
+              <AacUid>
+                <AseUidChi>
+                  <codeType>RAS</codeType>
+                  <codeId>4594</codeId>
+                </AseUidChi>
+                <AseUidPar>
+                  <codeType>PART</codeType>
+                  <codeId>4595</codeId>
+                </AseUidPar>
+              </AacUid>
+              <codeType>BOM</codeType>
+              <codeOpr>BASE</codeOpr>
+            </Aac>
+            <abdMergedArea>
+              <AbdUid>
+                <AseUid>
+                  <codeType>RAS</codeType>
+                  <codeId>4594</codeId>
+                </AseUid>
+              </AbdUid>
+              <txtRmk>4594</txtRmk>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.9350831N</geoLat>
+                <geoLong>112.01166667W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.933166N</geoLat>
+                <geoLong>111.95929304W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.92742953N</geoLat>
+                <geoLong>111.90732496W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.91791811N</geoLat>
+                <geoLong>111.85616468W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.90470535N</geoLat>
+                <geoLong>111.80620785W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.88789347N</geoLat>
+                <geoLong>111.75784036W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.86761246N</geoLat>
+                <geoLong>111.7114352W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.84401903N</geoLat>
+                <geoLong>111.66734946W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.81729536N</geoLat>
+                <geoLong>111.62592153W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.78764761N</geoLat>
+                <geoLong>111.5874684W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75530425N</geoLat>
+                <geoLong>111.5522832W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.72051429N</geoLat>
+                <geoLong>111.52063299W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.68354523N</geoLat>
+                <geoLong>111.49275674W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.64468099N</geoLat>
+                <geoLong>111.46886355W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.60421966N</geoLat>
+                <geoLong>111.44913119W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.56247113N</geoLat>
+                <geoLong>111.43370487W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.51975472N</geoLat>
+                <geoLong>111.42269629W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.47639667N</geoLat>
+                <geoLong>111.41618294W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.43272763N</geoLat>
+                <geoLong>111.41420777W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.38908015N</geoLat>
+                <geoLong>111.41677899W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.3457861N</geoLat>
+                <geoLong>111.42387028W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.3031742N</geoLat>
+                <geoLong>111.43542114W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.26156751N</geoLat>
+                <geoLong>111.4513376W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.22128104N</geoLat>
+                <geoLong>111.47149307W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.18261938N</geoLat>
+                <geoLong>111.49572949W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.14587445N</geoLat>
+                <geoLong>111.52385865W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.11132336N</geoLat>
+                <geoLong>111.55566376W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.07922637N</geoLat>
+                <geoLong>111.59090116W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.04982498N</geoLat>
+                <geoLong>111.62930218W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.0233402N</geoLat>
+                <geoLong>111.67057528W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.99997092N</geoLat>
+                <geoLong>111.71440816W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.9798925N</geoLat>
+                <geoLong>111.76047012W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.9632555N</geoLat>
+                <geoLong>111.8084145W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.95018461N</geoLat>
+                <geoLong>111.85788116W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.94077771N</geoLat>
+                <geoLong>111.90849912W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.93510526N</geoLat>
+                <geoLong>111.95988918W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.93320972N</geoLat>
+                <geoLong>112.01166667W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.93510526N</geoLat>
+                <geoLong>112.06344416W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.94077771N</geoLat>
+                <geoLong>112.11483422W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.95018461N</geoLat>
+                <geoLong>112.16545218W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.9632555N</geoLat>
+                <geoLong>112.21491884W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.9798925N</geoLat>
+                <geoLong>112.26286322W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>32.99997092N</geoLat>
+                <geoLong>112.30892518W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.0233402N</geoLat>
+                <geoLong>112.35275806W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.04982498N</geoLat>
+                <geoLong>112.39403116W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.07922637N</geoLat>
+                <geoLong>112.43243218W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.11132336N</geoLat>
+                <geoLong>112.46766958W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.14587445N</geoLat>
+                <geoLong>112.49947469W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.18261938N</geoLat>
+                <geoLong>112.52760385W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.22128104N</geoLat>
+                <geoLong>112.55184027W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.26156751N</geoLat>
+                <geoLong>112.57199574W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.3031742N</geoLat>
+                <geoLong>112.5879122W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.3457861N</geoLat>
+                <geoLong>112.59946306W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.38908015N</geoLat>
+                <geoLong>112.60655435W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.43272763N</geoLat>
+                <geoLong>112.60912557W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.47639667N</geoLat>
+                <geoLong>112.6071504W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.51975472N</geoLat>
+                <geoLong>112.60063705W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.56247113N</geoLat>
+                <geoLong>112.58962847W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.60421966N</geoLat>
+                <geoLong>112.57420215W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.64468099N</geoLat>
+                <geoLong>112.55446979W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.68354523N</geoLat>
+                <geoLong>112.5305766W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.72051429N</geoLat>
+                <geoLong>112.50270035W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.75530425N</geoLat>
+                <geoLong>112.47105014W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.78764761N</geoLat>
+                <geoLong>112.43586494W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.81729536N</geoLat>
+                <geoLong>112.39741181W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.84401903N</geoLat>
+                <geoLong>112.35598388W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.86761246N</geoLat>
+                <geoLong>112.31189814W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.88789347N</geoLat>
+                <geoLong>112.26549298W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.90470535N</geoLat>
+                <geoLong>112.21712549W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.91791811N</geoLat>
+                <geoLong>112.16716866W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.92742953N</geoLat>
+                <geoLong>112.11600838W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.933166N</geoLat>
+                <geoLong>112.0640403W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.9350831N</geoLat>
+                <geoLong>112.01166667W</geoLong>
+              </Avx>
+            </abdMergedArea>
+            <aseShapes>
+              <AseUid>
+                <codeType>PART</codeType>
+                <codeId>4595</codeId>
+              </AseUid>
+              <Att>
+                <codeWorkHr>NOTAM</codeWorkHr>
+              </Att>
+              <Abd>
+                <AbdUid>
+                  <AseUid>
+                    <codeType>PART</codeType>
+                    <codeId>4595</codeId>
+                  </AseUid>
+                </AbdUid>
+                <txtRmk>4595</txtRmk>
+                <Avx>
+                  <codeType>CIR</codeType>
+                  <geoLat>33.43416667N</geoLat>
+                  <geoLong>112.01166667W</geoLong>
+                  <codeDatum>WGE</codeDatum>
+                  <valRadiusArc>30.0</valRadiusArc>
+                  <uomRadiusArc>NM</uomRadiusArc>
+                  <Frd>
+                    <FrdUid>
+                      <DpnUid>
+                        <codeId>PXR02</codeId>
+                        <geoLat>33.43416667N</geoLat>
+                        <geoLong>112.01166667W</geoLong>
+                      </DpnUid>
+                    </FrdUid>
+                    <Ain>
+                      <VorUid>
+                        <codeId>PXR</codeId>
+                        <geoLat>33.43302058N</geoLat>
+                        <geoLong>111.97019889W</geoLong>
+                      </VorUid>
+                      <valAngleBrg>260.0</valAngleBrg>
+                    </Ain>
+                    <Din>
+                      <TcnUid>
+                        <codeId>PXR</codeId>
+                        <geoLat>33.43302058N</geoLat>
+                        <geoLong>111.97019889W</geoLong>
+                      </TcnUid>
+                      <valDist>2.1</valDist>
+                      <uomDist>NM</uomDist>
+                    </Din>
+                    <txtRmk>PHOENIX</txtRmk>
+                  </Frd>
+                </Avx>
+              </Abd>
+            </aseShapes>
+            <codeIncFRD>TRUE</codeIncFRD>
+            <codeShpPrt>COMPOSITE</codeShpPrt>
+            <codeLclTime>TRUE</codeLclTime>
+            <codeAuthATC>FALSE</codeAuthATC>
+          </TFRAreaGroup>
+          <TFRAreaGroup>
+            <aseTFRArea>
+              <AseUid>
+                <codeType>RAS</codeType>
+                <codeId>4596</codeId>
+              </AseUid>
+              <txtName>Area F</txtName>
+              <codeDistVerUpper>ALT</codeDistVerUpper>
+              <valDistVerUpper>17999</valDistVerUpper>
+              <uomDistVerUpper>FT</uomDistVerUpper>
+              <codeDistVerLower>HEI</codeDistVerLower>
+              <valDistVerLower>0</valDistVerLower>
+              <uomDistVerLower>FT</uomDistVerLower>
+              <Att>
+                <codeWorkHr>NOTAM</codeWorkHr>
+              </Att>
+              <codeExclVerUpper>INCLUDE</codeExclVerUpper>
+              <codeExclVerLower>INCLUDE</codeExclVerLower>
+              <isScheduledTfrArea>FALSE</isScheduledTfrArea>
+              <ScheduleGroup>
+                <isTimeSeparate>FALSE</isTimeSeparate>
+                <dateEffective>2026-04-17T21:45:00</dateEffective>
+                <dateExpire>2026-04-17T23:30:00</dateExpire>
+              </ScheduleGroup>
+            </aseTFRArea>
+            <Aac>
+              <AacUid>
+                <AseUidChi>
+                  <codeType>RAS</codeType>
+                  <codeId>4596</codeId>
+                </AseUidChi>
+                <AseUidPar>
+                  <codeType>PART</codeType>
+                  <codeId>4597</codeId>
+                </AseUidPar>
+              </AacUid>
+              <codeType>BOM</codeType>
+              <codeOpr>BASE</codeOpr>
+            </Aac>
+            <abdMergedArea>
+              <AbdUid>
+                <AseUid>
+                  <codeType>RAS</codeType>
+                  <codeId>4596</codeId>
+                </AseUid>
+              </AbdUid>
+              <txtRmk>4596</txtRmk>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.60114333N</geoLat>
+                <geoLong>112.01166667W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.59860178N</geoLat>
+                <geoLong>111.9770183W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.59105477N</geoLat>
+                <geoLong>111.94342863W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.57873287N</geoLat>
+                <geoLong>111.91192348W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.56201238N</geoLat>
+                <geoLong>111.88346397W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.54140368N</geoLat>
+                <geoLong>111.85891686W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.51753544N</geoLat>
+                <geoLong>111.83902797W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.49113521N</geoLat>
+                <geoLong>111.82439951W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.46300702N</geoLat>
+                <geoLong>111.8154721W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.43400678N</geoLat>
+                <geoLong>111.81251176W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.40501604N</geoLat>
+                <geoLong>111.81560255W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.37691523N</geoLat>
+                <geoLong>111.82464468W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.35055693N</geoLat>
+                <geoLong>111.83935828W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.32674014N</geoLat>
+                <geoLong>111.85929248W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.30618619N</geoLat>
+                <geoLong>111.88383959W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.28951714N</geoLat>
+                <geoLong>111.91225379W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.27723719N</geoLat>
+                <geoLong>111.9436738W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.26971755N</geoLat>
+                <geoLong>111.97714875W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.26718551N</geoLat>
+                <geoLong>112.01166667W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.26971755N</geoLat>
+                <geoLong>112.04618459W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.27723719N</geoLat>
+                <geoLong>112.07965954W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.28951714N</geoLat>
+                <geoLong>112.11107955W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.30618619N</geoLat>
+                <geoLong>112.13949375W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.32674014N</geoLat>
+                <geoLong>112.16404086W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.35055693N</geoLat>
+                <geoLong>112.18397506W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.37691523N</geoLat>
+                <geoLong>112.19868866W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.40501604N</geoLat>
+                <geoLong>112.20773079W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.43400678N</geoLat>
+                <geoLong>112.21082158W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.46300702N</geoLat>
+                <geoLong>112.20786124W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.49113521N</geoLat>
+                <geoLong>112.19893383W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.51753544N</geoLat>
+                <geoLong>112.18430537W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.54140368N</geoLat>
+                <geoLong>112.16441648W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.56201238N</geoLat>
+                <geoLong>112.13986937W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.57873287N</geoLat>
+                <geoLong>112.11140986W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.59105477N</geoLat>
+                <geoLong>112.07990471W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.59860178N</geoLat>
+                <geoLong>112.04631504W</geoLong>
+              </Avx>
+              <Avx>
+                <codeDatum>WGE</codeDatum>
+                <codeType>GRC</codeType>
+                <geoLat>33.60114333N</geoLat>
+                <geoLong>112.01166667W</geoLong>
+              </Avx>
+            </abdMergedArea>
+            <aseShapes>
+              <AseUid>
+                <codeType>PART</codeType>
+                <codeId>4597</codeId>
+              </AseUid>
+              <Att>
+                <codeWorkHr>NOTAM</codeWorkHr>
+              </Att>
+              <Abd>
+                <AbdUid>
+                  <AseUid>
+                    <codeType>PART</codeType>
+                    <codeId>4597</codeId>
+                  </AseUid>
+                </AbdUid>
+                <txtRmk>4597</txtRmk>
+                <Avx>
+                  <codeType>CIR</codeType>
+                  <geoLat>33.43416667N</geoLat>
+                  <geoLong>112.01166667W</geoLong>
+                  <codeDatum>WGE</codeDatum>
+                  <valRadiusArc>10.0</valRadiusArc>
+                  <uomRadiusArc>NM</uomRadiusArc>
+                  <Frd>
+                    <FrdUid>
+                      <DpnUid>
+                        <codeId>PXR02</codeId>
+                        <geoLat>33.43416667N</geoLat>
+                        <geoLong>112.01166667W</geoLong>
+                      </DpnUid>
+                    </FrdUid>
+                    <Ain>
+                      <VorUid>
+                        <codeId>PXR</codeId>
+                        <geoLat>33.43302058N</geoLat>
+                        <geoLong>111.97019889W</geoLong>
+                      </VorUid>
+                      <valAngleBrg>260.0</valAngleBrg>
+                    </Ain>
+                    <Din>
+                      <TcnUid>
+                        <codeId>PXR</codeId>
+                        <geoLat>33.43302058N</geoLat>
+                        <geoLong>111.97019889W</geoLong>
+                      </TcnUid>
+                      <valDist>2.1</valDist>
+                      <uomDist>NM</uomDist>
+                    </Din>
+                    <txtRmk>PHOENIX</txtRmk>
+                  </Frd>
+                </Avx>
+              </Abd>
+            </aseShapes>
+            <codeIncFRD>TRUE</codeIncFRD>
+            <codeShpPrt>COMPOSITE</codeShpPrt>
+            <codeLclTime>TRUE</codeLclTime>
+            <codeAuthATC>FALSE</codeAuthATC>
+          </TFRAreaGroup>
+          <TemplateType>BigThreatLanguage</TemplateType>
+          <codeCtrlFacilityType>ARTCC</codeCtrlFacilityType>
+        </TfrNot>
+        <codeCoordFacilityType>ARTCC</codeCoordFacilityType>
+        <txtDescrUSNS>!FDC 6/2548 ZAB PART 1 OF 6 AZ..AIRSPACE PHOENIX, ARIZONA..TEMPORARY
+ FLIGHT
+RESTRICTIONS.  
+      APRIL 17, 2026 LOCAL.  PURSUANT TO 49 USC 40103(B)(3), THE 
+FEDERAL AVIATION ADMINISTRATION (FAA) CLASSIFIES THE AIRSPACE 
+DEFINED IN THIS NOTAM AS 'NTL DEFENSE AIRSPACE'. PILOTS WHO DO NOT 
+ADHERE TO THE FOLLOWING PROC MAY BE INTERCEPTED, DETAINED AND 
+INTERVIEWED BY LAW ENFORCEMENT/SECURITY PERSONNEL. ANY OF THE 
+FOLLOWING ADDITIONAL ACTIONS MAY ALSO BE TAKEN AGAINST A PILOT WHO 
+DOES NOT COMPLY WITH THE RQMNTS OR  ANY SPECIAL INSTRUCTIONS OR 
+PROC ANNOUNCED IN THIS NOTAM: 
+A) THE FAA MAY TAKE ADMINISTRATIVE ACTION, INCLUDING IMPOSING CIVIL 
+PENALTIES AND THE SUSPENSION OR REVOCATION OF AIRMEN CERTIFICATES; 
+OR  
+B) THE UNITED STATES GOVERNMENT MAY PURSUE CRIMINAL CHARGES, 
+INCLUDING CHARGES UNDER 49 USC SECTION 46307; OR  
+C) THE UNITED STATES GOVERNMENT MAY USE DEADLY FORCE AGAINST THE 
+AIRBORNE ACFT, IF IT IS DETERMINED THAT THE ACFT POSES AN IMMINENT 
+SECURITY THREAT.   
+PURSUANT TO 14 CFR 91.141, ALL ACFT FLT OPS INCLUDING REMOTE 
+CONTROLLED ACFT OPS ARE PROHIBITED: WI AN AREA DEFINED AS 30NM 
+2604171945-2604172330
+END PART 1 OF 6
+
+
+
+
+!FDC 6/2548 ZAB PART 2 OF 6 AZ..AIRSPACE PHOENIX, ARIZONA..TEMPORARY
+ FLIGHT
+RADIUS OF 332603N1120042W (PXR260002.1) SFC-17999FT MSL  
+EFFECTIVE 2604171945 UTC (1245 LOCAL 04/17/26) UNTIL 2604172100 UTC 
+(1400 LOCAL 04/17/26).  
+
+WI AN AREA DEFINED AS 10NM RADIUS OF 332603N1120042W (PXR260002.1) 
+SFC-17999FT MSL  
+EFFECTIVE 2604171945 UTC (1245 LOCAL 04/17/26) UNTIL 2604172100 UTC 
+(1400 LOCAL 04/17/26).  
+
+WI AN AREA DEFINED AS 30NM RADIUS OF 333735N1120156W (PXR333012.0) 
+SFC-17999FT MSL  
+EFFECTIVE 2604172015 UTC (1315 LOCAL 04/17/26) UNTIL 2604172245 UTC 
+(1545 LOCAL 04/17/26).  
+
+WI AN AREA DEFINED AS 10NM RADIUS OF 333735N1120156W (PXR333012.0) 
+SFC-17999FT MSL  
+EFFECTIVE 2604172015 UTC (1315 LOCAL 04/17/26) UNTIL 2604172245 UTC 
+(1545 LOCAL 04/17/26).  
+
+2604171945-2604172330
+END PART 2 OF 6
+
+
+
+
+!FDC 6/2548 ZAB PART 3 OF 6 AZ..AIRSPACE PHOENIX, ARIZONA..TEMPORARY
+ FLIGHT
+WI AN AREA DEFINED AS 30NM RADIUS OF 332603N1120042W (PXR260002.1) 
+SFC-17999FT MSL  
+EFFECTIVE 2604172145 UTC (1445 LOCAL 04/17/26) UNTIL 2604172330 UTC 
+(1630 LOCAL 04/17/26).  
+
+WI AN AREA DEFINED AS 10NM RADIUS OF 332603N1120042W (PXR260002.1) 
+SFC-17999FT MSL  
+EFFECTIVE 2604172145 UTC (1445 LOCAL 04/17/26) UNTIL 2604172330 UTC 
+(1630 LOCAL 04/17/26). 
+
+EXC AS SPECIFIED BLW AND/OR UNLESS AUTH BY ATC IN
+CONSULTATION WITH THE AIR TFC SECURITY COORDINATOR
+VIA THE DOMESTIC EVENTS NETWORK (DEN):
+A. ALL ACFT OPS WI THE 10NM RADIUS AREA(S) LISTED
+   ABV, KNOWN AS THE INNER CORE(S), ARE PROHIBITED
+   EXC FOR: APPROVED LAW ENFORCEMENT, MIL ACFT
+   DIRECTLY SUPPORTING THE UNITED STATES SECRET
+   SERVICE(USSS) AND THE OFFICE OF THE PRESIDENT OF
+   THE UNITED STATES, APPROVED AIR AMBULANCE FLIGHTS,
+2604171945-2604172330
+END PART 3 OF 6
+
+
+
+
+!FDC 6/2548 ZAB PART 4 OF 6 AZ..AIRSPACE PHOENIX, ARIZONA..TEMPORARY
+ FLIGHT
+   AND REGULARLY SCHEDULED COMMERCIAL PAX AND ALL -
+   CARGO CARRIERS OPR UNDER ONE OF THE FOLLOWING TSA
+   - APPROVED STANDARD SECURITY PROGRAMS / PROC AND
+   ARE ARR INTO AND / OR DEP FM 14 CFR PART 139 AP:
+   ACFT OPR STANDARD SECURITY PROGRAM(AOSSP), FULL
+   ALL - CARGO ACFT OPR STANDARD SECURITY
+   PROGRAM(FACAOSSP), MODEL SECURITY PROGRAM(MSP),
+   TWELVE FIVE STANDARD SECURITY PROGRAM ALL
+   CARGO(TFSSP - ALL CARGO), OR ALL - CARGO
+   INTERNATIONAL SECURITY PROC(ACISP). ALL EMERGENCY
+   / LIFE SAVING FLT(MEDICAL / LAW ENFORCEMENT /
+   FIREFIGHTING) OPS MUST COORDINATE WITH ATC PRIOR
+   TO THEIR DEP AT 602-306-2566 TO AVOID POTENTIAL
+   DELAYS.
+B. FOR OPS WI THE AIRSPACE BTN THE 10NM RADIUS AND
+   30NM RADIUS AREA(S) LISTED ABV, KNOWN AS THE OUTER
+   RING(S): ALL ACFT OPR WI THE OUTER RING(S) LISTED
+   ABV ARE LIMITED TO ACFT ARR OR DEP LOCAL
+   AIRFIELDS, AND WORKLOAD PERMITTING, ATC MAY
+2604171945-2604172330
+END PART 4 OF 6
+
+
+
+
+!FDC 6/2548 ZAB PART 5 OF 6 AZ..AIRSPACE PHOENIX, ARIZONA..TEMPORARY
+ FLIGHT
+   AUTHORIZE TRANSIT OPS. ACFT MAY NOT LOITER. ALL
+   ACFT MUST BE ON AN ACT IFR OR FILED VFR FLT PLAN
+   WITH A DISCRETE CODE ASSIGNED BY AN AIR TFC CTL
+   (ATC) FAC. ACFT MUST BE SQUAWKING THE DISCRETE
+   CODE PRIOR TO DEP AND AT ALL TIMES WHILE IN THE
+   TFR AND MUST REMAIN IN TWO-WAY RADIO COM WITH ATC.
+C. THE FOLLOWING OPS ARE NOT AUTH WI THIS TFR: FLT
+   TRAINING, PRACTICE INSTRUMENT APCH, AEROBATIC FLT,
+   GLIDER OPS, PARACHUTE OPS, ULTRALIGHT, HANG
+   GLIDING, BALLOON OPS, AGRICULTURE/CROP DUSTING,
+   ANIMAL POPULATION CTL FLT OPS, BANNER TOWING OPS,
+   SIGHTSEEING OPS, MAINTENANCE TEST FLIGHTS, MODEL
+   ACFT OPS, MODEL ROCKETRY, UNMANNED ACFT SYSTEMS
+   (UAS), AND UTILITY AND PIPELINE SURVEY OPS.
+D. UAS OPR WHO DO NOT COMPLY WITH APPLICABLE
+   AIRSPACE RESTRICTIONS ARE WARNED THAT PURSUANT TO
+   10 U.S.C.SECTION 130I AND 6 U.S.C.SECTION 124N,
+   THE DEPARTMENT OF DEFENSE(DOD), THE DEPARTMENT OF
+   HOMELAND SECURITY(DHS) OR THE DEPARTMENT OF
+2604171945-2604172330
+END PART 5 OF 6
+
+
+
+
+!FDC 6/2548 ZAB PART 6 OF 6 AZ..AIRSPACE PHOENIX, ARIZONA..TEMPORARY
+ FLIGHT
+   JUSTICE(DOJ) MAY TAKE SECURITY ACTION THAT RESULTS
+   IN THE INTERFERENCE, DISRUPTION, SEIZURE,
+   DAMAGING, OR DESTRUCTION OF UNMANNED ACFT DEEMED
+   TO POSE A CREDIBLE SAFETY OR SECURITY THREAT TO
+   PROTECTED PERSONNEL, FAC, OR ASSETS.
+E. THE SYSTEM OPERATIONS SUPPORT CENTER (SOSC), IS
+   THE CDN FAC FOR UAS OPS, SUBMIT SGI WAIVER REQUEST
+   VIA HTTPS://WAIVERS.FAA.GOV, FIRST RESPONDERS
+   EMGERGENCY OPS CTC THE SOSC AT 202-267-8276.
+F. THE FAA RECOMMENDS THAT ALL ACFT OPR CK NOTAMS
+   FREQUENTLY FOR POSSIBLE CHANGES TO THIS TFR PRIOR
+   TO OPS. OPR MAY REVIEW THE TFR DETAILS AT
+   HTTPS://TFR.FAA.GOV/ OR
+   HTTPS://WWW.1800WXBRIEF.COM.
+
+ 
+2604171945-2604172330
+END PART 6 OF 6</txtDescrUSNS>
+        <txtDescrTraditional>!FDC 6/2548 ZAB AZ..AIRSPACE PHOENIX, ARIZONA..TEMPORARY FLIGHT RESTRICTIONS. APRIL 17, 2026 LOCAL. PURSUANT TO 49 USC 40103(B)(3), THE FEDERAL AVIATION ADMINISTRATION (FAA) CLASSIFIES THE AIRSPACE DEFINED IN THIS NOTAM AS 'NTL DEFENSE AIRSPACE'. PILOTS WHO DO NOT ADHERE TO THE FOLLOWING PROC MAY BE INTERCEPTED, DETAINED AND INTERVIEWED BY LAW ENFORCEMENT/SECURITY PERSONNEL. ANY OF THE FOLLOWING ADDITIONAL ACTIONS MAY ALSO BE TAKEN AGAINST A PILOT WHO DOES NOT COMPLY WITH THE RQMNTS OR ANY SPECIAL INSTRUCTIONS OR PROC ANNOUNCED IN THIS NOTAM:
+A) THE FAA MAY TAKE ADMINISTRATIVE ACTION, INCLUDING IMPOSING CIVIL PENALTIES AND THE SUSPENSION OR REVOCATION OF AIRMEN CERTIFICATES; OR 
+B) THE UNITED STATES GOVERNMENT MAY PURSUE CRIMINAL CHARGES, INCLUDING CHARGES UNDER 49 USC SECTION 46307; OR 
+C) THE UNITED STATES GOVERNMENT MAY USE DEADLY FORCE AGAINST THE AIRBORNE ACFT, IF IT IS DETERMINED THAT THE ACFT POSES AN IMMINENT SECURITY THREAT. 
+PURSUANT TO 14 CFR 91.141, ALL ACFT FLT OPS INCLUDING REMOTE CONTROLLED ACFT OPS ARE PROHIBITED: WI AN AREA DEFINED AS 30NM RADIUS OF 332603N1120042W (PXR260002.1) SFC-17999FT MSL EFFECTIVE 2604171945 UTC (1245 LOCAL 04/17/26) UNTIL 2604172100 UTC (1400 LOCAL 04/17/26). WI AN AREA DEFINED AS 10NM RADIUS OF 332603N1120042W (PXR260002.1) SFC-17999FT MSL EFFECTIVE 2604171945 UTC (1245 LOCAL 04/17/26) UNTIL 2604172100 UTC (1400 LOCAL 04/17/26). WI AN AREA DEFINED AS 30NM RADIUS OF 333735N1120156W (PXR333012.0) SFC-17999FT MSL EFFECTIVE 2604172015 UTC (1315 LOCAL 04/17/26) UNTIL 2604172245 UTC (1545 LOCAL 04/17/26). WI AN AREA DEFINED AS 10NM RADIUS OF 333735N1120156W (PXR333012.0) SFC-17999FT MSL EFFECTIVE 2604172015 UTC (1315 LOCAL 04/17/26) UNTIL 2604172245 UTC (1545 LOCAL 04/17/26). WI AN AREA DEFINED AS 30NM RADIUS OF 332603N1120042W (PXR260002.1) SFC-17999FT MSL EFFECTIVE 2604172145 UTC (1445 LOCAL 04/17/26) UNTIL 2604172330 UTC (1630 LOCAL 04/17/26). WI AN AREA DEFINED AS 10NM RADIUS OF 332603N1120042W (PXR260002.1) SFC-17999FT MSL EFFECTIVE 2604172145 UTC (1445 LOCAL 04/17/26) UNTIL 2604172330 UTC (1630 LOCAL 04/17/26). EXC AS SPECIFIED BLW AND/OR UNLESS AUTH BY ATC IN CONSULTATION WITH THE AIR TFC SECURITY COORDINATOR VIA THE DOMESTIC EVENTS NETWORK (DEN): A. ALL ACFT OPS WI THE 10NM RADIUS AREA(S) LISTED ABV, KNOWN AS THE INNER CORE(S), ARE PROHIBITED EXC FOR: APPROVED LAW ENFORCEMENT, MIL ACFT DIRECTLY SUPPORTING THE UNITED STATES SECRET SERVICE(USSS) AND THE OFFICE OF THE PRESIDENT OF THE UNITED STATES, APPROVED AIR AMBULANCE FLIGHTS, AND REGULARLY SCHEDULED COMMERCIAL PAX AND ALL - CARGO CARRIERS OPR UNDER ONE OF THE FOLLOWING TSA - APPROVED STANDARD SECURITY PROGRAMS / PROC AND ARE ARR INTO AND / OR DEP FM 14 CFR PART 139 AP: ACFT OPR STANDARD SECURITY PROGRAM(AOSSP), FULL ALL - CARGO ACFT OPR STANDARD SECURITY PROGRAM(FACAOSSP), MODEL SECURITY PROGRAM(MSP), TWELVE FIVE STANDARD SECURITY PROGRAM ALL CARGO(TFSSP - ALL CARGO), OR ALL - CARGO INTERNATIONAL SECURITY PROC(ACISP). ALL EMERGENCY / LIFE SAVING FLT(MEDICAL / LAW ENFORCEMENT / FIREFIGHTING) OPS MUST COORDINATE WITH ATC PRIOR TO THEIR DEP AT 602-306-2566 TO AVOID POTENTIAL DELAYS. B. FOR OPS WI THE AIRSPACE BTN THE 10NM RADIUS AND 30NM RADIUS AREA(S) LISTED ABV, KNOWN AS THE OUTER RING(S): ALL ACFT OPR WI THE OUTER RING(S) LISTED ABV ARE LIMITED TO ACFT ARR OR DEP LOCAL AIRFIELDS, AND WORKLOAD PERMITTING, ATC MAY AUTHORIZE TRANSIT OPS. ACFT MAY NOT LOITER. ALL ACFT MUST BE ON AN ACT IFR OR FILED VFR FLT PLAN WITH A DISCRETE CODE ASSIGNED BY AN AIR TFC CTL (ATC) FAC. ACFT MUST BE SQUAWKING THE DISCRETE CODE PRIOR TO DEP AND AT ALL TIMES WHILE IN THE TFR AND MUST REMAIN IN TWO-WAY RADIO COM WITH ATC. C. THE FOLLOWING OPS ARE NOT AUTH WI THIS TFR: FLT TRAINING, PRACTICE INSTRUMENT APCH, AEROBATIC FLT, GLIDER OPS, PARACHUTE OPS, ULTRALIGHT, HANG GLIDING, BALLOON OPS, AGRICULTURE/CROP DUSTING, ANIMAL POPULATION CTL FLT OPS, BANNER TOWING OPS, SIGHTSEEING OPS, MAINTENANCE TEST FLIGHTS, MODEL ACFT OPS, MODEL ROCKETRY, UNMANNED ACFT SYSTEMS (UAS), AND UTILITY AND PIPELINE SURVEY OPS. D. UAS OPR WHO DO NOT COMPLY WITH APPLICABLE AIRSPACE RESTRICTIONS ARE WARNED THAT PURSUANT TO 10 U.S.C.SECTION 130I AND 6 U.S.C.SECTION 124N, THE DEPARTMENT OF DEFENSE(DOD), THE DEPARTMENT OF HOMELAND SECURITY(DHS) OR THE DEPARTMENT OF JUSTICE(DOJ) MAY TAKE SECURITY ACTION THAT RESULTS IN THE INTERFERENCE, DISRUPTION, SEIZURE, DAMAGING, OR DESTRUCTION OF UNMANNED ACFT DEEMED TO POSE A CREDIBLE SAFETY OR SECURITY THREAT TO PROTECTED PERSONNEL, FAC, OR ASSETS. E. THE SYSTEM OPERATIONS SUPPORT CENTER (SOSC), IS THE CDN FAC FOR UAS OPS, SUBMIT SGI WAIVER REQUEST VIA HTTPS://WAIVERS.FAA.GOV, FIRST RESPONDERS EMGERGENCY OPS CTC THE SOSC AT 202-267-8276. F. THE FAA RECOMMENDS THAT ALL ACFT OPR CK NOTAMS FREQUENTLY FOR POSSIBLE CHANGES TO THIS TFR PRIOR TO OPS. OPR MAY REVIEW THE TFR DETAILS AT HTTPS://TFR.FAA.GOV/ OR HTTPS://WWW.1800WXBRIEF.COM. 2604171945-2604172330</txtDescrTraditional>
+        <txtDescrModern>&lt;html&gt;
+  &lt;span style="Arial" valign="Top"&gt;
+    &lt;Body&gt;
+      &lt;Table cellpadding="1" cellspacing="0"&gt;
+        &lt;TR bgcolor="#1E90FF"&gt;
+          &lt;TD colspan="3" align="left" valign="bottom" width="250"&gt;
+            &lt;b&gt;
+              &lt;font color="#FFFFFF" size="3" face="Arial"&gt;NOTAM Number     :&lt;/font&gt;
+            &lt;/b&gt;
+          &lt;/TD&gt;
+          &lt;TD valign="bottom" align="left" width="320"&gt;
+            &lt;b&gt;
+              &lt;font color="#FFFFFF" size="3" face="Arial"&gt;FDC 6/2548&lt;/font&gt;
+            &lt;/b&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="left" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;Issue Date     :&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;April 15, 2026 at 0104 UTC&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="left" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;Location     :&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;Phoenix, Arizona&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="left" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;Beginning Date and Time     :&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;April 17, 2026 at 1945 UTC&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="left" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;Ending Date and Time     :&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;April 17, 2026 at 2330 UTC&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="left" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;Reason for NOTAM     :&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;Temporary flight restrictions for VIP Movement&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="left" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;Type     :&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;VIP&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="left" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;Replaced NOTAM(s)     :&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;N/A&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="20"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" align="right" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Jump To: &amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;
+                &lt;a href="#areas" class="internal"&gt; Affected Areas &lt;/a&gt;&lt;br/&gt;&lt;a href="#restrictions" class="internal"&gt; Operating Restrictions and Requirements &lt;/a&gt;&lt;br/&gt;&lt;a href="#other" class="internal"&gt; Other Information &lt;/a&gt;&lt;br/&gt;&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="20"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+      &lt;/Table&gt;
+      &lt;Table cellpadding="1" cellspacing="0"&gt;
+        &lt;TR bgcolor="#1E90FF"&gt;
+          &lt;TD colspan="5"&gt;
+            &lt;a name="areas"&gt;
+              &lt;b&gt;
+                &lt;font color="#FFFFFF" size="3" face="Arial"&gt;Affected Area(s)&lt;/font&gt;
+              &lt;/b&gt;
+            &lt;/a&gt;
+          &lt;/TD&gt;
+          &lt;TD colspan="1" align="right"&gt;
+            &lt;a href="#"&gt;
+              &lt;font color="#FFFFFF" face="Arial"&gt;
+                &lt;b&gt;Top&lt;/b&gt;
+              &lt;/font&gt;
+            &lt;/a&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="10"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Area A&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" width="200"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Airspace Definition:&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Center:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; On the PHOENIX VORTAC (PXR) 260 degree radial at 2.1 nautical miles. (Latitude: 33&amp;#xBA;26'03"N, Longitude: 112&amp;#xBA;00'42"W)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Radius:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; 30 nautical miles&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Altitude:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; From the surface  up to and including 17999 feet MSL &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="5"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Effective Date(s):&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="5" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;From April 17, 2026 at 1945 UTC (April 17, 2026 at 1245 MST)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="5" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;To April 17, 2026 at 2100 UTC (April 17, 2026 at 1400 MST)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="10"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Area B&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" width="200"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Airspace Definition:&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Center:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; On the PHOENIX VORTAC (PXR) 260 degree radial at 2.1 nautical miles. (Latitude: 33&amp;#xBA;26'03"N, Longitude: 112&amp;#xBA;00'42"W)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Radius:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; 10 nautical miles&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Altitude:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; From the surface  up to and including 17999 feet MSL &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="5"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Effective Date(s):&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="5" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;From April 17, 2026 at 1945 UTC (April 17, 2026 at 1245 MST)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="5" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;To April 17, 2026 at 2100 UTC (April 17, 2026 at 1400 MST)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="10"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Area C&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" width="200"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Airspace Definition:&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Center:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; On the PHOENIX VORTAC (PXR) 333 degree radial at 12 nautical miles. (Latitude: 33&amp;#xBA;37'35"N, Longitude: 112&amp;#xBA;01'56"W)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Radius:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; 30 nautical miles&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Altitude:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; From the surface  up to and including 17999 feet MSL &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="5"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Effective Date(s):&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="5" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;From April 17, 2026 at 2015 UTC (April 17, 2026 at 1315 MST)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="5" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;To April 17, 2026 at 2245 UTC (April 17, 2026 at 1545 MST)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="10"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Area D&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" width="200"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Airspace Definition:&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Center:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; On the PHOENIX VORTAC (PXR) 333 degree radial at 12 nautical miles. (Latitude: 33&amp;#xBA;37'35"N, Longitude: 112&amp;#xBA;01'56"W)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Radius:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; 10 nautical miles&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Altitude:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; From the surface  up to and including 17999 feet MSL &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="5"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Effective Date(s):&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="5" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;From April 17, 2026 at 2015 UTC (April 17, 2026 at 1315 MST)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="5" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;To April 17, 2026 at 2245 UTC (April 17, 2026 at 1545 MST)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="10"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Area E&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" width="200"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Airspace Definition:&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Center:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; On the PHOENIX VORTAC (PXR) 260 degree radial at 2.1 nautical miles. (Latitude: 33&amp;#xBA;26'03"N, Longitude: 112&amp;#xBA;00'42"W)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Radius:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; 30 nautical miles&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Altitude:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; From the surface  up to and including 17999 feet MSL &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="5"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Effective Date(s):&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="5" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;From April 17, 2026 at 2145 UTC (April 17, 2026 at 1445 MST)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="5" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;To April 17, 2026 at 2330 UTC (April 17, 2026 at 1630 MST)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="10"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Area F&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3" width="200"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Airspace Definition:&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Center:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; On the PHOENIX VORTAC (PXR) 260 degree radial at 2.1 nautical miles. (Latitude: 33&amp;#xBA;26'03"N, Longitude: 112&amp;#xBA;00'42"W)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Radius:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; 10 nautical miles&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;Altitude:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt; From the surface  up to and including 17999 feet MSL &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="5"&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;b&gt;Effective Date(s):&lt;/b&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="5" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;From April 17, 2026 at 2145 UTC (April 17, 2026 at 1445 MST)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD&gt; &lt;/TD&gt;
+          &lt;TD colspan="5" valign="top"&gt;
+            &lt;font face="Arial" size="2"&gt;To April 17, 2026 at 2330 UTC (April 17, 2026 at 1630 MST)&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="20"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+      &lt;/Table&gt;
+      &lt;b&gt;ENDSECTION1&lt;/b&gt;
+      &lt;Table cellpadding="1" cellspacing="0"&gt;
+        &lt;TR bgcolor="#1E90FF"&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;a name="restrictions"&gt;
+              &lt;b&gt;
+                &lt;font color="#FFFFFF" face="Arial" size="3"&gt;Operating Restrictions and Requirements&lt;/font&gt;
+              &lt;/b&gt;
+            &lt;/a&gt;
+          &lt;/TD&gt;
+          &lt;TD colspan="1" align="right"&gt;
+            &lt;a href="#"&gt;
+              &lt;font color="#FFFFFF" face="Arial"&gt;
+                &lt;b&gt;Top&lt;/b&gt;
+              &lt;/font&gt;
+            &lt;/a&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="20"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;font face="Arial" size="2"&gt;No pilots may operate an aircraft in the areas covered by this NOTAM (except as described).&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="20"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;
+              &lt;DL&gt;
+                &lt;DT&gt;EXC AS SPECIFIED BLW AND/OR UNLESS AUTH BY ATC IN CONSULTATION WITH THE AIR TFC SECURITY COORDINATOR VIA THE DOMESTIC EVENTS NETWORK (DEN): &lt;/DT&gt;&lt;br/&gt;&lt;DT&gt;A. ALL ACFT OPS WI THE 10NM RADIUS AREA(S) LISTED ABV, KNOWN AS THE INNER CORE(S), ARE PROHIBITED EXC FOR: APPROVED LAW ENFORCEMENT, MIL ACFT DIRECTLY SUPPORTING THE UNITED STATES SECRET SERVICE(USSS) AND THE OFFICE OF THE PRESIDENT OF THE UNITED STATES, APPROVED AIR AMBULANCE FLIGHTS, AND REGULARLY SCHEDULED COMMERCIAL PAX AND ALL - CARGO CARRIERS OPR UNDER ONE OF THE FOLLOWING TSA - APPROVED STANDARD SECURITY PROGRAMS / PROC AND ARE ARR INTO AND / OR DEP FM 14 CFR PART 139 AP: ACFT OPR STANDARD SECURITY PROGRAM(AOSSP), FULL ALL - CARGO ACFT OPR STANDARD SECURITY PROGRAM(FACAOSSP), MODEL SECURITY PROGRAM(MSP), TWELVE FIVE STANDARD SECURITY PROGRAM ALL CARGO(TFSSP - ALL CARGO), OR ALL - CARGO INTERNATIONAL SECURITY PROC(ACISP). ALL EMERGENCY / LIFE SAVING FLT(MEDICAL / LAW ENFORCEMENT / FIREFIGHTING) OPS MUST COORDINATE WITH ATC PRIOR TO THEIR DEP AT 602-306-2566 TO AVOID POTENTIAL DELAYS.&lt;/DT&gt;&lt;br/&gt;&lt;DT&gt;B. FOR OPS WI THE AIRSPACE BTN THE 10NM RADIUS AND 30NM RADIUS AREA(S) LISTED ABV, KNOWN AS THE OUTER RING(S): ALL ACFT OPR WI THE OUTER RING(S) LISTED ABV ARE LIMITED TO ACFT ARR OR DEP LOCAL AIRFIELDS, AND WORKLOAD PERMITTING, ATC MAY AUTHORIZE TRANSIT OPS. ACFT MAY NOT LOITER. ALL ACFT MUST BE ON AN ACT IFR OR FILED VFR FLT PLAN WITH A DISCRETE CODE ASSIGNED BY AN AIR TFC CTL (ATC) FAC. ACFT MUST BE SQUAWKING THE DISCRETE CODE PRIOR TO DEP AND AT ALL TIMES WHILE IN THE TFR AND MUST REMAIN IN TWO-WAY RADIO COM WITH ATC. &lt;/DT&gt;&lt;br/&gt;&lt;DT&gt;C. THE FOLLOWING OPS ARE NOT AUTH WI THIS TFR: FLT TRAINING, PRACTICE INSTRUMENT APCH, AEROBATIC FLT, GLIDER OPS, PARACHUTE OPS, ULTRALIGHT, HANG GLIDING, BALLOON OPS, AGRICULTURE/CROP DUSTING, ANIMAL POPULATION CTL FLT OPS, BANNER TOWING OPS, SIGHTSEEING OPS, MAINTENANCE TEST FLIGHTS, MODEL ACFT OPS, MODEL ROCKETRY, UNMANNED ACFT SYSTEMS (UAS), AND UTILITY AND PIPELINE SURVEY OPS. &lt;/DT&gt;&lt;br/&gt;&lt;DT&gt;D. UAS OPR WHO DO NOT COMPLY WITH APPLICABLE AIRSPACE RESTRICTIONS ARE WARNED THAT PURSUANT TO 10 U.S.C.SECTION 130I AND 6 U.S.C.SECTION 124N, THE DEPARTMENT OF DEFENSE(DOD), THE DEPARTMENT OF HOMELAND SECURITY(DHS) OR THE DEPARTMENT OF JUSTICE(DOJ) MAY TAKE SECURITY ACTION THAT RESULTS IN THE INTERFERENCE, DISRUPTION, SEIZURE, DAMAGING, OR DESTRUCTION OF UNMANNED ACFT DEEMED TO POSE A CREDIBLE SAFETY OR SECURITY THREAT TO PROTECTED PERSONNEL, FAC, OR ASSETS. &lt;/DT&gt;&lt;br/&gt;&lt;DT&gt;E. THE SYSTEM OPERATIONS SUPPORT CENTER (SOSC), IS THE CDN FAC FOR UAS OPS, SUBMIT SGI WAIVER REQUEST VIA HTTPS://WAIVERS.FAA.GOV, FIRST RESPONDERS EMGERGENCY OPS CTC THE SOSC AT 202-267-8276.&lt;/DT&gt;&lt;br/&gt;&lt;DT&gt;F. THE FAA RECOMMENDS THAT ALL ACFT OPR CK NOTAMS FREQUENTLY FOR POSSIBLE CHANGES TO THIS TFR PRIOR TO OPS. OPR MAY REVIEW THE TFR DETAILS AT HTTPS://TFR.FAA.GOV/ OR HTTPS://WWW.1800WXBRIEF.COM.&lt;/DT&gt;&lt;br/&gt;&lt;/DL&gt;
+            &lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2" height="10"&gt;  &lt;/TD&gt;
+        &lt;/TR&gt;
+      &lt;/Table&gt;
+      &lt;Table cellpadding="1" cellspacing="0"&gt;
+        &lt;TR bgcolor="#1E90FF"&gt;
+          &lt;TD colspan="3"&gt;
+            &lt;a name="other"&gt;
+              &lt;b&gt;
+                &lt;font color="#FFFFFF" face="Arial" size="3"&gt;Other Information:&lt;/font&gt;
+              &lt;/b&gt;
+            &lt;/a&gt;
+          &lt;/TD&gt;
+          &lt;TD colspan="1" align="right"&gt;
+            &lt;a href="#"&gt;
+              &lt;font color="#FFFFFF" face="Arial"&gt;
+                &lt;b&gt;Top&lt;/b&gt;
+              &lt;/font&gt;
+            &lt;/a&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2"&gt;
+            &lt;font face="Arial" size="2"&gt;ARTCC:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;ZAB - Albuquerque Center&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD colspan="2"&gt;
+            &lt;font face="Arial" size="2"&gt;Authority:&lt;/font&gt;
+          &lt;/TD&gt;
+          &lt;TD&gt;
+            &lt;font face="Arial" size="2"&gt;Title 14 CFR section 91.141&lt;/font&gt;
+          &lt;/TD&gt;
+        &lt;/TR&gt;
+        &lt;TR&gt;
+          &lt;TD Width="40" /&gt;
+          &lt;TD Width="152" /&gt;
+          &lt;TD Width="318" /&gt;
+        &lt;/TR&gt;
+      &lt;/Table&gt;
+    &lt;/Body&gt;
+  &lt;/span&gt;
+&lt;/html&gt;</txtDescrModern>
+        <codeFreeformText>false</codeFreeformText>
+      </Not>
+    </Add>
+  </Group>
+</XNOTAM-Update>

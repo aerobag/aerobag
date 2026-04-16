@@ -11,7 +11,7 @@ use std::{
 };
 
 use anyhow::{bail, Context};
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate, Timelike, Utc};
 use crossbeam_channel::{self, RecvTimeoutError};
 use preprocessor_charts::{
     build_family_tiles, build_family_vrts, package_family_region_versioned, stage_work_dir,
@@ -28,6 +28,9 @@ use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
     read_source_urls_jsonl, write_package_outputs_jsonl, FetchCacheConfig, FetchCacheMode,
     PackageOutputRecord,
+};
+use preprocessor_fast::{
+    build_tfr_dataset, load_tfr_notam_ids, sanitize_notam_id, BuildTfrRequest,
 };
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, ResourceIndex,
@@ -132,6 +135,8 @@ struct CurrentArtifactsManifest {
     as_of_date: String,
     bundles: Vec<CurrentBundleEntry>,
     obstacles: CurrentObstacleEntry,
+    #[serde(default)]
+    fast_products: Vec<CurrentFastProductEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +153,16 @@ struct CurrentBundleEntry {
 struct CurrentObstacleEntry {
     filename: String,
     published_date: String,
+    checksum_sha256: String,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CurrentFastProductEntry {
+    id: String,
+    filename: String,
+    published_at_utc: String,
+    source_generated_at_utc: String,
     checksum_sha256: String,
     size_bytes: u64,
 }
@@ -277,11 +292,23 @@ enum ProductTaskValue {
         stats_path: PathBuf,
         zip_path: PathBuf,
     },
+    TfrsBuilt {
+        zip_path: PathBuf,
+        source_generated_at_utc: String,
+    },
     PublishedObstacle {
         source_zip_path: PathBuf,
         published_zip: PathBuf,
         sha256: String,
         size_bytes: u64,
+    },
+    PublishedFastProduct {
+        id: String,
+        source_zip_path: PathBuf,
+        published_zip: PathBuf,
+        sha256: String,
+        size_bytes: u64,
+        source_generated_at_utc: String,
     },
     CurrentArtifacts { path: PathBuf },
 }
@@ -464,11 +491,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         BundleManifest { cycle: String },
         ObstaclesBuild,
         ObstaclesPublish,
-    CurrentArtifacts,
-    ProductUnpack,
-    ValidatePackagedContract,
-    ValidateUnpackedContract,
-}
+        TfrsBuild,
+        TfrsPublish,
+        CurrentArtifacts,
+        ProductUnpack,
+        ValidatePackagedContract,
+        ValidateUnpackedContract,
+    }
 
     #[derive(Debug, Clone)]
     struct ProductScheduledTask {
@@ -711,18 +740,35 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             kind: ProductScheduledTaskKind::ObstaclesPublish,
         });
         pending_tasks.push(ProductScheduledTask {
+            id: "build-tfrs".to_string(),
+            deps: vec![],
+            weight: 1,
+            kind: ProductScheduledTaskKind::TfrsBuild,
+        });
+        pending_tasks.push(ProductScheduledTask {
+            id: "publish-tfrs".to_string(),
+            deps: vec!["build-tfrs".to_string()],
+            weight: 1,
+            kind: ProductScheduledTaskKind::TfrsPublish,
+        });
+        pending_tasks.push(ProductScheduledTask {
             id: "current-artifacts".to_string(),
             deps: cycles
                 .iter()
                 .map(|cycle| cycle_task_id(cycle, "bundle-manifest"))
                 .chain(std::iter::once("publish-obstacles".to_string()))
+                .chain(std::iter::once("publish-tfrs".to_string()))
                 .collect(),
             weight: 1,
             kind: ProductScheduledTaskKind::CurrentArtifacts,
         });
         pending_tasks.push(ProductScheduledTask {
             id: "product-unpack".to_string(),
-            deps: vec!["current-artifacts".to_string(), "publish-obstacles".to_string()],
+            deps: vec![
+                "current-artifacts".to_string(),
+                "publish-obstacles".to_string(),
+                "publish-tfrs".to_string(),
+            ],
             weight: 1,
             kind: ProductScheduledTaskKind::ProductUnpack,
         });
@@ -1475,6 +1521,42 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 completion_detail: "published".to_string(),
                             })
                         }
+                        ProductScheduledTaskKind::TfrsBuild => {
+                            let (zip_path, source_generated_at_utc) =
+                                build_tfrs_product(&config)?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::TfrsBuilt {
+                                    zip_path,
+                                    source_generated_at_utc,
+                                },
+                                completion_detail: "rebuilt".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::TfrsPublish => {
+                            let built = match task_values_snapshot.get("build-tfrs") {
+                                Some(ProductTaskValue::TfrsBuilt {
+                                    zip_path,
+                                    source_generated_at_utc,
+                                    ..
+                                }) => (zip_path.clone(), source_generated_at_utc.clone()),
+                                _ => bail!("missing TFR build output"),
+                            };
+                            let (published_zip, sha256, size_bytes) =
+                                publish_content_addressed_fast_product_zip(&config.build_root, "tfrs", &built.0)?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::PublishedFastProduct {
+                                    id: "tfrs".to_string(),
+                                    source_zip_path: built.0,
+                                    published_zip,
+                                    sha256,
+                                    size_bytes,
+                                    source_generated_at_utc: built.1,
+                                },
+                                completion_detail: "published".to_string(),
+                            })
+                        }
                         ProductScheduledTaskKind::CurrentArtifacts => {
                             let published_obstacle = match task_values_snapshot.get("publish-obstacles") {
                                 Some(ProductTaskValue::PublishedObstacle {
@@ -1485,12 +1567,35 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 }) => (published_zip.clone(), sha256.clone(), *size_bytes),
                                 _ => bail!("missing published obstacle output"),
                             };
+                            let fast_products = match task_values_snapshot.get("publish-tfrs") {
+                                Some(ProductTaskValue::PublishedFastProduct {
+                                    id,
+                                    published_zip,
+                                    sha256,
+                                    size_bytes,
+                                    source_generated_at_utc,
+                                    ..
+                                }) => vec![CurrentFastProductEntry {
+                                    id: id.clone(),
+                                    filename: published_zip
+                                        .file_name()
+                                        .and_then(|name| name.to_str())
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    published_at_utc: utc_now_string(),
+                                    source_generated_at_utc: source_generated_at_utc.clone(),
+                                    checksum_sha256: sha256.clone(),
+                                    size_bytes: *size_bytes,
+                                }],
+                                _ => vec![],
+                            };
                             let current_artifacts_path = write_current_artifacts_manifest(
                                 &config.build_root,
                                 Utc::now().date_naive(),
                                 &published_obstacle.0,
                                 &published_obstacle.1,
                                 published_obstacle.2,
+                                fast_products,
                             )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
@@ -1513,11 +1618,18 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 }) => (source_zip_path.clone(), published_zip.clone()),
                                 _ => bail!("missing published obstacle output"),
                             };
+                            let tfrs = match task_values_snapshot.get("publish-tfrs") {
+                                Some(ProductTaskValue::PublishedFastProduct {
+                                    source_zip_path,
+                                    published_zip,
+                                    ..
+                                }) => (source_zip_path.clone(), published_zip.clone()),
+                                _ => bail!("missing published TFR output"),
+                            };
                             sync_product_level_unpacked(
                                 &config.build_root,
                                 &current_artifacts_path,
-                                &obstacle.0,
-                                &obstacle.1,
+                                &[obstacle, tfrs],
                             )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
@@ -2885,24 +2997,25 @@ fn sync_unpacked_file(source_path: &Path, unpacked_root: &Path) -> anyhow::Resul
 pub fn sync_product_level_unpacked(
     build_root: &Path,
     current_artifacts_path: &Path,
-    obstacle_zip_path: &Path,
-    published_obstacle_zip: &Path,
+    zip_artifacts: &[(PathBuf, PathBuf)],
 ) -> anyhow::Result<()> {
     let unpacked_root = published_unpacked_root_from_build_root(build_root)?;
     remove_legacy_unpacked_subtree(&unpacked_root)?;
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
     sync_unpacked_file(current_artifacts_path, &unpacked_root)?;
-    let published_filename = published_obstacle_zip
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("failed to determine obstacle filename"))?;
-    sync_unpacked_zip_from_source(
-        published_obstacle_zip,
-        obstacle_zip_path.parent().unwrap_or_else(|| Path::new("/")),
-        &unpacked_root,
-        published_filename,
-    )?;
+    for (source_zip_path, published_zip_path) in zip_artifacts {
+        let published_filename = published_zip_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("failed to determine published filename"))?;
+        sync_unpacked_zip_from_source(
+            published_zip_path,
+            source_zip_path.parent().unwrap_or_else(|| Path::new("/")),
+            &unpacked_root,
+            published_filename,
+        )?;
+    }
     Ok(())
 }
 
@@ -2999,20 +3112,129 @@ fn build_obstacles_product(
     Ok((result.manifest_path, result.stats_path, result.zip_path))
 }
 
+fn build_tfrs_product(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<(PathBuf, String)> {
+    let artifact_root = artifact_root_from_build_root(&config.build_root).to_path_buf();
+    let generated_at_utc = Utc::now()
+        .with_second(0)
+        .expect("zero seconds should be valid")
+        .with_nanosecond(0)
+        .expect("zero nanos should be valid");
+    let version_label = generated_at_utc.format("%Y%m%dT%H%MZ").to_string();
+    let build_root = artifact_root.join("private-work").join("tfrs").join(&version_label);
+    let input_dir = build_root.join("input");
+    let details_dir = input_dir.join("details");
+    let output_dir = build_root.join("output");
+
+    if build_root.exists() {
+        fs::remove_dir_all(&build_root)
+            .with_context(|| format!("failed to clear {}", build_root.display()))?;
+    }
+    fs::create_dir_all(&details_dir)
+        .with_context(|| format!("failed to create {}", details_dir.display()))?;
+
+    let fetch_cache = FetchCacheConfig {
+        root: config.fetch_cache_root.clone(),
+        mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
+    };
+    let provenance_dir = build_root.join("meta").join("provenance").join("tfrs");
+    fs::create_dir_all(&provenance_dir)
+        .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
+
+    let list_url = "https://tfr.faa.gov/tfrapi/getTfrList#logical_name=list.json".to_string();
+    fs::write(
+        provenance_dir.join("source_urls.jsonl"),
+        format!("{{\"event\":\"source_url\",\"label\":\"tfrs\",\"url\":\"{}\"}}\n", list_url),
+    )
+    .with_context(|| {
+        format!(
+            "failed to write {}",
+            provenance_dir.join("source_urls.jsonl").display()
+        )
+    })?;
+    prefetch_archives_with_provenance(
+        std::slice::from_ref(&list_url),
+        &input_dir,
+        config.fetch_jobs,
+        Some(&fetch_cache),
+        &provenance_dir,
+        "tfrs-list",
+    )?;
+
+    let notam_ids = load_tfr_notam_ids(&input_dir)?;
+    let detail_urls = notam_ids
+        .iter()
+        .map(|notam_id| {
+            let sanitized = sanitize_notam_id(notam_id);
+            format!(
+                "https://tfr.faa.gov/download/detail_{}.xml#logical_name={}.xml",
+                sanitized, sanitized
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut source_urls_jsonl =
+        String::from("{\"event\":\"source_url\",\"label\":\"tfrs-list\",\"url\":\"https://tfr.faa.gov/tfrapi/getTfrList#logical_name=list.json\"}\n");
+    for url in &detail_urls {
+        source_urls_jsonl.push_str(&format!(
+            "{{\"event\":\"source_url\",\"label\":\"tfrs-detail\",\"url\":\"{}\"}}\n",
+            url
+        ));
+    }
+    fs::write(provenance_dir.join("source_urls.jsonl"), source_urls_jsonl).with_context(|| {
+        format!(
+            "failed to write {}",
+            provenance_dir.join("source_urls.jsonl").display()
+        )
+    })?;
+    prefetch_archives_with_provenance(
+        &detail_urls,
+        &details_dir,
+        config.fetch_jobs,
+        Some(&fetch_cache),
+        &provenance_dir,
+        "tfrs-detail",
+    )?;
+
+    let result = build_tfr_dataset(&BuildTfrRequest {
+        input_dir,
+        output_dir,
+        version_label,
+        generated_at_utc,
+    })?;
+    Ok((result.zip_path, generated_at_utc.to_rfc3339()))
+}
+
 fn publish_content_addressed_obstacle_zip(
     build_root: &Path,
     obstacle_zip_path: &Path,
 ) -> anyhow::Result<(PathBuf, String, u64)> {
-    let sha256 = hash_file(obstacle_zip_path)?;
-    let size_bytes = fs::metadata(obstacle_zip_path)
-        .with_context(|| format!("failed to stat {}", obstacle_zip_path.display()))?
+    publish_content_addressed_zip(build_root, obstacle_zip_path, "obstacles")
+}
+
+fn publish_content_addressed_fast_product_zip(
+    build_root: &Path,
+    fast_product_id: &str,
+    zip_path: &Path,
+) -> anyhow::Result<(PathBuf, String, u64)> {
+    publish_content_addressed_zip(build_root, zip_path, fast_product_id)
+}
+
+fn publish_content_addressed_zip(
+    build_root: &Path,
+    zip_path: &Path,
+    file_prefix: &str,
+) -> anyhow::Result<(PathBuf, String, u64)> {
+    let sha256 = hash_file(zip_path)?;
+    let size_bytes = fs::metadata(zip_path)
+        .with_context(|| format!("failed to stat {}", zip_path.display()))?
         .len();
-    let published_path = build_root.join(format!("obstacles_{sha256}.zip"));
+    let published_path = build_root.join(format!("{file_prefix}_{sha256}.zip"));
     if !published_path.is_file() {
-        fs::copy(obstacle_zip_path, &published_path).with_context(|| {
+        fs::copy(zip_path, &published_path).with_context(|| {
             format!(
                 "failed to copy {} to {}",
-                obstacle_zip_path.display(),
+                zip_path.display(),
                 published_path.display()
             )
         })?;
@@ -3100,6 +3322,7 @@ fn write_current_artifacts_manifest(
     published_obstacle_zip: &Path,
     obstacle_sha256: &str,
     obstacle_size_bytes: u64,
+    fast_products: Vec<CurrentFastProductEntry>,
 ) -> anyhow::Result<PathBuf> {
     let bundles = build_current_bundle_entries(build_root, as_of_date)?;
     let published_date = as_of_date.format("%Y-%m-%d").to_string();
@@ -3117,6 +3340,7 @@ fn write_current_artifacts_manifest(
             checksum_sha256: obstacle_sha256.to_string(),
             size_bytes: obstacle_size_bytes,
         },
+        fast_products,
     };
     let manifest_path = build_root.join(format!(
         "current_artifacts_{}.json",
@@ -3153,6 +3377,13 @@ fn validate_packaged_contract(
         "current_artifacts.obstacles.filename",
     )?;
     ensure_public_file_exists(&packaged_root.join(&current.obstacles.filename))?;
+    for product in &current.fast_products {
+        validate_public_filename(
+            &product.filename,
+            "current_artifacts.fast_products[].filename",
+        )?;
+        ensure_public_file_exists(&packaged_root.join(&product.filename))?;
+    }
     Ok(())
 }
 
@@ -3225,6 +3456,9 @@ fn validate_unpacked_contract(
     }
 
     ensure_public_dir_exists(&unpacked_root.join(zip_stem(&current.obstacles.filename)?))?;
+    for product in &current.fast_products {
+        ensure_public_dir_exists(&unpacked_root.join(zip_stem(&product.filename)?))?;
+    }
     Ok(())
 }
 

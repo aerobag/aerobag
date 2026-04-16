@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::{
     collections::VecDeque,
     fs,
-    fs::File,
+    fs::{File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     process::Command,
@@ -264,8 +264,11 @@ pub fn prefetch_archives_with_provenance(
     fs::create_dir_all(provenance_dir.as_ref())
         .with_context(|| format!("failed to create {}", provenance_dir.as_ref().display()))?;
     let downloads_path = provenance_dir.as_ref().join("downloads.jsonl");
-    let file = File::create(&downloads_path)
-        .with_context(|| format!("failed to create {}", downloads_path.display()))?;
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&downloads_path)
+        .with_context(|| format!("failed to open {}", downloads_path.display()))?;
     let recorder = PrefetchProvenanceRecorder {
         label: label.to_string(),
         file: Arc::new(Mutex::new(file)),

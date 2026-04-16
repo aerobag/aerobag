@@ -539,7 +539,6 @@ data class ContentReport(
 
 data class AppState(
     val activePlan: FlightPlan? = null,
-    val ownship: OwnshipState = OwnshipState(),
     val contentPolicy: ContentPolicy = ContentPolicy.PreferLocal,
     val lastContentRequirements: List<ContentRequirement> = emptyList(),
     val lastContentReport: ContentReport? = null,
@@ -560,24 +559,9 @@ data class UiSnapshotAppState(
     val lastContentReport: ContentReport? = null,
 )
 
-data class OwnshipState(
-    val policy: OwnshipPolicy = OwnshipPolicy(),
-    val resolved: ResolvedOwnshipState = ResolvedOwnshipState(),
-    val render: OwnshipRenderState = OwnshipRenderState(),
-    val controls: OwnshipControlModel = OwnshipControlModel(),
-    val sources: List<OwnshipSourceStatus> = emptyList(),
-)
-
-data class OwnshipPolicy(
-    val selection: OwnshipSelection = OwnshipSelection.Auto,
-    val sourcePriority: List<String> = emptyList(),
-    val allowAutoReplay: Boolean = false,
-    val allowAutoSimulated: Boolean = false,
-)
-
 sealed interface OwnshipSelection {
     data object Auto : OwnshipSelection
-    data class Manual(val sourceId: String) : OwnshipSelection
+    data class Source(val sourceId: String) : OwnshipSelection
 }
 
 enum class OwnshipMode {
@@ -642,31 +626,6 @@ data class OwnshipSourceMenuItem(
     val statusLabel: String,
 )
 
-data class OwnshipSourceStatus(
-    val sourceId: String,
-    val sourceKind: OwnshipSourceKind,
-    val displayName: String,
-    val connectionState: SourceConnectionState,
-    val lastEventTimeEpochMs: Long? = null,
-    val lastReceivedTimeEpochMs: Long? = null,
-    val staleAfterMs: Long = 0,
-    val selectable: Boolean = true,
-    val enabled: Boolean = true,
-    val autoEligible: Boolean = true,
-    val active: Boolean = false,
-    val statusLabel: String = "",
-)
-
-data class ResolvedOwnshipState(
-    val mode: OwnshipMode = OwnshipMode.None,
-    val activeSourceId: String? = null,
-    val activeSourceKind: OwnshipSourceKind? = null,
-    val bannerText: String = "NO GPS POSITION",
-    val bannerSeverity: OwnshipBannerSeverity = OwnshipBannerSeverity.Warning,
-    val guidanceEnabled: Boolean = false,
-    val sequencingEnabled: Boolean = false,
-)
-
 data class SituationSample(
     val sourceId: String,
     val sourceKind: OwnshipSourceKind,
@@ -693,4 +652,16 @@ data class OwnshipSourceStatusUpdate(
     val connectionState: SourceConnectionState,
     val enabled: Boolean,
     val statusLabel: String,
+)
+
+data class MapFollowUiState(
+    val canCenterHere: Boolean = false,
+    val following: Boolean = false,
+)
+
+data class CoreMapViewport(
+    val center: LatLonPoint,
+    val zoom: Double,
+    val rotationDeg: Double,
+    val pitchDeg: Double,
 )

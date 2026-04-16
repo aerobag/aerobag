@@ -63,7 +63,7 @@ data class WireOwnshipPolicy(
 @Serializable(with = WireOwnshipSelectionSerializer::class)
 sealed interface WireOwnshipSelection {
     data object Auto : WireOwnshipSelection
-    data class Manual(val source_id: String) : WireOwnshipSelection
+    data class Source(val source_id: String) : WireOwnshipSelection
 }
 
 @Serializable
@@ -101,6 +101,12 @@ data class WireOwnshipControlModel(
 data class WireOwnshipUiState(
     val render: WireOwnshipRenderState = WireOwnshipRenderState(),
     val controls: WireOwnshipControlModel = WireOwnshipControlModel(),
+)
+
+@Serializable
+data class WireMapFollowUiState(
+    val can_center_here: Boolean = false,
+    val following: Boolean = false,
 )
 
 @Serializable
@@ -214,9 +220,9 @@ object WireOwnshipSelectionSerializer : KSerializer<WireOwnshipSelection> {
         require(encoder is JsonEncoder) { "WireOwnshipSelection is JSON-only" }
         val element = when (value) {
             WireOwnshipSelection.Auto -> JsonObject(mapOf("kind" to JsonPrimitive("auto")))
-            is WireOwnshipSelection.Manual -> JsonObject(
+            is WireOwnshipSelection.Source -> JsonObject(
                 mapOf(
-                    "kind" to JsonPrimitive("manual"),
+                    "kind" to JsonPrimitive("source"),
                     "source_id" to JsonPrimitive(value.source_id),
                 ),
             )
@@ -230,13 +236,15 @@ object WireOwnshipSelectionSerializer : KSerializer<WireOwnshipSelection> {
         if (element is JsonPrimitive) {
             return when (element.content) {
                 "auto" -> WireOwnshipSelection.Auto
-                else -> WireOwnshipSelection.Manual(source_id = element.content)
+                else -> WireOwnshipSelection.Source(source_id = element.content)
             }
         }
         val obj = element as? JsonObject ?: error("WireOwnshipSelection must be an object")
         return when (obj["kind"]?.jsonPrimitive?.content) {
             "auto" -> WireOwnshipSelection.Auto
-            "manual" -> WireOwnshipSelection.Manual(
+            "source",
+            "manual",
+            -> WireOwnshipSelection.Source(
                 source_id = obj["source_id"]?.jsonPrimitive?.content ?: error("source_id required"),
             )
             else -> error("Unsupported WireOwnshipSelection")

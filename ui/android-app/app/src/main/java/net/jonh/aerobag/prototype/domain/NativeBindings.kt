@@ -194,6 +194,23 @@ interface NativeBridge {
         selectionJson: String,
     ): String
 
+    fun engageMapFollowInSessionJson(
+        handle: Long,
+        viewportJson: String,
+    ): String
+
+    fun disengageMapFollowInSessionJson(
+        handle: Long,
+        viewportJson: String,
+    ): String
+
+    fun setMapFollowOffsetInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        offsetXPx: Double,
+        offsetYPx: Double,
+    ): String
+
     fun selectAirportInSessionJson(
         handle: Long,
         airportIdJson: String,
@@ -465,6 +482,23 @@ object NativeBindings : NativeBridge {
     external override fun selectOwnshipSourceInSessionJson(
         handle: Long,
         selectionJson: String,
+    ): String
+
+    external override fun engageMapFollowInSessionJson(
+        handle: Long,
+        viewportJson: String,
+    ): String
+
+    external override fun disengageMapFollowInSessionJson(
+        handle: Long,
+        viewportJson: String,
+    ): String
+
+    external override fun setMapFollowOffsetInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        offsetXPx: Double,
+        offsetYPx: Double,
     ): String
 
     external override fun selectAirportInSessionJson(

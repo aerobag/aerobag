@@ -471,6 +471,29 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun engageMapFollow(viewport: MapViewportState): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.engageMapFollowInSessionJson(handle, viewport.toCoreViewport().toCoreJson(json)))
+        return snapshot
+    }
+
+    fun disengageMapFollow(viewport: MapViewportState): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.disengageMapFollowInSessionJson(handle, viewport.toCoreViewport().toCoreJson(json)))
+        return snapshot
+    }
+
+    fun setMapFollowOffset(viewport: MapViewportState, offsetXPx: Double, offsetYPx: Double): UiSessionSnapshot {
+        snapshot =
+            decodeSnapshot(
+                bridge.setMapFollowOffsetInSessionJson(
+                    handle,
+                    viewport.toCoreViewport().toCoreJson(json),
+                    offsetXPx,
+                    offsetYPx,
+                ),
+            )
+        return snapshot
+    }
+
     fun selectAirport(airportId: String): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.selectAirportInSessionJson(handle, json.encodeToString(airportId)))
         return snapshot
@@ -582,7 +605,7 @@ private fun ContentInventory.toWire() = WireContentInventory(
 
 private fun AppState.toWire() = WireAppState(
     active_plan = activePlan?.toWire(),
-    ownship = ownship.toWire(),
+    ownship = WireOwnshipState(),
     content_policy = contentPolicy.toWire(),
     last_content_requirements = lastContentRequirements.map { requirement ->
         WireContentRequirement(
@@ -608,35 +631,10 @@ private fun AppState.toWire() = WireAppState(
     },
 )
 
-private fun OwnshipState.toWire() = WireOwnshipState(
-    policy = policy.toWire(),
-    resolved = resolved.toWire(),
-    render = render.toWire(),
-    controls = controls.toWire(),
-    sources = sources.map { it.toWire() },
-)
-
-private fun OwnshipPolicy.toWire() = WireOwnshipPolicy(
-    selection = selection.toWire(),
-    source_priority = sourcePriority,
-    allow_auto_replay = allowAutoReplay,
-    allow_auto_simulated = allowAutoSimulated,
-)
-
 private fun OwnshipSelection.toWire(): WireOwnshipSelection = when (this) {
     OwnshipSelection.Auto -> WireOwnshipSelection.Auto
-    is OwnshipSelection.Manual -> WireOwnshipSelection.Manual(sourceId)
+    is OwnshipSelection.Source -> WireOwnshipSelection.Source(sourceId)
 }
-
-private fun ResolvedOwnshipState.toWire() = WireResolvedOwnshipState(
-    mode = mode.toWire(),
-    active_source_id = activeSourceId,
-    active_source_kind = activeSourceKind?.toWire(),
-    banner_text = bannerText,
-    banner_severity = bannerSeverity.toWire(),
-    guidance_enabled = guidanceEnabled,
-    sequencing_enabled = sequencingEnabled,
-)
 
 private fun OwnshipRenderState.toWire() = WireOwnshipRenderState(
     mode = mode.toWire(),
@@ -664,24 +662,8 @@ private fun OwnshipSourceMenuItem.toWire() = WireOwnshipSourceMenuItem(
     status_label = statusLabel,
 )
 
-private fun OwnshipSourceStatus.toWire() = WireOwnshipSourceStatus(
-    source_id = sourceId,
-    source_kind = sourceKind.toWire(),
-    display_name = displayName,
-    connection_state = connectionState.toWire(),
-    last_event_time_epoch_ms = lastEventTimeEpochMs,
-    last_received_time_epoch_ms = lastReceivedTimeEpochMs,
-    stale_after_ms = staleAfterMs,
-    selectable = selectable,
-    enabled = enabled,
-    auto_eligible = autoEligible,
-    active = active,
-    status_label = statusLabel,
-)
-
 private fun WireAppState.toUi() = AppState(
     activePlan = active_plan?.toUiFlightPlan(),
-    ownship = ownship.toUi(),
     contentPolicy = content_policy.toUi(),
     lastContentRequirements = last_content_requirements.map { requirement ->
         ContentRequirement(
@@ -764,35 +746,10 @@ private fun WireUiSnapshotAppState.toUi() = UiSnapshotAppState(
     },
 )
 
-private fun WireOwnshipState.toUi() = OwnshipState(
-    policy = policy.toUi(),
-    resolved = resolved.toUi(),
-    render = render.toUi(),
-    controls = controls.toUi(),
-    sources = sources.map { it.toUi() },
-)
-
-private fun WireOwnshipPolicy.toUi() = OwnshipPolicy(
-    selection = selection.toUi(),
-    sourcePriority = source_priority,
-    allowAutoReplay = allow_auto_replay,
-    allowAutoSimulated = allow_auto_simulated,
-)
-
 private fun WireOwnshipSelection.toUi(): OwnshipSelection = when (this) {
     WireOwnshipSelection.Auto -> OwnshipSelection.Auto
-    is WireOwnshipSelection.Manual -> OwnshipSelection.Manual(source_id)
+    is WireOwnshipSelection.Source -> OwnshipSelection.Source(source_id)
 }
-
-private fun WireResolvedOwnshipState.toUi() = ResolvedOwnshipState(
-    mode = mode.toUi(),
-    activeSourceId = active_source_id,
-    activeSourceKind = active_source_kind?.toUi(),
-    bannerText = banner_text,
-    bannerSeverity = banner_severity.toUi(),
-    guidanceEnabled = guidance_enabled,
-    sequencingEnabled = sequencing_enabled,
-)
 
 private fun WireOwnshipRenderState.toUi() = OwnshipRenderState(
     mode = mode.toUi(),
@@ -817,25 +774,15 @@ private fun WireOwnshipUiState.toUi() = OwnshipUiState(
     controls = controls.toUi(),
 )
 
+private fun WireMapFollowUiState.toUi() = MapFollowUiState(
+    canCenterHere = can_center_here,
+    following = following,
+)
+
 private fun WireOwnshipSourceMenuItem.toUi() = OwnshipSourceMenuItem(
     sourceId = source_id,
     label = label,
     enabled = enabled,
-    active = active,
-    statusLabel = status_label,
-)
-
-private fun WireOwnshipSourceStatus.toUi() = OwnshipSourceStatus(
-    sourceId = source_id,
-    sourceKind = source_kind.toUi(),
-    displayName = display_name,
-    connectionState = connection_state.toUi(),
-    lastEventTimeEpochMs = last_event_time_epoch_ms,
-    lastReceivedTimeEpochMs = last_received_time_epoch_ms,
-    staleAfterMs = stale_after_ms,
-    selectable = selectable,
-    enabled = enabled,
-    autoEligible = auto_eligible,
     active = active,
     statusLabel = status_label,
 )
@@ -940,6 +887,9 @@ private fun SituationSample.toCoreJson(json: Json): String =
 private fun OwnshipSelection.toCoreJson(json: Json): String =
     json.encodeToString(WireOwnshipSelectionSerializer, toWire())
 
+private fun CoreMapViewport.toCoreJson(json: Json): String =
+    json.encodeToString(WireMapViewport.serializer(), toWire())
+
 private fun OwnshipSourceKind.toWireName(): String = when (this) {
     OwnshipSourceKind.DeviceGps -> "device_gps"
     OwnshipSourceKind.ExternalGps -> "external_gps"
@@ -999,6 +949,8 @@ private data class WireUiChartPageState(
 private data class WireUiSessionSnapshot(
     val app_state: WireUiSnapshotAppState,
     val app_ui_state: WireAppUiState = WireAppUiState(),
+    val map_follow_ui_state: WireMapFollowUiState = WireMapFollowUiState(),
+    val map_follow_target_viewport: WireMapViewport? = null,
     val chart_page_state: WireUiChartPageState,
 )
 
@@ -1046,6 +998,8 @@ data class DerivedChartPageState(
 data class UiSessionSnapshot(
     val appState: UiSnapshotAppState,
     val appUiState: AppUiState,
+    val mapFollowUiState: MapFollowUiState,
+    val mapFollowTargetViewport: CoreMapViewport?,
     val chartPageState: UiChartPageState,
 )
 
@@ -1073,6 +1027,8 @@ private fun WireUiChartPageState.toUi() = UiChartPageState(
 private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     appState = app_state.toUi(),
     appUiState = app_ui_state.toUi(),
+    mapFollowUiState = map_follow_ui_state.toUi(),
+    mapFollowTargetViewport = map_follow_target_viewport?.toUi(),
     chartPageState = chart_page_state.toUi(),
 )
 
@@ -1103,6 +1059,27 @@ private data class WireMapViewport(
     val zoom: Double,
     val rotation_deg: Double,
     val pitch_deg: Double,
+)
+
+private fun WireMapViewport.toUi() = CoreMapViewport(
+    center = center.toUi(),
+    zoom = zoom,
+    rotationDeg = rotation_deg,
+    pitchDeg = pitch_deg,
+)
+
+private fun CoreMapViewport.toWire() = WireMapViewport(
+    center = center.toWire(),
+    zoom = zoom,
+    rotation_deg = rotationDeg,
+    pitch_deg = pitchDeg,
+)
+
+private fun MapViewportState.toCoreViewport() = CoreMapViewport(
+    center = viewportCenterLatLon(this).let { LatLonPoint(lat = it.first, lon = it.second) },
+    zoom = zoom,
+    rotationDeg = 0.0,
+    pitchDeg = 0.0,
 )
 
 private fun PointTilePayload.toWire() = WirePointTilePayload(

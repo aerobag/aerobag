@@ -837,6 +837,46 @@ pub fn select_ownship_source_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn engage_map_follow_in_session_json(
+    handle: u64,
+    viewport_json: &str,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::engage_map_follow_in_session(handle as u32, viewport).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn disengage_map_follow_in_session_json(
+    handle: u64,
+    viewport_json: &str,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::disengage_map_follow_in_session(handle as u32, viewport).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn set_map_follow_offset_in_session_json(
+    handle: u64,
+    viewport_json: &str,
+    offset_x_px: f64,
+    offset_y_px: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::set_map_follow_offset_in_session(
+        handle as u32,
+        viewport,
+        offset_x_px,
+        offset_y_px,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn select_chart_in_session_json(handle: u64, chart_id_json: &str) -> Result<String, String> {
     let chart_id: String = serde_json::from_str(chart_id_json).map_err(|err| err.to_string())?;
     let snapshot =
@@ -1734,6 +1774,55 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sel
     let result = (|| {
         let selection_json = get_java_string(&mut env, selection_json)?;
         select_ownship_source_in_session_json(handle as u64, &selection_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_engageMapFollowInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    viewport_json: JString,
+) -> jstring {
+    let result = (|| {
+        let viewport_json = get_java_string(&mut env, viewport_json)?;
+        engage_map_follow_in_session_json(handle as u64, &viewport_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_disengageMapFollowInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    viewport_json: JString,
+) -> jstring {
+    let result = (|| {
+        let viewport_json = get_java_string(&mut env, viewport_json)?;
+        disengage_map_follow_in_session_json(handle as u64, &viewport_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setMapFollowOffsetInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    viewport_json: JString,
+    offset_x_px: f64,
+    offset_y_px: f64,
+) -> jstring {
+    let result = (|| {
+        let viewport_json = get_java_string(&mut env, viewport_json)?;
+        set_map_follow_offset_in_session_json(
+            handle as u64,
+            &viewport_json,
+            offset_x_px,
+            offset_y_px,
+        )
     })();
     return_string(&mut env, result)
 }

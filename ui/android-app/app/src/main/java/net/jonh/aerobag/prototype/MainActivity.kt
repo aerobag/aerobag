@@ -127,6 +127,7 @@ import net.jonh.aerobag.prototype.domain.AirwayEntryCandidate
 import net.jonh.aerobag.prototype.domain.AirwayExitCandidate
 import net.jonh.aerobag.prototype.domain.AirwaySuggestion
 import net.jonh.aerobag.prototype.domain.ConcretizedNavItem
+import net.jonh.aerobag.prototype.domain.CoreMapViewport
 import net.jonh.aerobag.prototype.domain.FlightPlanUiMutation
 import net.jonh.aerobag.prototype.domain.FlightPlanDisplayRowKind
 import net.jonh.aerobag.prototype.domain.FlightPlanDisplayRowUiView
@@ -136,6 +137,7 @@ import net.jonh.aerobag.prototype.domain.FlightPlanRouteSegment
 import net.jonh.aerobag.prototype.domain.FlightPlanUiState
 import net.jonh.aerobag.prototype.domain.LatLonPoint
 import net.jonh.aerobag.prototype.domain.MapChartFamily
+import net.jonh.aerobag.prototype.domain.MapFollowUiState
 import net.jonh.aerobag.prototype.domain.MapOverlayQueryResult
 import net.jonh.aerobag.prototype.domain.MapView
 import net.jonh.aerobag.prototype.domain.MapViewportState
@@ -183,6 +185,7 @@ import net.jonh.aerobag.prototype.domain.zoomImageAroundPoint
 import kotlinx.serialization.json.Json
 import java.io.BufferedInputStream
 import java.util.zip.ZipInputStream
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -709,6 +712,20 @@ private fun createInitialSituationViewport(mapView: MapView): MapViewportState {
     )
 }
 
+private fun mapViewportFromCore(viewport: CoreMapViewport): MapViewportState {
+    val center = latLonToWorld(viewport.center.lat, viewport.center.lon)
+    return MapViewportState(
+        centerWorldX = center.x,
+        centerWorldY = center.y,
+        zoom = viewport.zoom,
+    )
+}
+
+private fun sameMapViewport(left: MapViewportState, right: MapViewportState): Boolean =
+    abs(left.centerWorldX - right.centerWorldX) < 1e-9 &&
+        abs(left.centerWorldY - right.centerWorldY) < 1e-9 &&
+        abs(left.zoom - right.zoom) < 1e-9
+
 @Composable
 private fun SituationStatusBadge(
     ownship: OwnshipRenderState,
@@ -1210,9 +1227,12 @@ private fun AerobagApp() {
                     uiSession = uiSession,
                     uiTheme = uiTheme,
                     ownship = appUiState.ownship.render,
+                    mapFollowUiState = sessionSnapshot.mapFollowUiState,
+                    mapFollowTargetViewport = sessionSnapshot.mapFollowTargetViewport,
                     selectedMapId = selectedMapId,
                     viewport = mapViewport,
                     onViewportChange = { mapViewport = it },
+                    onSessionSnapshotChange = { sessionSnapshot = it },
                     onSelectMapId = {
                         restoreSnapshot(
                             currentSnapshot().copy(
@@ -1327,9 +1347,12 @@ private fun MapExplorerPage(
     uiSession: NativeUiSession,
     uiTheme: UiTheme,
     ownship: OwnshipRenderState,
+    mapFollowUiState: MapFollowUiState,
+    mapFollowTargetViewport: CoreMapViewport?,
     selectedMapId: String,
     viewport: MapViewportState,
     onViewportChange: (MapViewportState) -> Unit,
+    onSessionSnapshotChange: (net.jonh.aerobag.prototype.domain.UiSessionSnapshot) -> Unit,
     onSelectMapId: (String) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
@@ -1463,6 +1486,40 @@ private fun MapExplorerPage(
             }
         }
     }
+
+    fun syncFollowStateForViewport(nextViewport: MapViewportState) {
+        if (!mapFollowUiState.following || surfaceWidthUnits <= 0f || surfaceHeightUnits <= 0f) {
+            return
+        }
+        val overlay = resolveSituationOverlay(
+            ownship = ownship,
+            viewport = nextViewport,
+            widthUnits = surfaceWidthUnits,
+            heightUnits = surfaceHeightUnits,
+        )
+        if (overlay == null) {
+            runCatching { uiSession.disengageMapFollow(nextViewport) }.onSuccess(onSessionSnapshotChange)
+            return
+        }
+        val point = overlay.pointUnits
+        if (point.x < 0f || point.x > surfaceWidthUnits || point.y < 0f || point.y > surfaceHeightUnits) {
+            runCatching { uiSession.disengageMapFollow(nextViewport) }.onSuccess(onSessionSnapshotChange)
+            return
+        }
+        runCatching {
+            uiSession.setMapFollowOffset(
+                nextViewport,
+                (point.x - surfaceWidthUnits / 2f).toDouble(),
+                (point.y - surfaceHeightUnits / 2f).toDouble(),
+            )
+        }.onSuccess(onSessionSnapshotChange)
+    }
+
+    fun updateViewport(nextViewport: MapViewportState) {
+        onViewportChange(nextViewport)
+        syncFollowStateForViewport(nextViewport)
+    }
+
     val aircraftDrawable = remember(context) { AppCompatResources.getDrawable(context, R.drawable.plan_view_icon)?.mutate() }
     val outlinePaint = remember {
         Paint().apply {
@@ -1617,6 +1674,21 @@ private fun MapExplorerPage(
             focusRequester.requestFocus()
         }
     }
+    LaunchedEffect(uiSession, mapFollowUiState.following, mapFollowTargetViewport, viewport) {
+        if (mapFollowUiState.following && mapFollowTargetViewport == null) {
+            runCatching { uiSession.engageMapFollow(viewport) }.onSuccess(onSessionSnapshotChange)
+        }
+    }
+    LaunchedEffect(mapFollowUiState.following, mapFollowTargetViewport) {
+        if (!mapFollowUiState.following) {
+            return@LaunchedEffect
+        }
+        val target = mapFollowTargetViewport ?: return@LaunchedEffect
+        val nextViewport = mapViewportFromCore(target)
+        if (!sameMapViewport(nextViewport, viewport)) {
+            onViewportChange(nextViewport)
+        }
+    }
     LaunchedEffect(uiSession, viewport, surfaceSize) {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             mapOverlayError = null
@@ -1678,7 +1750,7 @@ private fun MapExplorerPage(
                 if (surfaceWidthUnits == 0f || surfaceHeightUnits == 0f || pageTrayOpen || chartTrayOpen) {
                     false
                 } else {
-                    onViewportChange(
+                    updateViewport(
                         zoomAroundPoint(
                             viewport = viewport,
                             mapView = selectedMap.mapView,
@@ -1738,7 +1810,7 @@ private fun MapExplorerPage(
                     -> -0.35
                     else -> return@onPreviewKeyEvent false
                 }
-                onViewportChange(
+                updateViewport(
                     zoomAroundPoint(
                         viewport = viewportState.value,
                         mapView = selectedMap.mapView,
@@ -1775,7 +1847,7 @@ private fun MapExplorerPage(
                                 pinchSnapshot = null
                             } else {
                                 val last = dragLastPosition ?: change.position
-                                onViewportChange(
+                                updateViewport(
                                     dragViewport(
                                         viewportState.value,
                                         dx = with(density) { (change.position.x - last.x).toDp().value },
@@ -1797,7 +1869,7 @@ private fun MapExplorerPage(
                                     heightPx = surfaceHeightUnits,
                                 )
                             }
-                            onViewportChange(
+                            updateViewport(
                                 applyPinchGesture(
                                     snapshot = pinchSnapshot,
                                     currentFirst = ScreenPoint(with(density) { first.position.x.toDp().value }, with(density) { first.position.y.toDp().value }),
@@ -1834,7 +1906,7 @@ private fun MapExplorerPage(
                         }
                         val dxPx = event.x - motionDragLastX
                         val dyPx = event.y - motionDragLastY
-                        onViewportChange(
+                        updateViewport(
                             dragViewport(
                                 viewportState.value,
                                 dx = with(density) { dxPx.toDp().value },
@@ -1854,7 +1926,7 @@ private fun MapExplorerPage(
                 if (event.action == MotionEvent.ACTION_SCROLL) {
                     val wheelDelta = event.getAxisValue(MotionEvent.AXIS_VSCROLL).takeIf { it != 0f }
                         ?: event.getAxisValue(MotionEvent.AXIS_SCROLL)
-                    onViewportChange(
+                    updateViewport(
                         zoomAroundPoint(
                             viewport = viewportState.value,
                             mapView = selectedMap.mapView,
@@ -2135,6 +2207,20 @@ private fun MapExplorerPage(
             onToggle = {
                 chartTrayOpen = !chartTrayOpen
                 pageTrayOpen = false
+            },
+        )
+
+        CompactSquareButton(
+            label = "CTR",
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = ThumbGap, bottom = ThumbGap)
+                .size(ThumbSize),
+            enabled = mapFollowUiState.canCenterHere,
+            selected = mapFollowUiState.following,
+            selectedColor = Color(0xFF0D6F67),
+            onClick = {
+                runCatching { uiSession.engageMapFollow(viewport) }.onSuccess(onSessionSnapshotChange)
             },
         )
 

@@ -2307,8 +2307,23 @@ function PlaybackWidget(props: {
         </button>
       </div>
       <div className="playbackWidgetRow">
-        <button type="button" className="playbackWidgetButton" disabled={!canControl || playbackUiState.status === "empty"} onClick={() => void playPause()}>
-          {playbackUiState.status === "playing" ? "⏸" : "▶"}
+        <button
+          type="button"
+          className="playbackWidgetButton playbackWidgetMediaButton"
+          disabled={!canControl || playbackUiState.status === "empty"}
+          onClick={() => void playPause()}
+          aria-label={playbackUiState.status === "playing" ? "Pause playback" : "Play playback"}
+        >
+          {playbackUiState.status === "playing" ? (
+            <svg className="playbackWidgetMediaIcon" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="7" y="6" width="3.5" height="12" rx="0.8" />
+              <rect x="13.5" y="6" width="3.5" height="12" rx="0.8" />
+            </svg>
+          ) : (
+            <svg className="playbackWidgetMediaIcon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8 6.5v11l9-5.5z" />
+            </svg>
+          )}
         </button>
         <label className="playbackWidgetRateLabel">
           SPD

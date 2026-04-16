@@ -4068,7 +4068,8 @@ private fun PlaybackWidget(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     PlaybackSmallButton(
-                        label = if (playbackUiState.status == PlaybackStatus.Playing) "⏸" else "▶",
+                        label = "",
+                        icon = if (playbackUiState.status == PlaybackStatus.Playing) PlaybackButtonIcon.Pause else PlaybackButtonIcon.Play,
                         enabled = playbackUiState.status != PlaybackStatus.Empty,
                         onClick = {
                             scope.launch {
@@ -4143,12 +4144,13 @@ private fun PlaybackSmallButton(
     label: String,
     enabled: Boolean,
     onClick: () -> Unit,
+    icon: PlaybackButtonIcon? = null,
 ) {
     Surface(
         modifier =
             Modifier
                 .height(ThumbSize * 0.42f)
-                .widthIn(min = ThumbSize * 0.86f)
+                .then(if (icon == null) Modifier.widthIn(min = ThumbSize * 0.86f) else Modifier.width(ThumbSize * 0.42f))
                 .then(
                     if (enabled) {
                         Modifier.clickable(
@@ -4164,13 +4166,66 @@ private fun PlaybackSmallButton(
         contentColor = Color.White,
         border = BorderStroke(1.dp, Color(0x24132129)),
     ) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = ThumbSize * 0.14f)) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.ExtraBold,
-                color = Color.White,
-            )
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = if (icon == null) Modifier.padding(horizontal = ThumbSize * 0.14f) else Modifier.fillMaxSize(),
+        ) {
+            if (icon == null) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color.White,
+                )
+            } else {
+                PlaybackButtonIconCanvas(icon = icon)
+            }
+        }
+    }
+}
+
+private enum class PlaybackButtonIcon {
+    Play,
+    Pause,
+}
+
+@Composable
+private fun PlaybackButtonIconCanvas(icon: PlaybackButtonIcon) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        when (icon) {
+            PlaybackButtonIcon.Play -> {
+                val iconWidth = size.width * 0.34f
+                val iconHeight = size.height * 0.44f
+                val left = size.width * 0.5f - iconWidth * 0.38f
+                val top = size.height * 0.5f - iconHeight * 0.5f
+                val path =
+                    Path().apply {
+                        moveTo(left, top)
+                        lineTo(left, top + iconHeight)
+                        lineTo(left + iconWidth, top + iconHeight * 0.5f)
+                        close()
+                    }
+                drawPath(path = path, color = Color.White)
+            }
+            PlaybackButtonIcon.Pause -> {
+                val barWidth = size.width * 0.12f
+                val barHeight = size.height * 0.44f
+                val gap = size.width * 0.08f
+                val left = size.width * 0.5f - gap * 0.5f - barWidth
+                val top = size.height * 0.5f - barHeight * 0.5f
+                drawRoundRect(
+                    color = Color.White,
+                    topLeft = Offset(left, top),
+                    size = Size(barWidth, barHeight),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(barWidth * 0.28f, barWidth * 0.28f),
+                )
+                drawRoundRect(
+                    color = Color.White,
+                    topLeft = Offset(left + barWidth + gap, top),
+                    size = Size(barWidth, barHeight),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(barWidth * 0.28f, barWidth * 0.28f),
+                )
+            }
         }
     }
 }

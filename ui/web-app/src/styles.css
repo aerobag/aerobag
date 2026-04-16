@@ -812,6 +812,23 @@ button {
   opacity: 0.45;
 }
 
+.playbackWidgetMediaButton {
+  width: calc(var(--thumb) * 0.42);
+  min-width: calc(var(--thumb) * 0.42);
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+}
+
+.playbackWidgetMediaIcon {
+  width: calc(var(--thumb) * 0.24);
+  height: calc(var(--thumb) * 0.24);
+  display: block;
+  fill: currentColor;
+}
+
 .playbackWidgetRateLabel {
   min-width: 0;
   flex: 1 1 auto;

@@ -2308,7 +2308,7 @@ function PlaybackWidget(props: {
       </div>
       <div className="playbackWidgetRow">
         <button type="button" className="playbackWidgetButton" disabled={!canControl || playbackUiState.status === "empty"} onClick={() => void playPause()}>
-          {playbackUiState.status === "playing" ? "PAUSE" : "PLAY"}
+          {playbackUiState.status === "playing" ? "⏸" : "▶"}
         </button>
         <label className="playbackWidgetRateLabel">
           SPD

@@ -4068,7 +4068,7 @@ private fun PlaybackWidget(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     PlaybackSmallButton(
-                        label = if (playbackUiState.status == PlaybackStatus.Playing) "PAUSE" else "PLAY",
+                        label = if (playbackUiState.status == PlaybackStatus.Playing) "⏸" else "▶",
                         enabled = playbackUiState.status != PlaybackStatus.Empty,
                         onClick = {
                             scope.launch {

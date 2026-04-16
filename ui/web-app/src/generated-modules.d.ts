@@ -48,6 +48,7 @@ declare module "@generated/app_wasm.js" {
   export const engage_map_follow_in_session: (...args: unknown[]) => string;
   export const disengage_map_follow_in_session: (...args: unknown[]) => string;
   export const set_map_follow_offset_in_session: (...args: unknown[]) => string;
+  export const sync_map_follow_in_session: (...args: unknown[]) => string;
   export const load_playback_trace_in_session: (...args: unknown[]) => string;
   export const play_playback_in_session: (...args: unknown[]) => string;
   export const pause_playback_in_session: (...args: unknown[]) => string;

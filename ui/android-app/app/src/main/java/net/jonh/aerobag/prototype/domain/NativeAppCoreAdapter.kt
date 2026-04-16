@@ -578,6 +578,12 @@ class NativeUiSession internal constructor(
         return json.decodeFromString<WireMapOverlayQueryResult>(resultJson).toUi()
     }
 
+    fun syncMapFollow(viewport: MapViewportState, widthPx: Double, heightPx: Double): UiSessionSnapshot {
+        val viewportJson = json.encodeToString(viewport.toWire())
+        snapshot = decodeSnapshot(bridge.syncMapFollowInSessionJson(handle, viewportJson, widthPx, heightPx))
+        return snapshot
+    }
+
     fun destroy() {
         bridge.destroySession(handle)
     }

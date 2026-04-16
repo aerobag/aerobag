@@ -56,6 +56,7 @@ describe("loadBestAvailableAdapter", () => {
       engage_map_follow_in_session: async () => snapshotJson,
       disengage_map_follow_in_session: async () => snapshotJson,
       set_map_follow_offset_in_session: async () => snapshotJson,
+      sync_map_follow_in_session: async () => snapshotJson,
       load_playback_trace_in_session: async () => snapshotJson,
       play_playback_in_session: async () => snapshotJson,
       pause_playback_in_session: async () => snapshotJson,

@@ -159,6 +159,7 @@ export interface UiSession {
   engageMapFollow(viewport: MapViewportState): Promise<UiSessionSnapshot>;
   disengageMapFollow(viewport: MapViewportState): Promise<UiSessionSnapshot>;
   setMapFollowOffset(viewport: MapViewportState, offsetXPx: number, offsetYPx: number): Promise<UiSessionSnapshot>;
+  syncMapFollow(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<UiSessionSnapshot>;
   registerOwnshipSource(registration: OwnshipSourceRegistration): Promise<UiSessionSnapshot>;
   updateOwnshipSourceStatus(update: OwnshipSourceStatusUpdate): Promise<UiSessionSnapshot>;
   pushSituationSample(sample: SituationSample): Promise<UiSessionSnapshot>;
@@ -276,6 +277,7 @@ type WasmModule = {
   engage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
   disengage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
   set_map_follow_offset_in_session(handle: number, viewportJson: string, offsetXPx: number, offsetYPx: number): Promise<string> | string;
+  sync_map_follow_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   load_playback_trace_in_session(handle: number, sourcePathJson: string, traceJson: string): Promise<string> | string;
   play_playback_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
   pause_playback_in_session(handle: number, nowEpochMs: number): Promise<string> | string;
@@ -560,6 +562,19 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               JSON.stringify(coreViewportForMap(viewport)),
               offsetXPx,
               offsetYPx,
+            ),
+          ) as UiSessionSnapshot,
+        );
+        return snapshot;
+      },
+      syncMapFollow: async (viewport, widthPx, heightPx) => {
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(
+            await this.module.sync_map_follow_in_session(
+              handle,
+              JSON.stringify(coreViewportForMap(viewport)),
+              widthPx,
+              heightPx,
             ),
           ) as UiSessionSnapshot,
         );
@@ -1029,6 +1044,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.engage_map_follow_in_session !== "function" ||
     typeof mod.disengage_map_follow_in_session !== "function" ||
     typeof mod.set_map_follow_offset_in_session !== "function" ||
+    typeof mod.sync_map_follow_in_session !== "function" ||
     typeof mod.load_playback_trace_in_session !== "function" ||
     typeof mod.play_playback_in_session !== "function" ||
     typeof mod.pause_playback_in_session !== "function" ||

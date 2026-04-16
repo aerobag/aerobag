@@ -981,6 +981,19 @@ pub fn get_map_overlay_in_session_json(
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
 }
 
+pub fn sync_map_follow_in_session_json(
+    handle: u64,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::sync_map_follow_in_session(handle as u32, viewport, width_px, height_px)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn destroy_session_json(handle: u64) {
     app_core::destroy_session(handle as u32);
 }
@@ -2032,6 +2045,22 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
     let result = (|| {
         let viewport = get_java_string(&mut env, viewport_json)?;
         get_map_overlay_in_session_json(handle as u64, &viewport, width_px, height_px)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_syncMapFollowInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    viewport_json: JString,
+    width_px: f64,
+    height_px: f64,
+) -> jstring {
+    let result = (|| {
+        let viewport = get_java_string(&mut env, viewport_json)?;
+        sync_map_follow_in_session_json(handle as u64, &viewport, width_px, height_px)
     })();
     return_string(&mut env, result)
 }

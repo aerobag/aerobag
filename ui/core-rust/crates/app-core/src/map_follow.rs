@@ -61,6 +61,41 @@ impl MapFollowSessionState {
         }
     }
 
+    pub fn sync_for_viewport(
+        &mut self,
+        ownship: &OwnshipRenderState,
+        viewport: MapViewport,
+        width_px: f64,
+        height_px: f64,
+    ) {
+        self.current_viewport = Some(viewport);
+        if !self.following || width_px <= 0.0 || height_px <= 0.0 {
+            return;
+        }
+        let Some(position) = ownship.position else {
+            self.following = false;
+            return;
+        };
+        let point = world_to_screen(
+            viewport,
+            lat_lon_to_world(position),
+            width_px,
+            height_px,
+        );
+        if !point.x.is_finite()
+            || !point.y.is_finite()
+            || point.x < 0.0
+            || point.x > width_px
+            || point.y < 0.0
+            || point.y > height_px
+        {
+            self.following = false;
+            return;
+        }
+        self.anchor_offset_x_px = point.x - width_px / 2.0;
+        self.anchor_offset_y_px = point.y - height_px / 2.0;
+    }
+
     pub fn target_viewport(&self, ownship: &OwnshipRenderState) -> Option<MapViewport> {
         self.current_viewport
             .map(|viewport| self.resolve_viewport(ownship, viewport))
@@ -106,6 +141,20 @@ fn world_to_lat_lon(x: f64, y: f64) -> LatLon {
     let n = std::f64::consts::PI - (2.0 * std::f64::consts::PI * y) / WORLD_SIZE;
     let lat = n.sinh().atan().to_degrees();
     LatLon { lat, lon }
+}
+
+fn world_to_screen(
+    viewport: MapViewport,
+    world: WorldPoint,
+    width_px: f64,
+    height_px: f64,
+) -> WorldPoint {
+    let scale = 2.0_f64.powf(viewport.zoom);
+    let center = lat_lon_to_world(viewport.center);
+    WorldPoint {
+        x: (world.x - center.x) * scale + width_px / 2.0,
+        y: (world.y - center.y) * scale + height_px / 2.0,
+    }
 }
 
 #[cfg(test)]
@@ -156,5 +205,36 @@ mod tests {
         state.set_anchor_offset(viewport, 128.0, 64.0);
         let update = state.target_viewport(&ownship).unwrap();
         assert_ne!(update.center, viewport.center);
+    }
+
+    #[test]
+    fn sync_for_viewport_updates_anchor_from_ownship_screen_position() {
+        let mut state = MapFollowSessionState::default();
+        let viewport = MapViewport {
+            center: LatLon { lat: 47.5, lon: -122.3 },
+            zoom: 8.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        state.engage(viewport);
+        let ownship = ownship(47.45, -122.25);
+        state.sync_for_viewport(&ownship, viewport, 800.0, 600.0);
+        let update = state.target_viewport(&ownship).unwrap();
+        assert_ne!(update.center, viewport.center);
+        assert!(state.following);
+    }
+
+    #[test]
+    fn sync_for_viewport_disengages_when_ownship_leaves_viewport() {
+        let mut state = MapFollowSessionState::default();
+        let viewport = MapViewport {
+            center: LatLon { lat: 47.5, lon: -122.3 },
+            zoom: 8.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        state.engage(viewport);
+        state.sync_for_viewport(&ownship(0.0, 0.0), viewport, 800.0, 600.0);
+        assert!(!state.following);
     }
 }

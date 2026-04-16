@@ -280,6 +280,13 @@ interface NativeBridge {
         heightPx: Double,
     ): String
 
+    fun syncMapFollowInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+    ): String
+
     fun destroySession(handle: Long)
 
     fun removeFlightPlanLegJson(
@@ -597,6 +604,13 @@ object NativeBindings : NativeBridge {
     ): String
 
     external override fun getMapOverlayInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+    ): String
+
+    external override fun syncMapFollowInSessionJson(
         handle: Long,
         viewportJson: String,
         widthPx: Double,

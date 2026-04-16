@@ -1495,18 +1495,8 @@ function MapPage(props: {
     if (!uiSession || !mapFollowUiState.following || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
-    const overlay = resolveSituationOverlay(ownship, nextViewport, surfaceSize.width, surfaceSize.height);
-    if (!overlay) {
-      void uiSession.disengageMapFollow(nextViewport).then(props.onPlaybackSnapshotChange).catch(() => {});
-      return;
-    }
-    const point = overlay.point;
-    if (!point || point.x < 0 || point.x > surfaceSize.width || point.y < 0 || point.y > surfaceSize.height) {
-      void uiSession.disengageMapFollow(nextViewport).then(props.onPlaybackSnapshotChange).catch(() => {});
-      return;
-    }
     void uiSession
-      .setMapFollowOffset(nextViewport, point.x - surfaceSize.width / 2, point.y - surfaceSize.height / 2)
+      .syncMapFollow(nextViewport, surfaceSize.width, surfaceSize.height)
       .then(props.onPlaybackSnapshotChange)
       .catch(() => {});
   }

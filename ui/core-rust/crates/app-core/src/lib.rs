@@ -102,7 +102,7 @@ pub use session::{
     restore_chart_page_state_in_session, select_airport_in_session, select_chart_in_session,
     seek_playback_in_session, set_playback_rate_in_session, set_situation_in_session,
     tick_playback_in_session, disengage_map_follow_in_session, engage_map_follow_in_session,
-    set_map_follow_offset_in_session,
+    set_map_follow_offset_in_session, sync_map_follow_in_session,
     select_ownship_source_in_session,
     update_ownship_source_status_in_session,
     UiChartPageState, UiSessionInitResult, UiSessionSnapshot,

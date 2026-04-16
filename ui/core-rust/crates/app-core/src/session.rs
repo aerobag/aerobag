@@ -445,6 +445,20 @@ pub fn set_map_follow_offset_in_session(
     Ok(snapshot_for_session(session))
 }
 
+pub fn sync_map_follow_in_session(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session
+        .map_follow
+        .sync_for_viewport(&session.app_state.ownship.render, viewport, width_px, height_px);
+    Ok(snapshot_for_session(session))
+}
+
 pub fn restore_chart_page_state_in_session(
     handle: u32,
     recent_airport_ids: &[String],

@@ -60,6 +60,7 @@ Standalone artifacts:
 - `tfrs_<sha256>.zip`
 - `metars_<sha256>.zip`
 - `nexrad_<sha256>.zip`
+- `geo_<sha256>.zip`
 
 Operational files:
 
@@ -89,6 +90,8 @@ current_artifacts_YYYYMMDD.json
 │   ├── tfrs_<sha256>.zip
 │   ├── metars_<sha256>.zip
 │   └── nexrad_<sha256>.zip
+├── static_products[]
+│   └── geo_<sha256>.zip
 └── obstacles
     └── obstacles_<sha256>.zip
 
@@ -182,6 +185,7 @@ It answers:
 - what date this publication set represents
 - which bundle manifests are current
 - which obstacle zip is current
+- which optional standalone static products are current
 - which standalone fast products are current
 
 It does not replace `bundle_YYCC.json`.
@@ -223,6 +227,17 @@ Per-cycle vector-data package.
 Standalone content-addressed obstacle artifact.
 
 It is not owned by one cycle in the same way as chart/data/TPP packages.
+
+
+### `geo_<sha256>.zip`
+
+Optional standalone static geo grid artifact.
+
+It contains Avare-compatible `geo.csv` with one-degree grid rows:
+`Latitude,Longitude,geoid_height,magnetic_declination`.
+
+It is referenced from `current_artifacts_YYYYMMDD.json` under `static_products[]`,
+not from any per-cycle bundle, so consumers fetch it only if they explicitly need it.
 
 
 ## Non-Goals

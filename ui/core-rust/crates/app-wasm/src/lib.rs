@@ -58,13 +58,13 @@ pub fn move_component_ui(
 }
 
 #[wasm_bindgen]
-pub fn insert_airport_waypoint_ui(
+pub fn insert_waypoint_ui(
     plan_json: &str,
     component_index: usize,
     before: bool,
-    airport_id: &str,
+    waypoint_json: &str,
 ) -> Result<String, JsValue> {
-    insert_airport_waypoint_ui_json(plan_json, component_index, before, airport_id)
+    insert_waypoint_ui_json(plan_json, component_index, before, waypoint_json)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -263,6 +263,11 @@ pub fn web_materialize_airway_selection(
         destination_anchor_json,
     )
     .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn web_resolve_waypoint_identifier(identifier: &str) -> Result<String, JsValue> {
+    web_navdb::resolve_waypoint_identifier_json(identifier).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -808,15 +813,17 @@ fn move_component_ui_json(
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
-fn insert_airport_waypoint_ui_json(
+fn insert_waypoint_ui_json(
     plan_json: &str,
     component_index: usize,
     before: bool,
-    airport_id: &str,
+    waypoint_json: &str,
 ) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::insert_airport_waypoint_ui(&plan, component_index, before, airport_id)
+    let waypoint: app_core::NavRef =
+        serde_json::from_str(waypoint_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::insert_waypoint_ui(&plan, component_index, before, waypoint)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }

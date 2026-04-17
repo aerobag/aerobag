@@ -98,6 +98,11 @@ pub fn materialize_airway_selection_json(
     serde_json::to_string(&response).map_err(|err| err.to_string())
 }
 
+pub fn resolve_waypoint_identifier_json(identifier: &str) -> Result<String, String> {
+    let nav_ref = classify_identifier(identifier).map_err(|err| err.to_string())?;
+    serde_json::to_string(&nav_ref).map_err(|err| err.to_string())
+}
+
 pub fn project_flight_plan_route_json(plan_json: &str) -> Result<String, String> {
     let plan: FlightPlan = serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let plan = app_core::build_flight_plan(plan).map_err(|err| err.to_string())?;

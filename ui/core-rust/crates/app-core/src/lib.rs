@@ -66,7 +66,7 @@ pub use navdb::{
     load_cifp_tpp_matches_for_plate, load_cifp_tpp_matches_for_procedure,
     load_procedure_concretized_items, load_procedure_legs, load_resolved_procedure_legs,
     materialize_airway_selection, materialize_procedure_selection, resolve_airway_segment,
-    resolve_airway_segment_by_index, resolve_nav_ref_position,
+    resolve_airway_segment_by_index, resolve_nav_ref_identifier, resolve_nav_ref_position,
     resolve_nav_ref_position_with_procedure_airport, select_airway_branch,
     suggest_airways_near,
 };
@@ -75,7 +75,7 @@ pub use planning::{
     active_guidance_leg, change_airway_entry, change_airway_exit,
     change_procedure_enroute_transition, change_procedure_runway_transition, delete_component,
     delete_waypoint_component,
-    flatten_component_to_waypoints, insert_airport_waypoint, insert_airway_between_waypoints,
+    flatten_component_to_waypoints, insert_airport_waypoint, insert_waypoint, insert_airway_between_waypoints,
     insert_airway_after_waypoint,
     insert_procedure_between_waypoints, project_ui_state,
     move_component, replace_airway_component, replace_procedure_component, sequence_active_leg, suspend_sequencing,
@@ -2094,13 +2094,13 @@ pub fn move_component_ui(
     Ok(project_plan_mutation(plan))
 }
 
-pub fn insert_airport_waypoint_ui(
+pub fn insert_waypoint_ui(
     plan: &FlightPlan,
     component_index: usize,
     before: bool,
-    airport_id: &str,
+    waypoint: NavRef,
 ) -> AppResult<FlightPlanUiMutation> {
-    let plan = insert_airport_waypoint(plan, component_index, before, airport_id)?;
+    let plan = insert_waypoint(plan, component_index, before, waypoint)?;
     Ok(project_plan_mutation(plan))
 }
 

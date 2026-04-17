@@ -974,10 +974,11 @@ export default function App() {
           }}
           onInsertAirportWaypoint={async (componentIndex, before, airportId) => {
             if (!appCoreAdapter) return;
-            if (!(await appCoreAdapter.validateAirportIdentifier(airportId))) {
-              throw new Error(`Unknown airport ${airportId}`);
+            const waypoint = await appCoreAdapter.resolveWaypointIdentifier(airportId);
+            if (!waypoint) {
+              throw new Error(`Unknown waypoint ${airportId}`);
             }
-            const mutation = await appCoreAdapter.insertAirportWaypointUi(currentPlan, componentIndex, before, airportId);
+            const mutation = await appCoreAdapter.insertWaypointUi(currentPlan, componentIndex, before, waypoint);
             await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
           onActivateLeg={async (legIndex) => {

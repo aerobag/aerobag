@@ -66,6 +66,24 @@ pub fn resolve_nav_ref_position(db_path: &Path, nav_ref: &NavRef) -> AppResult<L
     with_connection(db_path, |connection| resolve_nav_ref_position_in_db(connection, nav_ref))
 }
 
+pub fn resolve_nav_ref_identifier(db_path: &Path, identifier: &str) -> AppResult<NavRef> {
+    let trimmed = identifier.trim();
+    if trimmed.is_empty() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "waypoint id is required".to_string(),
+        });
+    }
+
+    let resolved = with_connection(db_path, |connection| classify_identifier_in_db(connection, trimmed))?;
+    resolved.ok_or_else(|| {
+        AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("unknown waypoint {trimmed}"),
+        }
+    })
+}
+
 pub fn resolve_nav_ref_position_with_procedure_airport(
     db_path: &Path,
     nav_ref: &NavRef,
@@ -1649,6 +1667,13 @@ fn classify_procedure_identifier_in_db(
     connection: &Connection,
     identifier: &str,
 ) -> rusqlite::Result<Option<NavRef>> {
+    classify_identifier_in_db(connection, identifier)
+}
+
+fn classify_identifier_in_db(
+    connection: &Connection,
+    identifier: &str,
+) -> rusqlite::Result<Option<NavRef>> {
     let trimmed = identifier.trim();
     if trimmed.is_empty() {
         return Ok(None);
@@ -1656,40 +1681,36 @@ fn classify_procedure_identifier_in_db(
     if trimmed.starts_with("RW") || trimmed.starts_with("rw") {
         return Ok(Some(NavRef::Fix(trimmed.to_string())));
     }
-    if connection
+    let exists_as_airport = connection
         .query_row(
             "SELECT LocationID FROM airports WHERE trim(LocationID) = trim(?1) LIMIT 1",
             params![trimmed],
             |row| row.get::<_, String>(0),
         )
         .optional()?
-        .is_some()
-    {
-        return Ok(Some(NavRef::Airport(trimmed.to_string())));
-    }
-    if connection
+        .is_some();
+    let exists_as_navaid = connection
         .query_row(
             "SELECT LocationID FROM nav WHERE trim(LocationID) = trim(?1) LIMIT 1",
             params![trimmed],
             |row| row.get::<_, String>(0),
         )
         .optional()?
-        .is_some()
-    {
-        return Ok(Some(NavRef::Navaid(trimmed.to_string())));
-    }
-    if connection
+        .is_some();
+    let exists_as_fix = connection
         .query_row(
             "SELECT LocationID FROM fix WHERE trim(LocationID) = trim(?1) LIMIT 1",
             params![trimmed],
             |row| row.get::<_, String>(0),
         )
         .optional()?
-        .is_some()
-    {
-        return Ok(Some(NavRef::Fix(trimmed.to_string())));
-    }
-    Ok(None)
+        .is_some();
+    Ok(crate::classify_procedure_identifier(
+        trimmed,
+        exists_as_airport,
+        exists_as_navaid,
+        exists_as_fix,
+    ))
 }
 
 fn lookup_runway_threshold_position(
@@ -1958,6 +1979,23 @@ mod tests {
         assert_eq!(points[0].airway_name, "V16");
         assert!(points.windows(2).all(|pair| pair[0].sequence <= pair[1].sequence));
         assert!(points.windows(2).any(|pair| pair[0].sequence == pair[1].sequence));
+    }
+
+    #[test]
+    fn resolves_user_waypoint_identifier_to_typed_nav_ref() {
+        assert_eq!(
+            resolve_nav_ref_identifier(fixture_db_path(), "OLM").unwrap(),
+            NavRef::Navaid("OLM".to_string()),
+        );
+        assert_eq!(
+            resolve_nav_ref_identifier(fixture_db_path(), "MALAY").unwrap(),
+            NavRef::Fix("MALAY".to_string()),
+        );
+        assert_eq!(
+            resolve_nav_ref_identifier(fixture_db_path(), "PARNO").unwrap(),
+            NavRef::Fix("PARNO".to_string()),
+        );
+        assert!(resolve_nav_ref_identifier(fixture_db_path(), "ZZZZZZ").is_err());
     }
 
     #[test]

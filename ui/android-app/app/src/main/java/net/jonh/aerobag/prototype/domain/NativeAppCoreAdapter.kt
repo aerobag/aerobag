@@ -158,6 +158,11 @@ class NativeAppCoreAdapter(
         return json.decodeFromString<WireLatLon>(nextJson).toUi()
     }
 
+    fun resolveNavRefIdentifier(dbPath: String, identifier: String): NavRef {
+        val nextJson = bridge.resolveNavRefIdentifierJson(dbPath, identifier)
+        return json.decodeFromString<WireNavRef>(nextJson).toUi()
+    }
+
     fun resolveNavRefPosition(dbPath: String, navRef: NavRef, procedureAirportId: String?): LatLonPoint {
         val nextJson =
             bridge.resolveNavRefPositionWithAirportJson(
@@ -270,8 +275,8 @@ class NativeAppCoreAdapter(
         return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
     }
 
-    fun insertAirportWaypointUi(plan: FlightPlan, componentIndex: Int, before: Boolean, airportId: String): FlightPlanUiMutation {
-        val nextJson = bridge.insertAirportWaypointUiJson(json.encodeToString(plan.toWire()), componentIndex, before, airportId)
+    fun insertWaypointUi(plan: FlightPlan, componentIndex: Int, before: Boolean, waypoint: NavRef): FlightPlanUiMutation {
+        val nextJson = bridge.insertWaypointUiJson(json.encodeToString(plan.toWire()), componentIndex, before, json.encodeToString(waypoint.toWire()))
         return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
     }
 

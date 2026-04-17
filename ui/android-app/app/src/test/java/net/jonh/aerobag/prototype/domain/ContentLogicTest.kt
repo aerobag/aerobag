@@ -312,6 +312,7 @@ private class FakeNativeBridge(
     override fun suggestAirwaysNearJson(dbPath: String, anchorJson: String, limit: Int): String = "[]"
 
     override fun resolveNavRefPositionJson(dbPath: String, navRefJson: String): String = """{"lat":0.0,"lon":0.0}"""
+    override fun resolveNavRefIdentifierJson(dbPath: String, identifier: String): String = """{"Fix":"$identifier"}"""
     override fun resolveNavRefPositionWithAirportJson(dbPath: String, navRefJson: String, airportIdJson: String): String =
         """{"lat":0.0,"lon":0.0}"""
     override fun projectFlightPlanRouteJson(dbPath: String, planJson: String): String = "[]"
@@ -358,7 +359,7 @@ private class FakeNativeBridge(
 
     override fun moveComponentUiJson(planJson: String, componentIndex: Int, delta: Int): String = activateLegUiJson(planJson, 0)
 
-    override fun insertAirportWaypointUiJson(planJson: String, componentIndex: Int, before: Boolean, airportId: String): String =
+    override fun insertWaypointUiJson(planJson: String, componentIndex: Int, before: Boolean, waypointJson: String): String =
         activateLegUiJson(planJson, 0)
 
     override fun suspendSequencingUiJson(planJson: String): String = activateLegUiJson(planJson, 0)

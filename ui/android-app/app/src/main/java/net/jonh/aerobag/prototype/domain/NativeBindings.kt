@@ -12,6 +12,11 @@ interface NativeBridge {
         navRefJson: String,
     ): String
 
+    fun resolveNavRefIdentifierJson(
+        dbPath: String,
+        identifier: String,
+    ): String
+
     fun resolveNavRefPositionWithAirportJson(
         dbPath: String,
         navRefJson: String,
@@ -74,7 +79,7 @@ interface NativeBridge {
 
     fun moveComponentUiJson(planJson: String, componentIndex: Int, delta: Int): String
 
-    fun insertAirportWaypointUiJson(planJson: String, componentIndex: Int, before: Boolean, airportId: String): String
+    fun insertWaypointUiJson(planJson: String, componentIndex: Int, before: Boolean, waypointJson: String): String
 
     fun suspendSequencingUiJson(planJson: String): String
 
@@ -349,6 +354,11 @@ object NativeBindings : NativeBridge {
         navRefJson: String,
     ): String
 
+    external override fun resolveNavRefIdentifierJson(
+        dbPath: String,
+        identifier: String,
+    ): String
+
     external override fun resolveNavRefPositionWithAirportJson(
         dbPath: String,
         navRefJson: String,
@@ -411,7 +421,7 @@ object NativeBindings : NativeBridge {
 
     external override fun moveComponentUiJson(planJson: String, componentIndex: Int, delta: Int): String
 
-    external override fun insertAirportWaypointUiJson(planJson: String, componentIndex: Int, before: Boolean, airportId: String): String
+    external override fun insertWaypointUiJson(planJson: String, componentIndex: Int, before: Boolean, waypointJson: String): String
 
     external override fun suspendSequencingUiJson(planJson: String): String
 

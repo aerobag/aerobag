@@ -2946,8 +2946,8 @@ private fun FlightPlanPage(
                                 return@AirportInsertPanel
                             }
                             runCatching {
-                                appCore.resolveNavRefPosition(navDbPath, NavRef.Airport(airportId))
-                                appCore.insertAirportWaypointUi(samplePlan, editor.componentIndex, editor.before, airportId)
+                                val waypoint = appCore.resolveNavRefIdentifier(navDbPath, airportId)
+                                appCore.insertWaypointUi(samplePlan, editor.componentIndex, editor.before, waypoint)
                             }.onSuccess { mutation ->
                                 onApplyMutation(mutation)
                                 closePanels()

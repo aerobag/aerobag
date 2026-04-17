@@ -1275,6 +1275,20 @@ pub fn insert_airport_waypoint(
         });
     }
 
+    insert_waypoint(
+        plan,
+        component_index,
+        before,
+        NavRef::Airport(airport_id),
+    )
+}
+
+pub fn insert_waypoint(
+    plan: &FlightPlan,
+    component_index: usize,
+    before: bool,
+    waypoint: NavRef,
+) -> AppResult<FlightPlan> {
     let plan = plan.clone().normalized();
     if component_index >= plan.route_components.len() {
         return Err(AppError {
@@ -1283,9 +1297,7 @@ pub fn insert_airport_waypoint(
         });
     }
 
-    let inserted = RouteComponent::Waypoint {
-        waypoint: NavRef::Airport(airport_id),
-    };
+    let inserted = RouteComponent::Waypoint { waypoint };
     let mut new_components = Vec::with_capacity(plan.route_components.len() + 1);
     let mut old_index_by_new_index = Vec::with_capacity(plan.route_components.len() + 1);
     for (old_index, component) in plan.route_components.iter().cloned().enumerate() {

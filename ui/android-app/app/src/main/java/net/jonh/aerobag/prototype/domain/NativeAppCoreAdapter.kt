@@ -163,6 +163,26 @@ class NativeAppCoreAdapter(
         return json.decodeFromString<WireNavRef>(nextJson).toUi()
     }
 
+    fun suggestWaypointIdentifiers(
+        dbPath: String,
+        plan: FlightPlan,
+        componentIndex: Int,
+        before: Boolean,
+        prefix: String,
+        limit: Int = 8,
+    ): List<WaypointIdentifierSuggestion> {
+        val nextJson =
+            bridge.suggestWaypointIdentifiersJson(
+                dbPath,
+                json.encodeToString(plan.toWire()),
+                componentIndex,
+                before,
+                prefix,
+                limit,
+            )
+        return json.decodeFromString<List<WireWaypointIdentifierSuggestion>>(nextJson).map { it.toUi() }
+    }
+
     fun resolveNavRefPosition(dbPath: String, navRef: NavRef, procedureAirportId: String?): LatLonPoint {
         val nextJson =
             bridge.resolveNavRefPositionWithAirportJson(
@@ -1230,6 +1250,13 @@ private fun WireAirwaySuggestion.toUi() = AirwaySuggestion(
     nearestBranchKey = nearest_branch_key,
     nearestNavRef = nearest_nav_ref.toUi(),
     nearestSequence = nearest_sequence,
+    distanceFromAnchorNm = distance_from_anchor_nm,
+)
+
+private fun WireWaypointIdentifierSuggestion.toUi() = WaypointIdentifierSuggestion(
+    identifier = identifier,
+    navRef = nav_ref.toUi(),
+    kind = kind,
     distanceFromAnchorNm = distance_from_anchor_nm,
 )
 

@@ -271,6 +271,24 @@ pub fn web_resolve_waypoint_identifier(identifier: &str) -> Result<String, JsVal
 }
 
 #[wasm_bindgen]
+pub fn web_suggest_waypoint_identifiers(
+    plan_json: &str,
+    component_index: usize,
+    before: bool,
+    prefix: &str,
+    limit: usize,
+) -> Result<String, JsValue> {
+    web_navdb::suggest_waypoint_identifiers_json(
+        plan_json,
+        component_index,
+        before,
+        prefix,
+        limit,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn replace_airway_materialized_ui(
     plan_json: &str,
     component_index: usize,

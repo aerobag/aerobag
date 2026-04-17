@@ -8,10 +8,11 @@ use crate::navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
     AirwayExitSelection, AirwayFixPoint, AirwayPoint, AirwaySuggestion, MaterializedProcedure,
     CifpTppMatchRow, ProcedureLegRecord, ProcedureOptions, ProcedureSpecChoice,
-    ProcedureSummary, ProcedureVariantKey,
+    ProcedureSummary, ProcedureVariantKey, WaypointIdentifierSuggestion,
 };
 use crate::planning::{
-    interpret_path_termination, AirwaySegment, ConcretizedNavItem, NavRef,
+    interpret_path_termination, AirwaySegment, ConcretizedNavItem, FlightPlan, NavRef,
+    RouteComponent,
     ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegmentRole,
     ResolvedLeg, ResolvedLegSource,
 };
@@ -81,6 +82,83 @@ pub fn resolve_nav_ref_identifier(db_path: &Path, identifier: &str) -> AppResult
             kind: AppErrorKind::InvalidFlightPlan,
             message: format!("unknown waypoint {trimmed}"),
         }
+    })
+}
+
+pub fn suggest_waypoint_identifiers(
+    db_path: &Path,
+    plan: &FlightPlan,
+    component_index: usize,
+    before: bool,
+    prefix: &str,
+    limit: usize,
+) -> AppResult<Vec<WaypointIdentifierSuggestion>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let prefix = prefix.trim().to_ascii_uppercase();
+    if prefix.is_empty() {
+        return Ok(Vec::new());
+    }
+    let anchor = component_insert_anchor(plan, component_index, before)?;
+    with_connection(db_path, |connection| {
+        let anchor_position = resolve_nav_ref_position_in_db(connection, &anchor)?;
+        let query_limit = (limit.max(16) * 16).min(512) as i64;
+        let like_prefix = format!("{prefix}%");
+        let mut stmt = connection.prepare(
+            "SELECT identifier, kind, lat, lon FROM (
+                SELECT trim(LocationID) AS identifier, 'airport' AS kind,
+                       CAST(ARPLatitude AS REAL) AS lat, CAST(ARPLongitude AS REAL) AS lon
+                  FROM airports
+                 WHERE trim(LocationID) LIKE ?1
+                UNION ALL
+                SELECT trim(LocationID) AS identifier, 'navaid' AS kind,
+                       CAST(ARPLatitude AS REAL) AS lat, CAST(ARPLongitude AS REAL) AS lon
+                  FROM nav
+                 WHERE trim(LocationID) LIKE ?1
+                UNION ALL
+                SELECT trim(LocationID) AS identifier, 'fix' AS kind,
+                       CAST(ARPLatitude AS REAL) AS lat, CAST(ARPLongitude AS REAL) AS lon
+                  FROM fix
+                 WHERE trim(LocationID) LIKE ?1
+            )
+            WHERE identifier <> ''
+            ORDER BY length(identifier), identifier, kind
+            LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![like_prefix, query_limit], |row| {
+            let identifier: String = row.get(0)?;
+            let kind: String = row.get(1)?;
+            let position = LatLon {
+                lat: row.get(2)?,
+                lon: row.get(3)?,
+            };
+            Ok((identifier, kind, position))
+        })?;
+        let mut suggestions = Vec::new();
+        for row in rows {
+            let (identifier, kind, position) = row?;
+            let nav_ref = match kind.as_str() {
+                "airport" => NavRef::Airport(identifier.clone()),
+                "navaid" => NavRef::Navaid(identifier.clone()),
+                _ => NavRef::Fix(identifier.clone()),
+            };
+            suggestions.push(WaypointIdentifierSuggestion {
+                identifier,
+                nav_ref,
+                kind,
+                distance_from_anchor_nm: distance_nm(anchor_position, position),
+            });
+        }
+        suggestions.sort_by(|left, right| {
+            left.distance_from_anchor_nm
+                .partial_cmp(&right.distance_from_anchor_nm)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.identifier.cmp(&right.identifier))
+                .then_with(|| nav_ref_kind_order(&left.nav_ref).cmp(&nav_ref_kind_order(&right.nav_ref)))
+        });
+        suggestions.truncate(limit);
+        Ok(suggestions)
     })
 }
 
@@ -1713,6 +1791,50 @@ fn classify_identifier_in_db(
     ))
 }
 
+fn component_insert_anchor(plan: &FlightPlan, component_index: usize, before: bool) -> AppResult<NavRef> {
+    let plan = plan.clone().normalized();
+    let component = plan.route_components.get(component_index).ok_or_else(|| AppError {
+        kind: AppErrorKind::UnsupportedOperation,
+        message: format!("component index out of bounds: {component_index}"),
+    })?;
+    let waypoint = match component {
+        RouteComponent::Waypoint { waypoint } => Some(waypoint.clone()),
+        RouteComponent::Airway { airway } => {
+            if before {
+                Some(airway.entry.clone())
+            } else {
+                Some(airway.exit.clone())
+            }
+        }
+        RouteComponent::Procedure { .. } => {
+            let mut legs = plan.resolved_legs.iter().filter(|leg| {
+                matches!(
+                    leg.source,
+                    ResolvedLegSource::RouteComponent { component_index: index } if index == component_index
+                )
+            });
+            if before {
+                legs.next().map(|leg| leg.from.clone())
+            } else {
+                legs.last().map(|leg| leg.to.clone())
+            }
+        }
+    };
+    waypoint.ok_or_else(|| AppError {
+        kind: AppErrorKind::UnsupportedOperation,
+        message: "selected component has no waypoint anchor".to_string(),
+    })
+}
+
+fn nav_ref_kind_order(nav_ref: &NavRef) -> usize {
+    match nav_ref {
+        NavRef::Navaid(_) => 0,
+        NavRef::Airport(_) => 1,
+        NavRef::Fix(_) => 2,
+        NavRef::LatLon(_) => 3,
+    }
+}
+
 fn lookup_runway_threshold_position(
     connection: &Connection,
     airport_id: &str,
@@ -1996,6 +2118,40 @@ mod tests {
             NavRef::Fix("PARNO".to_string()),
         );
         assert!(resolve_nav_ref_identifier(fixture_db_path(), "ZZZZZZ").is_err());
+    }
+
+    #[test]
+    fn suggests_waypoint_identifiers_by_prefix_and_anchor_distance() {
+        let plan = FlightPlan {
+            id: "p".to_string(),
+            name: "Plan".to_string(),
+            legs: vec![],
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KUAO".to_string()),
+                },
+            ],
+            resolved_legs: vec![],
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 0,
+        };
+
+        let suggestions = suggest_waypoint_identifiers(fixture_db_path(), &plan, 0, false, "OL", 8).unwrap();
+        assert!(suggestions.iter().any(|suggestion| {
+            suggestion.identifier == "OLM" && matches!(suggestion.nav_ref, NavRef::Navaid(_))
+        }));
+        assert!(suggestions.windows(2).all(|pair| {
+            pair[0].distance_from_anchor_nm <= pair[1].distance_from_anchor_nm
+        }));
     }
 
     #[test]

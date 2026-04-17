@@ -519,6 +519,14 @@ data class WireAirwaySuggestion(
 )
 
 @Serializable
+data class WireWaypointIdentifierSuggestion(
+    val identifier: String,
+    val nav_ref: WireNavRef,
+    val kind: String,
+    val distance_from_anchor_nm: Double,
+)
+
+@Serializable
 data class WireAirwayEntryCandidate(
     val airway_name: String,
     val branch_key: String,

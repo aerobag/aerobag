@@ -132,6 +132,28 @@ pub fn resolve_nav_ref_identifier_json(db_path: &str, identifier: &str) -> Resul
     serde_json::to_string(&nav_ref).map_err(|err| err.to_string())
 }
 
+pub fn suggest_waypoint_identifiers_json(
+    db_path: &str,
+    plan_json: &str,
+    component_index: usize,
+    before: bool,
+    prefix: &str,
+    limit: usize,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let suggestions = app_core::suggest_waypoint_identifiers(
+        Path::new(db_path),
+        &plan,
+        component_index,
+        before,
+        prefix,
+        limit,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&suggestions).map_err(|err| err.to_string())
+}
+
 pub fn resolve_nav_ref_position_with_airport_json(
     db_path: &str,
     nav_ref_json: &str,
@@ -1206,6 +1228,33 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_res
         let db_path = get_java_string(&mut env, db_path)?;
         let identifier = get_java_string(&mut env, identifier)?;
         resolve_nav_ref_identifier_json(&db_path, &identifier)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_suggestWaypointIdentifiersJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    plan_json: JString,
+    component_index: i32,
+    before: bool,
+    prefix: JString,
+    limit: i32,
+) -> jstring {
+    let result = (|| {
+        let db_path = get_java_string(&mut env, db_path)?;
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        let prefix = get_java_string(&mut env, prefix)?;
+        suggest_waypoint_identifiers_json(
+            &db_path,
+            &plan_json,
+            component_index as usize,
+            before,
+            &prefix,
+            limit as usize,
+        )
     })();
     return_string(&mut env, result)
 }

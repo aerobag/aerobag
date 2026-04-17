@@ -91,6 +91,13 @@ data class AirwaySuggestion(
     val distanceFromAnchorNm: Double,
 )
 
+data class WaypointIdentifierSuggestion(
+    val identifier: String,
+    val navRef: NavRef,
+    val kind: String,
+    val distanceFromAnchorNm: Double,
+)
+
 data class AirwayEntryCandidate(
     val airwayName: String,
     val branchKey: String,

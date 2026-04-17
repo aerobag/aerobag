@@ -313,6 +313,14 @@ private class FakeNativeBridge(
 
     override fun resolveNavRefPositionJson(dbPath: String, navRefJson: String): String = """{"lat":0.0,"lon":0.0}"""
     override fun resolveNavRefIdentifierJson(dbPath: String, identifier: String): String = """{"Fix":"$identifier"}"""
+    override fun suggestWaypointIdentifiersJson(
+        dbPath: String,
+        planJson: String,
+        componentIndex: Int,
+        before: Boolean,
+        prefix: String,
+        limit: Int,
+    ): String = "[]"
     override fun resolveNavRefPositionWithAirportJson(dbPath: String, navRefJson: String, airportIdJson: String): String =
         """{"lat":0.0,"lon":0.0}"""
     override fun projectFlightPlanRouteJson(dbPath: String, planJson: String): String = "[]"

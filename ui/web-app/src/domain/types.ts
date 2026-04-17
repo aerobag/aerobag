@@ -73,6 +73,13 @@ export type AirwaySuggestion = {
   distance_from_anchor_nm: number;
 };
 
+export type WaypointIdentifierSuggestion = {
+  identifier: string;
+  nav_ref: NavRef;
+  kind: string;
+  distance_from_anchor_nm: number;
+};
+
 export type AirwayEntryCandidate = {
   airway_name: string;
   branch_key: string;

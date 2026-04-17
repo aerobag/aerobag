@@ -43,7 +43,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -141,6 +140,7 @@ import net.jonh.aerobag.prototype.domain.AppState
 import net.jonh.aerobag.prototype.domain.AirwayEntryCandidate
 import net.jonh.aerobag.prototype.domain.AirwayExitCandidate
 import net.jonh.aerobag.prototype.domain.AirwaySuggestion
+import net.jonh.aerobag.prototype.domain.WaypointIdentifierSuggestion
 import net.jonh.aerobag.prototype.domain.ConcretizedNavItem
 import net.jonh.aerobag.prototype.domain.CoreMapViewport
 import net.jonh.aerobag.prototype.domain.FlightPlanUiMutation
@@ -436,6 +436,8 @@ private data class AndroidAirportInsertState(
     val before: Boolean,
     val airportId: String,
     val error: String?,
+    val loading: Boolean,
+    val suggestions: List<WaypointIdentifierSuggestion>,
 )
 
 private data class PageTrayOption(
@@ -2340,6 +2342,7 @@ private fun AirportInsertPanel(
     modifier: Modifier,
     onTextChange: (String) -> Unit,
     onSubmit: () -> Unit,
+    onSuggestionClick: (WaypointIdentifierSuggestion) -> Unit,
 ) {
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -2410,6 +2413,17 @@ private fun AirportInsertPanel(
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFFD45A7A),
+                )
+            }
+            if (state.loading) {
+                Text("Searching...", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            }
+            state.suggestions.forEach { suggestion ->
+                MenuPanelRow(
+                    label = "${suggestion.identifier}  ${suggestion.kind.uppercase()} ${"%.1f".format(suggestion.distanceFromAnchorNm)}nm",
+                    active = false,
+                    enabled = true,
+                    onSelect = { onSuggestionClick(suggestion) },
                 )
             }
         }
@@ -2657,6 +2671,25 @@ private fun FlightPlanPage(
         airwayPicker = null
         procedurePicker = null
         airportInsert = null
+    }
+
+    LaunchedEffect(airportInsert?.componentIndex, airportInsert?.before, airportInsert?.airportId, samplePlan) {
+        val editor = airportInsert ?: return@LaunchedEffect
+        val prefix = editor.airportId.trim().uppercase()
+        if (prefix.isEmpty()) {
+            airportInsert = editor.copy(loading = false, suggestions = emptyList())
+            return@LaunchedEffect
+        }
+        airportInsert = editor.copy(loading = true)
+        runCatching {
+            withContext(Dispatchers.IO) {
+                appCore.suggestWaypointIdentifiers(navDbPath, samplePlan, editor.componentIndex, editor.before, prefix, 8)
+            }
+        }.onSuccess { suggestions ->
+            airportInsert = airportInsert?.copy(loading = false, suggestions = suggestions)
+        }.onFailure { error ->
+            airportInsert = airportInsert?.copy(loading = false, suggestions = emptyList(), error = error.message ?: error.toString())
+        }
     }
 
     LaunchedEffect(rows, pendingSelectedRowKey) {
@@ -2927,10 +2960,9 @@ private fun FlightPlanPage(
                         state = editor,
                         modifier =
                             Modifier
-                                .align(Alignment.BottomCenter)
+                                .align(Alignment.TopCenter)
                                 .fillMaxWidth()
-                                .imePadding()
-                                .padding(start = ThumbGap, end = ThumbGap, bottom = ThumbGap)
+                                .padding(start = ThumbGap, top = ThumbSize, end = ThumbGap)
                                 .heightIn(min = ThumbSize * 1.45f),
                         onTextChange = { value ->
                             airportInsert =
@@ -2948,6 +2980,16 @@ private fun FlightPlanPage(
                             runCatching {
                                 val waypoint = appCore.resolveNavRefIdentifier(navDbPath, airportId)
                                 appCore.insertWaypointUi(samplePlan, editor.componentIndex, editor.before, waypoint)
+                            }.onSuccess { mutation ->
+                                onApplyMutation(mutation)
+                                closePanels()
+                            }.onFailure { error ->
+                                airportInsert = editor.copy(error = error.message ?: error.toString())
+                            }
+                        },
+                        onSuggestionClick = { suggestion ->
+                            runCatching {
+                                appCore.insertWaypointUi(samplePlan, editor.componentIndex, editor.before, suggestion.navRef)
                             }.onSuccess { mutation ->
                                 onApplyMutation(mutation)
                                 closePanels()
@@ -3266,6 +3308,8 @@ private fun FlightPlanPage(
                                                 before = action.id == FlightPlanRowActionId.InsertBefore,
                                                 airportId = "",
                                                 error = null,
+                                                loading = false,
+                                                suggestions = emptyList(),
                                             )
                                     }
                                     FlightPlanRowActionId.AddAirway -> {

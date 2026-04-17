@@ -17,6 +17,15 @@ interface NativeBridge {
         identifier: String,
     ): String
 
+    fun suggestWaypointIdentifiersJson(
+        dbPath: String,
+        planJson: String,
+        componentIndex: Int,
+        before: Boolean,
+        prefix: String,
+        limit: Int,
+    ): String
+
     fun resolveNavRefPositionWithAirportJson(
         dbPath: String,
         navRefJson: String,
@@ -357,6 +366,15 @@ object NativeBindings : NativeBridge {
     external override fun resolveNavRefIdentifierJson(
         dbPath: String,
         identifier: String,
+    ): String
+
+    external override fun suggestWaypointIdentifiersJson(
+        dbPath: String,
+        planJson: String,
+        componentIndex: Int,
+        before: Boolean,
+        prefix: String,
+        limit: Int,
     ): String
 
     external override fun resolveNavRefPositionWithAirportJson(

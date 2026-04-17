@@ -40,6 +40,7 @@ import type {
   SequencingMode,
   Situation,
   SituationSample,
+  WaypointIdentifierSuggestion,
 } from "./types";
 import { deriveChartPage as deriveChartCatalog } from "./resourceIndexAdapters";
 import { sampleCatalog } from "./sampleData";
@@ -179,6 +180,7 @@ export interface AppCoreAdapter {
   deleteComponentUi(plan: FlightPlan, componentIndex: number): Promise<FlightPlanUiMutation>;
   moveComponentUi(plan: FlightPlan, componentIndex: number, delta: number): Promise<FlightPlanUiMutation>;
   resolveWaypointIdentifier(identifier: string): Promise<NavRef | null>;
+  suggestWaypointIdentifiers(plan: FlightPlan, componentIndex: number, before: boolean, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
   insertWaypointUi(plan: FlightPlan, componentIndex: number, before: boolean, waypoint: NavRef): Promise<FlightPlanUiMutation>;
   suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   unsuspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
@@ -380,6 +382,13 @@ type WasmModule = {
     destinationAnchorJson: string,
   ): Promise<string> | string;
   web_resolve_waypoint_identifier(identifier: string): Promise<string> | string;
+  web_suggest_waypoint_identifiers(
+    planJson: string,
+    componentIndex: number,
+    before: boolean,
+    prefix: string,
+    limit: number,
+  ): Promise<string> | string;
   web_list_procedures(airportId: string, kindJson: string): Promise<string> | string;
   web_describe_procedure_options(
     airportId: string,
@@ -804,6 +813,25 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as NavRef | null;
   }
 
+  async suggestWaypointIdentifiers(
+    plan: FlightPlan,
+    componentIndex: number,
+    before: boolean,
+    prefix: string,
+    limit = 8,
+  ): Promise<WaypointIdentifierSuggestion[]> {
+    await this.ensureNavDbHost();
+    return JSON.parse(
+      await this.module.web_suggest_waypoint_identifiers(
+        JSON.stringify(plan),
+        componentIndex,
+        before,
+        prefix,
+        limit,
+      ),
+    ) as WaypointIdentifierSuggestion[];
+  }
+
   async insertWaypointUi(plan: FlightPlan, componentIndex: number, before: boolean, waypoint: NavRef): Promise<FlightPlanUiMutation> {
     return this.enrichFlightPlanUiMutation(JSON.parse(
       await this.module.insert_waypoint_ui(JSON.stringify(plan), componentIndex, before, JSON.stringify(waypoint)),
@@ -1103,6 +1131,8 @@ export async function loadBestAvailableAdapter(
     typeof mod.web_suggest_airways_near !== "function" ||
     typeof mod.web_prepare_airway_presentation_for_anchors !== "function" ||
     typeof mod.web_materialize_airway_selection !== "function" ||
+    typeof mod.web_resolve_waypoint_identifier !== "function" ||
+    typeof mod.web_suggest_waypoint_identifiers !== "function" ||
     typeof mod.web_list_procedures !== "function" ||
     typeof mod.web_describe_procedure_options !== "function" ||
     typeof mod.web_materialize_procedure !== "function" ||

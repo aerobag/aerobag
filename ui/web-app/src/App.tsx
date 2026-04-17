@@ -19,6 +19,7 @@ import type {
   ProcedureOptions,
   ProcedureLoadOption,
   ProcedureSummary,
+  WaypointIdentifierSuggestion,
 } from "./domain/types";
 import uiTheme from "@shared-ui-theme";
 import planViewIcon from "./assets/plan-view-icon.svg";
@@ -2713,6 +2714,8 @@ function FlightPlanPage(props: {
     before: boolean;
     airportId: string;
     error: string | null;
+    loading: boolean;
+    suggestions: WaypointIdentifierSuggestion[];
   } | null>(null);
   const trayGroup = useModalTrayGroup(["page"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
@@ -2736,6 +2739,40 @@ function FlightPlanPage(props: {
   if (planUiState.resolved_legs.length > 0 && componentViews.length === 0) {
     throw new Error("FlightPlanUiState invariant failed: resolved legs present but components are empty");
   }
+  useEffect(() => {
+    const editor = airportInsert;
+    const adapter = props.appCoreAdapter;
+    if (!editor || !adapter) {
+      return;
+    }
+    const prefix = editor.airportId.trim().toUpperCase();
+    if (!prefix) {
+      setAirportInsert((current) => current ? { ...current, loading: false, suggestions: [] } : current);
+      return;
+    }
+    let cancelled = false;
+    setAirportInsert((current) => current ? { ...current, loading: true } : current);
+    adapter
+      .suggestWaypointIdentifiers(props.plan, editor.componentIndex, editor.before, prefix, 8)
+      .then((suggestions) => {
+        if (!cancelled) {
+          setAirportInsert((current) => current ? { ...current, loading: false, suggestions } : current);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setAirportInsert((current) => current ? {
+            ...current,
+            loading: false,
+            suggestions: [],
+            error: error instanceof Error ? error.message : String(error),
+          } : current);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [airportInsert?.airportId, airportInsert?.before, airportInsert?.componentIndex, props.appCoreAdapter, props.plan]);
   const displayRows = useMemo(() => {
     return planUiState.display_rows.map((row, index) => ({
         showPlateTargetId:
@@ -2855,6 +2892,8 @@ function FlightPlanPage(props: {
               before: action.id === "insert_before",
               airportId: "",
               error: null,
+              loading: false,
+              suggestions: [],
             });
             return;
           }
@@ -3373,6 +3412,39 @@ function FlightPlanPage(props: {
                   }}
                 />
                 {airportInsert.error ? <div className="planGuidanceSummary">{airportInsert.error}</div> : null}
+                {airportInsert.loading ? <div className="planGuidanceSummary">Searching...</div> : null}
+                {airportInsert.suggestions.length > 0 ? (
+                  <div className="airportInsertSuggestions">
+                    {airportInsert.suggestions.map((suggestion) => (
+                      <button
+                        key={`${suggestion.kind}:${suggestion.identifier}`}
+                        type="button"
+                        className="trayButton airwayChoiceButton airportInsertSuggestion"
+                        onPointerDown={stopPointer}
+                        onPointerUp={stopPointer}
+                        onClick={async () => {
+                          try {
+                            await props.onInsertAirportWaypoint(
+                              airportInsert.componentIndex,
+                              airportInsert.before,
+                              suggestion.identifier,
+                            );
+                            setAirportInsert(null);
+                            setSelectedWaypointIndex(null);
+                          } catch (error) {
+                            setAirportInsert((current) => current ? {
+                              ...current,
+                              error: error instanceof Error ? error.message : String(error),
+                            } : current);
+                          }
+                        }}
+                      >
+                        <span>{suggestion.identifier}</span>
+                        <span>{suggestion.kind.toUpperCase()} {suggestion.distance_from_anchor_nm.toFixed(1)}nm</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 <button type="submit" className="trayButton airwayChoiceButton" onPointerDown={stopPointer} onPointerUp={stopPointer}>
                   Enter
                 </button>

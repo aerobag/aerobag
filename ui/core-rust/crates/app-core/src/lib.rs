@@ -57,7 +57,7 @@ pub use navdb_types::{
     CifpTppMatch, CifpTppMatchRow,
     ProcedureDistinctRow, ProcedureLegMaterializationRecord, ProcedureLegRecord,
     ProcedureOptions, ProcedureSpecChoice, ProcedureSummary, ProcedureVariantKey,
-    AirwayPresentationPlan, AirwayPresentationPoint,
+    AirwayPresentationPlan, AirwayPresentationPoint, WaypointIdentifierSuggestion,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use navdb::{
@@ -68,7 +68,7 @@ pub use navdb::{
     materialize_airway_selection, materialize_procedure_selection, resolve_airway_segment,
     resolve_airway_segment_by_index, resolve_nav_ref_identifier, resolve_nav_ref_position,
     resolve_nav_ref_position_with_procedure_airport, select_airway_branch,
-    suggest_airways_near,
+    suggest_airways_near, suggest_waypoint_identifiers,
 };
 pub use planning::{
     activate_direct_to, activate_direct_to_leg, activate_leg, activate_next_leg,

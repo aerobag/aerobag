@@ -328,7 +328,8 @@ export type FlightPlanDisplayRowKind = "waypoint" | "group" | "discontinuity";
 export type FlightPlanRowActionId =
   | "activate_leg"
   | "remove"
-  | "insert"
+  | "insert_before"
+  | "insert_after"
   | "reorder"
   | "waypoint_info"
   | "add_airway"

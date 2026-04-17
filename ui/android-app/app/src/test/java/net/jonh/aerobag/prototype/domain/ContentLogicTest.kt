@@ -358,6 +358,9 @@ private class FakeNativeBridge(
 
     override fun moveComponentUiJson(planJson: String, componentIndex: Int, delta: Int): String = activateLegUiJson(planJson, 0)
 
+    override fun insertAirportWaypointUiJson(planJson: String, componentIndex: Int, before: Boolean, airportId: String): String =
+        activateLegUiJson(planJson, 0)
+
     override fun suspendSequencingUiJson(planJson: String): String = activateLegUiJson(planJson, 0)
 
     override fun unsuspendSequencingUiJson(planJson: String): String = activateLegUiJson(planJson, 0)

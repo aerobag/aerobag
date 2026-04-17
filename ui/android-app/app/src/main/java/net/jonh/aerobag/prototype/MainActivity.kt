@@ -29,6 +29,8 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -41,6 +43,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -110,8 +113,14 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PlatformImeOptions
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.Dp
@@ -420,6 +429,13 @@ private data class AndroidProcedurePickerState(
     val procedures: List<ProcedureSummary>,
     val selectedProcedureId: String?,
     val options: ProcedureOptions?,
+)
+
+private data class AndroidAirportInsertState(
+    val componentIndex: Int,
+    val before: Boolean,
+    val airportId: String,
+    val error: String?,
 )
 
 private data class PageTrayOption(
@@ -2319,6 +2335,88 @@ private fun MapExplorerPage(
 }
 
 @Composable
+private fun AirportInsertPanel(
+    state: AndroidAirportInsertState,
+    modifier: Modifier,
+    onTextChange: (String) -> Unit,
+    onSubmit: () -> Unit,
+) {
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    LaunchedEffect(state.componentIndex, state.before) {
+        focusRequester.requestFocus()
+        keyboardController?.show()
+    }
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(ThumbRadius),
+        color = Color(0xF7FCF8F1),
+        contentColor = Color(0xFF132129),
+        border = BorderStroke(1.dp, Color(0x334E626C)),
+        shadowElevation = 8.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(ThumbGap),
+            verticalArrangement = Arrangement.spacedBy(ThumbGap),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = if (state.before) "INSERT BEFORE" else "INSERT AFTER",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color(0xFF52656D),
+                )
+                BasicTextField(
+                    value = state.airportId,
+                    onValueChange = onTextChange,
+                    singleLine = true,
+                    keyboardOptions =
+                        KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Characters,
+                            autoCorrectEnabled = false,
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Done,
+                            platformImeOptions =
+                                PlatformImeOptions(
+                                    privateImeOptions = "com.google.android.inputmethod.latin.forceAscii",
+                                ),
+                        ),
+                    keyboardActions = KeyboardActions(onDone = { onSubmit() }),
+                    textStyle =
+                        MaterialTheme.typography.headlineMedium.copy(
+                            color = Color(0xFF132129),
+                            fontWeight = FontWeight.ExtraBold,
+                            textAlign = TextAlign.Center,
+                        ),
+                    modifier =
+                        Modifier
+                            .weight(1f)
+                            .height(ThumbSize)
+                            .focusRequester(focusRequester)
+                            .clip(RoundedCornerShape(ThumbRadius))
+                            .background(Color.White)
+                            .border(1.dp, Color(0x334E626C), RoundedCornerShape(ThumbRadius))
+                            .padding(horizontal = ThumbGap, vertical = ThumbSize * 0.18f),
+                )
+                CompactSquareButton(label = "Enter", modifier = Modifier.width(ThumbSize * 1.4f).height(ThumbSize), onClick = onSubmit)
+            }
+            if (state.error != null) {
+                Text(
+                    text = state.error,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFD45A7A),
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun FlightPlanPage(
     appCore: NativeAppCoreAdapter,
     navDbPath: String,
@@ -2345,6 +2443,7 @@ private fun FlightPlanPage(
     var debugPanelOpen by remember { mutableStateOf(false) }
     var airwayPicker by remember { mutableStateOf<AndroidAirwayPickerState?>(null) }
     var procedurePicker by remember { mutableStateOf<AndroidProcedurePickerState?>(null) }
+    var airportInsert by remember { mutableStateOf<AndroidAirportInsertState?>(null) }
     var trayOpenedAtMs by remember { mutableStateOf(0L) }
     val projectedPlanUiState = requireNotNull(planUiState) { "FlightPlanPage requires core-projected FlightPlanUiState" }
     val guidance = projectedPlanUiState.guidance
@@ -2383,6 +2482,7 @@ private fun FlightPlanPage(
                 val estimatedRows =
                     when {
                         reorderOpen -> 2
+                        airportInsert != null -> 5
                         procedurePicker != null -> {
                             val picker = procedurePicker!!
                             when {
@@ -2417,6 +2517,7 @@ private fun FlightPlanPage(
                 val estimatedRows =
                     when {
                         reorderOpen -> 2
+                        airportInsert != null -> 5
                         procedurePicker != null -> {
                             val picker = procedurePicker!!
                             when {
@@ -2555,6 +2656,7 @@ private fun FlightPlanPage(
         reorderOpen = false
         airwayPicker = null
         procedurePicker = null
+        airportInsert = null
     }
 
     LaunchedEffect(rows, pendingSelectedRowKey) {
@@ -2645,6 +2747,7 @@ private fun FlightPlanPage(
                                             reorderOpen = false
                                             airwayPicker = null
                                             procedurePicker = null
+                                            airportInsert = null
                                         },
                                     )
                                 }
@@ -2668,6 +2771,7 @@ private fun FlightPlanPage(
                                             reorderOpen = false
                                             airwayPicker = null
                                             procedurePicker = null
+                                            airportInsert = null
                                         },
                                         children = block.children,
                                         selectedWaypointIndex = selectedWaypointIndex,
@@ -2686,6 +2790,7 @@ private fun FlightPlanPage(
                                             reorderOpen = false
                                             airwayPicker = null
                                             procedurePicker = null
+                                            airportInsert = null
                                         },
                                     )
                                 }
@@ -2810,7 +2915,49 @@ private fun FlightPlanPage(
                     closePanels()
                 }
             }
-            if (procedurePicker != null) {
+            if (airportInsert != null) {
+                val editor = airportInsert!!
+                BoxWithConstraints(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .zIndex(5f),
+                ) {
+                    AirportInsertPanel(
+                        state = editor,
+                        modifier =
+                            Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .imePadding()
+                                .padding(start = ThumbGap, end = ThumbGap, bottom = ThumbGap)
+                                .heightIn(min = ThumbSize * 1.45f),
+                        onTextChange = { value ->
+                            airportInsert =
+                                editor.copy(
+                                    airportId = value.uppercase().filter { it in 'A'..'Z' || it in '0'..'9' }.take(8),
+                                    error = null,
+                                )
+                        },
+                        onSubmit = {
+                            val airportId = editor.airportId.trim().uppercase()
+                            if (airportId.isEmpty()) {
+                                airportInsert = editor.copy(error = "Enter airport id")
+                                return@AirportInsertPanel
+                            }
+                            runCatching {
+                                appCore.resolveNavRefPosition(navDbPath, NavRef.Airport(airportId))
+                                appCore.insertAirportWaypointUi(samplePlan, editor.componentIndex, editor.before, airportId)
+                            }.onSuccess { mutation ->
+                                onApplyMutation(mutation)
+                                closePanels()
+                            }.onFailure { error ->
+                                airportInsert = editor.copy(error = error.message ?: error.toString())
+                            }
+                        },
+                    )
+                }
+            } else if (procedurePicker != null) {
                 val picker = procedurePicker!!
                 MenuPanel(
                     modifier = Modifier
@@ -3109,6 +3256,18 @@ private fun FlightPlanPage(
                                     FlightPlanRowActionId.Reorder -> {
                                         reorderOpen = true
                                     }
+                                    FlightPlanRowActionId.InsertBefore,
+                                    FlightPlanRowActionId.InsertAfter,
+                                    -> {
+                                        val componentIndex = selectedRow.componentIndex ?: return@MenuPanelRow
+                                        airportInsert =
+                                            AndroidAirportInsertState(
+                                                componentIndex = componentIndex,
+                                                before = action.id == FlightPlanRowActionId.InsertBefore,
+                                                airportId = "",
+                                                error = null,
+                                            )
+                                    }
                                     FlightPlanRowActionId.AddAirway -> {
                                         airwayPicker =
                                             AndroidAirwayPickerState(
@@ -3187,7 +3346,6 @@ private fun FlightPlanPage(
                                         onOpenCharts(selectedRow.chartAirportId)
                                         closePanels()
                                     }
-                                    FlightPlanRowActionId.Insert,
                                     FlightPlanRowActionId.WaypointInfo,
                                     -> {}
                                 }
@@ -3235,19 +3393,22 @@ private fun ChartsPage(
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     val sortedCharts = remember(selectedAirport) { sortChartsForFolder(selectedAirport?.charts ?: emptyList()) }
     val overscrollPx = with(density) { ThumbSize.toPx() }
-    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, selectedChart?.assetPath) {
-        value = selectedChart?.assetPath?.let { path ->
+    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, selectedChart?.id, selectedChart?.assetPath) {
+        val chart = selectedChart
+        val path = chart?.assetPath
+        value = if (path == null) {
+            null
+        } else {
             withContext(Dispatchers.IO) {
                 runCatching {
                     val localFile = java.io.File(context.filesDir, path)
-                    val inputStream = when {
-                        localFile.isFile -> localFile.inputStream()
-                        selectedChart != null -> {
-                            val chartBytes = ChartPackages.loadChartBytes(context, selectedChart) ?: context.assets.open(path).use { it.readBytes() }
+                    val inputStream =
+                        if (localFile.isFile) {
+                            localFile.inputStream()
+                        } else {
+                            val chartBytes = ChartPackages.loadChartBytes(context, chart) ?: context.assets.open(path).use { it.readBytes() }
                             chartBytes.inputStream()
                         }
-                        else -> context.assets.open(path)
-                    }
                     inputStream.use { stream ->
                         BitmapFactory.decodeStream(stream)?.asImageBitmap()
                     }
@@ -4552,7 +4713,8 @@ private fun selectionKeyForDisplayRow(row: FlightPlanDisplayRowUiView, index: In
 private fun flightPlanActionLabel(actionId: FlightPlanRowActionId): String = when (actionId) {
     FlightPlanRowActionId.ActivateLeg -> "Activate Leg"
     FlightPlanRowActionId.Remove -> "Remove"
-    FlightPlanRowActionId.Insert -> "Insert"
+    FlightPlanRowActionId.InsertBefore -> "Insert Before"
+    FlightPlanRowActionId.InsertAfter -> "Insert After"
     FlightPlanRowActionId.Reorder -> "Reorder"
     FlightPlanRowActionId.WaypointInfo -> "Waypoint Info"
     FlightPlanRowActionId.AddAirway -> "Add Airway"

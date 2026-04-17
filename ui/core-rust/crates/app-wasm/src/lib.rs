@@ -58,6 +58,17 @@ pub fn move_component_ui(
 }
 
 #[wasm_bindgen]
+pub fn insert_airport_waypoint_ui(
+    plan_json: &str,
+    component_index: usize,
+    before: bool,
+    airport_id: &str,
+) -> Result<String, JsValue> {
+    insert_airport_waypoint_ui_json(plan_json, component_index, before, airport_id)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn suspend_sequencing_ui(plan_json: &str) -> Result<String, JsValue> {
     suspend_sequencing_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
 }
@@ -794,6 +805,19 @@ fn move_component_ui_json(
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let mutation =
         app_core::move_component_ui(&plan, component_index, delta).map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+fn insert_airport_waypoint_ui_json(
+    plan_json: &str,
+    component_index: usize,
+    before: bool,
+    airport_id: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::insert_airport_waypoint_ui(&plan, component_index, before, airport_id)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 

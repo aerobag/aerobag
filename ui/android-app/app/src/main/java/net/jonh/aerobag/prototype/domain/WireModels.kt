@@ -1019,8 +1019,11 @@ enum class WireFlightPlanRowActionId {
     @SerialName("remove")
     Remove,
 
-    @SerialName("insert")
-    Insert,
+    @SerialName("insert_before")
+    InsertBefore,
+
+    @SerialName("insert_after")
+    InsertAfter,
 
     @SerialName("reorder")
     Reorder,

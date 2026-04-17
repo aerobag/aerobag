@@ -74,6 +74,8 @@ interface NativeBridge {
 
     fun moveComponentUiJson(planJson: String, componentIndex: Int, delta: Int): String
 
+    fun insertAirportWaypointUiJson(planJson: String, componentIndex: Int, before: Boolean, airportId: String): String
+
     fun suspendSequencingUiJson(planJson: String): String
 
     fun unsuspendSequencingUiJson(planJson: String): String
@@ -408,6 +410,8 @@ object NativeBindings : NativeBridge {
     external override fun deleteComponentUiJson(planJson: String, componentIndex: Int): String
 
     external override fun moveComponentUiJson(planJson: String, componentIndex: Int, delta: Int): String
+
+    external override fun insertAirportWaypointUiJson(planJson: String, componentIndex: Int, before: Boolean, airportId: String): String
 
     external override fun suspendSequencingUiJson(planJson: String): String
 

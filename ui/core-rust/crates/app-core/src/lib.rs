@@ -75,7 +75,7 @@ pub use planning::{
     active_guidance_leg, change_airway_entry, change_airway_exit,
     change_procedure_enroute_transition, change_procedure_runway_transition, delete_component,
     delete_waypoint_component,
-    flatten_component_to_waypoints, insert_airway_between_waypoints,
+    flatten_component_to_waypoints, insert_airport_waypoint, insert_airway_between_waypoints,
     insert_airway_after_waypoint,
     insert_procedure_between_waypoints, project_ui_state,
     move_component, replace_airway_component, replace_procedure_component, sequence_active_leg, suspend_sequencing,
@@ -2091,6 +2091,16 @@ pub fn move_component_ui(
     delta: isize,
 ) -> AppResult<FlightPlanUiMutation> {
     let plan = move_component(plan, component_index, delta)?;
+    Ok(project_plan_mutation(plan))
+}
+
+pub fn insert_airport_waypoint_ui(
+    plan: &FlightPlan,
+    component_index: usize,
+    before: bool,
+    airport_id: &str,
+) -> AppResult<FlightPlanUiMutation> {
+    let plan = insert_airport_waypoint(plan, component_index, before, airport_id)?;
     Ok(project_plan_mutation(plan))
 }
 

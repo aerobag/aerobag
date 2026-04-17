@@ -293,7 +293,8 @@ pub enum FlightPlanDisplayRowKind {
 pub enum FlightPlanRowActionId {
     ActivateLeg,
     Remove,
-    Insert,
+    InsertBefore,
+    InsertAfter,
     Reorder,
     WaypointInfo,
     AddAirway,
@@ -1093,7 +1094,8 @@ fn waypoint_or_discontinuity_actions(
                 FlightPlanRowActionId::Remove,
                 row.component_index.is_some() && row.can_remove_component,
             ),
-            action(FlightPlanRowActionId::Insert, false),
+            action(FlightPlanRowActionId::InsertBefore, row.component_index.is_some()),
+            action(FlightPlanRowActionId::InsertAfter, row.component_index.is_some()),
             action(
                 FlightPlanRowActionId::Reorder,
                 row.component_index.is_some() && row.can_reorder_component,
@@ -1257,6 +1259,53 @@ pub fn delete_waypoint_component(plan: &FlightPlan, component_index: usize) -> A
             message: format!("component index out of bounds: {component_index}"),
         }),
     }
+}
+
+pub fn insert_airport_waypoint(
+    plan: &FlightPlan,
+    component_index: usize,
+    before: bool,
+    airport_id: &str,
+) -> AppResult<FlightPlan> {
+    let airport_id = airport_id.trim().to_ascii_uppercase();
+    if airport_id.is_empty() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "airport id is required".to_string(),
+        });
+    }
+
+    let plan = plan.clone().normalized();
+    if component_index >= plan.route_components.len() {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("component index out of bounds: {component_index}"),
+        });
+    }
+
+    let inserted = RouteComponent::Waypoint {
+        waypoint: NavRef::Airport(airport_id),
+    };
+    let mut new_components = Vec::with_capacity(plan.route_components.len() + 1);
+    let mut old_index_by_new_index = Vec::with_capacity(plan.route_components.len() + 1);
+    for (old_index, component) in plan.route_components.iter().cloned().enumerate() {
+        if old_index == component_index && before {
+            new_components.push(inserted.clone());
+            old_index_by_new_index.push(None);
+        }
+        new_components.push(component);
+        old_index_by_new_index.push(Some(old_index));
+        if old_index == component_index && !before {
+            new_components.push(inserted.clone());
+            old_index_by_new_index.push(None);
+        }
+    }
+
+    Ok(rebuild_after_component_remap(
+        &plan,
+        new_components,
+        old_index_by_new_index,
+    ))
 }
 
 pub fn move_component(
@@ -4030,6 +4079,42 @@ mod tests {
         let ui = project_ui_state(&deleted);
         assert!(ui.components[0].can_remove);
         assert!(!ui.components[0].can_reorder);
+    }
+
+    #[test]
+    fn insert_airport_waypoint_adds_explicit_waypoint_before_or_after_component() {
+        let inserted_before = insert_airport_waypoint(&sample_two_waypoint_plan(), 1, true, " khio ").unwrap();
+        assert_eq!(
+            inserted_before.route_components[1],
+            RouteComponent::Waypoint {
+                waypoint: NavRef::Airport("KHIO".to_string())
+            }
+        );
+        assert_eq!(inserted_before.resolved_legs[0].to, NavRef::Airport("KHIO".to_string()));
+        assert_eq!(inserted_before.resolved_legs[1].from, NavRef::Airport("KHIO".to_string()));
+
+        let inserted_after = insert_airport_waypoint(&sample_two_waypoint_plan(), 0, false, "khio").unwrap();
+        assert_eq!(
+            inserted_after.route_components[1],
+            RouteComponent::Waypoint {
+                waypoint: NavRef::Airport("KHIO".to_string())
+            }
+        );
+        assert_eq!(inserted_after.resolved_legs[0].to, NavRef::Airport("KHIO".to_string()));
+        assert_eq!(inserted_after.resolved_legs[1].from, NavRef::Airport("KHIO".to_string()));
+    }
+
+    #[test]
+    fn project_ui_state_enables_insert_before_and_after_for_top_level_waypoints() {
+        let ui = project_ui_state(&sample_two_waypoint_plan());
+        let action_ids = ui.display_rows[0]
+            .actions
+            .iter()
+            .map(|action| (&action.id, action.enabled))
+            .collect::<Vec<_>>();
+
+        assert!(action_ids.contains(&(&FlightPlanRowActionId::InsertBefore, true)));
+        assert!(action_ids.contains(&(&FlightPlanRowActionId::InsertAfter, true)));
     }
 
     #[test]

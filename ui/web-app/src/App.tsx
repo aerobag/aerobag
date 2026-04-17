@@ -972,6 +972,14 @@ export default function App() {
             const mutation = await appCoreAdapter.moveComponentUi(currentPlan, componentIndex, delta);
             await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
           }}
+          onInsertAirportWaypoint={async (componentIndex, before, airportId) => {
+            if (!appCoreAdapter) return;
+            if (!(await appCoreAdapter.validateAirportIdentifier(airportId))) {
+              throw new Error(`Unknown airport ${airportId}`);
+            }
+            const mutation = await appCoreAdapter.insertAirportWaypointUi(currentPlan, componentIndex, before, airportId);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+          }}
           onActivateLeg={async (legIndex) => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.activateLegUi(currentPlan, legIndex);
@@ -2638,6 +2646,7 @@ function FlightPlanPage(props: {
   onSelectPage: (page: AppPage) => void;
   onOpenCharts: (airportId: string | null, chartId?: string | null) => void;
   onMoveComponent: (componentIndex: number, delta: number) => void | Promise<void>;
+  onInsertAirportWaypoint: (componentIndex: number, before: boolean, airportId: string) => void | Promise<void>;
   onActivateLeg: (index: number) => void | Promise<void>;
   onDeleteComponent: (componentIndex: number) => void | Promise<void>;
   onActivateNextLeg: () => void | Promise<void>;
@@ -2697,6 +2706,12 @@ function FlightPlanPage(props: {
     procedures: ProcedureSummary[];
     selectedProcedureId: string | null;
     options: ProcedureOptions | null;
+  } | null>(null);
+  const [airportInsert, setAirportInsert] = useState<{
+    componentIndex: number;
+    before: boolean;
+    airportId: string;
+    error: string | null;
   } | null>(null);
   const trayGroup = useModalTrayGroup(["page"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
@@ -2804,6 +2819,7 @@ function FlightPlanPage(props: {
       setSelectedWaypointIndex(null);
       setAirwayPicker(null);
       setProcedurePicker(null);
+      setAirportInsert(null);
     };
 
     return (selectedRow.actions as Array<{ id: string; enabled: boolean }>).map((action) => {
@@ -2827,6 +2843,18 @@ function FlightPlanPage(props: {
           }
           if (action.id === "reorder") {
             setReorderOpen(true);
+            return;
+          }
+          if (action.id === "insert_before" || action.id === "insert_after") {
+            if (selectedRow.componentIndex === null) {
+              return;
+            }
+            setAirportInsert({
+              componentIndex: selectedRow.componentIndex,
+              before: action.id === "insert_before",
+              airportId: "",
+              error: null,
+            });
             return;
           }
           if (action.id === "add_airway") {
@@ -3291,6 +3319,7 @@ function FlightPlanPage(props: {
               setReorderOpen(false);
               setAirwayPicker(null);
               setProcedurePicker(null);
+              setAirportInsert(null);
             }}
           />
           <section
@@ -3302,7 +3331,52 @@ function FlightPlanPage(props: {
               maxHeight: waypointModalMaxHeight === null ? undefined : `${waypointModalMaxHeight}px`,
             }}
           >
-            {procedurePicker ? (
+            {airportInsert ? (
+              <form
+                className="waypointActionTray airportInsertTray"
+                onSubmit={async (event) => {
+                  event.preventDefault();
+                  const airportId = airportInsert.airportId.trim().toUpperCase();
+                  if (!airportId) {
+                    setAirportInsert((current) => current ? { ...current, error: "Enter airport id" } : current);
+                    return;
+                  }
+                  try {
+                    await props.onInsertAirportWaypoint(airportInsert.componentIndex, airportInsert.before, airportId);
+                    setAirportInsert(null);
+                    setSelectedWaypointIndex(null);
+                  } catch (error) {
+                    setAirportInsert((current) => current ? {
+                      ...current,
+                      error: error instanceof Error ? error.message : String(error),
+                    } : current);
+                  }
+                }}
+              >
+                <div className="planGuidanceSummary">
+                  {airportInsert.before ? "INSERT BEFORE" : "INSERT AFTER"}
+                </div>
+                <input
+                  className="airportInsertInput"
+                  autoFocus
+                  value={airportInsert.airportId}
+                  spellCheck={false}
+                  autoCapitalize="characters"
+                  autoCorrect="off"
+                  onChange={(event) => {
+                    setAirportInsert((current) => current ? {
+                      ...current,
+                      airportId: event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8),
+                      error: null,
+                    } : current);
+                  }}
+                />
+                {airportInsert.error ? <div className="planGuidanceSummary">{airportInsert.error}</div> : null}
+                <button type="submit" className="trayButton airwayChoiceButton" onPointerDown={stopPointer} onPointerUp={stopPointer}>
+                  Enter
+                </button>
+              </form>
+            ) : procedurePicker ? (
               <div className="waypointActionTray">
                 <div className="planGuidanceSummary">
                   APPROACH {procedurePicker.airportId}
@@ -4519,8 +4593,10 @@ function flightPlanActionLabel(actionId: string): string {
       return "Activate Leg";
     case "remove":
       return "Remove";
-    case "insert":
-      return "Insert";
+    case "insert_before":
+      return "Insert Before";
+    case "insert_after":
+      return "Insert After";
     case "reorder":
       return "Reorder";
     case "waypoint_info":

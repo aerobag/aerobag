@@ -270,6 +270,11 @@ class NativeAppCoreAdapter(
         return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
     }
 
+    fun insertAirportWaypointUi(plan: FlightPlan, componentIndex: Int, before: Boolean, airportId: String): FlightPlanUiMutation {
+        val nextJson = bridge.insertAirportWaypointUiJson(json.encodeToString(plan.toWire()), componentIndex, before, airportId)
+        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
+    }
+
     fun suspendSequencingUi(plan: FlightPlan): FlightPlanUiMutation {
         val nextJson = bridge.suspendSequencingUiJson(json.encodeToString(plan.toWire()))
         return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
@@ -1658,7 +1663,8 @@ private fun WireFlightPlanRowActionUiView.toUi() = FlightPlanRowActionUiView(
 private fun WireFlightPlanRowActionId.toUi() = when (this) {
     WireFlightPlanRowActionId.ActivateLeg -> FlightPlanRowActionId.ActivateLeg
     WireFlightPlanRowActionId.Remove -> FlightPlanRowActionId.Remove
-    WireFlightPlanRowActionId.Insert -> FlightPlanRowActionId.Insert
+    WireFlightPlanRowActionId.InsertBefore -> FlightPlanRowActionId.InsertBefore
+    WireFlightPlanRowActionId.InsertAfter -> FlightPlanRowActionId.InsertAfter
     WireFlightPlanRowActionId.Reorder -> FlightPlanRowActionId.Reorder
     WireFlightPlanRowActionId.WaypointInfo -> FlightPlanRowActionId.WaypointInfo
     WireFlightPlanRowActionId.AddAirway -> FlightPlanRowActionId.AddAirway

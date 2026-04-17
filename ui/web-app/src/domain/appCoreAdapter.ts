@@ -178,6 +178,8 @@ export interface AppCoreAdapter {
   activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   deleteComponentUi(plan: FlightPlan, componentIndex: number): Promise<FlightPlanUiMutation>;
   moveComponentUi(plan: FlightPlan, componentIndex: number, delta: number): Promise<FlightPlanUiMutation>;
+  validateAirportIdentifier(airportId: string): Promise<boolean>;
+  insertAirportWaypointUi(plan: FlightPlan, componentIndex: number, before: boolean, airportId: string): Promise<FlightPlanUiMutation>;
   suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   unsuspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   sequenceActiveLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
@@ -293,6 +295,7 @@ type WasmModule = {
   activate_next_leg_ui(planJson: string): Promise<string> | string;
   delete_component_ui(planJson: string, componentIndex: number): Promise<string> | string;
   move_component_ui(planJson: string, componentIndex: number, delta: number): Promise<string> | string;
+  insert_airport_waypoint_ui(planJson: string, componentIndex: number, before: boolean, airportId: string): Promise<string> | string;
   suspend_sequencing_ui(planJson: string): Promise<string> | string;
   unsuspend_sequencing_ui(planJson: string): Promise<string> | string;
   sequence_active_leg_ui(planJson: string): Promise<string> | string;
@@ -793,6 +796,21 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as FlightPlanUiMutation);
   }
 
+  async validateAirportIdentifier(airportId: string): Promise<boolean> {
+    try {
+      await resolveNavRefPosition({ Airport: airportId });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async insertAirportWaypointUi(plan: FlightPlan, componentIndex: number, before: boolean, airportId: string): Promise<FlightPlanUiMutation> {
+    return this.enrichFlightPlanUiMutation(JSON.parse(
+      await this.module.insert_airport_waypoint_ui(JSON.stringify(plan), componentIndex, before, airportId),
+    ) as FlightPlanUiMutation);
+  }
+
   async suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation> {
     return this.enrichFlightPlanUiMutation(JSON.parse(
       await this.module.suspend_sequencing_ui(JSON.stringify(plan)),
@@ -1065,6 +1083,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.activate_next_leg_ui !== "function" ||
     typeof mod.delete_component_ui !== "function" ||
     typeof mod.move_component_ui !== "function" ||
+    typeof mod.insert_airport_waypoint_ui !== "function" ||
     typeof mod.suspend_sequencing_ui !== "function" ||
     typeof mod.unsuspend_sequencing_ui !== "function" ||
     typeof mod.sequence_active_leg_ui !== "function" ||

@@ -44,6 +44,19 @@ pub fn move_component_ui_json(
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
+pub fn insert_airport_waypoint_ui_json(
+    plan_json: &str,
+    component_index: usize,
+    before: bool,
+    airport_id: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let mutation = app_core::insert_airport_waypoint_ui(&plan, component_index, before, airport_id)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
 pub fn build_flight_plan_ui_json(plan_json: &str) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
@@ -1391,6 +1404,23 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_mov
     let result = (|| {
         let plan_json = get_java_string(&mut env, plan_json)?;
         move_component_ui_json(&plan_json, component_index as usize, delta as isize)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_insertAirportWaypointUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    plan_json: JString,
+    component_index: i32,
+    before: bool,
+    airport_id: JString,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        let airport_id = get_java_string(&mut env, airport_id)?;
+        insert_airport_waypoint_ui_json(&plan_json, component_index as usize, before, &airport_id)
     })();
     return_string(&mut env, result)
 }

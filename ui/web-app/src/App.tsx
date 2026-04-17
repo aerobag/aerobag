@@ -65,6 +65,14 @@ type SurfaceSize = {
   height: number;
 };
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isInvalidUiSessionHandleError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("invalid ui session handle");
+}
+
 type AppPage = "map" | "plan" | "charts" | "settings";
 
 type ChartAsset = NonNullable<ChartPageData["airports"][number]>["charts"][number];
@@ -463,6 +471,7 @@ export default function App() {
   const [debugWarningActive, setDebugWarningActive] = useState(false);
   const logDebugWarning = useCallback((tag: string, data?: unknown) => {
     debugLog(tag, data);
+    debugLog("debug.warn.latched", { tag, data });
     setDebugWarningActive(true);
   }, []);
   const logHighLatencyWarning = useCallback((tag: string, data?: unknown) => {
@@ -1594,10 +1603,18 @@ function MapPage(props: {
         });
         reportOverlayWarnings(overlay, "initial");
       } catch (error) {
+        if (isInvalidUiSessionHandleError(error)) {
+          debugLog("map.overlay.query.stale_session", {
+            zoom: viewport.zoom,
+            elapsed_ms: Math.round(performance.now() - startedAt),
+            error: errorMessage(error),
+          });
+          return;
+        }
         debugLog("map.overlay.query.error", {
           zoom: viewport.zoom,
           elapsed_ms: Math.round(performance.now() - startedAt),
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage(error),
         });
         throw error;
       }
@@ -1641,7 +1658,19 @@ function MapPage(props: {
           elapsed_ms: Math.round(performance.now() - ingestStartedAt),
         });
         const refreshStartedAt = performance.now();
-        overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
+        try {
+          overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
+        } catch (error) {
+          if (isInvalidUiSessionHandleError(error)) {
+            debugLog("map.overlay.query.refresh.stale_session", {
+              zoom: viewport.zoom,
+              elapsed_ms: Math.round(performance.now() - refreshStartedAt),
+              error: errorMessage(error),
+            });
+            return;
+          }
+          throw error;
+        }
         debugLog("map.overlay.query.refresh.done", {
           zoom: viewport.zoom,
           elapsed_ms: Math.round(performance.now() - refreshStartedAt),
@@ -4087,8 +4116,11 @@ function ChartsPage(props: {
       if (!cancelled) {
         setPlateProcedureLoads(loads);
       }
-    }).catch(() => {
-      debugLog("charts.load_procedure.error", { plate_id: selectedChart.id });
+    }).catch((error: unknown) => {
+      debugLog("charts.load_procedure.unavailable", {
+        plate_id: selectedChart.id,
+        error: errorMessage(error),
+      });
       if (!cancelled) {
         setPlateProcedureLoads([]);
       }

@@ -879,9 +879,9 @@ fn project_nav_element_ui(plan: &FlightPlan) -> NavElementUiView {
     NavElementUiView {
         active_leg_summary: active_leg
             .as_ref()
-            .map(|leg| format!("{} \u{2192} {} CRS 342", nav_ref_label(&leg.from), nav_ref_label(&leg.to)))
+            .map(|leg| format!("{} \u{2192} {}", nav_ref_label(&leg.from), nav_ref_label(&leg.to)))
             .unwrap_or_default(),
-        cdi_indicator_dots: active_leg.as_ref().map(|_| -0.2_f32),
+        cdi_indicator_dots: None,
     }
 }
 
@@ -4168,7 +4168,7 @@ mod tests {
     }
 
     #[test]
-    fn project_ui_state_exposes_stub_nav_element_for_active_leg() {
+    fn project_ui_state_exposes_nav_element_summary_without_session_geometry() {
         let guided = FlightPlan {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
@@ -4183,8 +4183,8 @@ mod tests {
         let ui = project_ui_state(&guided);
         let nav_element = &ui.guidance.as_ref().unwrap().nav_element;
 
-        assert_eq!(nav_element.active_leg_summary, "KRNT \u{2192} KUAO CRS 342");
-        assert_eq!(nav_element.cdi_indicator_dots, Some(-0.2));
+        assert_eq!(nav_element.active_leg_summary, "KRNT \u{2192} KUAO");
+        assert_eq!(nav_element.cdi_indicator_dots, None);
     }
 
     #[test]

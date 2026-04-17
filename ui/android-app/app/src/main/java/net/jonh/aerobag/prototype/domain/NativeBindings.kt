@@ -261,6 +261,11 @@ interface NativeBridge {
         planJson: String,
     ): String
 
+    fun setGuidanceLegGeometryInSessionJson(
+        handle: Long,
+        geometriesJson: String,
+    ): String
+
     fun restoreChartPageStateInSessionJson(
         handle: Long,
         recentAirportIdsJson: String,
@@ -589,6 +594,11 @@ object NativeBindings : NativeBridge {
     external override fun replaceFlightPlanInSessionJson(
         handle: Long,
         planJson: String,
+    ): String
+
+    external override fun setGuidanceLegGeometryInSessionJson(
+        handle: Long,
+        geometriesJson: String,
     ): String
 
     external override fun restoreChartPageStateInSessionJson(

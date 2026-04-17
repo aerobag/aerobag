@@ -43,6 +43,7 @@ declare module "@generated/app_wasm.js" {
   export const sort_airway_suggestions_for_ui: (...args: unknown[]) => string;
   export const create_ui_session: (...args: unknown[]) => string;
   export const remove_leg_in_session: (...args: unknown[]) => string;
+  export const set_guidance_leg_geometry_in_session: (...args: unknown[]) => string;
   export const move_waypoint_in_session: (...args: unknown[]) => string;
   export const set_situation_in_session: (...args: unknown[]) => string;
   export const engage_map_follow_in_session: (...args: unknown[]) => string;

@@ -768,6 +768,14 @@ data class WireFlightPlanRouteSegment(
 )
 
 @Serializable
+data class WireGuidanceLegGeometry(
+    @SerialName("leg_id")
+    val legId: String,
+    val from: WireLatLon,
+    val to: WireLatLon,
+)
+
+@Serializable
 enum class WireSequencingMode {
     @SerialName("follow_plan")
     FollowPlan,

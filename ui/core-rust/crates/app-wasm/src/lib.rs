@@ -531,6 +531,15 @@ pub fn sync_map_follow_in_session(
 }
 
 #[wasm_bindgen]
+pub fn set_guidance_leg_geometry_in_session(
+    handle: u32,
+    geometries_json: &str,
+) -> Result<String, JsValue> {
+    set_guidance_leg_geometry_in_session_json(handle, geometries_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn load_playback_trace_in_session(
     handle: u32,
     source_path_json: &str,
@@ -1384,6 +1393,17 @@ fn sync_map_follow_in_session_json(
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::sync_map_follow_in_session(handle, viewport, width_px, height_px)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn set_guidance_leg_geometry_in_session_json(
+    handle: u32,
+    geometries_json: &str,
+) -> Result<String, String> {
+    let geometries: Vec<app_core::GuidanceLegGeometry> =
+        serde_json::from_str(geometries_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::set_guidance_leg_geometry_in_session(handle, geometries)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }

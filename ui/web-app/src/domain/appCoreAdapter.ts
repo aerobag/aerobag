@@ -21,6 +21,7 @@ import type {
   FlightPlanUiState,
   ChartFamilyId,
   ContentAvailability,
+  GuidanceLegGeometry,
   GuidanceState,
   LatLon,
   MapFollowUiState,
@@ -149,6 +150,7 @@ export interface UiSession {
   replaceFlightPlan(plan: FlightPlan): Promise<UiSessionSnapshot>;
   removeLeg(index: number): Promise<UiSessionSnapshot>;
   moveWaypoint(index: number, delta: number): Promise<UiSessionSnapshot>;
+  setGuidanceLegGeometry(geometries: GuidanceLegGeometry[]): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
   loadPlaybackTrace(sourcePath: string, traceJson: string): Promise<UiSessionSnapshot>;
   playPlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
@@ -289,6 +291,7 @@ type WasmModule = {
   push_situation_sample_in_session(handle: number, sampleJson: string): Promise<string> | string;
   select_ownship_source_in_session(handle: number, selectionJson: string): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
+  set_guidance_leg_geometry_in_session(handle: number, geometriesJson: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
   ingest_point_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
@@ -499,6 +502,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       moveWaypoint: async (index, delta) => {
         snapshot = await withSessionRetry(async () =>
           JSON.parse(await this.module.move_waypoint_in_session(handle, index, delta)) as UiSessionSnapshot,
+        );
+        return snapshot;
+      },
+      setGuidanceLegGeometry: async (geometries) => {
+        snapshot = await withSessionRetry(async () =>
+          JSON.parse(await this.module.set_guidance_leg_geometry_in_session(handle, JSON.stringify(geometries))) as UiSessionSnapshot,
         );
         return snapshot;
       },
@@ -1056,6 +1065,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.push_situation_sample_in_session !== "function" ||
     typeof mod.select_ownship_source_in_session !== "function" ||
     typeof mod.replace_flight_plan_in_session !== "function" ||
+    typeof mod.set_guidance_leg_geometry_in_session !== "function" ||
     typeof mod.select_airport_in_session !== "function" ||
     typeof mod.select_chart_in_session !== "function" ||
     typeof mod.ingest_point_tiles_in_session !== "function" ||

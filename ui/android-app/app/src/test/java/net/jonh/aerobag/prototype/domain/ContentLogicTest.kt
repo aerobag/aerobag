@@ -507,6 +507,9 @@ private class FakeNativeBridge(
 
     override fun replaceFlightPlanInSessionJson(handle: Long, planJson: String): String = getSessionSnapshotJson(handle)
 
+    override fun setGuidanceLegGeometryInSessionJson(handle: Long, geometriesJson: String): String =
+        getSessionSnapshotJson(handle)
+
     override fun restoreChartPageStateInSessionJson(
         handle: Long,
         recentAirportIdsJson: String,
@@ -522,6 +525,13 @@ private class FakeNativeBridge(
         widthPx: Double,
         heightPx: Double,
     ): String = """{"needed_point_tiles":[],"visible_features":[],"warnings":[]}"""
+
+    override fun syncMapFollowInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+    ): String = getSessionSnapshotJson(handle)
 
     override fun destroySession(handle: Long) {}
 

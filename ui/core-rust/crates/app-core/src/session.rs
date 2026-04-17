@@ -11,9 +11,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     derive_chart_page_state_from_catalog, load_catalog, move_flight_plan_waypoint, remove_flight_plan_leg,
     map_follow::{MapFollowSessionState, MapFollowUiState},
-    playback::PlaybackSessionState, query_map_overlay, state, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
+    playback::PlaybackSessionState, planning::NavElementUiView, query_map_overlay, state, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
     CatalogHandle, DerivedChartCatalog, DerivedChartPageState, FlightPlan, MapOverlayQueryResult,
-    MapViewport, PlaybackUiState, PointTilePayload, UiSnapshotAppState,
+    LatLon, MapViewport, NavRef, PlaybackUiState, PlanLeg, PointTilePayload,
+    SequencingMode, UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -47,12 +48,21 @@ struct UiSession {
     app_state: AppState,
     playback: PlaybackSessionState,
     map_follow: MapFollowSessionState,
+    guidance_leg_geometry: HashMap<String, GuidanceLegGeometry>,
     chart_page_state: DerivedChartPageState,
     point_tile_cache: HashMap<String, PointTilePayload>,
 }
 
 const DIRECT_SITUATION_SOURCE_ID: &str = "__direct_situation__";
 const PLAYBACK_SOURCE_ID: &str = "__playback_trace__";
+const CDI_NM_PER_DOT: f64 = 1.0;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GuidanceLegGeometry {
+    pub leg_id: String,
+    pub from: LatLon,
+    pub to: LatLon,
+}
 
 static NEXT_HANDLE: AtomicU32 = AtomicU32::new(1);
 static SESSIONS: OnceLock<Mutex<HashMap<u32, UiSession>>> = OnceLock::new();
@@ -102,6 +112,7 @@ pub fn create_ui_session(
             app_state,
             playback,
             map_follow,
+            guidance_leg_geometry: HashMap::new(),
             chart_page_state,
             point_tile_cache: HashMap::new(),
         },
@@ -123,6 +134,7 @@ pub fn remove_leg_in_session(handle: u32, index: usize) -> AppResult<UiSessionSn
         AppEvent::ReplaceFlightPlan(next_plan.clone()),
         &session.catalog,
     )?;
+    session.guidance_leg_geometry.clear();
     session.chart_page_state = derive_chart_page_state_from_catalog(
         &session.chart_catalog,
         &next_plan,
@@ -147,6 +159,7 @@ pub fn move_waypoint_in_session(
         AppEvent::ReplaceFlightPlan(next_plan.clone()),
         &session.catalog,
     )?;
+    session.guidance_leg_geometry.clear();
     session.chart_page_state = derive_chart_page_state_from_catalog(
         &session.chart_catalog,
         &next_plan,
@@ -154,6 +167,19 @@ pub fn move_waypoint_in_session(
         Some(&session.chart_page_state.selected_airport_id),
         Some(&session.chart_page_state.selected_chart_id),
     );
+    Ok(snapshot_for_session(session))
+}
+
+pub fn set_guidance_leg_geometry_in_session(
+    handle: u32,
+    geometries: Vec<GuidanceLegGeometry>,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.guidance_leg_geometry = geometries
+        .into_iter()
+        .map(|geometry| (geometry.leg_id.clone(), geometry))
+        .collect();
     Ok(snapshot_for_session(session))
 }
 
@@ -401,6 +427,7 @@ pub fn replace_flight_plan_in_session(
         AppEvent::ReplaceFlightPlan(plan.clone()),
         &session.catalog,
     )?;
+    session.guidance_leg_geometry.clear();
     session.chart_page_state = derive_chart_page_state_from_catalog(
         &session.chart_catalog,
         &plan,
@@ -543,13 +570,126 @@ fn session_plan(session: &UiSession) -> AppResult<FlightPlan> {
 }
 
 fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
+    let app_ui_state = project_session_app_ui_state(session);
     UiSessionSnapshot {
         app_state: state::project_ui_snapshot_app_state(&session.app_state),
-        app_ui_state: state::project_app_ui_state(&session.app_state),
+        app_ui_state,
         playback_ui_state: session.playback.ui_state(),
         map_follow_ui_state: session.map_follow.ui_state(&session.app_state.ownship.render),
         map_follow_target_viewport: session.map_follow.target_viewport(&session.app_state.ownship.render),
         chart_page_state: compact_chart_page_state(&session.chart_page_state),
+    }
+}
+
+fn project_session_app_ui_state(session: &UiSession) -> AppUiState {
+    let mut app_ui_state = state::project_app_ui_state(&session.app_state);
+    if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
+        if let Some(guidance) = active_plan.guidance.as_mut() {
+            guidance.nav_element = project_active_leg_nav_element(session);
+        }
+    }
+    app_ui_state
+}
+
+fn project_active_leg_nav_element(session: &UiSession) -> NavElementUiView {
+    let Some(plan) = session.app_state.active_plan.as_ref() else {
+        return NavElementUiView::default();
+    };
+    let Some(active_leg) = crate::active_guidance_leg(plan) else {
+        return NavElementUiView::default();
+    };
+    let Some((from, to)) = active_leg_geometry(plan, &active_leg, &session.guidance_leg_geometry) else {
+        return NavElementUiView {
+            active_leg_summary: format!("{} -> {}", nav_ref_label(&active_leg.from), nav_ref_label(&active_leg.to)),
+            cdi_indicator_dots: None,
+        };
+    };
+    let course_deg = bearing_degrees(from, to);
+    let cdi_indicator_dots = session
+        .app_state
+        .ownship
+        .render
+        .position
+        .map(|position| cdi_dots_for_leg(from, to, position));
+
+    NavElementUiView {
+        active_leg_summary: format!(
+            "{} -> {} CRS {:03.0}",
+            nav_ref_label(&active_leg.from),
+            nav_ref_label(&active_leg.to),
+            course_deg.round().rem_euclid(360.0),
+        ),
+        cdi_indicator_dots,
+    }
+}
+
+fn active_leg_geometry(
+    plan: &FlightPlan,
+    active_leg: &PlanLeg,
+    geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
+) -> Option<(LatLon, LatLon)> {
+    if let (NavRef::LatLon(from), NavRef::LatLon(to)) = (&active_leg.from, &active_leg.to) {
+        return Some((*from, *to));
+    }
+    let guidance = plan.guidance.as_ref()?;
+    if guidance.sequencing_mode == SequencingMode::DirectTo {
+        return guidance
+            .direct_to
+            .as_ref()
+            .and_then(|direct_to| direct_to.target_leg_id.as_ref())
+            .and_then(|leg_id| geometry_by_leg_id.get(leg_id))
+            .map(|geometry| {
+                let from = match &active_leg.from {
+                    NavRef::LatLon(position) => *position,
+                    _ => geometry.from,
+                };
+                let to = match &active_leg.to {
+                    NavRef::LatLon(position) => *position,
+                    _ => geometry.to,
+                };
+                (from, to)
+            });
+    }
+    plan.resolved_legs
+        .get(guidance.active_leg_index)
+        .and_then(|leg| geometry_by_leg_id.get(&leg.id))
+        .map(|geometry| (geometry.from, geometry.to))
+}
+
+fn cdi_dots_for_leg(from: LatLon, to: LatLon, position: LatLon) -> f32 {
+    let (leg_east, leg_north) = local_delta_nm(from, to);
+    let leg_length = (leg_east.powi(2) + leg_north.powi(2)).sqrt();
+    if leg_length <= f64::EPSILON {
+        return 0.0;
+    }
+    let unit_east = leg_east / leg_length;
+    let unit_north = leg_north / leg_length;
+    let (pos_east, pos_north) = local_delta_nm(from, position);
+    let signed_cross_track_nm = unit_east * pos_north - unit_north * pos_east;
+    (signed_cross_track_nm / CDI_NM_PER_DOT) as f32
+}
+
+fn local_delta_nm(origin: LatLon, point: LatLon) -> (f64, f64) {
+    let north_nm = (point.lat - origin.lat) * 60.0;
+    let east_nm = (point.lon - origin.lon) * 60.0 * ((origin.lat + point.lat).to_radians() / 2.0).cos();
+    (east_nm, north_nm)
+}
+
+fn bearing_degrees(from: LatLon, to: LatLon) -> f64 {
+    let from_lat = from.lat.to_radians();
+    let from_lon = from.lon.to_radians();
+    let to_lat = to.lat.to_radians();
+    let to_lon = to.lon.to_radians();
+    let delta_lon = to_lon - from_lon;
+    let y = delta_lon.sin() * to_lat.cos();
+    let x = from_lat.cos() * to_lat.sin() - from_lat.sin() * to_lat.cos() * delta_lon.cos();
+    y.atan2(x).to_degrees().rem_euclid(360.0)
+}
+
+fn nav_ref_label(nav_ref: &NavRef) -> String {
+    match nav_ref {
+        NavRef::Airport(code) | NavRef::Navaid(code) | NavRef::Fix(code) => code.clone(),
+        NavRef::LatLon(position) => format!("{:.4},{:.4}", position.lat, position.lon),
     }
 }
 
@@ -610,5 +750,31 @@ fn compact_chart_page_state(state: &DerivedChartPageState) -> UiChartPageState {
         recent_airport_ids: state.recent_airport_ids.clone(),
         selected_airport_id: state.selected_airport_id.clone(),
         selected_chart_id: state.selected_chart_id.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn straight_leg_cdi_is_signed_against_course_direction() {
+        let from = LatLon { lat: 47.0, lon: -122.0 };
+        let to = LatLon { lat: 48.0, lon: -122.0 };
+        let right_of_course = LatLon { lat: 47.5, lon: -121.985 };
+        let left_of_course = LatLon { lat: 47.5, lon: -122.015 };
+
+        assert!(cdi_dots_for_leg(from, to, right_of_course) < 0.0);
+        assert!(cdi_dots_for_leg(from, to, left_of_course) > 0.0);
+    }
+
+    #[test]
+    fn straight_leg_bearing_uses_geographic_course() {
+        let from = LatLon { lat: 47.0, lon: -122.0 };
+        let north = LatLon { lat: 48.0, lon: -122.0 };
+        let east = LatLon { lat: 47.0, lon: -121.0 };
+
+        assert!((bearing_degrees(from, north) - 0.0).abs() < 0.1);
+        assert!((bearing_degrees(from, east) - 89.6).abs() < 0.5);
     }
 }

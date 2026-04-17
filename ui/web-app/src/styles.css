@@ -661,6 +661,13 @@ button {
   stroke-linecap: round;
 }
 
+.navElementCdiOffscalePointer {
+  fill: #d45a7a;
+  stroke: #ffd2dc;
+  stroke-width: 0.8;
+  stroke-linejoin: round;
+}
+
 .playbackWidget {
   position: absolute;
   right: var(--thumb-gap);

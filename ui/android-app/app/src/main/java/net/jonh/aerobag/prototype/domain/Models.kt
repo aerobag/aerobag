@@ -238,6 +238,12 @@ data class FlightPlanRouteSegment(
     val status: RouteSegmentStatus,
 )
 
+data class GuidanceLegGeometry(
+    val legId: String,
+    val from: LatLonPoint,
+    val to: LatLonPoint,
+)
+
 enum class SequencingMode {
     FollowPlan,
     Suspended,

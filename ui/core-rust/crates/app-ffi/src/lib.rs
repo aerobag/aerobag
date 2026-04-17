@@ -776,6 +776,17 @@ pub fn replace_flight_plan_in_session_json(handle: u64, plan_json: &str) -> Resu
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn set_guidance_leg_geometry_in_session_json(
+    handle: u64,
+    geometries_json: &str,
+) -> Result<String, String> {
+    let geometries: Vec<app_core::GuidanceLegGeometry> =
+        serde_json::from_str(geometries_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::set_guidance_leg_geometry_in_session(handle as u32, geometries)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn move_waypoint_in_session_json(
     handle: u64,
     waypoint_index: usize,
@@ -1753,6 +1764,20 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_rep
     let result = (|| {
         let plan_json = get_java_string(&mut env, plan_json)?;
         replace_flight_plan_in_session_json(handle as u64, &plan_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setGuidanceLegGeometryInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    geometries_json: JString,
+) -> jstring {
+    let result = (|| {
+        let geometries_json = get_java_string(&mut env, geometries_json)?;
+        set_guidance_leg_geometry_in_session_json(handle as u64, &geometries_json)
     })();
     return_string(&mut env, result)
 }

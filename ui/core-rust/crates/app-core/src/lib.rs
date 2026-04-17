@@ -97,7 +97,7 @@ pub use session::{
     create_ui_session, destroy_session, get_map_overlay_in_session, get_session_snapshot,
     ingest_point_tiles_in_session, move_waypoint_in_session, remove_leg_in_session,
     push_situation_sample_in_session, register_ownship_source_in_session,
-    replace_flight_plan_in_session,
+    replace_flight_plan_in_session, set_guidance_leg_geometry_in_session, GuidanceLegGeometry,
     load_playback_trace_in_session, pause_playback_in_session, play_playback_in_session,
     restore_chart_page_state_in_session, select_airport_in_session, select_chart_in_session,
     seek_playback_in_session, set_playback_rate_in_session, set_situation_in_session,

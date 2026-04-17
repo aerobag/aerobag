@@ -68,6 +68,7 @@ describe("loadBestAvailableAdapter", () => {
       push_situation_sample_in_session: async () => snapshotJson,
       select_ownship_source_in_session: async () => snapshotJson,
       replace_flight_plan_in_session: async () => snapshotJson,
+      set_guidance_leg_geometry_in_session: async () => snapshotJson,
       select_airport_in_session: async () => snapshotJson,
       select_chart_in_session: async () => snapshotJson,
       ingest_point_tiles_in_session: async () => {},

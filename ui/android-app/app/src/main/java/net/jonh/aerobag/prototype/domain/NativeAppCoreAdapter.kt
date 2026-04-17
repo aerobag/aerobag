@@ -551,6 +551,17 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun setGuidanceLegGeometry(geometries: List<GuidanceLegGeometry>): UiSessionSnapshot {
+        snapshot =
+            decodeSnapshot(
+                bridge.setGuidanceLegGeometryInSessionJson(
+                    handle,
+                    json.encodeToString(geometries.map { it.toWire() }),
+                ),
+            )
+        return snapshot
+    }
+
     fun restoreChartPageState(
         recentAirportIds: List<String>,
         selectedAirportId: String?,
@@ -1331,6 +1342,12 @@ private fun WireAirwayPresentationPoint.toUi() = AirwayPresentationPoint(
 private fun LatLonPoint.toWire() = WireLatLon(lat = lat, lon = lon)
 
 private fun WireLatLon.toUi() = LatLonPoint(lat = lat, lon = lon)
+
+private fun GuidanceLegGeometry.toWire() = WireGuidanceLegGeometry(
+    legId = legId,
+    from = from.toWire(),
+    to = to.toWire(),
+)
 
 private fun ProcedureKind.toWire() = when (this) {
     ProcedureKind.Sid -> WireProcedureKind.Sid

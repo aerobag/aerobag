@@ -3364,7 +3364,7 @@ function FlightPlanPage(props: {
           />
           <section
             ref={waypointModalRef}
-            className={`waypointModal${reorderOpen ? " isReorder" : ""}`}
+            className={`waypointModal${reorderOpen ? " isReorder" : ""}${airportInsert ? " isAirportInsert" : ""}`}
             aria-label="Waypoint actions"
             style={waypointModalTop === null ? undefined : {
               top: `${waypointModalTop}px`,
@@ -3393,24 +3393,29 @@ function FlightPlanPage(props: {
                   }
                 }}
               >
-                <div className="planGuidanceSummary">
-                  {airportInsert.before ? "INSERT BEFORE" : "INSERT AFTER"}
+                <div className="airportInsertInputRow">
+                  <div className="planGuidanceSummary airportInsertTitle">
+                    {airportInsert.before ? "INSERT BEFORE" : "INSERT AFTER"}
+                  </div>
+                  <input
+                    className="airportInsertInput"
+                    autoFocus
+                    value={airportInsert.airportId}
+                    spellCheck={false}
+                    autoCapitalize="characters"
+                    autoCorrect="off"
+                    onChange={(event) => {
+                      setAirportInsert((current) => current ? {
+                        ...current,
+                        airportId: event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8),
+                        error: null,
+                      } : current);
+                    }}
+                  />
+                  <button type="submit" className="trayButton airwayChoiceButton airportInsertEnter" onPointerDown={stopPointer} onPointerUp={stopPointer}>
+                    Enter
+                  </button>
                 </div>
-                <input
-                  className="airportInsertInput"
-                  autoFocus
-                  value={airportInsert.airportId}
-                  spellCheck={false}
-                  autoCapitalize="characters"
-                  autoCorrect="off"
-                  onChange={(event) => {
-                    setAirportInsert((current) => current ? {
-                      ...current,
-                      airportId: event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8),
-                      error: null,
-                    } : current);
-                  }}
-                />
                 {airportInsert.error ? <div className="planGuidanceSummary">{airportInsert.error}</div> : null}
                 {airportInsert.loading ? <div className="planGuidanceSummary">Searching...</div> : null}
                 {airportInsert.suggestions.length > 0 ? (
@@ -3445,9 +3450,6 @@ function FlightPlanPage(props: {
                     ))}
                   </div>
                 ) : null}
-                <button type="submit" className="trayButton airwayChoiceButton" onPointerDown={stopPointer} onPointerUp={stopPointer}>
-                  Enter
-                </button>
               </form>
             ) : procedurePicker ? (
               <div className="waypointActionTray">

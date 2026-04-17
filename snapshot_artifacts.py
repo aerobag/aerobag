@@ -29,6 +29,12 @@ def collect_packed_artifacts(source_root: pathlib.Path) -> set[pathlib.Path]:
     current_artifacts_path, current = load_current_artifacts(packaged_root)
     files_to_copy: set[pathlib.Path] = {current_artifacts_path}
 
+    def add_required_packed(filename: str, label: str) -> None:
+        artifact_path = packaged_root / filename
+        if not artifact_path.is_file():
+            raise FileNotFoundError(f"current artifacts references missing {label}: {artifact_path}")
+        files_to_copy.add(artifact_path)
+
     for bundle_entry in current["bundles"]:
         bundle_path = packaged_root / bundle_entry["filename"]
         files_to_copy.add(bundle_path)
@@ -41,13 +47,11 @@ def collect_packed_artifacts(source_root: pathlib.Path) -> set[pathlib.Path]:
         for package in bundle["packages"]:
             files_to_copy.add(packaged_root / package["relative_path"])
 
-    obstacle_path = packaged_root / current["obstacles"]["filename"]
-    if obstacle_path.exists():
-        files_to_copy.add(obstacle_path)
+    add_required_packed(current["obstacles"]["filename"], "obstacles artifact")
+    for product in current.get("static_products", []):
+        add_required_packed(product["filename"], f"static product {product.get('id', '(unknown)')}")
     for product in current.get("fast_products", []):
-        product_path = packaged_root / product["filename"]
-        if product_path.exists():
-            files_to_copy.add(product_path)
+        add_required_packed(product["filename"], f"fast product {product.get('id', '(unknown)')}")
 
     return files_to_copy
 

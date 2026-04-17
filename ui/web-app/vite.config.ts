@@ -159,6 +159,56 @@ function mountStaticTree(sourceRoot: string) {
   };
 }
 
+function unpackedDirFromRelativeZip(filename: string): string {
+  if (!filename.endsWith(".zip")) {
+    throw new Error(`expected zip filename, got ${filename}`);
+  }
+  return path.join(artifactReadRoot, unpackedDir, filename.slice(0, -".zip".length));
+}
+
+function resolveCurrentFastProductRoot(productId: string): string | null {
+  const manifestPath = latestCurrentArtifacts(artifactReadRoot);
+  if (!manifestPath) {
+    return null;
+  }
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
+    fast_products?: Array<{ id?: string; filename?: string }>;
+  };
+  const product = manifest.fast_products?.find((candidate) => candidate.id === productId);
+  if (!product?.filename) {
+    return null;
+  }
+  const productRoot = unpackedDirFromRelativeZip(product.filename);
+  if (!fs.existsSync(productRoot) || !fs.statSync(productRoot).isDirectory()) {
+    throw new Error(`missing unpacked fast product ${productId}: ${productRoot}`);
+  }
+  return productRoot;
+}
+
+function mountFastProducts() {
+  return (req: { url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
+    const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
+    const parts = requestPath.replace(/^\/+/, "").split("/");
+    const productId = parts.shift();
+    if (!productId || parts.length === 0) {
+      next();
+      return;
+    }
+    const productRoot = resolveCurrentFastProductRoot(productId);
+    if (!productRoot) {
+      next();
+      return;
+    }
+    const filePath = path.resolve(productRoot, parts.join("/"));
+    if (!filePath.startsWith(productRoot)) {
+      res.statusCode = 403;
+      res.end("forbidden");
+      return;
+    }
+    return mountStaticTree(productRoot)({ url: `/${parts.join("/")}` }, res, next);
+  };
+}
+
 function ensureLinkedFile(sourcePath: string, targetPath: string) {
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   fs.rmSync(targetPath, { force: true, recursive: true });
@@ -245,7 +295,7 @@ function aerobagStaticPlugin(): Plugin {
       server.middlewares.use("/thumbnails", mountStaticTree(thumbnailRoot));
       server.middlewares.use("/nav-db", mountStaticTree(navDbRoot));
       server.middlewares.use("/vectors", mountStaticTree(vectorRoot));
-      server.middlewares.use("/fast-products", mountStaticTree(fastProductRoot));
+      server.middlewares.use("/fast-products", mountFastProducts());
       server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot));
     },
     writeBundle(outputOptions) {

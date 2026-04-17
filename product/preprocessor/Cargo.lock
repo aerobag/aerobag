@@ -591,6 +591,7 @@ name = "preprocessor-fetch"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "preprocessor-core",
  "serde_json",
  "sha2",

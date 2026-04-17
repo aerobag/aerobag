@@ -5,7 +5,7 @@ use std::{
     process::Command,
 };
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use chrono::{Datelike, Duration, NaiveDate};
 use preprocessor_fetch::{CacheLayout, FetchCacheConfig, FetchCacheMode};
 use serde_json::Value;
@@ -38,11 +38,15 @@ pub fn emit_source_urls(
     Ok(results)
 }
 
-pub fn discover_published_cycles(fetch_cache: Option<&FetchCacheConfig>) -> anyhow::Result<Vec<String>> {
+pub fn discover_published_cycles(
+    fetch_cache: Option<&FetchCacheConfig>,
+) -> anyhow::Result<Vec<String>> {
     let published_chart_effective_dates = discover_published_chart_effective_dates(fetch_cache)?;
     let mut cycles = discover_published_tpp_cycles(fetch_cache)?
         .into_iter()
-        .filter(|cycle| chart_effective_date_for_cycle(cycle, &published_chart_effective_dates).is_ok())
+        .filter(|cycle| {
+            chart_effective_date_for_cycle(cycle, &published_chart_effective_dates).is_ok()
+        })
         .collect::<Vec<_>>();
     cycles.sort();
     cycles.dedup();
@@ -75,7 +79,8 @@ fn build_records(
             .context("no published FAA cycles discovered")?,
     };
     let published_chart_effective_dates = discover_published_chart_effective_dates(fetch_cache)?;
-    let charts_effective = chart_effective_date_for_cycle(&cycle, &published_chart_effective_dates)?;
+    let charts_effective =
+        chart_effective_date_for_cycle(&cycle, &published_chart_effective_dates)?;
     let charts_start = format_effective_date(charts_effective, CycleFormat::Charts);
     let iso_start = format_effective_date(charts_effective, CycleFormat::Iso);
     let current_start = format_effective_date(cycle_effective_date(&cycle)?, CycleFormat::Iso);
@@ -227,8 +232,7 @@ fn build_records(
     ];
 
     for label in [
-        "tpp-ak", "tpp-pac", "tpp-nw", "tpp-sw", "tpp-nc", "tpp-ec", "tpp-sc", "tpp-ne",
-        "tpp-se",
+        "tpp-ak", "tpp-pac", "tpp-nw", "tpp-sw", "tpp-nc", "tpp-ec", "tpp-sc", "tpp-ne", "tpp-se",
     ] {
         records.push((
             label.to_string(),
@@ -380,10 +384,9 @@ fn load_cached_bytes(layout: &CacheLayout, url: &str) -> anyhow::Result<Option<V
     if !blob_path.is_file() {
         return Ok(None);
     }
-    Ok(Some(
-        fs::read(&blob_path)
-            .with_context(|| format!("failed to read {}", blob_path.display()))?,
-    ))
+    Ok(Some(fs::read(&blob_path).with_context(|| {
+        format!("failed to read {}", blob_path.display())
+    })?))
 }
 
 fn store_cached_bytes(layout: &CacheLayout, url: &str, bytes: &[u8]) -> anyhow::Result<()> {
@@ -591,8 +594,14 @@ mod tests {
             extract_suffix_date_token(href, "DDTPP", ".zip").as_deref(),
             Some("260416")
         );
-        assert_eq!(parse_compact_yy_mm_dd("260416").unwrap(), NaiveDate::from_ymd_opt(2026, 4, 16).unwrap());
-        assert_eq!(cycle_code_from_effective_date(NaiveDate::from_ymd_opt(2026, 4, 16).unwrap()).unwrap(), "2604");
+        assert_eq!(
+            parse_compact_yy_mm_dd("260416").unwrap(),
+            NaiveDate::from_ymd_opt(2026, 4, 16).unwrap()
+        );
+        assert_eq!(
+            cycle_code_from_effective_date(NaiveDate::from_ymd_opt(2026, 4, 16).unwrap()).unwrap(),
+            "2604"
+        );
     }
 
     #[test]

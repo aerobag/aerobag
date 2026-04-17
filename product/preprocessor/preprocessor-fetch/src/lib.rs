@@ -1,4 +1,5 @@
 use anyhow::{bail, Context};
+use chrono::Utc;
 use preprocessor_core::CaptureManifest;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -72,6 +73,7 @@ impl CacheLayout {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchCacheMode {
+    CacheFirst,
     Fill,
     Offline,
 }
@@ -79,6 +81,7 @@ pub enum FetchCacheMode {
 impl FetchCacheMode {
     pub fn parse(value: &str) -> anyhow::Result<Self> {
         match value {
+            "cache-first" => Ok(Self::CacheFirst),
             "fill" => Ok(Self::Fill),
             "offline" => Ok(Self::Offline),
             other => bail!("unsupported fetch cache mode: {other}"),
@@ -87,6 +90,10 @@ impl FetchCacheMode {
 
     fn is_offline(&self) -> bool {
         matches!(self, Self::Offline)
+    }
+
+    fn is_cache_first(&self) -> bool {
+        matches!(self, Self::CacheFirst)
     }
 }
 
@@ -447,6 +454,10 @@ fn prefetch_one(
                 } else {
                     bail!("cache miss in offline mode for {url}");
                 }
+            } else if fetch_cache.mode.is_cache_first()
+                && restore_cached_download(&layout, &parsed.cache_key, file_name, &archive_path)?
+            {
+                source = "cache";
             } else {
                 source = fetch_network_with_cache(
                     &layout,
@@ -710,6 +721,7 @@ fn store_cached_download_with_headers(
     let metadata = serde_json::json!({
         "etag": validators.etag,
         "file": file_name,
+        "fetched_at_utc": Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         "last_modified": validators.last_modified,
         "sha256": sha256,
         "size": size,

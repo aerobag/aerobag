@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     env, fs,
     fs::{File, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     os::unix::fs::PermissionsExt,
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
@@ -12,7 +12,7 @@ use std::{
 };
 
 use anyhow::{bail, Context};
-use chrono::{Datelike, NaiveDate, Timelike, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
 use crossbeam_channel::{self, RecvTimeoutError};
 use preprocessor_charts::{
     build_family_tiles, build_family_vrts, package_family_region_versioned, stage_work_dir,
@@ -33,8 +33,8 @@ use preprocessor_fast::{
 };
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
-    read_source_urls_jsonl, write_package_outputs_jsonl, FetchCacheConfig, FetchCacheMode,
-    PackageOutputRecord,
+    read_source_urls_jsonl, write_package_outputs_jsonl, CacheLayout, FetchCacheConfig,
+    FetchCacheMode, PackageOutputRecord,
 };
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, ResourceIndex,
@@ -45,7 +45,9 @@ use preprocessor_vectors::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zip::ZipArchive;
+use zip::{
+    write::SimpleFileOptions, CompressionMethod, DateTime as ZipDateTime, ZipArchive, ZipWriter,
+};
 
 use crate::emit_source_urls::{cycle_effective_date, discover_published_cycles, emit_source_urls};
 
@@ -74,6 +76,13 @@ impl ProductBuildProfile {
     fn tpp_regions(self) -> &'static [Region] {
         match self {
             Self::Validation => &[Region::Ne, Region::Nw],
+            Self::Production => &Region::ALL,
+        }
+    }
+
+    fn terrain_regions(self) -> &'static [Region] {
+        match self {
+            Self::Validation => &[Region::Nw],
             Self::Production => &Region::ALL,
         }
     }
@@ -177,6 +186,8 @@ struct CurrentStaticProductEntry {
     source_version: String,
     checksum_sha256: String,
     size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_fetched_at_utc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -366,6 +377,11 @@ enum ProductTaskValue {
     BuiltStandaloneProduct {
         zip_path: PathBuf,
         source_version: String,
+        source_fetched_at_utc: Option<String>,
+    },
+    TerrainDiscovery {
+        index_path: PathBuf,
+        source_fetched_at_utc: Option<String>,
     },
     PublishedObstacle {
         source_zip_path: PathBuf,
@@ -380,6 +396,7 @@ enum ProductTaskValue {
         sha256: String,
         size_bytes: u64,
         source_version: String,
+        source_fetched_at_utc: Option<String>,
     },
     CurrentArtifacts {
         path: PathBuf,
@@ -495,6 +512,8 @@ const DEFAULT_PRODUCT_BUILD_MEMORY_MAX: &str = "80G";
 const TPP_RENDER_JOBS_PER_RUN: usize = 8;
 const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
+const TERRAIN_ZOOM: u32 = 10;
+const TERRAIN_TILE_SIZE: u32 = 512;
 
 pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<String> {
     let mut lines = Vec::new();
@@ -627,6 +646,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         NexradPublish,
         GeoBuild,
         GeoPublish,
+        TerrainDiscovery,
+        TerrainBuild {
+            region: Region,
+        },
+        TerrainPublish {
+            region: Region,
+        },
         CurrentArtifacts,
         ProductUnpack,
         ValidatePackagedContract,
@@ -926,6 +952,27 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             kind: ProductScheduledTaskKind::GeoPublish,
         });
         pending_tasks.push(ProductScheduledTask {
+            id: "terrain-discovery".to_string(),
+            deps: vec![],
+            weight: 1,
+            kind: ProductScheduledTaskKind::TerrainDiscovery,
+        });
+        for region in config.profile.terrain_regions() {
+            let region_id = region.code().to_ascii_lowercase();
+            pending_tasks.push(ProductScheduledTask {
+                id: format!("build-terrain-{region_id}"),
+                deps: vec!["terrain-discovery".to_string()],
+                weight: 2,
+                kind: ProductScheduledTaskKind::TerrainBuild { region: *region },
+            });
+            pending_tasks.push(ProductScheduledTask {
+                id: format!("publish-terrain-{region_id}"),
+                deps: vec![format!("build-terrain-{region_id}")],
+                weight: 1,
+                kind: ProductScheduledTaskKind::TerrainPublish { region: *region },
+            });
+        }
+        pending_tasks.push(ProductScheduledTask {
             id: "current-artifacts".to_string(),
             deps: cycles
                 .iter()
@@ -935,20 +982,31 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 .chain(std::iter::once("publish-metars".to_string()))
                 .chain(std::iter::once("publish-nexrad".to_string()))
                 .chain(std::iter::once("publish-geo".to_string()))
+                .chain(config.profile.terrain_regions().iter().map(|region| {
+                    format!("publish-terrain-{}", region.code().to_ascii_lowercase())
+                }))
                 .collect(),
             weight: 1,
             kind: ProductScheduledTaskKind::CurrentArtifacts,
         });
+        let mut product_unpack_deps = vec![
+            "current-artifacts".to_string(),
+            "publish-obstacles".to_string(),
+            "publish-tfrs".to_string(),
+            "publish-metars".to_string(),
+            "publish-nexrad".to_string(),
+            "publish-geo".to_string(),
+        ];
+        product_unpack_deps.extend(
+            config
+                .profile
+                .terrain_regions()
+                .iter()
+                .map(|region| format!("publish-terrain-{}", region.code().to_ascii_lowercase())),
+        );
         pending_tasks.push(ProductScheduledTask {
             id: "product-unpack".to_string(),
-            deps: vec![
-                "current-artifacts".to_string(),
-                "publish-obstacles".to_string(),
-                "publish-tfrs".to_string(),
-                "publish-metars".to_string(),
-                "publish-nexrad".to_string(),
-                "publish-geo".to_string(),
-            ],
+            deps: product_unpack_deps,
             weight: 1,
             kind: ProductScheduledTaskKind::ProductUnpack,
         });
@@ -1725,6 +1783,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 value: ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
                                     source_version: source_generated_at_utc,
+                                    source_fetched_at_utc: None,
                                 },
                                 completion_detail: format!("cache_hit={cache_hit}"),
                             })
@@ -1738,6 +1797,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 value: ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
                                     source_version: source_generated_at_utc,
+                                    source_fetched_at_utc: None,
                                 },
                                 completion_detail: format!("cache_hit={cache_hit}"),
                             })
@@ -1751,6 +1811,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 value: ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
                                     source_version: source_generated_at_utc,
+                                    source_fetched_at_utc: None,
                                 },
                                 completion_detail: format!("cache_hit={cache_hit}"),
                             })
@@ -1763,6 +1824,47 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 value: ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
                                     source_version,
+                                    source_fetched_at_utc: None,
+                                },
+                                completion_detail: format!("cache_hit={cache_hit}"),
+                            })
+                        }
+                        ProductScheduledTaskKind::TerrainDiscovery => {
+                            let (index_path, source_fetched_at_utc, record) =
+                                build_terrain_discovery_index(&config)?;
+                            let cache_hit = record.cache_hit;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![record],
+                                value: ProductTaskValue::TerrainDiscovery {
+                                    index_path,
+                                    source_fetched_at_utc,
+                                },
+                                completion_detail: format!("cache_hit={cache_hit}"),
+                            })
+                        }
+                        ProductScheduledTaskKind::TerrainBuild { region } => {
+                            let (index_path, source_fetched_at_utc) =
+                                match task_values_snapshot.get("terrain-discovery") {
+                                    Some(ProductTaskValue::TerrainDiscovery {
+                                        index_path,
+                                        source_fetched_at_utc,
+                                    }) => (index_path.clone(), source_fetched_at_utc.clone()),
+                                    _ => bail!("missing terrain discovery output"),
+                                };
+                            let (zip_path, source_version, source_fetched_at_utc, record) =
+                                build_terrain_product(
+                                    &config,
+                                    region,
+                                    &index_path,
+                                    source_fetched_at_utc,
+                                )?;
+                            let cache_hit = record.cache_hit;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![record],
+                                value: ProductTaskValue::BuiltStandaloneProduct {
+                                    zip_path,
+                                    source_version,
+                                    source_fetched_at_utc,
                                 },
                                 completion_detail: format!("cache_hit={cache_hit}"),
                             })
@@ -1772,8 +1874,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 Some(ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
                                     source_version,
+                                    source_fetched_at_utc,
                                     ..
-                                }) => (zip_path.clone(), source_version.clone()),
+                                }) => (
+                                    zip_path.clone(),
+                                    source_version.clone(),
+                                    source_fetched_at_utc.clone(),
+                                ),
                                 _ => bail!("missing TFR build output"),
                             };
                             let (published_zip, sha256, size_bytes) =
@@ -1787,6 +1894,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     sha256,
                                     size_bytes,
                                     source_version: built.1,
+                                    source_fetched_at_utc: built.2,
                                 },
                                 completion_detail: "published".to_string(),
                             })
@@ -1796,8 +1904,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 Some(ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
                                     source_version,
+                                    source_fetched_at_utc,
                                     ..
-                                }) => (zip_path.clone(), source_version.clone()),
+                                }) => (
+                                    zip_path.clone(),
+                                    source_version.clone(),
+                                    source_fetched_at_utc.clone(),
+                                ),
                                 _ => bail!("missing METAR build output"),
                             };
                             let (published_zip, sha256, size_bytes) =
@@ -1811,6 +1924,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     sha256,
                                     size_bytes,
                                     source_version: built.1,
+                                    source_fetched_at_utc: built.2,
                                 },
                                 completion_detail: "published".to_string(),
                             })
@@ -1820,8 +1934,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 Some(ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
                                     source_version,
+                                    source_fetched_at_utc,
                                     ..
-                                }) => (zip_path.clone(), source_version.clone()),
+                                }) => (
+                                    zip_path.clone(),
+                                    source_version.clone(),
+                                    source_fetched_at_utc.clone(),
+                                ),
                                 _ => bail!("missing NEXRAD build output"),
                             };
                             let (published_zip, sha256, size_bytes) =
@@ -1835,6 +1954,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     sha256,
                                     size_bytes,
                                     source_version: built.1,
+                                    source_fetched_at_utc: built.2,
                                 },
                                 completion_detail: "published".to_string(),
                             })
@@ -1844,8 +1964,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 Some(ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
                                     source_version,
+                                    source_fetched_at_utc,
                                     ..
-                                }) => (zip_path.clone(), source_version.clone()),
+                                }) => (
+                                    zip_path.clone(),
+                                    source_version.clone(),
+                                    source_fetched_at_utc.clone(),
+                                ),
                                 _ => bail!("missing geo build output"),
                             };
                             let (published_zip, sha256, size_bytes) =
@@ -1859,6 +1984,40 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     sha256,
                                     size_bytes,
                                     source_version: built.1,
+                                    source_fetched_at_utc: built.2,
+                                },
+                                completion_detail: "published".to_string(),
+                            })
+                        }
+                        ProductScheduledTaskKind::TerrainPublish { region } => {
+                            let region_id = region.code().to_ascii_lowercase();
+                            let task_id = format!("build-terrain-{region_id}");
+                            let built = match task_values_snapshot.get(&task_id) {
+                                Some(ProductTaskValue::BuiltStandaloneProduct {
+                                    zip_path,
+                                    source_version,
+                                    source_fetched_at_utc,
+                                    ..
+                                }) => (
+                                    zip_path.clone(),
+                                    source_version.clone(),
+                                    source_fetched_at_utc.clone(),
+                                ),
+                                _ => bail!("missing terrain build output for {}", region.code()),
+                            };
+                            let product_id = format!("terrain-{region_id}");
+                            let (published_zip, sha256, size_bytes) =
+                                publish_content_addressed_zip(&config.build_root, &built.0, &product_id)?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::PublishedStandaloneProduct {
+                                    id: product_id,
+                                    source_zip_path: built.0,
+                                    published_zip,
+                                    sha256,
+                                    size_bytes,
+                                    source_version: built.1,
+                                    source_fetched_at_utc: built.2,
                                 },
                                 completion_detail: "published".to_string(),
                             })
@@ -1898,15 +2057,24 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     _ => bail!("missing published fast product output for {}", task_id),
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
-                            let static_products = ["publish-geo"]
+                            let static_product_task_ids = std::iter::once("publish-geo".to_string())
+                                .chain(config.profile.terrain_regions().iter().map(|region| {
+                                    format!(
+                                        "publish-terrain-{}",
+                                        region.code().to_ascii_lowercase()
+                                    )
+                                }))
+                                .collect::<Vec<_>>();
+                            let static_products = static_product_task_ids
                                 .iter()
-                                .map(|task_id| match task_values_snapshot.get(*task_id) {
+                                .map(|task_id| match task_values_snapshot.get(task_id) {
                                     Some(ProductTaskValue::PublishedStandaloneProduct {
                                         id,
                                         published_zip,
                                         sha256,
                                         size_bytes,
                                         source_version,
+                                        source_fetched_at_utc,
                                         ..
                                     }) => Ok(CurrentStaticProductEntry {
                                         id: id.clone(),
@@ -1919,6 +2087,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                         source_version: source_version.clone(),
                                         checksum_sha256: sha256.clone(),
                                         size_bytes: *size_bytes,
+                                        source_fetched_at_utc: source_fetched_at_utc.clone(),
                                     }),
                                     _ => bail!("missing published static product output for {}", task_id),
                                 })
@@ -1964,9 +2133,17 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     _ => bail!("missing published fast product output for {}", task_id),
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
-                            let static_products = ["publish-geo"]
+                            let static_product_task_ids = std::iter::once("publish-geo".to_string())
+                                .chain(config.profile.terrain_regions().iter().map(|region| {
+                                    format!(
+                                        "publish-terrain-{}",
+                                        region.code().to_ascii_lowercase()
+                                    )
+                                }))
+                                .collect::<Vec<_>>();
+                            let static_products = static_product_task_ids
                                 .iter()
-                                .map(|task_id| match task_values_snapshot.get(*task_id) {
+                                .map(|task_id| match task_values_snapshot.get(task_id) {
                                     Some(ProductTaskValue::PublishedStandaloneProduct {
                                         source_zip_path,
                                         published_zip,
@@ -4223,6 +4400,113 @@ fn build_geo_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf, St
     Ok((result.zip_path, version_label, record))
 }
 
+fn build_terrain_product(
+    config: &ProductBuildConfig,
+    region: Region,
+    terrain_index_path: &Path,
+    source_fetched_at_utc: Option<String>,
+) -> anyhow::Result<(PathBuf, String, Option<String>, NodeRecord)> {
+    let region_id = region.code().to_ascii_lowercase();
+    let input_dir = artifact_root_from_build_root(&config.build_root)
+        .join("private-work")
+        .join("terrain")
+        .join(&region_id)
+        .join("input");
+    let dem_dir = input_dir.join("dems");
+    fs::create_dir_all(&dem_dir)
+        .with_context(|| format!("failed to create {}", dem_dir.display()))?;
+
+    let provenance_dir = config
+        .build_root
+        .join("meta")
+        .join("provenance")
+        .join(format!("terrain-{region_id}"));
+    let fetch_cache = terrain_fetch_cache_config(config)?;
+    let mut dem_candidates = terrain_dem_candidates_for_region(terrain_index_path, region)?;
+    if dem_candidates.is_empty() {
+        bail!(
+            "terrain discovery index has no DEM URLs for {}",
+            region.code()
+        );
+    }
+    let dem_urls = prefetch_terrain_dems_with_fallback(
+        &mut dem_candidates,
+        &dem_dir,
+        config.fetch_jobs,
+        &fetch_cache,
+        &provenance_dir,
+        &format!("terrain-{region_id}-dem"),
+    )?;
+    let dem_paths = terrain_dem_paths_from_urls(&dem_dir, &dem_urls)?;
+    let source_fingerprint = terrain_source_fingerprint(&dem_urls, &dem_paths)?;
+    let version_label = fast_product_version_label(&source_fingerprint);
+    let inputs = BTreeMap::from([
+        ("product_id".to_string(), format!("terrain-{region_id}")),
+        ("region".to_string(), region.code().to_string()),
+        ("zoom".to_string(), TERRAIN_ZOOM.to_string()),
+        ("tile_size".to_string(), TERRAIN_TILE_SIZE.to_string()),
+        ("source_fingerprint".to_string(), source_fingerprint),
+        (
+            "product_build".to_string(),
+            hash_file(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/product_build.rs"))?,
+        ),
+        ("geo_csv".to_string(), hash_file(static_geo_source_path())?),
+    ]);
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, &format!("static-terrain-{region_id}"))?,
+        &format!("static-terrain-{region_id}"),
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let zip_path = output_dir.join(format!("terrain_{region_id}_{version_label}.zip"));
+    let manifest_path = output_dir.join("manifest.json");
+    let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path])? {
+        NodeCacheState::CacheHit(record) => {
+            return Ok((zip_path, version_label, source_fetched_at_utc, record));
+        }
+        NodeCacheState::Build(lock) => lock,
+    };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir)
+            .with_context(|| format!("failed to clear {}", output_dir.display()))?;
+    }
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    let vrt_path = output_dir.join(format!("terrain_{region_id}.vrt"));
+    build_terrain_vrt(&vrt_path, &dem_paths)?;
+    build_terrain_region_tiles(
+        region,
+        &vrt_path,
+        &static_geo_source_path(),
+        &output_dir,
+        &version_label,
+        &dem_urls,
+    )?;
+    zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
+    let outputs = BTreeMap::from([
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&output_dir.join("manifest.json"), &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&zip_path, &config.build_root),
+        ),
+    ]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((zip_path, version_label, source_fetched_at_utc, record))
+}
+
 fn static_geo_source_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -4235,6 +4519,728 @@ fn static_geo_source_path() -> PathBuf {
         .join("geo")
         .join("geo.csv")
 }
+
+fn terrain_tnmaccess_url(region: Region) -> String {
+    let bounds = region.bounds();
+    let bbox = format!(
+        "{},{},{},{}",
+        bounds.lon_min, bounds.lat_min, bounds.lon_max, bounds.lat_max
+    );
+    format!(
+        "https://tnmaccess.nationalmap.gov/api/v1/products?bbox={bbox}&datasets=National%20Elevation%20Dataset%20(NED)%201%20arc-second%20Current&prodFormats=GeoTIFF&max=3000#logical_name=terrain_{}_tnmaccess.json",
+        region.code().to_ascii_lowercase()
+    )
+}
+
+fn build_terrain_discovery_index(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<(PathBuf, Option<String>, NodeRecord)> {
+    let discovery_dir = artifact_root_from_build_root(&config.build_root)
+        .join("private-work")
+        .join("terrain")
+        .join("global-discovery")
+        .join("input");
+    fs::create_dir_all(&discovery_dir)
+        .with_context(|| format!("failed to create {}", discovery_dir.display()))?;
+    let provenance_dir = config
+        .build_root
+        .join("meta")
+        .join("provenance")
+        .join("terrain-discovery");
+    let fetch_cache = terrain_fetch_cache_config(config)?;
+    let discovery_urls = config
+        .profile
+        .terrain_regions()
+        .iter()
+        .map(|region| terrain_tnmaccess_url(*region))
+        .collect::<Vec<_>>();
+    prefetch_archives_with_provenance(
+        &discovery_urls,
+        &discovery_dir,
+        config.fetch_jobs,
+        Some(&fetch_cache),
+        &provenance_dir,
+        "terrain-discovery",
+    )?;
+
+    let mut by_cell = BTreeMap::<String, Vec<TerrainDemCandidate>>::new();
+    let mut discovery_hashes = BTreeMap::new();
+    for region in config.profile.terrain_regions() {
+        let region_id = region.code().to_ascii_lowercase();
+        let path = discovery_dir.join(format!("terrain_{region_id}_tnmaccess.json"));
+        discovery_hashes.insert(region_id, hash_file(&path)?);
+        for (cell, mut candidates) in terrain_dem_candidates_from_tnmaccess(&path)? {
+            by_cell.entry(cell).or_default().append(&mut candidates);
+        }
+    }
+    normalize_terrain_candidates(&mut by_cell);
+    let source_fetched_at_utc = terrain_source_fetched_at_utc(&fetch_cache, &discovery_urls, &[])?;
+    let source_fingerprint = terrain_discovery_fingerprint(&by_cell, &discovery_hashes);
+    let inputs = BTreeMap::from([
+        ("product_id".to_string(), "terrain-discovery".to_string()),
+        (
+            "regions".to_string(),
+            config
+                .profile
+                .terrain_regions()
+                .iter()
+                .map(|region| region.code())
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+        ("source_fingerprint".to_string(), source_fingerprint.clone()),
+        (
+            "product_build".to_string(),
+            hash_file(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/product_build.rs"))?,
+        ),
+    ]);
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "static-terrain-discovery")?,
+        "static-terrain-discovery",
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let index_path = output_dir.join("terrain_dem_index.json");
+    let _build_lock = match claim_or_wait_for_node(&prepared, &[index_path.clone()])? {
+        NodeCacheState::CacheHit(record) => {
+            return Ok((index_path, source_fetched_at_utc, record));
+        }
+        NodeCacheState::Build(lock) => lock,
+    };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir)
+            .with_context(|| format!("failed to clear {}", output_dir.display()))?;
+    }
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    let index = TerrainDemIndex {
+        schema_version: 1,
+        regions: config
+            .profile
+            .terrain_regions()
+            .iter()
+            .map(|region| region.code().to_string())
+            .collect(),
+        source_fetched_at_utc: source_fetched_at_utc.clone(),
+        cells: by_cell,
+    };
+    fs::write(
+        &index_path,
+        serde_json::to_vec_pretty(&index).context("failed to encode terrain DEM index")?,
+    )
+    .with_context(|| format!("failed to write {}", index_path.display()))?;
+    let outputs = BTreeMap::from([(
+        "index".to_string(),
+        relative_artifact_path(&index_path, &config.build_root),
+    )]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((index_path, source_fetched_at_utc, record))
+}
+
+fn terrain_dem_candidates_from_tnmaccess(
+    path: &Path,
+) -> anyhow::Result<BTreeMap<String, Vec<TerrainDemCandidate>>> {
+    let value: serde_json::Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    let items = value
+        .get("items")
+        .and_then(|value| value.as_array())
+        .context("TNMAccess response missing items[]")?;
+    let mut by_cell = BTreeMap::<String, Vec<TerrainDemCandidate>>::new();
+    for item in items {
+        let Some(url) = item.get("downloadURL").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if !url.ends_with(".tif") {
+            continue;
+        }
+        let filename = url.rsplit('/').next().unwrap_or("dem.tif").to_string();
+        let Some(cell) = terrain_dem_cell_from_filename(&filename) else {
+            continue;
+        };
+        let candidate = TerrainDemCandidate {
+            url: format!("{url}#logical_name={filename}"),
+            publication_date: item
+                .get("publicationDate")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            last_updated: item
+                .get("lastUpdated")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            filename,
+        };
+        by_cell.entry(cell).or_default().push(candidate);
+    }
+    normalize_terrain_candidates(&mut by_cell);
+    Ok(by_cell)
+}
+
+fn normalize_terrain_candidates(
+    candidates_by_cell: &mut BTreeMap<String, Vec<TerrainDemCandidate>>,
+) {
+    for candidates in candidates_by_cell.values_mut() {
+        candidates.sort_by(|left, right| right.sort_key().cmp(&left.sort_key()));
+        candidates.dedup_by(|left, right| left.url == right.url);
+    }
+}
+
+fn terrain_discovery_fingerprint(
+    candidates: &BTreeMap<String, Vec<TerrainDemCandidate>>,
+    discovery_hashes: &BTreeMap<String, String>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"terrain-discovery-v1");
+    for (region, hash) in discovery_hashes {
+        hasher.update(region.as_bytes());
+        hasher.update([0]);
+        hasher.update(hash.as_bytes());
+        hasher.update([0xff]);
+    }
+    for (cell, cell_candidates) in candidates {
+        hasher.update(cell.as_bytes());
+        hasher.update([0]);
+        for candidate in cell_candidates {
+            hasher.update(candidate.url.as_bytes());
+            hasher.update([0]);
+        }
+        hasher.update([0xff]);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TerrainDemIndex {
+    schema_version: u32,
+    regions: Vec<String>,
+    source_fetched_at_utc: Option<String>,
+    cells: BTreeMap<String, Vec<TerrainDemCandidate>>,
+}
+
+#[derive(Debug, Clone)]
+struct TerrainCellCandidates {
+    cell: String,
+    candidates: Vec<TerrainDemCandidate>,
+    selected: usize,
+}
+
+impl TerrainCellCandidates {
+    fn selected_candidate(&self) -> anyhow::Result<&TerrainDemCandidate> {
+        self.candidates
+            .get(self.selected)
+            .with_context(|| format!("terrain cell {} has no selected DEM candidate", self.cell))
+    }
+
+    fn selected_url(&self) -> anyhow::Result<String> {
+        Ok(self.selected_candidate()?.url.clone())
+    }
+
+    fn advance_after_failed_url(&mut self, failed_url: &str) -> anyhow::Result<bool> {
+        if self.selected_candidate()?.url != failed_url {
+            return Ok(false);
+        }
+        if self.selected + 1 >= self.candidates.len() {
+            bail!(
+                "terrain DEM fetch failed for cell {} and no fallback candidate remains: {}",
+                self.cell,
+                failed_url
+            );
+        }
+        self.selected += 1;
+        Ok(true)
+    }
+}
+
+fn terrain_dem_candidates_for_region(
+    index_path: &Path,
+    region: Region,
+) -> anyhow::Result<Vec<TerrainCellCandidates>> {
+    let index: TerrainDemIndex = serde_json::from_slice(
+        &fs::read(index_path)
+            .with_context(|| format!("failed to read {}", index_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", index_path.display()))?;
+    Ok(index
+        .cells
+        .into_iter()
+        .filter(|(cell, _)| terrain_cell_intersects_region(cell, region))
+        .map(|(cell, candidates)| TerrainCellCandidates {
+            cell,
+            candidates,
+            selected: 0,
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TerrainDemCandidate {
+    url: String,
+    publication_date: String,
+    last_updated: String,
+    filename: String,
+}
+
+impl TerrainDemCandidate {
+    fn sort_key(&self) -> (&str, &str, &str) {
+        (&self.publication_date, &self.last_updated, &self.filename)
+    }
+}
+
+fn terrain_dem_cell_from_filename(filename: &str) -> Option<String> {
+    filename
+        .split('_')
+        .find(|part| {
+            let bytes = part.as_bytes();
+            matches!(bytes.first(), Some(b'n' | b's')) && (part.contains('w') || part.contains('e'))
+        })
+        .map(ToOwned::to_owned)
+}
+
+fn terrain_cell_intersects_region(cell: &str, region: Region) -> bool {
+    let Some((lat_min, lon_min)) = terrain_cell_origin(cell) else {
+        return false;
+    };
+    let bounds = region.bounds();
+    let lat_max = lat_min + 1.0;
+    let lon_max = lon_min + 1.0;
+    lon_min < bounds.lon_max
+        && lon_max > bounds.lon_min
+        && lat_min < bounds.lat_max
+        && lat_max > bounds.lat_min
+}
+
+fn terrain_cell_origin(cell: &str) -> Option<(f64, f64)> {
+    let lon_start = cell.find('w').or_else(|| cell.find('e'))?;
+    let (lat_part, lon_part_with_dir) = cell.split_at(lon_start);
+    let (lon_dir, lon_part) = lon_part_with_dir.split_at(1);
+    let lat_abs = lat_part.get(1..)?.parse::<f64>().ok()?;
+    let lon_abs = lon_part.parse::<f64>().ok()?;
+    let lat = if lat_part.starts_with('s') {
+        -lat_abs
+    } else {
+        lat_abs
+    };
+    let lon = if lon_dir == "w" { -lon_abs } else { lon_abs };
+    Some((lat, lon))
+}
+
+fn prefetch_terrain_dems_with_fallback(
+    cells: &mut [TerrainCellCandidates],
+    dem_dir: &Path,
+    fetch_jobs: usize,
+    fetch_cache: &FetchCacheConfig,
+    provenance_dir: &Path,
+    label: &str,
+) -> anyhow::Result<Vec<String>> {
+    loop {
+        let urls = cells
+            .iter()
+            .map(TerrainCellCandidates::selected_url)
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        match prefetch_archives_with_provenance(
+            &urls,
+            dem_dir,
+            fetch_jobs,
+            Some(fetch_cache),
+            provenance_dir,
+            label,
+        ) {
+            Ok(()) => return Ok(urls),
+            Err(error) => {
+                let message = error.to_string();
+                let Some(failed_url) = terrain_failed_fetch_url(&message) else {
+                    return Err(error);
+                };
+                let Some(failed_logical_url) = urls
+                    .iter()
+                    .find(|url| terrain_urls_match(url, &failed_url))
+                    .cloned()
+                else {
+                    return Err(error);
+                };
+                let mut advanced = false;
+                for cell in cells.iter_mut() {
+                    if cell.advance_after_failed_url(&failed_logical_url)? {
+                        eprintln!(
+                            "terrain DEM fetch failed for {}; falling back to next candidate for cell {}",
+                            failed_logical_url, cell.cell
+                        );
+                        advanced = true;
+                        break;
+                    }
+                }
+                if !advanced {
+                    return Err(error);
+                }
+            }
+        }
+    }
+}
+
+fn terrain_failed_fetch_url(message: &str) -> Option<String> {
+    let start = message.find("curl failed for ")? + "curl failed for ".len();
+    let rest = &message[start..];
+    let end = rest.find(" with HTTP").or_else(|| rest.find('\n'))?;
+    Some(rest[..end].to_string())
+}
+
+fn terrain_urls_match(logical_url: &str, failed_url: &str) -> bool {
+    logical_url == failed_url
+        || logical_url
+            .split_once("#logical_name=")
+            .map(|(network_url, _)| network_url == failed_url)
+            .unwrap_or(false)
+}
+
+fn terrain_dem_paths_from_urls(dem_dir: &Path, urls: &[String]) -> anyhow::Result<Vec<PathBuf>> {
+    urls.iter()
+        .map(|url| {
+            let parsed_name = url
+                .split("#logical_name=")
+                .nth(1)
+                .or_else(|| url.rsplit('/').next())
+                .context("terrain DEM URL has no filename")?;
+            let path = dem_dir.join(parsed_name);
+            if !path.is_file() {
+                bail!("terrain DEM download missing {}", path.display());
+            }
+            Ok(path)
+        })
+        .collect()
+}
+
+fn terrain_source_fetched_at_utc(
+    fetch_cache: &FetchCacheConfig,
+    discovery_urls: &[String],
+    dem_urls: &[String],
+) -> anyhow::Result<Option<String>> {
+    let layout = CacheLayout::new(&fetch_cache.root);
+    let mut fetched_times = Vec::new();
+    for url in discovery_urls
+        .iter()
+        .map(String::as_str)
+        .chain(dem_urls.iter().map(String::as_str))
+    {
+        let metadata_path = layout.http_metadata_path(url);
+        if !metadata_path.is_file() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_slice(
+            &fs::read(&metadata_path)
+                .with_context(|| format!("failed to read {}", metadata_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+        if let Some(fetched_at) = value.get("fetched_at_utc").and_then(|value| value.as_str()) {
+            fetched_times.push(fetched_at.to_string());
+            continue;
+        }
+        if let Ok(modified) = fs::metadata(&metadata_path).and_then(|metadata| metadata.modified())
+        {
+            fetched_times.push(
+                DateTime::<Utc>::from(modified)
+                    .format("%Y-%m-%dT%H:%M:%SZ")
+                    .to_string(),
+            );
+        }
+    }
+    fetched_times.sort();
+    Ok(fetched_times.into_iter().max())
+}
+
+fn terrain_source_fingerprint(
+    dem_urls: &[String],
+    dem_paths: &[PathBuf],
+) -> anyhow::Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"terrain-v1");
+    hasher.update(TERRAIN_ZOOM.to_string().as_bytes());
+    for url in dem_urls {
+        hasher.update(url.as_bytes());
+        hasher.update([0]);
+    }
+    for path in dem_paths {
+        hasher.update(
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        hasher.update(hash_file(path)?.as_bytes());
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn build_terrain_vrt(vrt_path: &Path, dem_paths: &[PathBuf]) -> anyhow::Result<()> {
+    let mut command = Command::new("gdalbuildvrt");
+    command.arg("-overwrite").arg(vrt_path);
+    for path in dem_paths {
+        command.arg(path);
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("failed to run gdalbuildvrt for {}", vrt_path.display()))?;
+    if !status.success() {
+        bail!("gdalbuildvrt failed for {}", vrt_path.display());
+    }
+    Ok(())
+}
+
+fn build_terrain_region_tiles(
+    region: Region,
+    vrt_path: &Path,
+    geo_csv_path: &Path,
+    output_dir: &Path,
+    version_label: &str,
+    dem_urls: &[String],
+) -> anyhow::Result<()> {
+    let script_path = output_dir.join("build_terrain_tiles.py");
+    fs::write(&script_path, TERRAIN_TILE_SCRIPT)
+        .with_context(|| format!("failed to write {}", script_path.display()))?;
+    let bounds = region.bounds();
+    let output = Command::new("python3")
+        .arg(&script_path)
+        .arg("--vrt")
+        .arg(vrt_path)
+        .arg("--geo-csv")
+        .arg(geo_csv_path)
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--region")
+        .arg(region.code())
+        .arg(format!(
+            "--bbox={},{},{},{}",
+            bounds.lon_min, bounds.lat_min, bounds.lon_max, bounds.lat_max
+        ))
+        .arg("--zoom")
+        .arg(TERRAIN_ZOOM.to_string())
+        .arg("--tile-size")
+        .arg(TERRAIN_TILE_SIZE.to_string())
+        .arg("--version-label")
+        .arg(version_label)
+        .arg("--source-count")
+        .arg(dem_urls.len().to_string())
+        .output()
+        .with_context(|| format!("failed to run {}", script_path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "terrain tile builder failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+fn zip_directory_deterministic(
+    zip_path: &Path,
+    root: &Path,
+    entries: &[&str],
+) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    for entry in entries {
+        collect_zip_files(root, &root.join(entry), &mut files)?;
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    let file = File::create(zip_path)
+        .with_context(|| format!("failed to create {}", zip_path.display()))?;
+    let mut writer = ZipWriter::new(file);
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .last_modified_time(ZipDateTime::default());
+    for (name, path) in files {
+        writer.start_file(name, options).with_context(|| {
+            format!("failed to add {} to {}", path.display(), zip_path.display())
+        })?;
+        let mut input =
+            File::open(&path).with_context(|| format!("failed to open {}", path.display()))?;
+        let mut bytes = Vec::new();
+        input
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        writer
+            .write_all(&bytes)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+    }
+    writer
+        .finish()
+        .with_context(|| format!("failed to finish {}", zip_path.display()))?;
+    Ok(())
+}
+
+fn collect_zip_files(
+    root: &Path,
+    path: &Path,
+    files: &mut Vec<(String, PathBuf)>,
+) -> anyhow::Result<()> {
+    if path.is_file() {
+        let relative = path
+            .strip_prefix(root)
+            .with_context(|| format!("failed to relativize {}", path.display()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        files.push((relative, path.to_path_buf()));
+        return Ok(());
+    }
+    for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
+        let entry = entry?;
+        collect_zip_files(root, &entry.path(), files)?;
+    }
+    Ok(())
+}
+
+const TERRAIN_TILE_SCRIPT: &str = r#"
+import argparse, json, math, struct
+from pathlib import Path
+import numpy as np
+from osgeo import gdal
+
+RADIUS = 6378137.0
+ORIGIN_SHIFT = math.pi * RADIUS
+
+def mercator(lon, lat):
+    lat = max(min(lat, 85.05112878), -85.05112878)
+    mx = lon * ORIGIN_SHIFT / 180.0
+    my = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) * RADIUS
+    return mx, my
+
+def lonlat(mx, my):
+    lon = (mx / ORIGIN_SHIFT) * 180.0
+    lat = (2.0 * math.atan(math.exp(my / RADIUS)) - math.pi / 2.0) * 180.0 / math.pi
+    return lon, lat
+
+def tile_bounds(x, y, z, tile_size):
+    initial_resolution = (2.0 * math.pi * RADIUS) / tile_size
+    resolution = initial_resolution / (2 ** z)
+    minx = x * tile_size * resolution - ORIGIN_SHIFT
+    maxx = (x + 1) * tile_size * resolution - ORIGIN_SHIFT
+    miny = y * tile_size * resolution - ORIGIN_SHIFT
+    maxy = (y + 1) * tile_size * resolution - ORIGIN_SHIFT
+    return minx, miny, maxx, maxy
+
+def tile_range(west, south, east, north, z, tile_size):
+    resolution = ((2.0 * math.pi * RADIUS) / tile_size) / (2 ** z)
+    west_m, south_m = mercator(west, south)
+    east_m, north_m = mercator(east, north)
+    x0 = math.floor((west_m + ORIGIN_SHIFT) / resolution / tile_size)
+    x1 = math.floor((east_m + ORIGIN_SHIFT) / resolution / tile_size)
+    y0 = math.floor((south_m + ORIGIN_SHIFT) / resolution / tile_size)
+    y1 = math.floor((north_m + ORIGIN_SHIFT) / resolution / tile_size)
+    return range(x0, x1 + 1), range(y0, y1 + 1)
+
+def load_geo(path):
+    values = {}
+    with open(path) as f:
+        for line in f:
+            lat, lon, height, _decl = [int(x) for x in line.strip().split(',')]
+            values[(lat, lon)] = height
+    return values
+
+def geoid(values, lat, lon):
+    lon = ((lon + 180.0) % 360.0) - 180.0
+    lat = max(min(lat, 89.0), -90.0)
+    lat0 = math.floor(lat)
+    lat1 = min(lat0 + 1, 89)
+    lon0 = math.floor(lon)
+    lon1 = lon0 + 1
+    if lon1 >= 180:
+        lon1 -= 360
+    lt = lat - lat0
+    ln = lon - lon0
+    sw = values[(lat0, lon0)]
+    se = values[(lat0, lon1)]
+    nw = values[(lat1, lon0)]
+    ne = values[(lat1, lon1)]
+    return (sw * (1-ln) + se * ln) * (1-lt) + (nw * (1-ln) + ne * ln) * lt
+
+def write_tile(path, payload, tile_size):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'wb') as f:
+        f.write(b'ABT1')
+        f.write(struct.pack('<HHhhff', tile_size, tile_size, -32768, 0, 1.0, 0.0))
+        f.write(payload)
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--vrt', required=True)
+    ap.add_argument('--geo-csv', required=True)
+    ap.add_argument('--output-dir', required=True)
+    ap.add_argument('--region', required=True)
+    ap.add_argument('--bbox', required=True)
+    ap.add_argument('--zoom', required=True, type=int)
+    ap.add_argument('--tile-size', required=True, type=int)
+    ap.add_argument('--version-label', required=True)
+    ap.add_argument('--source-count', required=True, type=int)
+    args = ap.parse_args()
+    west, south, east, north = [float(x) for x in args.bbox.split(',')]
+    root = Path(args.output_dir)
+    tiles_root = root / 'tiles'
+    ds = gdal.Open(args.vrt)
+    if ds is None:
+        raise SystemExit(f'failed to open {args.vrt}')
+    geo = load_geo(args.geo_csv)
+    x_range, y_range = tile_range(west, south, east, north, args.zoom, args.tile_size)
+    count = 0
+    for x in x_range:
+        for y in y_range:
+            minx, miny, maxx, maxy = tile_bounds(x, y, args.zoom, args.tile_size)
+            warped = gdal.Warp(
+                '', ds, format='MEM', dstSRS='EPSG:3857',
+                outputBounds=[minx, miny, maxx, maxy],
+                width=args.tile_size, height=args.tile_size,
+                resampleAlg='bilinear', dstNodata=-999999.0,
+            )
+            arr = warped.ReadAsArray()
+            center_lon, center_lat = lonlat((minx + maxx) / 2.0, (miny + maxy) / 2.0)
+            tile_geoid_ft = geoid(geo, center_lat, center_lon)
+            invalid = (arr <= -999998.0) | np.isnan(arr)
+            samples = np.rint(arr.astype(np.float64) * 3.280839895 + tile_geoid_ft)
+            samples = np.clip(samples, -32767, 32767).astype('<i2')
+            samples[invalid] = -32768
+            write_tile(tiles_root / str(args.zoom) / str(x) / f'{y}.terrain', samples.tobytes(), args.tile_size)
+            count += 1
+    manifest = {
+        'schema_version': 1,
+        'product': 'terrain',
+        'region': args.region,
+        'version_label': args.version_label,
+        'zoom': args.zoom,
+        'tile_size': args.tile_size,
+        'tile_format': 'ABT1',
+        'sample_encoding': 'int16_le',
+        'sample_units': 'feet',
+        'sample_vertical_datum': 'WGS84 ellipsoid',
+        'source_dem': 'USGS 3DEP 1 arc-second DEM',
+        'source_dem_vertical_datum': 'source tile metadata; generally NAVD88 in CONUS',
+        'geoid_model': 'avare geo.csv one-degree grid, applied once per tile at tile center (temporary approximation)',
+        'refresh_policy': {
+            'identity': 'published filename is content-addressed by ZIP bytes',
+            'source_fetched_at_utc': 'reported in current_artifacts.static_products[]',
+            'refresh_interval': 'producer policy; not embedded in artifact metadata'
+        },
+        'source_dem_count': args.source_count,
+        'tile_count': count,
+        'files': {'tiles': 'tiles'}
+    }
+    with open(root / 'manifest.json', 'w') as f:
+        json.dump(manifest, f, indent=2, sort_keys=True)
+
+if __name__ == '__main__':
+    main()
+"#;
 
 fn fast_product_version_label(source_fingerprint: &str) -> String {
     source_fingerprint.chars().take(16).collect()
@@ -5023,6 +6029,14 @@ fn fetch_cache_config(config: &ProductBuildConfig) -> anyhow::Result<FetchCacheC
     Ok(FetchCacheConfig {
         root: config.fetch_cache_root.clone(),
         mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
+    })
+}
+
+fn terrain_fetch_cache_config(config: &ProductBuildConfig) -> anyhow::Result<FetchCacheConfig> {
+    let mode = env::var("TERRAIN_FETCH_CACHE_MODE").unwrap_or_else(|_| "cache-first".to_string());
+    Ok(FetchCacheConfig {
+        root: config.fetch_cache_root.clone(),
+        mode: FetchCacheMode::parse(&mode)?,
     })
 }
 

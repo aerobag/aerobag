@@ -68,5 +68,8 @@ fn main() {
         hasher.update(fs::read(&full_path).expect("read hashed input"));
         hasher.update([0xff]);
     }
-    println!("cargo:rustc-env=PREPROCESSOR_WORKSPACE_HASH={:x}", hasher.finalize());
+    println!(
+        "cargo:rustc-env=PREPROCESSOR_WORKSPACE_HASH={:x}",
+        hasher.finalize()
+    );
 }

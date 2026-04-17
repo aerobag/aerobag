@@ -23,6 +23,7 @@ use preprocessor_data::{
     load_matching_bundle, resolve_matching_db_path, tpp_zip_paths_from_bundle, DataBuildMode,
     DataBuildRequest,
 };
+use preprocessor_fast::{terrain_ellipsoid_height_feet_from_navd88_meters, GeoidGrid};
 use preprocessor_fetch::{
     hash_text, manifest_path_for_run, manifest_summary, prefetch_archives_with_provenance,
     read_download_records, read_extract_records, read_source_url_set, CacheLayout,
@@ -82,6 +83,7 @@ fn long_usage() -> &'static str {
   preprocessor-cli compare-provenance --left-provenance-dir <path> --right-provenance-dir <path>
   preprocessor-cli compare-data-db --left-db <path> --right-db <path>
   preprocessor-cli audit-cifp-tpp-matching [--artifact-root <path>] [--bundle <path>] [--limit <count>]
+  preprocessor-cli audit-terrain-airports --nav-db <path> --dem-vrt <path> --geo-csv <path> --output-dir <path> [--bbox <west,south,east,north>] [--limit <count>]
   preprocessor-cli compare-sampled-images --left-root <path> --right-root <path> [--sample-percent <0-100>] [--rmse-threshold <0-1>] [--limit <count>]
   preprocessor-cli print-cache-layout --cache-root <path> --url <url> --sha256 <sha256>
   preprocessor-cli print-tool-example --cwd <path>
@@ -1291,6 +1293,416 @@ fn audit_cifp_tpp_matching_command(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct TerrainAuditPoint {
+    source: String,
+    airport_id: String,
+    airport_type: String,
+    point_id: String,
+    latitude: f64,
+    longitude: f64,
+    charted_elevation_ft_msl: f64,
+}
+
+#[derive(Debug, Clone)]
+struct TerrainAuditRow {
+    point: TerrainAuditPoint,
+    dem_height_ft_msl: f64,
+    geoid_height_ft: f64,
+    transformed_height_ft_wgs84_ellipsoid: f64,
+    residual_ft: f64,
+}
+
+fn audit_terrain_airports_command(args: &[String]) -> anyhow::Result<()> {
+    let mut nav_db = None;
+    let mut dem_vrt = None;
+    let mut geo_csv = None;
+    let mut output_dir = None;
+    let mut bbox = None;
+    let mut include_heliports = false;
+    let mut limit = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--nav-db" => {
+                nav_db = Some(PathBuf::from(
+                    args.get(i + 1)
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                ));
+                i += 2;
+            }
+            "--dem-vrt" => {
+                dem_vrt = Some(PathBuf::from(
+                    args.get(i + 1)
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                ));
+                i += 2;
+            }
+            "--geo-csv" => {
+                geo_csv = Some(PathBuf::from(
+                    args.get(i + 1)
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                ));
+                i += 2;
+            }
+            "--output-dir" => {
+                output_dir = Some(PathBuf::from(
+                    args.get(i + 1)
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                ));
+                i += 2;
+            }
+            "--bbox" => {
+                bbox = Some(parse_bbox(
+                    args.get(i + 1)
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                )?);
+                i += 2;
+            }
+            "--limit" => {
+                limit = Some(
+                    args.get(i + 1)
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                        .parse::<usize>()
+                        .context("failed to parse --limit")?,
+                );
+                i += 2;
+            }
+            "--include-heliports" => {
+                include_heliports = true;
+                i += 1;
+            }
+            _ => anyhow::bail!("{}", usage()),
+        }
+    }
+
+    let nav_db = nav_db.ok_or_else(|| anyhow::anyhow!("{}", usage()))?;
+    let dem_vrt = dem_vrt.ok_or_else(|| anyhow::anyhow!("{}", usage()))?;
+    let geo_csv = geo_csv.ok_or_else(|| anyhow::anyhow!("{}", usage()))?;
+    let output_dir = output_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?;
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+
+    let geoid_grid = GeoidGrid::from_avare_geo_csv(&geo_csv)?;
+    let points = load_terrain_audit_points(&nav_db, bbox, include_heliports, limit)?;
+    let mut rows = Vec::new();
+    for point in points {
+        let dem_height_msl_m = probe_dem_meters(&dem_vrt, point.longitude, point.latitude)
+            .with_context(|| {
+                format!(
+                    "failed to probe DEM for {} {} at {},{}",
+                    point.airport_id, point.point_id, point.latitude, point.longitude
+                )
+            })?;
+        let dem_height_ft_msl = dem_height_msl_m * 3.280_839_895;
+        let transformed_height_ft_wgs84_ellipsoid =
+            terrain_ellipsoid_height_feet_from_navd88_meters(
+                dem_height_msl_m,
+                point.latitude,
+                point.longitude,
+                &geoid_grid,
+            );
+        let geoid_height_ft = transformed_height_ft_wgs84_ellipsoid - dem_height_ft_msl;
+        let charted_elevation_ft_wgs84_ellipsoid = point.charted_elevation_ft_msl + geoid_height_ft;
+        rows.push(TerrainAuditRow {
+            point,
+            dem_height_ft_msl,
+            geoid_height_ft,
+            transformed_height_ft_wgs84_ellipsoid,
+            residual_ft: transformed_height_ft_wgs84_ellipsoid
+                - charted_elevation_ft_wgs84_ellipsoid,
+        });
+    }
+
+    let csv_path = output_dir.join("terrain_airport_audit.csv");
+    write_terrain_audit_csv(&csv_path, &rows)?;
+    let svg_path = output_dir.join("terrain_airport_scatter.svg");
+    write_terrain_audit_svg(&svg_path, &rows)?;
+    println!("points {}", rows.len());
+    println!("csv {}", csv_path.display());
+    println!("scatter {}", svg_path.display());
+    if !rows.is_empty() {
+        let mean_abs =
+            rows.iter().map(|row| row.residual_ft.abs()).sum::<f64>() / rows.len() as f64;
+        let max_abs = rows
+            .iter()
+            .map(|row| row.residual_ft.abs())
+            .fold(0.0, f64::max);
+        println!("mean_abs_residual_ft {:.1}", mean_abs);
+        println!("max_abs_residual_ft {:.1}", max_abs);
+    }
+    if !include_heliports {
+        println!(
+            "heliports skipped; pass --include-heliports to audit rooftop/pad elevations separately"
+        );
+    }
+    Ok(())
+}
+
+fn load_terrain_audit_points(
+    nav_db: &Path,
+    bbox: Option<(f64, f64, f64, f64)>,
+    include_heliports: bool,
+    limit: Option<usize>,
+) -> anyhow::Result<Vec<TerrainAuditPoint>> {
+    let conn = rusqlite::Connection::open(nav_db)
+        .with_context(|| format!("failed to open {}", nav_db.display()))?;
+    let mut points = Vec::new();
+
+    let mut airports = conn.prepare(
+        "select LocationID, Type, ARPLatitude, ARPLongitude, ARPElevation
+         from airports
+         where ARPLatitude is not null and ARPLongitude is not null and trim(ARPElevation) != ''
+         order by LocationID",
+    )?;
+    let airport_rows = airports.query_map([], |row| {
+        Ok(TerrainAuditPoint {
+            source: "airport_arp".to_string(),
+            airport_id: row.get::<_, String>(0)?,
+            airport_type: row.get::<_, String>(1)?,
+            point_id: "ARP".to_string(),
+            latitude: row.get::<_, f64>(2)?,
+            longitude: row.get::<_, f64>(3)?,
+            charted_elevation_ft_msl: parse_sql_text_f64(row.get::<_, String>(4)?),
+        })
+    })?;
+    for point in airport_rows {
+        let point = point?;
+        if !include_heliports && point.airport_type == "HELIPORT" {
+            continue;
+        }
+        if point.charted_elevation_ft_msl.is_finite()
+            && point_is_inside_bbox(point.longitude, point.latitude, bbox)
+        {
+            points.push(point);
+        }
+        if limit.is_some_and(|limit| points.len() >= limit) {
+            return Ok(points);
+        }
+    }
+
+    let mut runways = conn.prepare(
+        "select r.LocationID, a.Type, r.LEIdent, r.LELatitude, r.LELongitude, r.LEElevation,
+                r.HEIdent, r.HELatitude, r.HELongitude, r.HEElevation
+         from airportrunways r
+         join airports a on a.LocationID = r.LocationID
+         order by r.LocationID, r.LEIdent, r.HEIdent",
+    )?;
+    let runway_rows = runways.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, String>(9)?,
+        ))
+    })?;
+    for row in runway_rows {
+        let (
+            airport_id,
+            airport_type,
+            le_ident,
+            le_lat,
+            le_lon,
+            le_elev,
+            he_ident,
+            he_lat,
+            he_lon,
+            he_elev,
+        ) = row?;
+        if !include_heliports && airport_type == "HELIPORT" {
+            continue;
+        }
+        for (ident, lat, lon, elevation) in [
+            (le_ident, le_lat, le_lon, le_elev),
+            (he_ident, he_lat, he_lon, he_elev),
+        ] {
+            let Some(latitude) = parse_optional_f64(&lat) else {
+                continue;
+            };
+            let Some(longitude) = parse_optional_f64(&lon) else {
+                continue;
+            };
+            let Some(charted_elevation_ft_msl) = parse_optional_f64(&elevation) else {
+                continue;
+            };
+            if !point_is_inside_bbox(longitude, latitude, bbox) {
+                continue;
+            }
+            points.push(TerrainAuditPoint {
+                source: "runway_endpoint".to_string(),
+                airport_id: airport_id.clone(),
+                airport_type: airport_type.clone(),
+                point_id: format!("RWY-{ident}"),
+                latitude,
+                longitude,
+                charted_elevation_ft_msl,
+            });
+            if limit.is_some_and(|limit| points.len() >= limit) {
+                return Ok(points);
+            }
+        }
+    }
+    Ok(points)
+}
+
+fn parse_sql_text_f64(value: String) -> f64 {
+    parse_optional_f64(&value).unwrap_or(f64::NAN)
+}
+
+fn parse_optional_f64(value: &str) -> Option<f64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<f64>().ok()
+}
+
+fn parse_bbox(value: &str) -> anyhow::Result<(f64, f64, f64, f64)> {
+    let parts = value.split(',').collect::<Vec<_>>();
+    if parts.len() != 4 {
+        anyhow::bail!("--bbox must be west,south,east,north");
+    }
+    let west = parts[0]
+        .parse::<f64>()
+        .context("failed to parse bbox west")?;
+    let south = parts[1]
+        .parse::<f64>()
+        .context("failed to parse bbox south")?;
+    let east = parts[2]
+        .parse::<f64>()
+        .context("failed to parse bbox east")?;
+    let north = parts[3]
+        .parse::<f64>()
+        .context("failed to parse bbox north")?;
+    if west >= east || south >= north {
+        anyhow::bail!("--bbox must satisfy west < east and south < north");
+    }
+    Ok((west, south, east, north))
+}
+
+fn point_is_inside_bbox(longitude: f64, latitude: f64, bbox: Option<(f64, f64, f64, f64)>) -> bool {
+    let Some((west, south, east, north)) = bbox else {
+        return true;
+    };
+    longitude >= west && longitude <= east && latitude >= south && latitude <= north
+}
+
+fn probe_dem_meters(dem_vrt: &Path, longitude: f64, latitude: f64) -> anyhow::Result<f64> {
+    let output = Command::new("gdallocationinfo")
+        .arg("-valonly")
+        .arg("-wgs84")
+        .arg(dem_vrt)
+        .arg(longitude.to_string())
+        .arg(latitude.to_string())
+        .output()
+        .with_context(|| format!("failed to run gdallocationinfo on {}", dem_vrt.display()))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "gdallocationinfo failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let stdout = String::from_utf8(output.stdout).context("gdallocationinfo stdout not utf-8")?;
+    stdout
+        .split_whitespace()
+        .find_map(|part| part.parse::<f64>().ok())
+        .ok_or_else(|| anyhow::anyhow!("gdallocationinfo produced no numeric value: {stdout:?}"))
+}
+
+fn write_terrain_audit_csv(path: &Path, rows: &[TerrainAuditRow]) -> anyhow::Result<()> {
+    let mut out = String::from("source,airport_id,airport_type,point_id,latitude,longitude,charted_elevation_ft_msl,dem_height_ft_msl,geoid_height_ft,transformed_height_ft_wgs84_ellipsoid,residual_ft\n");
+    for row in rows {
+        out.push_str(&format!(
+            "{},{},{},{},{:.8},{:.8},{:.2},{:.2},{:.2},{:.2},{:.2}\n",
+            row.point.source,
+            row.point.airport_id,
+            row.point.airport_type,
+            row.point.point_id,
+            row.point.latitude,
+            row.point.longitude,
+            row.point.charted_elevation_ft_msl,
+            row.dem_height_ft_msl,
+            row.geoid_height_ft,
+            row.transformed_height_ft_wgs84_ellipsoid,
+            row.residual_ft
+        ));
+    }
+    fs::write(path, out).with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn write_terrain_audit_svg(path: &Path, rows: &[TerrainAuditRow]) -> anyhow::Result<()> {
+    let width = 900.0;
+    let height = 700.0;
+    let pad = 70.0;
+    let mut min_v = f64::INFINITY;
+    let mut max_v = f64::NEG_INFINITY;
+    for row in rows {
+        let x = row.point.charted_elevation_ft_msl + row.geoid_height_ft;
+        let y = row.transformed_height_ft_wgs84_ellipsoid;
+        min_v = min_v.min(x).min(y);
+        max_v = max_v.max(x).max(y);
+    }
+    if !min_v.is_finite() || !max_v.is_finite() || (max_v - min_v).abs() < 1.0 {
+        min_v = 0.0;
+        max_v = 1.0;
+    }
+    let span = max_v - min_v;
+    let sx = |value: f64| pad + ((value - min_v) / span) * (width - 2.0 * pad);
+    let sy = |value: f64| height - pad - ((value - min_v) / span) * (height - 2.0 * pad);
+    let mut svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+<rect width="100%" height="100%" fill="white"/>
+<text x="{pad}" y="35" font-family="sans-serif" font-size="22">Terrain DEM airport scatter</text>
+<line x1="{pad}" y1="{}" x2="{}" y2="{}" stroke="#333" stroke-width="1"/>
+<line x1="{pad}" y1="{}" x2="{pad}" y2="{pad}" stroke="#333" stroke-width="1"/>
+<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="#999" stroke-width="1" stroke-dasharray="6 4"/>
+"##,
+        height - pad,
+        width - pad,
+        height - pad,
+        height - pad,
+        sx(min_v),
+        sy(min_v),
+        sx(max_v),
+        sy(max_v),
+    );
+    for row in rows {
+        let x_value = row.point.charted_elevation_ft_msl + row.geoid_height_ft;
+        let y_value = row.transformed_height_ft_wgs84_ellipsoid;
+        let color = if row.point.source == "runway_endpoint" {
+            "#0b7285"
+        } else {
+            "#c92a2a"
+        };
+        svg.push_str(&format!(
+            r##"<circle cx="{:.2}" cy="{:.2}" r="2.2" fill="{color}"><title>{} {} residual {:.1} ft</title></circle>
+"##,
+            sx(x_value),
+            sy(y_value),
+            row.point.airport_id,
+            row.point.point_id,
+            row.residual_ft
+        ));
+    }
+    svg.push_str(&format!(
+        r##"<text x="{pad}" y="{}" font-family="sans-serif" font-size="13">x: charted elevation + geoid height (ft WGS84 ellipsoid)</text>
+<text x="{pad}" y="{}" font-family="sans-serif" font-size="13">y: DEM probe + geoid height (ft WGS84 ellipsoid)</text>
+<text x="{pad}" y="{}" font-family="sans-serif" font-size="13">red: ARP, blue: runway endpoint</text>
+</svg>
+"##,
+        height - 34.0,
+        height - 18.0,
+        height - 2.0
+    ));
+    fs::write(path, svg).with_context(|| format!("failed to write {}", path.display()))
+}
+
 fn parse_family(value: &str) -> anyhow::Result<ChartFamily> {
     match value {
         "sec" => Ok(ChartFamily::Sec),
@@ -1348,6 +1760,7 @@ fn main() -> anyhow::Result<()> {
                 | "build-cycle"
                 | "build-fast-subset"
                 | "build-product"
+                | "audit-terrain-airports"
                 | "run-chart"
         )
     ) {
@@ -2259,6 +2672,9 @@ fn main() -> anyhow::Result<()> {
                     product.published_zip.display()
                 );
             }
+        }
+        Some("audit-terrain-airports") => {
+            audit_terrain_airports_command(&args[2..])?;
         }
         Some("explain-product-build") => {
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;

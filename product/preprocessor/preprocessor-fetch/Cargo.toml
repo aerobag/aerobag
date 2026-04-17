@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 preprocessor-core = { path = "../preprocessor-core" }
 serde_json.workspace = true
 sha2.workspace = true

@@ -352,6 +352,88 @@ struct GeoGridPoint {
     magnetic_declination_degrees: i32,
 }
 
+#[derive(Debug, Clone)]
+pub struct GeoidGrid {
+    geoid_height_feet_by_lat_lon: Vec<i32>,
+}
+
+impl GeoidGrid {
+    const MIN_LAT: i32 = -90;
+    const MAX_LAT_EXCLUSIVE: i32 = 90;
+    const MIN_LON: i32 = -180;
+    const MAX_LON_EXCLUSIVE: i32 = 180;
+    const LON_COUNT: usize = 360;
+
+    pub fn from_avare_geo_csv(path: &Path) -> anyhow::Result<Self> {
+        let mut values = vec![0; 180 * Self::LON_COUNT];
+        let mut seen = vec![false; values.len()];
+        for point in parse_geo_csv(path)? {
+            if !(Self::MIN_LAT..Self::MAX_LAT_EXCLUSIVE).contains(&point.latitude) {
+                bail!("geo latitude {} is outside [-90, 90)", point.latitude);
+            }
+            if !(Self::MIN_LON..Self::MAX_LON_EXCLUSIVE).contains(&point.longitude) {
+                bail!("geo longitude {} is outside [-180, 180)", point.longitude);
+            }
+            let index = Self::index(point.latitude, point.longitude);
+            values[index] = point.geoid_height_feet;
+            seen[index] = true;
+        }
+        if let Some(missing) = seen.iter().position(|value| !*value) {
+            let lat = missing / Self::LON_COUNT;
+            let lon = missing % Self::LON_COUNT;
+            bail!(
+                "geo grid is missing latitude {}, longitude {}",
+                lat as i32 + Self::MIN_LAT,
+                lon as i32 + Self::MIN_LON
+            );
+        }
+        Ok(Self {
+            geoid_height_feet_by_lat_lon: values,
+        })
+    }
+
+    pub fn geoid_height_feet_bilinear(&self, latitude: f64, longitude: f64) -> f64 {
+        let lat = latitude.clamp(
+            f64::from(Self::MIN_LAT),
+            f64::from(Self::MAX_LAT_EXCLUSIVE - 1),
+        );
+        let lon = normalize_longitude(longitude);
+        let lat0 = lat.floor() as i32;
+        let lat1 = (lat0 + 1).min(Self::MAX_LAT_EXCLUSIVE - 1);
+        let lon0 = lon.floor() as i32;
+        let lon1 = wrap_longitude(lon0 + 1);
+        let lat_t = lat - f64::from(lat0);
+        let lon_t = lon - f64::from(lon0);
+
+        let sw = f64::from(self.value(lat0, lon0));
+        let se = f64::from(self.value(lat0, lon1));
+        let nw = f64::from(self.value(lat1, lon0));
+        let ne = f64::from(self.value(lat1, lon1));
+        let south = sw * (1.0 - lon_t) + se * lon_t;
+        let north = nw * (1.0 - lon_t) + ne * lon_t;
+        south * (1.0 - lat_t) + north * lat_t
+    }
+
+    fn value(&self, latitude: i32, longitude: i32) -> i32 {
+        self.geoid_height_feet_by_lat_lon[Self::index(latitude, longitude)]
+    }
+
+    fn index(latitude: i32, longitude: i32) -> usize {
+        ((latitude - Self::MIN_LAT) as usize) * Self::LON_COUNT
+            + (longitude - Self::MIN_LON) as usize
+    }
+}
+
+pub fn terrain_ellipsoid_height_feet_from_navd88_meters(
+    navd88_height_meters: f64,
+    latitude: f64,
+    longitude: f64,
+    geoid_grid: &GeoidGrid,
+) -> f64 {
+    navd88_height_meters * 3.280_839_895
+        + geoid_grid.geoid_height_feet_bilinear(latitude, longitude)
+}
+
 pub fn sanitize_notam_id(notam_id: &str) -> String {
     notam_id.replace('/', "_")
 }
@@ -1078,6 +1160,27 @@ fn write_geo_csv(path: &Path, points: &[GeoGridPoint]) -> anyhow::Result<()> {
     fs::write(path, output).with_context(|| format!("failed to write {}", path.display()))
 }
 
+fn normalize_longitude(longitude: f64) -> f64 {
+    let mut lon = longitude;
+    while lon < -180.0 {
+        lon += 360.0;
+    }
+    while lon >= 180.0 {
+        lon -= 360.0;
+    }
+    lon
+}
+
+fn wrap_longitude(longitude: i32) -> i32 {
+    if longitude >= 180 {
+        longitude - 360
+    } else if longitude < -180 {
+        longitude + 360
+    } else {
+        longitude
+    }
+}
+
 fn parse_radar_listing(path: &Path) -> anyhow::Result<Vec<RadarListingEntry>> {
     let html =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
@@ -1748,6 +1851,30 @@ mod tests {
             fs::read(&result.csv_path)?,
         );
         assert_eq!(64_800, result.point_count);
+        Ok(())
+    }
+
+    #[test]
+    fn geoid_grid_interpolates_avare_geo_fixture() -> anyhow::Result<()> {
+        let fixture_root = avare_parity_fixture_root("geo_parity");
+        let grid = GeoidGrid::from_avare_geo_csv(&fixture_root.join("input").join("geo.csv"))?;
+        assert_eq!(grid.geoid_height_feet_bilinear(-90.0, -180.0), -30.0);
+        assert_eq!(grid.geoid_height_feet_bilinear(89.0, 179.0), 10.0);
+
+        let west = grid.geoid_height_feet_bilinear(40.0, -122.0);
+        let east = grid.geoid_height_feet_bilinear(40.0, -121.0);
+        let midpoint = grid.geoid_height_feet_bilinear(40.0, -121.5);
+        assert!((midpoint - ((west + east) / 2.0)).abs() < 0.001);
+        Ok(())
+    }
+
+    #[test]
+    fn terrain_transform_adds_geoid_height_after_meter_to_feet_conversion() -> anyhow::Result<()> {
+        let fixture_root = avare_parity_fixture_root("geo_parity");
+        let grid = GeoidGrid::from_avare_geo_csv(&fixture_root.join("input").join("geo.csv"))?;
+        let transformed =
+            terrain_ellipsoid_height_feet_from_navd88_meters(100.0, -90.0, -180.0, &grid);
+        assert!((transformed - 298.0839895).abs() < 0.0001);
         Ok(())
     }
 }

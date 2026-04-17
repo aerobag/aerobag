@@ -146,9 +146,31 @@ struct ProcedureLegMaterializationRecordSerde {
     key: ProcedureVariantKey,
     sequence: i32,
     nav_ref: Option<NavRef>,
+    #[serde(default)]
+    nav_position: Option<LatLon>,
+    #[serde(default)]
+    nav_magnetic_variation_deg: Option<f64>,
+    #[serde(default)]
+    defining_nav_ref: Option<NavRef>,
+    #[serde(default)]
+    defining_nav_position: Option<LatLon>,
+    #[serde(default)]
+    defining_nav_magnetic_variation_deg: Option<f64>,
+    #[serde(default)]
+    airport_magnetic_variation_deg: Option<f64>,
+    #[serde(default)]
+    altitude_1_ft: Option<f64>,
+    #[serde(default)]
+    altitude_2_ft: Option<f64>,
     path_termination: String,
     #[serde(default)]
     path_termination_kind: Option<PathTermination>,
+    #[serde(default)]
+    turn_direction: Option<String>,
+    #[serde(default)]
+    magnetic_course_deg: Option<f64>,
+    #[serde(default)]
+    route_distance_or_time: Option<String>,
 }
 
 impl Serialize for ProcedureLegMaterializationRecord {
@@ -160,8 +182,19 @@ impl Serialize for ProcedureLegMaterializationRecord {
             key: self.key.clone(),
             sequence: self.sequence,
             nav_ref: self.nav_ref.clone(),
+            nav_position: self.nav_position,
+            nav_magnetic_variation_deg: self.nav_magnetic_variation_deg,
+            defining_nav_ref: self.defining_nav_ref.clone(),
+            defining_nav_position: self.defining_nav_position,
+            defining_nav_magnetic_variation_deg: self.defining_nav_magnetic_variation_deg,
+            airport_magnetic_variation_deg: self.airport_magnetic_variation_deg,
+            altitude_1_ft: self.altitude_1_ft,
+            altitude_2_ft: self.altitude_2_ft,
             path_termination: self.path_termination.clone(),
-            path_termination_kind: None,
+            path_termination_kind: Some(self.path_termination_kind.clone()),
+            turn_direction: self.turn_direction.clone(),
+            magnetic_course_deg: self.magnetic_course_deg,
+            route_distance_or_time: self.route_distance_or_time.clone(),
         }
         .serialize(serializer)
     }
@@ -177,21 +210,21 @@ impl<'de> Deserialize<'de> for ProcedureLegMaterializationRecord {
             key: raw.key,
             sequence: raw.sequence,
             nav_ref: raw.nav_ref,
-            nav_position: None,
-            nav_magnetic_variation_deg: None,
-            defining_nav_ref: None,
-            defining_nav_position: None,
-            defining_nav_magnetic_variation_deg: None,
-            airport_magnetic_variation_deg: None,
-            altitude_1_ft: None,
-            altitude_2_ft: None,
+            nav_position: raw.nav_position,
+            nav_magnetic_variation_deg: raw.nav_magnetic_variation_deg,
+            defining_nav_ref: raw.defining_nav_ref,
+            defining_nav_position: raw.defining_nav_position,
+            defining_nav_magnetic_variation_deg: raw.defining_nav_magnetic_variation_deg,
+            airport_magnetic_variation_deg: raw.airport_magnetic_variation_deg,
+            altitude_1_ft: raw.altitude_1_ft,
+            altitude_2_ft: raw.altitude_2_ft,
             path_termination_kind: raw
                 .path_termination_kind
                 .unwrap_or_else(|| interpret_path_termination(&raw.path_termination)),
             path_termination: raw.path_termination,
-            turn_direction: None,
-            magnetic_course_deg: None,
-            route_distance_or_time: None,
+            turn_direction: raw.turn_direction,
+            magnetic_course_deg: raw.magnetic_course_deg,
+            route_distance_or_time: raw.route_distance_or_time,
         })
     }
 }

@@ -1,5 +1,7 @@
 use wasm_bindgen::prelude::*;
 
+mod web_navdb;
+
 #[wasm_bindgen]
 pub fn load_catalog(catalog_json: &str) -> Result<String, JsValue> {
     load_catalog_json(catalog_json).map_err(|err| JsValue::from_str(&err))
@@ -216,6 +218,43 @@ pub fn sort_airway_suggestions_for_ui(suggestions_json: &str) -> Result<String, 
 }
 
 #[wasm_bindgen]
+pub fn web_suggest_airways_near(anchor_json: &str, limit: usize) -> Result<String, JsValue> {
+    web_navdb::suggest_airways_near_json(anchor_json, limit).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn web_prepare_airway_presentation_for_anchors(
+    airway_name: &str,
+    origin_anchor_json: &str,
+    destination_anchor_json: &str,
+) -> Result<String, JsValue> {
+    web_navdb::prepare_airway_presentation_for_anchors_json(
+        airway_name,
+        origin_anchor_json,
+        destination_anchor_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn web_materialize_airway_selection(
+    start_component_index: usize,
+    entry_json: &str,
+    exit_json: &str,
+    origin_anchor_json: &str,
+    destination_anchor_json: &str,
+) -> Result<String, JsValue> {
+    web_navdb::materialize_airway_selection_json(
+        start_component_index,
+        entry_json,
+        exit_json,
+        origin_anchor_json,
+        destination_anchor_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn replace_airway_materialized_ui(
     plan_json: &str,
     component_index: usize,
@@ -331,6 +370,67 @@ pub fn describe_plate_procedure_load_options(
     candidates_json: &str,
 ) -> Result<String, JsValue> {
     describe_plate_procedure_load_options_json(plan_json, candidates_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn web_project_flight_plan_route(plan_json: &str) -> Result<String, JsValue> {
+    web_navdb::project_flight_plan_route_json(plan_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn web_list_procedures(
+    airport_id: &str,
+    kind_json: &str,
+) -> Result<String, JsValue> {
+    web_navdb::list_procedures_json(airport_id, kind_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn web_describe_procedure_options(
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+) -> Result<String, JsValue> {
+    web_navdb::describe_procedure_options_json(airport_id, procedure_id, kind_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn web_materialize_procedure(
+    airport_id: &str,
+    procedure_id: &str,
+    kind_json: &str,
+    runway_transition_json: &str,
+    enroute_transition_json: &str,
+    component_index: usize,
+) -> Result<String, JsValue> {
+    web_navdb::materialize_procedure_json(
+        airport_id,
+        procedure_id,
+        kind_json,
+        runway_transition_json,
+        enroute_transition_json,
+        component_index,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn web_find_procedure_plate_match(
+    airport_id: &str,
+    cifp_id: &str,
+) -> Result<String, JsValue> {
+    web_navdb::find_procedure_plate_match_json(airport_id, cifp_id)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn web_describe_plate_procedure_loads(
+    plan_json: &str,
+    plate_id: &str,
+) -> Result<String, JsValue> {
+    web_navdb::describe_plate_procedure_loads_json(plan_json, plate_id)
         .map_err(|err| JsValue::from_str(&err))
 }
 

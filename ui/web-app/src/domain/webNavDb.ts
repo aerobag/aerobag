@@ -95,3 +95,18 @@ export function getBrowserNavDb(sourceUrl = DEFAULT_NAV_DB_URL): Promise<Browser
   }
   return sharedNavDbPromise;
 }
+
+declare global {
+  // Core/WASM owns all nav-db SQL and interpretation. This hook is deliberately
+  // a dumb web SQLite transport, not an application-layer planning API.
+  // eslint-disable-next-line no-var
+  var __aerobagNavDbQueryObjects: ((sql: string, bindJson: string) => string) | undefined;
+}
+
+export async function installBrowserNavDbQueryHost(sourceUrl = DEFAULT_NAV_DB_URL): Promise<void> {
+  const db = await getBrowserNavDb(sourceUrl);
+  globalThis.__aerobagNavDbQueryObjects = (sql: string, bindJson: string) => {
+    const bind = JSON.parse(bindJson) as BindingSpec | undefined;
+    return JSON.stringify(db.queryObjects(sql, bind));
+  };
+}

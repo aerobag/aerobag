@@ -11,7 +11,6 @@ import type {
   AirwaySegment,
   CatalogJson,
   CifpTppMatch,
-  CifpTppMatchRow,
   ChartPageData,
   ContentInventory,
   ContentPolicy,
@@ -32,7 +31,6 @@ import type {
   OwnshipSourceStatusUpdate,
   PlanLeg,
   PlaybackUiState,
-  PlateProcedureLoadCandidateInput,
   ProcedureLoadOption,
   ProcedureOptions,
   ProcedureSummary,
@@ -44,24 +42,9 @@ import type {
   SituationSample,
 } from "./types";
 import { deriveChartPage as deriveChartCatalog } from "./resourceIndexAdapters";
-import {
-  loadCifpTppMatchesForAirport,
-  loadCifpTppMatchesForPlate,
-  loadCifpTppMatchesForProcedure,
-  listProceduresForAirport,
-  loadProcedureDistinctRows,
-  loadProcedureMaterializationRecords,
-} from "./procedurePlanner";
 import { sampleCatalog } from "./sampleData";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
-import {
-  materializeAirwaySelection as materializeAirwaySelectionWithNavDb,
-  prepareAirwayPresentationForAnchors as prepareAirwayPresentationForAnchorsWithNavDb,
-  resolveNavRefPosition,
-  suggestAirwaysNearAnchor as suggestAirwaysNearAnchorWithNavDb,
-} from "./airwayPlanner";
-import { getBrowserNavDb } from "./webNavDb";
-import { debugLog } from "./debugLog";
+import { installBrowserNavDbQueryHost } from "./webNavDb";
 
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];
@@ -379,13 +362,52 @@ type WasmModule = {
     planJson: string,
     candidatesJson: string,
   ): Promise<string> | string;
+  web_project_flight_plan_route(planJson: string): Promise<string> | string;
+  web_suggest_airways_near(anchorJson: string, limit: number): Promise<string> | string;
+  web_prepare_airway_presentation_for_anchors(
+    airwayName: string,
+    originAnchorJson: string,
+    destinationAnchorJson: string,
+  ): Promise<string> | string;
+  web_materialize_airway_selection(
+    startComponentIndex: number,
+    entryJson: string,
+    exitJson: string,
+    originAnchorJson: string,
+    destinationAnchorJson: string,
+  ): Promise<string> | string;
+  web_list_procedures(airportId: string, kindJson: string): Promise<string> | string;
+  web_describe_procedure_options(
+    airportId: string,
+    procedureId: string,
+    kindJson: string,
+  ): Promise<string> | string;
+  web_materialize_procedure(
+    airportId: string,
+    procedureId: string,
+    kindJson: string,
+    runwayTransitionJson: string,
+    enrouteTransitionJson: string,
+    componentIndex: number,
+  ): Promise<string> | string;
+  web_find_procedure_plate_match(airportId: string, cifpId: string): Promise<string> | string;
+  web_describe_plate_procedure_loads(planJson: string, plateId: string): Promise<string> | string;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
+  private navDbHostPromise: Promise<void> | null = null;
+
   constructor(private readonly module: WasmModule) {}
 
   async prewarm(): Promise<void> {
-    await getBrowserNavDb();
+    await this.ensureNavDbHost();
+  }
+
+  private ensureNavDbHost(): Promise<void> {
+    if (this.navDbHostPromise === null) {
+      this.navDbHostPromise = installBrowserNavDbQueryHost();
+    }
+    return this.navDbHostPromise;
   }
 
   private async enrichFlightPlanUiState(uiState: FlightPlanUiState): Promise<FlightPlanUiState> {
@@ -394,9 +416,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       if (!showPlateAction || !row.chart_airport_id || !row.procedure_id) {
         return row as FlightPlanDisplayRowWithShowPlateTarget;
       }
-      const rows = await loadCifpTppMatchesForProcedure(row.chart_airport_id, row.procedure_id);
+      await this.ensureNavDbHost();
       const match = JSON.parse(
-        await this.module.describe_show_plate_for_procedure(JSON.stringify(rows)),
+        await this.module.web_find_procedure_plate_match(row.chart_airport_id, row.procedure_id),
       ) as CifpTppMatch | null;
       return {
         ...row,
@@ -740,29 +762,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]> {
-    const rawLegs = plan.resolved_legs ?? [];
-    const uiLegs = planUiState?.resolved_legs ?? [];
-    if (rawLegs.length === 0 || uiLegs.length === 0) {
-      return [];
-    }
-    const resolvedPositions = new Map<string, Promise<LatLon>>();
-    const resolveCachedPosition = (navRef: NavRef, procedureAirportId?: string | null) => {
-      const key = `${JSON.stringify(navRef)}:${procedureAirportId ?? ""}`;
-      let promise = resolvedPositions.get(key);
-      if (!promise) {
-        promise = resolveNavRefPosition(navRef, procedureAirportId);
-        resolvedPositions.set(key, promise);
-      }
-      return promise;
-    };
-    return Promise.all(
-      rawLegs.map(async (leg, index) => ({
-        id: leg.id,
-        from: await resolveCachedPosition(leg.from, leg.procedure_airport_id ?? null),
-        to: await resolveCachedPosition(leg.to, leg.procedure_airport_id ?? null),
-        status: routeStatusForLeg(planUiState, uiLegs[index]?.leg_index ?? index),
-      })),
-    );
+    void planUiState;
+    await this.ensureNavDbHost();
+    return JSON.parse(
+      await this.module.web_project_flight_plan_route(JSON.stringify(plan)),
+    ) as FlightPlanRouteSegment[];
   }
 
   async activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation> {
@@ -824,7 +828,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async suggestAirwaysNearAnchor(anchor: NavRef, limit = 5): Promise<AirwaySuggestion[]> {
-    return suggestAirwaysNearAnchorWithNavDb(this, anchor, limit);
+    await this.ensureNavDbHost();
+    return JSON.parse(
+      await this.module.web_suggest_airways_near(JSON.stringify(anchor), limit),
+    ) as AirwaySuggestion[];
   }
 
   async prepareAirwayPresentationForAnchors(
@@ -832,7 +839,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     originAnchor: NavRef,
     destinationAnchor: NavRef | null,
   ): Promise<AirwayPresentationPlan> {
-    return prepareAirwayPresentationForAnchorsWithNavDb(this, airwayName, originAnchor, destinationAnchor);
+    await this.ensureNavDbHost();
+    return JSON.parse(
+      await this.module.web_prepare_airway_presentation_for_anchors(
+        airwayName,
+        JSON.stringify(originAnchor),
+        JSON.stringify(destinationAnchor),
+      ),
+    ) as AirwayPresentationPlan;
   }
 
   async materializeAirwaySelection(
@@ -846,13 +860,20 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     airway: AirwaySegment;
     resolvedLegs: ResolvedLeg[];
   }> {
-    return materializeAirwaySelectionWithNavDb(
-      startComponentIndex,
-      entry,
-      exit,
-      originAnchor,
-      destinationAnchor,
-    );
+    await this.ensureNavDbHost();
+    return JSON.parse(
+      await this.module.web_materialize_airway_selection(
+        startComponentIndex,
+        JSON.stringify(entry),
+        JSON.stringify(exit),
+        JSON.stringify(originAnchor),
+        JSON.stringify(destinationAnchor),
+      ),
+    ) as {
+      selection: AirwayAutoSelection;
+      airway: AirwaySegment;
+      resolvedLegs: ResolvedLeg[];
+    };
   }
 
   async sortAirwaySuggestionsForUi(suggestions: AirwaySuggestion[]): Promise<AirwaySuggestion[]> {
@@ -908,26 +929,19 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async listProcedures(airportId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureSummary[]> {
-    if (kind === "approach") {
-      const rows = await loadCifpTppMatchesForAirport(airportId);
-      return JSON.parse(
-        await this.module.list_approach_procedures_from_match_rows(
-          airportId,
-          JSON.stringify(rows),
-        ),
-      ) as ProcedureSummary[];
-    }
-    return listProceduresForAirport(airportId, kind);
+    await this.ensureNavDbHost();
+    return JSON.parse(
+      await this.module.web_list_procedures(airportId, JSON.stringify(kind)),
+    ) as ProcedureSummary[];
   }
 
   async describeProcedureOptions(airportId: string, procedureId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureOptions> {
-    const rows = await loadProcedureDistinctRows(airportId, procedureId);
+    await this.ensureNavDbHost();
     return JSON.parse(
-      await this.module.describe_procedure_options_from_rows(
+      await this.module.web_describe_procedure_options(
         airportId,
         procedureId,
         JSON.stringify(kind),
-        JSON.stringify(rows),
       ),
     ) as ProcedureOptions;
   }
@@ -978,61 +992,32 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     enrouteTransition: string | null,
     componentIndex: number,
   ): Promise<MaterializedProcedure> {
-    const rows = await loadProcedureDistinctRows(airportId, procedureId);
-    const legs = await loadProcedureMaterializationRecords(airportId, procedureId);
+    await this.ensureNavDbHost();
     return JSON.parse(
-      await this.module.materialize_procedure_from_records(
+      await this.module.web_materialize_procedure(
         airportId,
         procedureId,
         JSON.stringify(kind),
         JSON.stringify(runwayTransition),
         JSON.stringify(enrouteTransition),
         componentIndex,
-        JSON.stringify(rows),
-        JSON.stringify(legs),
       ),
     ) as MaterializedProcedure;
   }
 
   async findProcedurePlateMatch(airportId: string, cifpId: string): Promise<CifpTppMatch | null> {
-    const rows = await loadCifpTppMatchesForProcedure(airportId, cifpId);
-    debugLog("adapter.cifp_tpp.by_procedure", { airport_id: airportId, cifp_id: cifpId, rows });
+    await this.ensureNavDbHost();
     return JSON.parse(
-      await this.module.describe_show_plate_for_procedure(JSON.stringify(rows)),
+      await this.module.web_find_procedure_plate_match(airportId, cifpId),
     ) as CifpTppMatch | null;
   }
 
   async describePlateProcedureLoads(plan: FlightPlan, plateId: string): Promise<ProcedureLoadOption[]> {
-    const rows = await loadCifpTppMatchesForPlate(plateId);
-    debugLog("adapter.cifp_tpp.by_plate", { plate_id: plateId, rows });
-    const grouped = new Map<string, CifpTppMatchRow[]>();
-    for (const row of rows) {
-      const key = `${row.airport_id}:${row.cifp_id}`;
-      grouped.set(key, [...(grouped.get(key) ?? []), row]);
-    }
-    const candidates: PlateProcedureLoadCandidateInput[] = [];
-    for (const groupedRows of grouped.values()) {
-      const preferred = JSON.parse(
-        await this.module.select_preferred_cifp_tpp_match(JSON.stringify(groupedRows)),
-      ) as CifpTppMatch | null;
-      if (!preferred) {
-        continue;
-      }
-      const procedureRows = await loadProcedureDistinctRows(preferred.airport_id, preferred.cifp_id);
-      if (procedureRows.length === 0) {
-        continue;
-      }
-      candidates.push({
-        airport_id: preferred.airport_id,
-        cifp_id: preferred.cifp_id,
-        match_rows: groupedRows,
-        distinct_rows: procedureRows,
-      });
-    }
+    await this.ensureNavDbHost();
     return JSON.parse(
-      await this.module.describe_plate_procedure_load_options(
+      await this.module.web_describe_plate_procedure_loads(
         JSON.stringify(plan),
-        JSON.stringify(candidates),
+        plateId,
       ),
     ) as ProcedureLoadOption[];
   }
@@ -1096,6 +1081,15 @@ export async function loadBestAvailableAdapter(
     typeof mod.describe_show_plate_for_procedure !== "function" ||
     typeof mod.describe_load_procedure_from_plate !== "function" ||
     typeof mod.describe_plate_procedure_load_options !== "function" ||
+    typeof mod.web_project_flight_plan_route !== "function" ||
+    typeof mod.web_suggest_airways_near !== "function" ||
+    typeof mod.web_prepare_airway_presentation_for_anchors !== "function" ||
+    typeof mod.web_materialize_airway_selection !== "function" ||
+    typeof mod.web_list_procedures !== "function" ||
+    typeof mod.web_describe_procedure_options !== "function" ||
+    typeof mod.web_materialize_procedure !== "function" ||
+    typeof mod.web_find_procedure_plate_match !== "function" ||
+    typeof mod.web_describe_plate_procedure_loads !== "function" ||
     typeof mod.derive_chart_page !== "function" ||
     typeof mod.derive_chart_page_state !== "function" ||
     typeof mod.set_content_policy_state !== "function" ||
@@ -1135,22 +1129,6 @@ function sampleCatalogLike(_resourceIndex: unknown): CatalogJson {
       supplements: sampleCatalog.supplements,
     } as CatalogJson),
   };
-}
-
-function routeStatusForLeg(planUiState: FlightPlanUiState | null, legIndex: number): FlightPlanRouteSegment["status"] {
-  const guidance = planUiState?.guidance ?? null;
-  const activeLegIndex = guidance?.active_leg != null ? guidance.active_leg_index : null;
-  if (activeLegIndex != null) {
-    if (legIndex < activeLegIndex) {
-      return "completed";
-    }
-    if (legIndex === activeLegIndex) {
-      return "active";
-    }
-    return "remaining";
-  }
-  const splitIndex = guidance?.display_split_leg_index ?? 0;
-  return legIndex < splitIndex ? "completed" : "remaining";
 }
 
 function moveAirportToFront(

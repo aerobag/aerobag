@@ -56,7 +56,7 @@ import {
 } from "./domain/imageViewport";
 import { pointTileUrl, type PointTilePayload } from "./domain/vectorTiles";
 import type { MapOverlayQueryResult } from "./domain/appCoreAdapter";
-import { airwayEntryCandidateFromPresentation, airwayExitCandidatesFromPresentation } from "./domain/airwayPlanner";
+import { airwayEntryCandidateFromPresentation, airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import { debugLog } from "./domain/debugLog";
 
 type SurfaceSize = {

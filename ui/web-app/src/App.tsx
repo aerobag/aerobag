@@ -122,6 +122,11 @@ type NexradOverlayFrame = NexradFrame & {
   url: string;
 };
 
+type NexradLayerStatus =
+  | { state: "loading" }
+  | { state: "available"; frame_count: number }
+  | { state: "unavailable"; reason: string };
+
 const WEB_MERCATOR_WORLD_SIZE = 256;
 const WEB_MERCATOR_HALF_WORLD_M = 20037508.342789244;
 const NEXRAD_FRAME_INTERVAL_MS = 900;
@@ -1222,6 +1227,7 @@ function MapPage(props: {
   });
   const [nexradFrames, setNexradFrames] = useState<NexradOverlayFrame[]>([]);
   const [nexradFrameIndex, setNexradFrameIndex] = useState(0);
+  const [nexradStatus, setNexradStatus] = useState<NexradLayerStatus>({ state: "loading" });
   const [flightPlanRoute, setFlightPlanRoute] = useState<FlightPlanRouteSegment[]>([]);
   const [mapOverlayViewport, setMapOverlayViewport] = useState<MapViewportState | null>(null);
   const viewportRef = useRef<MapViewportState>(viewport);
@@ -1334,29 +1340,44 @@ function MapPage(props: {
   useEffect(() => {
     const controller = new AbortController();
     let cancelled = false;
+    setNexradStatus({ state: "loading" });
 
     async function loadNexrad() {
       const response = await fetch("/fast-products/nexrad/nexrad.json", { signal: controller.signal });
       if (response.status === 404) {
-        return [];
+        return {
+          status: { state: "unavailable", reason: "not_found" } satisfies NexradLayerStatus,
+          frames: [],
+        };
       }
       if (!response.ok) {
-        throw new Error(`failed to load NEXRAD manifest: ${response.status}`);
+        return {
+          status: { state: "unavailable", reason: `http_${response.status}` } satisfies NexradLayerStatus,
+          frames: [],
+        };
       }
       const manifest = (await response.json()) as NexradManifest;
       if (manifest.projection !== "EPSG:3857") {
-        throw new Error(`unsupported NEXRAD projection: ${manifest.projection}`);
+        return {
+          status: { state: "unavailable", reason: `unsupported_projection_${manifest.projection}` } satisfies NexradLayerStatus,
+          frames: [],
+        };
       }
-      return [...manifest.frames]
+      const frames = [...manifest.frames]
         .reverse()
         .map((frame) => ({
           ...frame,
           url: `/fast-products/nexrad/${frame.filename}`,
         }));
+      return {
+        status: { state: "available", frame_count: frames.length } satisfies NexradLayerStatus,
+        frames,
+      };
     }
 
-    loadNexrad().then((frames) => {
+    loadNexrad().then(({ status, frames }) => {
       if (!cancelled) {
+        setNexradStatus(status);
         setNexradFrames(frames);
         setNexradFrameIndex(0);
       }
@@ -1364,8 +1385,12 @@ function MapPage(props: {
       if ((error as { name?: string } | null)?.name === "AbortError") {
         return;
       }
-      console.error(error);
+      console.warn("NEXRAD unavailable", error);
       if (!cancelled) {
+        setNexradStatus({
+          state: "unavailable",
+          reason: error instanceof Error ? error.message : String(error),
+        });
         setNexradFrames([]);
         setNexradFrameIndex(0);
       }
@@ -2186,7 +2211,8 @@ function MapPage(props: {
             <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: selectedMap.id, selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
             <div className="debugLine">family {selectedFamily.launcherLabel}</div>
             <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
-            <div className="debugLine">nexrad {nexradFrames.length > 0 ? `${nexradFrameIndex + 1}/${nexradFrames.length}` : "(none)"}</div>
+            <div className="debugLine">nexrad {nexradStatus.state === "available" ? `${nexradFrameIndex + 1}/${nexradFrames.length}` : nexradStatus.state}</div>
+            {nexradStatus.state === "unavailable" ? <div className="debugLine">nexrad reason {nexradStatus.reason}</div> : null}
             <div className="debugLine">vec pts={mapOverlay.visible_features.length} need={mapOverlay.needed_point_tiles.length} warn={mapOverlay.warnings.length}</div>
             {mapOverlay.warnings.map((warning) => (
               <div key={warning.code} className="debugLine">warn {warning.code}</div>

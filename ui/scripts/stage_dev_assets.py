@@ -306,7 +306,8 @@ def stage_fast_products() -> None:
             continue
         product_root = unpacked_dir_from_relative_zip(filename)
         if not product_root.is_dir():
-            raise RuntimeError(f"missing unpacked fast product {product_id}: {product_root}")
+            print(f"warning: fast product unavailable {product_id}: {product_root}")
+            continue
         ensure_symlink(product_root, target / product_id)
 
 

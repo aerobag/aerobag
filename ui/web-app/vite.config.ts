@@ -180,7 +180,7 @@ function resolveCurrentFastProductRoot(productId: string): string | null {
   }
   const productRoot = unpackedDirFromRelativeZip(product.filename);
   if (!fs.existsSync(productRoot) || !fs.statSync(productRoot).isDirectory()) {
-    throw new Error(`missing unpacked fast product ${productId}: ${productRoot}`);
+    return null;
   }
   return productRoot;
 }
@@ -196,7 +196,8 @@ function mountFastProducts() {
     }
     const productRoot = resolveCurrentFastProductRoot(productId);
     if (!productRoot) {
-      next();
+      res.statusCode = 404;
+      res.end("fast product unavailable");
       return;
     }
     const filePath = path.resolve(productRoot, parts.join("/"));

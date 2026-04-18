@@ -39,7 +39,8 @@ use preprocessor_vectors::{
 };
 use product_build::{
     build_cycle, build_fast_subset, build_product, default_artifact_write_path,
-    explain_product_build, maybe_reexec_build_cycle_under_cgroup, ProductBuildConfig,
+    explain_product_build, gc_build_cache, maybe_reexec_build_cycle_under_cgroup,
+    BuildCacheGcConfig, BuildCacheGcMode, ProductBuildConfig, ProductBuildProfile,
 };
 use sha2::{Digest, Sha256};
 
@@ -101,6 +102,7 @@ fn long_usage() -> &'static str {
   preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli build-fast-subset [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli gc-build-cache [--profile <validation|production>] [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>] [--bootstrap-from-build-manifests]
   preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli run-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
 }
@@ -1734,6 +1736,75 @@ fn work_kind_name(value: WorkKind) -> &'static str {
     }
 }
 
+fn build_cache_gc_config_from_args(args: &[String]) -> anyhow::Result<BuildCacheGcConfig> {
+    let mut base = ProductBuildConfig::from_env_and_args(&[])?;
+    let mut mode = BuildCacheGcMode::DryRun;
+    let mut grace_hours = 24_u64;
+    let mut bootstrap_from_build_manifests = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--profile" => {
+                let value = args.get(index + 1).context("missing value for --profile")?;
+                base.profile = ProductBuildProfile::parse(value)
+                    .ok_or_else(|| anyhow::anyhow!("unsupported profile: {value}"))?;
+                if !args.iter().any(|arg| arg == "--build-root") {
+                    let artifact_root = default_artifact_write_path(
+                        &Path::new(env!("CARGO_MANIFEST_DIR"))
+                            .parent()
+                            .and_then(|path| path.parent())
+                            .and_then(|path| path.parent())
+                            .context("failed to derive repo root")?
+                            .to_path_buf(),
+                    );
+                    base.build_root = match base.profile {
+                        ProductBuildProfile::Production => artifact_root.join("published-packaged"),
+                        ProductBuildProfile::Validation => {
+                            artifact_root.join("published-packaged-validation")
+                        }
+                    };
+                }
+                index += 2;
+            }
+            "--build-root" => {
+                base.build_root = PathBuf::from(
+                    args.get(index + 1)
+                        .context("missing value for --build-root")?,
+                );
+                index += 2;
+            }
+            "--dry-run" => {
+                mode = BuildCacheGcMode::DryRun;
+                index += 1;
+            }
+            "--execute" => {
+                mode = BuildCacheGcMode::Execute;
+                index += 1;
+            }
+            "--grace-hours" => {
+                grace_hours = args
+                    .get(index + 1)
+                    .context("missing value for --grace-hours")?
+                    .parse()
+                    .context("failed to parse --grace-hours")?;
+                index += 2;
+            }
+            "--bootstrap-from-build-manifests" => {
+                bootstrap_from_build_manifests = true;
+                index += 1;
+            }
+            other => anyhow::bail!("unknown gc-build-cache argument: {other}"),
+        }
+    }
+    Ok(BuildCacheGcConfig {
+        build_root: base.build_root,
+        profile: base.profile,
+        mode,
+        grace_hours,
+        bootstrap_from_build_manifests,
+    })
+}
+
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
     if matches!(args.get(1).map(String::as_str), Some("--help" | "-h")) {
@@ -2670,6 +2741,40 @@ fn main() -> anyhow::Result<()> {
                     "fast_product {} {}",
                     product.id,
                     product.published_zip.display()
+                );
+            }
+        }
+        Some("gc-build-cache") => {
+            let config = build_cache_gc_config_from_args(&args[2..])?;
+            let mode = config.mode;
+            let report = gc_build_cache(&config)?;
+            println!("roots {}", report.roots_path.display());
+            println!(
+                "mode {}",
+                if mode == BuildCacheGcMode::Execute {
+                    "execute"
+                } else {
+                    "dry-run"
+                }
+            );
+            println!("rooted_nodes {}", report.rooted_nodes);
+            println!("scanned_nodes {}", report.scanned_nodes);
+            println!("active_nodes {}", report.active_nodes);
+            println!("stale_lock_nodes {}", report.stale_lock_nodes);
+            println!("grace_nodes {}", report.grace_nodes);
+            println!("evictable_nodes {}", report.evictable_nodes);
+            println!("reclaimable_bytes {}", report.reclaimed_bytes);
+            println!(
+                "reclaimable_gib {:.2}",
+                report.reclaimed_bytes as f64 / 1024.0 / 1024.0 / 1024.0
+            );
+            for (node_name, bucket) in report.by_node_name {
+                println!(
+                    "candidate {} count={} bytes={} gib={:.2}",
+                    node_name,
+                    bucket.count,
+                    bucket.bytes,
+                    bucket.bytes as f64 / 1024.0 / 1024.0 / 1024.0
                 );
             }
         }

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     fs::{File, OpenOptions},
     io::{Read, Write},
@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::{bail, Context};
@@ -132,6 +132,62 @@ struct BuildManifest {
     fetch_cache_root: String,
     fetch_cache_mode: String,
     nodes: Vec<NodeRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GcRootsManifest {
+    schema_version: u32,
+    profile: String,
+    build_root: String,
+    updated_at_utc: String,
+    node_roots: BTreeMap<String, GcNodeRoot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GcNodeRoot {
+    scope: String,
+    task_id: String,
+    node_name: String,
+    fingerprint: String,
+    node_dir: String,
+    record_path: String,
+    cache_hit: bool,
+    finished_at_utc: String,
+    updated_at_utc: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildCacheGcMode {
+    DryRun,
+    Execute,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildCacheGcConfig {
+    pub build_root: PathBuf,
+    pub profile: ProductBuildProfile,
+    pub mode: BuildCacheGcMode,
+    pub grace_hours: u64,
+    pub bootstrap_from_build_manifests: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildCacheGcReport {
+    pub roots_path: PathBuf,
+    pub rooted_nodes: usize,
+    pub scanned_nodes: usize,
+    pub active_nodes: usize,
+    pub stale_lock_nodes: usize,
+    pub grace_nodes: usize,
+    pub evictable_nodes: usize,
+    pub reclaimed_bytes: u64,
+    pub by_node_name: BTreeMap<String, BuildCacheGcBucket>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BuildCacheGcBucket {
+    pub count: usize,
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2301,6 +2357,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             Some(ProductTaskValue::CurrentArtifacts { path }) => path.clone(),
             _ => bail!("missing current artifacts output"),
         };
+        record_gc_roots(config, "full", &task_node_records)?;
 
         Ok(ProductBuildResult {
             cycle_manifest_paths,
@@ -2338,9 +2395,16 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
     .with_context(|| format!("failed to parse {}", current_artifacts_path.display()))?;
     let previous_fast_products = current.fast_products.clone();
 
-    let tfrs = publish_built_fast_product(config, "tfrs", build_tfrs_product(config)?)?;
-    let metars = publish_built_fast_product(config, "metars", build_metars_product(config)?)?;
-    let nexrad = publish_built_fast_product(config, "nexrad", build_nexrad_product(config)?)?;
+    let built_tfrs = build_tfrs_product(config)?;
+    let built_metars = build_metars_product(config)?;
+    let built_nexrad = build_nexrad_product(config)?;
+    let mut gc_records = BTreeMap::new();
+    gc_records.insert("fast:tfrs".to_string(), vec![built_tfrs.2.clone()]);
+    gc_records.insert("fast:metars".to_string(), vec![built_metars.2.clone()]);
+    gc_records.insert("fast:nexrad".to_string(), vec![built_nexrad.2.clone()]);
+    let tfrs = publish_built_fast_product(config, "tfrs", built_tfrs)?;
+    let metars = publish_built_fast_product(config, "metars", built_metars)?;
+    let nexrad = publish_built_fast_product(config, "nexrad", built_nexrad)?;
     let fast_products = vec![tfrs, metars, nexrad];
     let published_at_utc = utc_now_string();
     current.fast_products = fast_products
@@ -2381,6 +2445,7 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
     validate_packaged_contract(&config.build_root, &output_path)?;
     let unpacked_root = published_unpacked_root(config)?;
     validate_unpacked_contract(&config.build_root, &unpacked_root, &output_path)?;
+    record_gc_roots(config, "fast", &gc_records)?;
 
     Ok(FastSubsetBuildResult {
         current_artifacts_path: output_path,
@@ -5764,6 +5829,264 @@ fn manifest_generated_at(node_records: &[NodeRecord]) -> String {
         .max()
         .unwrap_or_else(|| panic!("build manifest should include at least one node"))
         .to_string()
+}
+
+fn gc_roots_path(config: &ProductBuildConfig) -> PathBuf {
+    artifact_root_from_build_root(&config.build_root)
+        .join("cache")
+        .join("gc_roots")
+        .join(format!("{}_build_roots.json", config.profile.as_str()))
+}
+
+fn load_gc_roots(path: &Path, config: &ProductBuildConfig) -> anyhow::Result<GcRootsManifest> {
+    if path.is_file() {
+        return serde_json::from_slice(
+            &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", path.display()));
+    }
+    Ok(GcRootsManifest {
+        schema_version: 1,
+        profile: config.profile.as_str().to_string(),
+        build_root: relative_product_build_path(&config.build_root),
+        updated_at_utc: utc_now_string(),
+        node_roots: BTreeMap::new(),
+    })
+}
+
+fn write_gc_roots(path: &Path, roots: &GcRootsManifest) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let temp_path = path.with_extension("json.tmp");
+    fs::write(
+        &temp_path,
+        serde_json::to_vec_pretty(roots).context("failed to encode GC roots")?,
+    )
+    .with_context(|| format!("failed to write {}", temp_path.display()))?;
+    fs::rename(&temp_path, path).with_context(|| {
+        format!(
+            "failed to rename {} to {}",
+            temp_path.display(),
+            path.display()
+        )
+    })
+}
+
+fn record_gc_roots(
+    config: &ProductBuildConfig,
+    scope: &str,
+    task_records: &BTreeMap<String, Vec<NodeRecord>>,
+) -> anyhow::Result<PathBuf> {
+    let roots_path = gc_roots_path(config);
+    let mut roots = load_gc_roots(&roots_path, config)?;
+    let now = utc_now_string();
+    roots.schema_version = 1;
+    roots.profile = config.profile.as_str().to_string();
+    roots.build_root = relative_product_build_path(&config.build_root);
+    roots.updated_at_utc = now.clone();
+    let prefix = format!("{scope}:");
+    roots.node_roots.retain(|key, _| !key.starts_with(&prefix));
+    let cache_nodes_root = artifact_root_from_build_root(&config.build_root)
+        .join("cache")
+        .join("nodes");
+    for (task_id, records) in task_records {
+        for record in records {
+            let key = format!("{scope}:{task_id}:{}:{}", record.name, record.fingerprint);
+            let node_dir = cache_nodes_root
+                .join(&record.name)
+                .join(&record.fingerprint);
+            let record_path = node_dir.join("build-record.json");
+            roots.node_roots.insert(
+                key,
+                GcNodeRoot {
+                    scope: scope.to_string(),
+                    task_id: task_id.clone(),
+                    node_name: record.name.clone(),
+                    fingerprint: record.fingerprint.clone(),
+                    node_dir: relative_artifact_path(&node_dir, &config.build_root),
+                    record_path: relative_artifact_path(&record_path, &config.build_root),
+                    cache_hit: record.cache_hit,
+                    finished_at_utc: record.finished_at_utc.clone(),
+                    updated_at_utc: now.clone(),
+                },
+            );
+        }
+    }
+    write_gc_roots(&roots_path, &roots)?;
+    Ok(roots_path)
+}
+
+fn bootstrap_gc_roots_from_build_manifests(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
+    let manifest_dir = artifact_root_from_build_root(&config.build_root)
+        .join("private-work")
+        .join("build-manifests")
+        .join(
+            config
+                .build_root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(config.profile.as_str()),
+        );
+    let mut records = BTreeMap::<String, Vec<NodeRecord>>::new();
+    if manifest_dir.is_dir() {
+        for entry in fs::read_dir(&manifest_dir)
+            .with_context(|| format!("failed to read {}", manifest_dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("build-manifest_") && name.ends_with(".json"))
+            {
+                continue;
+            }
+            let manifest: BuildManifest = serde_json::from_slice(
+                &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
+            )
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+            records.insert(format!("{}:build-manifest", manifest.cycle), manifest.nodes);
+        }
+    }
+    if records.is_empty() {
+        bail!(
+            "no build-manifest_*.json files found in {}",
+            manifest_dir.display()
+        );
+    }
+    record_gc_roots(config, "full", &records)
+}
+
+pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheGcReport> {
+    let product_config = ProductBuildConfig {
+        chart_cutline_root: PathBuf::new(),
+        build_root: config.build_root.clone(),
+        profile: config.profile,
+        target_cycle: None,
+        fetch_jobs: 1,
+        cpu_jobs: 1,
+        max_heavy_jobs: 1,
+        fetch_cache_root: artifact_root_from_build_root(&config.build_root)
+            .join("cache")
+            .join("fetch"),
+        fetch_cache_mode: "cache-first".to_string(),
+    };
+    if config.bootstrap_from_build_manifests {
+        bootstrap_gc_roots_from_build_manifests(&product_config)?;
+    }
+    let roots_path = gc_roots_path(&product_config);
+    let roots = load_gc_roots(&roots_path, &product_config)?;
+    let cache_nodes_root = artifact_root_from_build_root(&config.build_root)
+        .join("cache")
+        .join("nodes");
+    let rooted = roots
+        .node_roots
+        .values()
+        .map(|root| (root.node_name.clone(), root.fingerprint.clone()))
+        .collect::<BTreeSet<_>>();
+    let mut report = BuildCacheGcReport {
+        roots_path,
+        rooted_nodes: rooted.len(),
+        scanned_nodes: 0,
+        active_nodes: 0,
+        stale_lock_nodes: 0,
+        grace_nodes: 0,
+        evictable_nodes: 0,
+        reclaimed_bytes: 0,
+        by_node_name: BTreeMap::new(),
+    };
+    if !cache_nodes_root.is_dir() {
+        return Ok(report);
+    }
+    let grace = Duration::from_secs(config.grace_hours.saturating_mul(3600));
+    let now = SystemTime::now();
+    for node_entry in fs::read_dir(&cache_nodes_root)
+        .with_context(|| format!("failed to read {}", cache_nodes_root.display()))?
+    {
+        let node_entry = node_entry?;
+        if !node_entry.file_type()?.is_dir() {
+            continue;
+        }
+        let node_name = node_entry.file_name().to_string_lossy().to_string();
+        for fingerprint_entry in fs::read_dir(node_entry.path())
+            .with_context(|| format!("failed to read {}", node_entry.path().display()))?
+        {
+            let fingerprint_entry = fingerprint_entry?;
+            if !fingerprint_entry.file_type()?.is_dir() {
+                continue;
+            }
+            let fingerprint = fingerprint_entry.file_name().to_string_lossy().to_string();
+            report.scanned_nodes += 1;
+            if rooted.contains(&(node_name.clone(), fingerprint.clone())) {
+                continue;
+            }
+            let node_dir = fingerprint_entry.path();
+            let lock_path = node_dir.join(".build-lock");
+            if lock_path.exists() {
+                if lock_is_live(&lock_path)? {
+                    report.active_nodes += 1;
+                    continue;
+                }
+                report.stale_lock_nodes += 1;
+            }
+            if is_younger_than(&node_dir, now, grace)? {
+                report.grace_nodes += 1;
+                continue;
+            }
+            let bytes = directory_size(&node_dir)?;
+            report.evictable_nodes += 1;
+            report.reclaimed_bytes = report.reclaimed_bytes.saturating_add(bytes);
+            let bucket = report.by_node_name.entry(node_name.clone()).or_default();
+            bucket.count += 1;
+            bucket.bytes = bucket.bytes.saturating_add(bytes);
+            if config.mode == BuildCacheGcMode::Execute {
+                set_tree_readonly(&node_dir, false)?;
+                fs::remove_dir_all(&node_dir)
+                    .with_context(|| format!("failed to remove {}", node_dir.display()))?;
+            }
+        }
+    }
+    Ok(report)
+}
+
+fn is_younger_than(path: &Path, now: SystemTime, grace: Duration) -> anyhow::Result<bool> {
+    if grace.is_zero() {
+        return Ok(false);
+    }
+    let modified = fs::metadata(path)
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .modified()
+        .with_context(|| format!("failed to read mtime for {}", path.display()))?;
+    Ok(now
+        .duration_since(modified)
+        .map(|age| age < grace)
+        .unwrap_or(true))
+}
+
+fn lock_is_live(lock_path: &Path) -> anyhow::Result<bool> {
+    let Some(pid) = read_lock_pid(lock_path)? else {
+        return Ok(true);
+    };
+    Ok(process_is_alive(pid))
+}
+
+fn directory_size(path: &Path) -> anyhow::Result<u64> {
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    if !metadata.is_dir() {
+        return Ok(0);
+    }
+    let mut total = 0_u64;
+    for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
+        let entry = entry?;
+        total = total.saturating_add(directory_size(&entry.path())?);
+    }
+    Ok(total)
 }
 
 fn bundle_artifact(

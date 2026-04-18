@@ -235,6 +235,8 @@ export type FlightPlanRouteSegment = {
   id: string;
   from: LatLon;
   to: LatLon;
+  distance_nm: number;
+  course_deg: number;
   status: "completed" | "active" | "remaining";
 };
 
@@ -361,6 +363,8 @@ export type FlightPlanDisplayRowUiView = {
   procedure_id: string | null;
   procedure_kind: ProcedureKind | null;
   leg_index: number | null;
+  distance_nm: number | null;
+  course_deg: number | null;
   chart_airport_id: string | null;
   nav_ref: NavRef | null;
   symbol_feature: NavSymbolFeature | null;

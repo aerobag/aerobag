@@ -292,25 +292,29 @@ class NativeAppCoreAdapter(
         }
     }
 
-    private fun enrichFlightPlanUiSymbols(uiState: FlightPlanUiState): FlightPlanUiState {
+    private fun enrichFlightPlanUiState(uiState: FlightPlanUiState, plan: FlightPlan): FlightPlanUiState {
         val dbPath = navDbPath ?: return uiState
+        val routeSegments = projectFlightPlanRoute(dbPath, plan)
         return uiState.copy(
             displayRows = uiState.displayRows.map { row ->
-                if (row.navRef == null) {
-                    row
-                } else {
-                    row.copy(symbolFeature = resolveNavSymbolFeature(dbPath, row.navRef))
-                }
+                val legMetrics = row.legIndex?.let { routeSegments.getOrNull(it) }
+                row.copy(
+                    symbolFeature = row.navRef?.let { resolveNavSymbolFeature(dbPath, it) },
+                    distanceNm = legMetrics?.distanceNm,
+                    courseDeg = legMetrics?.courseDeg,
+                )
             },
         )
     }
 
-    private fun enrichUiSessionSnapshot(snapshot: UiSessionSnapshot): UiSessionSnapshot =
-        snapshot.copy(
+    private fun enrichUiSessionSnapshot(snapshot: UiSessionSnapshot): UiSessionSnapshot {
+        val plan = snapshot.appState.activePlan ?: return snapshot
+        return snapshot.copy(
             appUiState = snapshot.appUiState.copy(
-                activePlan = snapshot.appUiState.activePlan?.let(::enrichFlightPlanUiSymbols),
+                activePlan = snapshot.appUiState.activePlan?.let { enrichFlightPlanUiState(it, plan) },
             ),
         )
+    }
 
     fun activateLegUi(plan: FlightPlan, legIndex: Int): FlightPlanUiMutation {
         val nextJson = bridge.activateLegUiJson(json.encodeToString(plan.toWire()), legIndex)
@@ -670,16 +674,26 @@ class NativeUiSession internal constructor(
     private fun decodeSnapshot(snapshotJson: String): UiSessionSnapshot =
         enrichSnapshot(json.decodeFromString<WireUiSessionSnapshot>(snapshotJson).toUi())
 
+    private fun projectFlightPlanRoute(dbPath: String, plan: FlightPlan): List<FlightPlanRouteSegment> {
+        val nextJson = bridge.projectFlightPlanRouteJson(dbPath, json.encodeToString(plan.toWire()))
+        return json.decodeFromString<List<WireFlightPlanRouteSegment>>(nextJson).map { it.toUi() }
+    }
+
     private fun enrichSnapshot(snapshot: UiSessionSnapshot): UiSessionSnapshot {
         val dbPath = navDbPath ?: return snapshot
+        val plan = snapshot.appState.activePlan ?: return snapshot
+        val routeSegments = projectFlightPlanRoute(dbPath, plan)
         return snapshot.copy(
             appUiState = snapshot.appUiState.copy(
                 activePlan = snapshot.appUiState.activePlan?.let { uiState ->
                     uiState.copy(
                         displayRows = uiState.displayRows.map { row ->
-                            row.navRef?.let { navRef ->
-                                row.copy(symbolFeature = resolveNavSymbolFeature(dbPath, navRef))
-                            } ?: row
+                            val legMetrics = row.legIndex?.let { routeSegments.getOrNull(it) }
+                            row.copy(
+                                symbolFeature = row.navRef?.let { navRef -> resolveNavSymbolFeature(dbPath, navRef) },
+                                distanceNm = legMetrics?.distanceNm,
+                                courseDeg = legMetrics?.courseDeg,
+                            )
                         },
                     )
                 },
@@ -1709,6 +1723,8 @@ private fun WireFlightPlanRouteSegment.toUi() = FlightPlanRouteSegment(
     id = id,
     from = from.toUi(),
     to = to.toUi(),
+    distanceNm = distance_nm,
+    courseDeg = course_deg,
     status = status.toUi(),
 )
 
@@ -1731,6 +1747,8 @@ private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
     componentKind = component_kind?.toUi(),
     componentIndex = component_index,
     legIndex = leg_index,
+    distanceNm = distance_nm,
+    courseDeg = course_deg,
     chartAirportId = chart_airport_id,
     navRef = nav_ref?.toUi(),
     symbolFeature = symbol_feature?.toUi(),

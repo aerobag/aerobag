@@ -342,6 +342,8 @@ private data class FlightPlanDisplayRow(
     val componentKind: RouteComponentViewKind? = null,
     val componentIndex: Int? = null,
     val legIndex: Int? = null,
+    val distanceNm: Double? = null,
+    val courseDeg: Double? = null,
     val chartAirportId: String? = null,
     val navRef: NavRef? = null,
     val symbolFeature: net.jonh.aerobag.prototype.domain.NavSymbolFeature? = null,
@@ -1022,6 +1024,21 @@ private fun transformVisibleFeature(
 
 private fun formatRingDistance(radiusNm: Double): String =
     if (radiusNm % 1.0 == 0.0) "${radiusNm.toInt()}nm" else "${radiusNm}nm"
+
+private fun formatPlanDistance(distanceNm: Double?): String =
+    when {
+        distanceNm == null -> "—"
+        distanceNm < 10.0 -> "%.1f".format(distanceNm)
+        else -> "%.0f".format(distanceNm)
+    }
+
+private fun formatPlanCourse(courseDeg: Double?): String {
+    if (courseDeg == null) {
+        return "—"
+    }
+    val rounded = ((courseDeg.roundToInt() % 360) + 360) % 360
+    return if (rounded == 0) "360" else rounded.toString().padStart(3, '0')
+}
 
 private fun readRecentAirportIds(context: Context): List<String> =
     context.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
@@ -4677,6 +4694,8 @@ private fun buildFlightPlanDisplayRows(planUiState: FlightPlanUiState): List<Fli
             componentKind = row.componentKind,
             componentIndex = row.componentIndex,
             legIndex = row.legIndex,
+            distanceNm = row.distanceNm,
+            courseDeg = row.courseDeg,
             chartAirportId = row.chartAirportId,
             navRef = row.navRef,
             symbolFeature = row.symbolFeature,
@@ -4937,9 +4956,9 @@ private fun FlightPlanDataRow(
                     .alpha(rowOpacity),
             )
         }
+        PlanCell(formatPlanDistance(row.distanceNm), Modifier.weight(1f), cellHeight = cellHeight, alpha = rowOpacity)
         PlanCell("—", Modifier.weight(1f), cellHeight = cellHeight, alpha = rowOpacity)
-        PlanCell("—", Modifier.weight(1f), cellHeight = cellHeight, alpha = rowOpacity)
-        PlanCell("—", Modifier.weight(1f), cellHeight = cellHeight, alpha = rowOpacity)
+        PlanCell(formatPlanCourse(row.courseDeg), Modifier.weight(1f), cellHeight = cellHeight, alpha = rowOpacity)
     }
 }
 

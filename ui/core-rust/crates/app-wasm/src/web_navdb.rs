@@ -136,10 +136,14 @@ pub fn project_flight_plan_route_json(plan_json: &str) -> Result<String, String>
                 .procedure_provenance
                 .as_ref()
                 .and_then(|provenance| (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str()));
+            let from = resolve_nav_ref_position(&leg.from, procedure_airport_id)?;
+            let to = resolve_nav_ref_position(&leg.to, procedure_airport_id)?;
             Ok(FlightPlanRouteSegment {
                 id: leg.id.clone(),
-                from: resolve_nav_ref_position(&leg.from, procedure_airport_id)?,
-                to: resolve_nav_ref_position(&leg.to, procedure_airport_id)?,
+                from,
+                to,
+                distance_nm: app_core::flight_leg_distance_nm(from, to),
+                course_deg: app_core::flight_leg_course_deg(from, to),
                 status: route_status_for_leg(&ui_state, leg_index),
             })
         })

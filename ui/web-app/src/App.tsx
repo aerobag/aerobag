@@ -2827,9 +2827,9 @@ function FlightPlanPage(props: {
                 ? `component:${row.component_index ?? index}`
                 : `item:${row.component_index ?? "x"}:${row.label}:${index}`,
         label: row.label,
-        distance: row.row_kind === "group" ? "" : row.leg_index !== null ? "11.2" : "—",
+        distance: row.row_kind === "group" ? "" : formatPlanDistance(row.distance_nm),
         ete: row.row_kind === "group" ? "" : row.leg_index !== null ? "0:04" : "—",
-        course: row.row_kind === "group" ? "" : row.active ? "ACT" : row.leg_index !== null ? "161" : "—",
+        course: row.row_kind === "group" ? "" : formatPlanCourse(row.course_deg),
         active: row.active,
         depth: row.depth,
         rowKind: row.row_kind,
@@ -4950,6 +4950,24 @@ function pointOnCircle(center: { x: number; y: number }, radiusPx: number, angle
 
 function formatRingDistance(radiusNm: number) {
   return `${Number.isInteger(radiusNm) ? radiusNm.toFixed(0) : radiusNm.toString()}nm`;
+}
+
+function formatPlanDistance(distanceNm: number | null) {
+  if (distanceNm === null) {
+    return "—";
+  }
+  if (distanceNm < 10) {
+    return distanceNm.toFixed(1);
+  }
+  return distanceNm.toFixed(0);
+}
+
+function formatPlanCourse(courseDeg: number | null) {
+  if (courseDeg === null) {
+    return "—";
+  }
+  const rounded = Math.round(courseDeg) % 360;
+  return rounded === 0 ? "360" : rounded.toString().padStart(3, "0");
 }
 
 async function applyFlightPlanMutation(

@@ -424,17 +424,26 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     return this.navDbHostPromise;
   }
 
-  private async enrichFlightPlanUiState(uiState: FlightPlanUiState): Promise<FlightPlanUiState> {
+  private async enrichFlightPlanUiState(plan: FlightPlan, uiState: FlightPlanUiState): Promise<FlightPlanUiState> {
     await this.ensureNavDbHost();
+    const routeSegments = JSON.parse(
+      await this.module.web_project_flight_plan_route(JSON.stringify(plan)),
+    ) as FlightPlanRouteSegment[];
     const display_rows = await Promise.all(uiState.display_rows.map(async (row) => {
       const showPlateAction = row.actions.find((action) => action.id === "show_plate");
+      const legMetrics = row.leg_index !== null ? routeSegments[row.leg_index] ?? null : null;
       const symbol_feature = row.nav_ref
         ? JSON.parse(
           await this.module.web_resolve_nav_symbol_feature(JSON.stringify(row.nav_ref)),
         ) as NavSymbolFeature | null
         : null;
       if (!showPlateAction || !row.chart_airport_id || !row.procedure_id) {
-        return { ...row, symbol_feature } as FlightPlanDisplayRowWithShowPlateTarget;
+        return {
+          ...row,
+          symbol_feature,
+          distance_nm: legMetrics?.distance_nm ?? null,
+          course_deg: legMetrics?.course_deg ?? null,
+        } as FlightPlanDisplayRowWithShowPlateTarget;
       }
       const match = JSON.parse(
         await this.module.web_find_procedure_plate_match(row.chart_airport_id, row.procedure_id),
@@ -442,6 +451,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       return {
         ...row,
         symbol_feature,
+        distance_nm: legMetrics?.distance_nm ?? null,
+        course_deg: legMetrics?.course_deg ?? null,
         show_plate_target_id: match?.plate_id ?? null,
         actions: row.actions.map((action) =>
           action.id === "show_plate"
@@ -457,12 +468,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   private async enrichUiSessionSnapshot(snapshot: UiSessionSnapshot): Promise<UiSessionSnapshot> {
+    const plan = snapshot.app_state.active_plan;
     return {
       ...snapshot,
       app_ui_state: {
         ...snapshot.app_ui_state,
-        active_plan: snapshot.app_ui_state.active_plan
-          ? await this.enrichFlightPlanUiState(snapshot.app_ui_state.active_plan)
+        active_plan: plan && snapshot.app_ui_state.active_plan
+          ? await this.enrichFlightPlanUiState(plan, snapshot.app_ui_state.active_plan)
           : null,
       },
     };
@@ -471,7 +483,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   private async enrichFlightPlanUiMutation(mutation: FlightPlanUiMutation): Promise<FlightPlanUiMutation> {
     return {
       ...mutation,
-      ui_state: await this.enrichFlightPlanUiState(mutation.ui_state),
+      ui_state: await this.enrichFlightPlanUiState(mutation.plan, mutation.ui_state),
     };
   }
 
@@ -973,7 +985,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
     return {
       plan: result.mutation.plan,
-      ui_state: await this.enrichFlightPlanUiState(result.ui_state),
+      ui_state: await this.enrichFlightPlanUiState(result.mutation.plan, result.ui_state),
     };
   }
 
@@ -995,7 +1007,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
     return {
       plan: result.mutation.plan,
-      ui_state: await this.enrichFlightPlanUiState(result.ui_state),
+      ui_state: await this.enrichFlightPlanUiState(result.mutation.plan, result.ui_state),
     };
   }
 
@@ -1033,7 +1045,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
     return {
       plan: result.mutation.plan,
-      ui_state: await this.enrichFlightPlanUiState(result.ui_state),
+      ui_state: await this.enrichFlightPlanUiState(result.mutation.plan, result.ui_state),
     };
   }
 
@@ -1051,7 +1063,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as { mutation: { plan: FlightPlan }; ui_state: FlightPlanUiState };
     return {
       plan: result.mutation.plan,
-      ui_state: await this.enrichFlightPlanUiState(result.ui_state),
+      ui_state: await this.enrichFlightPlanUiState(result.mutation.plan, result.ui_state),
     };
   }
 

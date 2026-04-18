@@ -243,6 +243,8 @@ data class FlightPlanRouteSegment(
     val id: String,
     val from: LatLonPoint,
     val to: LatLonPoint,
+    val distanceNm: Double,
+    val courseDeg: Double,
     val status: RouteSegmentStatus,
 )
 
@@ -385,6 +387,8 @@ data class FlightPlanDisplayRowUiView(
     val componentKind: RouteComponentViewKind?,
     val componentIndex: Int?,
     val legIndex: Int?,
+    val distanceNm: Double?,
+    val courseDeg: Double?,
     val chartAirportId: String?,
     val navRef: NavRef?,
     val symbolFeature: NavSymbolFeature?,

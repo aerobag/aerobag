@@ -784,6 +784,8 @@ data class WireFlightPlanRouteSegment(
     val id: String,
     val from: WireLatLon,
     val to: WireLatLon,
+    val distance_nm: Double,
+    val course_deg: Double,
     val status: WireRouteSegmentStatus,
 )
 
@@ -1083,6 +1085,8 @@ data class WireFlightPlanDisplayRowUiView(
     val component_kind: WireRouteComponentViewKind? = null,
     val component_index: Int? = null,
     val leg_index: Int? = null,
+    val distance_nm: Double? = null,
+    val course_deg: Double? = null,
     val chart_airport_id: String? = null,
     val nav_ref: WireNavRef? = null,
     val symbol_feature: WireNavSymbolFeature? = null,

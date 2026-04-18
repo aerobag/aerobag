@@ -192,6 +192,8 @@ pub struct FlightPlanRouteSegment {
     pub id: String,
     pub from: LatLon,
     pub to: LatLon,
+    pub distance_nm: f64,
+    pub course_deg: f64,
     pub status: FlightPlanRouteSegmentStatus,
 }
 
@@ -1563,13 +1565,13 @@ pub fn move_flight_plan_waypoint(
     })
 }
 
-fn distance_nm(first: LatLon, second: LatLon) -> f64 {
+pub fn flight_leg_distance_nm(first: LatLon, second: LatLon) -> f64 {
     let lat_nm = (second.lat - first.lat) * 60.0;
     let lon_nm = (second.lon - first.lon) * 60.0 * ((first.lat + second.lat).to_radians() / 2.0).cos();
     (lat_nm.powi(2) + lon_nm.powi(2)).sqrt()
 }
 
-fn bearing_degrees(from: LatLon, to: LatLon) -> f64 {
+pub fn flight_leg_course_deg(from: LatLon, to: LatLon) -> f64 {
     let from_lat = from.lat.to_radians();
     let from_lon = from.lon.to_radians();
     let to_lat = to.lat.to_radians();
@@ -1578,6 +1580,14 @@ fn bearing_degrees(from: LatLon, to: LatLon) -> f64 {
     let y = delta_lon.sin() * to_lat.cos();
     let x = from_lat.cos() * to_lat.sin() - from_lat.sin() * to_lat.cos() * delta_lon.cos();
     normalize_bearing_degrees(y.atan2(x).to_degrees())
+}
+
+fn distance_nm(first: LatLon, second: LatLon) -> f64 {
+    flight_leg_distance_nm(first, second)
+}
+
+fn bearing_degrees(from: LatLon, to: LatLon) -> f64 {
+    flight_leg_course_deg(from, to)
 }
 
 fn angular_difference_degrees(left: f64, right: f64) -> f64 {
@@ -1677,6 +1687,8 @@ pub fn project_flight_plan_route(
                 id: leg.id.clone(),
                 from,
                 to,
+                distance_nm: flight_leg_distance_nm(from, to),
+                course_deg: flight_leg_course_deg(from, to),
                 status: route_status_for_leg(&ui_state, leg_index),
             })
         })

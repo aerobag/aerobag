@@ -92,6 +92,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.lerp
@@ -343,6 +344,7 @@ private data class FlightPlanDisplayRow(
     val legIndex: Int? = null,
     val chartAirportId: String? = null,
     val navRef: NavRef? = null,
+    val symbolFeature: net.jonh.aerobag.prototype.domain.NavSymbolFeature? = null,
     val depth: Int = 0,
     val active: Boolean = false,
     val canAddAirwayAfter: Boolean = false,
@@ -728,7 +730,12 @@ private fun buildSeededDevPlan(
         Log.e("AerobagSeed", "buildSeededDevPlan fell back to sample plan", it)
         FlightPlanUiMutation(
             plan = plan,
-            uiState = adapter.buildFlightPlanUi(plan),
+            uiState = FlightPlanUiState(
+                components = emptyList(),
+                resolvedLegs = emptyList(),
+                displayRows = emptyList(),
+                guidance = null,
+            ),
         )
     }
 }
@@ -1101,8 +1108,10 @@ private fun AerobagApp() {
     val context = LocalContext.current
     val fixture = remember(context) { SampleData.load(context.applicationContext) }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
-    val appCore = remember(fixture.catalogJson, fixture.chartCatalogJson) { NativeAppCoreAdapter(fixture.catalogJson, fixture.chartCatalogJson) }
     val navDbPath = remember(context) { ensureNavDbPath(context.applicationContext) }
+    val appCore = remember(fixture.catalogJson, fixture.chartCatalogJson, navDbPath) {
+        NativeAppCoreAdapter(fixture.catalogJson, fixture.chartCatalogJson, navDbPath)
+    }
     val initialPlanMutation = remember(appCore, navDbPath, fixture.samplePlan) {
         buildSeededDevPlan(appCore, navDbPath, fixture.samplePlan)
     }
@@ -1132,7 +1141,6 @@ private fun AerobagApp() {
         onDispose { uiSession.destroy() }
     }
     var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
-    var planUiState by remember(uiSession) { mutableStateOf(initialPlanMutation.uiState) }
     val appState = sessionSnapshot.appState
     val appUiState = sessionSnapshot.appUiState
     val currentPlan = appState.activePlan ?: initialPlanMutation.plan
@@ -1175,9 +1183,6 @@ private fun AerobagApp() {
         )
         sessionSnapshot = uiSession.pushSituationSample(demoSituationSample())
     }
-    LaunchedEffect(appCore, currentPlan) {
-        planUiState = appCore.buildFlightPlanUi(currentPlan)
-    }
     LaunchedEffect(uiSession, sessionSnapshot.playbackUiState.status) {
         while (sessionSnapshot.playbackUiState.status == PlaybackStatus.Playing) {
             delay(250)
@@ -1186,7 +1191,9 @@ private fun AerobagApp() {
                 .onFailure { Log.e("AerobagPlayback", "tick failed", it) }
         }
     }
-    val sessionPlanUiState = sessionSnapshot.appUiState.activePlan ?: planUiState
+    val sessionPlanUiState = requireNotNull(sessionSnapshot.appUiState.activePlan) {
+        "UiSessionSnapshot must provide active flight-plan UI state"
+    }
     val navElement = sessionPlanUiState?.guidance?.navElement ?: NavElementUiView("", null)
 
     LaunchedEffect(selectedMap.id) {
@@ -1308,7 +1315,6 @@ private fun AerobagApp() {
                     onOpenCharts = { airportId -> if (airportId != null) openChartsForAirport(airportId) },
                     onApplyMutation = { mutation ->
                         sessionSnapshot = uiSession.replaceFlightPlan(mutation.plan)
-                        planUiState = mutation.uiState
                     },
                 )
             }
@@ -4736,6 +4742,7 @@ private fun buildFlightPlanDisplayRows(planUiState: FlightPlanUiState): List<Fli
             legIndex = row.legIndex,
             chartAirportId = row.chartAirportId,
             navRef = row.navRef,
+            symbolFeature = row.symbolFeature,
             depth = row.depth,
             active = row.active,
             canAddAirwayAfter = row.canAddAirwayAfter,
@@ -4816,8 +4823,11 @@ private fun navRefLabel(ref: NavRef): String = when (ref) {
 }
 
 @Composable
-private fun PlanWaypointSymbol(navRef: NavRef?, modifier: Modifier = Modifier) {
-    if (navRef == null || navRef is NavRef.LatLon) {
+private fun PlanWaypointSymbol(
+    feature: net.jonh.aerobag.prototype.domain.NavSymbolFeature?,
+    modifier: Modifier = Modifier,
+) {
+    if (feature == null) {
         return
     }
     Canvas(modifier = modifier.size(ThumbSize * 0.78f)) {
@@ -4828,29 +4838,44 @@ private fun PlanWaypointSymbol(navRef: NavRef?, modifier: Modifier = Modifier) {
         val airportMarkerStrokeColor = Color(0xB3081218)
         val airportFillColor = Color(0xFFFF4FD8)
         val vorMarkerColor = Color(0xFF4AA3FF)
-        when (navRef) {
-            is NavRef.Airport -> {
+        val isAirport = feature.styleClass == "airport" || feature.kind.equals("airport", ignoreCase = true)
+        val isVor = feature.styleClass == "nav" || feature.kind.contains("vor", ignoreCase = true)
+        when {
+            isAirport -> {
                 val airportRadius = 12f * scale
+                if (feature.fuelAvailable) {
+                    val tabHalf = 4f * scale
+                    val tabOuter = 17f * scale
+                    val tabInner = 11f * scale
+                    drawRect(airportFillColor, topLeft = Offset(center.x - tabHalf, center.y - tabOuter), size = Size(tabHalf * 2f, 6f * scale))
+                    drawRect(airportFillColor, topLeft = Offset(center.x + tabInner, center.y - tabHalf), size = Size(6f * scale, tabHalf * 2f))
+                    drawRect(airportFillColor, topLeft = Offset(center.x - tabHalf, center.y + tabInner), size = Size(tabHalf * 2f, 6f * scale))
+                    drawRect(airportFillColor, topLeft = Offset(center.x - tabOuter, center.y - tabHalf), size = Size(6f * scale, tabHalf * 2f))
+                }
                 drawCircle(airportFillColor, radius = airportRadius, center = center)
                 drawCircle(airportMarkerStrokeColor, radius = airportRadius, center = center, style = Stroke(width = 2f * scale))
-                val runwayHalfLength = 8f * 0.6f * scale
-                drawLine(
-                    color = airportMarkerStrokeColor,
-                    start = Offset(center.x, center.y - runwayHalfLength),
-                    end = Offset(center.x, center.y + runwayHalfLength),
-                    strokeWidth = 5f * scale,
-                    cap = StrokeCap.Round,
-                )
-                drawLine(
-                    color = Color.White,
-                    start = Offset(center.x, center.y - runwayHalfLength),
-                    end = Offset(center.x, center.y + runwayHalfLength),
-                    strokeWidth = 3f * scale,
-                    cap = StrokeCap.Round,
-                )
+                feature.longestRunwayHeadingTrueDeg?.let { heading ->
+                    val runwayHalfLength = 8f * feature.runwayLengthRatio.coerceAtLeast(0.2).toFloat() * scale
+                    rotate(heading.toFloat(), center) {
+                        drawLine(
+                            color = airportMarkerStrokeColor,
+                            start = Offset(center.x, center.y - runwayHalfLength),
+                            end = Offset(center.x, center.y + runwayHalfLength),
+                            strokeWidth = 5f * scale,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = Color.White,
+                            start = Offset(center.x, center.y - runwayHalfLength),
+                            end = Offset(center.x, center.y + runwayHalfLength),
+                            strokeWidth = 3f * scale,
+                            cap = StrokeCap.Round,
+                        )
+                    }
+                }
             }
 
-            is NavRef.Navaid -> {
+            isVor -> {
                 val radius = 8f * scale
                 val outerHex = polygonPath(vorHexPoints(center, radius))
                 val band = vorBandPath(center, radius)
@@ -4859,13 +4884,11 @@ private fun PlanWaypointSymbol(navRef: NavRef?, modifier: Modifier = Modifier) {
                 drawPath(outerHex, fixMarkerStrokeColor, style = Stroke(width = 1.6f * scale))
             }
 
-            is NavRef.Fix -> {
+            else -> {
                 val triangle = fixTrianglePath(center, 8f * scale)
                 drawPath(triangle, fixMarkerFillColor)
                 drawPath(triangle, fixMarkerStrokeColor, style = Stroke(width = 2.5f * scale))
             }
-
-            is NavRef.LatLon -> Unit
         }
     }
 }
@@ -4941,7 +4964,7 @@ private fun FlightPlanDataRow(
                 onClick = onWaypointClick,
             )
             PlanWaypointSymbol(
-                navRef = row.navRef,
+                feature = row.symbolFeature,
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .padding(end = ThumbSize * 0.12f)

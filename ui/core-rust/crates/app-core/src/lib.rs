@@ -38,9 +38,9 @@ pub use errors::{AppError, AppErrorKind, AppResult};
 pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord};
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use map_overlay::{
-    query_map_overlay, tile_key, visible_point_tile_window, MapOverlayQueryResult,
+    point_vector_record_to_symbol_feature, query_map_overlay, tile_key, visible_point_tile_window, MapOverlayQueryResult,
     MapOverlayWarning, PointTilePayload, PointVectorRecord, VectorTileRequest,
-    VisibleMapFeature, VECTOR_DISPLAY_FEATURE_LIMIT,
+    NavSymbolFeature, VisibleMapFeature, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 pub use map_follow::MapFollowUiState;
 pub use ownship::{
@@ -68,7 +68,7 @@ pub use navdb::{
     materialize_airway_selection, materialize_procedure_selection, resolve_airway_segment,
     resolve_airway_segment_by_index, resolve_nav_ref_identifier, resolve_nav_ref_position,
     resolve_nav_ref_position_with_procedure_airport, select_airway_branch,
-    suggest_airways_near, suggest_waypoint_identifiers,
+    resolve_nav_symbol_feature, suggest_airways_near, suggest_waypoint_identifiers,
 };
 pub use planning::{
     activate_direct_to, activate_direct_to_leg, activate_leg, activate_next_leg,

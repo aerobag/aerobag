@@ -29,11 +29,6 @@ pub fn classify_procedure_identifier(
 }
 
 #[wasm_bindgen]
-pub fn build_flight_plan_ui(plan_json: &str) -> Result<String, JsValue> {
-    build_flight_plan_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn activate_leg_ui(plan_json: &str, leg_index: usize) -> Result<String, JsValue> {
     activate_leg_ui_json(plan_json, leg_index).map_err(|err| JsValue::from_str(&err))
 }
@@ -286,6 +281,11 @@ pub fn web_suggest_waypoint_identifiers(
         limit,
     )
     .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn web_resolve_nav_symbol_feature(nav_ref_json: &str) -> Result<String, JsValue> {
+    web_navdb::resolve_nav_symbol_feature_json(nav_ref_json).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -788,13 +788,6 @@ fn remove_flight_plan_leg_json(plan_json: &str, index: usize) -> Result<String, 
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let plan = app_core::remove_flight_plan_leg(&plan, index).map_err(|err| err.to_string())?;
     serde_json::to_string(&plan).map_err(|err| err.to_string())
-}
-
-fn build_flight_plan_ui_json(plan_json: &str) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let ui = app_core::build_flight_plan_ui(plan).map_err(|err| err.to_string())?;
-    serde_json::to_string(&ui).map_err(|err| err.to_string())
 }
 
 fn activate_leg_ui_json(plan_json: &str, leg_index: usize) -> Result<String, String> {
@@ -1849,15 +1842,6 @@ mod tests {
 
         assert!(next.active_plan.is_some());
         assert_eq!(next.last_content_requirements.len(), 1);
-    }
-
-    #[test]
-    fn build_flight_plan_ui_json_returns_projected_plan_view() {
-        let ui_json = build_flight_plan_ui_json(&sample_plan_json()).unwrap();
-        let ui: app_core::FlightPlanUiState = serde_json::from_str(&ui_json).unwrap();
-
-        assert!(!ui.components.is_empty());
-        assert_eq!(ui.components[0].summary, "KBOS");
     }
 
     #[test]

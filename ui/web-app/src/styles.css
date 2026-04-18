@@ -1086,10 +1086,13 @@ button {
 .planWaypointSymbol {
   position: relative;
   z-index: 1;
+  display: block;
   flex: 0 0 calc(var(--thumb) * 0.78);
   width: calc(var(--thumb) * 0.78);
   height: calc(var(--thumb) * 0.78);
+  margin-left: auto;
   overflow: visible;
+  pointer-events: none;
 }
 
 .planWaypointSymbol .airportMarker,

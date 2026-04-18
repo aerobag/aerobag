@@ -3,11 +3,12 @@ use std::collections::HashMap;
 use app_core::{
     classify_procedure_identifier, describe_plate_procedure_load_options, describe_procedure_options_from_rows,
     describe_show_plate_for_procedure, interpret_path_termination, parse_airport_magnetic_variation,
+    point_vector_record_to_symbol_feature,
     parse_cifp_altitude_ft, parse_cifp_tenths_value, prepare_airway_presentation,
     select_preferred_cifp_tpp_match, AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate,
     AirwayExitCandidate, AirwayFixPoint, AirwaySegment, AirwaySuggestion, AppError, AppErrorKind,
     AppResult, CifpTppMatchRow, FlightPlan, FlightPlanRouteSegment,
-    FlightPlanRouteSegmentStatus, LatLon, NavRef,
+    FlightPlanRouteSegmentStatus, LatLon, NavRef, NavSymbolFeature, PointVectorRecord,
     PlateProcedureLoadCandidateInput, ProcedureDistinctRow, ProcedureKind,
     ProcedureLegMaterializationRecord, ProcedureSummary, ProcedureVariantKey,
     ResolvedLeg, ResolvedLegSource, RouteComponent, WaypointIdentifierSuggestion,
@@ -114,6 +115,12 @@ pub fn suggest_waypoint_identifiers_json(
     let suggestions = suggest_waypoint_identifiers(&plan, component_index, before, prefix, limit)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&suggestions).map_err(|err| err.to_string())
+}
+
+pub fn resolve_nav_symbol_feature_json(nav_ref_json: &str) -> Result<String, String> {
+    let nav_ref: NavRef = serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
+    let feature = resolve_nav_symbol_feature(&nav_ref).map_err(|err| err.to_string())?;
+    serde_json::to_string(&feature).map_err(|err| err.to_string())
 }
 
 pub fn project_flight_plan_route_json(plan_json: &str) -> Result<String, String> {
@@ -964,6 +971,234 @@ fn resolve_nav_ref_position(nav_ref: &NavRef, airport_id: Option<&str>) -> AppRe
             lookup_nav_ref_position("fix", code)
         }
         NavRef::Fix(code) => lookup_nav_ref_position("fix", code),
+    }
+}
+
+fn resolve_nav_symbol_feature(nav_ref: &NavRef) -> AppResult<Option<NavSymbolFeature>> {
+    let record = match nav_ref {
+        NavRef::Airport(code) => airport_symbol_record(code)?,
+        NavRef::Navaid(code) => navaid_symbol_record(code)?,
+        NavRef::Fix(code) => fix_symbol_record(code)?,
+        NavRef::LatLon(_) => None,
+    };
+    Ok(record.and_then(|record| point_vector_record_to_symbol_feature(&record)))
+}
+
+fn airport_symbol_record(code: &str) -> AppResult<Option<PointVectorRecord>> {
+    let rows = query(
+        "
+        SELECT trim(LocationID) AS id,
+               CAST(ARPLatitude AS REAL) AS lat,
+               CAST(ARPLongitude AS REAL) AS lon,
+               trim(FacilityName) AS label,
+               trim(Type) AS kind,
+               trim(ATCT) AS atct,
+               trim(FuelTypes) AS fuel_types,
+               trim(Use) AS use_code
+        FROM airports
+        WHERE trim(LocationID) = trim(?1)
+        LIMIT 1
+        ",
+        json!([code]),
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let id = field_string(row, "id")?;
+    let kind = field_string(row, "kind")?;
+    let runway_info = airport_runway_info(&id)?;
+    let kind_upper = kind.trim().to_ascii_uppercase();
+    Ok(Some(PointVectorRecord {
+        id: format!("airports:{id}"),
+        kind: kind.to_lowercase(),
+        lat: field_f64(row, "lat")?,
+        lon: field_f64(row, "lon")?,
+        label: field_string(row, "label")?,
+        style_class: "airport".to_string(),
+        towered: Some(field_string(row, "atct")?.trim().eq_ignore_ascii_case("Y")),
+        fuel_available: Some(!field_string(row, "fuel_types")?.trim().is_empty()),
+        public_use: Some(field_string(row, "use_code")?.trim().eq_ignore_ascii_case("PU")),
+        private_use: Some(field_string(row, "use_code")?.trim().eq_ignore_ascii_case("PR")),
+        has_paved_runway: runway_info.as_ref().map(|runway| runway.has_paved_runway),
+        heliport: Some(kind_upper.contains("HELIPORT")),
+        has_water_runway: Some(
+            runway_info
+                .as_ref()
+                .map(|runway| runway.has_water_runway)
+                .unwrap_or(false)
+                || kind.trim().eq_ignore_ascii_case("SEAPLANE BAS"),
+        ),
+        longest_runway_length_ft: runway_info.as_ref().map(|runway| runway.length_ft),
+        longest_runway_heading_true_deg: runway_info.as_ref().map(|runway| runway.heading_true_deg),
+    }))
+}
+
+fn navaid_symbol_record(code: &str) -> AppResult<Option<PointVectorRecord>> {
+    let rows = query(
+        "
+        SELECT trim(LocationID) AS id,
+               CAST(ARPLatitude AS REAL) AS lat,
+               CAST(ARPLongitude AS REAL) AS lon,
+               trim(FacilityName) AS label,
+               trim(Type) AS kind
+        FROM nav
+        WHERE trim(LocationID) = trim(?1)
+          AND UPPER(trim(Type)) IN ('VOR', 'VOR/DME', 'VORTAC')
+        LIMIT 1
+        ",
+        json!([code]),
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    Ok(Some(PointVectorRecord {
+        id: format!("nav:{}", field_string(row, "id")?),
+        kind: field_string(row, "kind")?.to_lowercase(),
+        lat: field_f64(row, "lat")?,
+        lon: field_f64(row, "lon")?,
+        label: field_string(row, "label")?,
+        style_class: "nav".to_string(),
+        towered: None,
+        fuel_available: None,
+        public_use: None,
+        private_use: None,
+        has_paved_runway: None,
+        heliport: None,
+        has_water_runway: None,
+        longest_runway_length_ft: None,
+        longest_runway_heading_true_deg: None,
+    }))
+}
+
+fn fix_symbol_record(code: &str) -> AppResult<Option<PointVectorRecord>> {
+    let rows = query(
+        "
+        SELECT trim(LocationID) AS id,
+               CAST(ARPLatitude AS REAL) AS lat,
+               CAST(ARPLongitude AS REAL) AS lon,
+               trim(FacilityName) AS label,
+               trim(Type) AS kind
+        FROM fix
+        WHERE trim(LocationID) = trim(?1)
+        LIMIT 1
+        ",
+        json!([code]),
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    Ok(Some(PointVectorRecord {
+        id: format!("fix:{}", field_string(row, "id")?),
+        kind: field_string(row, "kind")?.to_lowercase(),
+        lat: field_f64(row, "lat")?,
+        lon: field_f64(row, "lon")?,
+        label: field_string(row, "label")?,
+        style_class: "fix".to_string(),
+        towered: None,
+        fuel_available: None,
+        public_use: None,
+        private_use: None,
+        has_paved_runway: None,
+        heliport: None,
+        has_water_runway: None,
+        longest_runway_length_ft: None,
+        longest_runway_heading_true_deg: None,
+    }))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AirportRunwaySymbolInfo {
+    length_ft: f64,
+    heading_true_deg: f64,
+    has_paved_runway: bool,
+    has_water_runway: bool,
+}
+
+fn airport_runway_info(airport_id: &str) -> AppResult<Option<AirportRunwaySymbolInfo>> {
+    let rows = query(
+        "
+        SELECT trim(Length) AS length,
+               trim(Surface) AS surface,
+               trim(LEHeadingT) AS le_heading,
+               trim(LELatitude) AS le_lat,
+               trim(LELongitude) AS le_lon,
+               trim(HELatitude) AS he_lat,
+               trim(HELongitude) AS he_lon
+        FROM airportrunways
+        WHERE trim(LocationID) = trim(?1)
+        ",
+        json!([airport_id]),
+    )?;
+    let mut best: Option<AirportRunwaySymbolInfo> = None;
+    for row in rows {
+        let length = parse_float(&field_string(&row, "length")?);
+        if length <= 0.0 {
+            continue;
+        }
+        let surface = field_string(&row, "surface")?.trim().to_ascii_uppercase();
+        let has_paved_runway = surface_is_paved(&surface);
+        let has_water_runway = surface.contains("WATER");
+        let heading = parse_float(&field_string(&row, "le_heading")?);
+        let heading = if heading > 0.0 {
+            normalize_heading(heading)
+        } else {
+            let le_lat = parse_float(&field_string(&row, "le_lat")?);
+            let le_lon = parse_float(&field_string(&row, "le_lon")?);
+            let he_lat = parse_float(&field_string(&row, "he_lat")?);
+            let he_lon = parse_float(&field_string(&row, "he_lon")?);
+            if !valid_lat_lon(le_lat, le_lon) || !valid_lat_lon(he_lat, he_lon) {
+                continue;
+            }
+            bearing_true_deg(le_lat, le_lon, he_lat, he_lon)
+        };
+        match best.as_mut() {
+            Some(existing) if existing.length_ft >= length => {
+                existing.has_paved_runway |= has_paved_runway;
+                existing.has_water_runway |= has_water_runway;
+            }
+            _ => {
+                best = Some(AirportRunwaySymbolInfo {
+                    length_ft: length,
+                    heading_true_deg: heading,
+                    has_paved_runway,
+                    has_water_runway,
+                });
+            }
+        }
+    }
+    Ok(best)
+}
+
+fn surface_is_paved(surface: &str) -> bool {
+    surface
+        .split('-')
+        .any(|part| matches!(part.trim(), "ASPH" | "CONC" | "BIT" | "PEM"))
+}
+
+fn parse_float(value: &str) -> f64 {
+    value.trim().parse::<f64>().unwrap_or(0.0)
+}
+
+fn valid_lat_lon(lat: f64, lon: f64) -> bool {
+    lat.is_finite() && lon.is_finite() && lat.abs() <= 90.0 && lon.abs() <= 180.0
+}
+
+fn bearing_true_deg(start_lat: f64, start_lon: f64, end_lat: f64, end_lon: f64) -> f64 {
+    let start_lat_rad = start_lat.to_radians();
+    let end_lat_rad = end_lat.to_radians();
+    let delta_lon_rad = (end_lon - start_lon).to_radians();
+    let y = delta_lon_rad.sin() * end_lat_rad.cos();
+    let x = start_lat_rad.cos() * end_lat_rad.sin()
+        - start_lat_rad.sin() * end_lat_rad.cos() * delta_lon_rad.cos();
+    normalize_heading(y.atan2(x).to_degrees())
+}
+
+fn normalize_heading(heading: f64) -> f64 {
+    let normalized = heading.rem_euclid(360.0);
+    if normalized == 0.0 {
+        360.0
+    } else {
+        normalized
     }
 }
 

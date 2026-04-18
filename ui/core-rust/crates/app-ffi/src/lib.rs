@@ -59,13 +59,6 @@ pub fn insert_waypoint_ui_json(
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
-pub fn build_flight_plan_ui_json(plan_json: &str) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let ui = app_core::build_flight_plan_ui(plan).map_err(|err| err.to_string())?;
-    serde_json::to_string(&ui).map_err(|err| err.to_string())
-}
-
 pub fn project_flight_plan_route_json(db_path: &str, plan_json: &str) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
@@ -130,6 +123,12 @@ pub fn resolve_nav_ref_position_json(db_path: &str, nav_ref_json: &str) -> Resul
 pub fn resolve_nav_ref_identifier_json(db_path: &str, identifier: &str) -> Result<String, String> {
     let nav_ref = app_core::resolve_nav_ref_identifier(Path::new(db_path), identifier).map_err(|err| err.to_string())?;
     serde_json::to_string(&nav_ref).map_err(|err| err.to_string())
+}
+
+pub fn resolve_nav_symbol_feature_json(db_path: &str, nav_ref_json: &str) -> Result<String, String> {
+    let nav_ref: app_core::NavRef = serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
+    let feature = app_core::resolve_nav_symbol_feature(Path::new(db_path), &nav_ref).map_err(|err| err.to_string())?;
+    serde_json::to_string(&feature).map_err(|err| err.to_string())
 }
 
 pub fn suggest_waypoint_identifiers_json(
@@ -1233,6 +1232,21 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_res
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_resolveNavSymbolFeatureJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    nav_ref_json: JString,
+) -> jstring {
+    let result = (|| {
+        let db_path = get_java_string(&mut env, db_path)?;
+        let nav_ref_json = get_java_string(&mut env, nav_ref_json)?;
+        resolve_nav_symbol_feature_json(&db_path, &nav_ref_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_suggestWaypointIdentifiersJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -1406,19 +1420,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_mat
             &enroute_transition_json,
             component_index as usize,
         )
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_buildFlightPlanUiJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    plan_json: JString,
-) -> jstring {
-    let result = (|| {
-        let plan_json = get_java_string(&mut env, plan_json)?;
-        build_flight_plan_ui_json(&plan_json)
     })();
     return_string(&mut env, result)
 }
@@ -2391,15 +2392,6 @@ mod tests {
 
         assert!(next.active_plan.is_some());
         assert_eq!(next.last_content_requirements.len(), 1);
-    }
-
-    #[test]
-    fn build_flight_plan_ui_json_returns_projected_plan_view() {
-        let ui_json = build_flight_plan_ui_json(&sample_plan_json()).unwrap();
-        let ui: app_core::FlightPlanUiState = serde_json::from_str(&ui_json).unwrap();
-
-        assert!(!ui.components.is_empty());
-        assert_eq!(ui.components[0].summary, "KBOS");
     }
 
     #[test]

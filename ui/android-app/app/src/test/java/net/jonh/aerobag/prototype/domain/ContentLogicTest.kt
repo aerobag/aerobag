@@ -313,6 +313,7 @@ private class FakeNativeBridge(
 
     override fun resolveNavRefPositionJson(dbPath: String, navRefJson: String): String = """{"lat":0.0,"lon":0.0}"""
     override fun resolveNavRefIdentifierJson(dbPath: String, identifier: String): String = """{"Fix":"$identifier"}"""
+    override fun resolveNavSymbolFeatureJson(dbPath: String, navRefJson: String): String = "null"
     override fun suggestWaypointIdentifiersJson(
         dbPath: String,
         planJson: String,
@@ -354,9 +355,6 @@ private class FakeNativeBridge(
         enrouteTransitionJson: String,
         componentIndex: Int,
     ): String = """{"procedure_id":"","summary":"","legs":[]}"""
-
-    override fun buildFlightPlanUiJson(planJson: String): String =
-        """{"components":[],"resolved_legs":[],"guidance":null,"display_split_leg_index":null}"""
 
     override fun activateLegUiJson(planJson: String, legIndex: Int): String =
         """{"plan":$planJson,"ui_state":{"components":[],"resolved_legs":[],"guidance":null,"display_split_leg_index":null}}"""

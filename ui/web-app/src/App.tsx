@@ -11,6 +11,7 @@ import type {
   FlightPlanUiState,
   LatLon,
   MaterializedProcedure,
+  NavSymbolFeature,
   NavElementUiView,
   NavRef,
   PlaybackUiState,
@@ -411,42 +412,11 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
   );
 }
 
-function PlanWaypointSymbol(props: { navRef: NavRef | null }) {
-  const { navRef } = props;
-  if (!navRef || "LatLon" in navRef) {
+function PlanWaypointSymbol(props: { feature: NavSymbolFeature | null }) {
+  const { feature } = props;
+  if (!feature) {
     return null;
   }
-  const label = navRefLabel(navRef);
-  const feature: VectorPointSymbolFeature =
-    "Airport" in navRef
-      ? {
-          kind: "airport",
-          label,
-          style_class: "airport",
-          towered: false,
-          fuel_available: false,
-          runway_length_ratio: 0.6,
-          longest_runway_heading_true_deg: 0,
-        }
-      : "Navaid" in navRef
-        ? {
-            kind: "vor",
-            label,
-            style_class: "nav",
-            towered: false,
-            fuel_available: false,
-            runway_length_ratio: 0,
-            longest_runway_heading_true_deg: null,
-          }
-        : {
-            kind: "fix",
-            label,
-            style_class: "fix",
-            towered: false,
-            fuel_available: false,
-            runway_length_ratio: 0,
-            longest_runway_heading_true_deg: null,
-          };
   return (
     <svg className="planWaypointSymbol" viewBox="-20 -20 40 40" aria-hidden="true">
       <VectorPointSymbol feature={feature} showLabel={false} />
@@ -676,7 +646,7 @@ export default function App() {
     };
   }, [playbackUiState.status, uiSession]);
   const currentPlan = appState.active_plan;
-  const [planUiState, setPlanUiState] = useState<FlightPlanUiState | null>(null);
+  const planUiState = appUiState.active_plan;
   const recentAirportIds = sessionSnapshot.chart_page_state.recent_airport_ids;
   const selectedAirportId = sessionSnapshot.chart_page_state.selected_airport_id;
   const selectedChartId = sessionSnapshot.chart_page_state.selected_chart_id;
@@ -768,7 +738,7 @@ export default function App() {
     if (!appCoreAdapter) {
       return;
     }
-    buildSeededDevPlan(appCoreAdapter).then(async (initialPlan) => {
+    buildSeededDevPlan().then(async (initialPlan) => {
       const created = await appCoreAdapter.createUiSession(
         resourceIndex,
         initialPlan.plan,
@@ -784,7 +754,7 @@ export default function App() {
       nextSession = created;
       if (!cancelled) {
         setUiSession(created);
-        setPlanUiState(initialPlan.uiState);
+        setSessionSnapshot(createdSnapshot);
       }
       await created.registerOwnshipSource(demoOwnshipSourceRegistration());
       await created.updateOwnshipSourceStatus({
@@ -809,28 +779,6 @@ export default function App() {
   useEffect(() => {
     setMapViewport((current) => preserveViewportForMap(current, selectedMap.map_view));
   }, [selectedMap]);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!appCoreAdapter) {
-      setPlanUiState(null);
-      return;
-    }
-    if (!currentPlan) {
-      setPlanUiState(null);
-      return;
-    }
-    appCoreAdapter.buildFlightPlanUi(currentPlan).then((next) => {
-      if (!cancelled) {
-        setPlanUiState(next);
-      }
-    }).catch((error) => {
-      console.error("failed to build flight plan ui state", error);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [appCoreAdapter, currentPlan]);
 
   const appReady =
     appCoreAdapter !== null &&
@@ -1026,7 +974,6 @@ export default function App() {
           ownship={appUiState.ownship.render}
           plan={currentPlan}
           planUiState={planUiState}
-          sessionPlanUiState={appUiState.active_plan}
           playbackUiState={playbackUiState}
           mapFollowUiState={mapFollowUiState}
           mapFollowTargetViewport={sessionSnapshot.map_follow_target_viewport}
@@ -1052,7 +999,6 @@ export default function App() {
           legSummary={legSummary}
           plan={currentPlan}
           planUiState={planUiState}
-          sessionPlanUiState={appUiState.active_plan}
           onOpenPlan={() => navigateToPage("plan")}
           onSelectPage={navigateToPage}
           onOpenCharts={(airportId, chartId) => {
@@ -1098,7 +1044,7 @@ export default function App() {
           onMoveComponent={async (componentIndex, delta) => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.moveComponentUi(currentPlan, componentIndex, delta);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onInsertAirportWaypoint={async (componentIndex, before, airportId) => {
             if (!appCoreAdapter) return;
@@ -1107,37 +1053,37 @@ export default function App() {
               throw new Error(`Unknown waypoint ${airportId}`);
             }
             const mutation = await appCoreAdapter.insertWaypointUi(currentPlan, componentIndex, before, waypoint);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onActivateLeg={async (legIndex) => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.activateLegUi(currentPlan, legIndex);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onDeleteComponent={async (componentIndex) => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.deleteComponentUi(currentPlan, componentIndex);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onActivateNextLeg={async () => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.activateNextLegUi(currentPlan);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onSuspendSequencing={async () => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.suspendSequencingUi(currentPlan);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onUnsuspendSequencing={async () => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.unsuspendSequencingUi(currentPlan);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onSequenceActiveLeg={async () => {
             if (!appCoreAdapter) return;
             const mutation = await appCoreAdapter.sequenceActiveLegUi(currentPlan);
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onInsertAirway={async (startComponentIndex, endComponentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
             if (!appCoreAdapter) return;
@@ -1158,7 +1104,7 @@ export default function App() {
               materialized.airway,
               materialized.resolvedLegs,
             );
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onReplaceAirway={async (componentIndex, entryIndex, exitIndex, presentation, originAnchor, destinationAnchor) => {
             if (!appCoreAdapter) return;
@@ -1178,7 +1124,7 @@ export default function App() {
               materialized.airway,
               materialized.resolvedLegs,
             );
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onInsertProcedure={async (startComponentIndex, endComponentIndex, built) => {
             if (!appCoreAdapter) return;
@@ -1188,7 +1134,7 @@ export default function App() {
               endComponentIndex,
               built,
             );
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onReplaceProcedure={async (componentIndex, built) => {
             if (!appCoreAdapter) return;
@@ -1197,7 +1143,7 @@ export default function App() {
               componentIndex,
               built,
             );
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           debugWarningActive={debugWarningActive}
         />
@@ -1210,7 +1156,7 @@ export default function App() {
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
           plan={currentPlan}
-          sessionPlanUiState={appUiState.active_plan}
+          planUiState={planUiState}
           airports={orderedChartAirports}
           selectedAirport={selectedAirport}
           selectedChart={selectedChart}
@@ -1259,7 +1205,7 @@ export default function App() {
           }}
           ownship={appUiState.ownship.render}
           onApplyMutation={async (mutation) => {
-            await applyFlightPlanMutation(uiSession, setSessionSnapshot, setPlanUiState, mutation);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           playbackUiState={playbackUiState}
           playbackSourcePath={playbackSourcePath}
@@ -1276,7 +1222,7 @@ export default function App() {
           page={page}
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
-          sessionPlanUiState={appUiState.active_plan}
+          planUiState={planUiState}
           onSelectPage={navigateToPage}
           onOpenPlan={() => navigateToPage("plan")}
           debugWarningActive={debugWarningActive}
@@ -1307,7 +1253,6 @@ function MapPage(props: {
   ownship: OwnshipRenderState;
   plan: typeof samplePlan;
   planUiState: FlightPlanUiState | null;
-  sessionPlanUiState: FlightPlanUiState | null;
   playbackUiState: PlaybackUiState;
   mapFollowUiState: MapFollowUiState;
   mapFollowTargetViewport: { center: LatLon; zoom: number; rotation_deg: number; pitch_deg: number } | null;
@@ -1342,7 +1287,6 @@ function MapPage(props: {
     ownship,
     plan,
     planUiState,
-    sessionPlanUiState,
     uiSession,
     onPlaybackSnapshotChange,
     mapFollowUiState,
@@ -1552,13 +1496,12 @@ function MapPage(props: {
   useEffect(() => {
     debugLog("map.nav_element.render", {
       app_state_active_plan: plan?.id ?? null,
-      session_nav_element: sessionPlanUiState?.guidance?.nav_element ?? null,
-      local_plan_guidance: planUiState?.guidance?.nav_element ?? null,
+      plan_guidance: planUiState?.guidance?.nav_element ?? null,
       ownship_mode: ownship.mode,
       ownship_draw_cdi: ownship.draw_cdi,
       ownship_position: ownship.position,
     });
-  }, [ownship.draw_cdi, ownship.mode, ownship.position, plan, planUiState, sessionPlanUiState]);
+  }, [ownship.draw_cdi, ownship.mode, ownship.position, plan, planUiState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2266,7 +2209,7 @@ function MapPage(props: {
           onDoubleClick={stopDoubleClick}
           onClick={onOpenPlan}
         >
-          <NavElementView navElement={sessionPlanUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
+          <NavElementView navElement={planUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
         </button>
 
         <PlaybackWidget
@@ -2732,7 +2675,6 @@ function FlightPlanPage(props: {
   legSummary: string;
   plan: typeof samplePlan;
   planUiState: FlightPlanUiState | null;
-  sessionPlanUiState: FlightPlanUiState | null;
   onOpenPlan: () => void;
   onSelectPage: (page: AppPage) => void;
   onOpenCharts: (airportId: string | null, chartId?: string | null) => void;
@@ -2812,7 +2754,7 @@ function FlightPlanPage(props: {
   const planScrollSurfaceRef = useRef<HTMLDivElement | null>(null);
   const waypointModalRef = useRef<HTMLElement | null>(null);
   const trayOpen = trayGroup.scrimOpen;
-  const planUiState = props.sessionPlanUiState ?? props.planUiState;
+  const planUiState = props.planUiState;
   if (!planUiState) {
     throw new Error("FlightPlanPage requires core-projected FlightPlanUiState");
   }
@@ -2901,6 +2843,7 @@ function FlightPlanPage(props: {
         originAnchor: row.origin_anchor,
         destinationAnchor: row.destination_anchor,
         navRef: row.nav_ref,
+        symbolFeature: row.symbol_feature,
         groupKey: row.row_kind === "group" || row.depth > 0 ? `group:${row.component_index ?? index}` : null,
         componentIndex: row.component_index,
         componentKind: row.component_kind,
@@ -3370,7 +3313,7 @@ function FlightPlanPage(props: {
                   }}
                 >
 	                  <span className={`planStructuredLabel${row.depth > 0 ? " isIndented" : ""}`}>{row.label}</span>
-                    <PlanWaypointSymbol navRef={row.navRef} />
+                    <PlanWaypointSymbol feature={row.symbolFeature} />
 	                </button>
 	                <div
 	                  className={[
@@ -3424,7 +3367,7 @@ function FlightPlanPage(props: {
 
       <div className="planFooter">
         <button type="button" className="navElement navElementStatic" onClick={props.onOpenPlan}>
-          <NavElementView navElement={props.sessionPlanUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
+          <NavElementView navElement={planUiState.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
         </button>
       </div>
 
@@ -4002,7 +3945,7 @@ function ChartsPage(props: {
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
   plan: typeof samplePlan;
-  sessionPlanUiState: FlightPlanUiState | null;
+  planUiState: FlightPlanUiState | null;
   airports: ChartPageData["airports"];
   selectedAirport: ChartPageData["airports"][number] | null;
   selectedChart: ChartAsset | null;
@@ -4024,7 +3967,7 @@ function ChartsPage(props: {
   debugWarningActive: boolean;
   onFirstVisualReady: () => void;
 }) {
-  const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, sessionPlanUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, onApplyMutation, ownship, onFirstVisualReady } = props;
+  const { appCoreAdapter, page, pageHistory, uptimeLabel, plan, planUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, onApplyMutation, ownship, onFirstVisualReady } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -4536,7 +4479,7 @@ function ChartsPage(props: {
           onDoubleClick={stopDoubleClick}
           onClick={onOpenPlan}
         >
-          <NavElementView navElement={sessionPlanUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
+          <NavElementView navElement={planUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
         </button>
 
         <PlaybackWidget
@@ -4569,12 +4512,12 @@ function SettingsPage(props: {
   page: AppPage;
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
-  sessionPlanUiState: FlightPlanUiState | null;
+  planUiState: FlightPlanUiState | null;
   onSelectPage: (page: AppPage) => void;
   onOpenPlan: () => void;
   debugWarningActive: boolean;
 }) {
-  const { page, pageHistory, uptimeLabel, sessionPlanUiState, onSelectPage, onOpenPlan, debugWarningActive } = props;
+  const { page, pageHistory, uptimeLabel, planUiState, onSelectPage, onOpenPlan, debugWarningActive } = props;
   const trayGroup = useModalTrayGroup(["page"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
 
@@ -4616,7 +4559,7 @@ function SettingsPage(props: {
         onDoubleClick={stopDoubleClick}
         onClick={onOpenPlan}
       >
-        <NavElementView navElement={sessionPlanUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
+        <NavElementView navElement={planUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
       </button>
 
       <div className="debugDock">
@@ -5022,7 +4965,6 @@ function formatRingDistance(radiusNm: number) {
 async function applyFlightPlanMutation(
   uiSession: UiSession | null,
   setSessionSnapshot: Dispatch<SetStateAction<UiSessionSnapshot>>,
-  setPlanUiState: Dispatch<SetStateAction<FlightPlanUiState | null>>,
   mutation: FlightPlanUiMutation,
 ) {
   if (!uiSession) {
@@ -5030,10 +4972,9 @@ async function applyFlightPlanMutation(
   }
   const nextSnapshot = await uiSession.replaceFlightPlan(mutation.plan);
   setSessionSnapshot(nextSnapshot);
-  setPlanUiState(mutation.ui_state);
 }
 
-async function buildSeededDevPlan(adapter: AppCoreAdapter): Promise<{ plan: typeof samplePlan; uiState: FlightPlanUiState }> {
+async function buildSeededDevPlan(): Promise<{ plan: typeof samplePlan }> {
   const waypoints: Array<{ Airport: string } | { Navaid: string } | { Fix: string }> = [
     { Airport: "KPAO" },
     { Fix: "VPDUB" },
@@ -5060,10 +5001,8 @@ async function buildSeededDevPlan(adapter: AppCoreAdapter): Promise<{ plan: type
     updated_at_epoch_ms: Date.now(),
     version: samplePlan.version + 1,
   };
-  const uiState = await adapter.buildFlightPlanUi(plan);
   return {
     plan,
-    uiState,
   };
 }
 

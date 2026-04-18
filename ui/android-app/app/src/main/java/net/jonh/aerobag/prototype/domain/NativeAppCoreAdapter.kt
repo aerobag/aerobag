@@ -53,6 +53,16 @@ data class VisibleMapFeature(
     val longestRunwayHeadingTrueDeg: Double?,
 )
 
+data class NavSymbolFeature(
+    val kind: String,
+    val label: String,
+    val styleClass: String,
+    val towered: Boolean,
+    val fuelAvailable: Boolean,
+    val runwayLengthRatio: Double,
+    val longestRunwayHeadingTrueDeg: Double?,
+)
+
 data class MapOverlayWarning(
     val code: String,
     val message: String,
@@ -67,6 +77,7 @@ data class MapOverlayQueryResult(
 class NativeAppCoreAdapter(
     private val catalogJson: String,
     private val chartCatalogJson: String,
+    private val navDbPath: String? = null,
     private val bridge: NativeBridge = NativeBindings,
     private val json: Json = Json {
         encodeDefaults = true
@@ -92,8 +103,9 @@ class NativeAppCoreAdapter(
             handle = result.handle,
             bridge = bridge,
             json = json,
+            navDbPath = navDbPath,
             chartCatalog = result.chart_catalog.toUi(),
-            initialSnapshot = result.snapshot.toUi(),
+            initialSnapshot = enrichUiSessionSnapshot(result.snapshot.toUi()),
         )
     }
 
@@ -161,6 +173,11 @@ class NativeAppCoreAdapter(
     fun resolveNavRefIdentifier(dbPath: String, identifier: String): NavRef {
         val nextJson = bridge.resolveNavRefIdentifierJson(dbPath, identifier)
         return json.decodeFromString<WireNavRef>(nextJson).toUi()
+    }
+
+    fun resolveNavSymbolFeature(dbPath: String, navRef: NavRef): NavSymbolFeature? {
+        val nextJson = bridge.resolveNavSymbolFeatureJson(dbPath, json.encodeToString(navRef.toWire()))
+        return json.decodeFromString<WireNavSymbolFeature?>(nextJson)?.toUi()
     }
 
     fun suggestWaypointIdentifiers(
@@ -270,10 +287,25 @@ class NativeAppCoreAdapter(
         }
     }
 
-    fun buildFlightPlanUi(plan: FlightPlan): FlightPlanUiState {
-        val nextJson = bridge.buildFlightPlanUiJson(json.encodeToString(plan.toWire()))
-        return json.decodeFromString<WireFlightPlanUiState>(nextJson).toUi()
+    private fun enrichFlightPlanUiSymbols(uiState: FlightPlanUiState): FlightPlanUiState {
+        val dbPath = navDbPath ?: return uiState
+        return uiState.copy(
+            displayRows = uiState.displayRows.map { row ->
+                if (row.navRef == null) {
+                    row
+                } else {
+                    row.copy(symbolFeature = resolveNavSymbolFeature(dbPath, row.navRef))
+                }
+            },
+        )
     }
+
+    private fun enrichUiSessionSnapshot(snapshot: UiSessionSnapshot): UiSessionSnapshot =
+        snapshot.copy(
+            appUiState = snapshot.appUiState.copy(
+                activePlan = snapshot.appUiState.activePlan?.let(::enrichFlightPlanUiSymbols),
+            ),
+        )
 
     fun activateLegUi(plan: FlightPlan, legIndex: Int): FlightPlanUiMutation {
         val nextJson = bridge.activateLegUiJson(json.encodeToString(plan.toWire()), legIndex)
@@ -465,6 +497,7 @@ class NativeUiSession internal constructor(
     private val handle: Long,
     private val bridge: NativeBridge,
     private val json: Json,
+    private val navDbPath: String?,
     val chartCatalog: ChartPageFixture,
     initialSnapshot: UiSessionSnapshot,
 ) {
@@ -630,7 +663,29 @@ class NativeUiSession internal constructor(
     }
 
     private fun decodeSnapshot(snapshotJson: String): UiSessionSnapshot =
-        json.decodeFromString<WireUiSessionSnapshot>(snapshotJson).toUi()
+        enrichSnapshot(json.decodeFromString<WireUiSessionSnapshot>(snapshotJson).toUi())
+
+    private fun enrichSnapshot(snapshot: UiSessionSnapshot): UiSessionSnapshot {
+        val dbPath = navDbPath ?: return snapshot
+        return snapshot.copy(
+            appUiState = snapshot.appUiState.copy(
+                activePlan = snapshot.appUiState.activePlan?.let { uiState ->
+                    uiState.copy(
+                        displayRows = uiState.displayRows.map { row ->
+                            row.navRef?.let { navRef ->
+                                row.copy(symbolFeature = resolveNavSymbolFeature(dbPath, navRef))
+                            } ?: row
+                        },
+                    )
+                },
+            ),
+        )
+    }
+
+    private fun resolveNavSymbolFeature(dbPath: String, navRef: NavRef): NavSymbolFeature? {
+        val nextJson = bridge.resolveNavSymbolFeatureJson(dbPath, json.encodeToString(navRef.toWire()))
+        return json.decodeFromString<WireNavSymbolFeature?>(nextJson)?.toUi()
+    }
 }
 
 private fun MapViewportState.toWire(): WireMapViewport {
@@ -1240,6 +1295,16 @@ private fun WireVisibleMapFeature.toUi() = VisibleMapFeature(
     longestRunwayHeadingTrueDeg = longest_runway_heading_true_deg,
 )
 
+private fun WireNavSymbolFeature.toUi() = NavSymbolFeature(
+    kind = kind,
+    label = label,
+    styleClass = style_class,
+    towered = towered,
+    fuelAvailable = fuel_available,
+    runwayLengthRatio = runway_length_ratio,
+    longestRunwayHeadingTrueDeg = longest_runway_heading_true_deg,
+)
+
 private fun WireMapOverlayWarning.toUi() = MapOverlayWarning(
     code = code,
     message = message,
@@ -1663,6 +1728,7 @@ private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
     legIndex = leg_index,
     chartAirportId = chart_airport_id,
     navRef = nav_ref?.toUi(),
+    symbolFeature = symbol_feature?.toUi(),
     depth = depth,
     active = active,
     canAddAirwayAfter = can_add_airway_after,

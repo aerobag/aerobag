@@ -73,6 +73,17 @@ pub struct VisibleMapFeature {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NavSymbolFeature {
+    pub kind: String,
+    pub label: String,
+    pub style_class: String,
+    pub towered: bool,
+    pub fuel_available: bool,
+    pub runway_length_ratio: f64,
+    pub longest_runway_heading_true_deg: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapOverlayWarning {
     pub code: String,
     pub message: String,
@@ -169,17 +180,20 @@ pub fn query_map_overlay(
                 continue;
             }
             let point = world_to_screen(center_world, scale, width_px, height_px, LatLon { lat: record.lat, lon: record.lon });
+            let Some(symbol) = point_vector_record_to_symbol_feature(record) else {
+                continue;
+            };
             visible_features.push(VisibleMapFeature {
                 id: record.id.clone(),
-                kind: record.kind.clone(),
-                label: display_label(record),
-                style_class: record.style_class.clone(),
+                kind: symbol.kind,
+                label: symbol.label,
+                style_class: symbol.style_class,
                 screen_x: point.x,
                 screen_y: point.y,
-                towered: record.towered.unwrap_or(false),
-                fuel_available: record.fuel_available.unwrap_or(false),
-                runway_length_ratio: runway_length_ratio(record.longest_runway_length_ft),
-                longest_runway_heading_true_deg: record.longest_runway_heading_true_deg,
+                towered: symbol.towered,
+                fuel_available: symbol.fuel_available,
+                runway_length_ratio: symbol.runway_length_ratio,
+                longest_runway_heading_true_deg: symbol.longest_runway_heading_true_deg,
             });
         }
         if limit_hit {
@@ -204,6 +218,18 @@ pub fn query_map_overlay(
         visible_features,
         warnings,
     }
+}
+
+pub fn point_vector_record_to_symbol_feature(record: &PointVectorRecord) -> Option<NavSymbolFeature> {
+    should_display_record(record).then(|| NavSymbolFeature {
+        kind: record.kind.clone(),
+        label: display_label(record),
+        style_class: record.style_class.clone(),
+        towered: record.towered.unwrap_or(false),
+        fuel_available: record.fuel_available.unwrap_or(false),
+        runway_length_ratio: runway_length_ratio(record.longest_runway_length_ft),
+        longest_runway_heading_true_deg: record.longest_runway_heading_true_deg,
+    })
 }
 
 pub fn tile_key(layer: &str, z: u32, x: u32, y: u32) -> String {

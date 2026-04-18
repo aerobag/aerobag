@@ -21,7 +21,6 @@ declare module "@shared-bootstrap" {
 declare module "@generated/app_wasm.js" {
   const init: (...args: unknown[]) => Promise<unknown>;
   export default init;
-  export const build_flight_plan_ui: (...args: unknown[]) => string;
   export const activate_leg_ui: (...args: unknown[]) => string;
   export const activate_next_leg_ui: (...args: unknown[]) => string;
   export const delete_component_ui: (...args: unknown[]) => string;
@@ -49,6 +48,7 @@ declare module "@generated/app_wasm.js" {
   export const web_materialize_airway_selection: (...args: unknown[]) => string;
   export const web_resolve_waypoint_identifier: (...args: unknown[]) => string;
   export const web_suggest_waypoint_identifiers: (...args: unknown[]) => string;
+  export const web_resolve_nav_symbol_feature: (...args: unknown[]) => string;
   export const web_list_procedures: (...args: unknown[]) => string;
   export const web_describe_procedure_options: (...args: unknown[]) => string;
   export const web_materialize_procedure: (...args: unknown[]) => string;

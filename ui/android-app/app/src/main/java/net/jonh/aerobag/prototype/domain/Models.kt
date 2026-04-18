@@ -387,6 +387,7 @@ data class FlightPlanDisplayRowUiView(
     val legIndex: Int?,
     val chartAirportId: String?,
     val navRef: NavRef?,
+    val symbolFeature: NavSymbolFeature?,
     val depth: Int,
     val active: Boolean,
     val canAddAirwayAfter: Boolean,

@@ -4,6 +4,7 @@ use rusqlite::{params, Connection};
 
 use crate::errors::{AppError, AppErrorKind, AppResult};
 use crate::geometry::LatLon;
+use crate::map_overlay::{point_vector_record_to_symbol_feature, NavSymbolFeature, PointVectorRecord};
 use crate::navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
     AirwayExitSelection, AirwayFixPoint, AirwayPoint, AirwaySuggestion, MaterializedProcedure,
@@ -65,6 +66,10 @@ pub fn load_airway_branches(db_path: &Path, airway_name: &str) -> AppResult<Vec<
 
 pub fn resolve_nav_ref_position(db_path: &Path, nav_ref: &NavRef) -> AppResult<LatLon> {
     with_connection(db_path, |connection| resolve_nav_ref_position_in_db(connection, nav_ref))
+}
+
+pub fn resolve_nav_symbol_feature(db_path: &Path, nav_ref: &NavRef) -> AppResult<Option<NavSymbolFeature>> {
+    with_connection(db_path, |connection| resolve_nav_symbol_feature_in_db(connection, nav_ref))
 }
 
 pub fn resolve_nav_ref_identifier(db_path: &Path, identifier: &str) -> AppResult<NavRef> {
@@ -1785,6 +1790,248 @@ pub(crate) fn resolve_nav_ref_position_with_airport_context_in_db(
             lookup_nav_ref_position(connection, "fix", code)
         }
         NavRef::Fix(code) => lookup_nav_ref_position(connection, "fix", code),
+    }
+}
+
+fn resolve_nav_symbol_feature_in_db(
+    connection: &Connection,
+    nav_ref: &NavRef,
+) -> rusqlite::Result<Option<NavSymbolFeature>> {
+    let record = match nav_ref {
+        NavRef::Airport(code) => airport_symbol_record(connection, code)?,
+        NavRef::Navaid(code) => navaid_symbol_record(connection, code)?,
+        NavRef::Fix(code) => fix_symbol_record(connection, code)?,
+        NavRef::LatLon(_) => None,
+    };
+    Ok(record.and_then(|record| point_vector_record_to_symbol_feature(&record)))
+}
+
+fn airport_symbol_record(
+    connection: &Connection,
+    code: &str,
+) -> rusqlite::Result<Option<PointVectorRecord>> {
+    let airport = connection
+        .query_row(
+            "SELECT trim(LocationID), CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL),
+                    trim(FacilityName), trim(Type), trim(ATCT), trim(FuelTypes), trim(Use)
+             FROM airports
+             WHERE trim(LocationID) = trim(?1)
+             LIMIT 1",
+            params![code],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((id, lat, lon, label, kind, atct, fuel_types, use_code)) = airport else {
+        return Ok(None);
+    };
+    let runway_info = airport_runway_info(connection, &id)?;
+    let kind_upper = kind.trim().to_ascii_uppercase();
+    Ok(Some(PointVectorRecord {
+        id: format!("airports:{id}"),
+        kind: kind.to_lowercase(),
+        lat,
+        lon,
+        label,
+        style_class: "airport".to_string(),
+        towered: Some(atct.trim().eq_ignore_ascii_case("Y")),
+        fuel_available: Some(!fuel_types.trim().is_empty()),
+        public_use: Some(use_code.trim().eq_ignore_ascii_case("PU")),
+        private_use: Some(use_code.trim().eq_ignore_ascii_case("PR")),
+        has_paved_runway: runway_info.as_ref().map(|runway| runway.has_paved_runway),
+        heliport: Some(kind_upper.contains("HELIPORT")),
+        has_water_runway: Some(
+            runway_info
+                .as_ref()
+                .map(|runway| runway.has_water_runway)
+                .unwrap_or(false)
+                || kind.trim().eq_ignore_ascii_case("SEAPLANE BAS"),
+        ),
+        longest_runway_length_ft: runway_info.as_ref().map(|runway| runway.length_ft),
+        longest_runway_heading_true_deg: runway_info.as_ref().map(|runway| runway.heading_true_deg),
+    }))
+}
+
+fn navaid_symbol_record(
+    connection: &Connection,
+    code: &str,
+) -> rusqlite::Result<Option<PointVectorRecord>> {
+    connection
+        .query_row(
+            "SELECT trim(LocationID), CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL),
+                    trim(FacilityName), trim(Type)
+             FROM nav
+             WHERE trim(LocationID) = trim(?1)
+               AND UPPER(trim(Type)) IN ('VOR', 'VOR/DME', 'VORTAC')
+             LIMIT 1",
+            params![code],
+            |row| {
+                Ok(PointVectorRecord {
+                    id: format!("nav:{}", row.get::<_, String>(0)?),
+                    kind: row.get::<_, String>(4)?.to_lowercase(),
+                    lat: row.get::<_, f64>(1)?,
+                    lon: row.get::<_, f64>(2)?,
+                    label: row.get::<_, String>(3)?,
+                    style_class: "nav".to_string(),
+                    towered: None,
+                    fuel_available: None,
+                    public_use: None,
+                    private_use: None,
+                    has_paved_runway: None,
+                    heliport: None,
+                    has_water_runway: None,
+                    longest_runway_length_ft: None,
+                    longest_runway_heading_true_deg: None,
+                })
+            },
+        )
+        .optional()
+}
+
+fn fix_symbol_record(
+    connection: &Connection,
+    code: &str,
+) -> rusqlite::Result<Option<PointVectorRecord>> {
+    connection
+        .query_row(
+            "SELECT trim(LocationID), CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL),
+                    trim(FacilityName), trim(Type)
+             FROM fix
+             WHERE trim(LocationID) = trim(?1)
+             LIMIT 1",
+            params![code],
+            |row| {
+                Ok(PointVectorRecord {
+                    id: format!("fix:{}", row.get::<_, String>(0)?),
+                    kind: row.get::<_, String>(4)?.to_lowercase(),
+                    lat: row.get::<_, f64>(1)?,
+                    lon: row.get::<_, f64>(2)?,
+                    label: row.get::<_, String>(3)?,
+                    style_class: "fix".to_string(),
+                    towered: None,
+                    fuel_available: None,
+                    public_use: None,
+                    private_use: None,
+                    has_paved_runway: None,
+                    heliport: None,
+                    has_water_runway: None,
+                    longest_runway_length_ft: None,
+                    longest_runway_heading_true_deg: None,
+                })
+            },
+        )
+        .optional()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AirportRunwaySymbolInfo {
+    length_ft: f64,
+    heading_true_deg: f64,
+    has_paved_runway: bool,
+    has_water_runway: bool,
+}
+
+fn airport_runway_info(
+    connection: &Connection,
+    airport_id: &str,
+) -> rusqlite::Result<Option<AirportRunwaySymbolInfo>> {
+    let mut stmt = connection.prepare(
+        "SELECT Length, Surface, LEHeadingT, LELatitude, LELongitude, HELatitude, HELongitude
+         FROM airportrunways
+         WHERE trim(LocationID) = trim(?1)",
+    )?;
+    let rows = stmt.query_map(params![airport_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+        ))
+    })?;
+    let mut best: Option<AirportRunwaySymbolInfo> = None;
+    for row in rows {
+        let (length_text, surface_text, le_heading_text, le_lat_text, le_lon_text, he_lat_text, he_lon_text) = row?;
+        let length = parse_float(&length_text);
+        if length <= 0.0 {
+            continue;
+        }
+        let surface = surface_text.trim().to_ascii_uppercase();
+        let has_paved_runway = surface_is_paved(&surface);
+        let has_water_runway = surface.contains("WATER");
+        let heading = parse_float(&le_heading_text);
+        let heading = if heading > 0.0 {
+            normalize_heading(heading)
+        } else {
+            let le_lat = parse_float(&le_lat_text);
+            let le_lon = parse_float(&le_lon_text);
+            let he_lat = parse_float(&he_lat_text);
+            let he_lon = parse_float(&he_lon_text);
+            if !valid_lat_lon(le_lat, le_lon) || !valid_lat_lon(he_lat, he_lon) {
+                continue;
+            }
+            bearing_true_deg(le_lat, le_lon, he_lat, he_lon)
+        };
+        match best.as_mut() {
+            Some(existing) if existing.length_ft >= length => {
+                existing.has_paved_runway |= has_paved_runway;
+                existing.has_water_runway |= has_water_runway;
+            }
+            _ => {
+                best = Some(AirportRunwaySymbolInfo {
+                    length_ft: length,
+                    heading_true_deg: heading,
+                    has_paved_runway,
+                    has_water_runway,
+                });
+            }
+        }
+    }
+    Ok(best)
+}
+
+fn surface_is_paved(surface: &str) -> bool {
+    surface
+        .split('-')
+        .any(|part| matches!(part.trim(), "ASPH" | "CONC" | "BIT" | "PEM"))
+}
+
+fn parse_float(value: &str) -> f64 {
+    value.trim().parse::<f64>().unwrap_or(0.0)
+}
+
+fn valid_lat_lon(lat: f64, lon: f64) -> bool {
+    lat.is_finite() && lon.is_finite() && lat.abs() <= 90.0 && lon.abs() <= 180.0
+}
+
+fn bearing_true_deg(start_lat: f64, start_lon: f64, end_lat: f64, end_lon: f64) -> f64 {
+    let start_lat_rad = start_lat.to_radians();
+    let end_lat_rad = end_lat.to_radians();
+    let delta_lon_rad = (end_lon - start_lon).to_radians();
+    let y = delta_lon_rad.sin() * end_lat_rad.cos();
+    let x = start_lat_rad.cos() * end_lat_rad.sin()
+        - start_lat_rad.sin() * end_lat_rad.cos() * delta_lon_rad.cos();
+    normalize_heading(y.atan2(x).to_degrees())
+}
+
+fn normalize_heading(heading: f64) -> f64 {
+    let normalized = heading.rem_euclid(360.0);
+    if normalized == 0.0 {
+        360.0
+    } else {
+        normalized
     }
 }
 

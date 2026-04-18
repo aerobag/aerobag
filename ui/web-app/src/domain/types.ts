@@ -363,6 +363,7 @@ export type FlightPlanDisplayRowUiView = {
   leg_index: number | null;
   chart_airport_id: string | null;
   nav_ref: NavRef | null;
+  symbol_feature: NavSymbolFeature | null;
   depth: number;
   active: boolean;
   can_add_airway_after: boolean;
@@ -380,6 +381,16 @@ export type FlightPlanDisplayRowUiView = {
   preceding_waypoint: NavRef | null;
   following_waypoint: NavRef | null;
   actions: FlightPlanRowActionUiView[];
+};
+
+export type NavSymbolFeature = {
+  kind: string;
+  label: string;
+  style_class: string;
+  towered: boolean;
+  fuel_available: boolean;
+  runway_length_ratio: number;
+  longest_runway_heading_true_deg: number | null;
 };
 
 export type ProcedureLoadTarget = {

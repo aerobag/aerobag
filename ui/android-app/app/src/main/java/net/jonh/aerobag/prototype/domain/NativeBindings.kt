@@ -17,6 +17,11 @@ interface NativeBridge {
         identifier: String,
     ): String
 
+    fun resolveNavSymbolFeatureJson(
+        dbPath: String,
+        navRefJson: String,
+    ): String
+
     fun suggestWaypointIdentifiersJson(
         dbPath: String,
         planJson: String,
@@ -77,8 +82,6 @@ interface NativeBridge {
         enrouteTransitionJson: String,
         componentIndex: Int,
     ): String
-
-    fun buildFlightPlanUiJson(planJson: String): String
 
     fun activateLegUiJson(planJson: String, legIndex: Int): String
 
@@ -368,6 +371,11 @@ object NativeBindings : NativeBridge {
         identifier: String,
     ): String
 
+    external override fun resolveNavSymbolFeatureJson(
+        dbPath: String,
+        navRefJson: String,
+    ): String
+
     external override fun suggestWaypointIdentifiersJson(
         dbPath: String,
         planJson: String,
@@ -428,8 +436,6 @@ object NativeBindings : NativeBridge {
         enrouteTransitionJson: String,
         componentIndex: Int,
     ): String
-
-    external override fun buildFlightPlanUiJson(planJson: String): String
 
     external override fun activateLegUiJson(planJson: String, legIndex: Int): String
 

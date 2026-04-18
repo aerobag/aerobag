@@ -26,6 +26,7 @@ import type {
   MapFollowUiState,
   MaterializedProcedure,
   NavRef,
+  NavSymbolFeature,
   OwnshipSelectionCommand,
   OwnshipSourceRegistration,
   OwnshipSourceStatusUpdate,
@@ -173,7 +174,6 @@ export interface AppCoreAdapter {
   deriveChartPageState(resourceIndex: unknown, plan: FlightPlan, recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<DerivedChartPageState>;
   setContentPolicyState(state: AppState, catalog: CatalogJson, policy: ContentPolicy): Promise<AppState>;
   refreshContentState(state: AppState, catalog: CatalogJson, inventory: ContentInventory): Promise<AppState>;
-  buildFlightPlanUi(plan: FlightPlan): Promise<FlightPlanUiState>;
   projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]>;
   activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation>;
   activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
@@ -292,7 +292,6 @@ type WasmModule = {
   replace_flight_plan_state(stateJson: string, catalogJson: string, planJson: string): Promise<string> | string;
   set_content_policy_state(stateJson: string, catalogJson: string, policyJson: string): Promise<string> | string;
   refresh_content_state(stateJson: string, catalogJson: string, inventoryJson: string): Promise<string> | string;
-  build_flight_plan_ui(planJson: string): Promise<string> | string;
   activate_leg_ui(planJson: string, legIndex: number): Promise<string> | string;
   activate_next_leg_ui(planJson: string): Promise<string> | string;
   delete_component_ui(planJson: string, componentIndex: number): Promise<string> | string;
@@ -389,6 +388,7 @@ type WasmModule = {
     prefix: string,
     limit: number,
   ): Promise<string> | string;
+  web_resolve_nav_symbol_feature(navRefJson: string): Promise<string> | string;
   web_list_procedures(airportId: string, kindJson: string): Promise<string> | string;
   web_describe_procedure_options(
     airportId: string,
@@ -424,17 +424,23 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   private async enrichFlightPlanUiState(uiState: FlightPlanUiState): Promise<FlightPlanUiState> {
+    await this.ensureNavDbHost();
     const display_rows = await Promise.all(uiState.display_rows.map(async (row) => {
       const showPlateAction = row.actions.find((action) => action.id === "show_plate");
+      const symbol_feature = row.nav_ref
+        ? JSON.parse(
+          await this.module.web_resolve_nav_symbol_feature(JSON.stringify(row.nav_ref)),
+        ) as NavSymbolFeature | null
+        : null;
       if (!showPlateAction || !row.chart_airport_id || !row.procedure_id) {
-        return row as FlightPlanDisplayRowWithShowPlateTarget;
+        return { ...row, symbol_feature } as FlightPlanDisplayRowWithShowPlateTarget;
       }
-      await this.ensureNavDbHost();
       const match = JSON.parse(
         await this.module.web_find_procedure_plate_match(row.chart_airport_id, row.procedure_id),
       ) as CifpTppMatch | null;
       return {
         ...row,
+        symbol_feature,
         show_plate_target_id: match?.plate_id ?? null,
         actions: row.actions.map((action) =>
           action.id === "show_plate"
@@ -446,6 +452,18 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     return {
       ...uiState,
       display_rows,
+    };
+  }
+
+  private async enrichUiSessionSnapshot(snapshot: UiSessionSnapshot): Promise<UiSessionSnapshot> {
+    return {
+      ...snapshot,
+      app_ui_state: {
+        ...snapshot.app_ui_state,
+        active_plan: snapshot.app_ui_state.active_plan
+          ? await this.enrichFlightPlanUiState(snapshot.app_ui_state.active_plan)
+          : null,
+      },
     };
   }
 
@@ -473,7 +491,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       nextSelectedAirportId?: string,
       nextSelectedChartId?: string,
     ) => {
-      return JSON.parse(
+      const created = JSON.parse(
         await module.create_ui_session(
           catalogJson,
           chartCatalogJson,
@@ -483,10 +501,16 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           JSON.stringify(nextSelectedChartId ?? null),
         ),
       ) as { handle: number; chart_catalog: ChartPageData; snapshot: UiSessionSnapshot };
+      return {
+        ...created,
+        snapshot: await this.enrichUiSessionSnapshot(created.snapshot),
+      };
     };
     const init = await createSession(plan, recentAirportIds, selectedAirportId, selectedChartId);
     let handle = init.handle;
     let snapshot = init.snapshot;
+    const parseSessionSnapshot = async (json: Promise<string> | string) =>
+      this.enrichUiSessionSnapshot(JSON.parse(await json) as UiSessionSnapshot);
     const isInvalidSessionHandleError = (error: unknown) =>
       error instanceof Error && error.message.includes("invalid ui session handle");
     const ensureSession = async () => {
@@ -518,157 +542,157 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       chartCatalog: init.chart_catalog,
       snapshot: async () => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.get_session_snapshot(handle)) as UiSessionSnapshot,
+          parseSessionSnapshot(this.module.get_session_snapshot(handle)),
         );
         return snapshot;
       },
       replaceFlightPlan: async (plan) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.replace_flight_plan_in_session(handle, JSON.stringify(plan))) as UiSessionSnapshot,
+          parseSessionSnapshot(this.module.replace_flight_plan_in_session(handle, JSON.stringify(plan))),
         );
         return snapshot;
       },
       removeLeg: async (index) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.remove_leg_in_session(handle, index)) as UiSessionSnapshot,
+          parseSessionSnapshot(this.module.remove_leg_in_session(handle, index)),
         );
         return snapshot;
       },
       moveWaypoint: async (index, delta) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.move_waypoint_in_session(handle, index, delta)) as UiSessionSnapshot,
+          parseSessionSnapshot(this.module.move_waypoint_in_session(handle, index, delta)),
         );
         return snapshot;
       },
       setGuidanceLegGeometry: async (geometries) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.set_guidance_leg_geometry_in_session(handle, JSON.stringify(geometries))) as UiSessionSnapshot,
+          parseSessionSnapshot(this.module.set_guidance_leg_geometry_in_session(handle, JSON.stringify(geometries))),
         );
         return snapshot;
       },
       setSituation: async (situation) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.set_situation_in_session(handle, JSON.stringify(situation))) as UiSessionSnapshot,
+          parseSessionSnapshot(this.module.set_situation_in_session(handle, JSON.stringify(situation))),
         );
         return snapshot;
       },
       registerOwnshipSource: async (registration) => {
-        snapshot = JSON.parse(
-          await this.module.register_ownship_source_in_session(handle, JSON.stringify(registration)),
-        ) as UiSessionSnapshot;
+        snapshot = await parseSessionSnapshot(
+          this.module.register_ownship_source_in_session(handle, JSON.stringify(registration)),
+        );
         return snapshot;
       },
       updateOwnshipSourceStatus: async (update) => {
-        snapshot = JSON.parse(
-          await this.module.update_ownship_source_status_in_session(handle, JSON.stringify(update)),
-        ) as UiSessionSnapshot;
+        snapshot = await parseSessionSnapshot(
+          this.module.update_ownship_source_status_in_session(handle, JSON.stringify(update)),
+        );
         return snapshot;
       },
       pushSituationSample: async (sample) => {
-        snapshot = JSON.parse(
-          await this.module.push_situation_sample_in_session(handle, JSON.stringify(sample)),
-        ) as UiSessionSnapshot;
+        snapshot = await parseSessionSnapshot(
+          this.module.push_situation_sample_in_session(handle, JSON.stringify(sample)),
+        );
         return snapshot;
       },
       selectOwnshipSource: async (selection) => {
-        snapshot = JSON.parse(
-          await this.module.select_ownship_source_in_session(handle, JSON.stringify(selection)),
-        ) as UiSessionSnapshot;
+        snapshot = await parseSessionSnapshot(
+          this.module.select_ownship_source_in_session(handle, JSON.stringify(selection)),
+        );
         return snapshot;
       },
       engageMapFollow: async (viewport) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(
-            await this.module.engage_map_follow_in_session(
+          parseSessionSnapshot(
+            this.module.engage_map_follow_in_session(
               handle,
               JSON.stringify(coreViewportForMap(viewport)),
             ),
-          ) as UiSessionSnapshot,
+          ),
         );
         return snapshot;
       },
       disengageMapFollow: async (viewport) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(
-            await this.module.disengage_map_follow_in_session(
+          parseSessionSnapshot(
+            this.module.disengage_map_follow_in_session(
               handle,
               JSON.stringify(coreViewportForMap(viewport)),
             ),
-          ) as UiSessionSnapshot,
+          ),
         );
         return snapshot;
       },
       setMapFollowOffset: async (viewport, offsetXPx, offsetYPx) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(
-            await this.module.set_map_follow_offset_in_session(
+          parseSessionSnapshot(
+            this.module.set_map_follow_offset_in_session(
               handle,
               JSON.stringify(coreViewportForMap(viewport)),
               offsetXPx,
               offsetYPx,
             ),
-          ) as UiSessionSnapshot,
+          ),
         );
         return snapshot;
       },
       syncMapFollow: async (viewport, widthPx, heightPx) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(
-            await this.module.sync_map_follow_in_session(
+          parseSessionSnapshot(
+            this.module.sync_map_follow_in_session(
               handle,
               JSON.stringify(coreViewportForMap(viewport)),
               widthPx,
               heightPx,
             ),
-          ) as UiSessionSnapshot,
+          ),
         );
         return snapshot;
       },
       loadPlaybackTrace: async (sourcePath, traceJson) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.load_playback_trace_in_session(handle, JSON.stringify(sourcePath), traceJson)) as UiSessionSnapshot,
+          parseSessionSnapshot(this.module.load_playback_trace_in_session(handle, JSON.stringify(sourcePath), traceJson)),
         );
         return snapshot;
       },
       playPlayback: async (nowEpochMs) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.play_playback_in_session(handle, nowEpochMs)) as UiSessionSnapshot,
+          parseSessionSnapshot(this.module.play_playback_in_session(handle, nowEpochMs)),
         );
         return snapshot;
       },
       pausePlayback: async (nowEpochMs) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.pause_playback_in_session(handle, nowEpochMs)) as UiSessionSnapshot,
+          parseSessionSnapshot(this.module.pause_playback_in_session(handle, nowEpochMs)),
         );
         return snapshot;
       },
       seekPlayback: async (cursorSeconds, nowEpochMs) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.seek_playback_in_session(handle, cursorSeconds, nowEpochMs)) as UiSessionSnapshot,
+          parseSessionSnapshot(this.module.seek_playback_in_session(handle, cursorSeconds, nowEpochMs)),
         );
         return snapshot;
       },
       setPlaybackRate: async (rate, nowEpochMs) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.set_playback_rate_in_session(handle, rate, nowEpochMs)) as UiSessionSnapshot,
+          parseSessionSnapshot(this.module.set_playback_rate_in_session(handle, rate, nowEpochMs)),
         );
         return snapshot;
       },
       tickPlayback: async (nowEpochMs) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.tick_playback_in_session(handle, nowEpochMs)) as UiSessionSnapshot,
+          parseSessionSnapshot(this.module.tick_playback_in_session(handle, nowEpochMs)),
         );
         return snapshot;
       },
       selectAirport: async (airportId) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.select_airport_in_session(handle, JSON.stringify(airportId))) as UiSessionSnapshot,
+          parseSessionSnapshot(this.module.select_airport_in_session(handle, JSON.stringify(airportId))),
         );
         return snapshot;
       },
       selectChart: async (chartId) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(await this.module.select_chart_in_session(handle, JSON.stringify(chartId))) as UiSessionSnapshot,
+          parseSessionSnapshot(this.module.select_chart_in_session(handle, JSON.stringify(chartId))),
         );
         return snapshot;
       },
@@ -690,14 +714,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ),
       restoreChartPageState: async (nextRecentAirportIds, nextSelectedAirportId, nextSelectedChartId) => {
         snapshot = await withSessionRetry(async () =>
-          JSON.parse(
-            await this.module.restore_chart_page_state_in_session(
+          parseSessionSnapshot(
+            this.module.restore_chart_page_state_in_session(
               handle,
               JSON.stringify(nextRecentAirportIds),
               JSON.stringify(nextSelectedAirportId ?? null),
               JSON.stringify(nextSelectedChartId ?? null),
             ),
-          ) as UiSessionSnapshot,
+          ),
         );
         return snapshot;
       },
@@ -765,13 +789,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         JSON.stringify(inventory),
       ),
     ) as AppState;
-  }
-
-  async buildFlightPlanUi(plan: FlightPlan): Promise<FlightPlanUiState> {
-    const uiState = JSON.parse(
-      await this.module.build_flight_plan_ui(JSON.stringify(plan)),
-    ) as FlightPlanUiState;
-    return this.enrichFlightPlanUiState(uiState);
   }
 
   async projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]> {
@@ -1105,7 +1122,6 @@ export async function loadBestAvailableAdapter(
     typeof mod.destroy_session !== "function" ||
     typeof mod.replace_flight_plan_state !== "function" ||
     typeof mod.remove_flight_plan_leg !== "function" ||
-    typeof mod.build_flight_plan_ui !== "function" ||
     typeof mod.activate_leg_ui !== "function" ||
     typeof mod.activate_next_leg_ui !== "function" ||
     typeof mod.delete_component_ui !== "function" ||
@@ -1133,6 +1149,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.web_materialize_airway_selection !== "function" ||
     typeof mod.web_resolve_waypoint_identifier !== "function" ||
     typeof mod.web_suggest_waypoint_identifiers !== "function" ||
+    typeof mod.web_resolve_nav_symbol_feature !== "function" ||
     typeof mod.web_list_procedures !== "function" ||
     typeof mod.web_describe_procedure_options !== "function" ||
     typeof mod.web_materialize_procedure !== "function" ||

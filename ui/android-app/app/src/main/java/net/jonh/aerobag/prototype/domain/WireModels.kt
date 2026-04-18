@@ -497,6 +497,17 @@ data class WireVisibleMapFeature(
 )
 
 @Serializable
+data class WireNavSymbolFeature(
+    val kind: String,
+    val label: String,
+    val style_class: String,
+    val towered: Boolean,
+    val fuel_available: Boolean,
+    val runway_length_ratio: Double,
+    val longest_runway_heading_true_deg: Double? = null,
+)
+
+@Serializable
 data class WireMapOverlayWarning(
     val code: String,
     val message: String,
@@ -1074,6 +1085,7 @@ data class WireFlightPlanDisplayRowUiView(
     val leg_index: Int? = null,
     val chart_airport_id: String? = null,
     val nav_ref: WireNavRef? = null,
+    val symbol_feature: WireNavSymbolFeature? = null,
     val depth: Int,
     val active: Boolean,
     val can_add_airway_after: Boolean,

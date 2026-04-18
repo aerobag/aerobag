@@ -4816,6 +4816,61 @@ private fun navRefLabel(ref: NavRef): String = when (ref) {
 }
 
 @Composable
+private fun PlanWaypointSymbol(navRef: NavRef?, modifier: Modifier = Modifier) {
+    if (navRef == null || navRef is NavRef.LatLon) {
+        return
+    }
+    Canvas(modifier = modifier.size(ThumbSize * 0.78f)) {
+        val scale = size.minDimension / 40f
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val fixMarkerStrokeColor = Color(0xB3081218)
+        val fixMarkerFillColor = Color(0xFF39D9FF)
+        val airportMarkerStrokeColor = Color(0xB3081218)
+        val airportFillColor = Color(0xFFFF4FD8)
+        val vorMarkerColor = Color(0xFF4AA3FF)
+        when (navRef) {
+            is NavRef.Airport -> {
+                val airportRadius = 12f * scale
+                drawCircle(airportFillColor, radius = airportRadius, center = center)
+                drawCircle(airportMarkerStrokeColor, radius = airportRadius, center = center, style = Stroke(width = 2f * scale))
+                val runwayHalfLength = 8f * 0.6f * scale
+                drawLine(
+                    color = airportMarkerStrokeColor,
+                    start = Offset(center.x, center.y - runwayHalfLength),
+                    end = Offset(center.x, center.y + runwayHalfLength),
+                    strokeWidth = 5f * scale,
+                    cap = StrokeCap.Round,
+                )
+                drawLine(
+                    color = Color.White,
+                    start = Offset(center.x, center.y - runwayHalfLength),
+                    end = Offset(center.x, center.y + runwayHalfLength),
+                    strokeWidth = 3f * scale,
+                    cap = StrokeCap.Round,
+                )
+            }
+
+            is NavRef.Navaid -> {
+                val radius = 8f * scale
+                val outerHex = polygonPath(vorHexPoints(center, radius))
+                val band = vorBandPath(center, radius)
+                drawPath(band, vorMarkerColor)
+                drawPath(band, fixMarkerStrokeColor, style = Stroke(width = 1.6f * scale))
+                drawPath(outerHex, fixMarkerStrokeColor, style = Stroke(width = 1.6f * scale))
+            }
+
+            is NavRef.Fix -> {
+                val triangle = fixTrianglePath(center, 8f * scale)
+                drawPath(triangle, fixMarkerFillColor)
+                drawPath(triangle, fixMarkerStrokeColor, style = Stroke(width = 2.5f * scale))
+            }
+
+            is NavRef.LatLon -> Unit
+        }
+    }
+}
+
+@Composable
 private fun FlightPlanDataRow(
     row: FlightPlanDisplayRow,
     selected: Boolean,
@@ -4877,11 +4932,20 @@ private fun FlightPlanDataRow(
                 selected = selected,
                 selectedColor = selectedButtonColor,
                 textModifier =
-                    Modifier.graphicsLayer {
-                        scaleY = labelScaleY
-                        transformOrigin = TransformOrigin(0f, 0.5f)
-                    },
+                    Modifier
+                        .padding(end = ThumbSize * 0.78f)
+                        .graphicsLayer {
+                            scaleY = labelScaleY
+                            transformOrigin = TransformOrigin(0f, 0.5f)
+                        },
                 onClick = onWaypointClick,
+            )
+            PlanWaypointSymbol(
+                navRef = row.navRef,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = ThumbSize * 0.12f)
+                    .alpha(rowOpacity),
             )
         }
         PlanCell("—", Modifier.weight(1f), cellHeight = cellHeight, alpha = rowOpacity)

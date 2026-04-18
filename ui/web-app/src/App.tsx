@@ -336,6 +336,124 @@ const airportFuelTabsPath = [
   "M -17 -4 H -11 V 4 H -17 Z",
 ].join(" ");
 
+type VectorPointSymbolFeature = {
+  kind: string;
+  label: string;
+  style_class: string;
+  towered: boolean;
+  fuel_available: boolean;
+  runway_length_ratio: number;
+  longest_runway_heading_true_deg: number | null;
+};
+
+function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel?: boolean }) {
+  const { feature, showLabel = true } = props;
+  const isAirport = feature.style_class === "airport" || feature.kind.toLowerCase() === "airport";
+  const isVor = feature.kind.toLowerCase().includes("vor") || feature.style_class === "nav";
+  const airportClass = feature.towered ? "airportMarker airportTowered" : "airportMarker airportUntowered";
+  const airportLabelClass = feature.towered ? "airportLabel airportToweredLabel" : "airportLabel airportUntoweredLabel";
+  if (isAirport) {
+    const halfLength = 8 * Math.max(feature.runway_length_ratio, 0.2);
+    return (
+      <>
+        <circle r="12" className={airportClass} />
+        {feature.fuel_available ? <path d={airportFuelTabsPath} className={airportClass} /> : null}
+        {feature.longest_runway_heading_true_deg != null ? (
+          <>
+            <line
+              x1="0"
+              y1={-halfLength}
+              x2="0"
+              y2={halfLength}
+              className="airportRunwayBarUnder"
+              transform={`rotate(${feature.longest_runway_heading_true_deg})`}
+            />
+            <line
+              x1="0"
+              y1={-halfLength}
+              x2="0"
+              y2={halfLength}
+              className="airportRunwayBar"
+              transform={`rotate(${feature.longest_runway_heading_true_deg})`}
+            />
+          </>
+        ) : null}
+        {showLabel ? (
+          <text x="18" y="5" textAnchor="start" className={airportLabelClass}>
+            {feature.label}
+          </text>
+        ) : null}
+      </>
+    );
+  }
+  if (isVor) {
+    return (
+      <>
+        <path d={vorBandPath} className="vorBand" fillRule="evenodd" />
+        <path d={vorOuterHexPath} className="vorBorder" />
+        {showLabel ? (
+          <text x="0" y="20" textAnchor="middle" className="vorLabel">
+            {feature.label}
+          </text>
+        ) : null}
+      </>
+    );
+  }
+  return (
+    <>
+      <path d="M 0 -8 L 7 6 L -7 6 Z" className="fixMarker" />
+      {showLabel ? (
+        <text x="0" y="20" textAnchor="middle" className="fixLabel">
+          {feature.label}
+        </text>
+      ) : null}
+    </>
+  );
+}
+
+function PlanWaypointSymbol(props: { navRef: NavRef | null }) {
+  const { navRef } = props;
+  if (!navRef || "LatLon" in navRef) {
+    return null;
+  }
+  const label = navRefLabel(navRef);
+  const feature: VectorPointSymbolFeature =
+    "Airport" in navRef
+      ? {
+          kind: "airport",
+          label,
+          style_class: "airport",
+          towered: false,
+          fuel_available: false,
+          runway_length_ratio: 0.6,
+          longest_runway_heading_true_deg: 0,
+        }
+      : "Navaid" in navRef
+        ? {
+            kind: "vor",
+            label,
+            style_class: "nav",
+            towered: false,
+            fuel_available: false,
+            runway_length_ratio: 0,
+            longest_runway_heading_true_deg: null,
+          }
+        : {
+            kind: "fix",
+            label,
+            style_class: "fix",
+            towered: false,
+            fuel_available: false,
+            runway_length_ratio: 0,
+            longest_runway_heading_true_deg: null,
+          };
+  return (
+    <svg className="planWaypointSymbol" viewBox="-20 -20 40 40" aria-hidden="true">
+      <VectorPointSymbol feature={feature} showLabel={false} />
+    </svg>
+  );
+}
+
 function demoOwnshipSourceRegistration() {
   return {
     source_id: "demo-gps",
@@ -1965,67 +2083,9 @@ function MapPage(props: {
             style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
           >
             {mapOverlay.visible_features.map((feature) => {
-              const isAirport = feature.style_class === "airport" || feature.kind.toLowerCase() === "airport";
-              const isVor = feature.kind.toLowerCase().includes("vor") || feature.style_class === "nav";
-              const airportClass = feature.towered ? "airportMarker airportTowered" : "airportMarker airportUntowered";
-              const airportLabelClass = feature.towered ? "airportLabel airportToweredLabel" : "airportLabel airportUntoweredLabel";
               return (
                 <g key={feature.id} transform={`translate(${feature.screen_x} ${feature.screen_y})`}>
-                  {isAirport
-                    ? (
-                      <>
-                        <circle r="12" className={airportClass} />
-                        {feature.fuel_available ? <path d={airportFuelTabsPath} className={airportClass} /> : null}
-                        {feature.longest_runway_heading_true_deg != null ? (
-                          <>
-                            {(() => {
-                              const halfLength = 8 * Math.max(feature.runway_length_ratio, 0.2);
-                              return (
-                                <>
-                            <line
-                              x1="0"
-                              y1={-halfLength}
-                              x2="0"
-                              y2={halfLength}
-                              className="airportRunwayBarUnder"
-                              transform={`rotate(${feature.longest_runway_heading_true_deg})`}
-                            />
-                            <line
-                              x1="0"
-                              y1={-halfLength}
-                              x2="0"
-                              y2={halfLength}
-                              className="airportRunwayBar"
-                              transform={`rotate(${feature.longest_runway_heading_true_deg})`}
-                            />
-                                </>
-                              );
-                            })()}
-                          </>
-                        ) : null}
-                        <text x="18" y="5" textAnchor="start" className={airportLabelClass}>
-                          {feature.label}
-                        </text>
-                      </>
-                      )
-                    : isVor
-                      ? (
-                        <>
-                          <path d={vorBandPath} className="vorBand" fillRule="evenodd" />
-                          <path d={vorOuterHexPath} className="vorBorder" />
-                          <text x="0" y="20" textAnchor="middle" className="vorLabel">
-                            {feature.label}
-                          </text>
-                        </>
-                        )
-                      : (
-                        <>
-                          <path d="M 0 -8 L 7 6 L -7 6 Z" className="fixMarker" />
-                          <text x="0" y="20" textAnchor="middle" className="fixLabel">
-                            {feature.label}
-                          </text>
-                        </>
-                        )}
+                  <VectorPointSymbol feature={feature} />
                 </g>
               );
             })}
@@ -3310,6 +3370,7 @@ function FlightPlanPage(props: {
                   }}
                 >
 	                  <span className={`planStructuredLabel${row.depth > 0 ? " isIndented" : ""}`}>{row.label}</span>
+                    <PlanWaypointSymbol navRef={row.navRef} />
 	                </button>
 	                <div
 	                  className={[

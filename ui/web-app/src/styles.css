@@ -1032,7 +1032,8 @@ button {
 }
 
 .planWaypointButton {
-  justify-content: flex-start;
+  justify-content: space-between;
+  gap: calc(var(--thumb) * 0.08);
   border-color: color-mix(in srgb, var(--theme-button-bg) 78%, black);
   background: var(--theme-button-bg);
   color: var(--theme-button-fg);
@@ -1071,11 +1072,33 @@ button {
 .planStructuredLabel {
   position: relative;
   z-index: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .planStructuredLabel.isIndented {
   padding-left: calc(var(--thumb) * 0.18);
   transition: padding-left 180ms ease, opacity 180ms ease, transform 180ms ease;
+}
+
+.planWaypointSymbol {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 calc(var(--thumb) * 0.78);
+  width: calc(var(--thumb) * 0.78);
+  height: calc(var(--thumb) * 0.78);
+  overflow: visible;
+}
+
+.planWaypointSymbol .airportMarker,
+.planWaypointSymbol .vorBand,
+.planWaypointSymbol .vorBorder,
+.planWaypointSymbol .fixMarker,
+.planWaypointSymbol .airportRunwayBarUnder,
+.planWaypointSymbol .airportRunwayBar {
+  vector-effect: non-scaling-stroke;
 }
 
 .planTableWrap.isReordering .planStructuredWaypointCell.isChildRow,

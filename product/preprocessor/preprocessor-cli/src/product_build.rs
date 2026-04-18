@@ -4494,7 +4494,7 @@ fn build_terrain_product(
             region.code()
         );
     }
-    let dem_urls = prefetch_terrain_dems_with_fallback(
+    let dem_selection = prefetch_terrain_dems_with_fallback(
         &mut dem_candidates,
         &dem_dir,
         config.fetch_jobs,
@@ -4502,8 +4502,12 @@ fn build_terrain_product(
         &provenance_dir,
         &format!("terrain-{region_id}-dem"),
     )?;
-    let dem_paths = terrain_dem_paths_from_urls(&dem_dir, &dem_urls)?;
-    let source_fingerprint = terrain_source_fingerprint(&dem_urls, &dem_paths)?;
+    let dem_paths = terrain_dem_paths_from_urls(&dem_dir, &dem_selection.urls)?;
+    let source_fingerprint = terrain_source_fingerprint(
+        &dem_selection.urls,
+        &dem_paths,
+        &dem_selection.missing_cells,
+    )?;
     let version_label = fast_product_version_label(&source_fingerprint);
     let inputs = BTreeMap::from([
         ("product_id".to_string(), format!("terrain-{region_id}")),
@@ -4547,7 +4551,7 @@ fn build_terrain_product(
         &static_geo_source_path(),
         &output_dir,
         &version_label,
-        &dem_urls,
+        &dem_selection,
     )?;
     zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
     let outputs = BTreeMap::from([
@@ -4801,6 +4805,7 @@ struct TerrainCellCandidates {
     cell: String,
     candidates: Vec<TerrainDemCandidate>,
     selected: usize,
+    missing: bool,
 }
 
 impl TerrainCellCandidates {
@@ -4814,20 +4819,37 @@ impl TerrainCellCandidates {
         Ok(self.selected_candidate()?.url.clone())
     }
 
-    fn advance_after_failed_url(&mut self, failed_url: &str) -> anyhow::Result<bool> {
+    fn selected_url_if_available(&self) -> anyhow::Result<Option<String>> {
+        if self.missing {
+            return Ok(None);
+        }
+        Ok(Some(self.selected_url()?))
+    }
+
+    fn advance_after_failed_url(&mut self, failed_url: &str) -> anyhow::Result<TerrainCellAction> {
         if self.selected_candidate()?.url != failed_url {
-            return Ok(false);
+            return Ok(TerrainCellAction::Unaffected);
         }
         if self.selected + 1 >= self.candidates.len() {
-            bail!(
-                "terrain DEM fetch failed for cell {} and no fallback candidate remains: {}",
-                self.cell,
-                failed_url
-            );
+            self.missing = true;
+            return Ok(TerrainCellAction::MarkedMissing);
         }
         self.selected += 1;
-        Ok(true)
+        Ok(TerrainCellAction::Advanced)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerrainCellAction {
+    Unaffected,
+    Advanced,
+    MarkedMissing,
+}
+
+#[derive(Debug, Clone)]
+struct TerrainDemSelection {
+    urls: Vec<String>,
+    missing_cells: Vec<String>,
 }
 
 fn terrain_dem_candidates_for_region(
@@ -4847,6 +4869,7 @@ fn terrain_dem_candidates_for_region(
             cell,
             candidates,
             selected: 0,
+            missing: false,
         })
         .collect())
 }
@@ -4910,12 +4933,15 @@ fn prefetch_terrain_dems_with_fallback(
     fetch_cache: &FetchCacheConfig,
     provenance_dir: &Path,
     label: &str,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<TerrainDemSelection> {
     loop {
         let urls = cells
             .iter()
-            .map(TerrainCellCandidates::selected_url)
-            .collect::<anyhow::Result<Vec<_>>>()?;
+            .map(TerrainCellCandidates::selected_url_if_available)
+            .collect::<anyhow::Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         match prefetch_archives_with_provenance(
             &urls,
             dem_dir,
@@ -4924,7 +4950,17 @@ fn prefetch_terrain_dems_with_fallback(
             provenance_dir,
             label,
         ) {
-            Ok(()) => return Ok(urls),
+            Ok(()) => {
+                let missing_cells = cells
+                    .iter()
+                    .filter(|cell| cell.missing)
+                    .map(|cell| cell.cell.clone())
+                    .collect::<Vec<_>>();
+                return Ok(TerrainDemSelection {
+                    urls,
+                    missing_cells,
+                });
+            }
             Err(error) => {
                 let message = error.to_string();
                 let Some(failed_url) = terrain_failed_fetch_url(&message) else {
@@ -4937,18 +4973,29 @@ fn prefetch_terrain_dems_with_fallback(
                 else {
                     return Err(error);
                 };
-                let mut advanced = false;
+                let mut handled = false;
                 for cell in cells.iter_mut() {
-                    if cell.advance_after_failed_url(&failed_logical_url)? {
-                        eprintln!(
-                            "terrain DEM fetch failed for {}; falling back to next candidate for cell {}",
-                            failed_logical_url, cell.cell
-                        );
-                        advanced = true;
-                        break;
+                    match cell.advance_after_failed_url(&failed_logical_url)? {
+                        TerrainCellAction::Unaffected => {}
+                        TerrainCellAction::Advanced => {
+                            eprintln!(
+                                "terrain DEM fetch failed for {}; falling back to next candidate for cell {}",
+                                failed_logical_url, cell.cell
+                            );
+                            handled = true;
+                            break;
+                        }
+                        TerrainCellAction::MarkedMissing => {
+                            eprintln!(
+                                "terrain DEM fetch failed for {}; marking cell {} as nodata",
+                                failed_logical_url, cell.cell
+                            );
+                            handled = true;
+                            break;
+                        }
                     }
                 }
-                if !advanced {
+                if !handled {
                     return Err(error);
                 }
             }
@@ -5029,6 +5076,7 @@ fn terrain_source_fetched_at_utc(
 fn terrain_source_fingerprint(
     dem_urls: &[String],
     dem_paths: &[PathBuf],
+    missing_cells: &[String],
 ) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(b"terrain-v1");
@@ -5045,6 +5093,12 @@ fn terrain_source_fingerprint(
                 .as_bytes(),
         );
         hasher.update(hash_file(path)?.as_bytes());
+    }
+    for cell in missing_cells {
+        hasher.update(b"missing");
+        hasher.update([0]);
+        hasher.update(cell.as_bytes());
+        hasher.update([0xff]);
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
@@ -5070,7 +5124,7 @@ fn build_terrain_region_tiles(
     geo_csv_path: &Path,
     output_dir: &Path,
     version_label: &str,
-    dem_urls: &[String],
+    dem_selection: &TerrainDemSelection,
 ) -> anyhow::Result<()> {
     let script_path = output_dir.join("build_terrain_tiles.py");
     fs::write(&script_path, TERRAIN_TILE_SCRIPT)
@@ -5097,7 +5151,9 @@ fn build_terrain_region_tiles(
         .arg("--version-label")
         .arg(version_label)
         .arg("--source-count")
-        .arg(dem_urls.len().to_string())
+        .arg(dem_selection.urls.len().to_string())
+        .arg("--missing-cells")
+        .arg(dem_selection.missing_cells.join(","))
         .output()
         .with_context(|| format!("failed to run {}", script_path.display()))?;
     if !output.status.success() {
@@ -5249,6 +5305,7 @@ def main():
     ap.add_argument('--tile-size', required=True, type=int)
     ap.add_argument('--version-label', required=True)
     ap.add_argument('--source-count', required=True, type=int)
+    ap.add_argument('--missing-cells', default='')
     args = ap.parse_args()
     west, south, east, north = [float(x) for x in args.bbox.split(',')]
     root = Path(args.output_dir)
@@ -5297,6 +5354,8 @@ def main():
             'refresh_interval': 'producer policy; not embedded in artifact metadata'
         },
         'source_dem_count': args.source_count,
+        'missing_dem_cells': [cell for cell in args.missing_cells.split(',') if cell],
+        'nodata': -32768,
         'tile_count': count,
         'files': {'tiles': 'tiles'}
     }

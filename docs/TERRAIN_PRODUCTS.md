@@ -22,6 +22,12 @@ small binary header. The current magic is `ABT1`; samples are integer feet and
 regions. Tile coordinates follow the existing GDAL/gdal2tiles TMS convention
 used by chart tiles, not XYZ north-origin y.
 
+Nodata is a first-class value, not an alias for zero elevation. If a source DEM
+cell cannot be fetched and no alternate TNMAccess candidate exists, the builder
+omits that source cell, records it in `manifest.json` as `missing_dem_cells`,
+and emits `-32768` for uncovered samples. Clients must treat `-32768` as
+"unknown terrain", not "sea level" or "safe/no granite here".
+
 The terrain zoom level is fixed at z10 for v1. With 512px tiles this is roughly
 a 2x horizontal downsample from USGS 3DEP 1 arc-second source spacing at
 mid-latitudes. z11 would preserve source spacing more closely, but it would
@@ -54,6 +60,8 @@ metadata:
 - `output_vertical_datum: WGS84 ellipsoid`
 - `source_vertical_datum`: copied from the source DEM metadata
 - `nodata: -32768`
+- `missing_dem_cells`: one-degree DEM cells that were intentionally omitted
+  because every discovered source candidate failed
 
 ## Publication
 

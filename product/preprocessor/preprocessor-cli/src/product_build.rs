@@ -571,6 +571,7 @@ const DEFAULT_PRODUCT_BUILD_MEMORY_MAX: &str = "80G";
 const TPP_RENDER_JOBS_PER_RUN: usize = 8;
 const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
+const TERRAIN_PIPELINE_VERSION: &str = "v1";
 const TERRAIN_ZOOM: u32 = 10;
 const TERRAIN_TILE_SIZE: u32 = 512;
 
@@ -4497,6 +4498,28 @@ fn build_terrain_product(
             region.code()
         );
     }
+    if let Some(cached_selection) =
+        cached_terrain_dem_selection(&dem_candidates, &fetch_cache)?
+    {
+        let source_fingerprint = terrain_source_fingerprint_from_cached(
+            &cached_selection.selection.urls,
+            &cached_selection.sources,
+            &cached_selection.selection.missing_cells,
+        );
+        let version_label = fast_product_version_label(&source_fingerprint);
+        let inputs = terrain_product_inputs(region, &source_fingerprint)?;
+        let prepared = prepare_node_at(
+            &build_shared_node_dir(config, &format!("static-terrain-{region_id}"))?,
+            &format!("static-terrain-{region_id}"),
+            &inputs,
+        )?;
+        let output_dir = prepared.dir.join("output");
+        let zip_path = output_dir.join(format!("terrain_{region_id}_{version_label}.zip"));
+        let manifest_path = output_dir.join("manifest.json");
+        if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path])? {
+            return Ok((zip_path, version_label, source_fetched_at_utc, record));
+        }
+    }
     let dem_selection = prefetch_terrain_dems_with_fallback(
         &mut dem_candidates,
         &dem_dir,
@@ -4512,18 +4535,7 @@ fn build_terrain_product(
         &dem_selection.missing_cells,
     )?;
     let version_label = fast_product_version_label(&source_fingerprint);
-    let inputs = BTreeMap::from([
-        ("product_id".to_string(), format!("terrain-{region_id}")),
-        ("region".to_string(), region.code().to_string()),
-        ("zoom".to_string(), TERRAIN_ZOOM.to_string()),
-        ("tile_size".to_string(), TERRAIN_TILE_SIZE.to_string()),
-        ("source_fingerprint".to_string(), source_fingerprint),
-        (
-            "product_build".to_string(),
-            hash_file(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/product_build.rs"))?,
-        ),
-        ("geo_csv".to_string(), hash_file(static_geo_source_path())?),
-    ]);
+    let inputs = terrain_product_inputs(region, &source_fingerprint)?;
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, &format!("static-terrain-{region_id}"))?,
         &format!("static-terrain-{region_id}"),
@@ -4577,6 +4589,28 @@ fn build_terrain_product(
         started.elapsed().as_millis() as u64,
     )?;
     Ok((zip_path, version_label, source_fetched_at_utc, record))
+}
+
+fn terrain_product_inputs(
+    region: Region,
+    source_fingerprint: &str,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    let region_id = region.code().to_ascii_lowercase();
+    Ok(BTreeMap::from([
+        ("product_id".to_string(), format!("terrain-{region_id}")),
+        ("region".to_string(), region.code().to_string()),
+        ("zoom".to_string(), TERRAIN_ZOOM.to_string()),
+        ("tile_size".to_string(), TERRAIN_TILE_SIZE.to_string()),
+        (
+            "source_fingerprint".to_string(),
+            source_fingerprint.to_string(),
+        ),
+        (
+            "terrain_pipeline".to_string(),
+            TERRAIN_PIPELINE_VERSION.to_string(),
+        ),
+        ("geo_csv".to_string(), hash_file(static_geo_source_path())?),
+    ]))
 }
 
 fn static_geo_source_path() -> PathBuf {
@@ -4855,6 +4889,18 @@ struct TerrainDemSelection {
     missing_cells: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct CachedTerrainDemSelection {
+    selection: TerrainDemSelection,
+    sources: Vec<CachedTerrainDemSource>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedTerrainDemSource {
+    filename: String,
+    sha256: String,
+}
+
 fn terrain_dem_candidates_for_region(
     index_path: &Path,
     region: Region,
@@ -4875,6 +4921,69 @@ fn terrain_dem_candidates_for_region(
             missing: false,
         })
         .collect())
+}
+
+fn cached_terrain_dem_selection(
+    cells: &[TerrainCellCandidates],
+    fetch_cache: &FetchCacheConfig,
+) -> anyhow::Result<Option<CachedTerrainDemSelection>> {
+    let mut urls = Vec::new();
+    let mut sources = Vec::new();
+    let mut missing_cells = Vec::new();
+    for cell in cells {
+        let mut cached_candidates = Vec::new();
+        for (index, candidate) in cell.candidates.iter().enumerate() {
+            if let Some(source) = cached_terrain_dem_source(fetch_cache, candidate)? {
+                cached_candidates.push((index, candidate, source));
+            }
+        }
+        match cached_candidates.as_slice() {
+            [(0, candidate, source), ..] => {
+                urls.push(candidate.url.clone());
+                sources.push(source.clone());
+            }
+            [] => missing_cells.push(cell.cell.clone()),
+            _ => {
+                // A later cached candidate may be an intentional fallback, or it may be stale
+                // relative to a newly-discovered newer DEM. Fetching is the only safe way to
+                // distinguish those cases, so do not use the early cache-hit path.
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(CachedTerrainDemSelection {
+        selection: TerrainDemSelection {
+            urls,
+            missing_cells,
+        },
+        sources,
+    }))
+}
+
+fn cached_terrain_dem_source(
+    fetch_cache: &FetchCacheConfig,
+    candidate: &TerrainDemCandidate,
+) -> anyhow::Result<Option<CachedTerrainDemSource>> {
+    let layout = CacheLayout::new(&fetch_cache.root);
+    let metadata_path = layout.http_metadata_path(&candidate.url);
+    if !metadata_path.is_file() {
+        return Ok(None);
+    }
+    let value: serde_json::Value = serde_json::from_slice(
+        &fs::read(&metadata_path)
+            .with_context(|| format!("failed to read {}", metadata_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+    let Some(sha256) = value.get("sha256").and_then(|value| value.as_str()) else {
+        return Ok(None);
+    };
+    if !layout.blob_path(sha256).is_file() {
+        return Ok(None);
+    }
+    Ok(Some(CachedTerrainDemSource {
+        filename: candidate.filename.clone(),
+        sha256: sha256.to_string(),
+    }))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5104,6 +5213,31 @@ fn terrain_source_fingerprint(
         hasher.update([0xff]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn terrain_source_fingerprint_from_cached(
+    dem_urls: &[String],
+    sources: &[CachedTerrainDemSource],
+    missing_cells: &[String],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"terrain-v1");
+    hasher.update(TERRAIN_ZOOM.to_string().as_bytes());
+    for url in dem_urls {
+        hasher.update(url.as_bytes());
+        hasher.update([0]);
+    }
+    for source in sources {
+        hasher.update(source.filename.as_bytes());
+        hasher.update(source.sha256.as_bytes());
+    }
+    for cell in missing_cells {
+        hasher.update(b"missing");
+        hasher.update([0]);
+        hasher.update(cell.as_bytes());
+        hasher.update([0xff]);
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 fn build_terrain_vrt(vrt_path: &Path, dem_paths: &[PathBuf]) -> anyhow::Result<()> {

@@ -8,6 +8,7 @@ use std::{
     fs,
     fs::{File, OpenOptions},
     io::Write,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -475,6 +476,10 @@ fn prefetch_one(
     }
 
     let sha256 = hash_file(&archive_path)?;
+    if let Some(fetch_cache) = fetch_cache {
+        let layout = CacheLayout::new(&fetch_cache.root);
+        relink_existing_cached_download(&layout, &sha256, file_name, &archive_path)?;
+    }
     let size = fs::metadata(&archive_path)
         .with_context(|| format!("failed to stat {}", archive_path.display()))?
         .len();
@@ -736,7 +741,7 @@ fn store_cached_download_with_headers(
 }
 
 fn restore_cached_blob(source: &Path, destination: &Path, file_name: &str) -> anyhow::Result<()> {
-    if is_zip_name(file_name) {
+    if is_hardlink_safe_cached_name(file_name) {
         link_or_copy_file(source, destination)
     } else {
         copy_file(source, destination)
@@ -744,7 +749,7 @@ fn restore_cached_blob(source: &Path, destination: &Path, file_name: &str) -> an
 }
 
 fn store_cached_blob(source: &Path, destination: &Path, file_name: &str) -> anyhow::Result<()> {
-    if is_zip_name(file_name) {
+    if is_hardlink_safe_cached_name(file_name) {
         link_or_copy_file(source, destination)
     } else {
         copy_file(source, destination)
@@ -767,6 +772,46 @@ fn link_or_copy_file(source: &Path, destination: &Path) -> anyhow::Result<()> {
     }
 }
 
+fn relink_existing_cached_download(
+    layout: &CacheLayout,
+    sha256: &str,
+    file_name: &str,
+    archive_path: &Path,
+) -> anyhow::Result<()> {
+    if !is_hardlink_safe_cached_name(file_name) {
+        return Ok(());
+    }
+    let blob_path = layout.blob_path(sha256);
+    if !blob_path.is_file() {
+        return Ok(());
+    }
+    let archive_metadata = fs::metadata(archive_path)
+        .with_context(|| format!("failed to stat {}", archive_path.display()))?;
+    let blob_metadata =
+        fs::metadata(&blob_path).with_context(|| format!("failed to stat {}", blob_path.display()))?;
+    if archive_metadata.dev() == blob_metadata.dev() && archive_metadata.ino() == blob_metadata.ino()
+    {
+        return Ok(());
+    }
+    let temp_path = temporary_download_path(archive_path);
+    let _ = fs::remove_file(&temp_path);
+    fs::hard_link(&blob_path, &temp_path).with_context(|| {
+        format!(
+            "failed to hardlink cached blob {} to {}",
+            blob_path.display(),
+            temp_path.display()
+        )
+    })?;
+    fs::rename(&temp_path, archive_path).with_context(|| {
+        format!(
+            "failed to replace {} with hardlink {}",
+            archive_path.display(),
+            blob_path.display()
+        )
+    })?;
+    Ok(())
+}
+
 fn copy_file(source: &Path, destination: &Path) -> anyhow::Result<()> {
     fs::copy(source, destination).with_context(|| {
         format!(
@@ -778,12 +823,16 @@ fn copy_file(source: &Path, destination: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn is_zip_name(file_name: &str) -> bool {
-    Path::new(file_name)
+fn is_hardlink_safe_cached_name(file_name: &str) -> bool {
+    let Some(extension) = Path::new(file_name)
         .extension()
         .and_then(|value| value.to_str())
-        .map(|value| value.eq_ignore_ascii_case("zip"))
-        .unwrap_or(false)
+    else {
+        return false;
+    };
+    extension.eq_ignore_ascii_case("zip")
+        || extension.eq_ignore_ascii_case("tif")
+        || extension.eq_ignore_ascii_case("tiff")
 }
 
 fn read_cache_metadata(
@@ -930,7 +979,28 @@ mod tests {
     }
 
     #[test]
-    fn non_zip_cache_restore_uses_private_copy() {
+    fn tif_cache_restore_prefers_hardlinks() {
+        let root = std::env::temp_dir().join(format!(
+            "preprocessor-fetch-tif-link-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.tif");
+        let destination = root.join("destination.tif");
+        fs::write(&source, b"payload").unwrap();
+
+        restore_cached_blob(&source, &destination, "payload.tif").unwrap();
+
+        let source_metadata = fs::metadata(&source).unwrap();
+        let destination_metadata = fs::metadata(&destination).unwrap();
+        assert_eq!(source_metadata.ino(), destination_metadata.ino());
+        assert_eq!(source_metadata.nlink(), 2);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gz_cache_restore_uses_private_copy() {
         let root = std::env::temp_dir().join(format!(
             "preprocessor-fetch-copy-test-{}",
             std::process::id()

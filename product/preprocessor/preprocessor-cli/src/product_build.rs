@@ -181,6 +181,9 @@ pub struct BuildCacheGcReport {
     pub grace_nodes: usize,
     pub evictable_nodes: usize,
     pub reclaimed_bytes: u64,
+    pub scratch_files: usize,
+    pub scratch_bytes: u64,
+    pub scratch_active_nodes: usize,
     pub by_node_name: BTreeMap<String, BuildCacheGcBucket>,
 }
 
@@ -6054,6 +6057,9 @@ pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheG
         grace_nodes: 0,
         evictable_nodes: 0,
         reclaimed_bytes: 0,
+        scratch_files: 0,
+        scratch_bytes: 0,
+        scratch_active_nodes: 0,
         by_node_name: BTreeMap::new(),
     };
     if !cache_nodes_root.is_dir() {
@@ -6107,7 +6113,84 @@ pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheG
             }
         }
     }
+    scrub_rooted_tpp_render_scratch(
+        &cache_nodes_root,
+        &rooted,
+        config.mode,
+        &mut report,
+    )?;
     Ok(report)
+}
+
+fn scrub_rooted_tpp_render_scratch(
+    cache_nodes_root: &Path,
+    rooted: &BTreeSet<(String, String)>,
+    mode: BuildCacheGcMode,
+    report: &mut BuildCacheGcReport,
+) -> anyhow::Result<()> {
+    for (node_name, fingerprint) in rooted {
+        if !is_tpp_render_node_name(node_name) {
+            continue;
+        }
+        let node_dir = cache_nodes_root.join(node_name).join(fingerprint);
+        if !node_dir.is_dir() {
+            continue;
+        }
+        let lock_path = node_dir.join(".build-lock");
+        if lock_path.exists() && lock_is_live(&lock_path)? {
+            report.scratch_active_nodes += 1;
+            continue;
+        }
+        scrub_tpp_render_scratch_dir(&node_dir, mode, report)?;
+    }
+    Ok(())
+}
+
+fn is_tpp_render_node_name(node_name: &str) -> bool {
+    node_name.starts_with("tpp-") && node_name.ends_with("-render")
+}
+
+fn scrub_tpp_render_scratch_dir(
+    dir: &Path,
+    mode: BuildCacheGcMode,
+    report: &mut BuildCacheGcReport,
+) -> anyhow::Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            scrub_tpp_render_scratch_dir(&path, mode, report)?;
+            continue;
+        }
+        if !is_tpp_render_scratch_file(&path) {
+            continue;
+        }
+        let bytes = entry
+            .metadata()
+            .with_context(|| format!("failed to stat {}", path.display()))?
+            .len();
+        report.scratch_files += 1;
+        report.scratch_bytes = report.scratch_bytes.saturating_add(bytes);
+        if mode == BuildCacheGcMode::Execute {
+            set_path_readonly(&path, false)?;
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn is_tpp_render_scratch_file(path: &Path) -> bool {
+    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    if extension.eq_ignore_ascii_case("pdf") {
+        return true;
+    }
+    if !(extension.eq_ignore_ascii_case("tif") || extension.eq_ignore_ascii_case("tiff")) {
+        return false;
+    }
+    path.components().any(|component| component.as_os_str() == "plates")
 }
 
 fn is_younger_than(path: &Path, now: SystemTime, grace: Duration) -> anyhow::Result<bool> {

@@ -2768,6 +2768,13 @@ fn main() -> anyhow::Result<()> {
                 "reclaimable_gib {:.2}",
                 report.reclaimed_bytes as f64 / 1024.0 / 1024.0 / 1024.0
             );
+            println!("scratch_files {}", report.scratch_files);
+            println!("scratch_reclaimable_bytes {}", report.scratch_bytes);
+            println!(
+                "scratch_reclaimable_gib {:.2}",
+                report.scratch_bytes as f64 / 1024.0 / 1024.0 / 1024.0
+            );
+            println!("scratch_active_nodes {}", report.scratch_active_nodes);
             for (node_name, bucket) in report.by_node_name {
                 println!(
                     "candidate {} count={} bytes={} gib={:.2}",

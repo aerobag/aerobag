@@ -2064,55 +2064,13 @@ private fun MapExplorerPage(
                         val airportFillColor = if (feature.towered) airportToweredFillColor else airportUntoweredFillColor
                         val airportLabelPaint = if (feature.towered) airportToweredLabelFillPaint else airportUntoweredLabelFillPaint
                         val airportRadius = 12f * densityScale
-                        drawCircle(airportFillColor, radius = airportRadius, center = center)
-                        drawCircle(airportMarkerStrokeColor, radius = airportRadius, center = center, style = Stroke(width = 2f * densityScale))
                         if (feature.fuelAvailable) {
-                            val tabHalf = 4f * densityScale
-                            val tabInset = 11f * densityScale
-                            drawRect(
-                                color = airportFillColor,
-                                topLeft = Offset(center.x - tabHalf, center.y - 17f * densityScale),
-                                size = Size(tabHalf * 2f, 6f * densityScale),
-                            )
-                            drawRect(
-                                color = airportFillColor,
-                                topLeft = Offset(center.x + tabInset, center.y - tabHalf),
-                                size = Size(6f * densityScale, tabHalf * 2f),
-                            )
-                            drawRect(
-                                color = airportFillColor,
-                                topLeft = Offset(center.x - tabHalf, center.y + tabInset),
-                                size = Size(tabHalf * 2f, 6f * densityScale),
-                            )
-                            drawRect(
-                                color = airportFillColor,
-                                topLeft = Offset(center.x - 17f * densityScale, center.y - tabHalf),
-                                size = Size(6f * densityScale, tabHalf * 2f),
-                            )
-                            drawRect(
-                                color = airportMarkerStrokeColor,
-                                topLeft = Offset(center.x - tabHalf, center.y - 17f * densityScale),
-                                size = Size(tabHalf * 2f, 6f * densityScale),
-                                style = Stroke(width = 2f * densityScale),
-                            )
-                            drawRect(
-                                color = airportMarkerStrokeColor,
-                                topLeft = Offset(center.x + tabInset, center.y - tabHalf),
-                                size = Size(6f * densityScale, tabHalf * 2f),
-                                style = Stroke(width = 2f * densityScale),
-                            )
-                            drawRect(
-                                color = airportMarkerStrokeColor,
-                                topLeft = Offset(center.x - tabHalf, center.y + tabInset),
-                                size = Size(tabHalf * 2f, 6f * densityScale),
-                                style = Stroke(width = 2f * densityScale),
-                            )
-                            drawRect(
-                                color = airportMarkerStrokeColor,
-                                topLeft = Offset(center.x - 17f * densityScale, center.y - tabHalf),
-                                size = Size(6f * densityScale, tabHalf * 2f),
-                                style = Stroke(width = 2f * densityScale),
-                            )
+                            val markerPath = airportFuelMarkerPath(center, densityScale)
+                            drawPath(markerPath, airportFillColor)
+                            drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * densityScale))
+                        } else {
+                            drawCircle(airportFillColor, radius = airportRadius, center = center)
+                            drawCircle(airportMarkerStrokeColor, radius = airportRadius, center = center, style = Stroke(width = 2f * densityScale))
                         }
                         feature.longestRunwayHeadingTrueDeg?.let { headingDeg ->
                             val headingRad = Math.toRadians(headingDeg)
@@ -4822,6 +4780,38 @@ private fun navRefLabel(ref: NavRef): String = when (ref) {
     is NavRef.LatLon -> "${"%.3f".format(ref.lat)},${"%.3f".format(ref.lon)}"
 }
 
+private fun airportFuelMarkerPath(center: Offset, scale: Float): Path {
+    val circleRadius = 12f * scale
+    val tabHalf = 4f * scale
+    val tabOuter = 17f * scale
+    val arcJoin = 11.314f * scale
+    val circleBounds = Rect(
+        left = center.x - circleRadius,
+        top = center.y - circleRadius,
+        right = center.x + circleRadius,
+        bottom = center.y + circleRadius,
+    )
+    return Path().apply {
+        moveTo(center.x - tabHalf, center.y - tabOuter)
+        lineTo(center.x + tabHalf, center.y - tabOuter)
+        lineTo(center.x + tabHalf, center.y - arcJoin)
+        arcTo(circleBounds, -70.5288f, 51.0576f, false)
+        lineTo(center.x + tabOuter, center.y - tabHalf)
+        lineTo(center.x + tabOuter, center.y + tabHalf)
+        lineTo(center.x + arcJoin, center.y + tabHalf)
+        arcTo(circleBounds, 19.4712f, 51.0576f, false)
+        lineTo(center.x + tabHalf, center.y + tabOuter)
+        lineTo(center.x - tabHalf, center.y + tabOuter)
+        lineTo(center.x - tabHalf, center.y + arcJoin)
+        arcTo(circleBounds, 109.4712f, 51.0576f, false)
+        lineTo(center.x - tabOuter, center.y + tabHalf)
+        lineTo(center.x - tabOuter, center.y - tabHalf)
+        lineTo(center.x - arcJoin, center.y - tabHalf)
+        arcTo(circleBounds, 199.4712f, 51.0576f, false)
+        close()
+    }
+}
+
 @Composable
 private fun PlanWaypointSymbol(
     feature: net.jonh.aerobag.prototype.domain.NavSymbolFeature?,
@@ -4844,16 +4834,13 @@ private fun PlanWaypointSymbol(
             isAirport -> {
                 val airportRadius = 12f * scale
                 if (feature.fuelAvailable) {
-                    val tabHalf = 4f * scale
-                    val tabOuter = 17f * scale
-                    val tabInner = 11f * scale
-                    drawRect(airportFillColor, topLeft = Offset(center.x - tabHalf, center.y - tabOuter), size = Size(tabHalf * 2f, 6f * scale))
-                    drawRect(airportFillColor, topLeft = Offset(center.x + tabInner, center.y - tabHalf), size = Size(6f * scale, tabHalf * 2f))
-                    drawRect(airportFillColor, topLeft = Offset(center.x - tabHalf, center.y + tabInner), size = Size(tabHalf * 2f, 6f * scale))
-                    drawRect(airportFillColor, topLeft = Offset(center.x - tabOuter, center.y - tabHalf), size = Size(6f * scale, tabHalf * 2f))
+                    val markerPath = airportFuelMarkerPath(center, scale)
+                    drawPath(markerPath, airportFillColor)
+                    drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * scale))
+                } else {
+                    drawCircle(airportFillColor, radius = airportRadius, center = center)
+                    drawCircle(airportMarkerStrokeColor, radius = airportRadius, center = center, style = Stroke(width = 2f * scale))
                 }
-                drawCircle(airportFillColor, radius = airportRadius, center = center)
-                drawCircle(airportMarkerStrokeColor, radius = airportRadius, center = center, style = Stroke(width = 2f * scale))
                 feature.longestRunwayHeadingTrueDeg?.let { heading ->
                     val runwayHalfLength = 8f * feature.runwayLengthRatio.coerceAtLeast(0.2).toFloat() * scale
                     rotate(heading.toFloat(), center) {

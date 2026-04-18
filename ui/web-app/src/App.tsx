@@ -330,11 +330,22 @@ function polygonPathData(points: readonly VorPoint[]) {
 const vorInnerHexPoints = offsetPolygonByEdgeDistances(vorOuterHexPoints, vorEdgeInsetDistances);
 const vorOuterHexPath = polygonPathData(vorOuterHexPoints);
 const vorBandPath = `${vorOuterHexPath} ${polygonPathData(vorInnerHexPoints)}`;
-const airportFuelTabsPath = [
-  "M -4 -17 H 4 V -11 H -4 Z",
-  "M 11 -4 H 17 V 4 H 11 Z",
-  "M -4 11 H 4 V 17 H -4 Z",
-  "M -17 -4 H -11 V 4 H -17 Z",
+const airportFuelMarkerPath = [
+  "M -4 -17 H 4 V -11.314",
+  "A 12 12 0 0 1 11.314 -4",
+  "H 17 V 4 H 11.314",
+  "A 12 12 0 0 1 4 11.314",
+  "V 17 H -4 V 11.314",
+  "A 12 12 0 0 1 -11.314 4",
+  "H -17 V -4 H -11.314",
+  "A 12 12 0 0 1 -4 -11.314",
+  "Z",
+].join(" ");
+const airportCircleMarkerPath = [
+  "M 0 -12",
+  "A 12 12 0 1 1 0 12",
+  "A 12 12 0 1 1 0 -12",
+  "Z",
 ].join(" ");
 
 type VectorPointSymbolFeature = {
@@ -357,8 +368,9 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
     const halfLength = 8 * Math.max(feature.runway_length_ratio, 0.2);
     return (
       <>
-        <circle r="12" className={airportClass} />
-        {feature.fuel_available ? <path d={airportFuelTabsPath} className={airportClass} /> : null}
+        {feature.fuel_available
+          ? <path d={airportFuelMarkerPath} className={airportClass} />
+          : <path d={airportCircleMarkerPath} className={airportClass} />}
         {feature.longest_runway_heading_true_deg != null ? (
           <>
             <line

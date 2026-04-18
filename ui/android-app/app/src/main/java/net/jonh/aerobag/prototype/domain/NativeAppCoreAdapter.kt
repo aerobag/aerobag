@@ -1257,6 +1257,7 @@ private fun WireWaypointIdentifierSuggestion.toUi() = WaypointIdentifierSuggesti
     identifier = identifier,
     navRef = nav_ref.toUi(),
     kind = kind,
+    displayName = display_name,
     distanceFromAnchorNm = distance_from_anchor_nm,
 )
 

@@ -523,6 +523,7 @@ data class WireWaypointIdentifierSuggestion(
     val identifier: String,
     val nav_ref: WireNavRef,
     val kind: String,
+    val display_name: String,
     val distance_from_anchor_nm: Double,
 )
 

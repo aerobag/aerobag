@@ -95,6 +95,7 @@ data class WaypointIdentifierSuggestion(
     val identifier: String,
     val navRef: NavRef,
     val kind: String,
+    val displayName: String,
     val distanceFromAnchorNm: Double,
 )
 

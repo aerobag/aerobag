@@ -42,6 +42,7 @@ pub struct WaypointIdentifierSuggestion {
     pub identifier: String,
     pub nav_ref: NavRef,
     pub kind: String,
+    pub display_name: String,
     pub distance_from_anchor_nm: f64,
 }
 

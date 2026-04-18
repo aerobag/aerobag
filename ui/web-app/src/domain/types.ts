@@ -77,6 +77,7 @@ export type WaypointIdentifierSuggestion = {
   identifier: string;
   nav_ref: NavRef;
   kind: string;
+  display_name: string;
   distance_from_anchor_nm: number;
 };
 

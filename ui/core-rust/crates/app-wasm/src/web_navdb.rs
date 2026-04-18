@@ -398,18 +398,27 @@ fn suggest_waypoint_identifiers(
     let like_prefix = format!("{prefix}%");
     let rows = query(
         "
-        SELECT identifier, kind, lat, lon FROM (
+        SELECT identifier, kind, city, state, facility_name, lat, lon FROM (
             SELECT trim(LocationID) AS identifier, 'airport' AS kind,
+                   trim(City) AS city,
+                   trim(State) AS state,
+                   trim(FacilityName) AS facility_name,
                    CAST(ARPLatitude AS REAL) AS lat, CAST(ARPLongitude AS REAL) AS lon
               FROM airports
              WHERE trim(LocationID) LIKE ?1
             UNION ALL
             SELECT trim(LocationID) AS identifier, 'navaid' AS kind,
+                   '' AS city,
+                   '' AS state,
+                   trim(FacilityName) AS facility_name,
                    CAST(ARPLatitude AS REAL) AS lat, CAST(ARPLongitude AS REAL) AS lon
               FROM nav
              WHERE trim(LocationID) LIKE ?1
             UNION ALL
             SELECT trim(LocationID) AS identifier, 'fix' AS kind,
+                   '' AS city,
+                   '' AS state,
+                   trim(FacilityName) AS facility_name,
                    CAST(ARPLatitude AS REAL) AS lat, CAST(ARPLongitude AS REAL) AS lon
               FROM fix
              WHERE trim(LocationID) LIKE ?1
@@ -424,6 +433,9 @@ fn suggest_waypoint_identifiers(
     for row in rows {
         let identifier = field_string(&row, "identifier")?;
         let kind = field_string(&row, "kind")?;
+        let city = field_string(&row, "city")?;
+        let state = field_string(&row, "state")?;
+        let facility_name = field_string(&row, "facility_name")?;
         let position = LatLon {
             lat: field_f64(&row, "lat")?,
             lon: field_f64(&row, "lon")?,
@@ -433,10 +445,12 @@ fn suggest_waypoint_identifiers(
             "navaid" => NavRef::Navaid(identifier.clone()),
             _ => NavRef::Fix(identifier.clone()),
         };
+        let display_name = waypoint_identifier_display_name(&kind, &city, &state, &facility_name);
         suggestions.push(WaypointIdentifierSuggestion {
             identifier,
             nav_ref,
             kind,
+            display_name,
             distance_from_anchor_nm: distance_nm(anchor_position, position),
         });
     }
@@ -449,6 +463,39 @@ fn suggest_waypoint_identifiers(
     });
     suggestions.truncate(limit);
     Ok(suggestions)
+}
+
+fn waypoint_identifier_display_name(kind: &str, city: &str, state: &str, facility_name: &str) -> String {
+    let city = city.trim();
+    let state = state.trim();
+    let facility_name = facility_name.trim();
+    if kind == "airport" && !city.is_empty() {
+        let city = titlecase_nav_label(city);
+        return if state.is_empty() {
+            city
+        } else {
+            format!("{city}, {}", state.to_ascii_uppercase())
+        };
+    }
+    titlecase_nav_label(facility_name)
+}
+
+fn titlecase_nav_label(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut normalized = first.to_uppercase().collect::<String>();
+                    normalized.push_str(&chars.as_str().to_ascii_lowercase());
+                    normalized
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn component_insert_anchor(plan: &FlightPlan, component_index: usize, before: bool) -> AppResult<NavRef> {

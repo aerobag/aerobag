@@ -2418,13 +2418,26 @@ private fun AirportInsertPanel(
             if (state.loading) {
                 Text("Searching...", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             }
-            state.suggestions.forEach { suggestion ->
-                MenuPanelRow(
-                    label = "${suggestion.identifier}  ${suggestion.kind.uppercase()} ${"%.1f".format(suggestion.distanceFromAnchorNm)}nm",
-                    active = false,
-                    enabled = true,
-                    onSelect = { onSuggestionClick(suggestion) },
-                )
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(ThumbGap / 2f),
+            ) {
+                state.suggestions.forEach { suggestion ->
+                    val detail = "${suggestion.kind.uppercase()} ${"%.1f".format(suggestion.distanceFromAnchorNm)}nm"
+                    val friendlyName = suggestion.displayName.takeIf { it.isNotBlank() }
+                    MenuPanelRow(
+                        label = if (friendlyName == null) {
+                            "${suggestion.identifier}  $detail"
+                        } else {
+                            "${suggestion.identifier}  $detail\n$friendlyName"
+                        },
+                        active = false,
+                        enabled = true,
+                        width = ThumbSize * 3f,
+                        onSelect = { onSuggestionClick(suggestion) },
+                    )
+                }
             }
         }
     }

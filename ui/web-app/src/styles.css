@@ -1196,6 +1196,7 @@ button {
 .airportInsertSuggestions {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: calc(var(--thumb-gap) * 0.6);
 }
 
@@ -1203,7 +1204,34 @@ button {
   display: flex;
   justify-content: space-between;
   gap: var(--thumb-gap);
-  min-width: calc(var(--thumb) * 3);
+  width: calc(var(--thumb) * 3);
+  min-height: calc(var(--thumb) * 0.9);
+  text-align: left;
+}
+
+.airportInsertSuggestionMain {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: calc(var(--thumb-gap) * 0.2);
+}
+
+.airportInsertSuggestionName {
+  max-width: calc(var(--thumb) * 1.8);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.airportInsertSuggestionMeta {
+  flex: 0 0 auto;
+  align-self: center;
+  font-size: calc(var(--thumb) * 0.18);
 }
 
 .airwayLoadingPanel {

@@ -2768,6 +2768,7 @@ function FlightPlanPage(props: {
   if (planUiState.resolved_legs.length > 0 && componentViews.length === 0) {
     throw new Error("FlightPlanUiState invariant failed: resolved legs present but components are empty");
   }
+  const waypointSuggestionPlanKey = useMemo(() => JSON.stringify(props.plan), [props.plan]);
   useEffect(() => {
     const editor = airportInsert;
     const adapter = props.appCoreAdapter;
@@ -2801,7 +2802,7 @@ function FlightPlanPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [airportInsert?.airportId, airportInsert?.before, airportInsert?.componentIndex, props.appCoreAdapter, props.plan]);
+  }, [airportInsert?.airportId, airportInsert?.before, airportInsert?.componentIndex, props.appCoreAdapter, waypointSuggestionPlanKey]);
   const displayRows = useMemo(() => {
     return planUiState.display_rows.map((row, index) => ({
         showPlateTargetId:
@@ -3473,8 +3474,11 @@ function FlightPlanPage(props: {
                           }
                         }}
                       >
-                        <span>{suggestion.identifier}</span>
-                        <span>{suggestion.kind.toUpperCase()} {suggestion.distance_from_anchor_nm.toFixed(1)}nm</span>
+                        <span className="airportInsertSuggestionMain">
+                          <span>{suggestion.identifier}</span>
+                          {suggestion.display_name ? <span className="airportInsertSuggestionName">{suggestion.display_name}</span> : null}
+                        </span>
+                        <span className="airportInsertSuggestionMeta">{suggestion.kind.toUpperCase()} {suggestion.distance_from_anchor_nm.toFixed(1)}nm</span>
                       </button>
                     ))}
                   </div>

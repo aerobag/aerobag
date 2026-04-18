@@ -106,18 +106,27 @@ pub fn suggest_waypoint_identifiers(
         let query_limit = (limit.max(16) * 16).min(512) as i64;
         let like_prefix = format!("{prefix}%");
         let mut stmt = connection.prepare(
-            "SELECT identifier, kind, lat, lon FROM (
+            "SELECT identifier, kind, city, state, facility_name, lat, lon FROM (
                 SELECT trim(LocationID) AS identifier, 'airport' AS kind,
+                       trim(City) AS city,
+                       trim(State) AS state,
+                       trim(FacilityName) AS facility_name,
                        CAST(ARPLatitude AS REAL) AS lat, CAST(ARPLongitude AS REAL) AS lon
                   FROM airports
                  WHERE trim(LocationID) LIKE ?1
                 UNION ALL
                 SELECT trim(LocationID) AS identifier, 'navaid' AS kind,
+                       '' AS city,
+                       '' AS state,
+                       trim(FacilityName) AS facility_name,
                        CAST(ARPLatitude AS REAL) AS lat, CAST(ARPLongitude AS REAL) AS lon
                   FROM nav
                  WHERE trim(LocationID) LIKE ?1
                 UNION ALL
                 SELECT trim(LocationID) AS identifier, 'fix' AS kind,
+                       '' AS city,
+                       '' AS state,
+                       trim(FacilityName) AS facility_name,
                        CAST(ARPLatitude AS REAL) AS lat, CAST(ARPLongitude AS REAL) AS lon
                   FROM fix
                  WHERE trim(LocationID) LIKE ?1
@@ -129,24 +138,29 @@ pub fn suggest_waypoint_identifiers(
         let rows = stmt.query_map(params![like_prefix, query_limit], |row| {
             let identifier: String = row.get(0)?;
             let kind: String = row.get(1)?;
+            let city: String = row.get(2)?;
+            let state: String = row.get(3)?;
+            let facility_name: String = row.get(4)?;
             let position = LatLon {
-                lat: row.get(2)?,
-                lon: row.get(3)?,
+                lat: row.get(5)?,
+                lon: row.get(6)?,
             };
-            Ok((identifier, kind, position))
+            Ok((identifier, kind, city, state, facility_name, position))
         })?;
         let mut suggestions = Vec::new();
         for row in rows {
-            let (identifier, kind, position) = row?;
+            let (identifier, kind, city, state, facility_name, position) = row?;
             let nav_ref = match kind.as_str() {
                 "airport" => NavRef::Airport(identifier.clone()),
                 "navaid" => NavRef::Navaid(identifier.clone()),
                 _ => NavRef::Fix(identifier.clone()),
             };
+            let display_name = waypoint_identifier_display_name(&kind, &city, &state, &facility_name);
             suggestions.push(WaypointIdentifierSuggestion {
                 identifier,
                 nav_ref,
                 kind,
+                display_name,
                 distance_from_anchor_nm: distance_nm(anchor_position, position),
             });
         }
@@ -160,6 +174,39 @@ pub fn suggest_waypoint_identifiers(
         suggestions.truncate(limit);
         Ok(suggestions)
     })
+}
+
+fn waypoint_identifier_display_name(kind: &str, city: &str, state: &str, facility_name: &str) -> String {
+    let city = city.trim();
+    let state = state.trim();
+    let facility_name = facility_name.trim();
+    if kind == "airport" && !city.is_empty() {
+        let city = titlecase_nav_label(city);
+        return if state.is_empty() {
+            city
+        } else {
+            format!("{city}, {}", state.to_ascii_uppercase())
+        };
+    }
+    titlecase_nav_label(facility_name)
+}
+
+fn titlecase_nav_label(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut normalized = first.to_uppercase().collect::<String>();
+                    normalized.push_str(&chars.as_str().to_ascii_lowercase());
+                    normalized
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn resolve_nav_ref_position_with_procedure_airport(

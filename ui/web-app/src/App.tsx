@@ -201,7 +201,6 @@ const maxViewHistoryDepth = 64;
 const loadedUiTheme = uiTheme as UiThemeJson;
 const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
-const plateFolderCategoryOrder: PlateFolderCategory[] = ["airport-diagram", "csup", "takeoff-mins", "approach", "departure", "star"];
 const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
 const defaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json";
 const startupHighLatencyWarningGraceMs = 10_000;
@@ -693,10 +692,6 @@ export default function App() {
     () => chartPageData.airports.find((airport) => airport.id === selectedAirportId) ?? chartPageData.airports[0] ?? null,
     [chartPageData, selectedAirportId],
   );
-  const orderedChartAirports = useMemo(
-    () => orderAirportsByRecency(chartPageData.airports, recentAirportIds),
-    [chartPageData, recentAirportIds],
-  );
   const selectedChart = useMemo(
     () => selectedAirport?.charts.find((chart) => chart.id === selectedChartId) ?? selectedAirport?.charts[0] ?? null,
     [selectedAirport, selectedChartId],
@@ -1169,7 +1164,7 @@ export default function App() {
           uptimeLabel={uptimeLabel}
           plan={currentPlan}
           planUiState={planUiState}
-          airports={orderedChartAirports}
+          airports={chartPageData.airports}
           selectedAirport={selectedAirport}
           selectedChart={selectedChart}
           folderOpen={chartFolderOpen}
@@ -3996,7 +3991,7 @@ function ChartsPage(props: {
   const [debugOpen, setDebugOpen] = useState(false);
   const [plateProcedureLoads, setPlateProcedureLoads] = useState<ProcedureLoadOption[]>([]);
   const trayOpen = trayGroup.scrimOpen;
-  const sortedCharts = useMemo(() => sortChartsForFolder(selectedAirport?.charts ?? []), [selectedAirport]);
+  const sortedCharts = selectedAirport?.charts ?? [];
   const selectedImageSize = imageSize && imageSize.chartId === (selectedChart?.id ?? "") ? imageSize : null;
   const fallbackViewport = useMemo(() => {
     if (!selectedImageSize || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -4674,16 +4669,6 @@ function formatUptimeMs(elapsedMs: number) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-function orderAirportsByRecency(
-  airports: ChartPageData["airports"],
-  recentAirportIds: string[],
-) {
-  const airportById = new Map(airports.map((airport) => [airport.id, airport]));
-  return recentAirportIds
-    .map((airportId) => airportById.get(airportId))
-    .filter((airport): airport is ChartPageData["airports"][number] => airport !== undefined);
-}
-
 function moveAirportToFront(
   currentIds: string[],
   airportId: string,
@@ -4705,13 +4690,6 @@ function resolveAirportId(
 
 function plateFolderColor(category: PlateFolderCategory) {
   return plateFolderTheme.label_colors[category as keyof typeof plateFolderTheme.label_colors] ?? plateFolderTheme.label_colors.other ?? "#52656d";
-}
-
-function sortChartsForFolder(charts: ChartAsset[]) {
-  return [...charts].sort((left, right) => {
-    const rank = plateFolderCategoryOrder.indexOf(left.folder_category) - plateFolderCategoryOrder.indexOf(right.folder_category);
-    return rank !== 0 ? rank : left.label.localeCompare(right.label);
-  });
 }
 
 function flightPlanActionLabel(actionId: string): string {

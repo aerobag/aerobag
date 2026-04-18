@@ -534,6 +534,11 @@ pub fn derive_chart_page(resource_index_json: &str, plan_json: &str) -> Result<S
 }
 
 #[wasm_bindgen]
+pub fn derive_chart_catalog(resource_index_json: &str) -> Result<String, JsValue> {
+    derive_chart_catalog_json(resource_index_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn derive_chart_page_state(
     resource_index_json: &str,
     plan_json: &str,
@@ -1368,6 +1373,13 @@ fn derive_chart_page_json(
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let chart_page = app_core::derive_chart_page(&resource_index, &plan);
     serde_json::to_string(&chart_page).map_err(|err| err.to_string())
+}
+
+fn derive_chart_catalog_json(resource_index_json: &str) -> Result<String, String> {
+    let resource_index =
+        app_core::load_resource_index_chart_page_input(resource_index_json).map_err(|err| err.to_string())?;
+    let chart_catalog = app_core::build_chart_catalog(&resource_index);
+    serde_json::to_string(&chart_catalog).map_err(|err| err.to_string())
 }
 
 fn derive_chart_page_state_json(

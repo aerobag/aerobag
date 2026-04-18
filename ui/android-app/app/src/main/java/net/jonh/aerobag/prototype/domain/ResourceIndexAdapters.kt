@@ -351,16 +351,6 @@ private fun folderCategory(documentType: String): String = when (documentType) {
     else -> "approach"
 }
 
-private fun folderCategoryRank(category: String): Int = when (category) {
-    "airport-diagram" -> 0
-    "csup" -> 1
-    "takeoff-mins" -> 2
-    "approach" -> 3
-    "departure" -> 4
-    "star" -> 5
-    else -> 6
-}
-
 private fun chartAsset(
     airportId: String,
     packageId: String,
@@ -409,7 +399,7 @@ fun deriveChartPage(
             }.forEach { record ->
                 add(chartAsset(airportId, record.package_id, "csup", record.label, record.document_type, record.asset_path, record.thumbnail_path))
             }
-        }.sortedWith(compareBy<ChartAsset>({ folderCategoryRank(it.folderCategory) }, { it.label }))
+        }
         if (charts.isEmpty()) {
             null
         } else {

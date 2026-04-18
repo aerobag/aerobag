@@ -527,14 +527,6 @@ private fun mergeRecentAirportIds(
     return orderedIds
 }
 
-private fun orderAirportsByRecency(
-    airports: List<ChartAirport>,
-    recentAirportIds: List<String>,
-): List<ChartAirport> {
-    val airportById = airports.associateBy { it.id }
-    return recentAirportIds.mapNotNull(airportById::get)
-}
-
 private fun moveAirportToFront(
     currentIds: List<String>,
     airportId: String,
@@ -587,19 +579,6 @@ private fun latLonToScreenPoint(
         y = ((world.y - viewport.centerWorldY) * scale + heightPx / 2f).toFloat(),
     )
 }
-
-private fun plateFolderCategoryOrder(category: String): Int = when (category) {
-    "airport-diagram" -> 0
-    "csup" -> 1
-    "takeoff-mins" -> 2
-    "approach" -> 3
-    "departure" -> 4
-    "star" -> 5
-    else -> 6
-}
-
-private fun sortChartsForFolder(charts: List<ChartAsset>): List<ChartAsset> =
-    charts.sortedWith(compareBy<ChartAsset>({ plateFolderCategoryOrder(it.folderCategory) }, { it.label }))
 
 private fun plateFolderColor(uiTheme: UiTheme, category: String): Color =
     uiTheme.plateFolder.labelColors[category] ?: uiTheme.plateFolder.labelColors["other"] ?: Color(0xFF52656D)
@@ -3412,7 +3391,7 @@ private fun ChartsPage(
     var chartTrayOpen by remember { mutableStateOf(false) }
     var debugPanelOpen by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
-    val sortedCharts = remember(selectedAirport) { sortChartsForFolder(selectedAirport?.charts ?: emptyList()) }
+    val sortedCharts = selectedAirport?.charts ?: emptyList()
     val overscrollPx = with(density) { ThumbSize.toPx() }
     val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, selectedChart?.id, selectedChart?.assetPath) {
         val chart = selectedChart
@@ -3815,7 +3794,7 @@ private fun ChartViewerSelectors(
             open = chartTrayOpen,
             onToggle = onToggleChartTray,
             style = MenuDockStyle.PlateWide,
-            options = sortChartsForFolder(selectedAirport?.charts ?: emptyList()).map { chart ->
+            options = (selectedAirport?.charts ?: emptyList()).map { chart ->
                 MenuDockOption(
                     chart.id,
                     chart.label,

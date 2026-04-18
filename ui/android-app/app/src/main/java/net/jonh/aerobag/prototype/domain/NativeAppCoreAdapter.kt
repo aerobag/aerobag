@@ -133,6 +133,11 @@ class NativeAppCoreAdapter(
         return json.decodeFromString<WireDerivedChartPage>(nextJson).toUi()
     }
 
+    fun deriveChartCatalog(resourceIndexJson: String): ChartPageFixture {
+        val nextJson = bridge.deriveChartCatalogJson(resourceIndexJson)
+        return json.decodeFromString<WireDerivedChartPage>(nextJson).toUi()
+    }
+
     fun removeFlightPlanLeg(plan: FlightPlan, index: Int): FlightPlan {
         val planJson = json.encodeToString(plan.toWire())
         val nextJson = bridge.removeFlightPlanLegJson(planJson, index)

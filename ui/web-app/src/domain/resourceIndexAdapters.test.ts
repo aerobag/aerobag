@@ -117,7 +117,7 @@ describe("resourceIndexAdapters", () => {
     const chartPage = deriveChartPage(resourceIndex, samplePlan);
     expect(chartPage.airports).toHaveLength(1);
     expect(chartPage.airports[0].id).toBe("BOS");
-    expect(chartPage.airports[0].charts.map((chart) => chart.kind)).toEqual(["csup", "plate"]);
-    expect(chartPage.airports[0].charts.map((chart) => chart.folder_category)).toEqual(["csup", "approach"]);
+    expect(chartPage.airports[0].charts.map((chart) => chart.kind)).toEqual(["plate", "csup"]);
+    expect(chartPage.airports[0].charts.map((chart) => chart.folder_category)).toEqual(["approach", "csup"]);
   });
 });

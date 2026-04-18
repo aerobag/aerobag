@@ -81,6 +81,9 @@ declare module "@generated/app_wasm.js" {
   export const get_session_snapshot: (...args: unknown[]) => string;
   export const restore_chart_page_state_in_session: (...args: unknown[]) => string;
   export const destroy_session: (...args: unknown[]) => void;
+  export const derive_chart_catalog: (...args: unknown[]) => string;
+  export const derive_chart_page: (...args: unknown[]) => string;
+  export const derive_chart_page_state: (...args: unknown[]) => string;
   export const replace_flight_plan_state: (...args: unknown[]) => string;
   export const set_content_policy_state: (...args: unknown[]) => string;
   export const refresh_content_state: (...args: unknown[]) => string;

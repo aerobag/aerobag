@@ -552,6 +552,10 @@ private class FakeNativeBridge(
         return """{"airports":[]}"""
     }
 
+    override fun deriveChartCatalogJson(resourceIndexJson: String): String {
+        return """{"airports":[]}"""
+    }
+
     override fun deriveChartPageStateJson(
         resourceIndexJson: String,
         planJson: String,

@@ -77,6 +77,7 @@ describe("loadBestAvailableAdapter", () => {
       restore_chart_page_state_in_session: async () => snapshotJson,
       destroy_session: () => {},
       remove_flight_plan_leg: async () => "{}",
+      derive_chart_catalog: async () => "{\"airports\":[]}",
       derive_chart_page: async () => "{\"airports\":[]}",
       derive_chart_page_state: async () => "{\"airports\":[],\"recent_airport_ids\":[],\"selected_airport_id\":\"\",\"selected_chart_id\":\"\"}",
       replace_flight_plan_state: async (stateJson: string) => stateJson,

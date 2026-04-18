@@ -555,6 +555,13 @@ pub fn derive_chart_page_json(
     serde_json::to_string(&chart_page).map_err(|err| err.to_string())
 }
 
+pub fn derive_chart_catalog_json(resource_index_json: &str) -> Result<String, String> {
+    let resource_index =
+        app_core::load_resource_index_chart_page_input(resource_index_json).map_err(|err| err.to_string())?;
+    let chart_catalog = app_core::build_chart_catalog(&resource_index);
+    serde_json::to_string(&chart_catalog).map_err(|err| err.to_string())
+}
+
 pub fn derive_chart_page_state_json(
     resource_index_json: &str,
     plan_json: &str,
@@ -1785,6 +1792,19 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_der
         let resource_index = get_java_string(&mut env, resource_index_json)?;
         let plan = get_java_string(&mut env, plan_json)?;
         derive_chart_page_json(&resource_index, &plan)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_deriveChartCatalogJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    resource_index_json: JString,
+) -> jstring {
+    let result = (|| {
+        let resource_index = get_java_string(&mut env, resource_index_json)?;
+        derive_chart_catalog_json(&resource_index)
     })();
     return_string(&mut env, result)
 }

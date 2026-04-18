@@ -43,7 +43,6 @@ import type {
   SituationSample,
   WaypointIdentifierSuggestion,
 } from "./types";
-import { deriveChartPage as deriveChartCatalog } from "./resourceIndexAdapters";
 import { sampleCatalog } from "./sampleData";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { installBrowserNavDbQueryHost } from "./webNavDb";
@@ -170,6 +169,7 @@ export interface AppCoreAdapter {
   ): Promise<UiSession>;
   replaceFlightPlanState(state: AppState, catalog: CatalogJson, plan: FlightPlan): Promise<AppState>;
   removeFlightPlanLeg(plan: FlightPlan, index: number): Promise<FlightPlan>;
+  deriveChartCatalog(resourceIndex: unknown): Promise<ChartPageData>;
   deriveChartPage(resourceIndex: unknown, plan: FlightPlan): Promise<ChartPageData>;
   deriveChartPageState(resourceIndex: unknown, plan: FlightPlan, recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<DerivedChartPageState>;
   setContentPolicyState(state: AppState, catalog: CatalogJson, policy: ContentPolicy): Promise<AppState>;
@@ -287,6 +287,7 @@ type WasmModule = {
   restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   destroy_session(handle: number): void;
   remove_flight_plan_leg(planJson: string, index: number): Promise<string> | string;
+  derive_chart_catalog(resourceIndexJson: string): Promise<string> | string;
   derive_chart_page(resourceIndexJson: string, planJson: string): Promise<string> | string;
   derive_chart_page_state(resourceIndexJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   replace_flight_plan_state(stateJson: string, catalogJson: string, planJson: string): Promise<string> | string;
@@ -482,7 +483,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     selectedChartId?: string,
   ): Promise<UiSession> {
     const catalogJson = JSON.stringify(sampleCatalogLike(resourceIndex));
-    const chartCatalog = deriveChartCatalog(resourceIndex as Parameters<typeof deriveChartCatalog>[0], plan);
+    const chartCatalog = await this.deriveChartCatalog(resourceIndex);
     const chartCatalogJson = JSON.stringify(chartCatalog);
     const module = this.module;
     const createSession = async (
@@ -745,6 +746,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       await this.module.derive_chart_page(
         JSON.stringify(resourceIndex),
         JSON.stringify(plan),
+      ),
+    ) as ChartPageData;
+  }
+
+  async deriveChartCatalog(resourceIndex: unknown): Promise<ChartPageData> {
+    return JSON.parse(
+      await this.module.derive_chart_catalog(
+        JSON.stringify(resourceIndex),
       ),
     ) as ChartPageData;
   }
@@ -1155,6 +1164,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.web_materialize_procedure !== "function" ||
     typeof mod.web_find_procedure_plate_match !== "function" ||
     typeof mod.web_describe_plate_procedure_loads !== "function" ||
+    typeof mod.derive_chart_catalog !== "function" ||
     typeof mod.derive_chart_page !== "function" ||
     typeof mod.derive_chart_page_state !== "function" ||
     typeof mod.set_content_policy_state !== "function" ||

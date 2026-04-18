@@ -341,6 +341,10 @@ interface NativeBridge {
         planJson: String,
     ): String
 
+    fun deriveChartCatalogJson(
+        resourceIndexJson: String,
+    ): String
+
     fun deriveChartPageStateJson(
         resourceIndexJson: String,
         planJson: String,
@@ -693,6 +697,10 @@ object NativeBindings : NativeBridge {
     external override fun deriveChartPageJson(
         resourceIndexJson: String,
         planJson: String,
+    ): String
+
+    external override fun deriveChartCatalogJson(
+        resourceIndexJson: String,
     ): String
 
     external override fun deriveChartPageStateJson(

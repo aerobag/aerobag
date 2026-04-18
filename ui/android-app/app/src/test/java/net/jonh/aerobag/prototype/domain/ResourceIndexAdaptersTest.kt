@@ -123,7 +123,7 @@ class ResourceIndexAdaptersTest {
         )
         assertEquals(1, chartPage.airports.size)
         assertEquals("BOS", chartPage.airports[0].id)
-        assertEquals(listOf("csup", "plate"), chartPage.airports[0].charts.map { it.kind })
-        assertEquals(listOf("csup", "approach"), chartPage.airports[0].charts.map { it.folderCategory })
+        assertEquals(listOf("plate", "csup"), chartPage.airports[0].charts.map { it.kind })
+        assertEquals(listOf("approach", "csup"), chartPage.airports[0].charts.map { it.folderCategory })
     }
 }

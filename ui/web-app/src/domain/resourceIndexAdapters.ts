@@ -150,15 +150,6 @@ function folderCategoryForRecord(
   }
 }
 
-const folderCategoryRank: Record<FolderCategory, number> = {
-  "airport-diagram": 0,
-  csup: 1,
-  "takeoff-mins": 2,
-  approach: 3,
-  departure: 4,
-  star: 5,
-};
-
 function chartAssetForRecord(
   airportId: string,
   kind: "plate" | "csup",
@@ -204,10 +195,7 @@ export function deriveChartPage(
         .map((id) => csupById.get(id))
         .filter((record): record is ResourceIndexJson["csups"][number] => record !== undefined)
         .map((record) => chartAssetForRecord(airportId, "csup", record));
-      const charts = [...plates, ...csups].sort((left, right) => {
-        const rank = folderCategoryRank[left.folder_category] - folderCategoryRank[right.folder_category];
-        return rank !== 0 ? rank : left.label.localeCompare(right.label);
-      });
+      const charts = [...plates, ...csups];
       if (charts.length === 0) {
         return null;
       }

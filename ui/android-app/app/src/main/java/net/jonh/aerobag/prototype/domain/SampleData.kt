@@ -44,11 +44,13 @@ object SampleData {
         val mapViews = deriveMapViews(resourceIndex, emptyList())
         val mapView = mapViews.first().mapView
         val samplePlan = bootstrap.flight_plan.toUiFlightPlan()
-        val chartPage = deriveChartPage(resourceIndex = resourceIndex, samplePlan = samplePlan)
+        val catalogJson = json.encodeToString(deriveWireCatalog(resourceIndex))
+        val chartCatalog = NativeAppCoreAdapter(catalogJson, """{"airports":[]}""").deriveChartCatalog(resourceIndexPayload)
+        val chartPage = NativeAppCoreAdapter(catalogJson, json.encodeToString(chartCatalog.toWire())).deriveChartPage(resourceIndexPayload, samplePlan)
         val defaultLevel = mapView.levels.maxBy { it.zoom }
         return ContentFixture(
-            catalogJson = json.encodeToString(deriveWireCatalog(resourceIndex)),
-            chartCatalogJson = json.encodeToString(chartPage.toWire()),
+            catalogJson = catalogJson,
+            chartCatalogJson = json.encodeToString(chartCatalog.toWire()),
             resourceIndexJson = resourceIndexPayload,
             mapView = mapView,
             mapViews = mapViews,

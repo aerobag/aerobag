@@ -111,12 +111,20 @@ pub fn build_chart_catalog(resource_index: &ResourceIndexChartPageInput) -> Deri
             let airport_id = airport_resources.airport_id.clone();
             let mut charts: Vec<DerivedChartAsset> = Vec::new();
             for plate_id in &airport_resources.plate_ids {
-                if let Some(plate) = resource_index.plates.iter().find(|record| &record.id == plate_id) {
+                if let Some(plate) = resource_index
+                    .plates
+                    .iter()
+                    .find(|record| &record.id == plate_id)
+                {
                     charts.push(chart_asset_for_plate(&airport_id, plate));
                 }
             }
             for csup_id in &airport_resources.csup_ids {
-                if let Some(csup) = resource_index.csups.iter().find(|record| &record.id == csup_id) {
+                if let Some(csup) = resource_index
+                    .csups
+                    .iter()
+                    .find(|record| &record.id == csup_id)
+                {
                     charts.push(chart_asset_for_csup(&airport_id, csup));
                 }
             }
@@ -151,7 +159,13 @@ pub fn derive_chart_page_from_catalog(
     }
     let airports = ordered_airport_ids
         .into_iter()
-        .filter_map(|airport_id| catalog.airports.iter().find(|airport| airport.id == airport_id).cloned())
+        .filter_map(|airport_id| {
+            catalog
+                .airports
+                .iter()
+                .find(|airport| airport.id == airport_id)
+                .cloned()
+        })
         .collect();
     DerivedChartPage { airports }
 }
@@ -165,11 +179,12 @@ pub fn derive_chart_page_state_from_catalog(
 ) -> DerivedChartPageState {
     let page = derive_chart_page_from_catalog(catalog, plan);
     let recent_airport_ids = merge_recent_airport_ids(&page.airports, stored_recent_airport_ids);
-    let selected_airport_id = resolve_airport_id(&page.airports, candidate_airport_id, &recent_airport_ids);
-    let selected_chart_id = resolve_chart_id(&page.airports, &selected_airport_id, candidate_chart_id);
-    let airports = order_airports_by_recency(&page.airports, &recent_airport_ids);
+    let selected_airport_id =
+        resolve_airport_id(&page.airports, candidate_airport_id, &recent_airport_ids);
+    let selected_chart_id =
+        resolve_chart_id(&page.airports, &selected_airport_id, candidate_chart_id);
     DerivedChartPageState {
-        airports,
+        airports: page.airports,
         recent_airport_ids,
         selected_airport_id,
         selected_chart_id,
@@ -210,11 +225,16 @@ fn airport_ids_from_plan(plan: &FlightPlan) -> Vec<String> {
     airport_ids
 }
 
-fn merge_recent_airport_ids(airports: &[DerivedChartAirport], stored_ids: &[String]) -> Vec<String> {
+fn merge_recent_airport_ids(
+    airports: &[DerivedChartAirport],
+    stored_ids: &[String],
+) -> Vec<String> {
     let valid_ids: Vec<String> = airports.iter().map(|airport| airport.id.clone()).collect();
     let mut ordered_ids: Vec<String> = Vec::new();
     for id in stored_ids {
-        if valid_ids.iter().any(|valid_id| valid_id == id) && !ordered_ids.iter().any(|existing| existing == id) {
+        if valid_ids.iter().any(|valid_id| valid_id == id)
+            && !ordered_ids.iter().any(|existing| existing == id)
+        {
             ordered_ids.push(id.clone());
         }
     }
@@ -226,20 +246,16 @@ fn merge_recent_airport_ids(airports: &[DerivedChartAirport], stored_ids: &[Stri
     ordered_ids
 }
 
-fn order_airports_by_recency(airports: &[DerivedChartAirport], recent_airport_ids: &[String]) -> Vec<DerivedChartAirport> {
-    recent_airport_ids
-        .iter()
-        .filter_map(|airport_id| airports.iter().find(|airport| &airport.id == airport_id).cloned())
-        .collect()
-}
-
 fn resolve_airport_id(
     airports: &[DerivedChartAirport],
     candidate_airport_id: Option<&str>,
     recent_airport_ids: &[String],
 ) -> String {
     if let Some(candidate_airport_id) = candidate_airport_id {
-        if airports.iter().any(|airport| airport.id == candidate_airport_id) {
+        if airports
+            .iter()
+            .any(|airport| airport.id == candidate_airport_id)
+        {
             return candidate_airport_id.to_string();
         }
     }
@@ -258,7 +274,12 @@ fn resolve_chart_id(
     let airport = airports.iter().find(|airport| airport.id == airport_id);
     if let Some(candidate_chart_id) = candidate_chart_id {
         if airport
-            .map(|airport| airport.charts.iter().any(|chart| chart.id == candidate_chart_id))
+            .map(|airport| {
+                airport
+                    .charts
+                    .iter()
+                    .any(|chart| chart.id == candidate_chart_id)
+            })
             .unwrap_or(false)
         {
             return candidate_chart_id.to_string();
@@ -270,11 +291,11 @@ fn resolve_chart_id(
 }
 
 fn chart_asset_for_plate(airport_id: &str, plate: &ResourcePlate) -> DerivedChartAsset {
-    let filename = plate.asset_path.rsplit('/').next().unwrap_or(&plate.asset_path);
-    let thumbnail_filename = plate
-        .thumbnail_path
-        .as_ref()
-        .and_then(|path| path.rsplit('/').next().map(|value| value.to_string()));
+    let filename = plate
+        .asset_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&plate.asset_path);
     DerivedChartAsset {
         id: format!("plate:{airport_id}:{filename}"),
         airport_id: airport_id.to_string(),
@@ -283,23 +304,20 @@ fn chart_asset_for_plate(airport_id: &str, plate: &ResourcePlate) -> DerivedChar
         kind: "plate".to_string(),
         folder_category: folder_category("plate", raw_label_from_asset_path(&plate.asset_path)),
         source_asset_path: plate.asset_path.clone(),
-        asset_path: format!("chart-assets/{airport_id}/{filename}"),
-        asset_url: format!("/chart-assets/{airport_id}/{filename}"),
+        asset_path: plate.asset_path.clone(),
+        asset_url: format!("/{}", plate.asset_path),
         thumbnail_source_path: plate.thumbnail_path.clone(),
-        thumbnail_path: thumbnail_filename
-            .clone()
-            .map(|name| format!("chart-thumbnails/{airport_id}/{name}")),
-        thumbnail_url: thumbnail_filename
-            .map(|name| format!("/chart-thumbnails/{airport_id}/{name}")),
+        thumbnail_path: plate.thumbnail_path.clone(),
+        thumbnail_url: plate.thumbnail_path.as_ref().map(|path| format!("/{path}")),
     }
 }
 
 fn chart_asset_for_csup(airport_id: &str, csup: &ResourceCsup) -> DerivedChartAsset {
-    let filename = csup.asset_path.rsplit('/').next().unwrap_or(&csup.asset_path);
-    let thumbnail_filename = csup
-        .thumbnail_path
-        .as_ref()
-        .and_then(|path| path.rsplit('/').next().map(|value| value.to_string()));
+    let filename = csup
+        .asset_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&csup.asset_path);
     DerivedChartAsset {
         id: format!("csup:{airport_id}:{filename}"),
         airport_id: airport_id.to_string(),
@@ -308,14 +326,11 @@ fn chart_asset_for_csup(airport_id: &str, csup: &ResourceCsup) -> DerivedChartAs
         kind: "csup".to_string(),
         folder_category: "csup".to_string(),
         source_asset_path: csup.asset_path.clone(),
-        asset_path: format!("chart-assets/{airport_id}/{filename}"),
-        asset_url: format!("/chart-assets/{airport_id}/{filename}"),
+        asset_path: csup.asset_path.clone(),
+        asset_url: format!("/{}", csup.asset_path),
         thumbnail_source_path: csup.thumbnail_path.clone(),
-        thumbnail_path: thumbnail_filename
-            .clone()
-            .map(|name| format!("chart-thumbnails/{airport_id}/{name}")),
-        thumbnail_url: thumbnail_filename
-            .map(|name| format!("/chart-thumbnails/{airport_id}/{name}")),
+        thumbnail_path: csup.thumbnail_path.clone(),
+        thumbnail_url: csup.thumbnail_path.as_ref().map(|path| format!("/{path}")),
     }
 }
 
@@ -324,11 +339,17 @@ fn folder_category(kind: &str, label: &str) -> String {
         return "csup".to_string();
     }
     let normalized = label.to_uppercase();
-    if normalized.contains("AIRPORT DIAGRAM") {
+    if normalized.contains("HOT SPOT")
+        || normalized.contains("HOT_OR_HOT")
+        || normalized.contains("HOT-SPOT")
+    {
+        "hotspot".to_string()
+    } else if normalized.contains("AIRPORT DIAGRAM") {
         "airport-diagram".to_string()
     } else if normalized.starts_with("MIN-")
         || normalized.contains("TAKEOFF MINIMUMS")
         || normalized.contains("ALTERNATE MINIMUMS")
+        || normalized.contains("MINIMUMS")
     {
         "takeoff-mins".to_string()
     } else if normalized.starts_with("DP-")
@@ -353,13 +374,14 @@ fn raw_label_from_asset_path(asset_path: &str) -> &str {
 
 fn folder_category_rank(category: &str) -> usize {
     match category {
-        "airport-diagram" => 0,
-        "csup" => 1,
-        "takeoff-mins" => 2,
-        "approach" => 3,
-        "departure" => 4,
-        "star" => 5,
-        _ => 6,
+        "approach" => 0,
+        "departure" => 1,
+        "star" => 2,
+        "airport-diagram" => 3,
+        "csup" => 4,
+        "takeoff-mins" => 5,
+        "hotspot" => 6,
+        _ => 7,
     }
 }
 
@@ -425,8 +447,17 @@ mod tests {
 
         let page = derive_chart_page(&resource_index, &plan);
 
-        assert_eq!(page.airports.iter().map(|airport| airport.id.as_str()).collect::<Vec<_>>(), vec!["KSEA"]);
-        assert_eq!(page.airports[0].charts[0].folder_category, "airport-diagram");
+        assert_eq!(
+            page.airports
+                .iter()
+                .map(|airport| airport.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["KSEA"]
+        );
+        assert_eq!(
+            page.airports[0].charts[0].folder_category,
+            "airport-diagram"
+        );
     }
 
     #[test]
@@ -496,7 +527,223 @@ mod tests {
 
         assert_eq!(state.recent_airport_ids, vec!["KSEA".to_string()]);
         assert_eq!(state.selected_airport_id, "KSEA");
-        assert_eq!(state.selected_chart_id, "plate:KSEA:APD-WA-AIRPORT DIAGRAM.png");
+        assert_eq!(
+            state.selected_chart_id,
+            "plate:KSEA:APD-WA-AIRPORT DIAGRAM.png"
+        );
         assert_eq!(state.airports[0].id, "KSEA");
+    }
+
+    #[test]
+    fn orders_airport_options_by_terminal_fields_then_route_components() {
+        let resource_index = ResourceIndexChartPageInput {
+            airport_resources: vec![
+                ResourceAirportResources {
+                    airport_id: "KPAE".to_string(),
+                    plate_ids: vec!["p1".to_string()],
+                    csup_ids: vec![],
+                },
+                ResourceAirportResources {
+                    airport_id: "KSFO".to_string(),
+                    plate_ids: vec!["p2".to_string()],
+                    csup_ids: vec![],
+                },
+                ResourceAirportResources {
+                    airport_id: "KUAO".to_string(),
+                    plate_ids: vec!["p3".to_string()],
+                    csup_ids: vec![],
+                },
+            ],
+            plates: vec![
+                ResourcePlate {
+                    id: "p1".to_string(),
+                    airport_id: "KPAE".to_string(),
+                    package_id: "NW_TPP".to_string(),
+                    asset_path: "plates/PAE/IAP-WA-RNAV RWY 16R.png".to_string(),
+                    thumbnail_path: None,
+                    label: "RNAV RWY 16R".to_string(),
+                    asset_kind: "plate".to_string(),
+                },
+                ResourcePlate {
+                    id: "p2".to_string(),
+                    airport_id: "KSFO".to_string(),
+                    package_id: "SW_TPP".to_string(),
+                    asset_path: "plates/SFO/IAP-CA-RNAV RWY 28R.png".to_string(),
+                    thumbnail_path: None,
+                    label: "RNAV RWY 28R".to_string(),
+                    asset_kind: "plate".to_string(),
+                },
+                ResourcePlate {
+                    id: "p3".to_string(),
+                    airport_id: "KUAO".to_string(),
+                    package_id: "NW_TPP".to_string(),
+                    asset_path: "plates/UAO/IAP-OR-RNAV RWY 35.png".to_string(),
+                    thumbnail_path: None,
+                    label: "RNAV RWY 35".to_string(),
+                    asset_kind: "plate".to_string(),
+                },
+            ],
+            csups: vec![],
+        };
+        let plan = FlightPlan {
+            id: "1".to_string(),
+            name: "plan".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KSFO".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KUAO".to_string()),
+                },
+            ],
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KUAO".to_string())),
+            destination: Some(AirportId("KPAE".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let state = derive_chart_page_state(
+            &resource_index,
+            &plan,
+            &["KUAO".to_string(), "KSFO".to_string(), "KPAE".to_string()],
+            Some("KUAO"),
+            None,
+        );
+
+        assert_eq!(
+            state
+                .airports
+                .iter()
+                .map(|airport| airport.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["KUAO", "KPAE", "KSFO"]
+        );
+        assert_eq!(state.selected_airport_id, "KUAO");
+    }
+
+    #[test]
+    fn orders_plate_folder_by_core_policy() {
+        let resource_index = ResourceIndexChartPageInput {
+            airport_resources: vec![ResourceAirportResources {
+                airport_id: "KUAO".to_string(),
+                plate_ids: vec![
+                    "hot".to_string(),
+                    "min".to_string(),
+                    "apd".to_string(),
+                    "star".to_string(),
+                    "dp".to_string(),
+                    "iap".to_string(),
+                ],
+                csup_ids: vec!["csup".to_string()],
+            }],
+            plates: vec![
+                ResourcePlate {
+                    id: "hot".to_string(),
+                    airport_id: "KUAO".to_string(),
+                    package_id: "NW_TPP".to_string(),
+                    asset_path: "plates/UAO/HOT_OR_HOT SPOT-0.png".to_string(),
+                    thumbnail_path: None,
+                    label: "Hot Spot".to_string(),
+                    asset_kind: "plate".to_string(),
+                },
+                ResourcePlate {
+                    id: "min".to_string(),
+                    airport_id: "KUAO".to_string(),
+                    package_id: "NW_TPP".to_string(),
+                    asset_path: "plates/UAO/MIN-TAKEOFF MINIMUMS.png".to_string(),
+                    thumbnail_path: None,
+                    label: "Takeoff Minimums".to_string(),
+                    asset_kind: "plate".to_string(),
+                },
+                ResourcePlate {
+                    id: "apd".to_string(),
+                    airport_id: "KUAO".to_string(),
+                    package_id: "NW_TPP".to_string(),
+                    asset_path: "plates/UAO/APD-OR-AIRPORT DIAGRAM.png".to_string(),
+                    thumbnail_path: None,
+                    label: "Airport Diagram".to_string(),
+                    asset_kind: "plate".to_string(),
+                },
+                ResourcePlate {
+                    id: "star".to_string(),
+                    airport_id: "KUAO".to_string(),
+                    package_id: "NW_TPP".to_string(),
+                    asset_path: "plates/UAO/STAR-OR-BUXOM ARRIVAL.png".to_string(),
+                    thumbnail_path: None,
+                    label: "BUXOM Arrival".to_string(),
+                    asset_kind: "plate".to_string(),
+                },
+                ResourcePlate {
+                    id: "dp".to_string(),
+                    airport_id: "KUAO".to_string(),
+                    package_id: "NW_TPP".to_string(),
+                    asset_path: "plates/UAO/DP-OR-WESLA TWO.png".to_string(),
+                    thumbnail_path: None,
+                    label: "WESLA TWO".to_string(),
+                    asset_kind: "plate".to_string(),
+                },
+                ResourcePlate {
+                    id: "iap".to_string(),
+                    airport_id: "KUAO".to_string(),
+                    package_id: "NW_TPP".to_string(),
+                    asset_path: "plates/UAO/IAP-OR-RNAV (GPS) RWY 35.png".to_string(),
+                    thumbnail_path: None,
+                    label: "RNAV (GPS) RWY 35".to_string(),
+                    asset_kind: "plate".to_string(),
+                },
+            ],
+            csups: vec![ResourceCsup {
+                id: "csup".to_string(),
+                airport_id: "KUAO".to_string(),
+                package_id: "NW_CSUP".to_string(),
+                asset_path: "csup/UAO/page1.png".to_string(),
+                thumbnail_path: None,
+                label: "Chart Supplement".to_string(),
+                asset_kind: "csup".to_string(),
+            }],
+        };
+        let plan = FlightPlan {
+            id: "1".to_string(),
+            name: "plan".to_string(),
+            legs: Vec::new(),
+            route_components: Vec::new(),
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KUAO".to_string())),
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let page = derive_chart_page(&resource_index, &plan);
+
+        assert_eq!(
+            page.airports[0]
+                .charts
+                .iter()
+                .map(|chart| chart.folder_category.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "approach",
+                "departure",
+                "star",
+                "airport-diagram",
+                "csup",
+                "takeoff-mins",
+                "hotspot"
+            ]
+        );
     }
 }

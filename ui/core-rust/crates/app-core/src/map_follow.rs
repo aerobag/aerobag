@@ -76,12 +76,7 @@ impl MapFollowSessionState {
             self.following = false;
             return;
         };
-        let point = world_to_screen(
-            viewport,
-            lat_lon_to_world(position),
-            width_px,
-            height_px,
-        );
+        let point = world_to_screen(viewport, lat_lon_to_world(position), width_px, height_px);
         if !point.x.is_finite()
             || !point.y.is_finite()
             || point.x < 0.0
@@ -132,7 +127,8 @@ fn lat_lon_to_world(position: LatLon) -> WorldPoint {
     let clamped_lat = position.lat.clamp(-MAX_LATITUDE, MAX_LATITUDE);
     WorldPoint {
         x: ((position.lon + 180.0) / 360.0) * WORLD_SIZE,
-        y: ((1.0 - clamped_lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0) * WORLD_SIZE,
+        y: ((1.0 - clamped_lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0)
+            * WORLD_SIZE,
     }
 }
 
@@ -180,7 +176,10 @@ mod tests {
     fn engage_centers_on_ownship() {
         let mut state = MapFollowSessionState::default();
         let viewport = MapViewport {
-            center: LatLon { lat: 40.0, lon: -120.0 },
+            center: LatLon {
+                lat: 40.0,
+                lon: -120.0,
+            },
             zoom: 8.0,
             rotation_deg: 0.0,
             pitch_deg: 0.0,
@@ -196,7 +195,10 @@ mod tests {
         let mut state = MapFollowSessionState::default();
         let ownship = ownship(47.5, -122.3);
         let viewport = MapViewport {
-            center: LatLon { lat: 47.5, lon: -122.3 },
+            center: LatLon {
+                lat: 47.5,
+                lon: -122.3,
+            },
             zoom: 8.0,
             rotation_deg: 0.0,
             pitch_deg: 0.0,
@@ -211,7 +213,10 @@ mod tests {
     fn sync_for_viewport_updates_anchor_from_ownship_screen_position() {
         let mut state = MapFollowSessionState::default();
         let viewport = MapViewport {
-            center: LatLon { lat: 47.5, lon: -122.3 },
+            center: LatLon {
+                lat: 47.5,
+                lon: -122.3,
+            },
             zoom: 8.0,
             rotation_deg: 0.0,
             pitch_deg: 0.0,
@@ -228,7 +233,10 @@ mod tests {
     fn sync_for_viewport_disengages_when_ownship_leaves_viewport() {
         let mut state = MapFollowSessionState::default();
         let viewport = MapViewport {
-            center: LatLon { lat: 47.5, lon: -122.3 },
+            center: LatLon {
+                lat: 47.5,
+                lon: -122.3,
+            },
             zoom: 8.0,
             rotation_deg: 0.0,
             pitch_deg: 0.0,

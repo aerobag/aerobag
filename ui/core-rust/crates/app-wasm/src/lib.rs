@@ -121,8 +121,14 @@ pub fn replace_airway_from_selection_ui(
     entry_json: &str,
     exit_json: &str,
 ) -> Result<String, JsValue> {
-    replace_airway_from_selection_ui_json(db_path, plan_json, component_index, entry_json, exit_json)
-        .map_err(|err| JsValue::from_str(&err))
+    replace_airway_from_selection_ui_json(
+        db_path,
+        plan_json,
+        component_index,
+        entry_json,
+        exit_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -273,14 +279,8 @@ pub fn web_suggest_waypoint_identifiers(
     prefix: &str,
     limit: usize,
 ) -> Result<String, JsValue> {
-    web_navdb::suggest_waypoint_identifiers_json(
-        plan_json,
-        component_index,
-        before,
-        prefix,
-        limit,
-    )
-    .map_err(|err| JsValue::from_str(&err))
+    web_navdb::suggest_waypoint_identifiers_json(plan_json, component_index, before, prefix, limit)
+        .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -394,8 +394,14 @@ pub fn describe_load_procedure_from_plate(
     kind_json: &str,
     options_json: &str,
 ) -> Result<String, JsValue> {
-    describe_load_procedure_from_plate_json(plan_json, airport_id, procedure_id, kind_json, options_json)
-        .map_err(|err| JsValue::from_str(&err))
+    describe_load_procedure_from_plate_json(
+        plan_json,
+        airport_id,
+        procedure_id,
+        kind_json,
+        options_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -413,10 +419,7 @@ pub fn web_project_flight_plan_route(plan_json: &str) -> Result<String, JsValue>
 }
 
 #[wasm_bindgen]
-pub fn web_list_procedures(
-    airport_id: &str,
-    kind_json: &str,
-) -> Result<String, JsValue> {
+pub fn web_list_procedures(airport_id: &str, kind_json: &str) -> Result<String, JsValue> {
     web_navdb::list_procedures_json(airport_id, kind_json).map_err(|err| JsValue::from_str(&err))
 }
 
@@ -451,10 +454,7 @@ pub fn web_materialize_procedure(
 }
 
 #[wasm_bindgen]
-pub fn web_find_procedure_plate_match(
-    airport_id: &str,
-    cifp_id: &str,
-) -> Result<String, JsValue> {
+pub fn web_find_procedure_plate_match(airport_id: &str, cifp_id: &str) -> Result<String, JsValue> {
     web_navdb::find_procedure_plate_match_json(airport_id, cifp_id)
         .map_err(|err| JsValue::from_str(&err))
 }
@@ -577,6 +577,26 @@ pub fn create_ui_session(
 }
 
 #[wasm_bindgen]
+pub fn create_ui_session_snapshot(
+    catalog_json: &str,
+    chart_catalog_json: &str,
+    plan_json: &str,
+    recent_airport_ids_json: &str,
+    selected_airport_id_json: &str,
+    selected_chart_id_json: &str,
+) -> Result<String, JsValue> {
+    create_ui_session_snapshot_json(
+        catalog_json,
+        chart_catalog_json,
+        plan_json,
+        recent_airport_ids_json,
+        selected_airport_id_json,
+        selected_chart_id_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn remove_leg_in_session(handle: u32, index: usize) -> Result<String, JsValue> {
     remove_leg_in_session_json(handle, index).map_err(|err| JsValue::from_str(&err))
 }
@@ -615,10 +635,7 @@ pub fn update_ownship_source_status_in_session(
 }
 
 #[wasm_bindgen]
-pub fn push_situation_sample_in_session(
-    handle: u32,
-    sample_json: &str,
-) -> Result<String, JsValue> {
+pub fn push_situation_sample_in_session(handle: u32, sample_json: &str) -> Result<String, JsValue> {
     push_situation_sample_in_session_json(handle, sample_json)
         .map_err(|err| JsValue::from_str(&err))
 }
@@ -643,8 +660,12 @@ pub fn engage_map_follow_in_session(handle: u32, viewport_json: &str) -> Result<
 }
 
 #[wasm_bindgen]
-pub fn disengage_map_follow_in_session(handle: u32, viewport_json: &str) -> Result<String, JsValue> {
-    disengage_map_follow_in_session_json(handle, viewport_json).map_err(|err| JsValue::from_str(&err))
+pub fn disengage_map_follow_in_session(
+    handle: u32,
+    viewport_json: &str,
+) -> Result<String, JsValue> {
+    disengage_map_follow_in_session_json(handle, viewport_json)
+        .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -771,13 +792,30 @@ pub fn restore_chart_page_state_in_session(
 }
 
 #[wasm_bindgen]
+pub fn replace_chart_catalog_in_session(
+    handle: u32,
+    chart_catalog_json: &str,
+    recent_airport_ids_json: &str,
+    selected_airport_id_json: &str,
+    selected_chart_id_json: &str,
+) -> Result<String, JsValue> {
+    replace_chart_catalog_in_session_json(
+        handle,
+        chart_catalog_json,
+        recent_airport_ids_json,
+        selected_airport_id_json,
+        selected_chart_id_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn destroy_session(handle: u32) {
     destroy_session_json(handle)
 }
 
 fn load_catalog_json(catalog_json: &str) -> Result<String, String> {
-    let handle =
-        app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
+    let handle = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
     serde_json::to_string(&handle).map_err(|err| err.to_string())
 }
 
@@ -824,8 +862,8 @@ fn move_component_ui_json(
 ) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation =
-        app_core::move_component_ui(&plan, component_index, delta).map_err(|err| err.to_string())?;
+    let mutation = app_core::move_component_ui(&plan, component_index, delta)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
@@ -873,12 +911,9 @@ fn activate_direct_to_leg_ui_json(
 ) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::activate_direct_to_leg_ui(
-        &plan,
-        app_core::LatLon { lat, lon },
-        target_leg_id,
-    )
-    .map_err(|err| err.to_string())?;
+    let mutation =
+        app_core::activate_direct_to_leg_ui(&plan, app_core::LatLon { lat, lon }, target_leg_id)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
@@ -1133,13 +1168,9 @@ fn describe_procedure_options_from_rows_json(
         serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
     let rows: Vec<app_core::ProcedureDistinctRow> =
         serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
-    let options = app_core::describe_procedure_options_from_rows(
-        airport_id,
-        procedure_id,
-        kind,
-        rows,
-    )
-    .map_err(|err| err.to_string())?;
+    let options =
+        app_core::describe_procedure_options_from_rows(airport_id, procedure_id, kind, rows)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&options).map_err(|err| err.to_string())
 }
 
@@ -1215,9 +1246,14 @@ fn describe_load_procedure_from_plate_json(
         serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
     let options: app_core::ProcedureOptions =
         serde_json::from_str(options_json).map_err(|err| err.to_string())?;
-    let description =
-        app_core::describe_load_procedure_from_plate(&plan, airport_id, procedure_id, kind, options)
-            .map_err(|err| err.to_string())?;
+    let description = app_core::describe_load_procedure_from_plate(
+        &plan,
+        airport_id,
+        procedure_id,
+        kind,
+        options,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&description).map_err(|err| err.to_string())
 }
 
@@ -1363,12 +1399,9 @@ fn refresh_content_ui_state_json(
     serde_json::to_string(&app_core::project_app_ui_state(&next)).map_err(|err| err.to_string())
 }
 
-fn derive_chart_page_json(
-    resource_index_json: &str,
-    plan_json: &str,
-) -> Result<String, String> {
-    let resource_index =
-        app_core::load_resource_index_chart_page_input(resource_index_json).map_err(|err| err.to_string())?;
+fn derive_chart_page_json(resource_index_json: &str, plan_json: &str) -> Result<String, String> {
+    let resource_index = app_core::load_resource_index_chart_page_input(resource_index_json)
+        .map_err(|err| err.to_string())?;
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let chart_page = app_core::derive_chart_page(&resource_index, &plan);
@@ -1376,8 +1409,8 @@ fn derive_chart_page_json(
 }
 
 fn derive_chart_catalog_json(resource_index_json: &str) -> Result<String, String> {
-    let resource_index =
-        app_core::load_resource_index_chart_page_input(resource_index_json).map_err(|err| err.to_string())?;
+    let resource_index = app_core::load_resource_index_chart_page_input(resource_index_json)
+        .map_err(|err| err.to_string())?;
     let chart_catalog = app_core::build_chart_catalog(&resource_index);
     serde_json::to_string(&chart_catalog).map_err(|err| err.to_string())
 }
@@ -1389,8 +1422,8 @@ fn derive_chart_page_state_json(
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
 ) -> Result<String, String> {
-    let resource_index =
-        app_core::load_resource_index_chart_page_input(resource_index_json).map_err(|err| err.to_string())?;
+    let resource_index = app_core::load_resource_index_chart_page_input(resource_index_json)
+        .map_err(|err| err.to_string())?;
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let recent_airport_ids: Vec<String> =
@@ -1437,6 +1470,38 @@ fn create_ui_session_json(
     serde_json::to_string(&result).map_err(|err| err.to_string())
 }
 
+fn create_ui_session_snapshot_json(
+    catalog_json: &str,
+    chart_catalog_json: &str,
+    plan_json: &str,
+    recent_airport_ids_json: &str,
+    selected_airport_id_json: &str,
+    selected_chart_id_json: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let recent_airport_ids: Vec<String> =
+        serde_json::from_str(recent_airport_ids_json).map_err(|err| err.to_string())?;
+    let selected_airport_id: Option<String> =
+        serde_json::from_str(selected_airport_id_json).map_err(|err| err.to_string())?;
+    let selected_chart_id: Option<String> =
+        serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
+    let result = app_core::create_ui_session(
+        catalog_json,
+        chart_catalog_json,
+        plan,
+        &recent_airport_ids,
+        selected_airport_id.as_deref(),
+        selected_chart_id.as_deref(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&serde_json::json!({
+        "handle": result.handle,
+        "snapshot": result.snapshot,
+    }))
+    .map_err(|err| err.to_string())
+}
+
 fn remove_leg_in_session_json(handle: u32, index: usize) -> Result<String, String> {
     let snapshot = app_core::remove_leg_in_session(handle, index).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
@@ -1453,7 +1518,8 @@ fn move_waypoint_in_session_json(
 }
 
 fn select_airport_in_session_json(handle: u32, airport_id_json: &str) -> Result<String, String> {
-    let airport_id: String = serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
+    let airport_id: String =
+        serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
     let snapshot =
         app_core::select_airport_in_session(handle, &airport_id).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
@@ -1481,10 +1547,7 @@ fn update_ownship_source_status_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn push_situation_sample_in_session_json(
-    handle: u32,
-    sample_json: &str,
-) -> Result<String, String> {
+fn push_situation_sample_in_session_json(handle: u32, sample_json: &str) -> Result<String, String> {
     let sample: app_core::SituationSample =
         serde_json::from_str(sample_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::push_situation_sample_in_session(handle, sample)
@@ -1492,7 +1555,10 @@ fn push_situation_sample_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn select_ownship_source_in_session_json(handle: u32, selection_json: &str) -> Result<String, String> {
+fn select_ownship_source_in_session_json(
+    handle: u32,
+    selection_json: &str,
+) -> Result<String, String> {
     let selection: app_core::OwnshipSelectionCommand =
         serde_json::from_str(selection_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::select_ownship_source_in_session(handle, selection)
@@ -1503,8 +1569,8 @@ fn select_ownship_source_in_session_json(handle: u32, selection_json: &str) -> R
 fn set_situation_in_session_json(handle: u32, situation_json: &str) -> Result<String, String> {
     let situation: app_core::Situation =
         serde_json::from_str(situation_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_situation_in_session(handle, situation)
-        .map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::set_situation_in_session(handle, situation).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -1516,7 +1582,10 @@ fn engage_map_follow_in_session_json(handle: u32, viewport_json: &str) -> Result
     serde_json::to_string(&update).map_err(|err| err.to_string())
 }
 
-fn disengage_map_follow_in_session_json(handle: u32, viewport_json: &str) -> Result<String, String> {
+fn disengage_map_follow_in_session_json(
+    handle: u32,
+    viewport_json: &str,
+) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::disengage_map_follow_in_session(handle, viewport)
@@ -1534,7 +1603,7 @@ fn set_map_follow_offset_in_session_json(
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
     let snapshot =
         app_core::set_map_follow_offset_in_session(handle, viewport, offset_x_px, offset_y_px)
-        .map_err(|err| err.to_string())?;
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -1665,6 +1734,32 @@ fn restore_chart_page_state_in_session_json(
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::restore_chart_page_state_in_session(
         handle,
+        &recent_airport_ids,
+        selected_airport_id.as_deref(),
+        selected_chart_id.as_deref(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn replace_chart_catalog_in_session_json(
+    handle: u32,
+    chart_catalog_json: &str,
+    recent_airport_ids_json: &str,
+    selected_airport_id_json: &str,
+    selected_chart_id_json: &str,
+) -> Result<String, String> {
+    let chart_catalog: app_core::DerivedChartCatalog =
+        serde_json::from_str(chart_catalog_json).map_err(|err| err.to_string())?;
+    let recent_airport_ids: Vec<String> =
+        serde_json::from_str(recent_airport_ids_json).map_err(|err| err.to_string())?;
+    let selected_airport_id: Option<String> =
+        serde_json::from_str(selected_airport_id_json).map_err(|err| err.to_string())?;
+    let selected_chart_id: Option<String> =
+        serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::replace_chart_catalog_in_session(
+        handle,
+        chart_catalog,
         &recent_airport_ids,
         selected_airport_id.as_deref(),
         selected_chart_id.as_deref(),
@@ -1899,8 +1994,18 @@ mod tests {
         let next_json = activate_leg_ui_json(&plan_json, 1).unwrap();
         let next: app_core::FlightPlanUiMutation = serde_json::from_str(&next_json).unwrap();
 
-        assert_eq!(next.ui_state.guidance.as_ref().unwrap().active_leg_index, Some(1));
-        assert_eq!(next.ui_state.guidance.as_ref().unwrap().active_component_index, Some(1));
+        assert_eq!(
+            next.ui_state.guidance.as_ref().unwrap().active_leg_index,
+            Some(1)
+        );
+        assert_eq!(
+            next.ui_state
+                .guidance
+                .as_ref()
+                .unwrap()
+                .active_component_index,
+            Some(1)
+        );
     }
 
     #[test]
@@ -1939,7 +2044,10 @@ mod tests {
         let next: app_core::AirwayPlanUiMutation = serde_json::from_str(&next_json).unwrap();
 
         assert_eq!(next.mutation.component_index, 1);
-        assert!(matches!(next.ui_state.components[1].kind, app_core::RouteComponentViewKind::Airway));
+        assert!(matches!(
+            next.ui_state.components[1].kind,
+            app_core::RouteComponentViewKind::Airway
+        ));
     }
 
     #[test]
@@ -1979,7 +2087,10 @@ mod tests {
         let next: app_core::ProcedurePlanUiMutation = serde_json::from_str(&next_json).unwrap();
 
         assert_eq!(next.mutation.component_index, 1);
-        assert!(matches!(next.ui_state.components[1].kind, app_core::RouteComponentViewKind::Procedure));
+        assert!(matches!(
+            next.ui_state.components[1].kind,
+            app_core::RouteComponentViewKind::Procedure
+        ));
     }
 
     #[test]
@@ -2011,7 +2122,12 @@ mod tests {
         .unwrap();
 
         let refreshed: app_core::AppState = serde_json::from_str(&refreshed_json).unwrap();
-        assert!(refreshed.last_content_report.as_ref().unwrap().fully_satisfied);
+        assert!(
+            refreshed
+                .last_content_report
+                .as_ref()
+                .unwrap()
+                .fully_satisfied
+        );
     }
-
 }

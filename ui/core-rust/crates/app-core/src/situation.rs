@@ -19,7 +19,10 @@ impl SituationPosition {
     pub fn lat_lon(&self) -> Option<LatLon> {
         match self {
             Self::None => None,
-            Self::LatLon { lat, lon } => Some(LatLon { lat: *lat, lon: *lon }),
+            Self::LatLon { lat, lon } => Some(LatLon {
+                lat: *lat,
+                lon: *lon,
+            }),
         }
     }
 }

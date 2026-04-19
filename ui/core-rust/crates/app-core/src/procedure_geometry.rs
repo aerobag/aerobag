@@ -1,5 +1,5 @@
-use crate::{LatLon, LegDisplayElement, LegDisplayPath, ProcedureLegMaterializationRecord};
 use crate::planning::LegDisplayPathStyle;
+use crate::{LatLon, LegDisplayElement, LegDisplayPath, ProcedureLegMaterializationRecord};
 
 const NOMINAL_HOLD_GROUND_SPEED_KT: f64 = 120.0;
 const STANDARD_RATE_TURN_DEG_PER_SEC: f64 = 3.0;
@@ -18,7 +18,8 @@ pub fn display_path_for_procedure_leg(
     }
     let arrival_course_deg = procedure_arrival_course_deg(leg_start, leg_end);
     if let Some(hold) = hold_record {
-        if let Some(path) = missed_approach_display_path(segment_records, leg_start, leg_end, hold) {
+        if let Some(path) = missed_approach_display_path(segment_records, leg_start, leg_end, hold)
+        {
             return Some(path);
         }
         let mut path = hold_display_path(hold, arrival_course_deg)?;
@@ -26,7 +27,8 @@ pub fn display_path_for_procedure_leg(
             let start = leg_start.nav_position?;
             let fix = hold.nav_position?;
             if distance_between_points_nm(start, fix) > 0.05 {
-                path.elements.insert(0, LegDisplayElement::Segment { start, end: fix });
+                path.elements
+                    .insert(0, LegDisplayElement::Segment { start, end: fix });
             }
         }
         return Some(path);
@@ -94,19 +96,11 @@ fn procedure_turn_display_path(leg: &ProcedureLegMaterializationRecord) -> Optio
         nominal_procedure_turn_barb_distance_nm(),
     );
     let turn_radius_nm = missed_approach_turn_radius_nm();
-    let turn_center = turn_center_for_heading_change(
-        barb_end,
-        barb_course_deg,
-        clockwise,
-        turn_radius_nm,
-    );
+    let turn_center =
+        turn_center_for_heading_change(barb_end, barb_course_deg, clockwise, turn_radius_nm);
     let return_heading_deg = normalize_bearing_degrees(barb_course_deg + 180.0);
-    let intercept_start = point_on_turn_center(
-        turn_center,
-        return_heading_deg,
-        clockwise,
-        turn_radius_nm,
-    );
+    let intercept_start =
+        point_on_turn_center(turn_center, return_heading_deg, clockwise, turn_radius_nm);
     let inbound_course_deg = normalize_bearing_degrees(outbound_course_deg + 180.0);
     let intercept = intersect_heading_with_course(
         intercept_start,
@@ -165,14 +159,17 @@ fn missed_approach_display_path(
         return None;
     }
     let mut current_position = leg_start.nav_position?;
-    let mut current_course_deg =
-        leg_start.magnetic_course_deg.map(|course| course + course_reference_variation_deg(leg_start));
+    let mut current_course_deg = leg_start
+        .magnetic_course_deg
+        .map(|course| course + course_reference_variation_deg(leg_start));
     let mut current_altitude_ft = leg_start.altitude_1_ft;
     let mut elements = Vec::new();
 
     let mut steps = segment_records
         .iter()
-        .filter(|record| record.sequence > leg_start.sequence && record.sequence <= hold_record.sequence)
+        .filter(|record| {
+            record.sequence > leg_start.sequence && record.sequence <= hold_record.sequence
+        })
         .collect::<Vec<_>>();
     steps.sort_by_key(|record| record.sequence);
 
@@ -191,7 +188,8 @@ fn missed_approach_display_path(
                 let target_alt_ft = step.altitude_1_ft?;
                 let climb_minutes =
                     ((target_alt_ft - start_alt_ft).max(0.0)) / NOMINAL_MISSED_APPROACH_CLIMB_FTPM;
-                let climb_distance_nm = NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT * (climb_minutes / 60.0);
+                let climb_distance_nm =
+                    NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT * (climb_minutes / 60.0);
                 let climb_end = destination_point(current_position, course_deg, climb_distance_nm);
                 elements.push(LegDisplayElement::Segment {
                     start: current_position,
@@ -217,8 +215,8 @@ fn missed_approach_display_path(
                         && !raw_turn_direction.is_empty()
                     {
                         let next_magnetic_course_deg = next_step.magnetic_course_deg?;
-                        let next_course_deg =
-                            next_step.magnetic_course_deg? + course_reference_variation_deg(next_step);
+                        let next_course_deg = next_step.magnetic_course_deg?
+                            + course_reference_variation_deg(next_step);
                         if angular_difference_degrees(
                             step.magnetic_course_deg?,
                             next_magnetic_course_deg,
@@ -250,8 +248,8 @@ fn missed_approach_display_path(
                         && next_step.defining_nav_position.is_some()
                     {
                         let next_fix = next_step.nav_position?;
-                        let next_course_deg =
-                            next_step.magnetic_course_deg? + course_reference_variation_deg(next_step);
+                        let next_course_deg = next_step.magnetic_course_deg?
+                            + course_reference_variation_deg(next_step);
                         let next_defining_nav = next_step.defining_nav_position?;
                         let mut found_delayed_start = None;
                         for extra_straight_nm in (0..=8).map(|index| index as f64 * 0.25) {
@@ -295,7 +293,8 @@ fn missed_approach_display_path(
                                 break;
                             }
                         }
-                        if let Some((candidate_turn_start, extra_straight_nm)) = found_delayed_start {
+                        if let Some((candidate_turn_start, extra_straight_nm)) = found_delayed_start
+                        {
                             if extra_straight_nm > MAX_EXTRA_STRAIGHT_BEFORE_VI_TURN_NM {
                                 // Guard against silently inventing a long straight-ahead extension
                                 // just to make a coded VI->CF join numerically work. If the turn
@@ -394,19 +393,28 @@ fn missed_approach_display_path(
             "CF" => {
                 let fix = step.nav_position?;
                 let course_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
-                if step.turn_direction.as_deref().unwrap_or("").trim().is_empty() {
+                if step
+                    .turn_direction
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+                {
                     if let (Some(current_heading_deg), Some(start_alt_ft), Some(target_alt_ft)) =
                         (current_course_deg, current_altitude_ft, step.altitude_1_ft)
                     {
                         if target_alt_ft > start_alt_ft + 50.0
                             && angular_difference_degrees(current_heading_deg, course_deg) <= 5.0
                         {
-                            let climb_minutes = (target_alt_ft - start_alt_ft)
-                                / NOMINAL_MISSED_APPROACH_CLIMB_FTPM;
-                            let climb_distance_nm = NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT
-                                * (climb_minutes / 60.0);
-                            let climb_end =
-                                destination_point(current_position, current_heading_deg, climb_distance_nm);
+                            let climb_minutes =
+                                (target_alt_ft - start_alt_ft) / NOMINAL_MISSED_APPROACH_CLIMB_FTPM;
+                            let climb_distance_nm =
+                                NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT * (climb_minutes / 60.0);
+                            let climb_end = destination_point(
+                                current_position,
+                                current_heading_deg,
+                                climb_distance_nm,
+                            );
                             if distance_between_points_nm(current_position, climb_end) > 0.05 {
                                 elements.push(LegDisplayElement::Segment {
                                     start: current_position,
@@ -459,8 +467,12 @@ fn missed_approach_display_path(
                                 course_deg,
                                 fix,
                             )?;
-                            let intercept_is_reasonable =
-                                cf_intercept_is_reasonable(intercept, defining_nav, course_deg, fix);
+                            let intercept_is_reasonable = cf_intercept_is_reasonable(
+                                intercept,
+                                defining_nav,
+                                course_deg,
+                                fix,
+                            );
                             if intercept_is_reasonable {
                                 if distance_between_points_nm(current_position, intercept) > 0.05 {
                                     elements.push(LegDisplayElement::Segment {
@@ -515,7 +527,10 @@ fn missed_approach_display_path(
             _ => {}
         }
     }
-    Some(LegDisplayPath { style: LegDisplayPathStyle::Solid, elements })
+    Some(LegDisplayPath {
+        style: LegDisplayPathStyle::Solid,
+        elements,
+    })
 }
 
 fn course_reference_variation_deg(leg: &ProcedureLegMaterializationRecord) -> f64 {
@@ -607,7 +622,11 @@ fn tangent_rejoin_from_turn(
             }
             Some((turn_end, rejoin_course_deg, sweep_degrees))
         })
-        .max_by(|left, right| left.2.partial_cmp(&right.2).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|left, right| {
+            left.2
+                .partial_cmp(&right.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .map(|(turn_end, rejoin_course_deg, _)| (turn_end, rejoin_course_deg))
 }
 
@@ -676,12 +695,8 @@ fn directed_cf_join_elements(
         turn_clockwise,
         turn_radius_nm,
     );
-    let turn_end_from_center = point_on_turn_center(
-        turn_center,
-        course_deg,
-        turn_clockwise,
-        turn_radius_nm,
-    );
+    let turn_end_from_center =
+        point_on_turn_center(turn_center, course_deg, turn_clockwise, turn_radius_nm);
     let mut elements = Vec::new();
     if distance_between_points_nm(current_position, turn_start) > 0.05 {
         elements.push(LegDisplayElement::Segment {
@@ -696,11 +711,7 @@ fn directed_cf_join_elements(
             start: turn_start,
             end: turn_end_from_center,
             clockwise: turn_clockwise,
-            sweep_degrees: heading_sweep_degrees(
-                current_heading_deg,
-                course_deg,
-                turn_clockwise,
-            ),
+            sweep_degrees: heading_sweep_degrees(current_heading_deg, course_deg, turn_clockwise),
         });
     }
     if distance_between_points_nm(turn_end_from_center, fix) > 0.05 {
@@ -726,7 +737,8 @@ fn best_near_reciprocal_cf_join(
         normalize_bearing_degrees(course_deg - NOMINAL_COURSE_INTERCEPT_ANGLE_DEG),
         normalize_bearing_degrees(course_deg + NOMINAL_COURSE_INTERCEPT_ANGLE_DEG),
     ] {
-        let sweep = heading_sweep_degrees(current_heading_deg, intercept_heading_deg, turn_clockwise);
+        let sweep =
+            heading_sweep_degrees(current_heading_deg, intercept_heading_deg, turn_clockwise);
         let debug_knvd = (fix.lat - 37.941028).abs() < 0.01 && (fix.lon + 94.343094).abs() < 0.01;
         if sweep < 1.0 || sweep > 270.0 {
             if debug_knvd {
@@ -811,12 +823,13 @@ fn best_near_reciprocal_cf_join(
             let intercept_heading_penalty =
                 angular_difference_degrees(intercept_heading_deg, course_deg) * 0.1;
             let on_course_reward = on_course_distance_nm * 25.0;
-            let score = course_alignment_penalty
-                + intercept_heading_penalty
-                + sweep
-                + extra_straight_nm
-                - on_course_reward;
-            if best.as_ref().is_none_or(|(best_score, _)| score < *best_score) {
+            let score =
+                course_alignment_penalty + intercept_heading_penalty + sweep + extra_straight_nm
+                    - on_course_reward;
+            if best
+                .as_ref()
+                .is_none_or(|(best_score, _)| score < *best_score)
+            {
                 if debug_knvd {
                     eprintln!(
                         "knvd_candidate_accept heading={:.1} extra={:.2} score={:.2} on_course_nm={:.2}",
@@ -899,8 +912,13 @@ fn intersect_heading_with_course(
     course_heading_deg: f64,
     course_fix: LatLon,
 ) -> Option<LatLon> {
-    intersect_heading_with_course_core(ray_start, ray_heading_deg, course_anchor, course_heading_deg)
-        .or(Some(course_fix))
+    intersect_heading_with_course_core(
+        ray_start,
+        ray_heading_deg,
+        course_anchor,
+        course_heading_deg,
+    )
+    .or(Some(course_fix))
 }
 
 fn true_intersect_heading_with_course(
@@ -909,7 +927,12 @@ fn true_intersect_heading_with_course(
     course_anchor: LatLon,
     course_heading_deg: f64,
 ) -> Option<LatLon> {
-    intersect_heading_with_course_core(ray_start, ray_heading_deg, course_anchor, course_heading_deg)
+    intersect_heading_with_course_core(
+        ray_start,
+        ray_heading_deg,
+        course_anchor,
+        course_heading_deg,
+    )
 }
 
 fn intersect_heading_with_course_core(
@@ -1005,8 +1028,9 @@ fn build_hold_display_path(
         -lateral.1 * turn_radius_nm,
     );
 
-    let entry_kind = arrival_course_deg
-        .map(|arrival_course_deg| classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise));
+    let entry_kind = arrival_course_deg.map(|arrival_course_deg| {
+        classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise)
+    });
     let mut elements = hold_entry_elements(
         fix,
         inbound_course_deg,

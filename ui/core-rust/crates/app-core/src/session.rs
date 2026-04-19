@@ -9,11 +9,14 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    derive_chart_page_state_from_catalog, load_catalog, move_flight_plan_waypoint, remove_flight_plan_leg,
+    derive_chart_page_state_from_catalog, load_catalog,
     map_follow::{MapFollowSessionState, MapFollowUiState},
-    playback::PlaybackSessionState, planning::NavElementUiView, query_map_overlay, state, AppError, AppErrorKind, AppEvent, AppResult, AppState, AppUiState,
-    CatalogHandle, DerivedChartCatalog, DerivedChartPageState, FlightPlan, MapOverlayQueryResult,
-    LatLon, MapViewport, NavRef, PlaybackUiState, PlanLeg, PointTilePayload,
+    move_flight_plan_waypoint,
+    planning::NavElementUiView,
+    playback::PlaybackSessionState,
+    query_map_overlay, remove_flight_plan_leg, state, AppError, AppErrorKind, AppEvent, AppResult,
+    AppState, AppUiState, CatalogHandle, DerivedChartCatalog, DerivedChartPageState, FlightPlan,
+    LatLon, MapOverlayQueryResult, MapViewport, NavRef, PlanLeg, PlaybackUiState, PointTilePayload,
     SequencingMode, UiSnapshotAppState,
 };
 
@@ -85,7 +88,11 @@ pub fn create_ui_session(
             kind: AppErrorKind::InvalidCatalog,
             message: format!("failed to parse chart catalog json: {err}"),
         })?;
-    let app_state = state::reduce(&AppState::default(), AppEvent::ReplaceFlightPlan(plan.clone()), &catalog)?;
+    let app_state = state::reduce(
+        &AppState::default(),
+        AppEvent::ReplaceFlightPlan(plan.clone()),
+        &catalog,
+    )?;
     let chart_page_state = derive_chart_page_state_from_catalog(
         &chart_catalog,
         &plan,
@@ -480,9 +487,12 @@ pub fn sync_map_follow_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
-    session
-        .map_follow
-        .sync_for_viewport(&session.app_state.ownship.render, viewport, width_px, height_px);
+    session.map_follow.sync_for_viewport(
+        &session.app_state.ownship.render,
+        viewport,
+        width_px,
+        height_px,
+    );
     Ok(snapshot_for_session(session))
 }
 
@@ -505,6 +515,27 @@ pub fn restore_chart_page_state_in_session(
     Ok(snapshot_for_session(session))
 }
 
+pub fn replace_chart_catalog_in_session(
+    handle: u32,
+    chart_catalog: DerivedChartCatalog,
+    recent_airport_ids: &[String],
+    selected_airport_id: Option<&str>,
+    selected_chart_id: Option<&str>,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    session.chart_catalog = chart_catalog;
+    session.chart_page_state = derive_chart_page_state_from_catalog(
+        &session.chart_catalog,
+        &plan,
+        recent_airport_ids,
+        selected_airport_id,
+        selected_chart_id,
+    );
+    Ok(snapshot_for_session(session))
+}
+
 pub fn get_session_snapshot(handle: u32) -> AppResult<UiSessionSnapshot> {
     let sessions = sessions().lock().expect("session store poisoned");
     let session = session_ref(&sessions, handle)?;
@@ -515,9 +546,10 @@ pub fn ingest_point_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) ->
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     for tile in tiles {
-        session
-            .point_tile_cache
-            .insert(crate::tile_key(&tile.layer, tile.z, tile.x, tile.y), tile.clone());
+        session.point_tile_cache.insert(
+            crate::tile_key(&tile.layer, tile.z, tile.x, tile.y),
+            tile.clone(),
+        );
     }
     Ok(())
 }
@@ -539,23 +571,20 @@ pub fn get_map_overlay_in_session(
 }
 
 pub fn destroy_session(handle: u32) {
-    let _ = sessions().lock().expect("session store poisoned").remove(&handle);
+    let _ = sessions()
+        .lock()
+        .expect("session store poisoned")
+        .remove(&handle);
 }
 
-fn session_ref(
-    sessions: &HashMap<u32, UiSession>,
-    handle: u32,
-) -> AppResult<&UiSession> {
+fn session_ref(sessions: &HashMap<u32, UiSession>, handle: u32) -> AppResult<&UiSession> {
     sessions.get(&handle).ok_or_else(|| AppError {
         kind: AppErrorKind::Internal,
         message: format!("invalid ui session handle: {handle}"),
     })
 }
 
-fn session_mut(
-    sessions: &mut HashMap<u32, UiSession>,
-    handle: u32,
-) -> AppResult<&mut UiSession> {
+fn session_mut(sessions: &mut HashMap<u32, UiSession>, handle: u32) -> AppResult<&mut UiSession> {
     sessions.get_mut(&handle).ok_or_else(|| AppError {
         kind: AppErrorKind::Internal,
         message: format!("invalid ui session handle: {handle}"),
@@ -563,10 +592,14 @@ fn session_mut(
 }
 
 fn session_plan(session: &UiSession) -> AppResult<FlightPlan> {
-    session.app_state.active_plan.clone().ok_or_else(|| AppError {
-        kind: AppErrorKind::Internal,
-        message: "session missing active plan".to_string(),
-    })
+    session
+        .app_state
+        .active_plan
+        .clone()
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::Internal,
+            message: "session missing active plan".to_string(),
+        })
 }
 
 fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
@@ -575,8 +608,12 @@ fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
         app_state: state::project_ui_snapshot_app_state(&session.app_state),
         app_ui_state,
         playback_ui_state: session.playback.ui_state(),
-        map_follow_ui_state: session.map_follow.ui_state(&session.app_state.ownship.render),
-        map_follow_target_viewport: session.map_follow.target_viewport(&session.app_state.ownship.render),
+        map_follow_ui_state: session
+            .map_follow
+            .ui_state(&session.app_state.ownship.render),
+        map_follow_target_viewport: session
+            .map_follow
+            .target_viewport(&session.app_state.ownship.render),
         chart_page_state: compact_chart_page_state(&session.chart_page_state),
     }
 }
@@ -598,9 +635,14 @@ fn project_active_leg_nav_element(session: &UiSession) -> NavElementUiView {
     let Some(active_leg) = crate::active_guidance_leg(plan) else {
         return NavElementUiView::default();
     };
-    let Some((from, to)) = active_leg_geometry(plan, &active_leg, &session.guidance_leg_geometry) else {
+    let Some((from, to)) = active_leg_geometry(plan, &active_leg, &session.guidance_leg_geometry)
+    else {
         return NavElementUiView {
-            active_leg_summary: format!("{} -> {}", nav_ref_label(&active_leg.from), nav_ref_label(&active_leg.to)),
+            active_leg_summary: format!(
+                "{} -> {}",
+                nav_ref_label(&active_leg.from),
+                nav_ref_label(&active_leg.to)
+            ),
             cdi_indicator_dots: None,
         };
     };
@@ -671,7 +713,8 @@ fn cdi_dots_for_leg(from: LatLon, to: LatLon, position: LatLon) -> f32 {
 
 fn local_delta_nm(origin: LatLon, point: LatLon) -> (f64, f64) {
     let north_nm = (point.lat - origin.lat) * 60.0;
-    let east_nm = (point.lon - origin.lon) * 60.0 * ((origin.lat + point.lat).to_radians() / 2.0).cos();
+    let east_nm =
+        (point.lon - origin.lon) * 60.0 * ((origin.lat + point.lat).to_radians() / 2.0).cos();
     (east_nm, north_nm)
 }
 
@@ -746,7 +789,11 @@ fn apply_situation_to_ownship(
 
 fn compact_chart_page_state(state: &DerivedChartPageState) -> UiChartPageState {
     UiChartPageState {
-        ordered_airport_ids: state.airports.iter().map(|airport| airport.id.clone()).collect(),
+        ordered_airport_ids: state
+            .airports
+            .iter()
+            .map(|airport| airport.id.clone())
+            .collect(),
         recent_airport_ids: state.recent_airport_ids.clone(),
         selected_airport_id: state.selected_airport_id.clone(),
         selected_chart_id: state.selected_chart_id.clone(),
@@ -759,10 +806,22 @@ mod tests {
 
     #[test]
     fn straight_leg_cdi_is_signed_against_course_direction() {
-        let from = LatLon { lat: 47.0, lon: -122.0 };
-        let to = LatLon { lat: 48.0, lon: -122.0 };
-        let right_of_course = LatLon { lat: 47.5, lon: -121.985 };
-        let left_of_course = LatLon { lat: 47.5, lon: -122.015 };
+        let from = LatLon {
+            lat: 47.0,
+            lon: -122.0,
+        };
+        let to = LatLon {
+            lat: 48.0,
+            lon: -122.0,
+        };
+        let right_of_course = LatLon {
+            lat: 47.5,
+            lon: -121.985,
+        };
+        let left_of_course = LatLon {
+            lat: 47.5,
+            lon: -122.015,
+        };
 
         assert!(cdi_dots_for_leg(from, to, right_of_course) < 0.0);
         assert!(cdi_dots_for_leg(from, to, left_of_course) > 0.0);
@@ -770,9 +829,18 @@ mod tests {
 
     #[test]
     fn straight_leg_bearing_uses_geographic_course() {
-        let from = LatLon { lat: 47.0, lon: -122.0 };
-        let north = LatLon { lat: 48.0, lon: -122.0 };
-        let east = LatLon { lat: 47.0, lon: -121.0 };
+        let from = LatLon {
+            lat: 47.0,
+            lon: -122.0,
+        };
+        let north = LatLon {
+            lat: 48.0,
+            lon: -122.0,
+        };
+        let east = LatLon {
+            lat: 47.0,
+            lon: -121.0,
+        };
 
         assert!((bearing_degrees(from, north) - 0.0).abs() < 0.1);
         assert!((bearing_degrees(from, east) - 89.6).abs() < 0.5);

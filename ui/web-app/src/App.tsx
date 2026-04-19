@@ -1,11 +1,13 @@
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
-import { chartPage, mapViews, resourceIndex, sampleCatalog, samplePlan } from "./domain/sampleData";
+import bootstrapJson from "@shared-bootstrap";
 import type {
   AirwayPresentationPlan,
   AirwaySuggestion,
+  CatalogJson,
   ChartPageData,
   ChartFamilyId,
+  FlightPlan,
   FlightPlanRouteSegment,
   FlightPlanUiMutation,
   FlightPlanUiState,
@@ -16,9 +18,11 @@ import type {
   NavRef,
   PlaybackUiState,
   MapFollowUiState,
+  MapViewOptionJson,
   OwnshipRenderState,
   ProcedureOptions,
   ProcedureLoadOption,
+  ResourceIndexJson,
   ProcedureSummary,
   WaypointIdentifierSuggestion,
 } from "./domain/types";
@@ -148,10 +152,78 @@ const chartFamilies: Array<{ id: ChartFamilyId; label: string; launcherLabel: st
   { id: "enr-h", label: "IFR-HIGH", launcherLabel: "IFR H" },
 ];
 
+const bootstrap = bootstrapJson as { flight_plan: FlightPlan };
+const samplePlan = bootstrap.flight_plan;
+
+const fallbackMapViews: MapViewOptionJson[] = [
+  {
+    id: "startup-map",
+    label: "STARTUP",
+    region_id: "nw",
+    map_view: {
+      chart_family: "tac",
+      chart_name: "STARTUP",
+      chart_index: 0,
+      tile_root: "tiles",
+      tile_url_root: "/sectional-packages/startup/tiles",
+      tile_size: 512,
+      min_zoom: 1,
+      max_zoom: 20,
+      storage_kind: "sectional_package",
+      package_name: null,
+      initial_viewport: {
+        lat: 47.3648944444444,
+        lon: -121.980275,
+        zoom: 10,
+      },
+      levels: [{ zoom: 1, x_min: 999999, x_max: -999999, y_tms_min: 999999, y_tms_max: -999999 }],
+    },
+  },
+];
+
+const startupCatalog: CatalogJson = {
+  schema_version: 1,
+  cycle: "startup",
+  catalog_revision: "startup",
+  families: [],
+  regions: [],
+  packages: [],
+  charts: [],
+  plates: [],
+  supplements: [],
+};
+
+function airportIdsFromPlan(plan: FlightPlan): string[] {
+  const airportIds = new Set<string>();
+  if (plan.departure) airportIds.add(plan.departure);
+  if (plan.destination) airportIds.add(plan.destination);
+  if (plan.alternate) airportIds.add(plan.alternate);
+  for (const component of plan.route_components ?? []) {
+    if (component.kind === "waypoint" && "Airport" in component.waypoint) {
+      airportIds.add(component.waypoint.Airport);
+    } else if (component.kind === "procedure") {
+      airportIds.add(component.procedure.airport_id);
+    }
+  }
+  return [...airportIds];
+}
+
+function minimalChartPageForPlan(plan: FlightPlan): ChartPageData {
+  return {
+    airports: airportIdsFromPlan(plan).map((airportId) => ({
+      id: airportId,
+      label: airportId,
+      charts: [],
+    })),
+  };
+}
+
+const chartPage = minimalChartPageForPlan(samplePlan);
+
 function mapViewsForDisplayedFamily(
-  allMapViews: typeof mapViews,
+  allMapViews: MapViewOptionJson[],
   familyId: ChartFamilyId,
-): typeof mapViews {
+): MapViewOptionJson[] {
   if (familyId === "tac") {
     return allMapViews.filter((view) => {
       const chartFamily = view.map_view.chart_family;
@@ -162,10 +234,10 @@ function mapViewsForDisplayedFamily(
 }
 
 function preferredFamilyMap(
-  allMapViews: typeof mapViews,
+  allMapViews: MapViewOptionJson[],
   familyId: ChartFamilyId,
   fallbackRegionId: string | null,
-): (typeof mapViews)[number] | undefined {
+): MapViewOptionJson | undefined {
   const familyMaps = allMapViews.filter((view) => view.map_view.chart_family === familyId);
   return (
     familyMaps.find((view) => view.region_id === fallbackRegionId)
@@ -487,7 +559,7 @@ function emptyMapFollowUiState(): MapFollowUiState {
   };
 }
 
-function initialMapId() {
+function initialMapId(mapViews: MapViewOptionJson[]) {
   return preferredFamilyMap(mapViews, "tac", "nw")?.id ?? mapViews[0].id;
 }
 
@@ -506,7 +578,10 @@ export default function App() {
   const startupVisualReadyRef = useRef(false);
   const highLatencyWarningsSuppressedRef = useRef(true);
   const highLatencyWarningTimerRef = useRef<number | null>(null);
-  const [selectedMapId, setSelectedMapId] = useState<string>(initialMapId());
+  const fullResourceIndexLoadStartedRef = useRef(false);
+  const [mapViews, setMapViews] = useState<MapViewOptionJson[]>(fallbackMapViews);
+  const [chartCatalog, setChartCatalog] = useState<ChartPageData>(chartPage);
+  const [selectedMapId, setSelectedMapId] = useState<string>(() => initialMapId(fallbackMapViews));
   const initialRecentAirportIds = useMemo(
     () => mergeRecentAirportIds(chartPage.airports, persistedUiState.recentAirportIds ?? []),
     [persistedUiState],
@@ -585,6 +660,7 @@ export default function App() {
       return;
     }
     startupVisualReadyRef.current = true;
+    debugLog("startup.visual_ready");
     if (typeof window === "undefined") {
       highLatencyWarningsSuppressedRef.current = false;
       return;
@@ -598,7 +674,6 @@ export default function App() {
   const appUiState = sessionSnapshot.app_ui_state;
   const playbackUiState = sessionSnapshot.playback_ui_state;
   const mapFollowUiState = sessionSnapshot.map_follow_ui_state;
-  const chartCatalog: ChartPageData = uiSession?.chartCatalog ?? chartPage;
   const chartAirportById = useMemo(
     () => new Map(chartCatalog.airports.map((airport) => [airport.id, airport])),
     [chartCatalog],
@@ -664,7 +739,7 @@ export default function App() {
 
   const selectedMap = useMemo(
     () => mapViews.find((view) => view.id === selectedMapId) ?? mapViews[0],
-    [selectedMapId],
+    [mapViews, selectedMapId],
   );
   const [mapViewport, setMapViewport] = useState<MapViewportState>(() => {
     const center = latLonToWorld(VAMPS_POSITION.lat, VAMPS_POSITION.lon);
@@ -682,11 +757,11 @@ export default function App() {
   );
   const availableFamilies = useMemo(
     () => new Set(mapViews.map((view) => view.map_view.chart_family)),
-    [],
+    [mapViews],
   );
   const selectedFamilyMapViews = useMemo(
     () => mapViewsForDisplayedFamily(mapViews, selectedMap.map_view.chart_family),
-    [selectedMap],
+    [mapViews, selectedMap],
   );
   const selectedAirport = useMemo(
     () => chartPageData.airports.find((airport) => airport.id === selectedAirportId) ?? chartPageData.airports[0] ?? null,
@@ -729,15 +804,80 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    void appCoreAdapter?.prewarm().catch((error) => {
-      if (!cancelled) {
-        console.error("failed to prewarm web adapter", error);
+    let timeoutId: number | null = null;
+    if (!appCoreAdapter || !uiSession || fullResourceIndexLoadStartedRef.current) {
+      return;
+    }
+    fullResourceIndexLoadStartedRef.current = true;
+    timeoutId = window.setTimeout(() => {
+      if (cancelled) {
+        return;
       }
-    });
+      void appCoreAdapter.prewarm().catch((error) => {
+        if (!cancelled) {
+          console.error("failed to prewarm web adapter", error);
+        }
+      });
+    }, 1000);
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [appCoreAdapter, uiSession]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!appCoreAdapter || !uiSession) {
+      return;
+    }
+    window.setTimeout(() => {
+      const startMs = performance.now();
+      debugLog("startup.resource_index.fetch.start");
+      void fetch("/__product_resource_index").then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`failed to fetch product resource index: ${response.status}`);
+        }
+        const resourceIndex = await response.json() as ResourceIndexJson;
+        debugLog("startup.resource_index.fetch.ready", {
+          elapsed_ms: Math.round(performance.now() - startMs),
+        });
+        const adapters = await import("./domain/resourceIndexAdapters");
+        const nextMapViews = adapters.deriveMapViews(resourceIndex, []);
+        const nextChartCatalog = await appCoreAdapter.deriveChartCatalog(resourceIndex);
+        const nextSnapshot = await uiSession.replaceChartCatalog(
+          nextChartCatalog,
+          recentAirportIds,
+          selectedAirportId || undefined,
+          selectedChartId || undefined,
+        );
+        if (cancelled) {
+          return;
+        }
+        setMapViews(nextMapViews.length > 0 ? nextMapViews : fallbackMapViews);
+        setSelectedMapId((current) => (
+          nextMapViews.some((view) => view.id === current)
+            ? current
+            : initialMapId(nextMapViews.length > 0 ? nextMapViews : fallbackMapViews)
+        ));
+        setChartCatalog(nextChartCatalog);
+        setSessionSnapshot(nextSnapshot);
+        debugLog("startup.resource_index.derived", {
+          elapsed_ms: Math.round(performance.now() - startMs),
+          map_views: nextMapViews.length,
+          chart_airports: nextChartCatalog.airports.length,
+        });
+      }).catch((error) => {
+        debugLog("startup.resource_index.error", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, 250);
     return () => {
       cancelled = true;
     };
-  }, [appCoreAdapter]);
+  }, [appCoreAdapter, uiSession]);
 
   useEffect(() => {
     let cancelled = false;
@@ -746,8 +886,13 @@ export default function App() {
       return;
     }
     buildSeededDevPlan().then(async (initialPlan) => {
+      const catalogJson = JSON.stringify(startupCatalog);
+      debugLog("startup.catalog.ready", {
+        bytes: catalogJson.length,
+      });
       const created = await appCoreAdapter.createUiSession(
-        resourceIndex,
+        catalogJson,
+        chartPage,
         initialPlan.plan,
         initialRecentAirportIds,
         initialChartPageState.selected_airport_id,
@@ -760,6 +905,10 @@ export default function App() {
       });
       nextSession = created;
       if (!cancelled) {
+        debugLog("startup.snapshot.install.initial", {
+          has_plan: createdSnapshot.app_state.active_plan !== null,
+          has_plan_ui: createdSnapshot.app_ui_state.active_plan !== null,
+        });
         setUiSession(created);
         setSessionSnapshot(createdSnapshot);
       }
@@ -772,6 +921,11 @@ export default function App() {
       });
       const snapshot = await created.pushSituationSample(demoSituationSample());
       if (!cancelled) {
+        debugLog("startup.snapshot.install.decorated", {
+          has_plan: snapshot.app_state.active_plan !== null,
+          has_plan_ui: snapshot.app_ui_state.active_plan !== null,
+          rows: snapshot.app_ui_state.active_plan?.display_rows.length ?? 0,
+        });
         setSessionSnapshot(snapshot);
       }
     }).catch((error) => {
@@ -934,6 +1088,12 @@ export default function App() {
         currentPlan !== null &&
         planUiState !== null);
     if (shouldHideStartupShell) {
+      debugLog("startup.shell.hide", {
+        app_ready: appReady,
+        has_current_plan: currentPlan !== null,
+        has_plan_ui: planUiState !== null,
+        has_error: sessionInitError !== null,
+      });
       window.__aerobag_hide_startup_shell?.();
     }
   }, [appReady, currentPlan, planUiState, sessionInitError]);
@@ -961,6 +1121,7 @@ export default function App() {
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
           debugTileLabels={debugTileLabels}
+          mapViews={mapViews}
           selectedMapId={selectedMapId}
           selectedMap={selectedMap}
           selectedFamilyMapViews={selectedFamilyMapViews}
@@ -1245,9 +1406,10 @@ function MapPage(props: {
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
   debugTileLabels: boolean;
+  mapViews: MapViewOptionJson[];
   selectedMapId: string;
-  selectedMap: (typeof mapViews)[number];
-  selectedFamilyMapViews: (typeof mapViews);
+  selectedMap: MapViewOptionJson;
+  selectedFamilyMapViews: MapViewOptionJson[];
   selectedFamily: (typeof chartFamilies)[number];
   availableFamilies: Set<string>;
   viewport: MapViewportState;
@@ -1277,6 +1439,7 @@ function MapPage(props: {
   const {
     appCoreAdapter,
     debugTileLabels,
+    mapViews,
     page,
     pageHistory,
     uptimeLabel,
@@ -4750,7 +4913,7 @@ function pageLabel(page: AppPage) {
 function formatSnapshot(snapshot: Pick<AppViewSnapshot, "page" | "selectedMapId" | "selectedChartId" | "selectedChartLabel" | "chartFolderOpen">) {
   const label = pageLabel(snapshot.page);
   if (snapshot.page === "map") {
-    const map = mapViews.find((entry) => entry.id === snapshot.selectedMapId);
+    const map = fallbackMapViews.find((entry) => entry.id === snapshot.selectedMapId);
     const family = chartFamilies.find((entry) => entry.id === map?.map_view.chart_family)?.launcherLabel ?? "";
     return family ? `${label}-${family}` : label;
   }

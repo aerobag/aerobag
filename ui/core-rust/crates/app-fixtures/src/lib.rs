@@ -1,7 +1,6 @@
 use app_core::{
-    AirportId, CatalogBundle, CatalogFamily, CatalogPackage, CatalogRegion, ChartFamilyId,
-    ChartId, ChartRecord, GeometryBundle, PackageId, PlateId, PlateRecord, PolygonRecord,
-    RegionId,
+    AirportId, CatalogBundle, CatalogFamily, CatalogPackage, CatalogRegion, ChartFamilyId, ChartId,
+    ChartRecord, GeometryBundle, PackageId, PlateId, PlateRecord, PolygonRecord, RegionId,
 };
 use serde::Serialize;
 
@@ -200,22 +199,20 @@ mod tests {
     fn planning_bootstrap_scenarios_cover_key_categories() {
         let scenarios = planning_bootstrap_scenarios();
 
-        assert!(scenarios.iter().any(|scenario| scenario.tags.contains(&"airway")));
-        assert!(
-            scenarios
-                .iter()
-                .any(|scenario| scenario.tags.contains(&"procedure"))
-        );
-        assert!(
-            scenarios
-                .iter()
-                .any(|scenario| scenario.tags.contains(&"direct_to"))
-        );
-        assert!(
-            scenarios
-                .iter()
-                .any(|scenario| scenario.tags.contains(&"sequencing"))
-        );
-        assert!(scenarios.iter().any(|scenario| scenario.tags.contains(&"editing")));
+        assert!(scenarios
+            .iter()
+            .any(|scenario| scenario.tags.contains(&"airway")));
+        assert!(scenarios
+            .iter()
+            .any(|scenario| scenario.tags.contains(&"procedure")));
+        assert!(scenarios
+            .iter()
+            .any(|scenario| scenario.tags.contains(&"direct_to")));
+        assert!(scenarios
+            .iter()
+            .any(|scenario| scenario.tags.contains(&"sequencing")));
+        assert!(scenarios
+            .iter()
+            .any(|scenario| scenario.tags.contains(&"editing")));
     }
 }

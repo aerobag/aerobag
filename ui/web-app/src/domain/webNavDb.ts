@@ -1,8 +1,8 @@
-import sqlite3InitModule, {
-  type BindingSpec,
-  type Database,
-  type SqlValue,
-  type Sqlite3Static,
+import type {
+  BindingSpec,
+  Database,
+  SqlValue,
+  Sqlite3Static,
 } from "@sqlite.org/sqlite-wasm";
 import { debugLog } from "./debugLog";
 
@@ -11,10 +11,6 @@ const DEFAULT_DB_FILENAME = "/nav-main.db";
 const IGNORED_SQLITE_INIT_WARNINGS = [
   "Ignoring inability to install OPFS sqlite3_vfs",
 ];
-const sqlite3InitWithConfig = sqlite3InitModule as unknown as (config: {
-  printErr: (message: unknown) => void;
-}) => Promise<Sqlite3Static>;
-
 export class BrowserNavDb {
   private constructor(
     readonly sqlite3: Sqlite3Static,
@@ -25,6 +21,10 @@ export class BrowserNavDb {
   static async open(sourceUrl = DEFAULT_NAV_DB_URL): Promise<BrowserNavDb> {
     const startMs = performance.now();
     debugLog("navdb.open.start", { sourceUrl });
+    const { default: sqlite3InitModule } = await import("@sqlite.org/sqlite-wasm");
+    const sqlite3InitWithConfig = sqlite3InitModule as unknown as (config: {
+      printErr: (message: unknown) => void;
+    }) => Promise<Sqlite3Static>;
     const sqlite3 = await sqlite3InitWithConfig({
       printErr(message) {
         const rendered = String(message);

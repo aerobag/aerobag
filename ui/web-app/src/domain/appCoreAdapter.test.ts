@@ -50,6 +50,7 @@ describe("loadBestAvailableAdapter", () => {
   it("uses the wasm adapter when the generated module exports the expected API", async () => {
     const loaded = await loadBestAvailableAdapter(async () => ({
       create_ui_session: async () => JSON.stringify({ handle: 1, chart_catalog: { airports: [] }, snapshot: JSON.parse(snapshotJson) }),
+      create_ui_session_snapshot: async () => JSON.stringify({ handle: 1, snapshot: JSON.parse(snapshotJson) }),
       remove_leg_in_session: async () => snapshotJson,
       move_waypoint_in_session: async () => snapshotJson,
       set_situation_in_session: async () => snapshotJson,
@@ -75,6 +76,7 @@ describe("loadBestAvailableAdapter", () => {
       get_map_overlay_in_session: async () => "{\"visible_features\":[],\"needed_point_tiles\":[],\"warnings\":[]}",
       get_session_snapshot: async () => snapshotJson,
       restore_chart_page_state_in_session: async () => snapshotJson,
+      replace_chart_catalog_in_session: async () => snapshotJson,
       destroy_session: () => {},
       remove_flight_plan_leg: async () => "{}",
       derive_chart_catalog: async () => "{\"airports\":[]}",

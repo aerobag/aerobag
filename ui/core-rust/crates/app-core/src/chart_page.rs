@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use crate::planning::{FlightPlan, RouteComponent};
 
@@ -104,6 +105,16 @@ pub fn derive_chart_page_state(
 }
 
 pub fn build_chart_catalog(resource_index: &ResourceIndexChartPageInput) -> DerivedChartCatalog {
+    let plates_by_id: HashMap<&str, &ResourcePlate> = resource_index
+        .plates
+        .iter()
+        .map(|record| (record.id.as_str(), record))
+        .collect();
+    let csups_by_id: HashMap<&str, &ResourceCsup> = resource_index
+        .csups
+        .iter()
+        .map(|record| (record.id.as_str(), record))
+        .collect();
     let airports = resource_index
         .airport_resources
         .iter()
@@ -111,20 +122,12 @@ pub fn build_chart_catalog(resource_index: &ResourceIndexChartPageInput) -> Deri
             let airport_id = airport_resources.airport_id.clone();
             let mut charts: Vec<DerivedChartAsset> = Vec::new();
             for plate_id in &airport_resources.plate_ids {
-                if let Some(plate) = resource_index
-                    .plates
-                    .iter()
-                    .find(|record| &record.id == plate_id)
-                {
+                if let Some(plate) = plates_by_id.get(plate_id.as_str()) {
                     charts.push(chart_asset_for_plate(&airport_id, plate));
                 }
             }
             for csup_id in &airport_resources.csup_ids {
-                if let Some(csup) = resource_index
-                    .csups
-                    .iter()
-                    .find(|record| &record.id == csup_id)
-                {
+                if let Some(csup) = csups_by_id.get(csup_id.as_str()) {
                     charts.push(chart_asset_for_csup(&airport_id, csup));
                 }
             }

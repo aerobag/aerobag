@@ -6,11 +6,11 @@ pub mod content;
 pub mod errors;
 pub mod geometry;
 pub mod ids;
+pub mod map_follow;
+pub mod map_overlay;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod navdb;
 pub mod navdb_types;
-pub mod map_overlay;
-pub mod map_follow;
 pub mod ownship;
 pub mod planning;
 pub mod playback;
@@ -21,8 +21,8 @@ pub mod situation;
 pub mod state;
 
 pub use catalog::{
-    CatalogBundle, CatalogFamily, CatalogHandle, CatalogPackage, CatalogRegion,
-    ChartRecord, PlateRecord, SupplementRecord,
+    CatalogBundle, CatalogFamily, CatalogHandle, CatalogPackage, CatalogRegion, ChartRecord,
+    PlateRecord, SupplementRecord,
 };
 pub use chart_page::{
     build_chart_catalog, derive_chart_page, derive_chart_page_from_catalog,
@@ -37,27 +37,11 @@ pub use content::{
 pub use errors::{AppError, AppErrorKind, AppResult};
 pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord};
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
-pub use map_overlay::{
-    point_vector_record_to_symbol_feature, query_map_overlay, tile_key, visible_point_tile_window, MapOverlayQueryResult,
-    MapOverlayWarning, PointTilePayload, PointVectorRecord, VectorTileRequest,
-    NavSymbolFeature, VisibleMapFeature, VECTOR_DISPLAY_FEATURE_LIMIT,
-};
 pub use map_follow::MapFollowUiState;
-pub use ownship::{
-    push_sample, register_source, set_policy, update_source_status,
-    OwnshipBannerSeverity, OwnshipControlModel, OwnshipMode, OwnshipPolicy,
-    OwnshipRenderState, OwnshipSelectionCommand, OwnshipSelectionPolicy, OwnshipSourceId, OwnshipSourceKind,
-    OwnshipSourceMenuItem, OwnshipSourceRegistration, OwnshipSourceStatus,
-    OwnshipSourceStatusUpdate, OwnshipState, OwnshipUiState, ResolvedOwnshipState,
-    SituationKinematics, SituationSample, SourceConnectionState,
-};
-pub use navdb_types::{
-    AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
-    AirwayExitSelection, AirwayFixPoint, AirwayPoint, AirwaySuggestion, MaterializedProcedure,
-    CifpTppMatch, CifpTppMatchRow,
-    ProcedureDistinctRow, ProcedureLegMaterializationRecord, ProcedureLegRecord,
-    ProcedureOptions, ProcedureSpecChoice, ProcedureSummary, ProcedureVariantKey,
-    AirwayPresentationPlan, AirwayPresentationPoint, WaypointIdentifierSuggestion,
+pub use map_overlay::{
+    point_vector_record_to_symbol_feature, query_map_overlay, tile_key, visible_point_tile_window,
+    MapOverlayQueryResult, MapOverlayWarning, NavSymbolFeature, PointTilePayload,
+    PointVectorRecord, VectorTileRequest, VisibleMapFeature, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use navdb::{
@@ -67,48 +51,64 @@ pub use navdb::{
     load_procedure_concretized_items, load_procedure_legs, load_resolved_procedure_legs,
     materialize_airway_selection, materialize_procedure_selection, resolve_airway_segment,
     resolve_airway_segment_by_index, resolve_nav_ref_identifier, resolve_nav_ref_position,
-    resolve_nav_ref_position_with_procedure_airport, select_airway_branch,
-    resolve_nav_symbol_feature, suggest_airways_near, suggest_waypoint_identifiers,
+    resolve_nav_ref_position_with_procedure_airport, resolve_nav_symbol_feature,
+    select_airway_branch, suggest_airways_near, suggest_waypoint_identifiers,
+};
+pub use navdb_types::{
+    AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
+    AirwayExitSelection, AirwayFixPoint, AirwayPoint, AirwayPresentationPlan,
+    AirwayPresentationPoint, AirwaySuggestion, CifpTppMatch, CifpTppMatchRow,
+    MaterializedProcedure, ProcedureDistinctRow, ProcedureLegMaterializationRecord,
+    ProcedureLegRecord, ProcedureOptions, ProcedureSpecChoice, ProcedureSummary,
+    ProcedureVariantKey, WaypointIdentifierSuggestion,
+};
+pub use ownship::{
+    push_sample, register_source, set_policy, update_source_status, OwnshipBannerSeverity,
+    OwnshipControlModel, OwnshipMode, OwnshipPolicy, OwnshipRenderState, OwnshipSelectionCommand,
+    OwnshipSelectionPolicy, OwnshipSourceId, OwnshipSourceKind, OwnshipSourceMenuItem,
+    OwnshipSourceRegistration, OwnshipSourceStatus, OwnshipSourceStatusUpdate, OwnshipState,
+    OwnshipUiState, ResolvedOwnshipState, SituationKinematics, SituationSample,
+    SourceConnectionState,
 };
 pub use planning::{
     activate_direct_to, activate_direct_to_leg, activate_leg, activate_next_leg,
     active_guidance_leg, change_airway_entry, change_airway_exit,
     change_procedure_enroute_transition, change_procedure_runway_transition, delete_component,
-    delete_waypoint_component,
-    flatten_component_to_waypoints, insert_airport_waypoint, insert_waypoint, insert_airway_between_waypoints,
-    insert_airway_after_waypoint,
-    insert_procedure_between_waypoints, project_ui_state,
-    move_component, replace_airway_component, replace_procedure_component, sequence_active_leg, suspend_sequencing,
-    unsuspend_sequencing, AirwaySegment, ConcretizedNavItem, DirectToState, FlightPlan,
-    FlightPlanUiState, GuidanceState, GuidanceUiView, NavRef, PathTermination, PlanLeg,
-    ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegment,
-    ProcedureSegmentRole, ResolvedLeg, ResolvedLegSource, ResolvedLegUiView, RouteComponent,
-    RouteComponentUiView, RouteComponentViewKind, SequencingMode, DirectToUiView,
-    LegDisplayElement, LegDisplayPath,
+    delete_waypoint_component, flatten_component_to_waypoints, insert_airport_waypoint,
+    insert_airway_after_waypoint, insert_airway_between_waypoints,
+    insert_procedure_between_waypoints, insert_waypoint, move_component, project_ui_state,
+    replace_airway_component, replace_procedure_component, sequence_active_leg, suspend_sequencing,
+    unsuspend_sequencing, AirwaySegment, ConcretizedNavItem, DirectToState, DirectToUiView,
+    FlightPlan, FlightPlanUiState, GuidanceState, GuidanceUiView, LegDisplayElement,
+    LegDisplayPath, NavRef, PathTermination, PlanLeg, ProcedureDiscontinuity, ProcedureKind,
+    ProcedureLegProvenance, ProcedureSegment, ProcedureSegmentRole, ResolvedLeg, ResolvedLegSource,
+    ResolvedLegUiView, RouteComponent, RouteComponentUiView, RouteComponentViewKind,
+    SequencingMode,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use procedure_geometry::display_path_for_procedure_leg;
 pub use procedure_legs::{
-    interpret_path_termination, leading_procedure_discontinuity,
-    parse_airport_magnetic_variation, parse_cifp_altitude_ft, parse_cifp_tenths_value,
-    terminal_procedure_discontinuity,
+    interpret_path_termination, leading_procedure_discontinuity, parse_airport_magnetic_variation,
+    parse_cifp_altitude_ft, parse_cifp_tenths_value, terminal_procedure_discontinuity,
 };
 pub use session::{
-    create_ui_session, destroy_session, get_map_overlay_in_session, get_session_snapshot,
-    ingest_point_tiles_in_session, move_waypoint_in_session, remove_leg_in_session,
-    push_situation_sample_in_session, register_ownship_source_in_session,
-    replace_flight_plan_in_session, set_guidance_leg_geometry_in_session, GuidanceLegGeometry,
-    load_playback_trace_in_session, pause_playback_in_session, play_playback_in_session,
-    restore_chart_page_state_in_session, select_airport_in_session, select_chart_in_session,
-    seek_playback_in_session, set_playback_rate_in_session, set_situation_in_session,
-    tick_playback_in_session, disengage_map_follow_in_session, engage_map_follow_in_session,
-    set_map_follow_offset_in_session, sync_map_follow_in_session,
-    select_ownship_source_in_session,
-    update_ownship_source_status_in_session,
+    create_ui_session, destroy_session, disengage_map_follow_in_session,
+    engage_map_follow_in_session, get_map_overlay_in_session, get_session_snapshot,
+    ingest_point_tiles_in_session, load_playback_trace_in_session, move_waypoint_in_session,
+    pause_playback_in_session, play_playback_in_session, push_situation_sample_in_session,
+    register_ownship_source_in_session, remove_leg_in_session, replace_chart_catalog_in_session,
+    replace_flight_plan_in_session, restore_chart_page_state_in_session, seek_playback_in_session,
+    select_airport_in_session, select_chart_in_session, select_ownship_source_in_session,
+    set_guidance_leg_geometry_in_session, set_map_follow_offset_in_session,
+    set_playback_rate_in_session, set_situation_in_session, sync_map_follow_in_session,
+    tick_playback_in_session, update_ownship_source_status_in_session, GuidanceLegGeometry,
     UiChartPageState, UiSessionInitResult, UiSessionSnapshot,
 };
 pub use situation::{Situation, SituationPosition};
-pub use state::{project_app_ui_state, project_ui_snapshot_app_state, AppEvent, AppState, AppUiState, UiSnapshotAppState};
+pub use state::{
+    project_app_ui_state, project_ui_snapshot_app_state, AppEvent, AppState, AppUiState,
+    UiSnapshotAppState,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirwayPlanMutation {
@@ -366,20 +366,22 @@ pub fn prepare_airway_presentation(
         }
     }
 
-    best.map(|(_, presentation)| presentation).ok_or_else(|| AppError {
-        kind: AppErrorKind::InvalidFlightPlan,
-        message: format!("no airway branches found for {}", airway_name.trim()),
-    })
+    best.map(|(_, presentation)| presentation)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("no airway branches found for {}", airway_name.trim()),
+        })
 }
 
-pub fn sort_airway_suggestions_for_ui(mut suggestions: Vec<AirwaySuggestion>) -> Vec<AirwaySuggestion> {
+pub fn sort_airway_suggestions_for_ui(
+    mut suggestions: Vec<AirwaySuggestion>,
+) -> Vec<AirwaySuggestion> {
     suggestions.sort_by(|left, right| {
-        compare_airway_name_for_ui(&left.airway_name, &right.airway_name)
-            .then_with(|| {
-                left.distance_from_anchor_nm
-                    .partial_cmp(&right.distance_from_anchor_nm)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+        compare_airway_name_for_ui(&left.airway_name, &right.airway_name).then_with(|| {
+            left.distance_from_anchor_nm
+                .partial_cmp(&right.distance_from_anchor_nm)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
     suggestions
 }
@@ -438,17 +440,27 @@ pub fn describe_procedure_options_from_rows(
         .map(|row| row.transition_id.clone())
         .filter(|transition| !transition.is_empty() && transition != "ALL")
         .collect::<Vec<_>>();
-    let has_common_segment = rows.iter().any(|row| row.route_type == layout.common_route_type);
+    let has_common_segment = rows
+        .iter()
+        .any(|row| row.route_type == layout.common_route_type);
 
     let runway_choices = if runway_transitions.is_empty() {
         vec![None]
     } else {
-        runway_transitions.iter().cloned().map(Some).collect::<Vec<_>>()
+        runway_transitions
+            .iter()
+            .cloned()
+            .map(Some)
+            .collect::<Vec<_>>()
     };
     let enroute_choices = if enroute_transitions.is_empty() {
         vec![None]
     } else {
-        enroute_transitions.iter().cloned().map(Some).collect::<Vec<_>>()
+        enroute_transitions
+            .iter()
+            .cloned()
+            .map(Some)
+            .collect::<Vec<_>>()
     };
     let valid_choices = runway_choices
         .into_iter()
@@ -486,7 +498,9 @@ pub fn select_preferred_cifp_tpp_match(rows: Vec<CifpTppMatchRow>) -> Option<Cif
             is_primary: row.is_primary != 0,
         })
         .min_by(|left, right| {
-            right.is_primary.cmp(&left.is_primary)
+            right
+                .is_primary
+                .cmp(&left.is_primary)
                 .then_with(|| left.match_kind.cmp(&right.match_kind))
                 .then_with(|| left.plate_label.cmp(&right.plate_label))
         })
@@ -539,7 +553,8 @@ pub fn describe_plate_procedure_load_options(
             &preferred.cifp_id,
             ProcedureKind::Approach,
             options,
-        )? else {
+        )?
+        else {
             continue;
         };
         let choices = target
@@ -577,12 +592,14 @@ pub fn describe_load_procedure_from_plate(
     options: ProcedureOptions,
 ) -> AppResult<Option<ProcedureLoadTarget>> {
     let plan = plan.clone().normalized();
-    let Some(terminal_airport_index) = plan.route_components.iter().enumerate().rev().find_map(|(index, component)| {
-        match component {
-            RouteComponent::Waypoint { waypoint: NavRef::Airport(code) } if code.trim() == airport_id.trim() => Some(index),
+    let Some(terminal_airport_index) = plan.route_components.iter().enumerate().rev().find_map(
+        |(index, component)| match component {
+            RouteComponent::Waypoint {
+                waypoint: NavRef::Airport(code),
+            } if code.trim() == airport_id.trim() => Some(index),
             _ => None,
-        }
-    }) else {
+        },
+    ) else {
         return Ok(None);
     };
 
@@ -592,7 +609,8 @@ pub fn describe_load_procedure_from_plate(
 
     let replace_component_index = match plan.route_components.get(terminal_airport_index - 1) {
         Some(RouteComponent::Procedure { procedure })
-            if procedure.kind == ProcedureKind::Approach && procedure.airport_id.0.trim() == airport_id.trim() =>
+            if procedure.kind == ProcedureKind::Approach
+                && procedure.airport_id.0.trim() == airport_id.trim() =>
         {
             Some(terminal_airport_index - 1)
         }
@@ -650,7 +668,9 @@ fn choose_obvious_procedure_choice(
         .route_components
         .get(terminal_airport_index.checked_sub(1)?)
         .and_then(|component| match component {
-            RouteComponent::Procedure { .. } => plan.route_components.get(terminal_airport_index.checked_sub(2)?),
+            RouteComponent::Procedure { .. } => plan
+                .route_components
+                .get(terminal_airport_index.checked_sub(2)?),
             _ => Some(component),
         })
         .and_then(component_terminal_nav_ref)
@@ -701,18 +721,26 @@ pub fn materialize_procedure_from_records(
     rows: Vec<ProcedureDistinctRow>,
     legs: Vec<ProcedureLegMaterializationRecord>,
 ) -> AppResult<MaterializedProcedure> {
-    let options = describe_procedure_options_from_rows(
-        airport_id,
-        procedure_id,
-        kind.clone(),
-        rows.clone(),
-    )?;
+    let options =
+        describe_procedure_options_from_rows(airport_id, procedure_id, kind.clone(), rows.clone())?;
     let requested = ProcedureSpecChoice {
-        runway_transition: runway_transition.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(str::to_string),
-        enroute_transition: enroute_transition.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(str::to_string),
+        runway_transition: runway_transition
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        enroute_transition: enroute_transition
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
     };
 
-    if !options.valid_choices.iter().any(|choice| choice == &requested) {
+    if !options
+        .valid_choices
+        .iter()
+        .any(|choice| choice == &requested)
+    {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: format!(
@@ -734,25 +762,20 @@ pub fn materialize_procedure_from_records(
 
     if kind == ProcedureKind::Approach {
         if let Some(enroute_transition) = requested.enroute_transition.as_deref() {
-            let transition_legs = filter_procedure_records(
-                &legs,
-                airport_id,
-                procedure_id,
-                "A",
-                enroute_transition,
-            );
+            let transition_legs =
+                filter_procedure_records(&legs, airport_id, procedure_id, "A", enroute_transition);
             let items = concretize_procedure_materialization_legs(&transition_legs, false);
-            segments.push((MaterializedSegmentRole::EnrouteTransition, transition_legs, items, false));
+            segments.push((
+                MaterializedSegmentRole::EnrouteTransition,
+                transition_legs,
+                items,
+                false,
+            ));
         }
 
         if let Some(common_route_type) = approach_common_route_type(&rows) {
-            let common_legs = filter_procedure_records(
-                &legs,
-                airport_id,
-                procedure_id,
-                &common_route_type,
-                "",
-            );
+            let common_legs =
+                filter_procedure_records(&legs, airport_id, procedure_id, &common_route_type, "");
             let items = concretize_procedure_materialization_legs(&common_legs, false);
             segments.push((MaterializedSegmentRole::Common, common_legs, items, false));
         }
@@ -764,7 +787,9 @@ pub fn materialize_procedure_from_records(
                 .collect::<Vec<_>>(),
         );
         let terminal_discontinuity = match concretized_items.last() {
-            Some(ConcretizedNavItem::Discontinuity { discontinuity, .. }) => Some(discontinuity.clone()),
+            Some(ConcretizedNavItem::Discontinuity { discontinuity, .. }) => {
+                Some(discontinuity.clone())
+            }
             _ => None,
         };
         let resolved_legs = resolve_procedure_materialization_legs_with_provenance(
@@ -799,7 +824,8 @@ pub fn materialize_procedure_from_records(
             layout.enroute_route_type,
             enroute_transition,
         );
-        let items = concretize_procedure_materialization_legs(&segment_legs, layout.reverse_segment_order);
+        let items =
+            concretize_procedure_materialization_legs(&segment_legs, layout.reverse_segment_order);
         segments.push((
             MaterializedSegmentRole::EnrouteTransition,
             segment_legs,
@@ -815,7 +841,8 @@ pub fn materialize_procedure_from_records(
             layout.common_route_type,
             layout.common_transition_id,
         );
-        let items = concretize_procedure_materialization_legs(&common_legs, layout.reverse_segment_order);
+        let items =
+            concretize_procedure_materialization_legs(&common_legs, layout.reverse_segment_order);
         segments.push((
             MaterializedSegmentRole::Common,
             common_legs,
@@ -831,7 +858,8 @@ pub fn materialize_procedure_from_records(
             layout.runway_route_type,
             runway_transition,
         );
-        let items = concretize_procedure_materialization_legs(&segment_legs, layout.reverse_segment_order);
+        let items =
+            concretize_procedure_materialization_legs(&segment_legs, layout.reverse_segment_order);
         segments.push((
             MaterializedSegmentRole::RunwayTransition,
             segment_legs,
@@ -847,7 +875,9 @@ pub fn materialize_procedure_from_records(
             .collect::<Vec<_>>(),
     );
     let terminal_discontinuity = match concretized_items.last() {
-        Some(ConcretizedNavItem::Discontinuity { discontinuity, .. }) => Some(discontinuity.clone()),
+        Some(ConcretizedNavItem::Discontinuity { discontinuity, .. }) => {
+            Some(discontinuity.clone())
+        }
         _ => None,
     };
     let resolved_legs = resolve_procedure_materialization_legs_with_provenance(
@@ -1012,12 +1042,8 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 })
             };
             let provenance_record = hold_record.unwrap_or(pair[1]);
-            let display_path = display_path_for_procedure_leg(
-                leg_records,
-                pair[0],
-                pair[1],
-                hold_record,
-            );
+            let display_path =
+                display_path_for_procedure_leg(leg_records, pair[0], pair[1], hold_record);
             let signatures = heading_signatures_for_leg(
                 next_heading_step_index,
                 display_path.as_ref(),
@@ -1216,8 +1242,12 @@ fn validate_heading_continuity_checks(
     if !validate_heading_continuity {
         return;
     }
-    let mut worst_violation: Option<(f64, f64, &DisplayElementHeadingSignature, &DisplayElementHeadingSignature)> =
-        None;
+    let mut worst_violation: Option<(
+        f64,
+        f64,
+        &DisplayElementHeadingSignature,
+        &DisplayElementHeadingSignature,
+    )> = None;
     for window in checks.windows(2) {
         let previous = &window[0];
         let current = &window[1];
@@ -1242,11 +1272,15 @@ fn validate_heading_continuity_checks(
         };
         let inbound_magnetic_heading = magnetic_heading_degrees(
             previous.end_course_deg,
-            previous.end_magnetic_variation_deg.or(current.start_magnetic_variation_deg),
+            previous
+                .end_magnetic_variation_deg
+                .or(current.start_magnetic_variation_deg),
         );
         let outbound_magnetic_heading = magnetic_heading_degrees(
             current.start_course_deg,
-            current.start_magnetic_variation_deg.or(previous.end_magnetic_variation_deg),
+            current
+                .start_magnetic_variation_deg
+                .or(previous.end_magnetic_variation_deg),
         );
         panic!(
             "procedure heading continuity violated for {}: {:.1} deg (allowed {:.1}) at {} ({:.6},{:.6}) inbound_mh={:.1} outbound_mh={:.1} steps={:02}->{:02}",
@@ -1404,8 +1438,7 @@ fn should_skip_reconciliation_anchor_leg(
         return false;
     };
     let heading_to_anchor_deg = bearing_degrees(fix_position, anchor_position);
-    let heading_delta_deg =
-        angular_difference_degrees(final_heading_deg, heading_to_anchor_deg);
+    let heading_delta_deg = angular_difference_degrees(final_heading_deg, heading_to_anchor_deg);
     heading_delta_deg > 10.0 && current_from != current_to
 }
 
@@ -1423,18 +1456,22 @@ fn reconciliation_resume_skip_through_index(
     let Some(final_heading_deg) = final_course_of_display_path(previous_display_path) else {
         return None;
     };
-    let Some(reentry_index) = fix_records.windows(2).enumerate().find_map(|(index, pair)| {
-        let current_to = pair[1].nav_ref.as_ref()?;
-        if current_to != previous_leg_to {
-            return None;
-        }
-        let anchor_position = pair[0].nav_position?;
-        let fix_position = previous_display_path_terminal_position(previous_display_path)?;
-        let heading_to_anchor_deg = bearing_degrees(fix_position, anchor_position);
-        let heading_delta_deg =
-            angular_difference_degrees(final_heading_deg, heading_to_anchor_deg);
-        (heading_delta_deg > 10.0).then_some(index)
-    }) else {
+    let Some(reentry_index) = fix_records
+        .windows(2)
+        .enumerate()
+        .find_map(|(index, pair)| {
+            let current_to = pair[1].nav_ref.as_ref()?;
+            if current_to != previous_leg_to {
+                return None;
+            }
+            let anchor_position = pair[0].nav_position?;
+            let fix_position = previous_display_path_terminal_position(previous_display_path)?;
+            let heading_to_anchor_deg = bearing_degrees(fix_position, anchor_position);
+            let heading_delta_deg =
+                angular_difference_degrees(final_heading_deg, heading_to_anchor_deg);
+            (heading_delta_deg > 10.0).then_some(index)
+        })
+    else {
         return None;
     };
     Some(reentry_index)
@@ -1560,14 +1597,16 @@ pub fn move_flight_plan_waypoint(
     let _ = delta;
     Err(AppError {
         kind: AppErrorKind::UnsupportedOperation,
-        message: "legacy waypoint reordering is no longer supported; use structured component reordering"
-            .to_string(),
+        message:
+            "legacy waypoint reordering is no longer supported; use structured component reordering"
+                .to_string(),
     })
 }
 
 pub fn flight_leg_distance_nm(first: LatLon, second: LatLon) -> f64 {
     let lat_nm = (second.lat - first.lat) * 60.0;
-    let lon_nm = (second.lon - first.lon) * 60.0 * ((first.lat + second.lat).to_radians() / 2.0).cos();
+    let lon_nm =
+        (second.lon - first.lon) * 60.0 * ((first.lat + second.lat).to_radians() / 2.0).cos();
     (lat_nm.powi(2) + lon_nm.powi(2)).sqrt()
 }
 
@@ -1675,14 +1714,19 @@ pub fn project_flight_plan_route(
         .iter()
         .enumerate()
         .map(|(leg_index, leg)| {
-            let procedure_airport_id = leg
-                .procedure_provenance
-                .as_ref()
-                .and_then(|provenance| (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str()));
-            let from =
-                resolve_nav_ref_position_with_procedure_airport(db_path, &leg.from, procedure_airport_id)?;
-            let to =
-                resolve_nav_ref_position_with_procedure_airport(db_path, &leg.to, procedure_airport_id)?;
+            let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
+                (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str())
+            });
+            let from = resolve_nav_ref_position_with_procedure_airport(
+                db_path,
+                &leg.from,
+                procedure_airport_id,
+            )?;
+            let to = resolve_nav_ref_position_with_procedure_airport(
+                db_path,
+                &leg.to,
+                procedure_airport_id,
+            )?;
             Ok(FlightPlanRouteSegment {
                 id: leg.id.clone(),
                 from,
@@ -1708,7 +1752,8 @@ pub fn insert_airway_from_anchors(
     origin_anchor: &NavRef,
     destination_anchor: &NavRef,
 ) -> AppResult<AirwayPlanMutation> {
-    let selection = choose_best_airway_plan(db_path, airway_name, origin_anchor, destination_anchor)?;
+    let selection =
+        choose_best_airway_plan(db_path, airway_name, origin_anchor, destination_anchor)?;
     let entry = selection.entry.clone();
     let exit = selection.exit.clone();
     insert_airway_from_selection(
@@ -1990,8 +2035,12 @@ pub fn insert_airway_materialized_ui(
             start_component_index + 1,
         ),
         None => {
-            let inserted =
-                insert_airway_after_waypoint(plan, start_component_index, airway, resolved_legs.clone())?;
+            let inserted = insert_airway_after_waypoint(
+                plan,
+                start_component_index,
+                airway,
+                resolved_legs.clone(),
+            )?;
             let component_index = inserted.route_components.len() - 1;
             (inserted, component_index)
         }
@@ -2092,7 +2141,10 @@ pub fn unsuspend_sequencing_ui(plan: &FlightPlan) -> AppResult<FlightPlanUiMutat
     Ok(project_plan_mutation(plan))
 }
 
-pub fn delete_component_ui(plan: &FlightPlan, component_index: usize) -> AppResult<FlightPlanUiMutation> {
+pub fn delete_component_ui(
+    plan: &FlightPlan,
+    component_index: usize,
+) -> AppResult<FlightPlanUiMutation> {
     let plan = delete_component(plan, component_index)?;
     Ok(project_plan_mutation(plan))
 }
@@ -2414,34 +2466,35 @@ mod tests {
 
     fn fixture_db_path() -> &'static Path {
         static DB_PATH: OnceLock<PathBuf> = OnceLock::new();
-        DB_PATH.get_or_init(|| {
-            if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_NAV_DB") {
-                let path = PathBuf::from(value);
-                if path.is_file() {
-                    return path;
+        DB_PATH
+            .get_or_init(|| {
+                if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_NAV_DB") {
+                    let path = PathBuf::from(value);
+                    if path.is_file() {
+                        return path;
+                    }
                 }
-            }
-            for candidate in [
-                "/root/aerobag-three/ui-target-flightplan/android/assets/nav-db/main.db",
-                "/root/aerobag-three/ui-target/android/assets/nav-db/main.db",
-            ] {
-                let path = PathBuf::from(candidate);
-                if path.is_file() {
-                    return path;
+                for candidate in [
+                    "/root/aerobag-three/ui-target-flightplan/android/assets/nav-db/main.db",
+                    "/root/aerobag-three/ui-target/android/assets/nav-db/main.db",
+                ] {
+                    let path = PathBuf::from(candidate);
+                    if path.is_file() {
+                        return path;
+                    }
                 }
-            }
-            for root in [
-                "/root/aerobag-artifacts/published-unpacked",
-                "/root/aerobag-artifacts/cache/nodes",
-                "/root/aerobag-artifacts/private-work",
-            ] {
-                if let Some(path) = find_fixture_nav_db(Path::new(root)) {
-                    return path;
+                for root in [
+                    "/root/aerobag-artifacts/published-unpacked",
+                    "/root/aerobag-artifacts/cache/nodes",
+                    "/root/aerobag-artifacts/private-work",
+                ] {
+                    if let Some(path) = find_fixture_nav_db(Path::new(root)) {
+                        return path;
+                    }
                 }
-            }
-            panic!("unable to locate nav database fixture");
-        })
-        .as_path()
+                panic!("unable to locate nav database fixture");
+            })
+            .as_path()
     }
 
     const KRDD_I34_PLATE_PATH: &str = "/root/aerobag-artifacts-snapshot/published-unpacked/production/2604/private-work/tpp-sw-2604/work/tpp-sw/SW_TPP_2604/plates/RDD/IAP-CA-ILS OR LOC RWY 34.png";
@@ -2529,7 +2582,9 @@ mod tests {
         points
     }
 
-    fn keln_vorb_plate_points_for_display_elements(elements: &[LegDisplayElement]) -> Vec<(f64, f64)> {
+    fn keln_vorb_plate_points_for_display_elements(
+        elements: &[LegDisplayElement],
+    ) -> Vec<(f64, f64)> {
         let mut points = Vec::new();
         for element in elements {
             match element {
@@ -2571,7 +2626,9 @@ mod tests {
         points
     }
 
-    fn k04w_r06_plate_points_for_display_elements(elements: &[LegDisplayElement]) -> Vec<(f64, f64)> {
+    fn k04w_r06_plate_points_for_display_elements(
+        elements: &[LegDisplayElement],
+    ) -> Vec<(f64, f64)> {
         let mut points = Vec::new();
         for element in elements {
             match element {
@@ -2703,12 +2760,7 @@ mod tests {
         points
     }
 
-    fn draw_polyline(
-        image: &mut RgbaImage,
-        points: &[(f64, f64)],
-        color: Rgba<u8>,
-        radius: i32,
-    ) {
+    fn draw_polyline(image: &mut RgbaImage, points: &[(f64, f64)], color: Rgba<u8>, radius: i32) {
         for pair in points.windows(2) {
             let (x0, y0) = pair[0];
             let (x1, y1) = pair[1];
@@ -2734,8 +2786,7 @@ mod tests {
             pixels_per_latitude: plate.pixels_per_latitude,
             top_left_lon: plate.top_left_lon
                 - (padding.left_px as f64 / plate.pixels_per_longitude),
-            top_left_lat: plate.top_left_lat
-                - (padding.top_px as f64 / plate.pixels_per_latitude),
+            top_left_lat: plate.top_left_lat - (padding.top_px as f64 / plate.pixels_per_latitude),
         }
     }
 
@@ -2846,7 +2897,11 @@ mod tests {
                 runway_transition: None,
                 enroute_transition: Some(enroute_transition.to_string()),
             };
-            if !options.valid_choices.iter().any(|choice| choice == &requested) {
+            if !options
+                .valid_choices
+                .iter()
+                .any(|choice| choice == &requested)
+            {
                 return Err(format!(
                     "invalid procedure selection for {} {} {}",
                     airport_id, procedure_id, enroute_transition
@@ -2865,7 +2920,8 @@ mod tests {
                 "A",
                 enroute_transition,
             );
-            let transition_items = concretize_procedure_materialization_legs(&transition_legs, false);
+            let transition_items =
+                concretize_procedure_materialization_legs(&transition_legs, false);
             segments.push((
                 MaterializedSegmentRole::EnrouteTransition,
                 transition_legs,
@@ -2873,10 +2929,20 @@ mod tests {
                 false,
             ));
             if let Some(common_route_type) = approach_common_route_type(&rows) {
-                let common_legs =
-                    filter_procedure_records(&records, airport_id, procedure_id, &common_route_type, "");
+                let common_legs = filter_procedure_records(
+                    &records,
+                    airport_id,
+                    procedure_id,
+                    &common_route_type,
+                    "",
+                );
                 let common_items = concretize_procedure_materialization_legs(&common_legs, false);
-                segments.push((MaterializedSegmentRole::Common, common_legs, common_items, false));
+                segments.push((
+                    MaterializedSegmentRole::Common,
+                    common_legs,
+                    common_items,
+                    false,
+                ));
             }
             let concretized_items = merge_concretized_segments_from_records(
                 segments
@@ -2911,7 +2977,12 @@ mod tests {
                 resolved_legs,
             })
         })
-        .unwrap_or_else(|error| panic!("materialize {} {} {}: {}", airport_id, procedure_id, enroute_transition, error));
+        .unwrap_or_else(|error| {
+            panic!(
+                "materialize {} {} {}: {}",
+                airport_id, procedure_id, enroute_transition, error
+            )
+        });
 
         let base_canvas = match image::open(&plate.path).expect("open plate png") {
             DynamicImage::ImageRgba8(image) => image,
@@ -2935,7 +3006,8 @@ mod tests {
                 else {
                     continue;
                 };
-                let Some(end) = browser_style_nav_position_for_ref(&connection, airport_id, &leg.to)
+                let Some(end) =
+                    browser_style_nav_position_for_ref(&connection, airport_id, &leg.to)
                 else {
                     continue;
                 };
@@ -3027,7 +3099,8 @@ mod tests {
                 let end_label = describe_position_anchor(connection, airport_id, *end);
                 let true_heading = bearing_degrees(*start, *end);
                 let magnetic_heading = normalize_bearing_degrees(
-                    true_heading - estimate_local_magnetic_variation_deg(connection, airport_id, *start),
+                    true_heading
+                        - estimate_local_magnetic_variation_deg(connection, airport_id, *start),
                 );
                 let length_nm = distance_nm_between(*start, *end);
                 format!(
@@ -3047,11 +3120,11 @@ mod tests {
                 let center_label = describe_position_anchor(connection, airport_id, *center);
                 let start_tangent_true = tangent_course_for_arc(*center, *start, *clockwise);
                 let end_tangent_true = tangent_course_for_arc(*center, *end, *clockwise);
-                let variation = estimate_local_magnetic_variation_deg(connection, airport_id, *center);
+                let variation =
+                    estimate_local_magnetic_variation_deg(connection, airport_id, *center);
                 let start_tangent_magnetic =
                     normalize_bearing_degrees(start_tangent_true - variation);
-                let end_tangent_magnetic =
-                    normalize_bearing_degrees(end_tangent_true - variation);
+                let end_tangent_magnetic = normalize_bearing_degrees(end_tangent_true - variation);
                 let length_nm = radius_nm * sweep_degrees.to_radians().abs();
                 format!(
                     "{leg_id} element#{element_index} ARC {start_label} -> {end_label} center={center_label} cw={} start_mh={start_tangent_magnetic:.1} end_mh={end_tangent_magnetic:.1} radius_nm={radius_nm:.2} arc_len_nm={length_nm:.2} sweep_deg={sweep_degrees:.1}",
@@ -3061,7 +3134,11 @@ mod tests {
         }
     }
 
-    fn describe_position_anchor(connection: &Connection, airport_id: &str, position: LatLon) -> String {
+    fn describe_position_anchor(
+        connection: &Connection,
+        airport_id: &str,
+        position: LatLon,
+    ) -> String {
         browser_style_label_for_position(connection, airport_id, position)
             .unwrap_or_else(|| format!("{:.6},{:.6}", position.lat, position.lon))
     }
@@ -3146,7 +3223,10 @@ mod tests {
             .unwrap_or(0.0)
     }
 
-    fn browser_style_variation_for_position(connection: &Connection, position: LatLon) -> Option<f64> {
+    fn browser_style_variation_for_position(
+        connection: &Connection,
+        position: LatLon,
+    ) -> Option<f64> {
         let query = "SELECT trim(LocationID), ARPLatitude, ARPLongitude, trim(Variation) FROM nav";
         let mut stmt = connection.prepare(query).ok()?;
         let rows = stmt
@@ -3202,8 +3282,7 @@ mod tests {
         let cos_angular = angular_distance.cos();
         let lat2 = (sin_lat1 * cos_angular + cos_lat1 * sin_angular * bearing.cos()).asin();
         let lon2 = lon1
-            + (bearing.sin() * sin_angular * cos_lat1)
-                .atan2(cos_angular - sin_lat1 * lat2.sin());
+            + (bearing.sin() * sin_angular * cos_lat1).atan2(cos_angular - sin_lat1 * lat2.sin());
         LatLon {
             lat: lat2.to_degrees(),
             lon: normalize_longitude_degrees(lon2.to_degrees()),
@@ -3246,7 +3325,12 @@ mod tests {
         )
     }
 
-    fn format_point_from_anchor(label: &str, position: LatLon, anchor_label: &str, anchor: LatLon) -> String {
+    fn format_point_from_anchor(
+        label: &str,
+        position: LatLon,
+        anchor_label: &str,
+        anchor: LatLon,
+    ) -> String {
         format!(
             "{}=({:.6},{:.6}) {:.2}nm-from-{}",
             label,
@@ -3410,7 +3494,8 @@ mod tests {
     }
 
     fn sanitize_filename_component(value: &str) -> String {
-        value.chars()
+        value
+            .chars()
             .map(|ch| {
                 if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
                     ch
@@ -3498,7 +3583,10 @@ mod tests {
                 {
                     return false;
                 }
-                let name = plate_path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+                let name = plate_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("");
                 patterns.iter().any(|pattern| name.contains(pattern))
             })
             .cloned()
@@ -3635,12 +3723,12 @@ mod tests {
                 let nav_ref = browser_style_nav_ref_for_identifier(&connection, &fix_identifier);
                 let defining_nav_ref =
                     browser_style_nav_ref_for_identifier(&connection, &recommended_navaid);
-                let nav_position = nav_ref
-                    .as_ref()
-                    .and_then(|nav_ref| browser_style_nav_position_for_ref(&connection, airport_id.as_str(), nav_ref));
-                let defining_nav_position = defining_nav_ref
-                    .as_ref()
-                    .and_then(|nav_ref| browser_style_nav_position_for_ref(&connection, airport_id.as_str(), nav_ref));
+                let nav_position = nav_ref.as_ref().and_then(|nav_ref| {
+                    browser_style_nav_position_for_ref(&connection, airport_id.as_str(), nav_ref)
+                });
+                let defining_nav_position = defining_nav_ref.as_ref().and_then(|nav_ref| {
+                    browser_style_nav_position_for_ref(&connection, airport_id.as_str(), nav_ref)
+                });
                 Ok(ProcedureLegMaterializationRecord {
                     key: ProcedureVariantKey {
                         airport_id,
@@ -3659,14 +3747,17 @@ mod tests {
                     defining_nav_magnetic_variation_deg: defining_nav_magnetic_variation
                         .as_deref()
                         .and_then(|value| value.trim().parse::<f64>().ok()),
-                    airport_magnetic_variation_deg: parse_airport_magnetic_variation(&airport_magnetic_variation),
+                    airport_magnetic_variation_deg: parse_airport_magnetic_variation(
+                        &airport_magnetic_variation,
+                    ),
                     altitude_1_ft: parse_cifp_altitude_ft(&altitude_1),
                     altitude_2_ft: parse_cifp_altitude_ft(&altitude_2),
                     path_termination_kind: interpret_path_termination(&path_termination),
                     path_termination,
                     turn_direction: (!turn_direction.is_empty()).then_some(turn_direction),
                     magnetic_course_deg: parse_cifp_tenths_value(&magnetic_course),
-                    route_distance_or_time: (!route_distance_or_time.is_empty()).then_some(route_distance_or_time),
+                    route_distance_or_time: (!route_distance_or_time.is_empty())
+                        .then_some(route_distance_or_time),
                 })
             })
             .expect("query materialization records");
@@ -3808,12 +3899,27 @@ mod tests {
 
         assert_eq!(mutation.component_index, 1);
         assert_eq!(mutation.selection.branch_key, "V2-A");
-        assert_eq!(mutation.selection.entry.nav_ref, NavRef::Navaid("SEA".to_string()));
-        assert_eq!(mutation.selection.exit.nav_ref, NavRef::Fix("VAMPS".to_string()));
-        assert!(matches!(mutation.plan.route_components[1], RouteComponent::Airway { .. }));
+        assert_eq!(
+            mutation.selection.entry.nav_ref,
+            NavRef::Navaid("SEA".to_string())
+        );
+        assert_eq!(
+            mutation.selection.exit.nav_ref,
+            NavRef::Fix("VAMPS".to_string())
+        );
+        assert!(matches!(
+            mutation.plan.route_components[1],
+            RouteComponent::Airway { .. }
+        ));
         assert!(mutation.plan.guidance.is_none());
-        assert_eq!(mutation.resolved_legs.first().unwrap().from, NavRef::Navaid("SEA".to_string()));
-        assert_eq!(mutation.resolved_legs.last().unwrap().to, NavRef::Fix("VAMPS".to_string()));
+        assert_eq!(
+            mutation.resolved_legs.first().unwrap().from,
+            NavRef::Navaid("SEA".to_string())
+        );
+        assert_eq!(
+            mutation.resolved_legs.last().unwrap().to,
+            NavRef::Fix("VAMPS".to_string())
+        );
     }
 
     #[test]
@@ -3908,30 +4014,23 @@ mod tests {
             &NavRef::Airport("KUAO".to_string()),
         )
         .unwrap();
-        let (airway, resolved_legs) = materialize_airway_selection(
-            fixture_db_path(),
-            &selection.entry,
-            &selection.exit,
-            0,
-        )
-        .unwrap();
+        let (airway, resolved_legs) =
+            materialize_airway_selection(fixture_db_path(), &selection.entry, &selection.exit, 0)
+                .unwrap();
 
-        let mutation = insert_airway_materialized_ui(
-            &plan,
-            0,
-            Some(1),
-            selection,
-            airway,
-            resolved_legs,
-        )
-        .unwrap();
+        let mutation =
+            insert_airway_materialized_ui(&plan, 0, Some(1), selection, airway, resolved_legs)
+                .unwrap();
 
         assert_eq!(mutation.mutation.component_index, 1);
         assert!(matches!(
             mutation.mutation.plan.route_components[1],
             RouteComponent::Airway { .. }
         ));
-        assert_eq!(mutation.ui_state.components[1].kind, RouteComponentViewKind::Airway);
+        assert_eq!(
+            mutation.ui_state.components[1].kind,
+            RouteComponentViewKind::Airway
+        );
     }
 
     #[test]
@@ -4046,13 +4145,9 @@ mod tests {
             ],
         }];
 
-        let presentation = prepare_airway_presentation(
-            "V2",
-            branches,
-            LatLon { lat: 0.0, lon: 0.2 },
-            None,
-        )
-        .unwrap();
+        let presentation =
+            prepare_airway_presentation("V2", branches, LatLon { lat: 0.0, lon: 0.2 }, None)
+                .unwrap();
 
         assert_eq!(presentation.suggested_entry_index, 0);
         assert_eq!(presentation.suggested_exit_index, None);
@@ -4107,7 +4202,10 @@ mod tests {
             mutation.mutation.plan.route_components[1],
             RouteComponent::Procedure { .. }
         ));
-        assert_eq!(mutation.ui_state.components[1].kind, RouteComponentViewKind::Procedure);
+        assert_eq!(
+            mutation.ui_state.components[1].kind,
+            RouteComponentViewKind::Procedure
+        );
     }
 
     #[test]
@@ -4461,7 +4559,9 @@ mod tests {
             )
             .expect("prepare all approaches query");
         let approaches = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .expect("query all approaches")
             .collect::<Result<Vec<_>, _>>()
             .expect("collect all approaches");
@@ -4478,7 +4578,9 @@ mod tests {
                 ProcedureKind::Approach,
                 rows.clone(),
             )
-            .unwrap_or_else(|error| panic!("describe options failed for {airport_id} {procedure_id}: {error}"));
+            .unwrap_or_else(|error| {
+                panic!("describe options failed for {airport_id} {procedure_id}: {error}")
+            });
             let records = load_browser_style_procedure_materialization_records(
                 fixture_db_path(),
                 &airport_id,
@@ -4623,12 +4725,11 @@ mod tests {
 
         let output_path = "/tmp/procedure-turn-limits-under-15nm.csv";
         fs::write(output_path, report).expect("write PI report");
-        eprintln!(
-            "wrote {} rows to {}",
-            filtered.len(),
-            output_path
+        eprintln!("wrote {} rows to {}", filtered.len(), output_path);
+        assert!(
+            !filtered.is_empty(),
+            "expected at least one PI leg under 15 NM"
         );
-        assert!(!filtered.is_empty(), "expected at least one PI leg under 15 NM");
     }
 
     #[test]
@@ -4678,11 +4779,8 @@ mod tests {
         )
         .expect("resolve RDD position");
         let rows = load_browser_style_procedure_distinct_rows(fixture_db_path(), "KRDD", "I34");
-        let records = load_browser_style_procedure_materialization_records(
-            fixture_db_path(),
-            "KRDD",
-            "I34",
-        );
+        let records =
+            load_browser_style_procedure_materialization_records(fixture_db_path(), "KRDD", "I34");
         let materialized = materialize_procedure_from_records(
             "KRDD",
             "I34",
@@ -4776,7 +4874,8 @@ mod tests {
             }
             if has_display_path {
                 for element in &elements {
-                    let single_points = plate_points_for_display_elements(std::slice::from_ref(element));
+                    let single_points =
+                        plate_points_for_display_elements(std::slice::from_ref(element));
                     if single_points.len() < 2 {
                         continue;
                     }
@@ -5036,11 +5135,8 @@ mod tests {
         )
         .expect("resolve RDD position");
         let rows = load_browser_style_procedure_distinct_rows(fixture_db_path(), "KRDD", "I34");
-        let records = load_browser_style_procedure_materialization_records(
-            fixture_db_path(),
-            "KRDD",
-            "I34",
-        );
+        let records =
+            load_browser_style_procedure_materialization_records(fixture_db_path(), "KRDD", "I34");
         let materialized = materialize_procedure_from_records(
             "KRDD",
             "I34",
@@ -5242,14 +5338,12 @@ mod tests {
             {
                 path.elements.clone()
             } else {
-                let Some(start) =
-                    browser_style_nav_position_for_ref(&connection, "04W", &leg.from)
+                let Some(start) = browser_style_nav_position_for_ref(&connection, "04W", &leg.from)
                 else {
                     skipped_legs.push(format!("{} unresolved start {:?}", leg.id, leg.from));
                     continue;
                 };
-                let Some(end) =
-                    browser_style_nav_position_for_ref(&connection, "04W", &leg.to)
+                let Some(end) = browser_style_nav_position_for_ref(&connection, "04W", &leg.to)
                 else {
                     skipped_legs.push(format!("{} unresolved end {:?}", leg.id, leg.to));
                     continue;
@@ -5375,7 +5469,12 @@ mod tests {
                 continue;
             };
             let key = format!("{}|{}|{}", airport_id, procedure_id, plate_path.display());
-            candidates.push((pseudo_random_score(&key), airport_id, procedure_id, plate_path));
+            candidates.push((
+                pseudo_random_score(&key),
+                airport_id,
+                procedure_id,
+                plate_path,
+            ));
         }
         candidates.sort_by_key(|entry| entry.0);
         eprintln!("found {} mappable procedure candidates", candidates.len());
@@ -5516,18 +5615,14 @@ mod tests {
                     {
                         path.elements.clone()
                     } else {
-                        let Some(start) = browser_style_nav_position_for_ref(
-                            &connection,
-                            &airport_id,
-                            &leg.from,
-                        ) else {
+                        let Some(start) =
+                            browser_style_nav_position_for_ref(&connection, &airport_id, &leg.from)
+                        else {
                             continue;
                         };
-                        let Some(end) = browser_style_nav_position_for_ref(
-                            &connection,
-                            &airport_id,
-                            &leg.to,
-                        ) else {
+                        let Some(end) =
+                            browser_style_nav_position_for_ref(&connection, &airport_id, &leg.to)
+                        else {
                             continue;
                         };
                         vec![LegDisplayElement::Segment { start, end }]
@@ -5601,10 +5696,7 @@ mod tests {
                 render_procedure_overlay_to_paths(
                     &airport_id,
                     &procedure_id,
-                    choice
-                        .enroute_transition
-                        .as_deref()
-                        .unwrap_or(""),
+                    choice.enroute_transition.as_deref().unwrap_or(""),
                     &fail_stem,
                     true,
                 );
@@ -5627,8 +5719,16 @@ mod tests {
         for example in failed_examples {
             eprintln!("example: {example}");
         }
-        assert_eq!(written, TARGET_PLOTS, "expected to write exactly {} procedure plots", TARGET_PLOTS);
-        eprintln!("wrote {} procedure plots to {}", TARGET_PLOTS, output_dir.display());
+        assert_eq!(
+            written, TARGET_PLOTS,
+            "expected to write exactly {} procedure plots",
+            TARGET_PLOTS
+        );
+        eprintln!(
+            "wrote {} procedure plots to {}",
+            TARGET_PLOTS,
+            output_dir.display()
+        );
     }
 
     #[test]
@@ -5789,5 +5889,4 @@ mod tests {
             ContentAvailability::Unavailable
         );
     }
-
 }

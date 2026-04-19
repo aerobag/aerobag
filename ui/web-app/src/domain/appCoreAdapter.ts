@@ -43,9 +43,9 @@ import type {
   SituationSample,
   WaypointIdentifierSuggestion,
 } from "./types";
-import { sampleCatalog } from "./sampleData";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { installBrowserNavDbQueryHost } from "./webNavDb";
+import { debugLog } from "./debugLog";
 
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];
@@ -155,13 +155,15 @@ export interface UiSession {
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
   queryMapOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<MapOverlayQueryResult>;
   restoreChartPageState(recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
+  replaceChartCatalog(chartCatalog: ChartPageData, recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
   destroy(): Promise<void>;
 }
 
 export interface AppCoreAdapter {
   prewarm(): Promise<void>;
   createUiSession(
-    resourceIndex: unknown,
+    catalogJson: string,
+    initialChartCatalog: ChartPageData,
     plan: FlightPlan,
     recentAirportIds: string[],
     selectedAirportId?: string,
@@ -285,7 +287,9 @@ type WasmModule = {
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   get_session_snapshot(handle: number): Promise<string> | string;
   restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
+  replace_chart_catalog_in_session(handle: number, chartCatalogJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   destroy_session(handle: number): void;
+  create_ui_session_snapshot(catalogJson: string, chartCatalogJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   remove_flight_plan_leg(planJson: string, index: number): Promise<string> | string;
   derive_chart_catalog(resourceIndexJson: string): Promise<string> | string;
   derive_chart_page(resourceIndexJson: string, planJson: string): Promise<string> | string;
@@ -425,11 +429,23 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   private async enrichFlightPlanUiState(plan: FlightPlan, uiState: FlightPlanUiState): Promise<FlightPlanUiState> {
+    const startMs = performance.now();
+    debugLog("flight_plan.enrich.start", {
+      rows: uiState.display_rows.length,
+    });
     await this.ensureNavDbHost();
+    debugLog("flight_plan.enrich.navdb_host", {
+      elapsed_ms: Math.round(performance.now() - startMs),
+    });
     const routeSegments = JSON.parse(
       await this.module.web_project_flight_plan_route(JSON.stringify(plan)),
     ) as FlightPlanRouteSegment[];
+    debugLog("flight_plan.enrich.route_segments", {
+      elapsed_ms: Math.round(performance.now() - startMs),
+      segments: routeSegments.length,
+    });
     const display_rows = await Promise.all(uiState.display_rows.map(async (row) => {
+      const rowStartMs = performance.now();
       const showPlateAction = row.actions.find((action) => action.id === "show_plate");
       const legMetrics = row.leg_index !== null ? routeSegments[row.leg_index] ?? null : null;
       const symbol_feature = row.nav_ref
@@ -438,6 +454,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ) as NavSymbolFeature | null
         : null;
       if (!showPlateAction || !row.chart_airport_id || !row.procedure_id) {
+        debugLog("flight_plan.enrich.row", {
+          label: row.label,
+          component_index: row.component_index,
+          leg_index: row.leg_index,
+          elapsed_ms: Math.round(performance.now() - rowStartMs),
+          has_symbol: symbol_feature !== null,
+          has_plate_lookup: false,
+        });
         return {
           ...row,
           symbol_feature,
@@ -448,6 +472,15 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       const match = JSON.parse(
         await this.module.web_find_procedure_plate_match(row.chart_airport_id, row.procedure_id),
       ) as CifpTppMatch | null;
+      debugLog("flight_plan.enrich.row", {
+        label: row.label,
+        component_index: row.component_index,
+        leg_index: row.leg_index,
+        elapsed_ms: Math.round(performance.now() - rowStartMs),
+        has_symbol: symbol_feature !== null,
+        has_plate_lookup: true,
+        has_plate_match: match !== null,
+      });
       return {
         ...row,
         symbol_feature,
@@ -461,6 +494,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ),
       } satisfies FlightPlanDisplayRowWithShowPlateTarget;
     }));
+    debugLog("flight_plan.enrich.ready", {
+      elapsed_ms: Math.round(performance.now() - startMs),
+      rows: display_rows.length,
+    });
     return {
       ...uiState,
       display_rows,
@@ -488,15 +525,29 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async createUiSession(
-    resourceIndex: unknown,
+    catalogJson: string,
+    initialChartCatalog: ChartPageData,
     plan: FlightPlan,
     recentAirportIds: string[],
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<UiSession> {
-    const catalogJson = JSON.stringify(sampleCatalogLike(resourceIndex));
-    const chartCatalog = await this.deriveChartCatalog(resourceIndex);
+    const startMs = performance.now();
+    debugLog("session.create.start");
+    debugLog("session.create.catalog_json", {
+      elapsed_ms: Math.round(performance.now() - startMs),
+      bytes: catalogJson.length,
+    });
+    const chartCatalog = initialChartCatalog;
+    debugLog("session.create.chart_catalog", {
+      elapsed_ms: Math.round(performance.now() - startMs),
+      airports: chartCatalog.airports.length,
+    });
     const chartCatalogJson = JSON.stringify(chartCatalog);
+    debugLog("session.create.chart_catalog_json", {
+      elapsed_ms: Math.round(performance.now() - startMs),
+      bytes: chartCatalogJson.length,
+    });
     const module = this.module;
     const createSession = async (
       nextPlan: FlightPlan,
@@ -505,7 +556,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       nextSelectedChartId?: string,
     ) => {
       const created = JSON.parse(
-        await module.create_ui_session(
+        await module.create_ui_session_snapshot(
           catalogJson,
           chartCatalogJson,
           JSON.stringify(nextPlan),
@@ -513,15 +564,19 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           JSON.stringify(nextSelectedAirportId ?? null),
           JSON.stringify(nextSelectedChartId ?? null),
         ),
-      ) as { handle: number; chart_catalog: ChartPageData; snapshot: UiSessionSnapshot };
-      return {
-        ...created,
-        snapshot: await this.enrichUiSessionSnapshot(created.snapshot),
-      };
+      ) as { handle: number; snapshot: UiSessionSnapshot };
+      debugLog("session.create.core_snapshot", {
+        elapsed_ms: Math.round(performance.now() - startMs),
+      });
+      return created;
     };
     const init = await createSession(plan, recentAirportIds, selectedAirportId, selectedChartId);
+    debugLog("session.create.ready", {
+      elapsed_ms: Math.round(performance.now() - startMs),
+    });
     let handle = init.handle;
     let snapshot = init.snapshot;
+    let returnedInitialSnapshot = false;
     const parseSessionSnapshot = async (json: Promise<string> | string) =>
       this.enrichUiSessionSnapshot(JSON.parse(await json) as UiSessionSnapshot);
     const isInvalidSessionHandleError = (error: unknown) =>
@@ -552,8 +607,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       }
     };
     return {
-      chartCatalog: init.chart_catalog,
+      chartCatalog,
       snapshot: async () => {
+        if (!returnedInitialSnapshot) {
+          returnedInitialSnapshot = true;
+          return snapshot;
+        }
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.get_session_snapshot(handle)),
         );
@@ -730,6 +789,20 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           parseSessionSnapshot(
             this.module.restore_chart_page_state_in_session(
               handle,
+              JSON.stringify(nextRecentAirportIds),
+              JSON.stringify(nextSelectedAirportId ?? null),
+              JSON.stringify(nextSelectedChartId ?? null),
+            ),
+          ),
+        );
+        return snapshot;
+      },
+      replaceChartCatalog: async (nextChartCatalog, nextRecentAirportIds, nextSelectedAirportId, nextSelectedChartId) => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(
+            this.module.replace_chart_catalog_in_session(
+              handle,
+              JSON.stringify(nextChartCatalog),
               JSON.stringify(nextRecentAirportIds),
               JSON.stringify(nextSelectedAirportId ?? null),
               JSON.stringify(nextSelectedChartId ?? null),
@@ -1140,7 +1213,9 @@ export async function loadBestAvailableAdapter(
     typeof mod.get_map_overlay_in_session !== "function" ||
     typeof mod.get_session_snapshot !== "function" ||
     typeof mod.restore_chart_page_state_in_session !== "function" ||
+    typeof mod.replace_chart_catalog_in_session !== "function" ||
     typeof mod.destroy_session !== "function" ||
+    typeof mod.create_ui_session_snapshot !== "function" ||
     typeof mod.replace_flight_plan_state !== "function" ||
     typeof mod.remove_flight_plan_leg !== "function" ||
     typeof mod.activate_leg_ui !== "function" ||
@@ -1199,22 +1274,6 @@ function coreViewportForMap(viewport: MapViewportState) {
     zoom: viewport.zoom,
     rotation_deg: 0,
     pitch_deg: 0,
-  };
-}
-
-function sampleCatalogLike(_resourceIndex: unknown): CatalogJson {
-  return {
-    ...({
-      schema_version: sampleCatalog.schema_version,
-      cycle: sampleCatalog.cycle,
-      catalog_revision: sampleCatalog.catalog_revision,
-      families: sampleCatalog.families,
-      regions: sampleCatalog.regions,
-      packages: sampleCatalog.packages,
-      charts: sampleCatalog.charts,
-      plates: sampleCatalog.plates,
-      supplements: sampleCatalog.supplements,
-    } as CatalogJson),
   };
 }
 

@@ -4,21 +4,22 @@ use rusqlite::{params, Connection};
 
 use crate::errors::{AppError, AppErrorKind, AppResult};
 use crate::geometry::LatLon;
-use crate::map_overlay::{point_vector_record_to_symbol_feature, NavSymbolFeature, PointVectorRecord};
+use crate::map_overlay::{
+    point_vector_record_to_symbol_feature, NavSymbolFeature, PointVectorRecord,
+};
 use crate::navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
-    AirwayExitSelection, AirwayFixPoint, AirwayPoint, AirwaySuggestion, MaterializedProcedure,
-    CifpTppMatchRow, ProcedureLegRecord, ProcedureOptions, ProcedureSpecChoice,
+    AirwayExitSelection, AirwayFixPoint, AirwayPoint, AirwaySuggestion, CifpTppMatchRow,
+    MaterializedProcedure, ProcedureLegRecord, ProcedureOptions, ProcedureSpecChoice,
     ProcedureSummary, ProcedureVariantKey, WaypointIdentifierSuggestion,
-};
-use crate::planning::{
-    interpret_path_termination, AirwaySegment, ConcretizedNavItem, FlightPlan, NavRef,
-    RouteComponent,
-    ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegmentRole,
-    ResolvedLeg, ResolvedLegSource,
 };
 #[cfg(test)]
 use crate::planning::PathTermination;
+use crate::planning::{
+    interpret_path_termination, AirwaySegment, ConcretizedNavItem, FlightPlan, NavRef,
+    ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegmentRole,
+    ResolvedLeg, ResolvedLegSource, RouteComponent,
+};
 
 const MAX_AIRWAY_BRANCH_HOP_NM: f64 = 500.0;
 const AIRWAY_SEARCH_RADII_NM: [f64; 5] = [25.0, 50.0, 100.0, 200.0, 400.0];
@@ -48,9 +49,9 @@ pub fn load_airway_points(db_path: &Path, airway_name: &str) -> AppResult<Vec<Ai
 }
 
 pub fn load_airway_branches(db_path: &Path, airway_name: &str) -> AppResult<Vec<AirwayBranch>> {
-    if let Some(branches) =
-        with_connection(db_path, |connection| load_airway_branches_from_branch_table(connection, airway_name))?
-    {
+    if let Some(branches) = with_connection(db_path, |connection| {
+        load_airway_branches_from_branch_table(connection, airway_name)
+    })? {
         return Ok(branches);
     }
 
@@ -65,11 +66,18 @@ pub fn load_airway_branches(db_path: &Path, airway_name: &str) -> AppResult<Vec<
 }
 
 pub fn resolve_nav_ref_position(db_path: &Path, nav_ref: &NavRef) -> AppResult<LatLon> {
-    with_connection(db_path, |connection| resolve_nav_ref_position_in_db(connection, nav_ref))
+    with_connection(db_path, |connection| {
+        resolve_nav_ref_position_in_db(connection, nav_ref)
+    })
 }
 
-pub fn resolve_nav_symbol_feature(db_path: &Path, nav_ref: &NavRef) -> AppResult<Option<NavSymbolFeature>> {
-    with_connection(db_path, |connection| resolve_nav_symbol_feature_in_db(connection, nav_ref))
+pub fn resolve_nav_symbol_feature(
+    db_path: &Path,
+    nav_ref: &NavRef,
+) -> AppResult<Option<NavSymbolFeature>> {
+    with_connection(db_path, |connection| {
+        resolve_nav_symbol_feature_in_db(connection, nav_ref)
+    })
 }
 
 pub fn resolve_nav_ref_identifier(db_path: &Path, identifier: &str) -> AppResult<NavRef> {
@@ -81,12 +89,12 @@ pub fn resolve_nav_ref_identifier(db_path: &Path, identifier: &str) -> AppResult
         });
     }
 
-    let resolved = with_connection(db_path, |connection| classify_identifier_in_db(connection, trimmed))?;
-    resolved.ok_or_else(|| {
-        AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: format!("unknown waypoint {trimmed}"),
-        }
+    let resolved = with_connection(db_path, |connection| {
+        classify_identifier_in_db(connection, trimmed)
+    })?;
+    resolved.ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: format!("unknown waypoint {trimmed}"),
     })
 }
 
@@ -160,7 +168,8 @@ pub fn suggest_waypoint_identifiers(
                 "navaid" => NavRef::Navaid(identifier.clone()),
                 _ => NavRef::Fix(identifier.clone()),
             };
-            let display_name = waypoint_identifier_display_name(&kind, &city, &state, &facility_name);
+            let display_name =
+                waypoint_identifier_display_name(&kind, &city, &state, &facility_name);
             suggestions.push(WaypointIdentifierSuggestion {
                 identifier,
                 nav_ref,
@@ -174,14 +183,21 @@ pub fn suggest_waypoint_identifiers(
                 .partial_cmp(&right.distance_from_anchor_nm)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| left.identifier.cmp(&right.identifier))
-                .then_with(|| nav_ref_kind_order(&left.nav_ref).cmp(&nav_ref_kind_order(&right.nav_ref)))
+                .then_with(|| {
+                    nav_ref_kind_order(&left.nav_ref).cmp(&nav_ref_kind_order(&right.nav_ref))
+                })
         });
         suggestions.truncate(limit);
         Ok(suggestions)
     })
 }
 
-fn waypoint_identifier_display_name(kind: &str, city: &str, state: &str, facility_name: &str) -> String {
+fn waypoint_identifier_display_name(
+    kind: &str,
+    city: &str,
+    state: &str,
+    facility_name: &str,
+) -> String {
     let city = city.trim();
     let state = state.trim();
     let facility_name = facility_name.trim();
@@ -246,9 +262,19 @@ pub fn suggest_airways_near(
 
         for radius_nm in AIRWAY_SEARCH_RADII_NM {
             suggestions = if table_exists(connection, "airways_branch")? {
-                query_airway_suggestions_from_branch_table(connection, anchor_position, radius_nm, limit)?
+                query_airway_suggestions_from_branch_table(
+                    connection,
+                    anchor_position,
+                    radius_nm,
+                    limit,
+                )?
             } else {
-                query_airway_suggestions_from_legacy_table(connection, anchor_position, radius_nm, limit)?
+                query_airway_suggestions_from_legacy_table(
+                    connection,
+                    anchor_position,
+                    radius_nm,
+                    limit,
+                )?
             };
 
             if suggestions.len() >= limit {
@@ -351,7 +377,8 @@ pub fn list_airway_exit_candidates(
         .iter()
         .enumerate()
         .map(|(branch_point_index, point)| {
-            let leg_offset_from_entry = branch_point_index as isize - entry_branch_point_index as isize;
+            let leg_offset_from_entry =
+                branch_point_index as isize - entry_branch_point_index as isize;
             AirwayExitCandidate {
                 airway_name: branch.display_name.clone(),
                 branch_key: branch.branch_key.clone(),
@@ -360,7 +387,8 @@ pub fn list_airway_exit_candidates(
                 nav_ref: point.nav_ref.clone(),
                 leg_offset_from_entry,
                 is_entry: branch_point_index == entry_branch_point_index,
-                distance_from_target_nm: target_position.map(|position| distance_nm(position, point.position)),
+                distance_from_target_nm: target_position
+                    .map(|position| distance_nm(position, point.position)),
             }
         })
         .collect::<Vec<_>>();
@@ -424,10 +452,13 @@ pub fn choose_best_airway_plan(
             .map(|point| distance_nm(destination_position, point.position))
             .collect::<Vec<_>>();
 
-        let (best_index, second_best_index) = two_best_indexes(&origin_distances)
-            .ok_or_else(|| AppError {
+        let (best_index, second_best_index) =
+            two_best_indexes(&origin_distances).ok_or_else(|| AppError {
                 kind: AppErrorKind::InvalidFlightPlan,
-                message: format!("airway {} has no selectable entry points", airway_name.trim()),
+                message: format!(
+                    "airway {} has no selectable entry points",
+                    airway_name.trim()
+                ),
             })?;
 
         for exit_index in 0..branch.points.len() {
@@ -443,10 +474,16 @@ pub fn choose_best_airway_plan(
                 airway_name: branch.display_name.clone(),
                 branch_key: branch.branch_key.clone(),
                 entry: airway_entry_candidate(&branch, entry_index, origin_position),
-                exit: airway_exit_candidate(&branch, entry_index, exit_index, Some(destination_position)),
+                exit: airway_exit_candidate(
+                    &branch,
+                    entry_index,
+                    exit_index,
+                    Some(destination_position),
+                ),
                 origin_distance_nm: origin_distances[entry_index],
                 destination_distance_nm: destination_distances[exit_index],
-                total_anchor_distance_nm: origin_distances[entry_index] + destination_distances[exit_index],
+                total_anchor_distance_nm: origin_distances[entry_index]
+                    + destination_distances[exit_index],
             };
 
             let replace = match &best_selection {
@@ -840,7 +877,9 @@ pub fn list_procedures(
             .filter(|procedure| procedure.kind == kind)
             .collect::<Vec<_>>();
         procedures.sort_by(|left, right| left.procedure_id.cmp(&right.procedure_id));
-        procedures.dedup_by(|left, right| left.procedure_id == right.procedure_id && left.kind == right.kind);
+        procedures.dedup_by(|left, right| {
+            left.procedure_id == right.procedure_id && left.kind == right.kind
+        });
         Ok(procedures)
     })
 }
@@ -901,7 +940,9 @@ pub fn describe_procedure_options(
         .map(|row| row.transition_id.clone())
         .filter(|transition| !transition.is_empty() && transition != "ALL")
         .collect::<Vec<_>>();
-    let has_common_segment = rows.iter().any(|row| row.route_type == layout.common_route_type);
+    let has_common_segment = rows
+        .iter()
+        .any(|row| row.route_type == layout.common_route_type);
 
     let runway_choices = if runway_transitions.is_empty() {
         vec![None]
@@ -958,11 +999,21 @@ pub fn materialize_procedure_selection(
     let options = describe_procedure_options(db_path, airport_id, procedure_id, kind.clone())?;
     let connection = Connection::open(db_path).map_err(sqlite_error)?;
     let requested = ProcedureSpecChoice {
-        runway_transition: runway_transition.map(str::trim).filter(|value| !value.is_empty()).map(str::to_string),
-        enroute_transition: enroute_transition.map(str::trim).filter(|value| !value.is_empty()).map(str::to_string),
+        runway_transition: runway_transition
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        enroute_transition: enroute_transition
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
     };
 
-    if !options.valid_choices.iter().any(|choice| choice == &requested) {
+    if !options
+        .valid_choices
+        .iter()
+        .any(|choice| choice == &requested)
+    {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: format!(
@@ -991,8 +1042,14 @@ pub fn materialize_procedure_selection(
                 transition_id: enroute_transition.to_string(),
             };
             let leg_records = load_procedure_legs(db_path, &key)?;
-            let items = concretize_procedure_legs(&connection, &leg_records, false).map_err(sqlite_error)?;
-            segments.push((MaterializedSegmentRole::EnrouteTransition, leg_records, items, false));
+            let items = concretize_procedure_legs(&connection, &leg_records, false)
+                .map_err(sqlite_error)?;
+            segments.push((
+                MaterializedSegmentRole::EnrouteTransition,
+                leg_records,
+                items,
+                false,
+            ));
         }
 
         if let Some(common_route_type) = approach_common_route_type(&rows) {
@@ -1003,7 +1060,8 @@ pub fn materialize_procedure_selection(
                 transition_id: "".to_string(),
             };
             let leg_records = load_procedure_legs(db_path, &key)?;
-            let items = concretize_procedure_legs(&connection, &leg_records, false).map_err(sqlite_error)?;
+            let items = concretize_procedure_legs(&connection, &leg_records, false)
+                .map_err(sqlite_error)?;
             segments.push((MaterializedSegmentRole::Common, leg_records, items, false));
         }
 
@@ -1053,8 +1111,9 @@ pub fn materialize_procedure_selection(
             transition_id: enroute_transition.to_string(),
         };
         let leg_records = load_procedure_legs(db_path, &key)?;
-        let items = concretize_procedure_legs(&connection, &leg_records, layout.reverse_segment_order)
-            .map_err(sqlite_error)?;
+        let items =
+            concretize_procedure_legs(&connection, &leg_records, layout.reverse_segment_order)
+                .map_err(sqlite_error)?;
         segments.push((
             MaterializedSegmentRole::EnrouteTransition,
             leg_records,
@@ -1071,8 +1130,9 @@ pub fn materialize_procedure_selection(
             transition_id: layout.common_transition_id.to_string(),
         };
         let leg_records = load_procedure_legs(db_path, &key)?;
-        let items = concretize_procedure_legs(&connection, &leg_records, layout.reverse_segment_order)
-            .map_err(sqlite_error)?;
+        let items =
+            concretize_procedure_legs(&connection, &leg_records, layout.reverse_segment_order)
+                .map_err(sqlite_error)?;
         segments.push((
             MaterializedSegmentRole::Common,
             leg_records,
@@ -1089,8 +1149,9 @@ pub fn materialize_procedure_selection(
             transition_id: runway_transition.to_string(),
         };
         let leg_records = load_procedure_legs(db_path, &key)?;
-        let items = concretize_procedure_legs(&connection, &leg_records, layout.reverse_segment_order)
-            .map_err(sqlite_error)?;
+        let items =
+            concretize_procedure_legs(&connection, &leg_records, layout.reverse_segment_order)
+                .map_err(sqlite_error)?;
         segments.push((
             MaterializedSegmentRole::RunwayTransition,
             leg_records,
@@ -1101,12 +1162,14 @@ pub fn materialize_procedure_selection(
 
     let concretized_items = merge_concretized_segments(
         segments
-                .iter()
-                .map(|(_, _, items, _)| items.clone())
-                .collect::<Vec<_>>(),
-        );
+            .iter()
+            .map(|(_, _, items, _)| items.clone())
+            .collect::<Vec<_>>(),
+    );
     let terminal_discontinuity = match concretized_items.last() {
-        Some(ConcretizedNavItem::Discontinuity { discontinuity, .. }) => Some(discontinuity.clone()),
+        Some(ConcretizedNavItem::Discontinuity { discontinuity, .. }) => {
+            Some(discontinuity.clone())
+        }
         _ => None,
     };
     let resolved_legs = resolve_procedure_legs_with_provenance(
@@ -1138,7 +1201,9 @@ pub fn load_procedure_concretized_items(
     key: &ProcedureVariantKey,
 ) -> AppResult<Vec<ConcretizedNavItem>> {
     let legs = load_procedure_legs(db_path, key)?;
-    with_connection(db_path, |connection| concretize_procedure_legs(connection, &legs, false))
+    with_connection(db_path, |connection| {
+        concretize_procedure_legs(connection, &legs, false)
+    })
 }
 
 fn resolve_airway_fix_point(
@@ -1318,7 +1383,12 @@ fn resolve_procedure_legs_with_provenance(
             }
 
             resolved.push(ResolvedLeg {
-                id: format!("procedure-{}-{}-{}", procedure_id.trim(), pair[1].key.route_type.trim(), pair[1].sequence),
+                id: format!(
+                    "procedure-{}-{}-{}",
+                    procedure_id.trim(),
+                    pair[1].key.route_type.trim(),
+                    pair[1].sequence
+                ),
                 from: from.clone(),
                 to: to.clone(),
                 source: ResolvedLegSource::RouteComponent { component_index },
@@ -1353,12 +1423,18 @@ fn concretize_procedure_legs(
 ) -> rusqlite::Result<Vec<ConcretizedNavItem>> {
     let mut waypoints = legs
         .iter()
-        .filter_map(|leg| classify_procedure_identifier_in_db(connection, &leg.fix_identifier).transpose())
+        .filter_map(|leg| {
+            classify_procedure_identifier_in_db(connection, &leg.fix_identifier).transpose()
+        })
         .collect::<rusqlite::Result<Vec<_>>>()?;
     waypoints.dedup();
 
     let terminal_discontinuity = legs.last().and_then(terminal_procedure_discontinuity);
-    let initial_discontinuity = legs.iter().take_while(|leg| leg.fix_identifier.is_empty()).last().and_then(leading_procedure_discontinuity);
+    let initial_discontinuity = legs
+        .iter()
+        .take_while(|leg| leg.fix_identifier.is_empty())
+        .last()
+        .and_then(leading_procedure_discontinuity);
 
     if reverse_segment_order {
         waypoints.reverse();
@@ -1422,7 +1498,8 @@ fn airway_exit_candidate(
         nav_ref: point.nav_ref.clone(),
         leg_offset_from_entry: exit_branch_point_index as isize - entry_branch_point_index as isize,
         is_entry: exit_branch_point_index == entry_branch_point_index,
-        distance_from_target_nm: target_position.map(|position| distance_nm(position, point.position)),
+        distance_from_target_nm: target_position
+            .map(|position| distance_nm(position, point.position)),
     }
 }
 
@@ -1569,8 +1646,8 @@ fn query_airway_suggestions_from_branch_table(
     limit: usize,
 ) -> rusqlite::Result<Vec<AirwaySuggestion>> {
     let bounds = search_bounds(anchor_position, radius_nm);
-    let sql_limit = i64::try_from(limit.saturating_mul(4).max(AIRWAY_POINT_QUERY_LIMIT))
-        .unwrap_or(i64::MAX);
+    let sql_limit =
+        i64::try_from(limit.saturating_mul(4).max(AIRWAY_POINT_QUERY_LIMIT)).unwrap_or(i64::MAX);
     let mut stmt = connection.prepare(
         "SELECT
             trim(name),
@@ -1626,8 +1703,8 @@ fn query_airway_suggestions_from_legacy_table(
     limit: usize,
 ) -> rusqlite::Result<Vec<AirwaySuggestion>> {
     let bounds = search_bounds(anchor_position, radius_nm);
-    let sql_limit = i64::try_from(limit.saturating_mul(8).max(AIRWAY_POINT_QUERY_LIMIT))
-        .unwrap_or(i64::MAX);
+    let sql_limit =
+        i64::try_from(limit.saturating_mul(8).max(AIRWAY_POINT_QUERY_LIMIT)).unwrap_or(i64::MAX);
     let mut stmt = connection.prepare(
         "SELECT
             trim(name),
@@ -1736,11 +1813,7 @@ fn resolve_named_nav_ref(
     connection: &Connection,
     position: LatLon,
 ) -> rusqlite::Result<Option<NavRef>> {
-    for (table, variant) in [
-        ("fix", 0usize),
-        ("nav", 1usize),
-        ("airports", 2usize),
-    ] {
+    for (table, variant) in [("fix", 0usize), ("nav", 1usize), ("airports", 2usize)] {
         let mut stmt = connection.prepare(&format!(
             "SELECT trim(LocationID) FROM {table}
              WHERE abs(ARPLatitude - ?1) < 1e-6
@@ -1749,7 +1822,9 @@ fn resolve_named_nav_ref(
         ))?;
 
         if let Some(id) = stmt
-            .query_row(params![position.lat, position.lon], |row| row.get::<_, String>(0))
+            .query_row(params![position.lat, position.lon], |row| {
+                row.get::<_, String>(0)
+            })
             .optional()?
         {
             return Ok(Some(match variant {
@@ -1963,7 +2038,15 @@ fn airport_runway_info(
     })?;
     let mut best: Option<AirportRunwaySymbolInfo> = None;
     for row in rows {
-        let (length_text, surface_text, le_heading_text, le_lat_text, le_lon_text, he_lat_text, he_lon_text) = row?;
+        let (
+            length_text,
+            surface_text,
+            le_heading_text,
+            le_lat_text,
+            le_lon_text,
+            he_lat_text,
+            he_lon_text,
+        ) = row?;
         let length = parse_float(&length_text);
         if length <= 0.0 {
             continue;
@@ -2085,12 +2168,19 @@ fn classify_identifier_in_db(
     ))
 }
 
-fn component_insert_anchor(plan: &FlightPlan, component_index: usize, before: bool) -> AppResult<NavRef> {
+fn component_insert_anchor(
+    plan: &FlightPlan,
+    component_index: usize,
+    before: bool,
+) -> AppResult<NavRef> {
     let plan = plan.clone().normalized();
-    let component = plan.route_components.get(component_index).ok_or_else(|| AppError {
-        kind: AppErrorKind::UnsupportedOperation,
-        message: format!("component index out of bounds: {component_index}"),
-    })?;
+    let component = plan
+        .route_components
+        .get(component_index)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("component index out of bounds: {component_index}"),
+        })?;
     let waypoint = match component {
         RouteComponent::Waypoint { waypoint } => Some(waypoint.clone()),
         RouteComponent::Airway { airway } => {
@@ -2180,7 +2270,10 @@ fn resolve_runway_fix_position_in_db(
     runway_fix: &str,
     airport_id: &str,
 ) -> rusqlite::Result<LatLon> {
-    let runway_ident = runway_fix.trim().trim_start_matches("RW").trim_start_matches("rw");
+    let runway_ident = runway_fix
+        .trim()
+        .trim_start_matches("RW")
+        .trim_start_matches("rw");
     connection.query_row(
         "
         SELECT
@@ -2335,34 +2428,35 @@ mod tests {
 
     fn fixture_db_path() -> &'static Path {
         static DB_PATH: OnceLock<PathBuf> = OnceLock::new();
-        DB_PATH.get_or_init(|| {
-            if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_NAV_DB") {
-                let path = PathBuf::from(value);
-                if path.is_file() {
-                    return path;
+        DB_PATH
+            .get_or_init(|| {
+                if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_NAV_DB") {
+                    let path = PathBuf::from(value);
+                    if path.is_file() {
+                        return path;
+                    }
                 }
-            }
-            for candidate in [
-                "/root/aerobag-three/ui-target-flightplan/android/assets/nav-db/main.db",
-                "/root/aerobag-three/ui-target/android/assets/nav-db/main.db",
-            ] {
-                let path = PathBuf::from(candidate);
-                if path.is_file() {
-                    return path;
+                for candidate in [
+                    "/root/aerobag-three/ui-target-flightplan/android/assets/nav-db/main.db",
+                    "/root/aerobag-three/ui-target/android/assets/nav-db/main.db",
+                ] {
+                    let path = PathBuf::from(candidate);
+                    if path.is_file() {
+                        return path;
+                    }
                 }
-            }
-            for root in [
-                "/root/aerobag-artifacts/published-unpacked",
-                "/root/aerobag-artifacts/cache/nodes",
-                "/root/aerobag-artifacts/private-work",
-            ] {
-                if let Some(path) = find_fixture_nav_db(Path::new(root)) {
-                    return path;
+                for root in [
+                    "/root/aerobag-artifacts/published-unpacked",
+                    "/root/aerobag-artifacts/cache/nodes",
+                    "/root/aerobag-artifacts/private-work",
+                ] {
+                    if let Some(path) = find_fixture_nav_db(Path::new(root)) {
+                        return path;
+                    }
                 }
-            }
-            panic!("unable to locate nav database fixture");
-        })
-        .as_path()
+                panic!("unable to locate nav database fixture");
+            })
+            .as_path()
     }
 
     fn find_fixture_nav_db(root: &Path) -> Option<PathBuf> {
@@ -2393,8 +2487,12 @@ mod tests {
 
         assert!(points.len() > 50);
         assert_eq!(points[0].airway_name, "V16");
-        assert!(points.windows(2).all(|pair| pair[0].sequence <= pair[1].sequence));
-        assert!(points.windows(2).any(|pair| pair[0].sequence == pair[1].sequence));
+        assert!(points
+            .windows(2)
+            .all(|pair| pair[0].sequence <= pair[1].sequence));
+        assert!(points
+            .windows(2)
+            .any(|pair| pair[0].sequence == pair[1].sequence));
     }
 
     #[test]
@@ -2439,13 +2537,14 @@ mod tests {
             version: 0,
         };
 
-        let suggestions = suggest_waypoint_identifiers(fixture_db_path(), &plan, 0, false, "OL", 8).unwrap();
+        let suggestions =
+            suggest_waypoint_identifiers(fixture_db_path(), &plan, 0, false, "OL", 8).unwrap();
         assert!(suggestions.iter().any(|suggestion| {
             suggestion.identifier == "OLM" && matches!(suggestion.nav_ref, NavRef::Navaid(_))
         }));
-        assert!(suggestions.windows(2).all(|pair| {
-            pair[0].distance_from_anchor_nm <= pair[1].distance_from_anchor_nm
-        }));
+        assert!(suggestions
+            .windows(2)
+            .all(|pair| { pair[0].distance_from_anchor_nm <= pair[1].distance_from_anchor_nm }));
     }
 
     #[test]
@@ -2472,7 +2571,10 @@ mod tests {
         assert_eq!(segment.name, "V16");
         assert_eq!(segment.branch_key.as_deref(), Some("V16-A"));
         assert!(!legs.is_empty());
-        assert_eq!(legs.first().unwrap().from, NavRef::Navaid("LAX".to_string()));
+        assert_eq!(
+            legs.first().unwrap().from,
+            NavRef::Navaid("LAX".to_string())
+        );
         assert_eq!(legs.last().unwrap().to, NavRef::Navaid("PDZ".to_string()));
     }
 
@@ -2483,12 +2585,13 @@ mod tests {
                 .unwrap();
 
         assert_eq!(suggestions.len(), 5);
-        assert!(suggestions.windows(2).all(|pair| {
-            pair[0].distance_from_anchor_nm <= pair[1].distance_from_anchor_nm
-        }));
         assert!(suggestions
-            .iter()
-            .all(|suggestion| matches!(suggestion.nearest_nav_ref, NavRef::Airport(_) | NavRef::Navaid(_) | NavRef::Fix(_))));
+            .windows(2)
+            .all(|pair| { pair[0].distance_from_anchor_nm <= pair[1].distance_from_anchor_nm }));
+        assert!(suggestions.iter().all(|suggestion| matches!(
+            suggestion.nearest_nav_ref,
+            NavRef::Airport(_) | NavRef::Navaid(_) | NavRef::Fix(_)
+        )));
     }
 
     #[test]
@@ -2561,7 +2664,8 @@ mod tests {
         .unwrap();
         let exit = exits.candidates[exits.recommended_exit_branch_point_index.unwrap()].clone();
 
-        let (segment, legs) = materialize_airway_selection(fixture_db_path(), &entry, &exit, 2).unwrap();
+        let (segment, legs) =
+            materialize_airway_selection(fixture_db_path(), &entry, &exit, 2).unwrap();
 
         assert_eq!(segment.name, "V2");
         assert_eq!(segment.branch_key.as_deref(), Some("V2-A"));
@@ -2699,15 +2803,8 @@ mod tests {
 
     #[test]
     fn resolve_airway_segment_by_index_rejects_out_of_bounds_index() {
-        let err = resolve_airway_segment_by_index(
-            fixture_db_path(),
-            "V2",
-            "V2-A",
-            999,
-            1000,
-            0,
-        )
-        .unwrap_err();
+        let err = resolve_airway_segment_by_index(fixture_db_path(), "V2", "V2-A", 999, 1000, 0)
+            .unwrap_err();
         assert_eq!(err.kind, AppErrorKind::InvalidFlightPlan);
     }
 
@@ -2726,7 +2823,10 @@ mod tests {
 
         assert!(!legs.is_empty());
         assert_eq!(legs[0].inferred_kind, ProcedureKind::Sid);
-        assert_eq!(legs[0].path_termination_kind, PathTermination::HeadingToAltitude);
+        assert_eq!(
+            legs[0].path_termination_kind,
+            PathTermination::HeadingToAltitude
+        );
         assert_eq!(legs[1].fix_identifier, "NHANT");
     }
 
@@ -2830,7 +2930,9 @@ mod tests {
                 nav_ref: NavRef::Fix("BLZZR".to_string())
             })
         );
-        assert!(items.iter().all(|item| matches!(item, ConcretizedNavItem::Waypoint { .. })));
+        assert!(items
+            .iter()
+            .all(|item| matches!(item, ConcretizedNavItem::Waypoint { .. })));
     }
 
     #[test]
@@ -2858,8 +2960,12 @@ mod tests {
     fn lists_sid_procedures_for_airport() {
         let procedures = list_procedures(fixture_db_path(), "CYQG", ProcedureKind::Sid).unwrap();
 
-        assert!(procedures.iter().any(|procedure| procedure.procedure_id == "AUTTO1"));
-        assert!(procedures.iter().all(|procedure| procedure.kind == ProcedureKind::Sid));
+        assert!(procedures
+            .iter()
+            .any(|procedure| procedure.procedure_id == "AUTTO1"));
+        assert!(procedures
+            .iter()
+            .all(|procedure| procedure.kind == ProcedureKind::Sid));
     }
 
     #[test]
@@ -2868,7 +2974,10 @@ mod tests {
             describe_procedure_options(fixture_db_path(), "CYQG", "AUTTO1", ProcedureKind::Sid)
                 .unwrap();
 
-        assert_eq!(options.enroute_transitions, vec!["COLTS".to_string(), "PICUP".to_string()]);
+        assert_eq!(
+            options.enroute_transitions,
+            vec!["COLTS".to_string(), "PICUP".to_string()]
+        );
         assert!(options.runway_transitions.is_empty());
         assert!(options.has_common_segment);
         assert_eq!(
@@ -2938,9 +3047,18 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(built.resolved_legs.first().unwrap().from, NavRef::Fix("COLTS".to_string()));
-        assert_eq!(built.resolved_legs.last().unwrap().to, NavRef::Fix("GIGGY".to_string()));
-        let provenance = built.resolved_legs[0].procedure_provenance.as_ref().unwrap();
+        assert_eq!(
+            built.resolved_legs.first().unwrap().from,
+            NavRef::Fix("COLTS".to_string())
+        );
+        assert_eq!(
+            built.resolved_legs.last().unwrap().to,
+            NavRef::Fix("GIGGY".to_string())
+        );
+        let provenance = built.resolved_legs[0]
+            .procedure_provenance
+            .as_ref()
+            .unwrap();
         assert_eq!(provenance.airport_id, "CYQG");
         assert_eq!(provenance.procedure_id, "AUTTO1");
         assert_eq!(provenance.kind, ProcedureKind::Sid);
@@ -2971,7 +3089,10 @@ mod tests {
             describe_procedure_options(fixture_db_path(), "47N", "CENTR1", ProcedureKind::Star)
                 .unwrap();
 
-        assert_eq!(options.runway_transitions, vec!["RW07".to_string(), "RW25".to_string()]);
+        assert_eq!(
+            options.runway_transitions,
+            vec!["RW07".to_string(), "RW25".to_string()]
+        );
         assert!(options.enroute_transitions.is_empty());
         assert!(options.has_common_segment);
     }
@@ -3031,9 +3152,15 @@ mod tests {
             ]
         );
         assert_eq!(built.resolved_legs.len(), 2);
-        assert_eq!(built.resolved_legs[0].from, NavRef::Navaid("ARD".to_string()));
+        assert_eq!(
+            built.resolved_legs[0].from,
+            NavRef::Navaid("ARD".to_string())
+        );
         assert_eq!(built.resolved_legs[1].to, NavRef::Fix("METRO".to_string()));
-        let provenance = built.resolved_legs[0].procedure_provenance.as_ref().unwrap();
+        let provenance = built.resolved_legs[0]
+            .procedure_provenance
+            .as_ref()
+            .unwrap();
         assert_eq!(provenance.role, ProcedureSegmentRole::Common);
         assert_eq!(provenance.path_termination, PathTermination::TrackToFix);
     }
@@ -3084,8 +3211,14 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(built.resolved_legs.first().unwrap().from, NavRef::Fix("GOSHI".to_string()));
-        assert_eq!(built.resolved_legs.last().unwrap().to, NavRef::Fix("WAXEN".to_string()));
+        assert_eq!(
+            built.resolved_legs.first().unwrap().from,
+            NavRef::Fix("GOSHI".to_string())
+        );
+        assert_eq!(
+            built.resolved_legs.last().unwrap().to,
+            NavRef::Fix("WAXEN".to_string())
+        );
     }
 
     #[test]
@@ -3120,7 +3253,9 @@ mod tests {
         );
         assert!(built
             .concretized_items
-            .contains(&ConcretizedNavItem::Waypoint { nav_ref: NavRef::Fix("OMVOZ".to_string()) }));
+            .contains(&ConcretizedNavItem::Waypoint {
+                nav_ref: NavRef::Fix("OMVOZ".to_string())
+            }));
     }
 
     #[test]

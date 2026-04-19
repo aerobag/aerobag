@@ -290,6 +290,20 @@ function aerobagStaticPlugin(): Plugin {
         res.statusCode = 204;
         res.end();
       });
+      server.middlewares.use("/__product_catalog", (req, res, next) => {
+        if ((req.url ?? "").split("?")[0] !== "/") {
+          next();
+          return;
+        }
+        return mountStaticTree(path.dirname(catalogPath))({ ...req, url: `/${path.basename(catalogPath)}` }, res, next);
+      });
+      server.middlewares.use("/__product_resource_index", (req, res, next) => {
+        if ((req.url ?? "").split("?")[0] !== "/") {
+          next();
+          return;
+        }
+        return mountStaticTree(path.dirname(resourceIndexPath))({ ...req, url: `/${path.basename(resourceIndexPath)}` }, res, next);
+      });
       server.middlewares.use("/sectional-packages", mountStaticTree(sectionalRoot));
       server.middlewares.use("/plates", mountStaticTree(plateRoot));
       server.middlewares.use("/afd", mountStaticTree(csupRoot));

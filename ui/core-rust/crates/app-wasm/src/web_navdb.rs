@@ -1,17 +1,17 @@
 use std::collections::HashMap;
 
 use app_core::{
-    classify_procedure_identifier, describe_plate_procedure_load_options, describe_procedure_options_from_rows,
-    describe_show_plate_for_procedure, interpret_path_termination, parse_airport_magnetic_variation,
-    point_vector_record_to_symbol_feature,
-    parse_cifp_altitude_ft, parse_cifp_tenths_value, prepare_airway_presentation,
+    classify_procedure_identifier, describe_plate_procedure_load_options,
+    describe_procedure_options_from_rows, describe_show_plate_for_procedure,
+    interpret_path_termination, parse_airport_magnetic_variation, parse_cifp_altitude_ft,
+    parse_cifp_tenths_value, point_vector_record_to_symbol_feature, prepare_airway_presentation,
     select_preferred_cifp_tpp_match, AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate,
     AirwayExitCandidate, AirwayFixPoint, AirwaySegment, AirwaySuggestion, AppError, AppErrorKind,
-    AppResult, CifpTppMatchRow, FlightPlan, FlightPlanRouteSegment,
-    FlightPlanRouteSegmentStatus, LatLon, NavRef, NavSymbolFeature, PointVectorRecord,
-    PlateProcedureLoadCandidateInput, ProcedureDistinctRow, ProcedureKind,
-    ProcedureLegMaterializationRecord, ProcedureSummary, ProcedureVariantKey,
-    ResolvedLeg, ResolvedLegSource, RouteComponent, WaypointIdentifierSuggestion,
+    AppResult, CifpTppMatchRow, FlightPlan, FlightPlanRouteSegment, FlightPlanRouteSegmentStatus,
+    LatLon, NavRef, NavSymbolFeature, PlateProcedureLoadCandidateInput, PointVectorRecord,
+    ProcedureDistinctRow, ProcedureKind, ProcedureLegMaterializationRecord, ProcedureSummary,
+    ProcedureVariantKey, ResolvedLeg, ResolvedLegSource, RouteComponent,
+    WaypointIdentifierSuggestion,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -39,19 +39,16 @@ pub fn prepare_airway_presentation_for_anchors_json(
     let destination_anchor: Option<NavRef> =
         serde_json::from_str(destination_anchor_json).map_err(|err| err.to_string())?;
     let branches = load_airway_branches(airway_name).map_err(|err| err.to_string())?;
-    let origin_position = resolve_nav_ref_position(&origin_anchor, None).map_err(|err| err.to_string())?;
+    let origin_position =
+        resolve_nav_ref_position(&origin_anchor, None).map_err(|err| err.to_string())?;
     let destination_position = destination_anchor
         .as_ref()
         .map(|nav_ref| resolve_nav_ref_position(nav_ref, None))
         .transpose()
         .map_err(|err| err.to_string())?;
-    let presentation = prepare_airway_presentation(
-        airway_name,
-        branches,
-        origin_position,
-        destination_position,
-    )
-    .map_err(|err| err.to_string())?;
+    let presentation =
+        prepare_airway_presentation(airway_name, branches, origin_position, destination_position)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&presentation).map_err(|err| err.to_string())
 }
 
@@ -73,13 +70,17 @@ pub fn materialize_airway_selection_json(
     let (airway, resolved_legs) =
         materialize_airway_selection(start_component_index, &entry, &exit)
             .map_err(|err| err.to_string())?;
-    let origin_pos = resolve_nav_ref_position(&origin_anchor, None).map_err(|err| err.to_string())?;
-    let entry_pos = resolve_nav_ref_position(&entry.nav_ref, None).map_err(|err| err.to_string())?;
+    let origin_pos =
+        resolve_nav_ref_position(&origin_anchor, None).map_err(|err| err.to_string())?;
+    let entry_pos =
+        resolve_nav_ref_position(&entry.nav_ref, None).map_err(|err| err.to_string())?;
     let exit_pos = resolve_nav_ref_position(&exit.nav_ref, None).map_err(|err| err.to_string())?;
     let origin_distance_nm = distance_nm(origin_pos, entry_pos);
     let destination_distance_nm = destination_anchor
         .as_ref()
-        .map(|nav_ref| resolve_nav_ref_position(nav_ref, None).map(|position| distance_nm(position, exit_pos)))
+        .map(|nav_ref| {
+            resolve_nav_ref_position(nav_ref, None).map(|position| distance_nm(position, exit_pos))
+        })
         .transpose()
         .map_err(|err| err.to_string())?
         .unwrap_or(0.0);
@@ -132,10 +133,9 @@ pub fn project_flight_plan_route_json(plan_json: &str) -> Result<String, String>
         .iter()
         .enumerate()
         .map(|(leg_index, leg)| {
-            let procedure_airport_id = leg
-                .procedure_provenance
-                .as_ref()
-                .and_then(|provenance| (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str()));
+            let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
+                (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str())
+            });
             let from = resolve_nav_ref_position(&leg.from, procedure_airport_id)?;
             let to = resolve_nav_ref_position(&leg.to, procedure_airport_id)?;
             Ok(FlightPlanRouteSegment {
@@ -152,10 +152,7 @@ pub fn project_flight_plan_route_json(plan_json: &str) -> Result<String, String>
     serde_json::to_string(&route).map_err(|err| err.to_string())
 }
 
-pub fn list_procedures_json(
-    airport_id: &str,
-    kind_json: &str,
-) -> Result<String, String> {
+pub fn list_procedures_json(airport_id: &str, kind_json: &str) -> Result<String, String> {
     let kind: ProcedureKind = serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
     let procedures = if kind == ProcedureKind::Approach {
         let rows = load_cifp_tpp_matches_for_airport(airport_id).map_err(|err| err.to_string())?;
@@ -173,7 +170,8 @@ pub fn describe_procedure_options_json(
     kind_json: &str,
 ) -> Result<String, String> {
     let kind: ProcedureKind = serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
-    let rows = load_procedure_distinct_rows(airport_id, procedure_id).map_err(|err| err.to_string())?;
+    let rows =
+        load_procedure_distinct_rows(airport_id, procedure_id).map_err(|err| err.to_string())?;
     let options = describe_procedure_options_from_rows(airport_id, procedure_id, kind, rows)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&options).map_err(|err| err.to_string())
@@ -192,7 +190,8 @@ pub fn materialize_procedure_json(
         serde_json::from_str(runway_transition_json).map_err(|err| err.to_string())?;
     let enroute_transition: Option<String> =
         serde_json::from_str(enroute_transition_json).map_err(|err| err.to_string())?;
-    let rows = load_procedure_distinct_rows(airport_id, procedure_id).map_err(|err| err.to_string())?;
+    let rows =
+        load_procedure_distinct_rows(airport_id, procedure_id).map_err(|err| err.to_string())?;
     let legs = load_procedure_materialization_records(airport_id, procedure_id)
         .map_err(|err| err.to_string())?;
     let built = app_core::materialize_procedure_from_records(
@@ -209,12 +208,9 @@ pub fn materialize_procedure_json(
     serde_json::to_string(&built).map_err(|err| err.to_string())
 }
 
-pub fn find_procedure_plate_match_json(
-    airport_id: &str,
-    cifp_id: &str,
-) -> Result<String, String> {
-    let rows = load_cifp_tpp_matches_for_procedure(airport_id, cifp_id)
-        .map_err(|err| err.to_string())?;
+pub fn find_procedure_plate_match_json(airport_id: &str, cifp_id: &str) -> Result<String, String> {
+    let rows =
+        load_cifp_tpp_matches_for_procedure(airport_id, cifp_id).map_err(|err| err.to_string())?;
     let match_row = describe_show_plate_for_procedure(rows);
     serde_json::to_string(&match_row).map_err(|err| err.to_string())
 }
@@ -251,8 +247,8 @@ pub fn describe_plate_procedure_loads_json(
         });
     }
 
-    let options = describe_plate_procedure_load_options(&plan, candidates)
-        .map_err(|err| err.to_string())?;
+    let options =
+        describe_plate_procedure_load_options(&plan, candidates).map_err(|err| err.to_string())?;
     serde_json::to_string(&options).map_err(|err| err.to_string())
 }
 
@@ -267,7 +263,11 @@ struct MaterializedAirwayResponse {
 fn query(sql: &str, bind: Value) -> AppResult<Vec<Value>> {
     let rows_json = navdb_query_objects(sql, &bind.to_string()).map_err(|err| AppError {
         kind: AppErrorKind::InvalidFlightPlan,
-        message: format!("web nav database query failed: {:?}", err.as_string().unwrap_or_else(|| "unknown JS error".to_string())),
+        message: format!(
+            "web nav database query failed: {:?}",
+            err.as_string()
+                .unwrap_or_else(|| "unknown JS error".to_string())
+        ),
     })?;
     serde_json::from_str(&rows_json).map_err(|err| AppError {
         kind: AppErrorKind::InvalidFlightPlan,
@@ -470,13 +470,20 @@ fn suggest_waypoint_identifiers(
             .partial_cmp(&right.distance_from_anchor_nm)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| left.identifier.cmp(&right.identifier))
-            .then_with(|| nav_ref_kind_order(&left.nav_ref).cmp(&nav_ref_kind_order(&right.nav_ref)))
+            .then_with(|| {
+                nav_ref_kind_order(&left.nav_ref).cmp(&nav_ref_kind_order(&right.nav_ref))
+            })
     });
     suggestions.truncate(limit);
     Ok(suggestions)
 }
 
-fn waypoint_identifier_display_name(kind: &str, city: &str, state: &str, facility_name: &str) -> String {
+fn waypoint_identifier_display_name(
+    kind: &str,
+    city: &str,
+    state: &str,
+    facility_name: &str,
+) -> String {
     let city = city.trim();
     let state = state.trim();
     let facility_name = facility_name.trim();
@@ -509,12 +516,19 @@ fn titlecase_nav_label(value: &str) -> String {
         .join(" ")
 }
 
-fn component_insert_anchor(plan: &FlightPlan, component_index: usize, before: bool) -> AppResult<NavRef> {
+fn component_insert_anchor(
+    plan: &FlightPlan,
+    component_index: usize,
+    before: bool,
+) -> AppResult<NavRef> {
     let plan = plan.clone().normalized();
-    let component = plan.route_components.get(component_index).ok_or_else(|| AppError {
-        kind: AppErrorKind::UnsupportedOperation,
-        message: format!("component index out of bounds: {component_index}"),
-    })?;
+    let component = plan
+        .route_components
+        .get(component_index)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("component index out of bounds: {component_index}"),
+        })?;
     let waypoint = match component {
         RouteComponent::Waypoint { waypoint } => Some(waypoint.clone()),
         RouteComponent::Airway { airway } => {
@@ -677,7 +691,12 @@ fn materialize_airway_selection(
     let branch = load_airway_branches(&entry.airway_name)?
         .into_iter()
         .find(|branch| branch.branch_key == entry.branch_key)
-        .ok_or_else(|| invalid(format!("unknown airway branch {} {}", entry.airway_name, entry.branch_key)))?;
+        .ok_or_else(|| {
+            invalid(format!(
+                "unknown airway branch {} {}",
+                entry.airway_name, entry.branch_key
+            ))
+        })?;
     let first_index = entry.branch_point_index;
     let last_index = exit.branch_point_index;
     if first_index == last_index {
@@ -695,7 +714,10 @@ fn materialize_airway_selection(
     let mut resolved_legs = Vec::new();
     for (index, pair) in slice.windows(2).enumerate() {
         resolved_legs.push(ResolvedLeg {
-            id: format!("airway:{}:{}:{}", entry.airway_name, entry.branch_key, index),
+            id: format!(
+                "airway:{}:{}:{}",
+                entry.airway_name, entry.branch_key, index
+            ),
             from: pair[0].nav_ref.clone(),
             to: pair[1].nav_ref.clone(),
             source: ResolvedLegSource::RouteComponent {
@@ -742,7 +764,8 @@ fn list_procedures(airport_id: &str, kind: ProcedureKind) -> AppResult<Vec<Proce
         .filter(|procedure| procedure.kind == kind)
         .collect::<Vec<_>>();
     procedures.sort_by(|left, right| left.procedure_id.cmp(&right.procedure_id));
-    procedures.dedup_by(|left, right| left.procedure_id == right.procedure_id && left.kind == right.kind);
+    procedures
+        .dedup_by(|left, right| left.procedure_id == right.procedure_id && left.kind == right.kind);
     Ok(procedures)
 }
 
@@ -1021,8 +1044,16 @@ fn airport_symbol_record(code: &str) -> AppResult<Option<PointVectorRecord>> {
         style_class: "airport".to_string(),
         towered: Some(field_string(row, "atct")?.trim().eq_ignore_ascii_case("Y")),
         fuel_available: Some(!field_string(row, "fuel_types")?.trim().is_empty()),
-        public_use: Some(field_string(row, "use_code")?.trim().eq_ignore_ascii_case("PU")),
-        private_use: Some(field_string(row, "use_code")?.trim().eq_ignore_ascii_case("PR")),
+        public_use: Some(
+            field_string(row, "use_code")?
+                .trim()
+                .eq_ignore_ascii_case("PU"),
+        ),
+        private_use: Some(
+            field_string(row, "use_code")?
+                .trim()
+                .eq_ignore_ascii_case("PR"),
+        ),
         has_paved_runway: runway_info.as_ref().map(|runway| runway.has_paved_runway),
         heliport: Some(kind_upper.contains("HELIPORT")),
         has_water_runway: Some(
@@ -1228,7 +1259,10 @@ fn lookup_runway_threshold_position(
     airport_id: &str,
     runway_code: &str,
 ) -> AppResult<Option<LatLon>> {
-    let runway_ident = runway_code.trim().trim_start_matches("RW").trim_start_matches("rw");
+    let runway_ident = runway_code
+        .trim()
+        .trim_start_matches("RW")
+        .trim_start_matches("rw");
     let rows = query(
         "
         SELECT
@@ -1385,7 +1419,9 @@ fn non_empty(value: String) -> Option<String> {
 }
 
 fn field_string(row: &Value, name: &str) -> AppResult<String> {
-    let value = row.get(name).ok_or_else(|| invalid(format!("missing column {name}")))?;
+    let value = row
+        .get(name)
+        .ok_or_else(|| invalid(format!("missing column {name}")))?;
     Ok(match value {
         Value::String(value) => value.clone(),
         Value::Number(value) => value.to_string(),
@@ -1407,9 +1443,12 @@ fn field_optional_string(row: &Value, name: &str) -> Option<String> {
 }
 
 fn field_i32(row: &Value, name: &str) -> AppResult<i32> {
-    let value = row.get(name).ok_or_else(|| invalid(format!("missing column {name}")))?;
+    let value = row
+        .get(name)
+        .ok_or_else(|| invalid(format!("missing column {name}")))?;
     if let Some(value) = value.as_i64() {
-        return i32::try_from(value).map_err(|_| invalid(format!("column {name} is out of i32 range")));
+        return i32::try_from(value)
+            .map_err(|_| invalid(format!("column {name} is out of i32 range")));
     }
     field_string(row, name)?
         .trim()
@@ -1418,7 +1457,9 @@ fn field_i32(row: &Value, name: &str) -> AppResult<i32> {
 }
 
 fn field_f64(row: &Value, name: &str) -> AppResult<f64> {
-    let value = row.get(name).ok_or_else(|| invalid(format!("missing column {name}")))?;
+    let value = row
+        .get(name)
+        .ok_or_else(|| invalid(format!("missing column {name}")))?;
     if let Some(value) = value.as_f64() {
         return Ok(value);
     }

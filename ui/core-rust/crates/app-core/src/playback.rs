@@ -110,7 +110,11 @@ impl Default for PlaybackSessionState {
 }
 
 impl PlaybackSessionState {
-    pub fn load_trace_json(&mut self, source_path: String, trace_json: &str) -> AppResult<Situation> {
+    pub fn load_trace_json(
+        &mut self,
+        source_path: String,
+        trace_json: &str,
+    ) -> AppResult<Situation> {
         let trace = parse_trace_json(trace_json)?;
         let initial_situation = situation_at_cursor(&trace, 0.0).unwrap_or_default();
         self.trace = Some(trace);
@@ -224,7 +228,10 @@ impl PlaybackSessionState {
             return;
         };
         let elapsed_seconds = ((now_epoch_ms - anchor_wallclock_epoch_ms) / 1000.0).max(0.0);
-        let raw_cursor_seconds = clamp_cursor(trace, self.anchor_cursor_seconds + elapsed_seconds * self.rate);
+        let raw_cursor_seconds = clamp_cursor(
+            trace,
+            self.anchor_cursor_seconds + elapsed_seconds * self.rate,
+        );
         let skipped_cursor_seconds = skip_gap_at_or_after(trace, raw_cursor_seconds);
         self.cursor_seconds = skipped_cursor_seconds;
         if (skipped_cursor_seconds - raw_cursor_seconds).abs() > f64::EPSILON {
@@ -246,12 +253,18 @@ fn parse_trace_json(trace_json: &str) -> AppResult<PlaybackTrace> {
         });
     };
     let registration = object.get("r").and_then(Value::as_str).map(str::to_string);
-    let icao = object.get("icao").and_then(Value::as_str).map(str::to_string);
+    let icao = object
+        .get("icao")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let aircraft_type = object.get("t").and_then(Value::as_str).map(str::to_string);
-    let trace_entries = object.get("trace").and_then(Value::as_array).ok_or_else(|| AppError {
-        kind: AppErrorKind::InvalidFlightPlan,
-        message: "playback trace missing trace array".to_string(),
-    })?;
+    let trace_entries = object
+        .get("trace")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "playback trace missing trace array".to_string(),
+        })?;
     let mut raw_points = Vec::new();
     for entry in trace_entries {
         let Some(items) = entry.as_array() else {
@@ -289,7 +302,10 @@ fn parse_trace_json(trace_json: &str) -> AppResult<PlaybackTrace> {
         });
     }
     raw_points.sort_by(|a, b| a.elapsed_seconds.total_cmp(&b.elapsed_seconds));
-    let trace_start_seconds = raw_points.first().map(|point| point.elapsed_seconds).unwrap_or(0.0);
+    let trace_start_seconds = raw_points
+        .first()
+        .map(|point| point.elapsed_seconds)
+        .unwrap_or(0.0);
     let points: Vec<PlaybackPoint> = raw_points
         .into_iter()
         .map(|mut point| {
@@ -308,7 +324,11 @@ fn parse_trace_json(trace_json: &str) -> AppResult<PlaybackTrace> {
 }
 
 fn duration_seconds(trace: &PlaybackTrace) -> f64 {
-    trace.points.last().map(|point| point.elapsed_seconds).unwrap_or(0.0)
+    trace
+        .points
+        .last()
+        .map(|point| point.elapsed_seconds)
+        .unwrap_or(0.0)
 }
 
 fn clamp_cursor(trace: &PlaybackTrace, cursor_seconds: f64) -> f64 {
@@ -321,10 +341,12 @@ fn find_gap_spans(points: &[PlaybackPoint]) -> Vec<PlaybackGapSpan> {
         .filter_map(|window| {
             let start_seconds = window[0].elapsed_seconds;
             let end_seconds = window[1].elapsed_seconds;
-            (end_seconds - start_seconds > PLAYBACK_GAP_THRESHOLD_SECONDS).then_some(PlaybackGapSpan {
-                start_seconds,
-                end_seconds,
-            })
+            (end_seconds - start_seconds > PLAYBACK_GAP_THRESHOLD_SECONDS).then_some(
+                PlaybackGapSpan {
+                    start_seconds,
+                    end_seconds,
+                },
+            )
         })
         .collect()
 }
@@ -367,10 +389,7 @@ fn build_profile(
     if values.is_empty() {
         return vec![None; PLAYBACK_PREVIEW_BINS];
     }
-    let max_value = values
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
+    let max_value = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     if !max_value.is_finite() || max_value <= 0.0 {
         return vec![None; PLAYBACK_PREVIEW_BINS];
     }
@@ -411,14 +430,19 @@ fn situation_at_cursor(trace: &PlaybackTrace, cursor_seconds: f64) -> Option<Sit
     if upper.elapsed_seconds - lower.elapsed_seconds > PLAYBACK_GAP_THRESHOLD_SECONDS {
         return Some(point_to_situation(lower));
     }
-    let t = ((cursor_seconds - lower.elapsed_seconds) / (upper.elapsed_seconds - lower.elapsed_seconds))
+    let t = ((cursor_seconds - lower.elapsed_seconds)
+        / (upper.elapsed_seconds - lower.elapsed_seconds))
         .clamp(0.0, 1.0);
     Some(Situation {
         position: SituationPosition::LatLon {
             lat: interpolate(lower.position.lat, upper.position.lat, t),
             lon: interpolate(lower.position.lon, upper.position.lon, t),
         },
-        orientation_deg: interpolate_optional_angle(lower.orientation_deg, upper.orientation_deg, t),
+        orientation_deg: interpolate_optional_angle(
+            lower.orientation_deg,
+            upper.orientation_deg,
+            t,
+        ),
         speed_kt: interpolate_optional(lower.speed_kt, upper.speed_kt, t),
     })
 }
@@ -514,7 +538,10 @@ mod tests {
         assert_eq!(playback.ui_state().cursor_seconds, 400.0);
         assert_eq!(
             playback.current_situation().unwrap().position,
-            SituationPosition::LatLon { lat: 11.0, lon: 21.0 },
+            SituationPosition::LatLon {
+                lat: 11.0,
+                lon: 21.0
+            },
         );
     }
 }

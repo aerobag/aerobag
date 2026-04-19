@@ -35,17 +35,31 @@ def collect_packed_artifacts(source_root: pathlib.Path) -> set[pathlib.Path]:
             raise FileNotFoundError(f"current artifacts references missing {label}: {artifact_path}")
         files_to_copy.add(artifact_path)
 
+    def add_required_bundle_artifact(artifact: dict, label: str) -> None:
+        relative_path = artifact["relative_path"]
+        artifact_path = packaged_root / relative_path
+        if not artifact_path.is_file():
+            raise FileNotFoundError(f"bundle references missing {label}: {artifact_path}")
+        files_to_copy.add(artifact_path)
+
     for bundle_entry in current["bundles"]:
         bundle_path = packaged_root / bundle_entry["filename"]
+        if not bundle_path.is_file():
+            raise FileNotFoundError(f"current artifacts references missing bundle: {bundle_path}")
         files_to_copy.add(bundle_path)
 
         bundle = json.loads(bundle_path.read_text())
-        files_to_copy.add(packaged_root / bundle["catalog"]["relative_path"])
-        files_to_copy.add(packaged_root / bundle["resource_index"]["relative_path"])
-        files_to_copy.add(packaged_root / bundle["data"]["relative_path"])
-        files_to_copy.add(packaged_root / bundle["vectors"]["relative_path"])
+        add_required_bundle_artifact(bundle["catalog"], "catalog artifact")
+        add_required_bundle_artifact(bundle["resource_index"], "resource index artifact")
+        nav_kv = bundle.get("nav_kv")
+        if nav_kv is not None:
+            add_required_bundle_artifact(nav_kv["root"], "nav_kv root artifact")
+            for index, value_page in enumerate(nav_kv["value_pages"]):
+                add_required_bundle_artifact(value_page, f"nav_kv value page {index}")
+        add_required_bundle_artifact(bundle["data"], "data artifact")
+        add_required_bundle_artifact(bundle["vectors"], "vectors artifact")
         for package in bundle["packages"]:
-            files_to_copy.add(packaged_root / package["relative_path"])
+            add_required_bundle_artifact(package, f"package {package.get('id', '(unknown)')}")
 
     add_required_packed(current["obstacles"]["filename"], "obstacles artifact")
     for product in current.get("static_products", []):

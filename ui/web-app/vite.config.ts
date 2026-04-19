@@ -103,7 +103,7 @@ for (const [label, resolvedPath] of [
 }
 
 function mountStaticTree(sourceRoot: string) {
-  return (req: { url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
+  return (req: { headers?: Record<string, string | string[] | undefined>; url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
     const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
     const relativePath = requestPath.replace(/^\/+/, "");
     const filePath = path.resolve(sourceRoot, relativePath);
@@ -137,6 +137,8 @@ function mountStaticTree(sourceRoot: string) {
             ? "application/vnd.sqlite3"
           : extension === ".json"
             ? "application/json"
+          : extension === ".terrain"
+            ? "application/vnd.aerobag.terrain"
             : "application/octet-stream";
     const acceptEncoding = req.headers?.["accept-encoding"] ?? "";
     const shouldCompress = extension === ".db" || extension === ".json";
@@ -145,6 +147,11 @@ function mountStaticTree(sourceRoot: string) {
     res.setHeader("Content-Type", contentType);
     res.setHeader("Vary", "Accept-Encoding");
     const stream = fs.createReadStream(filePath);
+    if (extension === ".terrain") {
+      res.setHeader("Content-Encoding", "gzip");
+      stream.pipe(res);
+      return;
+    }
     if (shouldCompress && supportsBrotli) {
       res.setHeader("Content-Encoding", "br");
       stream.pipe(zlib.createBrotliCompress()).pipe(res);
@@ -185,6 +192,25 @@ function resolveCurrentFastProductRoot(productId: string): string | null {
   return productRoot;
 }
 
+function resolveCurrentStaticProductRoot(productId: string): string | null {
+  const manifestPath = latestCurrentArtifacts(artifactReadRoot);
+  if (!manifestPath) {
+    return null;
+  }
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
+    static_products?: Array<{ id?: string; filename?: string }>;
+  };
+  const product = manifest.static_products?.find((candidate) => candidate.id === productId);
+  if (!product?.filename) {
+    return null;
+  }
+  const productRoot = unpackedDirFromRelativeZip(product.filename);
+  if (!fs.existsSync(productRoot) || !fs.statSync(productRoot).isDirectory()) {
+    return null;
+  }
+  return productRoot;
+}
+
 function mountFastProducts() {
   return (req: { url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
     const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
@@ -207,6 +233,30 @@ function mountFastProducts() {
       return;
     }
     return mountStaticTree(productRoot)({ url: `/${parts.join("/")}` }, res, next);
+  };
+}
+
+function mountTerrainProducts() {
+  return (req: { headers?: Record<string, string | string[] | undefined>; url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
+    const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
+    const parts = requestPath.replace(/^\/+/, "").split("/");
+    const productId = parts.shift();
+    if (!productId || parts.length === 0) {
+      next();
+      return;
+    }
+    if (!productId.startsWith("terrain-")) {
+      res.statusCode = 404;
+      res.end("terrain product unavailable");
+      return;
+    }
+    const productRoot = resolveCurrentStaticProductRoot(productId);
+    if (!productRoot) {
+      res.statusCode = 404;
+      res.end("terrain product unavailable");
+      return;
+    }
+    return mountStaticTree(productRoot)({ headers: req.headers, url: `/${parts.join("/")}` }, res, next);
   };
 }
 
@@ -297,6 +347,7 @@ function aerobagStaticPlugin(): Plugin {
       server.middlewares.use("/nav-db", mountStaticTree(navDbRoot));
       server.middlewares.use("/vectors", mountStaticTree(vectorRoot));
       server.middlewares.use("/fast-products", mountFastProducts());
+      server.middlewares.use("/terrain-products", mountTerrainProducts());
       server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot));
     },
     writeBundle(outputOptions) {

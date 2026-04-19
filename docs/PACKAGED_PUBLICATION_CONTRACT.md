@@ -239,6 +239,28 @@ It contains Avare-compatible `geo.csv` with one-degree grid rows:
 It is referenced from `current_artifacts_YYYYMMDD.json` under `static_products[]`,
 not from any per-cycle bundle, so consumers fetch it only if they explicitly need it.
 
+### `terrain-<region>_<sha256>.zip`
+
+Standalone content-addressed terrain artifact.
+
+It is referenced from `current_artifacts_YYYYMMDD.json` under `static_products[]`.
+Consumers fetch it only if they explicitly need terrain.
+
+The package contains `manifest.json` plus `tiles/<z>/<x>/<y>.terrain` members.
+Terrain tile members are gzip-compressed `ABT1` payloads stored directly in the
+outer zip. The outer zip must not deflate `.terrain` members again.
+
+When serving `published-unpacked/terrain-*/tiles/**/*.terrain` over HTTP, the
+server should treat the file bytes as precompressed content:
+
+- `Content-Type: application/vnd.aerobag.terrain`
+- `Content-Encoding: gzip`
+- no additional dynamic gzip/deflate recompression
+
+With those headers, browser fetch consumers receive decompressed `ABT1` bytes.
+Offline zip consumers that read directly from `published-packaged/*.zip` must
+gzip-decode the member payload after reading the zip entry.
+
 
 ## Non-Goals
 

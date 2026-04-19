@@ -1,11 +1,10 @@
-use std::{
-    fs,
-    path::Path,
-};
+use std::{fs, path::Path};
 
 use anyhow::{bail, Context};
 use chrono::Utc;
-use preprocessor_core::{PackageAssetManifest, PackageAssetRecord, Region, PACKAGE_ASSET_MANIFEST_NAME};
+use preprocessor_core::{
+    PackageAssetManifest, PackageAssetRecord, Region, PACKAGE_ASSET_MANIFEST_NAME,
+};
 use preprocessor_fetch::{hash_file, write_package_outputs_jsonl, PackageOutputRecord};
 use preprocessor_tools::ToolInvocation;
 
@@ -22,8 +21,13 @@ pub fn package_csup_region_versioned(
     manifest_version: &str,
     artifact_version: &str,
 ) -> anyhow::Result<PackageOutputRecord> {
-    let mut records =
-        package_csup_region_records(work_dir, &[region], true, manifest_version, artifact_version)?;
+    let mut records = package_csup_region_records(
+        work_dir,
+        &[region],
+        true,
+        manifest_version,
+        artifact_version,
+    )?;
     records
         .pop()
         .ok_or_else(|| anyhow::anyhow!("no csup package record generated for {}", region.code()))
@@ -64,11 +68,7 @@ fn package_csup_region_records(
         let package_assets_path = work_dir.join(PACKAGE_ASSET_MANIFEST_NAME);
         remove_if_exists(&package_assets_path)?;
         let selected = with_thumbnail_members(work_dir, &selected)?;
-        write_package_asset_manifest(
-            &package_assets_path,
-            &package_id,
-            &selected,
-        )?;
+        write_package_asset_manifest(&package_assets_path, &package_id, &selected)?;
 
         let mut manifest_text = String::new();
         manifest_text.push_str(manifest_version);
@@ -92,7 +92,12 @@ fn package_csup_region_records(
 
         let invocation = ToolInvocation {
             program: "zip".to_string(),
-            args: vec!["-q".to_string(), zip_name.clone(), "-@".to_string()],
+            args: vec![
+                "-q".to_string(),
+                "-0".to_string(),
+                zip_name.clone(),
+                "-@".to_string(),
+            ],
             cwd: work_dir.to_path_buf(),
             label: format!("csup-package-{}", region.code()),
             env: Vec::new(),
@@ -225,7 +230,8 @@ fn write_package_asset_manifest(
     };
     fs::write(
         output_path,
-        serde_json::to_vec_pretty(&manifest).context("failed to encode csup package asset manifest")?,
+        serde_json::to_vec_pretty(&manifest)
+            .context("failed to encode csup package asset manifest")?,
     )
     .with_context(|| format!("failed to write {}", output_path.display()))
 }
@@ -239,14 +245,14 @@ fn current_cycle_manifest() -> String {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use zip::ZipArchive;
+    use zip::{CompressionMethod, ZipArchive};
 
     const ONE_BY_ONE_PNG: &[u8] = &[
-        0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
-        b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
-        0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, b'I', b'D', b'A', b'T', 0x78,
-        0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99,
-        0x3D, 0x1D, 0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
+        0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H', b'D',
+        b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, b'I', b'D', b'A', b'T', 0x78, 0x9C, 0x63, 0xF8,
+        0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99, 0x3D, 0x1D, 0x00, 0x00,
+        0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
     ];
 
     #[test]
@@ -274,6 +280,20 @@ mod tests {
         assert_eq!(
             manifest.assets[0].thumbnail_path,
             "thumbnails/afd/AK84/CSUP-AK_0.png"
+        );
+        assert_eq!(
+            archive
+                .by_name("afd/AK84/CSUP-AK_0.png")
+                .unwrap()
+                .compression(),
+            CompressionMethod::Stored
+        );
+        assert_eq!(
+            archive
+                .by_name("thumbnails/afd/AK84/CSUP-AK_0.png")
+                .unwrap()
+                .compression(),
+            CompressionMethod::Stored
         );
     }
 }

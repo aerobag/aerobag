@@ -591,7 +591,7 @@ const DEFAULT_PRODUCT_BUILD_MEMORY_MAX: &str = "80G";
 const TPP_RENDER_JOBS_PER_RUN: usize = 8;
 const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
-const TERRAIN_PIPELINE_VERSION: &str = "v1";
+const TERRAIN_PIPELINE_VERSION: &str = "v2";
 const TERRAIN_ZOOM: u32 = 10;
 const TERRAIN_TILE_SIZE: u32 = 512;
 
@@ -1315,7 +1315,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 ),
                                 fetch_jobs: cycle_config.fetch_jobs,
                                 render_jobs: TPP_RENDER_JOBS_PER_RUN,
-                                fetch_cache: Some(fetch_cache_config(&cycle_config)?),
+                                fetch_cache: Some(static_source_fetch_cache_config(&cycle_config)?),
                             };
                             let record = build_tpp_render_node(&cycle_config, &request)?;
                             Ok(ProductTaskCompletion {
@@ -3045,7 +3045,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 ),
                                 fetch_jobs: config.fetch_jobs,
                                 render_jobs: TPP_RENDER_JOBS_PER_RUN,
-                                fetch_cache: Some(fetch_cache_config(&config)?),
+                                fetch_cache: Some(static_source_fetch_cache_config(&config)?),
                             };
                             build_tpp_render_node(&config, &request).map(|record| TaskCompletion {
                                 node_records: vec![record],
@@ -5445,10 +5445,15 @@ fn zip_directory_deterministic(
     let file = File::create(zip_path)
         .with_context(|| format!("failed to create {}", zip_path.display()))?;
     let mut writer = ZipWriter::new(file);
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
-        .last_modified_time(ZipDateTime::default());
     for (name, path) in files {
+        let compression = if name.ends_with(".terrain") {
+            CompressionMethod::Stored
+        } else {
+            CompressionMethod::Deflated
+        };
+        let options = SimpleFileOptions::default()
+            .compression_method(compression)
+            .last_modified_time(ZipDateTime::default());
         writer.start_file(name, options).with_context(|| {
             format!("failed to add {} to {}", path.display(), zip_path.display())
         })?;
@@ -5490,7 +5495,7 @@ fn collect_zip_files(
 }
 
 const TERRAIN_TILE_SCRIPT: &str = r#"
-import argparse, json, math, struct
+import argparse, gzip, json, math, struct
 from pathlib import Path
 import numpy as np
 from osgeo import gdal
@@ -5555,10 +5560,9 @@ def geoid(values, lat, lon):
 
 def write_tile(path, payload, tile_size):
     path.parent.mkdir(parents=True, exist_ok=True)
+    raw = b'ABT1' + struct.pack('<HHhhff', tile_size, tile_size, -32768, 0, 1.0, 0.0) + payload
     with open(path, 'wb') as f:
-        f.write(b'ABT1')
-        f.write(struct.pack('<HHhhff', tile_size, tile_size, -32768, 0, 1.0, 0.0))
-        f.write(payload)
+        f.write(gzip.compress(raw, mtime=0))
 
 def main():
     ap = argparse.ArgumentParser()
@@ -5608,6 +5612,8 @@ def main():
         'zoom': args.zoom,
         'tile_size': args.tile_size,
         'tile_format': 'ABT1',
+        'tile_content_encoding': 'gzip',
+        'zip_member_compression': 'stored',
         'sample_encoding': 'int16_le',
         'sample_units': 'feet',
         'sample_vertical_datum': 'WGS84 ellipsoid',
@@ -6857,6 +6863,17 @@ fn fetch_cache_config(config: &ProductBuildConfig) -> anyhow::Result<FetchCacheC
     })
 }
 
+fn static_source_fetch_cache_config(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<FetchCacheConfig> {
+    let mode =
+        env::var("STATIC_SOURCE_FETCH_CACHE_MODE").unwrap_or_else(|_| "cache-first".to_string());
+    Ok(FetchCacheConfig {
+        root: config.fetch_cache_root.clone(),
+        mode: FetchCacheMode::parse(&mode)?,
+    })
+}
+
 fn terrain_fetch_cache_config(config: &ProductBuildConfig) -> anyhow::Result<FetchCacheConfig> {
     let mode = env::var("TERRAIN_FETCH_CACHE_MODE").unwrap_or_else(|_| "cache-first".to_string());
     Ok(FetchCacheConfig {
@@ -6954,7 +6971,7 @@ fn build_chart_render_node(
         &urls,
         &work_dir,
         fetch_jobs,
-        Some(&fetch_cache_config(config)?),
+        Some(&static_source_fetch_cache_config(config)?),
         &provenance_dir,
         family.capture_label(),
     )?;
@@ -7234,7 +7251,7 @@ fn build_csup_stage_node(
         &urls,
         &work_dir,
         fetch_jobs,
-        Some(&fetch_cache_config(config)?),
+        Some(&static_source_fetch_cache_config(config)?),
         &provenance_dir,
         "csup",
     )?;
@@ -7490,7 +7507,7 @@ fn build_tpp_package_node(
         prefetch_source_urls: Some(source_urls_path.to_path_buf()),
         fetch_jobs: config.fetch_jobs,
         render_jobs: TPP_RENDER_JOBS_PER_RUN,
-        fetch_cache: Some(fetch_cache_config(config)?),
+        fetch_cache: Some(static_source_fetch_cache_config(config)?),
     };
     let render_node_name = format!("tpp-{region_id}-render");
     let render_inputs = tpp_render_inputs(&render_request, source_urls_path, &region_id)?;
@@ -8035,7 +8052,7 @@ fn build_data_input_node(
         &urls,
         &staged_root,
         config.fetch_jobs,
-        Some(&fetch_cache_config(config)?),
+        Some(&static_source_fetch_cache_config(config)?),
         &provenance_dir,
         "data",
     )?;

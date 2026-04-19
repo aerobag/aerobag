@@ -1,18 +1,11 @@
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::Path,
-    process::Command,
-};
+use std::{collections::BTreeMap, fs, path::Path, process::Command};
 
 use anyhow::{bail, Context};
 use chrono::Utc;
 use preprocessor_core::{
     PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region, PACKAGE_ASSET_MANIFEST_NAME,
 };
-use preprocessor_fetch::{
-    hash_file, write_package_outputs_jsonl, PackageOutputRecord,
-};
+use preprocessor_fetch::{hash_file, write_package_outputs_jsonl, PackageOutputRecord};
 use preprocessor_tools::{write_thumbnail_from_png, ToolInvocation};
 
 use crate::calculate_cycle;
@@ -57,12 +50,7 @@ pub(crate) fn package_region_versioned(
     remove_if_exists(&package_assets_path)?;
     stage_member_files(asset_root, output_root, &selected)?;
     let selected = with_thumbnail_members(asset_root, output_root, &selected)?;
-    write_package_asset_manifest(
-        asset_root,
-        &package_assets_path,
-        &package_id,
-        &selected,
-    )?;
+    write_package_asset_manifest(asset_root, &package_assets_path, &package_id, &selected)?;
     let mut manifest_text = String::new();
     manifest_text.push_str(manifest_version);
     manifest_text.push('\n');
@@ -85,7 +73,12 @@ pub(crate) fn package_region_versioned(
 
     let invocation = ToolInvocation {
         program: "zip".to_string(),
-        args: vec!["-q".to_string(), zip_name.clone(), "-@".to_string()],
+        args: vec![
+            "-q".to_string(),
+            "-0".to_string(),
+            zip_name.clone(),
+            "-@".to_string(),
+        ],
         cwd: output_root.to_path_buf(),
         label: format!("tpp-package-{}", region.code()),
         env: Vec::new(),
@@ -170,7 +163,11 @@ fn with_thumbnail_members(
     Ok(all)
 }
 
-fn stage_member_files(asset_root: &Path, output_root: &Path, members: &[String]) -> anyhow::Result<()> {
+fn stage_member_files(
+    asset_root: &Path,
+    output_root: &Path,
+    members: &[String],
+) -> anyhow::Result<()> {
     for member in members {
         let relative_path = Path::new(member);
         let source = asset_root.join(relative_path);
@@ -257,7 +254,8 @@ fn write_package_asset_manifest(
     };
     fs::write(
         output_path,
-        serde_json::to_vec_pretty(&manifest).context("failed to encode tpp package asset manifest")?,
+        serde_json::to_vec_pretty(&manifest)
+            .context("failed to encode tpp package asset manifest")?,
     )
     .with_context(|| format!("failed to write {}", output_path.display()))
 }
@@ -299,8 +297,14 @@ fn load_tpp_asset_metadata(
         if state_id.is_empty() {
             continue;
         }
-        for city in state.children().filter(|node| node.has_tag_name("city_name")) {
-            for airport in city.children().filter(|node| node.has_tag_name("airport_name")) {
+        for city in state
+            .children()
+            .filter(|node| node.has_tag_name("city_name"))
+        {
+            for airport in city
+                .children()
+                .filter(|node| node.has_tag_name("airport_name"))
+            {
                 let apt_id = airport
                     .attribute("apt_ident")
                     .unwrap_or("")
@@ -314,7 +318,10 @@ fn load_tpp_asset_metadata(
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .map(str::to_string);
-                for record in airport.children().filter(|node| node.has_tag_name("record")) {
+                for record in airport
+                    .children()
+                    .filter(|node| node.has_tag_name("record"))
+                {
                     let chart_name = record
                         .children()
                         .find(|node| node.has_tag_name("chart_name"))
@@ -455,14 +462,14 @@ fn remove_if_exists(path: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use zip::ZipArchive;
+    use zip::{CompressionMethod, ZipArchive};
 
     const ONE_BY_ONE_PNG: &[u8] = &[
-        0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
-        b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
-        0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, b'I', b'D', b'A', b'T', 0x78,
-        0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99,
-        0x3D, 0x1D, 0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
+        0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H', b'D',
+        b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, b'I', b'D', b'A', b'T', 0x78, 0x9C, 0x63, 0xF8,
+        0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99, 0x3D, 0x1D, 0x00, 0x00,
+        0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
     ];
 
     #[test]
@@ -494,13 +501,30 @@ mod tests {
         assert_eq!(manifest.family_id, "tpp");
         assert_eq!(manifest.package_id, "NW_TPP_2604");
         assert_eq!(manifest.assets.len(), 1);
-        assert_eq!(manifest.assets[0].asset_path, "plates/RNT/STAR-WA-GLASR THREE.png");
+        assert_eq!(
+            manifest.assets[0].asset_path,
+            "plates/RNT/STAR-WA-GLASR THREE.png"
+        );
         assert_eq!(
             manifest.assets[0].thumbnail_path,
             "thumbnails/plates/RNT/STAR-WA-GLASR THREE.png"
         );
         assert_eq!(manifest.assets[0].document_type, "star");
         assert_eq!(manifest.assets[0].georef, None);
+        assert_eq!(
+            archive
+                .by_name("plates/RNT/STAR-WA-GLASR THREE.png")
+                .unwrap()
+                .compression(),
+            CompressionMethod::Stored
+        );
+        assert_eq!(
+            archive
+                .by_name("thumbnails/plates/RNT/STAR-WA-GLASR THREE.png")
+                .unwrap()
+                .compression(),
+            CompressionMethod::Stored
+        );
     }
 
     #[test]

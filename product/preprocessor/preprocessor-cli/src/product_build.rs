@@ -602,9 +602,10 @@ const DEFAULT_PRODUCT_BUILD_MEMORY_MAX: &str = "80G";
 const TPP_RENDER_JOBS_PER_RUN: usize = 8;
 const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
-const TERRAIN_PIPELINE_VERSION: &str = "v2";
-const SHADED_RELIEF_PIPELINE_VERSION: &str = "v2";
+const TERRAIN_PIPELINE_VERSION: &str = "v3";
+const SHADED_RELIEF_PIPELINE_VERSION: &str = "v3";
 const SHADED_RELIEF_TILE_WORKERS: u32 = 4;
+const TERRAIN_MIN_ZOOM: u32 = 0;
 const TERRAIN_ZOOM: u32 = 10;
 const TERRAIN_TILE_SIZE: u32 = 512;
 
@@ -5033,7 +5034,8 @@ fn terrain_product_inputs(
     Ok(BTreeMap::from([
         ("product_id".to_string(), format!("terrain-{region_id}")),
         ("region".to_string(), region.code().to_string()),
-        ("zoom".to_string(), TERRAIN_ZOOM.to_string()),
+        ("min_zoom".to_string(), TERRAIN_MIN_ZOOM.to_string()),
+        ("max_zoom".to_string(), TERRAIN_ZOOM.to_string()),
         ("tile_size".to_string(), TERRAIN_TILE_SIZE.to_string()),
         (
             "source_fingerprint".to_string(),
@@ -5187,7 +5189,8 @@ fn shaded_relief_product_inputs(
             format!("shaded-relief-{region_id}"),
         ),
         ("region".to_string(), region.code().to_string()),
-        ("zoom".to_string(), TERRAIN_ZOOM.to_string()),
+        ("min_zoom".to_string(), TERRAIN_MIN_ZOOM.to_string()),
+        ("max_zoom".to_string(), TERRAIN_ZOOM.to_string()),
         ("tile_size".to_string(), TERRAIN_TILE_SIZE.to_string()),
         (
             "source_fingerprint".to_string(),
@@ -6120,6 +6123,54 @@ def write_tile(path, payload, tile_size):
     with open(path, 'wb') as f:
         f.write(gzip.compress(raw, mtime=0))
 
+def read_tile(path, tile_size):
+    with gzip.open(path, 'rb') as f:
+        raw = f.read()
+    if raw[:4] != b'ABT1':
+        raise ValueError(f'{path} is not an ABT1 terrain tile')
+    width, height, nodata, _reserved, _scale, _offset = struct.unpack('<HHhhff', raw[4:20])
+    if width != tile_size or height != tile_size or nodata != -32768:
+        raise ValueError(f'{path} has unexpected terrain header')
+    return np.frombuffer(raw[20:], dtype='<i2').reshape((tile_size, tile_size))
+
+def max_downsample_2x2(samples):
+    nodata = -32768
+    blocks = samples.reshape((samples.shape[0] // 2, 2, samples.shape[1] // 2, 2))
+    valid = blocks != nodata
+    safe = np.where(valid, blocks, -32768)
+    reduced = safe.max(axis=(1, 3)).astype('<i2')
+    reduced[~valid.any(axis=(1, 3))] = nodata
+    return reduced
+
+def build_parent_tile(tiles_root, z, x, y, tile_size):
+    half = tile_size // 2
+    parent = np.full((tile_size, tile_size), -32768, dtype='<i2')
+    children = [
+        (x * 2, y * 2 + 1, 0, half, 0, half),
+        (x * 2 + 1, y * 2 + 1, 0, half, half, tile_size),
+        (x * 2, y * 2, half, tile_size, 0, half),
+        (x * 2 + 1, y * 2, half, tile_size, half, tile_size),
+    ]
+    for child_x, child_y, row0, row1, col0, col1 in children:
+        child_path = tiles_root / str(z + 1) / str(child_x) / f'{child_y}.terrain'
+        if child_path.exists():
+            parent[row0:row1, col0:col1] = max_downsample_2x2(read_tile(child_path, tile_size))
+    write_tile(tiles_root / str(z) / str(x) / f'{y}.terrain', parent.tobytes(), tile_size)
+
+def build_parent_pyramid(tiles_root, max_zoom, tile_size):
+    counts = {max_zoom: sum(1 for _ in (tiles_root / str(max_zoom)).glob('*/*.terrain'))}
+    for z in range(max_zoom - 1, -1, -1):
+        child_root = tiles_root / str(z + 1)
+        parents = set()
+        for child_path in child_root.glob('*/*.terrain'):
+            child_x = int(child_path.parent.name)
+            child_y = int(child_path.stem)
+            parents.add((child_x // 2, child_y // 2))
+        for x, y in sorted(parents):
+            build_parent_tile(tiles_root, z, x, y, tile_size)
+        counts[z] = len(parents)
+    return counts
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--vrt', required=True)
@@ -6160,16 +6211,20 @@ def main():
             samples[invalid] = -32768
             write_tile(tiles_root / str(args.zoom) / str(x) / f'{y}.terrain', samples.tobytes(), args.tile_size)
             count += 1
+    level_counts = build_parent_pyramid(tiles_root, args.zoom, args.tile_size)
     manifest = {
         'schema_version': 1,
         'product': 'terrain',
         'region': args.region,
         'version_label': args.version_label,
-        'zoom': args.zoom,
+        'min_zoom': 0,
+        'max_zoom': args.zoom,
+        'base_zoom': args.zoom,
         'tile_size': args.tile_size,
         'tile_format': 'ABT1',
         'tile_content_encoding': 'gzip',
         'zip_member_compression': 'stored',
+        'parent_tile_policy': 'max valid elevation over child samples; all-nodata children remain nodata',
         'sample_encoding': 'int16_le',
         'sample_units': 'feet',
         'sample_vertical_datum': 'WGS84 ellipsoid',
@@ -6184,7 +6239,9 @@ def main():
         'source_dem_count': args.source_count,
         'missing_dem_cells': [cell for cell in args.missing_cells.split(',') if cell],
         'nodata': -32768,
-        'tile_count': count,
+        'base_tile_count': count,
+        'tile_count': sum(level_counts.values()),
+        'levels': [{'zoom': z, 'tile_count': level_counts[z]} for z in sorted(level_counts)],
         'files': {'tiles': 'tiles'}
     }
     with open(root / 'manifest.json', 'w') as f:

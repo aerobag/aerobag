@@ -269,8 +269,11 @@ It is referenced from `current_artifacts_YYYYMMDD.json` under `static_products[]
 Consumers fetch it only if they explicitly need terrain.
 
 The package contains `manifest.json` plus `tiles/<z>/<x>/<y>.terrain` members.
-Terrain tile members are gzip-compressed `ABT1` payloads stored directly in the
-outer zip. The outer zip must not deflate `.terrain` members again.
+The source/max zoom is z10, and parent tiles are generated down to z0. Parent
+terrain samples are the maximum valid child elevation over the covered child
+sample footprint; all-nodata footprints remain nodata. Terrain tile members are
+gzip-compressed `ABT1` payloads stored directly in the outer zip. The outer zip
+must not deflate `.terrain` members again.
 
 When serving `published-unpacked/terrain-*/tiles/**/*.terrain` over HTTP, the
 server should treat the file bytes as precompressed content:
@@ -292,9 +295,10 @@ Consumers fetch it only if they explicitly need a terrain-background visual
 layer.
 
 The package contains `manifest.json` plus `tiles/<z>/<x>/<y>.png` members.
-The first-cut product uses the same `z10` / `512x512` grid as the numeric
-terrain product. PNG tile members are already image-compressed and are stored in
-the outer zip without another deflate pass.
+The source/max zoom uses the same `z10` / `512x512` grid as the numeric terrain
+product, with alpha-preserving RGBA parent tiles generated down to z0. PNG tile
+members are already image-compressed and are stored in the outer zip without
+another deflate pass.
 
 The initial renderer derives directly from the same USGS 3DEP DEM inputs as
 numeric terrain, not from the published `.terrain` tiles. It applies coarse

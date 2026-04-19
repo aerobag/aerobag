@@ -13,7 +13,7 @@ The numeric terrain product is published as region-scoped ZIPs:
 ```text
 terrain_<region>_<sha256>.zip
   manifest.json
-  tiles/10/<x>/<y>.terrain
+  tiles/<z>/<x>/<y>.terrain
 ```
 
 Each `.terrain` tile is a 512x512 signed 16-bit little-endian raster with a
@@ -28,12 +28,16 @@ omits that source cell, records it in `manifest.json` as `missing_dem_cells`,
 and emits `-32768` for uncovered samples. Clients must treat `-32768` as
 "unknown terrain", not "sea level" or "safe/no granite here".
 
-The terrain zoom level is fixed at z10 for v1. With 512px tiles this is roughly
-a 2x horizontal downsample from USGS 3DEP 1 arc-second source spacing at
-mid-latitudes. z11 would preserve source spacing more closely, but it would
-publish about 80 GiB of raw samples across the current region boxes before ZIP
-compression. z10 is the initial operational compromise until we add sparse
-land/coverage masking or demand-shaped packaging.
+The terrain source/max zoom is z10. With 512px tiles this is roughly a 2x
+horizontal downsample from USGS 3DEP 1 arc-second source spacing at
+mid-latitudes. The package also contains parent tiles down to z0 so zoomed-out
+views do not have to fetch an unbounded set of z10 children.
+
+Parent terrain tiles are safety-conservative: each parent sample is the maximum
+valid elevation from the corresponding child sample footprint. If every
+contributing child sample is nodata, the parent sample remains nodata. This
+means zoomed-out terrain can overstate terrain height, but should not hide a
+peak by averaging it away.
 
 The numeric terrain product is terrain height in feet above the WGS84 ellipsoid:
 
@@ -92,7 +96,7 @@ Its first-cut package layout is:
 ```text
 shaded-relief-<region>_<sha256>.zip
   manifest.json
-  tiles/10/<x>/<y>.png
+  tiles/<z>/<x>/<y>.png
 ```
 
 The first-cut shaded-relief renderer derives directly from the same USGS 3DEP
@@ -102,6 +106,9 @@ should not be coupled to a client lookup format. The current renderer applies
 coarse sectional-style elevation color buckets and multiplies in a simple
 northwest hillshade. Nodata is transparent. Water and glacier masks are not
 included yet.
+
+The shaded-relief source/max zoom is z10, with alpha-preserving RGBA parent
+tiles generated down to z0 for scalable zoomed-out rendering.
 
 Terrain refresh state lives in `current_artifacts`, not inside the terrain ZIP.
 That keeps product identity stable: if a later poll checks TNMAccess/DEM inputs

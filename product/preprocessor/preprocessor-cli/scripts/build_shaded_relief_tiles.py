@@ -96,6 +96,44 @@ def write_png(path, rgba):
     Image.fromarray(rgba, mode="RGBA").save(path, optimize=False)
 
 
+def resampling_filter():
+    return getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+
+
+def build_parent_tile(tiles_root, z, x, y, tile_size):
+    half = tile_size // 2
+    parent = Image.new("RGBA", (tile_size, tile_size), (0, 0, 0, 0))
+    children = [
+        (x * 2, y * 2 + 1, 0, 0),
+        (x * 2 + 1, y * 2 + 1, half, 0),
+        (x * 2, y * 2, 0, half),
+        (x * 2 + 1, y * 2, half, half),
+    ]
+    for child_x, child_y, dst_x, dst_y in children:
+        child_path = tiles_root / str(z + 1) / str(child_x) / f"{child_y}.png"
+        if child_path.exists():
+            child = Image.open(child_path).convert("RGBA")
+            parent.paste(child.resize((half, half), resampling_filter()), (dst_x, dst_y))
+    path = tiles_root / str(z) / str(x) / f"{y}.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    parent.save(path, optimize=False)
+
+
+def build_parent_pyramid(tiles_root, max_zoom, tile_size):
+    counts = {max_zoom: sum(1 for _ in (tiles_root / str(max_zoom)).glob("*/*.png"))}
+    for z in range(max_zoom - 1, -1, -1):
+        child_root = tiles_root / str(z + 1)
+        parents = set()
+        for child_path in child_root.glob("*/*.png"):
+            child_x = int(child_path.parent.name)
+            child_y = int(child_path.stem)
+            parents.add((child_x // 2, child_y // 2))
+        for x, y in sorted(parents):
+            build_parent_tile(tiles_root, z, x, y, tile_size)
+        counts[z] = len(parents)
+    return counts
+
+
 def init_worker(vrt_path, tiles_root, zoom, tile_size, resolution):
     global WORKER_DS, WORKER_TILES_ROOT, WORKER_ZOOM, WORKER_TILE_SIZE, WORKER_RESOLUTION
     WORKER_DS = gdal.Open(vrt_path)
@@ -167,17 +205,21 @@ def main():
             initargs=(args.vrt, str(tiles_root), args.zoom, args.tile_size, resolution),
         ) as pool:
             count = sum(pool.map(render_tile, tasks, chunksize=8))
+    level_counts = build_parent_pyramid(tiles_root, args.zoom, args.tile_size)
 
     manifest = {
         "schema_version": 1,
         "product": "shaded-relief",
         "region": args.region,
         "version_label": args.version_label,
-        "zoom": args.zoom,
+        "min_zoom": 0,
+        "max_zoom": args.zoom,
+        "base_zoom": args.zoom,
         "tile_size": args.tile_size,
         "tile_format": "png_rgba",
         "tile_content_encoding": "identity",
         "zip_member_compression": "stored_png",
+        "parent_tile_policy": "alpha-preserving RGBA downsample from child tiles",
         "worker_count": workers,
         "source_dem": "USGS 3DEP 1 arc-second DEM",
         "source_dem_vertical_datum": "source tile metadata; generally NAVD88 in CONUS",
@@ -198,7 +240,9 @@ def main():
         "source_dem_count": args.source_count,
         "missing_dem_cells": [cell for cell in args.missing_cells.split(",") if cell],
         "nodata": "transparent alpha",
-        "tile_count": count,
+        "base_tile_count": count,
+        "tile_count": sum(level_counts.values()),
+        "levels": [{"zoom": z, "tile_count": level_counts[z]} for z in sorted(level_counts)],
         "files": {"tiles": "tiles"},
     }
     with open(root / "manifest.json", "w") as f:

@@ -1826,6 +1826,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             .with_context(|| {
                                 format!("failed to write {}", bundle_manifest_path.display())
                             })?;
+                            validate_bundle_manifest(&cycle_config.build_root, &bundle_manifest_path)?;
                             sync_unpacked_metadata(
                                 &cycle_config,
                                 &bundle_manifest,
@@ -3616,6 +3617,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 .context("failed to encode bundle manifest")?,
         )
         .with_context(|| format!("failed to write {}", bundle_manifest_path.display()))?;
+        validate_bundle_manifest(&config.build_root, &bundle_manifest_path)?;
         sync_unpacked_metadata(
             config,
             &bundle_manifest,
@@ -3764,19 +3766,31 @@ fn write_nav_kv_artifact(
     )
     .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
 
+    let source_dir = artifact_root_from_build_root(&config.build_root)
+        .join("private-work")
+        .join("nav-kv")
+        .join(config.profile.as_str())
+        .join(cycle);
+    fs::create_dir_all(&source_dir)
+        .with_context(|| format!("failed to create {}", source_dir.display()))?;
+
     let root_filename = format!("nav_kv_{cycle}.root");
-    let root_path = config.build_root.join(&root_filename);
-    fs::write(&root_path, &built.root_bytes)
-        .with_context(|| format!("failed to write {}", root_path.display()))?;
-    let root = bundle_artifact(&root_path, &root_filename)?;
+    let root_source_path = source_dir.join(&root_filename);
+    fs::write(&root_source_path, &built.root_bytes)
+        .with_context(|| format!("failed to write {}", root_source_path.display()))?;
+    let root = publish_bundle_artifact(config, &root_source_path, &root_filename)?;
 
     let mut value_pages = Vec::new();
     for (index, page) in built.value_pages.iter().enumerate() {
         let page_filename = format!("nav_kv_{cycle}.values_{index:04}");
-        let page_path = config.build_root.join(&page_filename);
-        fs::write(&page_path, page)
-            .with_context(|| format!("failed to write {}", page_path.display()))?;
-        value_pages.push(bundle_artifact(&page_path, &page_filename)?);
+        let page_source_path = source_dir.join(&page_filename);
+        fs::write(&page_source_path, page)
+            .with_context(|| format!("failed to write {}", page_source_path.display()))?;
+        value_pages.push(publish_bundle_artifact(
+            config,
+            &page_source_path,
+            &page_filename,
+        )?);
     }
 
     Ok(BundleNavKvArtifact {

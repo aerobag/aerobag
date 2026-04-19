@@ -43,9 +43,11 @@ import type {
   SituationSample,
   WaypointIdentifierSuggestion,
 } from "./types";
-import { sampleCatalog } from "./sampleData";
+import catalogJson from "@product-catalog";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { installBrowserNavDbQueryHost } from "./webNavDb";
+
+const sampleCatalog = catalogJson as CatalogJson;
 
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];

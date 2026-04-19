@@ -1,15 +1,20 @@
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
-import { chartPage, mapViews, resourceIndex, sampleCatalog, samplePlan } from "./domain/sampleData";
+import bootstrapJson from "@shared-bootstrap";
+import catalogJson from "@product-catalog";
 import type {
   AirwayPresentationPlan,
   AirwaySuggestion,
+  CatalogJson,
   ChartPageData,
   ChartFamilyId,
+  DevBootstrapJson,
+  FlightPlan,
   FlightPlanRouteSegment,
   FlightPlanUiMutation,
   FlightPlanUiState,
   LatLon,
+  MapViewOptionJson,
   MaterializedProcedure,
   NavSymbolFeature,
   NavElementUiView,
@@ -23,6 +28,7 @@ import type {
   ProcedureSummary,
   WaypointIdentifierSuggestion,
 } from "./domain/types";
+import { loadNavKvJson } from "./domain/navKv";
 import uiTheme from "@shared-ui-theme";
 import planViewIcon from "./assets/plan-view-icon.svg";
 import {
@@ -129,6 +135,11 @@ type NexradFrame = {
   };
 };
 
+const bootstrap = bootstrapJson as DevBootstrapJson;
+const sampleCatalog = catalogJson as CatalogJson;
+const samplePlan = bootstrap.flight_plan;
+const emptyChartPage: ChartPageData = { airports: [] };
+
 type NexradOverlayFrame = NexradFrame & {
   url: string;
 };
@@ -150,9 +161,9 @@ const chartFamilies: Array<{ id: ChartFamilyId; label: string; launcherLabel: st
 ];
 
 function mapViewsForDisplayedFamily(
-  allMapViews: typeof mapViews,
+  allMapViews: MapViewOptionJson[],
   familyId: ChartFamilyId,
-): typeof mapViews {
+): MapViewOptionJson[] {
   if (familyId === "tac") {
     return allMapViews.filter((view) => {
       const chartFamily = view.map_view.chart_family;
@@ -163,10 +174,10 @@ function mapViewsForDisplayedFamily(
 }
 
 function preferredFamilyMap(
-  allMapViews: typeof mapViews,
+  allMapViews: MapViewOptionJson[],
   familyId: ChartFamilyId,
   fallbackRegionId: string | null,
-): (typeof mapViews)[number] | undefined {
+): MapViewOptionJson | undefined {
   const familyMaps = allMapViews.filter((view) => view.map_view.chart_family === familyId);
   return (
     familyMaps.find((view) => view.region_id === fallbackRegionId)
@@ -463,8 +474,8 @@ function emptyMapFollowUiState(): MapFollowUiState {
   };
 }
 
-function initialMapId() {
-  return preferredFamilyMap(mapViews, "tac", "nw")?.id ?? mapViews[0].id;
+function initialMapId(mapViews: MapViewOptionJson[]) {
+  return preferredFamilyMap(mapViews, "tac", "nw")?.id ?? mapViews[0]?.id ?? "";
 }
 
 export default function App() {
@@ -482,19 +493,21 @@ export default function App() {
   const startupVisualReadyRef = useRef(false);
   const highLatencyWarningsSuppressedRef = useRef(true);
   const highLatencyWarningTimerRef = useRef<number | null>(null);
-  const [selectedMapId, setSelectedMapId] = useState<string>(initialMapId());
+  const [mapViews, setMapViews] = useState<MapViewOptionJson[]>([]);
+  const [mapViewsLoadError, setMapViewsLoadError] = useState<string | null>(null);
+  const [selectedMapId, setSelectedMapId] = useState<string>("");
   const initialRecentAirportIds = useMemo(
-    () => mergeRecentAirportIds(chartPage.airports, persistedUiState.recentAirportIds ?? []),
+    () => mergeRecentAirportIds(emptyChartPage.airports, persistedUiState.recentAirportIds ?? []),
     [persistedUiState],
   );
   const initialChartPageState = useMemo<DerivedChartPageState>(
     () => ({
-      airports: chartPage.airports,
+      airports: emptyChartPage.airports,
       recent_airport_ids: initialRecentAirportIds,
-      selected_airport_id: resolveAirportId(chartPage.airports, persistedUiState.selectedAirportId, initialRecentAirportIds),
+      selected_airport_id: resolveAirportId(emptyChartPage.airports, persistedUiState.selectedAirportId, initialRecentAirportIds),
       selected_chart_id: resolveChartId(
-        chartPage.airports,
-        resolveAirportId(chartPage.airports, persistedUiState.selectedAirportId, initialRecentAirportIds),
+        emptyChartPage.airports,
+        resolveAirportId(emptyChartPage.airports, persistedUiState.selectedAirportId, initialRecentAirportIds),
         persistedUiState.selectedChartId,
       ),
     }),
@@ -574,7 +587,7 @@ export default function App() {
   const appUiState = sessionSnapshot.app_ui_state;
   const playbackUiState = sessionSnapshot.playback_ui_state;
   const mapFollowUiState = sessionSnapshot.map_follow_ui_state;
-  const chartCatalog: ChartPageData = uiSession?.chartCatalog ?? chartPage;
+  const chartCatalog: ChartPageData = uiSession?.chartCatalog ?? emptyChartPage;
   const chartAirportById = useMemo(
     () => new Map(chartCatalog.airports.map((airport) => [airport.id, airport])),
     [chartCatalog],
@@ -639,7 +652,7 @@ export default function App() {
   const selectedChartId = sessionSnapshot.chart_page_state.selected_chart_id;
 
   const selectedMap = useMemo(
-    () => mapViews.find((view) => view.id === selectedMapId) ?? mapViews[0],
+    () => mapViews.find((view) => view.id === selectedMapId) ?? mapViews[0] ?? null,
     [selectedMapId],
   );
   const [mapViewport, setMapViewport] = useState<MapViewportState>(() => {
@@ -653,16 +666,16 @@ export default function App() {
   const [chartViewport, setChartViewport] = useState<ImageViewportState | null>(null);
   const [chartFolderOpen, setChartFolderOpen] = useState(false);
   const selectedFamily = useMemo(
-    () => chartFamilies.find((family) => family.id === selectedMap.map_view.chart_family) ?? chartFamilies[0],
+    () => chartFamilies.find((family) => family.id === selectedMap?.map_view.chart_family) ?? chartFamilies[0],
     [selectedMap],
   );
   const availableFamilies = useMemo(
     () => new Set(mapViews.map((view) => view.map_view.chart_family)),
-    [],
+    [mapViews],
   );
   const selectedFamilyMapViews = useMemo(
-    () => mapViewsForDisplayedFamily(mapViews, selectedMap.map_view.chart_family),
-    [selectedMap],
+    () => selectedMap ? mapViewsForDisplayedFamily(mapViews, selectedMap.map_view.chart_family) : [],
+    [mapViews, selectedMap],
   );
   const selectedAirport = useMemo(
     () => chartPageData.airports.find((airport) => airport.id === selectedAirportId) ?? chartPageData.airports[0] ?? null,
@@ -722,6 +735,7 @@ export default function App() {
       return;
     }
     buildSeededDevPlan().then(async (initialPlan) => {
+      const { resourceIndex } = await import("./domain/productResourceIndex");
       const created = await appCoreAdapter.createUiSession(
         resourceIndex,
         initialPlan.plan,
@@ -749,12 +763,41 @@ export default function App() {
   }, [adapterBackend, appCoreAdapter, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialRecentAirportIds]);
 
   useEffect(() => {
+    let cancelled = false;
+    loadNavKvJson<MapViewOptionJson[]>("chart/catalog").then((loaded) => {
+      if (cancelled) {
+        return;
+      }
+      if (!loaded || loaded.length === 0) {
+        throw new Error("nav_kv chart/catalog is missing or empty");
+      }
+      setMapViews(loaded);
+      setSelectedMapId((current) =>
+        loaded.some((view) => view.id === current)
+          ? current
+          : initialMapId(loaded),
+      );
+    }).catch((error) => {
+      if (!cancelled) {
+        setMapViewsLoadError(`failed to load chart catalog: ${errorMessage(error)}`);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedMap) {
+      return;
+    }
     setMapViewport((current) => preserveViewportForMap(current, selectedMap.map_view));
   }, [selectedMap]);
 
   const appReady =
     appCoreAdapter !== null &&
     uiSession !== null &&
+    selectedMap !== null &&
     currentPlan !== null &&
     planUiState !== null;
 
@@ -903,17 +946,17 @@ export default function App() {
     }
   }, [appReady, currentPlan, planUiState, sessionInitError]);
 
-  if (sessionInitError) {
+  if (sessionInitError || mapViewsLoadError) {
     return (
       <main className="appFrame">
         <section className="appPage planPage">
-          <div className="planGuidanceSummary">{sessionInitError}</div>
+          <div className="planGuidanceSummary">{sessionInitError ?? mapViewsLoadError}</div>
         </section>
       </main>
     );
   }
 
-  if (!appReady || !currentPlan || !planUiState) {
+  if (!appReady || !currentPlan || !planUiState || !selectedMap) {
     return null;
   }
 
@@ -927,6 +970,7 @@ export default function App() {
           uptimeLabel={uptimeLabel}
           debugTileLabels={debugTileLabels}
           selectedMapId={selectedMapId}
+          mapViews={mapViews}
           selectedMap={selectedMap}
           selectedFamilyMapViews={selectedFamilyMapViews}
           selectedFamily={selectedFamily}
@@ -1211,8 +1255,9 @@ function MapPage(props: {
   uptimeLabel: string;
   debugTileLabels: boolean;
   selectedMapId: string;
-  selectedMap: (typeof mapViews)[number];
-  selectedFamilyMapViews: (typeof mapViews);
+  mapViews: MapViewOptionJson[];
+  selectedMap: MapViewOptionJson;
+  selectedFamilyMapViews: MapViewOptionJson[];
   selectedFamily: (typeof chartFamilies)[number];
   availableFamilies: Set<string>;
   viewport: MapViewportState;
@@ -1223,7 +1268,7 @@ function MapPage(props: {
   legSummary: string;
   locationSearch: string;
   ownship: OwnshipRenderState;
-  plan: typeof samplePlan;
+  plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
   playbackUiState: PlaybackUiState;
   mapFollowUiState: MapFollowUiState;
@@ -2159,7 +2204,7 @@ function MapPage(props: {
                 disabled: !available,
                 onSelect: () => {
                   const nextMap = preferredFamilyMap(
-                    mapViews,
+                    props.mapViews,
                     family.id,
                     selectedMap.region_id,
                   );
@@ -2645,7 +2690,7 @@ function FlightPlanPage(props: {
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
   legSummary: string;
-  plan: typeof samplePlan;
+  plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
   onOpenPlan: () => void;
   onSelectPage: (page: AppPage) => void;
@@ -3916,7 +3961,7 @@ function ChartsPage(props: {
   page: AppPage;
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
-  plan: typeof samplePlan;
+  plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
   airports: ChartPageData["airports"];
   selectedAirport: ChartPageData["airports"][number] | null;
@@ -4728,9 +4773,7 @@ function pageLabel(page: AppPage) {
 function formatSnapshot(snapshot: Pick<AppViewSnapshot, "page" | "selectedMapId" | "selectedChartId" | "selectedChartLabel" | "chartFolderOpen">) {
   const label = pageLabel(snapshot.page);
   if (snapshot.page === "map") {
-    const map = mapViews.find((entry) => entry.id === snapshot.selectedMapId);
-    const family = chartFamilies.find((entry) => entry.id === map?.map_view.chart_family)?.launcherLabel ?? "";
-    return family ? `${label}-${family}` : label;
+    return snapshot.selectedMapId ? `${label}-${snapshot.selectedMapId.toUpperCase()}` : label;
   }
   if (snapshot.page !== "charts") {
     return label;
@@ -5009,7 +5052,7 @@ async function applyFlightPlanMutation(
   setSessionSnapshot(nextSnapshot);
 }
 
-async function buildSeededDevPlan(): Promise<{ plan: typeof samplePlan }> {
+async function buildSeededDevPlan(): Promise<{ plan: FlightPlan }> {
   const waypoints: Array<{ Airport: string } | { Navaid: string } | { Fix: string }> = [
     { Airport: "KPAO" },
     { Fix: "VPDUB" },
@@ -5101,12 +5144,6 @@ function routeSegmentColor(status: FlightPlanRouteSegment["status"]) {
 }
 
 function resolveChartLabel(chartId: string) {
-  for (const airport of chartPage.airports) {
-    const chart = airport.charts.find((entry) => entry.id === chartId);
-    if (chart) {
-      return chart.label;
-    }
-  }
   return "";
 }
 

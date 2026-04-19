@@ -1,6 +1,6 @@
 import bootstrapJson from "@shared-bootstrap";
 import catalogJson from "@product-catalog";
-import resourceIndexJson from "@product-resource-index";
+import { resourceIndex } from "./productResourceIndex";
 import { deriveChartPage, deriveMapViews } from "./resourceIndexAdapters";
 import type {
   AppState,
@@ -9,10 +9,8 @@ import type {
   DevBootstrapJson,
   GeometryJson,
   MapTileViewJson,
-  ResourceIndexJson,
 } from "./types";
 
-export const resourceIndex = resourceIndexJson as ResourceIndexJson;
 export const bootstrap = bootstrapJson as DevBootstrapJson;
 
 export const sampleCatalog = catalogJson as CatalogJson;

@@ -340,6 +340,14 @@ impl Drop for BuildLockGuard {
     }
 }
 
+fn node_output_file_detail(record: &NodeRecord, key: &str) -> (Option<String>, Option<u64>) {
+    record
+        .output_details
+        .get(key)
+        .map(|detail| (detail.sha256.clone(), detail.size_bytes))
+        .unwrap_or((None, None))
+}
+
 enum NodeCacheState {
     CacheHit(NodeRecord),
     Build(BuildLockGuard),
@@ -435,6 +443,8 @@ enum ProductTaskValue {
     },
     BuiltStandaloneProduct {
         zip_path: PathBuf,
+        zip_sha256: Option<String>,
+        zip_size_bytes: Option<u64>,
         source_version: String,
         source_fetched_at_utc: Option<String>,
     },
@@ -467,6 +477,13 @@ struct ProductTaskCompletion {
     node_records: Vec<NodeRecord>,
     value: ProductTaskValue,
     completion_detail: String,
+}
+
+#[derive(Debug, Clone)]
+struct PublishedZipArtifact {
+    source_zip_path: PathBuf,
+    published_zip_path: PathBuf,
+    checksum_sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1605,6 +1622,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 &source.package_root,
                                 &unpacked_root,
                                 &published_filename,
+                                Some(&package.zip_sha256),
                             )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
@@ -1636,6 +1654,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 &source.package_root,
                                 &unpacked_root,
                                 &published_filename,
+                                Some(&package.zip_sha256),
                             )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
@@ -1670,6 +1689,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 &source.package_root,
                                 &unpacked_root,
                                 &published_filename,
+                                Some(&package.zip_sha256),
                             )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
@@ -1700,6 +1720,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 zip.parent().unwrap_or_else(|| Path::new("/")),
                                 &unpacked_root,
                                 &format!("data_{bundle_cycle}.zip"),
+                                None,
                             )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
@@ -1730,6 +1751,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 zip.parent().unwrap_or_else(|| Path::new("/")),
                                 &unpacked_root,
                                 &format!("vectors_data_{bundle_cycle}.zip"),
+                                None,
                             )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
@@ -1838,10 +1860,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             let (zip_path, source_generated_at_utc, record) =
                                 build_tfrs_product(&config)?;
                             let cache_hit = record.cache_hit;
+                            let (zip_sha256, zip_size_bytes) =
+                                node_output_file_detail(&record, "zip");
                             Ok(ProductTaskCompletion {
                                 node_records: vec![record],
                                 value: ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
                                     source_version: source_generated_at_utc,
                                     source_fetched_at_utc: None,
                                 },
@@ -1852,10 +1878,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             let (zip_path, source_generated_at_utc, record) =
                                 build_metars_product(&config)?;
                             let cache_hit = record.cache_hit;
+                            let (zip_sha256, zip_size_bytes) =
+                                node_output_file_detail(&record, "zip");
                             Ok(ProductTaskCompletion {
                                 node_records: vec![record],
                                 value: ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
                                     source_version: source_generated_at_utc,
                                     source_fetched_at_utc: None,
                                 },
@@ -1866,10 +1896,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             let (zip_path, source_generated_at_utc, record) =
                                 build_nexrad_product(&config)?;
                             let cache_hit = record.cache_hit;
+                            let (zip_sha256, zip_size_bytes) =
+                                node_output_file_detail(&record, "zip");
                             Ok(ProductTaskCompletion {
                                 node_records: vec![record],
                                 value: ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
                                     source_version: source_generated_at_utc,
                                     source_fetched_at_utc: None,
                                 },
@@ -1879,10 +1913,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         ProductScheduledTaskKind::GeoBuild => {
                             let (zip_path, source_version, record) = build_geo_product(&config)?;
                             let cache_hit = record.cache_hit;
+                            let (zip_sha256, zip_size_bytes) =
+                                node_output_file_detail(&record, "zip");
                             Ok(ProductTaskCompletion {
                                 node_records: vec![record],
                                 value: ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
                                     source_version,
                                     source_fetched_at_utc: None,
                                 },
@@ -1919,10 +1957,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     source_fetched_at_utc,
                                 )?;
                             let cache_hit = record.cache_hit;
+                            let (zip_sha256, zip_size_bytes) =
+                                node_output_file_detail(&record, "zip");
                             Ok(ProductTaskCompletion {
                                 node_records: vec![record],
                                 value: ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
                                     source_version,
                                     source_fetched_at_utc,
                                 },
@@ -1933,18 +1975,28 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             let built = match task_values_snapshot.get("build-tfrs") {
                                 Some(ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
                                     source_version,
                                     source_fetched_at_utc,
                                     ..
                                 }) => (
                                     zip_path.clone(),
+                                    zip_sha256.clone(),
+                                    *zip_size_bytes,
                                     source_version.clone(),
                                     source_fetched_at_utc.clone(),
                                 ),
                                 _ => bail!("missing TFR build output"),
                             };
                             let (published_zip, sha256, size_bytes) =
-                                publish_content_addressed_fast_product_zip(&config.build_root, "tfrs", &built.0)?;
+                                publish_content_addressed_fast_product_zip(
+                                    &config.build_root,
+                                    "tfrs",
+                                    &built.0,
+                                    built.1.as_deref(),
+                                    built.2,
+                                )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
                                 value: ProductTaskValue::PublishedStandaloneProduct {
@@ -1953,8 +2005,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     published_zip,
                                     sha256,
                                     size_bytes,
-                                    source_version: built.1,
-                                    source_fetched_at_utc: built.2,
+                                    source_version: built.3,
+                                    source_fetched_at_utc: built.4,
                                 },
                                 completion_detail: "published".to_string(),
                             })
@@ -1963,18 +2015,28 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             let built = match task_values_snapshot.get("build-metars") {
                                 Some(ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
                                     source_version,
                                     source_fetched_at_utc,
                                     ..
                                 }) => (
                                     zip_path.clone(),
+                                    zip_sha256.clone(),
+                                    *zip_size_bytes,
                                     source_version.clone(),
                                     source_fetched_at_utc.clone(),
                                 ),
                                 _ => bail!("missing METAR build output"),
                             };
                             let (published_zip, sha256, size_bytes) =
-                                publish_content_addressed_fast_product_zip(&config.build_root, "metars", &built.0)?;
+                                publish_content_addressed_fast_product_zip(
+                                    &config.build_root,
+                                    "metars",
+                                    &built.0,
+                                    built.1.as_deref(),
+                                    built.2,
+                                )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
                                 value: ProductTaskValue::PublishedStandaloneProduct {
@@ -1983,8 +2045,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     published_zip,
                                     sha256,
                                     size_bytes,
-                                    source_version: built.1,
-                                    source_fetched_at_utc: built.2,
+                                    source_version: built.3,
+                                    source_fetched_at_utc: built.4,
                                 },
                                 completion_detail: "published".to_string(),
                             })
@@ -1993,18 +2055,28 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             let built = match task_values_snapshot.get("build-nexrad") {
                                 Some(ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
                                     source_version,
                                     source_fetched_at_utc,
                                     ..
                                 }) => (
                                     zip_path.clone(),
+                                    zip_sha256.clone(),
+                                    *zip_size_bytes,
                                     source_version.clone(),
                                     source_fetched_at_utc.clone(),
                                 ),
                                 _ => bail!("missing NEXRAD build output"),
                             };
                             let (published_zip, sha256, size_bytes) =
-                                publish_content_addressed_fast_product_zip(&config.build_root, "nexrad", &built.0)?;
+                                publish_content_addressed_fast_product_zip(
+                                    &config.build_root,
+                                    "nexrad",
+                                    &built.0,
+                                    built.1.as_deref(),
+                                    built.2,
+                                )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
                                 value: ProductTaskValue::PublishedStandaloneProduct {
@@ -2013,8 +2085,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     published_zip,
                                     sha256,
                                     size_bytes,
-                                    source_version: built.1,
-                                    source_fetched_at_utc: built.2,
+                                    source_version: built.3,
+                                    source_fetched_at_utc: built.4,
                                 },
                                 completion_detail: "published".to_string(),
                             })
@@ -2023,18 +2095,28 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             let built = match task_values_snapshot.get("build-geo") {
                                 Some(ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
                                     source_version,
                                     source_fetched_at_utc,
                                     ..
                                 }) => (
                                     zip_path.clone(),
+                                    zip_sha256.clone(),
+                                    *zip_size_bytes,
                                     source_version.clone(),
                                     source_fetched_at_utc.clone(),
                                 ),
                                 _ => bail!("missing geo build output"),
                             };
                             let (published_zip, sha256, size_bytes) =
-                                publish_content_addressed_zip(&config.build_root, &built.0, "geo")?;
+                                publish_content_addressed_zip(
+                                    &config.build_root,
+                                    &built.0,
+                                    "geo",
+                                    built.1.as_deref(),
+                                    built.2,
+                                )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
                                 value: ProductTaskValue::PublishedStandaloneProduct {
@@ -2043,8 +2125,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     published_zip,
                                     sha256,
                                     size_bytes,
-                                    source_version: built.1,
-                                    source_fetched_at_utc: built.2,
+                                    source_version: built.3,
+                                    source_fetched_at_utc: built.4,
                                 },
                                 completion_detail: "published".to_string(),
                             })
@@ -2055,11 +2137,15 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             let built = match task_values_snapshot.get(&task_id) {
                                 Some(ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
                                     source_version,
                                     source_fetched_at_utc,
                                     ..
                                 }) => (
                                     zip_path.clone(),
+                                    zip_sha256.clone(),
+                                    *zip_size_bytes,
                                     source_version.clone(),
                                     source_fetched_at_utc.clone(),
                                 ),
@@ -2067,7 +2153,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             };
                             let product_id = format!("terrain-{region_id}");
                             let (published_zip, sha256, size_bytes) =
-                                publish_content_addressed_zip(&config.build_root, &built.0, &product_id)?;
+                                publish_content_addressed_zip(
+                                    &config.build_root,
+                                    &built.0,
+                                    &product_id,
+                                    built.1.as_deref(),
+                                    built.2,
+                                )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
                                 value: ProductTaskValue::PublishedStandaloneProduct {
@@ -2076,8 +2168,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     published_zip,
                                     sha256,
                                     size_bytes,
-                                    source_version: built.1,
-                                    source_fetched_at_utc: built.2,
+                                    source_version: built.3,
+                                    source_fetched_at_utc: built.4,
                                 },
                                 completion_detail: "published".to_string(),
                             })
@@ -2178,8 +2270,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 Some(ProductTaskValue::PublishedObstacle {
                                     source_zip_path,
                                     published_zip,
+                                    sha256,
                                     ..
-                                }) => (source_zip_path.clone(), published_zip.clone()),
+                                }) => PublishedZipArtifact {
+                                    source_zip_path: source_zip_path.clone(),
+                                    published_zip_path: published_zip.clone(),
+                                    checksum_sha256: sha256.clone(),
+                                },
                                 _ => bail!("missing published obstacle output"),
                             };
                             let fast_products = ["publish-tfrs", "publish-metars", "publish-nexrad"]
@@ -2188,8 +2285,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     Some(ProductTaskValue::PublishedStandaloneProduct {
                                         source_zip_path,
                                         published_zip,
+                                        sha256,
                                         ..
-                                    }) => Ok((source_zip_path.clone(), published_zip.clone())),
+                                    }) => Ok(PublishedZipArtifact {
+                                        source_zip_path: source_zip_path.clone(),
+                                        published_zip_path: published_zip.clone(),
+                                        checksum_sha256: sha256.clone(),
+                                    }),
                                     _ => bail!("missing published fast product output for {}", task_id),
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
@@ -2207,8 +2309,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     Some(ProductTaskValue::PublishedStandaloneProduct {
                                         source_zip_path,
                                         published_zip,
+                                        sha256,
                                         ..
-                                    }) => Ok((source_zip_path.clone(), published_zip.clone())),
+                                    }) => Ok(PublishedZipArtifact {
+                                        source_zip_path: source_zip_path.clone(),
+                                        published_zip_path: published_zip.clone(),
+                                        checksum_sha256: sha256.clone(),
+                                    }),
                                     _ => bail!("missing published static product output for {}", task_id),
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
@@ -2462,9 +2569,15 @@ fn publish_built_fast_product(
     id: &str,
     built: (PathBuf, String, NodeRecord),
 ) -> anyhow::Result<PublishedFastProductResult> {
-    let (source_zip_path, source_generated_at_utc, _record) = built;
-    let (published_zip, checksum_sha256, size_bytes) =
-        publish_content_addressed_fast_product_zip(&config.build_root, id, &source_zip_path)?;
+    let (source_zip_path, source_generated_at_utc, record) = built;
+    let (zip_sha256, zip_size_bytes) = node_output_file_detail(&record, "zip");
+    let (published_zip, checksum_sha256, size_bytes) = publish_content_addressed_fast_product_zip(
+        &config.build_root,
+        id,
+        &source_zip_path,
+        zip_sha256.as_deref(),
+        zip_size_bytes,
+    )?;
     Ok(PublishedFastProductResult {
         id: id.to_string(),
         source_zip_path,
@@ -2532,6 +2645,7 @@ fn sync_fast_subset_unpacked(
                 .unwrap_or_else(|| Path::new("/")),
             &unpacked_root,
             published_filename,
+            Some(&product.checksum_sha256),
         )?;
     }
     Ok(())
@@ -3169,6 +3283,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 &source.package_root,
                                 &unpacked_root,
                                 &published_filename,
+                                Some(&package.zip_sha256),
                             )?;
                             Ok(TaskCompletion {
                                 node_records: vec![],
@@ -3199,6 +3314,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 &source.package_root,
                                 &unpacked_root,
                                 &published_filename,
+                                Some(&package.zip_sha256),
                             )?;
                             Ok(TaskCompletion {
                                 node_records: vec![],
@@ -3233,6 +3349,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 &source.package_root,
                                 &unpacked_root,
                                 &published_filename,
+                                Some(&package.zip_sha256),
                             )?;
                             Ok(TaskCompletion {
                                 node_records: vec![],
@@ -3257,6 +3374,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 zip.parent().unwrap_or_else(|| Path::new("/")),
                                 &unpacked_root,
                                 &format!("data_{bundle_cycle}.zip"),
+                                None,
                             )?;
                             Ok(TaskCompletion {
                                 node_records: vec![],
@@ -3279,6 +3397,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 zip.parent().unwrap_or_else(|| Path::new("/")),
                                 &unpacked_root,
                                 &format!("vectors_data_{bundle_cycle}.zip"),
+                                None,
                             )?;
                             Ok(TaskCompletion {
                                 node_records: vec![],
@@ -3711,10 +3830,14 @@ fn sync_unpacked_zip_from_source(
     source_root: &Path,
     unpacked_root: &Path,
     published_filename: &str,
+    known_sha256: Option<&str>,
 ) -> anyhow::Result<(bool, PathBuf)> {
     let unpack_dir = unpacked_target_dir(unpacked_root, published_filename)?;
     let marker_path = unpacked_marker_path(unpacked_root, published_filename)?;
-    let zip_sha256 = hash_file(zip_path)?;
+    let zip_sha256 = match known_sha256 {
+        Some(value) => value.to_string(),
+        None => hash_file(zip_path)?,
+    };
     if unpack_dir.is_dir()
         && fs::read_to_string(&marker_path)
             .ok()
@@ -3848,26 +3971,31 @@ fn sync_unpacked_file(source_path: &Path, unpacked_root: &Path) -> anyhow::Resul
     publish_flat_artifact(source_path, &published_path)
 }
 
-pub fn sync_product_level_unpacked(
+fn sync_product_level_unpacked(
     build_root: &Path,
     current_artifacts_path: &Path,
-    zip_artifacts: &[(PathBuf, PathBuf)],
+    zip_artifacts: &[PublishedZipArtifact],
 ) -> anyhow::Result<()> {
     let unpacked_root = published_unpacked_root_from_build_root(build_root)?;
     remove_legacy_unpacked_subtree(&unpacked_root)?;
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
     sync_unpacked_file(current_artifacts_path, &unpacked_root)?;
-    for (source_zip_path, published_zip_path) in zip_artifacts {
-        let published_filename = published_zip_path
+    for artifact in zip_artifacts {
+        let published_filename = artifact
+            .published_zip_path
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| anyhow::anyhow!("failed to determine published filename"))?;
         sync_unpacked_zip_from_source(
-            published_zip_path,
-            source_zip_path.parent().unwrap_or_else(|| Path::new("/")),
+            &artifact.published_zip_path,
+            artifact
+                .source_zip_path
+                .parent()
+                .unwrap_or_else(|| Path::new("/")),
             &unpacked_root,
             published_filename,
+            Some(&artifact.checksum_sha256),
         )?;
     }
     Ok(())
@@ -4498,9 +4626,7 @@ fn build_terrain_product(
             region.code()
         );
     }
-    if let Some(cached_selection) =
-        cached_terrain_dem_selection(&dem_candidates, &fetch_cache)?
-    {
+    if let Some(cached_selection) = cached_terrain_dem_selection(&dem_candidates, &fetch_cache)? {
         let source_fingerprint = terrain_source_fingerprint_from_cached(
             &cached_selection.selection.urls,
             &cached_selection.sources,
@@ -5590,35 +5716,56 @@ fn publish_content_addressed_obstacle_zip(
     build_root: &Path,
     obstacle_zip_path: &Path,
 ) -> anyhow::Result<(PathBuf, String, u64)> {
-    publish_content_addressed_zip(build_root, obstacle_zip_path, "obstacles")
+    publish_content_addressed_zip(build_root, obstacle_zip_path, "obstacles", None, None)
 }
 
 fn publish_content_addressed_fast_product_zip(
     build_root: &Path,
     fast_product_id: &str,
     zip_path: &Path,
+    known_sha256: Option<&str>,
+    known_size_bytes: Option<u64>,
 ) -> anyhow::Result<(PathBuf, String, u64)> {
-    publish_content_addressed_zip(build_root, zip_path, fast_product_id)
+    publish_content_addressed_zip(
+        build_root,
+        zip_path,
+        fast_product_id,
+        known_sha256,
+        known_size_bytes,
+    )
 }
 
 fn publish_content_addressed_zip(
     build_root: &Path,
     zip_path: &Path,
     file_prefix: &str,
+    known_sha256: Option<&str>,
+    known_size_bytes: Option<u64>,
 ) -> anyhow::Result<(PathBuf, String, u64)> {
-    let sha256 = hash_file(zip_path)?;
-    let size_bytes = fs::metadata(zip_path)
-        .with_context(|| format!("failed to stat {}", zip_path.display()))?
-        .len();
+    let sha256 = match known_sha256 {
+        Some(value) => value.to_string(),
+        None => hash_file(zip_path)?,
+    };
+    let size_bytes = match known_size_bytes {
+        Some(value) => value,
+        None => fs::metadata(zip_path)
+            .with_context(|| format!("failed to stat {}", zip_path.display()))?
+            .len(),
+    };
     let published_path = build_root.join(format!("{file_prefix}_{sha256}.zip"));
     if !published_path.is_file() {
-        fs::copy(zip_path, &published_path).with_context(|| {
-            format!(
-                "failed to copy {} to {}",
-                zip_path.display(),
-                published_path.display()
-            )
-        })?;
+        match fs::hard_link(zip_path, &published_path) {
+            Ok(()) => {}
+            Err(_) => {
+                fs::copy(zip_path, &published_path).with_context(|| {
+                    format!(
+                        "failed to copy {} to {}",
+                        zip_path.display(),
+                        published_path.display()
+                    )
+                })?;
+            }
+        }
     }
     Ok((published_path, sha256, size_bytes))
 }
@@ -6247,12 +6394,7 @@ pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheG
             }
         }
     }
-    scrub_rooted_tpp_render_scratch(
-        &cache_nodes_root,
-        &rooted,
-        config.mode,
-        &mut report,
-    )?;
+    scrub_rooted_tpp_render_scratch(&cache_nodes_root, &rooted, config.mode, &mut report)?;
     Ok(report)
 }
 
@@ -6324,7 +6466,8 @@ fn is_tpp_render_scratch_file(path: &Path) -> bool {
     if !(extension.eq_ignore_ascii_case("tif") || extension.eq_ignore_ascii_case("tiff")) {
         return false;
     }
-    path.components().any(|component| component.as_os_str() == "plates")
+    path.components()
+        .any(|component| component.as_os_str() == "plates")
 }
 
 fn is_younger_than(path: &Path, now: SystemTime, grace: Duration) -> anyhow::Result<bool> {

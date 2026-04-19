@@ -184,6 +184,9 @@ pub struct BuildCacheGcReport {
     pub scratch_files: usize,
     pub scratch_bytes: u64,
     pub scratch_active_nodes: usize,
+    pub private_scratch_files: usize,
+    pub private_scratch_bytes: u64,
+    pub private_scratch_active_nodes: usize,
     pub by_node_name: BTreeMap<String, BuildCacheGcBucket>,
 }
 
@@ -6341,6 +6344,9 @@ pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheG
         scratch_files: 0,
         scratch_bytes: 0,
         scratch_active_nodes: 0,
+        private_scratch_files: 0,
+        private_scratch_bytes: 0,
+        private_scratch_active_nodes: 0,
         by_node_name: BTreeMap::new(),
     };
     if !cache_nodes_root.is_dir() {
@@ -6395,7 +6401,84 @@ pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheG
         }
     }
     scrub_rooted_tpp_render_scratch(&cache_nodes_root, &rooted, config.mode, &mut report)?;
+    scrub_terrain_private_work_scratch(
+        &config.build_root,
+        &cache_nodes_root,
+        config.mode,
+        &mut report,
+    )?;
     Ok(report)
+}
+
+fn scrub_terrain_private_work_scratch(
+    build_root: &Path,
+    cache_nodes_root: &Path,
+    mode: BuildCacheGcMode,
+    report: &mut BuildCacheGcReport,
+) -> anyhow::Result<()> {
+    let private_terrain_root = artifact_root_from_build_root(build_root)
+        .join("private-work")
+        .join("terrain");
+    if !private_terrain_root.exists() {
+        return Ok(());
+    }
+    if terrain_node_build_is_active(cache_nodes_root)? {
+        report.private_scratch_active_nodes += 1;
+        return Ok(());
+    }
+    report.private_scratch_files += count_files_in_dir(&private_terrain_root)?;
+    report.private_scratch_bytes = report
+        .private_scratch_bytes
+        .saturating_add(directory_size(&private_terrain_root)?);
+    if mode == BuildCacheGcMode::Execute {
+        fs::remove_dir_all(&private_terrain_root)
+            .with_context(|| format!("failed to remove {}", private_terrain_root.display()))?;
+    }
+    Ok(())
+}
+
+fn terrain_node_build_is_active(cache_nodes_root: &Path) -> anyhow::Result<bool> {
+    if !cache_nodes_root.is_dir() {
+        return Ok(false);
+    }
+    for node_entry in fs::read_dir(cache_nodes_root)
+        .with_context(|| format!("failed to read {}", cache_nodes_root.display()))?
+    {
+        let node_entry = node_entry?;
+        if !node_entry.file_type()?.is_dir() {
+            continue;
+        }
+        let node_name = node_entry.file_name().to_string_lossy().to_string();
+        if !node_name.starts_with("static-terrain-") {
+            continue;
+        }
+        for fingerprint_entry in fs::read_dir(node_entry.path())
+            .with_context(|| format!("failed to read {}", node_entry.path().display()))?
+        {
+            let fingerprint_entry = fingerprint_entry?;
+            if !fingerprint_entry.file_type()?.is_dir() {
+                continue;
+            }
+            let lock_path = fingerprint_entry.path().join(".build-lock");
+            if lock_path.exists() && lock_is_live(&lock_path)? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn count_files_in_dir(dir: &Path) -> anyhow::Result<usize> {
+    let mut count = 0usize;
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            count += count_files_in_dir(&entry.path())?;
+        } else {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 fn scrub_rooted_tpp_render_scratch(

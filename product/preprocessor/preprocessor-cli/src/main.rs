@@ -2775,6 +2775,19 @@ fn main() -> anyhow::Result<()> {
                 report.scratch_bytes as f64 / 1024.0 / 1024.0 / 1024.0
             );
             println!("scratch_active_nodes {}", report.scratch_active_nodes);
+            println!("private_scratch_files {}", report.private_scratch_files);
+            println!(
+                "private_scratch_reclaimable_bytes {}",
+                report.private_scratch_bytes
+            );
+            println!(
+                "private_scratch_reclaimable_gib {:.2}",
+                report.private_scratch_bytes as f64 / 1024.0 / 1024.0 / 1024.0
+            );
+            println!(
+                "private_scratch_active_nodes {}",
+                report.private_scratch_active_nodes
+            );
             for (node_name, bucket) in report.by_node_name {
                 println!(
                     "candidate {} count={} bytes={} gib={:.2}",

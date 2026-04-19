@@ -4043,7 +4043,7 @@ fn build_obstacles_product(
         .join("obstacles")
         .join(&snapshot_label);
     let output_dir = build_root.join("output");
-    let manifest_path = output_dir.join(format!("obstacles_{snapshot_label}"));
+    let manifest_path = output_dir.join(format!("obstacles_{snapshot_label}.manifest"));
     let stats_path = output_dir.join("stats.json");
     let zip_path = output_dir.join(format!("obstacles_{snapshot_label}.zip"));
     if manifest_path.is_file() && stats_path.is_file() && zip_path.is_file() {

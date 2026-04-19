@@ -283,6 +283,24 @@ With those headers, browser fetch consumers receive decompressed `ABT1` bytes.
 Offline zip consumers that read directly from `published-packaged/*.zip` must
 gzip-decode the member payload after reading the zip entry.
 
+### `shaded-relief-<region>_<sha256>.zip`
+
+Standalone content-addressed shaded-relief raster artifact.
+
+It is referenced from `current_artifacts_YYYYMMDD.json` under `static_products[]`.
+Consumers fetch it only if they explicitly need a terrain-background visual
+layer.
+
+The package contains `manifest.json` plus `tiles/<z>/<x>/<y>.png` members.
+The first-cut product uses the same `z10` / `512x512` grid as the numeric
+terrain product. PNG tile members are already image-compressed and are stored in
+the outer zip without another deflate pass.
+
+The initial renderer derives directly from the same USGS 3DEP DEM inputs as
+numeric terrain, not from the published `.terrain` tiles. It applies coarse
+sectional-style elevation color buckets and a DEM hillshade. Nodata pixels are
+transparent. Water and glacier masks are not part of the first cut.
+
 
 ## Non-Goals
 

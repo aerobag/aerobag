@@ -603,6 +603,7 @@ const TPP_RENDER_JOBS_PER_RUN: usize = 8;
 const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
 const TERRAIN_PIPELINE_VERSION: &str = "v2";
+const SHADED_RELIEF_PIPELINE_VERSION: &str = "v1";
 const TERRAIN_ZOOM: u32 = 10;
 const TERRAIN_TILE_SIZE: u32 = 512;
 
@@ -742,6 +743,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             region: Region,
         },
         TerrainPublish {
+            region: Region,
+        },
+        ShadedReliefBuild {
+            region: Region,
+        },
+        ShadedReliefPublish {
             region: Region,
         },
         CurrentArtifacts,
@@ -1062,6 +1069,18 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 weight: 1,
                 kind: ProductScheduledTaskKind::TerrainPublish { region: *region },
             });
+            pending_tasks.push(ProductScheduledTask {
+                id: format!("build-shaded-relief-{region_id}"),
+                deps: vec!["terrain-discovery".to_string()],
+                weight: 2,
+                kind: ProductScheduledTaskKind::ShadedReliefBuild { region: *region },
+            });
+            pending_tasks.push(ProductScheduledTask {
+                id: format!("publish-shaded-relief-{region_id}"),
+                deps: vec![format!("build-shaded-relief-{region_id}")],
+                weight: 1,
+                kind: ProductScheduledTaskKind::ShadedReliefPublish { region: *region },
+            });
         }
         pending_tasks.push(ProductScheduledTask {
             id: "current-artifacts".to_string(),
@@ -1075,6 +1094,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 .chain(std::iter::once("publish-geo".to_string()))
                 .chain(config.profile.terrain_regions().iter().map(|region| {
                     format!("publish-terrain-{}", region.code().to_ascii_lowercase())
+                }))
+                .chain(config.profile.terrain_regions().iter().map(|region| {
+                    format!(
+                        "publish-shaded-relief-{}",
+                        region.code().to_ascii_lowercase()
+                    )
                 }))
                 .collect(),
             weight: 1,
@@ -1095,6 +1120,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 .iter()
                 .map(|region| format!("publish-terrain-{}", region.code().to_ascii_lowercase())),
         );
+        product_unpack_deps.extend(config.profile.terrain_regions().iter().map(|region| {
+            format!(
+                "publish-shaded-relief-{}",
+                region.code().to_ascii_lowercase()
+            )
+        }));
         pending_tasks.push(ProductScheduledTask {
             id: "product-unpack".to_string(),
             deps: product_unpack_deps,
@@ -1986,6 +2017,37 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 completion_detail: format!("cache_hit={cache_hit}"),
                             })
                         }
+                        ProductScheduledTaskKind::ShadedReliefBuild { region } => {
+                            let (index_path, source_fetched_at_utc) =
+                                match task_values_snapshot.get("terrain-discovery") {
+                                    Some(ProductTaskValue::TerrainDiscovery {
+                                        index_path,
+                                        source_fetched_at_utc,
+                                    }) => (index_path.clone(), source_fetched_at_utc.clone()),
+                                    _ => bail!("missing terrain discovery output"),
+                                };
+                            let (zip_path, source_version, source_fetched_at_utc, record) =
+                                build_shaded_relief_product(
+                                    &config,
+                                    region,
+                                    &index_path,
+                                    source_fetched_at_utc,
+                                )?;
+                            let cache_hit = record.cache_hit;
+                            let (zip_sha256, zip_size_bytes) =
+                                node_output_file_detail(&record, "zip");
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![record],
+                                value: ProductTaskValue::BuiltStandaloneProduct {
+                                    zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
+                                    source_version,
+                                    source_fetched_at_utc,
+                                },
+                                completion_detail: format!("cache_hit={cache_hit}"),
+                            })
+                        }
                         ProductScheduledTaskKind::TfrsPublish => {
                             let built = match task_values_snapshot.get("build-tfrs") {
                                 Some(ProductTaskValue::BuiltStandaloneProduct {
@@ -2189,6 +2251,52 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 completion_detail: "published".to_string(),
                             })
                         }
+                        ProductScheduledTaskKind::ShadedReliefPublish { region } => {
+                            let region_id = region.code().to_ascii_lowercase();
+                            let task_id = format!("build-shaded-relief-{region_id}");
+                            let built = match task_values_snapshot.get(&task_id) {
+                                Some(ProductTaskValue::BuiltStandaloneProduct {
+                                    zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
+                                    source_version,
+                                    source_fetched_at_utc,
+                                    ..
+                                }) => (
+                                    zip_path.clone(),
+                                    zip_sha256.clone(),
+                                    *zip_size_bytes,
+                                    source_version.clone(),
+                                    source_fetched_at_utc.clone(),
+                                ),
+                                _ => bail!(
+                                    "missing shaded relief build output for {}",
+                                    region.code()
+                                ),
+                            };
+                            let product_id = format!("shaded-relief-{region_id}");
+                            let (published_zip, sha256, size_bytes) =
+                                publish_content_addressed_zip(
+                                    &config.build_root,
+                                    &built.0,
+                                    &product_id,
+                                    built.1.as_deref(),
+                                    built.2,
+                                )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::PublishedStandaloneProduct {
+                                    id: product_id,
+                                    source_zip_path: built.0,
+                                    published_zip,
+                                    sha256,
+                                    size_bytes,
+                                    source_version: built.3,
+                                    source_fetched_at_utc: built.4,
+                                },
+                                completion_detail: "published".to_string(),
+                            })
+                        }
                         ProductScheduledTaskKind::CurrentArtifacts => {
                             let published_obstacle = match task_values_snapshot.get("publish-obstacles") {
                                 Some(ProductTaskValue::PublishedObstacle {
@@ -2228,6 +2336,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 .chain(config.profile.terrain_regions().iter().map(|region| {
                                     format!(
                                         "publish-terrain-{}",
+                                        region.code().to_ascii_lowercase()
+                                    )
+                                }))
+                                .chain(config.profile.terrain_regions().iter().map(|region| {
+                                    format!(
+                                        "publish-shaded-relief-{}",
                                         region.code().to_ascii_lowercase()
                                     )
                                 }))
@@ -2314,6 +2428,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 .chain(config.profile.terrain_regions().iter().map(|region| {
                                     format!(
                                         "publish-terrain-{}",
+                                        region.code().to_ascii_lowercase()
+                                    )
+                                }))
+                                .chain(config.profile.terrain_regions().iter().map(|region| {
+                                    format!(
+                                        "publish-shaded-relief-{}",
                                         region.code().to_ascii_lowercase()
                                     )
                                 }))
@@ -4832,11 +4952,21 @@ fn build_terrain_product(
         &format!("terrain-{region_id}-dem"),
     )?;
     let dem_paths = terrain_dem_paths_from_urls(&dem_dir, &dem_selection.urls)?;
-    let source_fingerprint = terrain_source_fingerprint(
-        &dem_selection.urls,
-        &dem_paths,
-        &dem_selection.missing_cells,
-    )?;
+    let source_fingerprint = if let Some(sources) =
+        cached_terrain_dem_sources_for_urls(&fetch_cache, &dem_selection.urls)?
+    {
+        terrain_source_fingerprint_from_cached(
+            &dem_selection.urls,
+            &sources,
+            &dem_selection.missing_cells,
+        )
+    } else {
+        terrain_source_fingerprint(
+            &dem_selection.urls,
+            &dem_paths,
+            &dem_selection.missing_cells,
+        )?
+    };
     let version_label = fast_product_version_label(&source_fingerprint);
     let inputs = terrain_product_inputs(region, &source_fingerprint)?;
     let prepared = prepare_node_at(
@@ -4913,6 +5043,159 @@ fn terrain_product_inputs(
             TERRAIN_PIPELINE_VERSION.to_string(),
         ),
         ("geo_csv".to_string(), hash_file(static_geo_source_path())?),
+    ]))
+}
+
+fn build_shaded_relief_product(
+    config: &ProductBuildConfig,
+    region: Region,
+    terrain_index_path: &Path,
+    source_fetched_at_utc: Option<String>,
+) -> anyhow::Result<(PathBuf, String, Option<String>, NodeRecord)> {
+    let region_id = region.code().to_ascii_lowercase();
+    let input_dir = artifact_root_from_build_root(&config.build_root)
+        .join("private-work")
+        .join("shaded-relief")
+        .join(&region_id)
+        .join("input");
+    let dem_dir = input_dir.join("dems");
+    fs::create_dir_all(&dem_dir)
+        .with_context(|| format!("failed to create {}", dem_dir.display()))?;
+
+    let provenance_dir = config
+        .build_root
+        .join("meta")
+        .join("provenance")
+        .join(format!("shaded-relief-{region_id}"));
+    let fetch_cache = terrain_fetch_cache_config(config)?;
+    let mut dem_candidates = terrain_dem_candidates_for_region(terrain_index_path, region)?;
+    if dem_candidates.is_empty() {
+        bail!(
+            "terrain discovery index has no DEM URLs for shaded relief {}",
+            region.code()
+        );
+    }
+    if let Some(cached_selection) = cached_terrain_dem_selection(&dem_candidates, &fetch_cache)? {
+        let source_fingerprint = terrain_source_fingerprint_from_cached(
+            &cached_selection.selection.urls,
+            &cached_selection.sources,
+            &cached_selection.selection.missing_cells,
+        );
+        let version_label = fast_product_version_label(&source_fingerprint);
+        let inputs = shaded_relief_product_inputs(region, &source_fingerprint)?;
+        let prepared = prepare_node_at(
+            &build_shared_node_dir(config, &format!("static-shaded-relief-{region_id}"))?,
+            &format!("static-shaded-relief-{region_id}"),
+            &inputs,
+        )?;
+        let output_dir = prepared.dir.join("output");
+        let zip_path = output_dir.join(format!("shaded_relief_{region_id}_{version_label}.zip"));
+        let manifest_path = output_dir.join("manifest.json");
+        if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path])? {
+            return Ok((zip_path, version_label, source_fetched_at_utc, record));
+        }
+    }
+    let dem_selection = prefetch_terrain_dems_with_fallback(
+        &mut dem_candidates,
+        &dem_dir,
+        config.fetch_jobs,
+        &fetch_cache,
+        &provenance_dir,
+        &format!("shaded-relief-{region_id}-dem"),
+    )?;
+    let dem_paths = terrain_dem_paths_from_urls(&dem_dir, &dem_selection.urls)?;
+    let source_fingerprint = if let Some(sources) =
+        cached_terrain_dem_sources_for_urls(&fetch_cache, &dem_selection.urls)?
+    {
+        terrain_source_fingerprint_from_cached(
+            &dem_selection.urls,
+            &sources,
+            &dem_selection.missing_cells,
+        )
+    } else {
+        terrain_source_fingerprint(
+            &dem_selection.urls,
+            &dem_paths,
+            &dem_selection.missing_cells,
+        )?
+    };
+    let version_label = fast_product_version_label(&source_fingerprint);
+    let inputs = shaded_relief_product_inputs(region, &source_fingerprint)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, &format!("static-shaded-relief-{region_id}"))?,
+        &format!("static-shaded-relief-{region_id}"),
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let zip_path = output_dir.join(format!("shaded_relief_{region_id}_{version_label}.zip"));
+    let manifest_path = output_dir.join("manifest.json");
+    let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path])? {
+        NodeCacheState::CacheHit(record) => {
+            return Ok((zip_path, version_label, source_fetched_at_utc, record));
+        }
+        NodeCacheState::Build(lock) => lock,
+    };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir)
+            .with_context(|| format!("failed to clear {}", output_dir.display()))?;
+    }
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    let vrt_path = output_dir.join(format!("shaded_relief_{region_id}.vrt"));
+    build_terrain_vrt(&vrt_path, &dem_paths)?;
+    build_shaded_relief_region_tiles(
+        region,
+        &vrt_path,
+        &output_dir,
+        &version_label,
+        &dem_selection,
+    )?;
+    zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
+    let outputs = BTreeMap::from([
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&output_dir.join("manifest.json"), &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&zip_path, &config.build_root),
+        ),
+    ]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((zip_path, version_label, source_fetched_at_utc, record))
+}
+
+fn shaded_relief_product_inputs(
+    region: Region,
+    source_fingerprint: &str,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    let region_id = region.code().to_ascii_lowercase();
+    Ok(BTreeMap::from([
+        (
+            "product_id".to_string(),
+            format!("shaded-relief-{region_id}"),
+        ),
+        ("region".to_string(), region.code().to_string()),
+        ("zoom".to_string(), TERRAIN_ZOOM.to_string()),
+        ("tile_size".to_string(), TERRAIN_TILE_SIZE.to_string()),
+        (
+            "source_fingerprint".to_string(),
+            source_fingerprint.to_string(),
+        ),
+        (
+            "shaded_relief_pipeline".to_string(),
+            SHADED_RELIEF_PIPELINE_VERSION.to_string(),
+        ),
     ]))
 }
 
@@ -5289,6 +5572,45 @@ fn cached_terrain_dem_source(
     }))
 }
 
+fn cached_terrain_dem_sources_for_urls(
+    fetch_cache: &FetchCacheConfig,
+    urls: &[String],
+) -> anyhow::Result<Option<Vec<CachedTerrainDemSource>>> {
+    let layout = CacheLayout::new(&fetch_cache.root);
+    let mut sources = Vec::new();
+    for url in urls {
+        let metadata_path = layout.http_metadata_path(url);
+        if !metadata_path.is_file() {
+            return Ok(None);
+        }
+        let value: serde_json::Value = serde_json::from_slice(
+            &fs::read(&metadata_path)
+                .with_context(|| format!("failed to read {}", metadata_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+        let Some(sha256) = value.get("sha256").and_then(|value| value.as_str()) else {
+            return Ok(None);
+        };
+        if !layout.blob_path(sha256).is_file() {
+            return Ok(None);
+        }
+        sources.push(CachedTerrainDemSource {
+            filename: terrain_dem_filename_from_url(url)?,
+            sha256: sha256.to_string(),
+        });
+    }
+    Ok(Some(sources))
+}
+
+fn terrain_dem_filename_from_url(url: &str) -> anyhow::Result<String> {
+    url.split("#logical_name=")
+        .nth(1)
+        .or_else(|| url.rsplit('/').next())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .context("terrain DEM URL has no filename")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TerrainDemCandidate {
     url: String,
@@ -5606,6 +5928,51 @@ fn build_terrain_region_tiles(
     Ok(())
 }
 
+fn build_shaded_relief_region_tiles(
+    region: Region,
+    vrt_path: &Path,
+    output_dir: &Path,
+    version_label: &str,
+    dem_selection: &TerrainDemSelection,
+) -> anyhow::Result<()> {
+    let script_path = output_dir.join("build_shaded_relief_tiles.py");
+    fs::write(&script_path, SHADED_RELIEF_TILE_SCRIPT)
+        .with_context(|| format!("failed to write {}", script_path.display()))?;
+    let bounds = region.bounds();
+    let output = Command::new("python3")
+        .arg(&script_path)
+        .arg("--vrt")
+        .arg(vrt_path)
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--region")
+        .arg(region.code())
+        .arg(format!(
+            "--bbox={},{},{},{}",
+            bounds.lon_min, bounds.lat_min, bounds.lon_max, bounds.lat_max
+        ))
+        .arg("--zoom")
+        .arg(TERRAIN_ZOOM.to_string())
+        .arg("--tile-size")
+        .arg(TERRAIN_TILE_SIZE.to_string())
+        .arg("--version-label")
+        .arg(version_label)
+        .arg("--source-count")
+        .arg(dem_selection.urls.len().to_string())
+        .arg("--missing-cells")
+        .arg(dem_selection.missing_cells.join(","))
+        .output()
+        .with_context(|| format!("failed to run {}", script_path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "shaded relief tile builder failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
 fn zip_directory_deterministic(
     zip_path: &Path,
     root: &Path,
@@ -5620,7 +5987,7 @@ fn zip_directory_deterministic(
         .with_context(|| format!("failed to create {}", zip_path.display()))?;
     let mut writer = ZipWriter::new(file);
     for (name, path) in files {
-        let compression = if name.ends_with(".terrain") {
+        let compression = if name.ends_with(".terrain") || name.ends_with(".png") {
             CompressionMethod::Stored
         } else {
             CompressionMethod::Deflated
@@ -5802,6 +6169,167 @@ def main():
         'source_dem_count': args.source_count,
         'missing_dem_cells': [cell for cell in args.missing_cells.split(',') if cell],
         'nodata': -32768,
+        'tile_count': count,
+        'files': {'tiles': 'tiles'}
+    }
+    with open(root / 'manifest.json', 'w') as f:
+        json.dump(manifest, f, indent=2, sort_keys=True)
+
+if __name__ == '__main__':
+    main()
+"#;
+
+const SHADED_RELIEF_TILE_SCRIPT: &str = r#"
+import argparse, json, math
+from pathlib import Path
+import numpy as np
+from osgeo import gdal
+from PIL import Image
+
+RADIUS = 6378137.0
+ORIGIN_SHIFT = math.pi * RADIUS
+FEET_PER_METER = 3.280839895
+
+COLOR_STOPS = [
+    (0.0, (198, 221, 154)),
+    (1000.0, (164, 195, 117)),
+    (2000.0, (216, 204, 151)),
+    (3000.0, (197, 166, 112)),
+    (5000.0, (148, 111, 73)),
+    (9000.0, (92, 64, 42)),
+]
+
+def mercator(lon, lat):
+    lat = max(min(lat, 85.05112878), -85.05112878)
+    mx = lon * ORIGIN_SHIFT / 180.0
+    my = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) * RADIUS
+    return mx, my
+
+def tile_bounds(x, y, z, tile_size):
+    initial_resolution = (2.0 * math.pi * RADIUS) / tile_size
+    resolution = initial_resolution / (2 ** z)
+    minx = x * tile_size * resolution - ORIGIN_SHIFT
+    maxx = (x + 1) * tile_size * resolution - ORIGIN_SHIFT
+    miny = y * tile_size * resolution - ORIGIN_SHIFT
+    maxy = (y + 1) * tile_size * resolution - ORIGIN_SHIFT
+    return minx, miny, maxx, maxy
+
+def tile_range(west, south, east, north, z, tile_size):
+    resolution = ((2.0 * math.pi * RADIUS) / tile_size) / (2 ** z)
+    west_m, south_m = mercator(west, south)
+    east_m, north_m = mercator(east, north)
+    x0 = math.floor((west_m + ORIGIN_SHIFT) / resolution / tile_size)
+    x1 = math.floor((east_m + ORIGIN_SHIFT) / resolution / tile_size)
+    y0 = math.floor((south_m + ORIGIN_SHIFT) / resolution / tile_size)
+    y1 = math.floor((north_m + ORIGIN_SHIFT) / resolution / tile_size)
+    return range(x0, x1 + 1), range(y0, y1 + 1)
+
+def colorize(elev_ft, invalid):
+    rgb = np.zeros((*elev_ft.shape, 3), dtype=np.float64)
+    for threshold, color in COLOR_STOPS:
+        mask = elev_ft >= threshold
+        rgb[mask, :] = color
+    below = elev_ft < 0.0
+    rgb[below, :] = COLOR_STOPS[0][1]
+    rgb[invalid, :] = 0
+    return rgb
+
+def hillshade(elev_m, invalid, pixel_size_m):
+    filled = elev_m.astype(np.float64).copy()
+    if np.any(invalid):
+        valid_values = filled[~invalid]
+        fill_value = float(np.nanmean(valid_values)) if valid_values.size else 0.0
+        filled[invalid] = fill_value
+    dy, dx = np.gradient(filled, pixel_size_m, pixel_size_m)
+    nx = -dx
+    ny = -dy
+    nz = np.ones_like(filled)
+    norm = np.sqrt(nx * nx + ny * ny + nz * nz)
+    nx /= norm
+    ny /= norm
+    nz /= norm
+    azimuth = math.radians(315.0)
+    altitude = math.radians(45.0)
+    sx = math.sin(azimuth) * math.cos(altitude)
+    sy = math.cos(azimuth) * math.cos(altitude)
+    sz = math.sin(altitude)
+    shade = np.clip(nx * sx + ny * sy + nz * sz, 0.0, 1.0)
+    return 0.62 + 0.46 * shade
+
+def write_png(path, rgba):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(rgba, mode='RGBA').save(path, optimize=False)
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--vrt', required=True)
+    ap.add_argument('--output-dir', required=True)
+    ap.add_argument('--region', required=True)
+    ap.add_argument('--bbox', required=True)
+    ap.add_argument('--zoom', required=True, type=int)
+    ap.add_argument('--tile-size', required=True, type=int)
+    ap.add_argument('--version-label', required=True)
+    ap.add_argument('--source-count', required=True, type=int)
+    ap.add_argument('--missing-cells', default='')
+    args = ap.parse_args()
+    west, south, east, north = [float(x) for x in args.bbox.split(',')]
+    root = Path(args.output_dir)
+    tiles_root = root / 'tiles'
+    ds = gdal.Open(args.vrt)
+    if ds is None:
+        raise SystemExit(f'failed to open {args.vrt}')
+    x_range, y_range = tile_range(west, south, east, north, args.zoom, args.tile_size)
+    resolution = ((2.0 * math.pi * RADIUS) / args.tile_size) / (2 ** args.zoom)
+    count = 0
+    for x in x_range:
+        for y in y_range:
+            minx, miny, maxx, maxy = tile_bounds(x, y, args.zoom, args.tile_size)
+            margin = resolution
+            warped = gdal.Warp(
+                '', ds, format='MEM', dstSRS='EPSG:3857',
+                outputBounds=[minx - margin, miny - margin, maxx + margin, maxy + margin],
+                width=args.tile_size + 2, height=args.tile_size + 2,
+                resampleAlg='bilinear', dstNodata=-999999.0,
+            )
+            arr = warped.ReadAsArray().astype(np.float64)
+            invalid = (arr <= -999998.0) | np.isnan(arr)
+            elev_ft = arr * FEET_PER_METER
+            rgb = colorize(elev_ft, invalid)
+            shade = hillshade(arr, invalid, resolution)
+            lit = np.clip(rgb * shade[:, :, None], 0, 255).astype(np.uint8)
+            alpha = np.where(invalid, 0, 255).astype(np.uint8)
+            rgba = np.dstack([lit, alpha])[1:-1, 1:-1, :]
+            write_png(tiles_root / str(args.zoom) / str(x) / f'{y}.png', rgba)
+            count += 1
+    manifest = {
+        'schema_version': 1,
+        'product': 'shaded-relief',
+        'region': args.region,
+        'version_label': args.version_label,
+        'zoom': args.zoom,
+        'tile_size': args.tile_size,
+        'tile_format': 'png_rgba',
+        'tile_content_encoding': 'identity',
+        'zip_member_compression': 'stored_png',
+        'source_dem': 'USGS 3DEP 1 arc-second DEM',
+        'source_dem_vertical_datum': 'source tile metadata; generally NAVD88 in CONUS',
+        'color_table': [
+            {'min_feet': 0, 'rgb': COLOR_STOPS[0][1], 'label': 'light green'},
+            {'min_feet': 1000, 'rgb': COLOR_STOPS[1][1], 'label': 'darker green'},
+            {'min_feet': 2000, 'rgb': COLOR_STOPS[2][1], 'label': 'beige'},
+            {'min_feet': 3000, 'rgb': COLOR_STOPS[3][1], 'label': 'tan'},
+            {'min_feet': 5000, 'rgb': COLOR_STOPS[4][1], 'label': 'mid brown'},
+            {'min_feet': 9000, 'rgb': COLOR_STOPS[5][1], 'label': 'dark brown'},
+        ],
+        'hillshade': {
+            'azimuth_degrees': 315,
+            'altitude_degrees': 45,
+            'note': 'first-cut DEM hillshade multiplied over elevation color buckets'
+        },
+        'water_glacier_mask': 'not applied in first cut',
+        'source_dem_count': args.source_count,
+        'missing_dem_cells': [cell for cell in args.missing_cells.split(',') if cell],
+        'nodata': 'transparent alpha',
         'tile_count': count,
         'files': {'tiles': 'tiles'}
     }

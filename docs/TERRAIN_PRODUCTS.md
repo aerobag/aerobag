@@ -4,7 +4,7 @@ Aerobag terrain products are derived from USGS 3DEP DEM source tiles. The same
 DEM inputs should produce both:
 
 - `terrain`: numeric terrain height tiles.
-- `shaded_relief`: visual hillshade/relief tiles.
+- `shaded-relief`: visual hillshade/relief tiles.
 
 ## Public Numeric Contract
 
@@ -77,6 +77,31 @@ terrain-sw
 
 The packaged artifact is content-addressed, so unchanged source DEM coverage and
 unchanged product code should keep the same published filename.
+
+The shaded-relief visual product is published the same way, with ids shaped as:
+
+```text
+shaded-relief-ak
+shaded-relief-nw
+shaded-relief-sw
+...
+```
+
+Its first-cut package layout is:
+
+```text
+shaded-relief-<region>_<sha256>.zip
+  manifest.json
+  tiles/10/<x>/<y>.png
+```
+
+The first-cut shaded-relief renderer derives directly from the same USGS 3DEP
+DEM inputs as numeric terrain. It does not derive from the published `.terrain`
+tiles, because visual hillshade needs neighboring DEM samples at tile edges and
+should not be coupled to a client lookup format. The current renderer applies
+coarse sectional-style elevation color buckets and multiplies in a simple
+northwest hillshade. Nodata is transparent. Water and glacier masks are not
+included yet.
 
 Terrain refresh state lives in `current_artifacts`, not inside the terrain ZIP.
 That keeps product identity stable: if a later poll checks TNMAccess/DEM inputs

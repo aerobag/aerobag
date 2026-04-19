@@ -261,6 +261,30 @@ function mountTerrainProducts() {
   };
 }
 
+function mountShadedReliefProducts() {
+  return (req: { headers?: Record<string, string | string[] | undefined>; url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
+    const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
+    const parts = requestPath.replace(/^\/+/, "").split("/");
+    const productId = parts.shift();
+    if (!productId || parts.length === 0) {
+      next();
+      return;
+    }
+    if (!productId.startsWith("shaded-relief-")) {
+      res.statusCode = 404;
+      res.end("shaded relief product unavailable");
+      return;
+    }
+    const productRoot = resolveCurrentStaticProductRoot(productId);
+    if (!productRoot) {
+      res.statusCode = 404;
+      res.end("shaded relief product unavailable");
+      return;
+    }
+    return mountStaticTree(productRoot)({ headers: req.headers, url: `/${parts.join("/")}` }, res, next);
+  };
+}
+
 function ensureLinkedFile(sourcePath: string, targetPath: string) {
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   fs.rmSync(targetPath, { force: true, recursive: true });
@@ -350,6 +374,7 @@ function aerobagStaticPlugin(): Plugin {
       server.middlewares.use("/vectors", mountStaticTree(vectorRoot));
       server.middlewares.use("/fast-products", mountFastProducts());
       server.middlewares.use("/terrain-products", mountTerrainProducts());
+      server.middlewares.use("/shaded-relief-products", mountShadedReliefProducts());
       server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot));
     },
     writeBundle(outputOptions) {

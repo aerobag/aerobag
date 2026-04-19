@@ -17,6 +17,7 @@ import type {
   PlaybackUiState,
   MapFollowUiState,
   OwnshipRenderState,
+  PlateGeoref,
   ProcedureOptions,
   ProcedureLoadOption,
   ProcedureSummary,
@@ -4012,6 +4013,10 @@ function ChartsPage(props: {
       effectiveViewport.zoom,
     );
   }, [selectedImageSize, surfaceSize.height, surfaceSize.width, effectiveViewport]);
+  const plateOwnshipOverlay = useMemo(
+    () => resolvePlateOwnshipOverlay(ownship, selectedChart?.georef ?? null, selectedImageSize, effectiveViewport, displaySize),
+    [displaySize, effectiveViewport, ownship, selectedChart?.georef, selectedImageSize],
+  );
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -4377,31 +4382,40 @@ function ChartsPage(props: {
             ))}
           </div>
         ) : selectedChart ? (
-          <img
-            key={selectedChart.id}
-            ref={imageRef}
-            className="chartImage"
-            src={selectedChart.asset_url}
-            alt={selectedChart.label}
-            draggable={false}
-            onLoad={(event) =>
-              {
-                setImageSize({
-                  chartId: selectedChart.id,
-                  width: event.currentTarget.naturalWidth,
-                  height: event.currentTarget.naturalHeight,
-                });
-                reportFirstVisualReady();
+          <>
+            <img
+              key={selectedChart.id}
+              ref={imageRef}
+              className="chartImage"
+              src={selectedChart.asset_url}
+              alt={selectedChart.label}
+              draggable={false}
+              onLoad={(event) =>
+                {
+                  setImageSize({
+                    chartId: selectedChart.id,
+                    width: event.currentTarget.naturalWidth,
+                    height: event.currentTarget.naturalHeight,
+                  });
+                  reportFirstVisualReady();
+                }
               }
-            }
-            style={{
-              left: `${selectedImageSize && effectiveViewport ? effectiveViewport.left : 0}px`,
-              top: `${selectedImageSize && effectiveViewport ? effectiveViewport.top : 0}px`,
-              width: displaySize ? `${displaySize.width}px` : undefined,
-              height: displaySize ? `${displaySize.height}px` : undefined,
-              visibility: selectedImageSize && effectiveViewport ? "visible" : "hidden",
-            }}
-          />
+              style={{
+                left: `${selectedImageSize && effectiveViewport ? effectiveViewport.left : 0}px`,
+                top: `${selectedImageSize && effectiveViewport ? effectiveViewport.top : 0}px`,
+                width: displaySize ? `${displaySize.width}px` : undefined,
+                height: displaySize ? `${displaySize.height}px` : undefined,
+                visibility: selectedImageSize && effectiveViewport ? "visible" : "hidden",
+              }}
+            />
+            {plateOwnshipOverlay ? (
+              <SituationAircraft
+                iconSrc={planViewIcon}
+                point={plateOwnshipOverlay.point}
+                headingDeg={plateOwnshipOverlay.headingDeg}
+              />
+            ) : null}
+          </>
         ) : null}
 
         <div className="chartDock chartDockDouble">
@@ -4818,6 +4832,55 @@ function resolveSituationOverlay(
       : null;
   const predictor = ahead ? latLonToScreen(ahead.lat, ahead.lon, viewport, width, height) : null;
   return { point, predictor, headingDeg, ring };
+}
+
+function resolvePlateOwnshipOverlay(
+  ownship: OwnshipRenderState,
+  georef: PlateGeoref | null,
+  imageSize: { chartId: string; width: number; height: number } | null,
+  viewport: ImageViewportState | null,
+  displaySize: { width: number; height: number } | null,
+) {
+  if (!ownship.draw_aircraft || !ownship.position || !georef || !imageSize || !viewport || !displaySize) {
+    return null;
+  }
+  const imagePoint = plateImagePoint(ownship.position, georef);
+  if (!imagePoint) {
+    return null;
+  }
+  if (imagePoint.x < 0 || imagePoint.x > imageSize.width || imagePoint.y < 0 || imagePoint.y > imageSize.height) {
+    return null;
+  }
+  const scaleX = displaySize.width / imageSize.width;
+  const scaleY = displaySize.height / imageSize.height;
+  return {
+    point: {
+      x: viewport.left + imagePoint.x * scaleX,
+      y: viewport.top + imagePoint.y * scaleY,
+    },
+    headingDeg: ownship.orientation_deg ?? 0,
+  };
+}
+
+function plateImagePoint(position: LatLon, georef: PlateGeoref) {
+  switch (georef.kind) {
+    case "plate_transform_v1":
+      return {
+        x: (position.lon - georef.top_left_lon) * georef.pixels_per_longitude,
+        y: (position.lat - georef.top_left_lat) * georef.pixels_per_latitude,
+      };
+    case "airport_diagram_transform_v1":
+      return {
+        x:
+          position.lon * georef.pixel_x_from_lon +
+          position.lat * georef.pixel_x_from_lat +
+          georef.pixel_x_offset,
+        y:
+          position.lon * georef.pixel_y_from_lon +
+          position.lat * georef.pixel_y_from_lat +
+          georef.pixel_y_offset,
+      };
+  }
 }
 
 function latLonToScreen(lat: number, lon: number, viewport: MapViewportState, width: number, height: number) {

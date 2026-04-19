@@ -38,6 +38,8 @@ pub struct DerivedChartAsset {
     pub thumbnail_source_path: Option<String>,
     pub thumbnail_path: Option<String>,
     pub thumbnail_url: Option<String>,
+    #[serde(default)]
+    pub georef: Option<PlateGeoref>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -65,6 +67,27 @@ pub struct ResourcePlate {
     pub thumbnail_path: Option<String>,
     pub label: String,
     pub asset_kind: String,
+    #[serde(default)]
+    pub georef: Option<PlateGeoref>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlateGeoref {
+    PlateTransformV1 {
+        pixels_per_longitude: f64,
+        pixels_per_latitude: f64,
+        top_left_lon: f64,
+        top_left_lat: f64,
+    },
+    AirportDiagramTransformV1 {
+        pixel_x_from_lon: f64,
+        pixel_x_from_lat: f64,
+        pixel_x_offset: f64,
+        pixel_y_from_lon: f64,
+        pixel_y_from_lat: f64,
+        pixel_y_offset: f64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -309,6 +332,7 @@ fn chart_asset_for_plate(airport_id: &str, plate: &ResourcePlate) -> DerivedChar
         thumbnail_source_path: plate.thumbnail_path.clone(),
         thumbnail_path: plate.thumbnail_path.clone(),
         thumbnail_url: plate.thumbnail_path.as_ref().map(|path| format!("/{path}")),
+        georef: plate.georef.clone(),
     }
 }
 
@@ -331,6 +355,7 @@ fn chart_asset_for_csup(airport_id: &str, csup: &ResourceCsup) -> DerivedChartAs
         thumbnail_source_path: csup.thumbnail_path.clone(),
         thumbnail_path: csup.thumbnail_path.clone(),
         thumbnail_url: csup.thumbnail_path.as_ref().map(|path| format!("/{path}")),
+        georef: None,
     }
 }
 
@@ -414,6 +439,7 @@ mod tests {
                 thumbnail_path: Some("thumbs/SEA/APD-WA-AIRPORT DIAGRAM.png".to_string()),
                 label: "Airport Diagram".to_string(),
                 asset_kind: "plate".to_string(),
+                georef: None,
             }],
             csups: vec![ResourceCsup {
                 id: "c1".to_string(),
@@ -484,6 +510,7 @@ mod tests {
                     thumbnail_path: None,
                     label: "Airport Diagram".to_string(),
                     asset_kind: "plate".to_string(),
+                    georef: None,
                 },
                 ResourcePlate {
                     id: "p2".to_string(),
@@ -493,6 +520,7 @@ mod tests {
                     thumbnail_path: None,
                     label: "RNDR TWO".to_string(),
                     asset_kind: "plate".to_string(),
+                    georef: None,
                 },
             ],
             csups: vec![],
@@ -563,6 +591,7 @@ mod tests {
                     thumbnail_path: None,
                     label: "RNAV RWY 16R".to_string(),
                     asset_kind: "plate".to_string(),
+                    georef: None,
                 },
                 ResourcePlate {
                     id: "p2".to_string(),
@@ -572,6 +601,7 @@ mod tests {
                     thumbnail_path: None,
                     label: "RNAV RWY 28R".to_string(),
                     asset_kind: "plate".to_string(),
+                    georef: None,
                 },
                 ResourcePlate {
                     id: "p3".to_string(),
@@ -581,6 +611,7 @@ mod tests {
                     thumbnail_path: None,
                     label: "RNAV RWY 35".to_string(),
                     asset_kind: "plate".to_string(),
+                    georef: None,
                 },
             ],
             csups: vec![],
@@ -654,6 +685,7 @@ mod tests {
                     thumbnail_path: None,
                     label: "Hot Spot".to_string(),
                     asset_kind: "plate".to_string(),
+                    georef: None,
                 },
                 ResourcePlate {
                     id: "min".to_string(),
@@ -663,6 +695,7 @@ mod tests {
                     thumbnail_path: None,
                     label: "Takeoff Minimums".to_string(),
                     asset_kind: "plate".to_string(),
+                    georef: None,
                 },
                 ResourcePlate {
                     id: "apd".to_string(),
@@ -672,6 +705,7 @@ mod tests {
                     thumbnail_path: None,
                     label: "Airport Diagram".to_string(),
                     asset_kind: "plate".to_string(),
+                    georef: None,
                 },
                 ResourcePlate {
                     id: "star".to_string(),
@@ -681,6 +715,7 @@ mod tests {
                     thumbnail_path: None,
                     label: "BUXOM Arrival".to_string(),
                     asset_kind: "plate".to_string(),
+                    georef: None,
                 },
                 ResourcePlate {
                     id: "dp".to_string(),
@@ -690,6 +725,7 @@ mod tests {
                     thumbnail_path: None,
                     label: "WESLA TWO".to_string(),
                     asset_kind: "plate".to_string(),
+                    georef: None,
                 },
                 ResourcePlate {
                     id: "iap".to_string(),
@@ -699,6 +735,7 @@ mod tests {
                     thumbnail_path: None,
                     label: "RNAV (GPS) RWY 35".to_string(),
                     asset_kind: "plate".to_string(),
+                    georef: None,
                 },
             ],
             csups: vec![ResourceCsup {

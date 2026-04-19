@@ -47,6 +47,24 @@ export type LatLon = {
   lon: number;
 };
 
+export type PlateGeoref =
+  | {
+      kind: "plate_transform_v1";
+      pixels_per_longitude: number;
+      pixels_per_latitude: number;
+      top_left_lon: number;
+      top_left_lat: number;
+    }
+  | {
+      kind: "airport_diagram_transform_v1";
+      pixel_x_from_lon: number;
+      pixel_x_from_lat: number;
+      pixel_x_offset: number;
+      pixel_y_from_lon: number;
+      pixel_y_from_lat: number;
+      pixel_y_offset: number;
+    };
+
 export type PlanLeg = {
   from: NavRef;
   to: NavRef;
@@ -770,6 +788,7 @@ export type ChartPageData = {
       thumbnail_source_path: string | null;
       thumbnail_path: string | null;
       thumbnail_url: string | null;
+      georef: PlateGeoref | null;
     }>;
   }>;
 };
@@ -844,6 +863,7 @@ export type ResourceIndexJson = {
     label: string;
     asset_kind: string;
     document_type: string;
+    georef?: PlateGeoref | null;
   }>;
   csups: Array<{
     id: string;

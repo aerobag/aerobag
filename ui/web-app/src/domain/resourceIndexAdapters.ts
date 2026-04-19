@@ -168,6 +168,7 @@ function chartAssetForRecord(
     thumbnail_source_path: record.thumbnail_path ?? null,
     thumbnail_path: record.thumbnail_path ?? null,
     thumbnail_url: record.thumbnail_path ? `/${record.thumbnail_path}` : null,
+    georef: "georef" in record ? record.georef ?? null : null,
   };
 }
 

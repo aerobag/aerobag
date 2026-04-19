@@ -436,31 +436,6 @@ function PlanWaypointSymbol(props: { feature: NavSymbolFeature | null }) {
   );
 }
 
-function demoOwnshipSourceRegistration() {
-  return {
-    source_id: "demo-gps",
-    source_kind: "device_gps" as const,
-    display_name: "Demo GPS",
-    selectable: true,
-    auto_eligible: true,
-  };
-}
-
-function demoSituationSample() {
-  return {
-    source_id: "demo-gps",
-    source_kind: "device_gps" as const,
-    event_time_epoch_ms: Date.now(),
-    received_time_epoch_ms: Date.now(),
-    position: VAMPS_POSITION,
-    track_deg_true: 135,
-    heading_deg_true: 135,
-    ground_speed_kt: 105,
-    altitude_msl_ft: null,
-    pressure_altitude_ft: null,
-  };
-}
-
 function emptyPlaybackUiState(): PlaybackUiState {
   return {
     status: "empty",
@@ -763,17 +738,6 @@ export default function App() {
       if (!cancelled) {
         setUiSession(created);
         setSessionSnapshot(createdSnapshot);
-      }
-      await created.registerOwnshipSource(demoOwnshipSourceRegistration());
-      await created.updateOwnshipSourceStatus({
-        source_id: "demo-gps",
-        connection_state: "connected",
-        enabled: true,
-        status_label: "Connected",
-      });
-      const snapshot = await created.pushSituationSample(demoSituationSample());
-      if (!cancelled) {
-        setSessionSnapshot(snapshot);
       }
     }).catch((error) => {
       console.error("failed to initialize web ui session", error);

@@ -110,47 +110,177 @@ value can be an array of candidate summaries with identifiers, names, types, and
 coordinates. Core can sort or filter those candidates according to current flight
 plan state.
 
-### Candidate File Shape
+### Wire Format
 
-A simple first artifact can be a single binary file:
-
-```text
-nav_kv_YYCC.akv
-```
-
-Logical layout:
+`nav_kv` v1 uses one root file plus fixed-size value pages:
 
 ```text
-magic: "AEROBAG_NAV_KV_1\n"
-index_length: little-endian u32
-index_json: UTF-8 JSON
-values_blob: concatenated value bytes
+nav_kv_YYCC.root
+nav_kv_YYCC.values_0000
+nav_kv_YYCC.values_0001
+...
 ```
 
-Index JSON:
+The root file contains everything needed for exact lookup and prefix range
+lookup. Value pages contain the concatenated value byte stream.
 
-```json
-{
-  "schema": "aerobag-nav-kv-v1",
-  "value_encoding": "json",
-  "entries": [
-    { "key": "chart/catalog", "offset": 0, "length": 12345 }
-  ]
-}
+Root file layout:
+
+```text
+header
+entries[real_entry_count + 1]
+key_bytes
 ```
 
-Offsets are relative to the start of `values_blob`.
+All integer fields are little-endian.
+
+Header:
+
+```text
+magic: 16 bytes
+version: u32
+real_entry_count: u32
+page_size: u32
+entry_table_offset: u32
+key_bytes_offset: u32
+key_bytes_len: u32
+value_bytes_len: u32
+reserved: u32
+```
+
+Entry:
+
+```text
+key_offset: u32
+value_offset: u32
+```
+
+`entries[real_entry_count]` is a sentinel, not a real key:
+
+```text
+sentinel.key_offset == key_bytes_len
+sentinel.value_offset == value_bytes_len
+```
+
+For real entry `i`:
+
+```text
+key_start = entries[i].key_offset
+key_end = entries[i + 1].key_offset
+value_start = entries[i].value_offset
+value_end = entries[i + 1].value_offset
+```
+
+Keys are byte strings in `key_bytes[key_start..key_end]` and are strictly sorted
+lexicographically. Values are byte strings in the logical concatenated value
+stream `values[value_start..value_end]`.
+
+Value pages are fixed-size chunks of that logical value stream:
+
+```text
+start_page = value_start / page_size
+end_page = (value_end - 1) / page_size
+```
+
+Values may cross page boundaries. The reader fetches and caches each required
+page, then reassembles the requested value bytes. Zero-length values are rejected
+in v1 so `value_end - 1` cannot underflow.
 
 This intentionally keeps the first version boring:
 
-- Fetch one blob.
-- Parse one compact index.
-- Binary-search or map keys in memory.
+- Fetch one compact root file.
+- Parse fixed-width header and entry table.
+- Binary-search keys by slicing `key_bytes`.
+- Fetch value pages on demand.
 - Decode and parse one value at a time.
 
-If index size becomes material, the next version can replace index JSON with
-sorted length-prefixed keys and fixed-width offsets without changing the core
-abstraction.
+The entry table is 8 bytes per real key plus one sentinel. Both offsets are
+`u32`; if a future artifact needs more than 4 GiB of key or value bytes, we will
+roll the format version instead of paying the v1 startup-size penalty.
+
+Required reader/builder tests:
+
+- reject malformed magic/version
+- reject duplicate keys
+- reject unsorted keys unless the builder explicitly sorts its input
+- reject zero-length values
+- reject key offsets outside `key_bytes`
+- reject value offsets beyond `value_bytes_len`
+- require the sentinel key offset to equal `key_bytes_len`
+- require the sentinel value offset to equal `value_bytes_len`
+- ensure lookup never returns the sentinel
+- compute the final real key length from the sentinel
+- compute the final real value length from the sentinel
+- exact lookup returns the correct value
+- missing lookup returns none
+- prefix lookup returns only the sorted matching real keys
+- value extraction works when a value crosses one or more page boundaries
+- repeated extraction reuses cached pages
+
+If root-file size becomes material, the next version can add sharding or a
+denser key index without changing the `key -> value bytes` abstraction.
+
+## Preprocessor Organization
+
+`nav_kv` is a collection of key/value tables contributed by multiple preprocessor
+phases. The final publication artifact should be assembled by one dedicated node,
+not hand-written independently by each producer.
+
+Each contributing phase should emit an intermediate KV contribution artifact:
+
+```text
+chart-products.nav_kv_contrib
+tpp.nav_kv_contrib
+csup.nav_kv_contrib
+data.nav_kv_contrib
+```
+
+The final `nav_kv` assembly node gathers all contribution artifacts, validates
+that keys are unique, sorts all keys into final lexicographic order, orders the
+value byte stream in that same key order, and writes the root file plus value
+pages.
+
+Ordering values by sorted key gives locality: adjacent keys usually touch nearby
+value pages. For example, a burst of `waypoint/id/...` or
+`procedure/airport/KRDD/...` lookups should tend to reuse cached pages.
+
+### Intermediate Contribution Format
+
+The intermediate format can be boring and build-time-friendly. It does not need
+to be optimized for runtime startup.
+
+Avoid a giant JSON object whose values are themselves escaped JSON strings. That
+creates unnecessary escaping, hard-to-read diffs, and avoidable producer bugs.
+
+A better first contribution format is newline-delimited JSON records:
+
+```json
+{"key":"chart/catalog","value":{"families":[],"regions":[],"charts":[]}}
+{"key":"waypoint/id/KRDD","value":{"kind":"airport","id":"KRDD"}}
+```
+
+The assembler parses each line, validates the `key`, and serializes `value` once
+to canonical compact JSON bytes for the runtime value stream. This keeps producer
+output inspectable without introducing JSON-string escaping hell.
+
+If contribution files become too large or slow, individual producers can switch
+to a binary contribution format later. The final runtime `nav_kv` wire format
+does not need to change.
+
+Contribution rules:
+
+- keys are UTF-8 and must not be empty
+- keys use `/`-separated namespaces
+- producers may emit records in any order
+- the assembler owns final sorting
+- duplicate keys across all contributions are fatal
+- values must be valid JSON in v1
+- values are serialized by the assembler into canonical compact JSON bytes
+- zero-length serialized values are rejected
+
+This keeps each preprocessor phase focused on the records it knows how to
+produce, while the final assembler owns the runtime layout and performance
+properties.
 
 ## `nav_tiles`
 
@@ -238,10 +368,22 @@ The UI renders returned state and sends user intents back to core.
 ```json
 {
   "nav_kv": {
-    "filename": "nav_kv_2604.akv",
-    "relative_path": "nav_kv_2604.akv",
-    "checksum_sha256": "...",
-    "size_bytes": 1234567
+    "root": {
+      "filename": "nav_kv_2604.root",
+      "relative_path": "nav_kv_2604.root",
+      "checksum_sha256": "...",
+      "size_bytes": 1234
+    },
+    "value_pages": [
+      {
+        "filename": "nav_kv_2604.values_0000",
+        "relative_path": "nav_kv_2604.values_0000",
+        "checksum_sha256": "...",
+        "size_bytes": 65536
+      }
+    ],
+    "page_size": 65536,
+    "value_bytes_len": 65536
   }
 }
 ```
@@ -249,14 +391,14 @@ The UI renders returned state and sends user intents back to core.
 `resource_index_YYCC.json` may remain published for diagnostics and broad
 inspection, but the web app should not parse it on startup.
 
-The unpacked publication view should expose the same `nav_kv_YYCC.akv` bytes as
-the packaged view unless and until we intentionally define an unpacked
-directory-based variant.
+The unpacked publication view should expose the same root and value-page files as
+the packaged view unless and until we intentionally define a directory-based
+variant.
 
 ## First Implementation Slice
 
 1. Add the redesign doc.
-2. Add a preproc writer for `nav_kv_YYCC.akv`.
+2. Add a preproc writer for `nav_kv_YYCC.root` and value pages.
 3. Populate the first key, `chart/catalog`, from existing chart collection
    metadata.
 4. Add `nav_kv` to `bundle_YYCC.json` and contract validation.

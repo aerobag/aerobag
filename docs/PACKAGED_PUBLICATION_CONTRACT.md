@@ -98,6 +98,8 @@ current_artifacts_YYYYMMDD.json
 bundle_YYCC.json
 ├── catalog_YYCC.json
 ├── resource_index_YYCC.json
+├── nav_kv_YYCC.root
+├── nav_kv_YYCC.values_NNNN
 ├── data_YYCC.zip
 ├── vectors_data_YYCC.zip
 └── packages[]
@@ -210,6 +212,26 @@ Per-cycle leaf metadata artifact for catalog-style browsing.
 ### `resource_index_YYCC.json`
 
 Per-cycle leaf metadata artifact for runtime lookup and asset indexing.
+
+
+### `nav_kv_YYCC.root` and `nav_kv_YYCC.values_NNNN`
+
+Per-cycle app-native key/value runtime index.
+
+The root file contains the fixed-width lookup table and key bytes. Value files
+contain fixed-size pages of the logical value byte stream. The bundle manifest's
+`nav_kv` entry lists the root file, all value pages in page-index order, the page
+size, and the logical value byte length.
+
+The initial required key is:
+
+```text
+chart/catalog
+```
+
+Its value is JSON for the app-ready raster chart catalog. Consumers should use
+this instead of parsing `resource_index_YYCC.json` to discover raster chart
+packages and tile metadata.
 
 
 ### `data_YYCC.zip`

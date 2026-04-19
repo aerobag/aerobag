@@ -24,6 +24,7 @@ const thumbnailRoot = path.join(staticRoot, "thumbnails");
 const navDbRoot = path.join(staticRoot, "nav-db");
 const vectorRoot = path.join(staticRoot, "vectors");
 const fastProductRoot = path.join(staticRoot, "fast-products");
+const navKvRoot = path.join(staticRoot, "nav-kv");
 const adsbTraceRoot = path.resolve(repoRoot, "..", "adsb-traces");
 const sharedRoot = path.join(repoRoot, "ui", "shared");
 const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
@@ -102,7 +103,7 @@ for (const [label, resolvedPath] of [
   }
 }
 
-function mountStaticTree(sourceRoot: string) {
+function mountStaticTree(sourceRoot: string, options: { missingStatus?: number } = {}) {
   return (req: { headers?: Record<string, string | string[] | undefined>; url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
     const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
     const relativePath = requestPath.replace(/^\/+/, "");
@@ -119,8 +120,8 @@ function mountStaticTree(sourceRoot: string) {
       return;
     }
     if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-      if (sourceRoot === vectorRoot) {
-        res.statusCode = 404;
+      if (sourceRoot === vectorRoot || options.missingStatus) {
+        res.statusCode = options.missingStatus ?? 404;
         res.end("not found");
         return;
       }
@@ -345,6 +346,7 @@ function aerobagStaticPlugin(): Plugin {
       server.middlewares.use("/afd", mountStaticTree(csupRoot));
       server.middlewares.use("/thumbnails", mountStaticTree(thumbnailRoot));
       server.middlewares.use("/nav-db", mountStaticTree(navDbRoot));
+      server.middlewares.use("/nav-kv", mountStaticTree(navKvRoot, { missingStatus: 404 }));
       server.middlewares.use("/vectors", mountStaticTree(vectorRoot));
       server.middlewares.use("/fast-products", mountFastProducts());
       server.middlewares.use("/terrain-products", mountTerrainProducts());
@@ -361,6 +363,7 @@ function aerobagStaticPlugin(): Plugin {
         [csupRoot, "afd"],
         [thumbnailRoot, "thumbnails"],
         [navDbRoot, "nav-db"],
+        [navKvRoot, "nav-kv"],
         [vectorRoot, "vectors"],
         [fastProductRoot, "fast-products"],
         [adsbTraceRoot, "adsb-traces"],

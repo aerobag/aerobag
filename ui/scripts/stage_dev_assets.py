@@ -141,6 +141,7 @@ def resolve_product_build_relative_path(node_name: str, output_name: str) -> str
 RESOURCE_INDEX_PATH = resolve_product_build_output("resource_index", "resource_index")
 VECTOR_ZIP_RELATIVE_PATH = resolve_product_build_relative_path("vectors", "zip")
 DATA_ZIP_RELATIVE_PATH = resolve_product_build_relative_path("data", "zip")
+NAV_KV = PRODUCT_BUILD.get("nav_kv") if isinstance(PRODUCT_BUILD.get("nav_kv"), dict) else None
 
 
 def reset_dir(path: Path) -> None:
@@ -311,6 +312,30 @@ def stage_fast_products() -> None:
         ensure_symlink(product_root, target / product_id)
 
 
+def stage_nav_kv() -> None:
+    target = WEB_STATIC_ROOT / "nav-kv"
+    reset_dir(target)
+    if not NAV_KV:
+        return
+    root = NAV_KV.get("root")
+    pages = NAV_KV.get("value_pages")
+    if not isinstance(root, dict) or not isinstance(pages, list):
+        raise RuntimeError("bundle nav_kv must contain root and value_pages")
+    root_filename = root.get("filename")
+    if not isinstance(root_filename, str) or not root_filename:
+        raise RuntimeError("bundle nav_kv root missing filename")
+    ensure_hard_link(UNPACKED_ROOT / root_filename, target / "root")
+    values_root = target / "values"
+    values_root.mkdir(parents=True, exist_ok=True)
+    for index, page in enumerate(pages):
+        if not isinstance(page, dict):
+            raise RuntimeError("bundle nav_kv value page must be an object")
+        page_filename = page.get("filename")
+        if not isinstance(page_filename, str) or not page_filename:
+            raise RuntimeError("bundle nav_kv value page missing filename")
+        ensure_hard_link(UNPACKED_ROOT / page_filename, values_root / f"{index:04}")
+
+
 def current_stage_stamp() -> dict:
     def file_stamp(path: Path) -> dict:
         stat = path.stat()
@@ -335,7 +360,8 @@ def current_stage_stamp() -> dict:
             for product in CURRENT_ARTIFACTS.get("fast_products", [])
             if isinstance(product, dict)
         ],
-        "version": 3,
+        "nav_kv": NAV_KV,
+        "version": 4,
     }
 
 
@@ -362,6 +388,7 @@ def main() -> None:
     stage_vectors()
     stage_nav_db()
     stage_fast_products()
+    stage_nav_kv()
     write_stage_stamp()
 
 

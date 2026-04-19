@@ -17,6 +17,7 @@ use crossbeam_channel::{self, RecvTimeoutError};
 use preprocessor_charts::{
     build_family_tiles, build_family_vrts, package_family_region_versioned, stage_work_dir,
 };
+use preprocessor_core::nav_kv::{build_nav_kv_sorted, NavKvPair};
 use preprocessor_core::{ChartFamily, Region};
 use preprocessor_csup::{
     package_csup_region_versioned, prepare_csup_inputs, render_csup_region,
@@ -205,6 +206,8 @@ struct BundleManifest {
     end_valid: String,
     catalog: BundleArtifact,
     resource_index: BundleArtifact,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nav_kv: Option<BundleNavKvArtifact>,
     data: BundleArtifact,
     vectors: BundleArtifact,
     packages: Vec<BundlePackageArtifact>,
@@ -268,6 +271,14 @@ struct BundleArtifact {
     relative_path: String,
     checksum_sha256: String,
     size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BundleNavKvArtifact {
+    root: BundleArtifact,
+    value_pages: Vec<BundleArtifact>,
+    page_size: u32,
+    value_bytes_len: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3716,6 +3727,7 @@ fn build_bundle_manifest(
             .join(format!("resource_index_{cycle}.json")),
         &public_resource_index,
     )?;
+    let nav_kv = write_nav_kv_artifact(config, &public_resource_index, &cycle)?;
 
     Ok(BundleManifest {
         schema_version: 1,
@@ -3728,10 +3740,149 @@ fn build_bundle_manifest(
             &published_resource_index_path,
             &format!("resource_index_{cycle}.json"),
         )?,
+        nav_kv: Some(nav_kv),
         data: publish_bundle_artifact(config, &data_zip_path, &data_filename)?,
         vectors: publish_bundle_artifact(config, &vectors_zip_path, &vectors_filename)?,
         packages: package_artifacts,
     })
+}
+
+fn write_nav_kv_artifact(
+    config: &ProductBuildConfig,
+    resource_index: &ResourceIndex,
+    cycle: &str,
+) -> anyhow::Result<BundleNavKvArtifact> {
+    let chart_catalog = build_nav_kv_chart_catalog(resource_index);
+    let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
+        .context("failed to encode nav_kv chart/catalog value")?;
+    let built = build_nav_kv_sorted(
+        vec![NavKvPair {
+            key: "chart/catalog".to_string(),
+            value: chart_catalog_bytes,
+        }],
+        64 * 1024,
+    )
+    .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
+
+    let root_filename = format!("nav_kv_{cycle}.root");
+    let root_path = config.build_root.join(&root_filename);
+    fs::write(&root_path, &built.root_bytes)
+        .with_context(|| format!("failed to write {}", root_path.display()))?;
+    let root = bundle_artifact(&root_path, &root_filename)?;
+
+    let mut value_pages = Vec::new();
+    for (index, page) in built.value_pages.iter().enumerate() {
+        let page_filename = format!("nav_kv_{cycle}.values_{index:04}");
+        let page_path = config.build_root.join(&page_filename);
+        fs::write(&page_path, page)
+            .with_context(|| format!("failed to write {}", page_path.display()))?;
+        value_pages.push(bundle_artifact(&page_path, &page_filename)?);
+    }
+
+    Ok(BundleNavKvArtifact {
+        root,
+        value_pages,
+        page_size: built.page_size,
+        value_bytes_len: built.value_bytes_len,
+    })
+}
+
+fn build_nav_kv_chart_catalog(resource_index: &ResourceIndex) -> serde_json::Value {
+    let collections = resource_index
+        .chart_collections
+        .iter()
+        .filter(|collection| {
+            matches!(
+                collection.family_id.as_str(),
+                "sec" | "tac" | "enr-l" | "enr-h"
+            )
+        })
+        .map(|collection| {
+            let levels = collection
+                .levels
+                .iter()
+                .map(|level| {
+                    serde_json::json!({
+                        "zoom": level.zoom,
+                        "x_min": level.x_min,
+                        "x_max": level.x_max,
+                        "y_tms_min": level.y_tms_min,
+                        "y_tms_max": level.y_tms_max,
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "id": collection.id,
+                "label": format!(
+                    "{} {}",
+                    region_display_name(resource_index, &collection.region_id),
+                    family_display_name(resource_index, &collection.family_id),
+                ),
+                "region_id": collection.region_id,
+                "map_view": {
+                    "chart_family": collection.family_id,
+                    "chart_name": format!(
+                        "{} {}",
+                        region_display_name(resource_index, &collection.region_id),
+                        family_display_name(resource_index, &collection.family_id),
+                    ),
+                    "chart_index": collection.chart_index,
+                    "tile_root": "tiles",
+                    "tile_url_root": format!("/sectional-packages/{}/tiles", collection.package_id),
+                    "tile_size": 512,
+                    "min_zoom": min_zoom_for_levels(collection),
+                    "max_zoom": max_zoom_for_levels(collection),
+                    "storage_kind": "sectional_package",
+                    "package_name": collection.package_id,
+                    "initial_viewport": {
+                        "lat": collection.default_view.lat,
+                        "lon": collection.default_view.lon,
+                        "zoom": collection.default_view.zoom,
+                    },
+                    "levels": levels,
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::Value::Array(collections)
+}
+
+fn family_display_name(resource_index: &ResourceIndex, family_id: &str) -> String {
+    resource_index
+        .families
+        .iter()
+        .find(|family| family.id == family_id)
+        .map(|family| family.display_name.clone())
+        .unwrap_or_else(|| family_id.to_string())
+}
+
+fn region_display_name(resource_index: &ResourceIndex, region_id: &str) -> String {
+    resource_index
+        .regions
+        .iter()
+        .find(|region| region.id == region_id)
+        .map(|region| region.display_name.clone())
+        .unwrap_or_else(|| region_id.to_ascii_uppercase())
+}
+
+fn min_zoom_for_levels(collection: &preprocessor_resource_index::ChartCollectionRecord) -> f64 {
+    let min_level = collection
+        .levels
+        .iter()
+        .map(|level| level.zoom)
+        .min()
+        .unwrap_or(0);
+    (min_level as f64 - 2.8).max(1.5)
+}
+
+fn max_zoom_for_levels(collection: &preprocessor_resource_index::ChartCollectionRecord) -> f64 {
+    collection
+        .levels
+        .iter()
+        .map(|level| level.zoom)
+        .max()
+        .unwrap_or(0) as f64
+        + 0.8
 }
 
 fn resolve_bundle_package_source_path(
@@ -3960,6 +4111,15 @@ fn sync_unpacked_metadata(
             .join(&bundle_manifest.resource_index.filename),
         &unpacked_root,
     )?;
+    if let Some(nav_kv) = &bundle_manifest.nav_kv {
+        sync_unpacked_file(
+            &config.build_root.join(&nav_kv.root.filename),
+            &unpacked_root,
+        )?;
+        for page in &nav_kv.value_pages {
+            sync_unpacked_file(&config.build_root.join(&page.filename), &unpacked_root)?;
+        }
+    }
     Ok(())
 }
 
@@ -5979,6 +6139,12 @@ fn validate_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow:
     ] {
         validate_bundle_artifact_ref(packaged_root, artifact)?;
     }
+    if let Some(nav_kv) = &bundle.nav_kv {
+        validate_bundle_artifact_ref(packaged_root, &nav_kv.root)?;
+        for page in &nav_kv.value_pages {
+            validate_bundle_artifact_ref(packaged_root, page)?;
+        }
+    }
     for package in &bundle.packages {
         validate_public_filename(&package.filename, "bundle.packages[].filename")?;
         validate_public_filename(&package.relative_path, "bundle.packages[].relative_path")?;
@@ -6027,6 +6193,12 @@ fn validate_unpacked_contract(
 
         for artifact in [&bundle.catalog, &bundle.resource_index] {
             ensure_public_file_exists(&unpacked_root.join(&artifact.filename))?;
+        }
+        if let Some(nav_kv) = &bundle.nav_kv {
+            ensure_public_file_exists(&unpacked_root.join(&nav_kv.root.filename))?;
+            for page in &nav_kv.value_pages {
+                ensure_public_file_exists(&unpacked_root.join(&page.filename))?;
+            }
         }
         for artifact in [&bundle.data, &bundle.vectors] {
             ensure_public_dir_exists(&unpacked_root.join(zip_stem(&artifact.filename)?))?;

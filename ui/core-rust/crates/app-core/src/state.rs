@@ -5,9 +5,8 @@ use crate::content::{ContentInventory, ContentPolicy, ContentReport, ContentRequ
 use crate::errors::AppResult;
 use crate::ownship::{
     push_sample, register_source, select_source, set_policy, update_source_status, OwnshipPolicy,
-    OwnshipSelectionCommand,
-    OwnshipSourceRegistration, OwnshipSourceStatusUpdate, OwnshipState, OwnshipUiState,
-    SituationSample,
+    OwnshipSelectionCommand, OwnshipSourceRegistration, OwnshipSourceStatusUpdate, OwnshipState,
+    OwnshipUiState, SituationSample,
 };
 use crate::planning::{project_ui_state, FlightPlan, FlightPlanUiState};
 
@@ -58,17 +57,11 @@ pub enum AppEvent {
     SetOwnshipPolicy(OwnshipPolicy),
     SelectOwnshipSource(OwnshipSelectionCommand),
     ReplaceFlightPlan(FlightPlan),
-    RefreshContent {
-        inventory: ContentInventory,
-    },
+    RefreshContent { inventory: ContentInventory },
     ClearFlightPlan,
 }
 
-pub fn reduce(
-    state: &AppState,
-    event: AppEvent,
-    catalog: &CatalogHandle,
-) -> AppResult<AppState> {
+pub fn reduce(state: &AppState, event: AppEvent, catalog: &CatalogHandle) -> AppResult<AppState> {
     let mut next = state.clone();
 
     match event {
@@ -264,7 +257,12 @@ mod tests {
             ..AppState::default()
         };
 
-        let next = reduce(&initial, AppEvent::ReplaceFlightPlan(sample_plan()), &catalog).unwrap();
+        let next = reduce(
+            &initial,
+            AppEvent::ReplaceFlightPlan(sample_plan()),
+            &catalog,
+        )
+        .unwrap();
 
         assert!(next.active_plan.is_some());
         assert_eq!(next.last_content_requirements.len(), 1);
@@ -296,7 +294,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(next.ownship.resolved.mode, crate::OwnshipMode::Live);
-        assert_eq!(next.ownship.render.position, Some(crate::LatLon { lat: 47.5, lon: -122.3 }));
+        assert_eq!(
+            next.ownship.render.position,
+            Some(crate::LatLon {
+                lat: 47.5,
+                lon: -122.3
+            })
+        );
         assert_eq!(next.ownship.render.orientation_deg, Some(90.0));
         assert_eq!(next.ownship.render.speed_kt, Some(120.0));
     }
@@ -325,11 +329,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            streamed
-                .last_content_report
-                .as_ref()
-                .unwrap()
-                .items[0]
+            streamed.last_content_report.as_ref().unwrap().items[0]
                 .availability
                 .availability,
             ContentAvailability::Unavailable
@@ -355,13 +355,15 @@ mod tests {
         )
         .unwrap();
 
-        assert!(streamed.last_content_report.as_ref().unwrap().fully_satisfied);
-        assert_eq!(
+        assert!(
             streamed
                 .last_content_report
                 .as_ref()
                 .unwrap()
-                .items[0]
+                .fully_satisfied
+        );
+        assert_eq!(
+            streamed.last_content_report.as_ref().unwrap().items[0]
                 .availability
                 .availability,
             ContentAvailability::RemoteOnly

@@ -19,7 +19,10 @@ impl SituationPosition {
     pub fn lat_lon(&self) -> Option<LatLon> {
         match self {
             Self::None => None,
-            Self::LatLon { lat, lon } => Some(LatLon { lat: *lat, lon: *lon }),
+            Self::LatLon { lat, lon } => Some(LatLon {
+                lat: *lat,
+                lon: *lon,
+            }),
         }
     }
 }
@@ -29,4 +32,5 @@ pub struct Situation {
     pub position: SituationPosition,
     pub orientation_deg: Option<f64>,
     pub speed_kt: Option<f64>,
+    pub altitude_msl_ft: Option<f64>,
 }

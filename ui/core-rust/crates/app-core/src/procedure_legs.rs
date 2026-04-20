@@ -1,6 +1,4 @@
-use crate::{
-    PathTermination, ProcedureDiscontinuity, ProcedureLegMaterializationRecord,
-};
+use crate::{PathTermination, ProcedureDiscontinuity, ProcedureLegMaterializationRecord};
 
 pub fn interpret_path_termination(code: &str) -> PathTermination {
     match code.trim() {

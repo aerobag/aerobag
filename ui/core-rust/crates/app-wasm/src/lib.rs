@@ -720,6 +720,17 @@ pub fn get_map_overlay_in_session(
 }
 
 #[wasm_bindgen]
+pub fn get_terrain_overlay_in_session(
+    handle: u32,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+) -> Result<String, JsValue> {
+    get_terrain_overlay_in_session_json(handle, viewport_json, width_px, height_px)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn restore_chart_page_state_in_session(
     handle: u32,
     recent_airport_ids_json: &str,
@@ -738,6 +749,38 @@ pub fn restore_chart_page_state_in_session(
 #[wasm_bindgen]
 pub fn destroy_session(handle: u32) {
     destroy_session_json(handle)
+}
+
+#[wasm_bindgen]
+pub fn render_terrain_overlay_tile_in_session(
+    handle: u32,
+    terrain_tile_bytes: &[u8],
+    aircraft_altitude_ft: f64,
+) -> Result<Vec<u8>, JsValue> {
+    app_core::render_terrain_overlay_tile_in_session(
+        handle,
+        terrain_tile_bytes,
+        aircraft_altitude_ft
+            .is_finite()
+            .then_some(aircraft_altitude_ft),
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn render_terrain_overlay_tiles_in_session(
+    handle: u32,
+    packed_terrain_tile_bytes: &[u8],
+    aircraft_altitude_ft: f64,
+) -> Result<Vec<u8>, JsValue> {
+    app_core::render_terrain_overlay_tiles_in_session(
+        handle,
+        packed_terrain_tile_bytes,
+        aircraft_altitude_ft
+            .is_finite()
+            .then_some(aircraft_altitude_ft),
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 fn load_catalog_json(catalog_json: &str) -> Result<String, String> {
@@ -2105,6 +2148,19 @@ fn get_map_overlay_in_session_json(
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
     let overlay = app_core::get_map_overlay_in_session(handle, viewport, width_px, height_px)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&overlay).map_err(|err| err.to_string())
+}
+
+fn get_terrain_overlay_in_session_json(
+    handle: u32,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let overlay = app_core::get_terrain_overlay_in_session(handle, viewport, width_px, height_px)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
 }

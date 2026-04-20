@@ -106,13 +106,31 @@ pub fn visible_point_tile_window(
     }
     let mut tiles = Vec::new();
     if viewport.zoom >= AIRPORT_MIN_DISPLAY_ZOOM {
-        tiles.extend(visible_layer_tile_window("airport", POINT_TILE_ZOOM, viewport, width_px, height_px));
+        tiles.extend(visible_layer_tile_window(
+            "airport",
+            POINT_TILE_ZOOM,
+            viewport,
+            width_px,
+            height_px,
+        ));
     }
     if viewport.zoom >= FIX_MIN_DISPLAY_ZOOM {
-        tiles.extend(visible_layer_tile_window("fix", POINT_TILE_ZOOM, viewport, width_px, height_px));
+        tiles.extend(visible_layer_tile_window(
+            "fix",
+            POINT_TILE_ZOOM,
+            viewport,
+            width_px,
+            height_px,
+        ));
     }
     if viewport.zoom >= NAV_MIN_DISPLAY_ZOOM {
-        tiles.extend(visible_layer_tile_window("nav", POINT_TILE_ZOOM, viewport, width_px, height_px));
+        tiles.extend(visible_layer_tile_window(
+            "nav",
+            POINT_TILE_ZOOM,
+            viewport,
+            width_px,
+            height_px,
+        ));
     }
     tiles
 }
@@ -179,7 +197,16 @@ pub fn query_map_overlay(
             if !should_display_record(record) {
                 continue;
             }
-            let point = world_to_screen(center_world, scale, width_px, height_px, LatLon { lat: record.lat, lon: record.lon });
+            let point = world_to_screen(
+                center_world,
+                scale,
+                width_px,
+                height_px,
+                LatLon {
+                    lat: record.lat,
+                    lon: record.lon,
+                },
+            );
             let Some(symbol) = point_vector_record_to_symbol_feature(record) else {
                 continue;
             };
@@ -220,7 +247,9 @@ pub fn query_map_overlay(
     }
 }
 
-pub fn point_vector_record_to_symbol_feature(record: &PointVectorRecord) -> Option<NavSymbolFeature> {
+pub fn point_vector_record_to_symbol_feature(
+    record: &PointVectorRecord,
+) -> Option<NavSymbolFeature> {
     should_display_record(record).then(|| NavSymbolFeature {
         kind: record.kind.clone(),
         label: display_label(record),
@@ -258,7 +287,12 @@ fn display_label(record: &PointVectorRecord) -> String {
             .strip_prefix("nav:")
             .map(|tail| tail.split(':').next().unwrap_or(tail).trim())
             .filter(|value| !value.is_empty());
-        let frequency = record.label.split_whitespace().last().map(str::trim).filter(|value| !value.is_empty());
+        let frequency = record
+            .label
+            .split_whitespace()
+            .last()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
         if let (Some(ident), Some(frequency)) = (ident, frequency) {
             return format!("{ident} {frequency}").to_uppercase();
         }
@@ -267,11 +301,17 @@ fn display_label(record: &PointVectorRecord) -> String {
 }
 
 fn is_vor_family_kind(kind: &str) -> bool {
-    matches!(kind.to_ascii_lowercase().as_str(), "vor" | "vor/dme" | "vortac")
+    matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "vor" | "vor/dme" | "vortac"
+    )
 }
 
 fn should_display_record(record: &PointVectorRecord) -> bool {
-    if record.style_class == "airport" || record.kind.eq_ignore_ascii_case("airport") || record.id.starts_with("airports:") {
+    if record.style_class == "airport"
+        || record.kind.eq_ignore_ascii_case("airport")
+        || record.id.starts_with("airports:")
+    {
         if record.private_use.unwrap_or(false) {
             return false;
         }
@@ -328,7 +368,10 @@ mod tests {
     #[test]
     fn suppresses_fix_tiles_below_threshold_zoom_but_keeps_airports_and_nav() {
         let viewport = MapViewport {
-            center: LatLon { lat: 47.36, lon: -121.98 },
+            center: LatLon {
+                lat: 47.36,
+                lon: -121.98,
+            },
             zoom: 8.9,
             rotation_deg: 0.0,
             pitch_deg: 0.0,
@@ -342,13 +385,19 @@ mod tests {
     #[test]
     fn caps_visible_features_and_warns() {
         let viewport = MapViewport {
-            center: LatLon { lat: 47.36, lon: -121.98 },
+            center: LatLon {
+                lat: 47.36,
+                lon: -121.98,
+            },
             zoom: 10.0,
             rotation_deg: 0.0,
             pitch_deg: 0.0,
         };
         let window = visible_point_tile_window(&viewport, 1200.0, 900.0);
-        let first = window.iter().find(|tile| tile.layer == "fix").expect("expected visible tile");
+        let first = window
+            .iter()
+            .find(|tile| tile.layer == "fix")
+            .expect("expected visible tile");
         let mut cache = HashMap::new();
         cache.insert(
             tile_key(&first.layer, first.z, first.x, first.y),
@@ -403,7 +452,9 @@ mod tests {
             if tile.layer != "fix" {
                 continue;
             }
-            let tile_path = tile_root.join(tile.x.to_string()).join(format!("{}.json", tile.y));
+            let tile_path = tile_root
+                .join(tile.x.to_string())
+                .join(format!("{}.json", tile.y));
             let payload: PointTilePayload = serde_json::from_str(
                 &fs::read_to_string(&tile_path)
                     .unwrap_or_else(|err| panic!("failed to read {}: {err}", tile_path.display())),
@@ -422,7 +473,10 @@ mod tests {
     #[test]
     fn filters_private_water_and_heliport_airports_in_core() {
         let viewport = MapViewport {
-            center: LatLon { lat: 47.36, lon: -121.98 },
+            center: LatLon {
+                lat: 47.36,
+                lon: -121.98,
+            },
             zoom: 9.0,
             rotation_deg: 0.0,
             pitch_deg: 0.0,
@@ -433,7 +487,12 @@ mod tests {
             .expect("expected airport tile");
         let mut cache = HashMap::new();
         cache.insert(
-            tile_key(&airport_tile.layer, airport_tile.z, airport_tile.x, airport_tile.y),
+            tile_key(
+                &airport_tile.layer,
+                airport_tile.z,
+                airport_tile.x,
+                airport_tile.y,
+            ),
             PointTilePayload {
                 schema_version: 1,
                 layer: airport_tile.layer.clone(),
@@ -528,11 +587,17 @@ mod tests {
                 }
             }
             let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            let ui_dir = manifest_dir.join("../../..").canonicalize().expect("resolve ui dir");
+            let ui_dir = manifest_dir
+                .join("../../..")
+                .canonicalize()
+                .expect("resolve ui dir");
             let repo_root = ui_dir.parent().expect("ui dir parent");
-            let target_root_raw =
-                fs::read_to_string(ui_dir.join("target-root.txt")).expect("read ui/target-root.txt");
-            let target_root = repo_root.join(target_root_raw.trim()).canonicalize().expect("resolve ui target root");
+            let target_root_raw = fs::read_to_string(ui_dir.join("target-root.txt"))
+                .expect("read ui/target-root.txt");
+            let target_root = repo_root
+                .join(target_root_raw.trim())
+                .canonicalize()
+                .expect("resolve ui target root");
             let path = target_root.join("web/generated-static/vectors/points/fix/9");
             if path.is_dir() {
                 return path;

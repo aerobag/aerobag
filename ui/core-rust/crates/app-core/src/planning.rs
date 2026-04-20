@@ -102,7 +102,9 @@ impl ProcedureDiscontinuity {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConcretizedNavItem {
-    Waypoint { nav_ref: NavRef },
+    Waypoint {
+        nav_ref: NavRef,
+    },
     Discontinuity {
         discontinuity: ProcedureDiscontinuity,
         label: String,
@@ -162,15 +164,16 @@ impl<'de> Deserialize<'de> for ResolvedLeg {
             to: raw.to,
             source: raw.source,
             procedure_provenance: raw.procedure_provenance.or_else(|| {
-                raw.procedure_airport_id.map(|airport_id| ProcedureLegProvenance {
-                    airport_id,
-                    procedure_id: String::new(),
-                    kind: ProcedureKind::Approach,
-                    role: ProcedureSegmentRole::Common,
-                    path_termination: PathTermination::Other(String::new()),
-                    leg_sequence: 0,
-                    display_path: None,
-                })
+                raw.procedure_airport_id
+                    .map(|airport_id| ProcedureLegProvenance {
+                        airport_id,
+                        procedure_id: String::new(),
+                        kind: ProcedureKind::Approach,
+                        role: ProcedureSegmentRole::Common,
+                        path_termination: PathTermination::Other(String::new()),
+                        leg_sequence: 0,
+                        display_path: None,
+                    })
             }),
         })
     }
@@ -179,8 +182,12 @@ impl<'de> Deserialize<'de> for ResolvedLeg {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResolvedLegSource {
-    LegacyPlanLeg { leg_index: usize },
-    RouteComponent { component_index: usize },
+    LegacyPlanLeg {
+        leg_index: usize,
+    },
+    RouteComponent {
+        component_index: usize,
+    },
     SyntheticBridge {
         from_component_index: usize,
         to_component_index: usize,
@@ -225,7 +232,10 @@ pub enum LegDisplayPathStyle {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LegDisplayElement {
-    Segment { start: LatLon, end: LatLon },
+    Segment {
+        start: LatLon,
+        end: LatLon,
+    },
     Arc {
         center: LatLon,
         radius_nm: f64,
@@ -465,18 +475,16 @@ pub fn activate_direct_to(
         });
     }
 
-    let target_leg_index = plan
-        .resolved_legs
-        .iter()
-        .position(|leg| leg.to == target);
-    let resume_leg_index = plan
-        .resolved_legs
-        .iter()
-        .position(|leg| leg.from == target);
+    let target_leg_index = plan.resolved_legs.iter().position(|leg| leg.to == target);
+    let resume_leg_index = plan.resolved_legs.iter().position(|leg| leg.from == target);
     let target_leg_id = target_leg_index.map(|index| plan.resolved_legs[index].id.clone());
     let resume_leg_id = resume_leg_index.map(|index| plan.resolved_legs[index].id.clone());
     let active_leg_index = target_leg_index
-        .or_else(|| plan.guidance.as_ref().map(|guidance| guidance.active_leg_index))
+        .or_else(|| {
+            plan.guidance
+                .as_ref()
+                .map(|guidance| guidance.active_leg_index)
+        })
         .unwrap_or(0);
 
     Ok(FlightPlan {
@@ -571,7 +579,10 @@ pub fn activate_next_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
     Ok(FlightPlan {
         guidance: Some(GuidanceState {
             active_leg_index: next_leg_index,
-            display_split_leg_id: plan.resolved_legs.get(next_leg_index).map(|leg| leg.id.clone()),
+            display_split_leg_id: plan
+                .resolved_legs
+                .get(next_leg_index)
+                .map(|leg| leg.id.clone()),
             sequencing_mode: SequencingMode::FollowPlan,
             direct_to: None,
             suspend_reason: None,
@@ -650,7 +661,10 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
             {
                 Some(resume_leg_index) => GuidanceState {
                     active_leg_index: resume_leg_index,
-                    display_split_leg_id: plan.resolved_legs.get(resume_leg_index).map(|leg| leg.id.clone()),
+                    display_split_leg_id: plan
+                        .resolved_legs
+                        .get(resume_leg_index)
+                        .map(|leg| leg.id.clone()),
                     sequencing_mode: SequencingMode::FollowPlan,
                     direct_to: None,
                     suspend_reason: None,
@@ -659,7 +673,9 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                     active_leg_index: direct_to
                         .target_leg_id
                         .as_deref()
-                        .and_then(|target_leg_id| leg_index_by_id(&plan.resolved_legs, target_leg_id))
+                        .and_then(|target_leg_id| {
+                            leg_index_by_id(&plan.resolved_legs, target_leg_id)
+                        })
                         .unwrap_or(guidance.active_leg_index),
                     display_split_leg_id: direct_to
                         .target_leg_id
@@ -730,15 +746,23 @@ pub fn active_guidance_leg(plan: &FlightPlan) -> Option<PlanLeg> {
                 airway: None,
             })
         }
-        SequencingMode::FollowPlan => plan.resolved_legs.get(guidance.active_leg_index).map(|leg| PlanLeg {
-            from: leg.from.clone(),
-            to: leg.to.clone(),
-            airway: None,
-        }),
+        SequencingMode::FollowPlan => {
+            plan.resolved_legs
+                .get(guidance.active_leg_index)
+                .map(|leg| PlanLeg {
+                    from: leg.from.clone(),
+                    to: leg.to.clone(),
+                    airway: None,
+                })
+        }
         SequencingMode::Suspended => {
             let preserve_active_leg = match guidance.suspend_reason {
                 Some(SuspendReason::Manual) => true,
-                Some(SuspendReason::Boundary | SuspendReason::RouteEnd | SuspendReason::DirectToComplete) => false,
+                Some(
+                    SuspendReason::Boundary
+                    | SuspendReason::RouteEnd
+                    | SuspendReason::DirectToComplete,
+                ) => false,
                 None => {
                     guidance.direct_to.is_none()
                         && !should_suspend_after_active_leg(&plan, guidance.active_leg_index)
@@ -748,11 +772,13 @@ pub fn active_guidance_leg(plan: &FlightPlan) -> Option<PlanLeg> {
             if !preserve_active_leg {
                 None
             } else {
-                plan.resolved_legs.get(guidance.active_leg_index).map(|leg| PlanLeg {
-                    from: leg.from.clone(),
-                    to: leg.to.clone(),
-                    airway: None,
-                })
+                plan.resolved_legs
+                    .get(guidance.active_leg_index)
+                    .map(|leg| PlanLeg {
+                        from: leg.from.clone(),
+                        to: leg.to.clone(),
+                        airway: None,
+                    })
             }
         }
     }
@@ -761,7 +787,8 @@ pub fn active_guidance_leg(plan: &FlightPlan) -> Option<PlanLeg> {
 pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
     let plan = plan.clone().normalized();
     let grouped_legs = grouped_component_legs(&plan);
-    let projected_items = dedupe_component_items_for_projection(&plan.route_components, &grouped_legs);
+    let projected_items =
+        dedupe_component_items_for_projection(&plan.route_components, &grouped_legs);
     let active_component_index = plan
         .guidance
         .as_ref()
@@ -785,18 +812,27 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
                 procedure_id: component_procedure_id(component),
                 procedure_kind: component_procedure_kind(component),
                 chart_airport_id: component_chart_airport_id(component),
-                items: projected_items.get(component_index).cloned().unwrap_or_default(),
+                items: projected_items
+                    .get(component_index)
+                    .cloned()
+                    .unwrap_or_default(),
                 active: active_component_index == Some(component_index),
                 can_add_airway_after: matches!(component, RouteComponent::Waypoint { .. })
                     && matches!(
                         plan.route_components.get(component_index + 1),
                         Some(RouteComponent::Waypoint { .. }) | None
                     ),
-                can_add_procedure_before: matches!(component, RouteComponent::Waypoint { waypoint: NavRef::Airport(_) })
-                    && (matches!(
-                        component_index.checked_sub(1).and_then(|index| plan.route_components.get(index)),
-                        Some(RouteComponent::Waypoint { .. })
-                    ) || replace_procedure_component_index.is_some()),
+                can_add_procedure_before: matches!(
+                    component,
+                    RouteComponent::Waypoint {
+                        waypoint: NavRef::Airport(_)
+                    }
+                ) && (matches!(
+                    component_index
+                        .checked_sub(1)
+                        .and_then(|index| plan.route_components.get(index)),
+                    Some(RouteComponent::Waypoint { .. })
+                ) || replace_procedure_component_index.is_some()),
                 can_change_airway: matches!(component, RouteComponent::Airway { .. })
                     && preceding_waypoint.is_some()
                     && following_waypoint.is_some(),
@@ -825,10 +861,10 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
             },
             from: leg.from.clone(),
             to: leg.to.clone(),
-            active: plan
-                .guidance
-                .as_ref()
-                .is_some_and(|guidance| guidance.sequencing_mode != SequencingMode::DirectTo && guidance.active_leg_index == leg_index),
+            active: plan.guidance.as_ref().is_some_and(|guidance| {
+                guidance.sequencing_mode != SequencingMode::DirectTo
+                    && guidance.active_leg_index == leg_index
+            }),
             suspend_boundary_after: should_suspend_after_active_leg(&plan, leg_index),
             display_path: leg
                 .procedure_provenance
@@ -868,7 +904,10 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         can_activate_next_leg: guidance.active_leg_index + 1 < plan.resolved_legs.len(),
         can_suspend: guidance.sequencing_mode != SequencingMode::Suspended,
         can_unsuspend: guidance.sequencing_mode == SequencingMode::Suspended,
-        suspend_boundary_after_active_leg: should_suspend_after_active_leg(&plan, guidance.active_leg_index),
+        suspend_boundary_after_active_leg: should_suspend_after_active_leg(
+            &plan,
+            guidance.active_leg_index,
+        ),
     });
 
     FlightPlanUiState {
@@ -884,7 +923,13 @@ fn project_nav_element_ui(plan: &FlightPlan) -> NavElementUiView {
     NavElementUiView {
         active_leg_summary: active_leg
             .as_ref()
-            .map(|leg| format!("{} \u{2192} {}", nav_ref_label(&leg.from), nav_ref_label(&leg.to)))
+            .map(|leg| {
+                format!(
+                    "{} \u{2192} {}",
+                    nav_ref_label(&leg.from),
+                    nav_ref_label(&leg.to)
+                )
+            })
             .unwrap_or_default(),
         cdi_indicator_dots: None,
     }
@@ -970,66 +1015,70 @@ fn project_display_rows(
             });
             for item in &component.items {
                 match item {
-                    ConcretizedNavItem::Waypoint { nav_ref } => rows.push(FlightPlanDisplayRowUiView {
-                        label: nav_ref_label(nav_ref),
-                        row_kind: FlightPlanDisplayRowKind::Waypoint,
-                        component_kind: Some(component.kind.clone()),
-                        component_index: Some(component.component_index),
-                        procedure_id: component.procedure_id.clone(),
-                        procedure_kind: component.procedure_kind.clone(),
-                        leg_index: None,
-                        distance_nm: None,
-                        course_deg: None,
-                        chart_airport_id: airport_id_from_nav_ref(nav_ref),
-                        nav_ref: Some(nav_ref.clone()),
-                        depth: 1,
-                        active: component.active,
-                        can_add_airway_after: false,
-                        can_add_procedure_before: false,
-                        can_change_airway: false,
-                        can_remove_component: false,
-                        can_reorder_component: false,
-                        can_reorder_up: false,
-                        can_reorder_down: false,
-                        replace_procedure_component_index: None,
-                        start_component_index: None,
-                        end_component_index: None,
-                        origin_anchor: None,
-                        destination_anchor: None,
-                        preceding_waypoint: component.preceding_waypoint.clone(),
-                        following_waypoint: component.following_waypoint.clone(),
-                        actions: Vec::new(),
-                    }),
-                    ConcretizedNavItem::Discontinuity { label, .. } => rows.push(FlightPlanDisplayRowUiView {
-                        label: label.clone(),
-                        row_kind: FlightPlanDisplayRowKind::Discontinuity,
-                        component_kind: Some(component.kind.clone()),
-                        component_index: Some(component.component_index),
-                        procedure_id: component.procedure_id.clone(),
-                        procedure_kind: component.procedure_kind.clone(),
-                        leg_index: None,
-                        distance_nm: None,
-                        course_deg: None,
-                        chart_airport_id: None,
-                        nav_ref: None,
-                        depth: 1,
-                        active: false,
-                        can_add_airway_after: false,
-                        can_add_procedure_before: false,
-                        can_change_airway: false,
-                        can_remove_component: false,
-                        can_reorder_component: false,
-                        can_reorder_up: false,
-                        can_reorder_down: false,
-                        replace_procedure_component_index: None,
-                        start_component_index: None,
-                        end_component_index: None,
-                        origin_anchor: None,
-                        destination_anchor: None,
-                        preceding_waypoint: component.preceding_waypoint.clone(),
-                        following_waypoint: component.following_waypoint.clone(),
-                        actions: Vec::new(),
-                    }),
+                    ConcretizedNavItem::Waypoint { nav_ref } => {
+                        rows.push(FlightPlanDisplayRowUiView {
+                            label: nav_ref_label(nav_ref),
+                            row_kind: FlightPlanDisplayRowKind::Waypoint,
+                            component_kind: Some(component.kind.clone()),
+                            component_index: Some(component.component_index),
+                            procedure_id: component.procedure_id.clone(),
+                            procedure_kind: component.procedure_kind.clone(),
+                            leg_index: None,
+                            distance_nm: None,
+                            course_deg: None,
+                            chart_airport_id: airport_id_from_nav_ref(nav_ref),
+                            nav_ref: Some(nav_ref.clone()),
+                            depth: 1,
+                            active: component.active,
+                            can_add_airway_after: false,
+                            can_add_procedure_before: false,
+                            can_change_airway: false,
+                            can_remove_component: false,
+                            can_reorder_component: false,
+                            can_reorder_up: false,
+                            can_reorder_down: false,
+                            replace_procedure_component_index: None,
+                            start_component_index: None,
+                            end_component_index: None,
+                            origin_anchor: None,
+                            destination_anchor: None,
+                            preceding_waypoint: component.preceding_waypoint.clone(),
+                            following_waypoint: component.following_waypoint.clone(),
+                            actions: Vec::new(),
+                        })
+                    }
+                    ConcretizedNavItem::Discontinuity { label, .. } => {
+                        rows.push(FlightPlanDisplayRowUiView {
+                            label: label.clone(),
+                            row_kind: FlightPlanDisplayRowKind::Discontinuity,
+                            component_kind: Some(component.kind.clone()),
+                            component_index: Some(component.component_index),
+                            procedure_id: component.procedure_id.clone(),
+                            procedure_kind: component.procedure_kind.clone(),
+                            leg_index: None,
+                            distance_nm: None,
+                            course_deg: None,
+                            chart_airport_id: None,
+                            nav_ref: None,
+                            depth: 1,
+                            active: false,
+                            can_add_airway_after: false,
+                            can_add_procedure_before: false,
+                            can_change_airway: false,
+                            can_remove_component: false,
+                            can_reorder_component: false,
+                            can_reorder_up: false,
+                            can_reorder_down: false,
+                            replace_procedure_component_index: None,
+                            start_component_index: None,
+                            end_component_index: None,
+                            origin_anchor: None,
+                            destination_anchor: None,
+                            preceding_waypoint: component.preceding_waypoint.clone(),
+                            following_waypoint: component.following_waypoint.clone(),
+                            actions: Vec::new(),
+                        })
+                    }
                 }
             }
         }
@@ -1059,7 +1108,10 @@ fn project_display_rows(
     rows
 }
 
-fn replaceable_procedure_component_before(plan: &FlightPlan, component_index: usize) -> Option<usize> {
+fn replaceable_procedure_component_before(
+    plan: &FlightPlan,
+    component_index: usize,
+) -> Option<usize> {
     let RouteComponent::Waypoint {
         waypoint: NavRef::Airport(ref airport_id),
     } = plan.route_components.get(component_index)?
@@ -1080,11 +1132,17 @@ fn replaceable_procedure_component_before(plan: &FlightPlan, component_index: us
 fn group_row_actions(component: &RouteComponentUiView) -> Vec<FlightPlanRowActionUiView> {
     match component.kind {
         RouteComponentViewKind::Airway => vec![
-            action(FlightPlanRowActionId::ChangeAirway, component.can_change_airway),
+            action(
+                FlightPlanRowActionId::ChangeAirway,
+                component.can_change_airway,
+            ),
             action(FlightPlanRowActionId::RemoveAirway, component.can_remove),
         ],
         RouteComponentViewKind::Procedure => vec![
-            action(FlightPlanRowActionId::ShowPlate, component.chart_airport_id.is_some() && component.procedure_id.is_some()),
+            action(
+                FlightPlanRowActionId::ShowPlate,
+                component.chart_airport_id.is_some() && component.procedure_id.is_some(),
+            ),
             action(FlightPlanRowActionId::RemoveProcedure, component.can_remove),
         ],
         RouteComponentViewKind::Waypoint => Vec::new(),
@@ -1106,25 +1164,42 @@ fn waypoint_or_discontinuity_actions(
                 FlightPlanRowActionId::Remove,
                 row.component_index.is_some() && row.can_remove_component,
             ),
-            action(FlightPlanRowActionId::InsertBefore, row.component_index.is_some()),
-            action(FlightPlanRowActionId::InsertAfter, row.component_index.is_some()),
+            action(
+                FlightPlanRowActionId::InsertBefore,
+                row.component_index.is_some(),
+            ),
+            action(
+                FlightPlanRowActionId::InsertAfter,
+                row.component_index.is_some(),
+            ),
             action(
                 FlightPlanRowActionId::Reorder,
                 row.component_index.is_some() && row.can_reorder_component,
             ),
             action(FlightPlanRowActionId::WaypointInfo, false),
-            action(FlightPlanRowActionId::AddAirway, row.can_add_airway_after && row.origin_anchor.is_some()),
+            action(
+                FlightPlanRowActionId::AddAirway,
+                row.can_add_airway_after && row.origin_anchor.is_some(),
+            ),
             action(
                 FlightPlanRowActionId::SelectProcedure,
-                row.can_add_procedure_before && row.component_index.is_some() && row.chart_airport_id.is_some(),
+                row.can_add_procedure_before
+                    && row.component_index.is_some()
+                    && row.chart_airport_id.is_some(),
             ),
-            action(FlightPlanRowActionId::Plates, row.chart_airport_id.is_some()),
+            action(
+                FlightPlanRowActionId::Plates,
+                row.chart_airport_id.is_some(),
+            ),
         ]
     } else {
         vec![
             action(FlightPlanRowActionId::ActivateLeg, row.leg_index.is_some()),
             action(FlightPlanRowActionId::WaypointInfo, false),
-            action(FlightPlanRowActionId::Plates, row.chart_airport_id.is_some()),
+            action(
+                FlightPlanRowActionId::Plates,
+                row.chart_airport_id.is_some(),
+            ),
         ]
     }
 }
@@ -1197,7 +1272,11 @@ fn can_reorder_component(plan: &FlightPlan, component_index: usize) -> bool {
     component_index < plan.route_components.len() && plan.route_components.len() > 1
 }
 
-fn can_reorder_component_in_direction(plan: &FlightPlan, component_index: usize, direction: isize) -> bool {
+fn can_reorder_component_in_direction(
+    plan: &FlightPlan,
+    component_index: usize,
+    direction: isize,
+) -> bool {
     if !can_reorder_component(plan, component_index) {
         return false;
     }
@@ -1224,7 +1303,8 @@ fn rebuild_after_component_remap(
             Some((new_index, rewrite_grouped_legs_source(legs, new_index)))
         })
         .collect::<BTreeMap<usize, Vec<ResolvedLeg>>>();
-    let resolved = rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_by_component);
+    let resolved =
+        rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_by_component);
 
     let mut plan = old_plan.clone();
     plan.route_components = new_components;
@@ -1259,7 +1339,10 @@ pub fn delete_component(plan: &FlightPlan, component_index: usize) -> AppResult<
     ))
 }
 
-pub fn delete_waypoint_component(plan: &FlightPlan, component_index: usize) -> AppResult<FlightPlan> {
+pub fn delete_waypoint_component(
+    plan: &FlightPlan,
+    component_index: usize,
+) -> AppResult<FlightPlan> {
     match plan.route_components.get(component_index) {
         Some(RouteComponent::Waypoint { .. }) => delete_component(plan, component_index),
         Some(RouteComponent::Airway { .. }) | Some(RouteComponent::Procedure { .. }) => Err(AppError {
@@ -1287,12 +1370,7 @@ pub fn insert_airport_waypoint(
         });
     }
 
-    insert_waypoint(
-        plan,
-        component_index,
-        before,
-        NavRef::Airport(airport_id),
-    )
+    insert_waypoint(plan, component_index, before, NavRef::Airport(airport_id))
 }
 
 pub fn insert_waypoint(
@@ -1525,10 +1603,8 @@ pub fn insert_airway_between_waypoints(
         rewrite_grouped_legs_source(&airway_legs, airway_component_index),
     );
 
-    let resolved_legs = rebuild_resolved_legs_with_grouped_components(
-        &new_components,
-        &preserved_grouped_legs,
-    );
+    let resolved_legs =
+        rebuild_resolved_legs_with_grouped_components(&new_components, &preserved_grouped_legs);
 
     if resolved_legs.is_empty() {
         return Err(AppError {
@@ -1572,7 +1648,9 @@ pub fn insert_airway_after_waypoint(
     if start_component_index + 1 != plan.route_components.len() {
         return Err(AppError {
             kind: AppErrorKind::UnsupportedOperation,
-            message: "airway tail insertion requires the selected waypoint to be the end of the route".to_string(),
+            message:
+                "airway tail insertion requires the selected waypoint to be the end of the route"
+                    .to_string(),
         });
     }
 
@@ -1590,7 +1668,8 @@ pub fn insert_airway_after_waypoint(
         rewrite_grouped_legs_source(&airway_legs, airway_component_index),
     );
 
-    let resolved_legs = rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_legs);
+    let resolved_legs =
+        rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_legs);
     if resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
@@ -1697,10 +1776,8 @@ pub fn insert_procedure_between_waypoints(
         rewrite_grouped_legs_source(&procedure_legs, procedure_component_index),
     );
 
-    let resolved_legs = rebuild_resolved_legs_with_grouped_components(
-        &new_components,
-        &preserved_grouped_legs,
-    );
+    let resolved_legs =
+        rebuild_resolved_legs_with_grouped_components(&new_components, &preserved_grouped_legs);
 
     if resolved_legs.is_empty() {
         return Err(AppError {
@@ -1759,7 +1836,8 @@ pub fn replace_airway_component(
         rewrite_grouped_legs_source(&airway_legs, component_index),
     );
 
-    let resolved_legs = rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_legs);
+    let resolved_legs =
+        rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_legs);
     if resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
@@ -1817,12 +1895,14 @@ pub fn replace_procedure_component(
         rewrite_grouped_legs_source(&procedure_legs, component_index),
     );
 
-    let resolved_legs = rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_legs);
+    let resolved_legs =
+        rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_legs);
     if resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
-            message: "flight plan must contain at least one flyable leg after procedure replacement"
-                .to_string(),
+            message:
+                "flight plan must contain at least one flyable leg after procedure replacement"
+                    .to_string(),
         });
     }
 
@@ -1864,10 +1944,7 @@ pub fn change_airway_entry(
     replace_airway_component(
         plan,
         component_index,
-        AirwaySegment {
-            entry,
-            ..existing
-        },
+        AirwaySegment { entry, ..existing },
         airway_legs,
     )
 }
@@ -1902,10 +1979,7 @@ pub fn change_airway_exit(
     replace_airway_component(
         plan,
         component_index,
-        AirwaySegment {
-            exit,
-            ..existing
-        },
+        AirwaySegment { exit, ..existing },
         airway_legs,
     )
 }
@@ -1916,7 +1990,12 @@ pub fn change_procedure_enroute_transition(
     enroute_transition: Option<String>,
     procedure_legs: Vec<ResolvedLeg>,
 ) -> AppResult<FlightPlan> {
-    let existing = match plan.clone().normalized().route_components.get(component_index) {
+    let existing = match plan
+        .clone()
+        .normalized()
+        .route_components
+        .get(component_index)
+    {
         Some(RouteComponent::Procedure { procedure }) => procedure.clone(),
         Some(_) => {
             return Err(AppError {
@@ -1949,7 +2028,12 @@ pub fn change_procedure_runway_transition(
     runway_transition: Option<String>,
     procedure_legs: Vec<ResolvedLeg>,
 ) -> AppResult<FlightPlan> {
-    let existing = match plan.clone().normalized().route_components.get(component_index) {
+    let existing = match plan
+        .clone()
+        .normalized()
+        .route_components
+        .get(component_index)
+    {
         Some(RouteComponent::Procedure { procedure }) => procedure.clone(),
         Some(_) => {
             return Err(AppError {
@@ -1988,8 +2072,10 @@ fn resolved_legs_from_waypoint_components(components: &[RouteComponent]) -> Vec<
             continue;
         };
 
-        let (RouteComponent::Waypoint { waypoint: from }, RouteComponent::Waypoint { waypoint: to }) =
-            (left, right)
+        let (
+            RouteComponent::Waypoint { waypoint: from },
+            RouteComponent::Waypoint { waypoint: to },
+        ) = (left, right)
         else {
             continue;
         };
@@ -2013,7 +2099,8 @@ fn rebuild_resolved_legs_with_grouped_components(
     grouped_component_legs: &BTreeMap<usize, Vec<ResolvedLeg>>,
 ) -> Vec<ResolvedLeg> {
     let mut resolved = Vec::new();
-    let per_component_items = dedupe_component_items_for_projection(components, grouped_component_legs);
+    let per_component_items =
+        dedupe_component_items_for_projection(components, grouped_component_legs);
     let flattened = flatten_visible_nav_sequence(&per_component_items);
     let mut previous_waypoint: Option<(usize, NavRef)> = None;
     let mut synthetic_leg_index = 0usize;
@@ -2034,7 +2121,10 @@ fn rebuild_resolved_legs_with_grouped_components(
                             resolved.push(grouped_leg.clone());
                         } else {
                             resolved.push(ResolvedLeg {
-                                id: format!("component-{synthetic_leg_index}-{}", synthetic_leg_index + 1),
+                                id: format!(
+                                    "component-{synthetic_leg_index}-{}",
+                                    synthetic_leg_index + 1
+                                ),
                                 from: from.clone(),
                                 to: nav_ref.clone(),
                                 source: ResolvedLegSource::SyntheticBridge {
@@ -2130,10 +2220,15 @@ fn component_summary(component: &RouteComponent) -> String {
     }
 }
 
-fn raw_component_ui_items(component: &RouteComponent, grouped_legs: Vec<ResolvedLeg>) -> Vec<ConcretizedNavItem> {
+fn raw_component_ui_items(
+    component: &RouteComponent,
+    grouped_legs: Vec<ResolvedLeg>,
+) -> Vec<ConcretizedNavItem> {
     match component {
         RouteComponent::Waypoint { waypoint } => {
-            vec![ConcretizedNavItem::Waypoint { nav_ref: waypoint.clone() }]
+            vec![ConcretizedNavItem::Waypoint {
+                nav_ref: waypoint.clone(),
+            }]
         }
         RouteComponent::Airway { airway } => {
             let mut items = Vec::new();
@@ -2170,7 +2265,7 @@ fn raw_component_ui_items(component: &RouteComponent, grouped_legs: Vec<Resolved
             };
 
             if let Some(first) = grouped_legs.first() {
-                    push_waypoint(first.from.clone());
+                push_waypoint(first.from.clone());
                 for leg in grouped_legs {
                     push_waypoint(leg.to.clone());
                 }
@@ -2188,22 +2283,30 @@ fn raw_component_ui_items(component: &RouteComponent, grouped_legs: Vec<Resolved
     }
 }
 
-fn active_component_index_for_guidance(plan: &FlightPlan, guidance: &GuidanceState) -> Option<usize> {
+fn active_component_index_for_guidance(
+    plan: &FlightPlan,
+    guidance: &GuidanceState,
+) -> Option<usize> {
     match guidance.sequencing_mode {
         SequencingMode::DirectTo => guidance
             .direct_to
             .as_ref()
             .and_then(|direct_to| direct_to.target_leg_id.as_deref())
             .and_then(|leg_id| leg_index_by_id(&plan.resolved_legs, leg_id))
-            .and_then(|leg_index| match plan.resolved_legs.get(leg_index)?.source {
+            .and_then(
+                |leg_index| match plan.resolved_legs.get(leg_index)?.source {
+                    ResolvedLegSource::RouteComponent { component_index } => Some(component_index),
+                    ResolvedLegSource::LegacyPlanLeg { .. }
+                    | ResolvedLegSource::SyntheticBridge { .. } => None,
+                },
+            ),
+        SequencingMode::FollowPlan | SequencingMode::Suspended => {
+            match plan.resolved_legs.get(guidance.active_leg_index)?.source {
                 ResolvedLegSource::RouteComponent { component_index } => Some(component_index),
                 ResolvedLegSource::LegacyPlanLeg { .. }
                 | ResolvedLegSource::SyntheticBridge { .. } => None,
-            }),
-        SequencingMode::FollowPlan | SequencingMode::Suspended => match plan.resolved_legs.get(guidance.active_leg_index)?.source {
-            ResolvedLegSource::RouteComponent { component_index } => Some(component_index),
-            ResolvedLegSource::LegacyPlanLeg { .. } | ResolvedLegSource::SyntheticBridge { .. } => None,
-        },
+            }
+        }
     }
 }
 
@@ -2267,8 +2370,13 @@ fn dedupe_component_items_for_projection(
             continue;
         }
 
-        let hide_right = matches!(components.get(boundary_index), Some(RouteComponent::Waypoint { .. }))
-            && !matches!(components.get(boundary_index + 1), Some(RouteComponent::Waypoint { .. }));
+        let hide_right = matches!(
+            components.get(boundary_index),
+            Some(RouteComponent::Waypoint { .. })
+        ) && !matches!(
+            components.get(boundary_index + 1),
+            Some(RouteComponent::Waypoint { .. })
+        );
         if hide_right {
             per_component[boundary_index + 1].remove(right_index);
         } else {
@@ -2364,7 +2472,8 @@ fn should_suspend_after_active_leg(plan: &FlightPlan, active_leg_index: usize) -
     let ResolvedLegSource::RouteComponent { component_index } = active_leg.source else {
         return false;
     };
-    let Some(RouteComponent::Procedure { procedure }) = plan.route_components.get(component_index) else {
+    let Some(RouteComponent::Procedure { procedure }) = plan.route_components.get(component_index)
+    else {
         return false;
     };
     if procedure.terminal_discontinuity.is_none() {
@@ -2376,11 +2485,9 @@ fn should_suspend_after_active_leg(plan: &FlightPlan, active_leg_index: usize) -
         .iter()
         .enumerate()
         .filter_map(|(index, leg)| match leg.source {
-            ResolvedLegSource::RouteComponent { component_index: leg_component_index }
-                if leg_component_index == component_index =>
-            {
-                Some(index)
-            }
+            ResolvedLegSource::RouteComponent {
+                component_index: leg_component_index,
+            } if leg_component_index == component_index => Some(index),
             _ => None,
         })
         .max();
@@ -2393,7 +2500,9 @@ fn resume_leg_id_after_leg(plan: &FlightPlan, leg_index: usize) -> Option<String
         return None;
     }
 
-    plan.resolved_legs.get(leg_index + 1).map(|leg| leg.id.clone())
+    plan.resolved_legs
+        .get(leg_index + 1)
+        .map(|leg| leg.id.clone())
 }
 
 #[cfg(test)]
@@ -2517,9 +2626,18 @@ mod tests {
 
     #[test]
     fn interpret_path_termination_maps_known_codes() {
-        assert_eq!(interpret_path_termination("IF"), PathTermination::InitialFix);
-        assert_eq!(interpret_path_termination("TF"), PathTermination::TrackToFix);
-        assert_eq!(interpret_path_termination("DF"), PathTermination::DirectToFix);
+        assert_eq!(
+            interpret_path_termination("IF"),
+            PathTermination::InitialFix
+        );
+        assert_eq!(
+            interpret_path_termination("TF"),
+            PathTermination::TrackToFix
+        );
+        assert_eq!(
+            interpret_path_termination("DF"),
+            PathTermination::DirectToFix
+        );
     }
 
     #[test]
@@ -2815,14 +2933,18 @@ mod tests {
                     id: "airway-V2-A-0".to_string(),
                     from: NavRef::Navaid("SEA".to_string()),
                     to: NavRef::Fix("SUMMA".to_string()),
-                    source: ResolvedLegSource::RouteComponent { component_index: 99 },
+                    source: ResolvedLegSource::RouteComponent {
+                        component_index: 99,
+                    },
                     procedure_provenance: None,
                 },
                 ResolvedLeg {
                     id: "airway-V2-A-1".to_string(),
                     from: NavRef::Fix("SUMMA".to_string()),
                     to: NavRef::Fix("VAMPS".to_string()),
-                    source: ResolvedLegSource::RouteComponent { component_index: 99 },
+                    source: ResolvedLegSource::RouteComponent {
+                        component_index: 99,
+                    },
                     procedure_provenance: None,
                 },
             ],
@@ -2844,21 +2966,27 @@ mod tests {
                     id: "proc-autto1-0".to_string(),
                     from: NavRef::Fix("COLTS".to_string()),
                     to: NavRef::Fix("BOREK".to_string()),
-                    source: ResolvedLegSource::RouteComponent { component_index: 99 },
+                    source: ResolvedLegSource::RouteComponent {
+                        component_index: 99,
+                    },
                     procedure_provenance: None,
                 },
                 ResolvedLeg {
                     id: "proc-autto1-1".to_string(),
                     from: NavRef::Fix("BOREK".to_string()),
                     to: NavRef::Fix("AXXIS".to_string()),
-                    source: ResolvedLegSource::RouteComponent { component_index: 99 },
+                    source: ResolvedLegSource::RouteComponent {
+                        component_index: 99,
+                    },
                     procedure_provenance: None,
                 },
                 ResolvedLeg {
                     id: "proc-autto1-2".to_string(),
                     from: NavRef::Fix("AXXIS".to_string()),
                     to: NavRef::Fix("GIGGY".to_string()),
-                    source: ResolvedLegSource::RouteComponent { component_index: 99 },
+                    source: ResolvedLegSource::RouteComponent {
+                        component_index: 99,
+                    },
                     procedure_provenance: None,
                 },
             ],
@@ -2880,14 +3008,18 @@ mod tests {
                     id: "proc-autto1-p0".to_string(),
                     from: NavRef::Fix("PICUP".to_string()),
                     to: NavRef::Fix("AXXIS".to_string()),
-                    source: ResolvedLegSource::RouteComponent { component_index: 99 },
+                    source: ResolvedLegSource::RouteComponent {
+                        component_index: 99,
+                    },
                     procedure_provenance: None,
                 },
                 ResolvedLeg {
                     id: "proc-autto1-p1".to_string(),
                     from: NavRef::Fix("AXXIS".to_string()),
                     to: NavRef::Fix("GIGGY".to_string()),
-                    source: ResolvedLegSource::RouteComponent { component_index: 99 },
+                    source: ResolvedLegSource::RouteComponent {
+                        component_index: 99,
+                    },
                     procedure_provenance: None,
                 },
             ],
@@ -2907,14 +3039,18 @@ mod tests {
                     id: "airway-V2-A-r0".to_string(),
                     from: NavRef::Fix("OLM".to_string()),
                     to: NavRef::Fix("SUMMA".to_string()),
-                    source: ResolvedLegSource::RouteComponent { component_index: 99 },
+                    source: ResolvedLegSource::RouteComponent {
+                        component_index: 99,
+                    },
                     procedure_provenance: None,
                 },
                 ResolvedLeg {
                     id: "airway-V2-A-r1".to_string(),
                     from: NavRef::Fix("SUMMA".to_string()),
                     to: NavRef::Fix("BTG".to_string()),
-                    source: ResolvedLegSource::RouteComponent { component_index: 99 },
+                    source: ResolvedLegSource::RouteComponent {
+                        component_index: 99,
+                    },
                     procedure_provenance: None,
                 },
             ],
@@ -2985,12 +3121,30 @@ mod tests {
             RouteComponent::Airway { .. }
         ));
         assert_eq!(inserted.resolved_legs.len(), 5);
-        assert_eq!(inserted.resolved_legs[0].from, NavRef::Airport("KRNT".to_string()));
-        assert_eq!(inserted.resolved_legs[0].to, NavRef::Navaid("SEA".to_string()));
-        assert_eq!(inserted.resolved_legs[3].from, NavRef::Fix("VAMPS".to_string()));
-        assert_eq!(inserted.resolved_legs[3].to, NavRef::Airport("KUAO".to_string()));
-        assert_eq!(inserted.resolved_legs[4].from, NavRef::Airport("KUAO".to_string()));
-        assert_eq!(inserted.resolved_legs[4].to, NavRef::Airport("KHIO".to_string()));
+        assert_eq!(
+            inserted.resolved_legs[0].from,
+            NavRef::Airport("KRNT".to_string())
+        );
+        assert_eq!(
+            inserted.resolved_legs[0].to,
+            NavRef::Navaid("SEA".to_string())
+        );
+        assert_eq!(
+            inserted.resolved_legs[3].from,
+            NavRef::Fix("VAMPS".to_string())
+        );
+        assert_eq!(
+            inserted.resolved_legs[3].to,
+            NavRef::Airport("KUAO".to_string())
+        );
+        assert_eq!(
+            inserted.resolved_legs[4].from,
+            NavRef::Airport("KUAO".to_string())
+        );
+        assert_eq!(
+            inserted.resolved_legs[4].to,
+            NavRef::Airport("KHIO".to_string())
+        );
     }
 
     #[test]
@@ -3010,14 +3164,19 @@ mod tests {
             id: "airway-V2-A-0".to_string(),
             from: NavRef::Airport("KRNT".to_string()),
             to: NavRef::Fix("VAMPS".to_string()),
-            source: ResolvedLegSource::RouteComponent { component_index: 88 },
+            source: ResolvedLegSource::RouteComponent {
+                component_index: 88,
+            },
             procedure_provenance: None,
         }];
 
         let inserted = insert_airway_between_waypoints(&plan, 0, 1, airway, airway_legs).unwrap();
 
         assert_eq!(inserted.route_components.len(), 4);
-        assert!(matches!(inserted.route_components[1], RouteComponent::Airway { .. }));
+        assert!(matches!(
+            inserted.route_components[1],
+            RouteComponent::Airway { .. }
+        ));
     }
 
     #[test]
@@ -3105,11 +3264,23 @@ mod tests {
         let replaced = replace_airway_component(&plan, 1, airway, airway_legs).unwrap();
 
         assert_eq!(replaced.route_components.len(), 4);
-        assert!(matches!(replaced.route_components[1], RouteComponent::Airway { .. }));
-        assert_eq!(replaced.resolved_legs[0].from, NavRef::Airport("KRNT".to_string()));
+        assert!(matches!(
+            replaced.route_components[1],
+            RouteComponent::Airway { .. }
+        ));
+        assert_eq!(
+            replaced.resolved_legs[0].from,
+            NavRef::Airport("KRNT".to_string())
+        );
         assert_eq!(replaced.resolved_legs[0].to, NavRef::Fix("OLM".to_string()));
-        assert_eq!(replaced.resolved_legs[3].from, NavRef::Fix("BTG".to_string()));
-        assert_eq!(replaced.resolved_legs[3].to, NavRef::Airport("KUAO".to_string()));
+        assert_eq!(
+            replaced.resolved_legs[3].from,
+            NavRef::Fix("BTG".to_string())
+        );
+        assert_eq!(
+            replaced.resolved_legs[3].to,
+            NavRef::Airport("KUAO".to_string())
+        );
         assert!(replaced.guidance.is_none());
     }
 
@@ -3125,7 +3296,8 @@ mod tests {
         .unwrap();
         let (_, retargeted_legs) = sample_retargeted_airway();
 
-        let changed = change_airway_entry(&plan, 1, NavRef::Fix("OLM".to_string()), retargeted_legs).unwrap();
+        let changed =
+            change_airway_entry(&plan, 1, NavRef::Fix("OLM".to_string()), retargeted_legs).unwrap();
 
         let RouteComponent::Airway { airway } = &changed.route_components[1] else {
             panic!("expected airway");
@@ -3152,19 +3324,24 @@ mod tests {
                 id: "airway-V2-A-e0".to_string(),
                 from: NavRef::Navaid("SEA".to_string()),
                 to: NavRef::Fix("SUMMA".to_string()),
-                source: ResolvedLegSource::RouteComponent { component_index: 99 },
+                source: ResolvedLegSource::RouteComponent {
+                    component_index: 99,
+                },
                 procedure_provenance: None,
             },
             ResolvedLeg {
                 id: "airway-V2-A-e1".to_string(),
                 from: NavRef::Fix("SUMMA".to_string()),
                 to: NavRef::Fix("BTG".to_string()),
-                source: ResolvedLegSource::RouteComponent { component_index: 99 },
+                source: ResolvedLegSource::RouteComponent {
+                    component_index: 99,
+                },
                 procedure_provenance: None,
             },
         ];
 
-        let changed = change_airway_exit(&plan, 1, NavRef::Fix("BTG".to_string()), airway_legs).unwrap();
+        let changed =
+            change_airway_exit(&plan, 1, NavRef::Fix("BTG".to_string()), airway_legs).unwrap();
 
         let RouteComponent::Airway { airway } = &changed.route_components[1] else {
             panic!("expected airway");
@@ -3173,8 +3350,14 @@ mod tests {
         assert_eq!(airway.branch_key.as_deref(), Some("V2-A"));
         assert_eq!(airway.entry, NavRef::Navaid("SEA".to_string()));
         assert_eq!(airway.exit, NavRef::Fix("BTG".to_string()));
-        assert_eq!(changed.resolved_legs[3].from, NavRef::Fix("BTG".to_string()));
-        assert_eq!(changed.resolved_legs[3].to, NavRef::Airport("KUAO".to_string()));
+        assert_eq!(
+            changed.resolved_legs[3].from,
+            NavRef::Fix("BTG".to_string())
+        );
+        assert_eq!(
+            changed.resolved_legs[3].to,
+            NavRef::Airport("KUAO".to_string())
+        );
     }
 
     #[test]
@@ -3197,7 +3380,9 @@ mod tests {
             id: "j1-r0".to_string(),
             from: NavRef::Fix("SEA".to_string()),
             to: NavRef::Fix("BTG".to_string()),
-            source: ResolvedLegSource::RouteComponent { component_index: 99 },
+            source: ResolvedLegSource::RouteComponent {
+                component_index: 99,
+            },
             procedure_provenance: None,
         }];
 
@@ -3213,7 +3398,8 @@ mod tests {
     #[test]
     fn replace_airway_component_rejects_non_airway_slot() {
         let (airway, airway_legs) = sample_inserted_airway();
-        let err = replace_airway_component(&sample_waypoint_only_plan(), 0, airway, airway_legs).unwrap_err();
+        let err = replace_airway_component(&sample_waypoint_only_plan(), 0, airway, airway_legs)
+            .unwrap_err();
         assert_eq!(err.kind, AppErrorKind::UnsupportedOperation);
     }
 
@@ -3243,7 +3429,8 @@ mod tests {
     }
 
     #[test]
-    fn insert_procedure_between_waypoints_keeps_procedure_atomic_and_blocks_outbound_bridge_on_gap() {
+    fn insert_procedure_between_waypoints_keeps_procedure_atomic_and_blocks_outbound_bridge_on_gap()
+    {
         let plan = sample_waypoint_only_plan();
         let (procedure, procedure_legs) = sample_inserted_procedure();
 
@@ -3256,15 +3443,22 @@ mod tests {
             RouteComponent::Procedure { .. }
         ));
         assert_eq!(inserted.resolved_legs.len(), 5);
-        assert_eq!(inserted.resolved_legs[0].from, NavRef::Airport("KRNT".to_string()));
-        assert_eq!(inserted.resolved_legs[0].to, NavRef::Fix("COLTS".to_string()));
-        assert_eq!(inserted.resolved_legs[3].to, NavRef::Fix("GIGGY".to_string()));
-        assert!(
-            inserted
-                .resolved_legs
-                .iter()
-                .all(|leg| leg.to != NavRef::Airport("KUAO".to_string()))
+        assert_eq!(
+            inserted.resolved_legs[0].from,
+            NavRef::Airport("KRNT".to_string())
         );
+        assert_eq!(
+            inserted.resolved_legs[0].to,
+            NavRef::Fix("COLTS".to_string())
+        );
+        assert_eq!(
+            inserted.resolved_legs[3].to,
+            NavRef::Fix("GIGGY".to_string())
+        );
+        assert!(inserted
+            .resolved_legs
+            .iter()
+            .all(|leg| leg.to != NavRef::Airport("KUAO".to_string())));
     }
 
     #[test]
@@ -3307,14 +3501,18 @@ mod tests {
             replaced.route_components[1],
             RouteComponent::Procedure { .. }
         ));
-        assert_eq!(replaced.resolved_legs[0].to, NavRef::Fix("PICUP".to_string()));
-        assert_eq!(replaced.resolved_legs[2].to, NavRef::Fix("GIGGY".to_string()));
-        assert!(
-            replaced
-                .resolved_legs
-                .iter()
-                .all(|leg| leg.to != NavRef::Airport("KUAO".to_string()))
+        assert_eq!(
+            replaced.resolved_legs[0].to,
+            NavRef::Fix("PICUP".to_string())
         );
+        assert_eq!(
+            replaced.resolved_legs[2].to,
+            NavRef::Fix("GIGGY".to_string())
+        );
+        assert!(replaced
+            .resolved_legs
+            .iter()
+            .all(|leg| leg.to != NavRef::Airport("KUAO".to_string())));
         assert!(replaced.guidance.is_none());
     }
 
@@ -3343,7 +3541,10 @@ mod tests {
         };
         assert_eq!(procedure.procedure_id, "AUTTO1");
         assert_eq!(procedure.enroute_transition.as_deref(), Some("PICUP"));
-        assert_eq!(changed.resolved_legs[0].to, NavRef::Fix("PICUP".to_string()));
+        assert_eq!(
+            changed.resolved_legs[0].to,
+            NavRef::Fix("PICUP".to_string())
+        );
     }
 
     #[test]
@@ -3400,14 +3601,18 @@ mod tests {
                 id: "star-rw25-0".to_string(),
                 from: NavRef::Fix("ARD".to_string()),
                 to: NavRef::Fix("DYLIN".to_string()),
-                source: ResolvedLegSource::RouteComponent { component_index: 99 },
+                source: ResolvedLegSource::RouteComponent {
+                    component_index: 99,
+                },
                 procedure_provenance: None,
             },
             ResolvedLeg {
                 id: "star-rw25-1".to_string(),
                 from: NavRef::Fix("DYLIN".to_string()),
                 to: NavRef::Fix("METRO".to_string()),
-                source: ResolvedLegSource::RouteComponent { component_index: 99 },
+                source: ResolvedLegSource::RouteComponent {
+                    component_index: 99,
+                },
                 procedure_provenance: None,
             },
         ];
@@ -3851,7 +4056,10 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(ui.resolved_legs[0].from, NavRef::Airport("KRNT".to_string()));
+        assert_eq!(
+            ui.resolved_legs[0].from,
+            NavRef::Airport("KRNT".to_string())
+        );
         assert_eq!(ui.resolved_legs[0].to, NavRef::Navaid("SEA".to_string()));
     }
 
@@ -3875,8 +4083,14 @@ mod tests {
 
         assert!(ui.components[1].can_change_airway);
         assert!(ui.components[1].can_remove);
-        assert_eq!(ui.components[1].preceding_waypoint, Some(NavRef::Airport("KRNT".to_string())));
-        assert_eq!(ui.components[1].following_waypoint, Some(NavRef::Airport("KUAO".to_string())));
+        assert_eq!(
+            ui.components[1].preceding_waypoint,
+            Some(NavRef::Airport("KRNT".to_string()))
+        );
+        assert_eq!(
+            ui.components[1].following_waypoint,
+            Some(NavRef::Airport("KUAO".to_string()))
+        );
     }
 
     #[test]
@@ -4107,25 +4321,39 @@ mod tests {
 
     #[test]
     fn insert_airport_waypoint_adds_explicit_waypoint_before_or_after_component() {
-        let inserted_before = insert_airport_waypoint(&sample_two_waypoint_plan(), 1, true, " khio ").unwrap();
+        let inserted_before =
+            insert_airport_waypoint(&sample_two_waypoint_plan(), 1, true, " khio ").unwrap();
         assert_eq!(
             inserted_before.route_components[1],
             RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KHIO".to_string())
             }
         );
-        assert_eq!(inserted_before.resolved_legs[0].to, NavRef::Airport("KHIO".to_string()));
-        assert_eq!(inserted_before.resolved_legs[1].from, NavRef::Airport("KHIO".to_string()));
+        assert_eq!(
+            inserted_before.resolved_legs[0].to,
+            NavRef::Airport("KHIO".to_string())
+        );
+        assert_eq!(
+            inserted_before.resolved_legs[1].from,
+            NavRef::Airport("KHIO".to_string())
+        );
 
-        let inserted_after = insert_airport_waypoint(&sample_two_waypoint_plan(), 0, false, "khio").unwrap();
+        let inserted_after =
+            insert_airport_waypoint(&sample_two_waypoint_plan(), 0, false, "khio").unwrap();
         assert_eq!(
             inserted_after.route_components[1],
             RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KHIO".to_string())
             }
         );
-        assert_eq!(inserted_after.resolved_legs[0].to, NavRef::Airport("KHIO".to_string()));
-        assert_eq!(inserted_after.resolved_legs[1].from, NavRef::Airport("KHIO".to_string()));
+        assert_eq!(
+            inserted_after.resolved_legs[0].to,
+            NavRef::Airport("KHIO".to_string())
+        );
+        assert_eq!(
+            inserted_after.resolved_legs[1].from,
+            NavRef::Airport("KHIO".to_string())
+        );
     }
 
     #[test]
@@ -4145,9 +4373,18 @@ mod tests {
     fn move_component_reorders_top_level_components_even_when_grouped() {
         let moved = move_component(&sample_airway_component_plan(), 2, -1).unwrap();
 
-        assert!(matches!(moved.route_components[0], RouteComponent::Waypoint { .. }));
-        assert!(matches!(moved.route_components[1], RouteComponent::Waypoint { .. }));
-        assert!(matches!(moved.route_components[2], RouteComponent::Airway { .. }));
+        assert!(matches!(
+            moved.route_components[0],
+            RouteComponent::Waypoint { .. }
+        ));
+        assert!(matches!(
+            moved.route_components[1],
+            RouteComponent::Waypoint { .. }
+        ));
+        assert!(matches!(
+            moved.route_components[2],
+            RouteComponent::Airway { .. }
+        ));
         let ui = project_ui_state(&moved);
         assert!(ui.components.iter().all(|component| component.can_reorder));
     }
@@ -4162,7 +4399,8 @@ mod tests {
     }
 
     #[test]
-    fn project_ui_state_enables_procedure_replacement_before_airport_with_matching_approach_predecessor() {
+    fn project_ui_state_enables_procedure_replacement_before_airport_with_matching_approach_predecessor(
+    ) {
         let plan = FlightPlan {
             route_components: vec![
                 RouteComponent::Waypoint {
@@ -4208,7 +4446,9 @@ mod tests {
         let airport_row = ui
             .display_rows
             .iter()
-            .find(|row| row.component_index == Some(2) && row.row_kind == FlightPlanDisplayRowKind::Waypoint)
+            .find(|row| {
+                row.component_index == Some(2) && row.row_kind == FlightPlanDisplayRowKind::Waypoint
+            })
             .expect("airport row");
         assert_eq!(airport_row.replace_procedure_component_index, Some(1));
     }
@@ -4272,7 +4512,10 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(ui.guidance.as_ref().unwrap().active_component_index, Some(1));
+        assert_eq!(
+            ui.guidance.as_ref().unwrap().active_component_index,
+            Some(1)
+        );
         assert_eq!(ui.guidance.as_ref().unwrap().active_leg_index, Some(2));
     }
 

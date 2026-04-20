@@ -137,6 +137,8 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number }
         ? "image/webp"
         : extension === ".png"
           ? "image/png"
+          : extension === ".terrain"
+            ? "application/vnd.aerobag.terrain"
           : extension === ".db"
             ? "application/vnd.sqlite3"
           : extension === ".json"
@@ -177,15 +179,8 @@ function unpackedDirFromRelativeZip(filename: string): string {
   return path.join(artifactReadRoot, unpackedDir, filename.slice(0, -".zip".length));
 }
 
-function resolveCurrentFastProductRoot(productId: string): string | null {
-  const manifestPath = latestCurrentArtifacts(artifactReadRoot);
-  if (!manifestPath) {
-    return null;
-  }
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
-    fast_products?: Array<{ id?: string; filename?: string }>;
-  };
-  const product = manifest.fast_products?.find((candidate) => candidate.id === productId);
+function resolveCurrentStaticProductRoot(productId: string): string | null {
+  const product = currentArtifacts.static_products?.find((candidate) => candidate.id === productId);
   if (!product?.filename) {
     return null;
   }
@@ -196,15 +191,15 @@ function resolveCurrentFastProductRoot(productId: string): string | null {
   return productRoot;
 }
 
-function resolveCurrentStaticProductRoot(productId: string): string | null {
+function resolveCurrentFastProductRoot(productId: string): string | null {
   const manifestPath = latestCurrentArtifacts(artifactReadRoot);
   if (!manifestPath) {
     return null;
   }
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
-    static_products?: Array<{ id?: string; filename?: string }>;
+    fast_products?: Array<{ id?: string; filename?: string }>;
   };
-  const product = manifest.static_products?.find((candidate) => candidate.id === productId);
+  const product = manifest.fast_products?.find((candidate) => candidate.id === productId);
   if (!product?.filename) {
     return null;
   }

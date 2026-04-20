@@ -43,3 +43,16 @@ The web prototype reverses the manifest frame order and loops oldest-to-newest. 
 Android can use the same model: load `nexrad.json`, decode the PNG frames, convert EPSG:3857 meter bounds into the map's Web Mercator world coordinates, and draw the current frame as a bitmap overlay under route/ownship symbology. Keep the radar layer pointer-transparent and treat absence or unsupported projection as "no radar layer", not as a fatal map error.
 
 METAR and TFR are not wired in web yet. METAR records have `station_id`, `raw_text`, `observation_time_utc`, `flight_category`, `longitude`, and `latitude`. TFR records are grouped as `areas`, with NOTAM metadata, schedule fragments, altitude limits, `avare_text`, and lat/lon polygon points.
+
+## Terrain draft
+
+Terrain is a static product, not a fast product, but it follows the same handoff principle: core owns product semantics and UI/platform owns byte transport plus final painting.
+
+The draft web flow is:
+
+- Core session call `get_terrain_overlay_in_session(viewport, width, height)` decides whether terrain is drawable from current ownship state and returns static product file requests plus screen placement.
+- Web fetches `/terrain-products/<product-id>/<path>` for each request and does not parse the payload.
+- Core session call `render_terrain_overlay_tile_in_session(bytes)` parses ABT1, applies terrain warning policy and nodata treatment, and returns a PNG.
+- Web paints the returned PNG at core-provided `left/top/size`.
+
+For Android parity, implement the same adapter boundary: satisfy core's static product file requests from the Android product/cache layer, pass bytes back to core, and draw the returned PNG/bitmap. Avoid duplicating ABT1 parsing, clearance thresholds, or nodata styling in Android UI code.

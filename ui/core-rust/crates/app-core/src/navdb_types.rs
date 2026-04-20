@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::geometry::LatLon;
 use crate::planning::{
-    interpret_path_termination, ConcretizedNavItem, NavRef, PathTermination,
-    ProcedureKind, ResolvedLeg,
+    interpret_path_termination, ConcretizedNavItem, NavRef, PathTermination, ProcedureKind,
+    ResolvedLeg,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

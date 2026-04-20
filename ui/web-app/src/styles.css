@@ -129,6 +129,24 @@ button {
   user-select: none;
 }
 
+.terrainOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.terrainOverlayTile {
+  position: absolute;
+  display: block;
+  max-width: none;
+  opacity: 0.68;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+  user-select: none;
+}
+
 .nexradBadge {
   position: absolute;
   left: var(--thumb-gap);

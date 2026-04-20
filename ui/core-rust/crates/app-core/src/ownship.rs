@@ -170,6 +170,8 @@ pub struct OwnshipRenderState {
     pub position: Option<LatLon>,
     pub orientation_deg: Option<f64>,
     pub speed_kt: Option<f64>,
+    pub altitude_msl_ft: Option<f64>,
+    pub pressure_altitude_ft: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -237,9 +239,16 @@ pub struct OwnshipSourceStatusUpdate {
     pub status_label: String,
 }
 
-pub fn register_source(state: &OwnshipState, registration: OwnshipSourceRegistration) -> OwnshipState {
+pub fn register_source(
+    state: &OwnshipState,
+    registration: OwnshipSourceRegistration,
+) -> OwnshipState {
     let mut next = state.clone();
-    match next.sources.iter_mut().find(|source| source.source_id == registration.source_id) {
+    match next
+        .sources
+        .iter_mut()
+        .find(|source| source.source_id == registration.source_id)
+    {
         Some(existing) => {
             existing.source_kind = registration.source_kind;
             existing.display_name = registration.display_name;
@@ -276,9 +285,16 @@ pub fn register_source(state: &OwnshipState, registration: OwnshipSourceRegistra
     refresh(&next)
 }
 
-pub fn update_source_status(state: &OwnshipState, update: OwnshipSourceStatusUpdate) -> OwnshipState {
+pub fn update_source_status(
+    state: &OwnshipState,
+    update: OwnshipSourceStatusUpdate,
+) -> OwnshipState {
     let mut next = state.clone();
-    if let Some(source) = next.sources.iter_mut().find(|source| source.source_id == update.source_id) {
+    if let Some(source) = next
+        .sources
+        .iter_mut()
+        .find(|source| source.source_id == update.source_id)
+    {
         source.connection_state = update.connection_state;
         source.enabled = update.enabled;
         source.status_label = update.status_label;
@@ -296,14 +312,20 @@ pub fn select_source(state: &OwnshipState, selection: OwnshipSelectionCommand) -
     let mut next = state.clone();
     next.policy.selection = match selection {
         OwnshipSelectionCommand::Auto => OwnshipSelectionPolicy::Auto,
-        OwnshipSelectionCommand::Source { source_id } => OwnshipSelectionPolicy::Manual { source_id },
+        OwnshipSelectionCommand::Source { source_id } => {
+            OwnshipSelectionPolicy::Manual { source_id }
+        }
     };
     refresh(&next)
 }
 
 pub fn push_sample(state: &OwnshipState, sample: SituationSample) -> OwnshipState {
     let mut next = state.clone();
-    match next.sources.iter_mut().find(|source| source.source_id == sample.source_id) {
+    match next
+        .sources
+        .iter_mut()
+        .find(|source| source.source_id == sample.source_id)
+    {
         Some(source) => apply_sample(source, sample),
         None => {
             let mut source = OwnshipSourceStatus {
@@ -322,7 +344,8 @@ pub fn push_sample(state: &OwnshipState, sample: SituationSample) -> OwnshipStat
                 provides_heading: sample.heading_deg_true.is_some(),
                 provides_track: sample.track_deg_true.is_some(),
                 provides_speed: sample.ground_speed_kt.is_some(),
-                provides_altitude: sample.altitude_msl_ft.is_some() || sample.pressure_altitude_ft.is_some(),
+                provides_altitude: sample.altitude_msl_ft.is_some()
+                    || sample.pressure_altitude_ft.is_some(),
                 status_label: "Connected".to_string(),
                 latest_sample: None,
             };
@@ -343,7 +366,8 @@ fn apply_sample(source: &mut OwnshipSourceStatus, sample: SituationSample) {
     source.provides_heading = sample.heading_deg_true.is_some();
     source.provides_track = sample.track_deg_true.is_some();
     source.provides_speed = sample.ground_speed_kt.is_some();
-    source.provides_altitude = sample.altitude_msl_ft.is_some() || sample.pressure_altitude_ft.is_some();
+    source.provides_altitude =
+        sample.altitude_msl_ft.is_some() || sample.pressure_altitude_ft.is_some();
     source.latest_sample = Some(sample);
 }
 
@@ -374,11 +398,13 @@ fn resolve_state(
     }
 
     let selected = match &policy.selection {
-        OwnshipSelectionPolicy::Manual { source_id } => sources
-            .iter_mut()
-            .find(|source| source.source_id == *source_id && is_candidate(source, now_epoch_ms, policy)),
+        OwnshipSelectionPolicy::Manual { source_id } => sources.iter_mut().find(|source| {
+            source.source_id == *source_id && is_candidate(source, now_epoch_ms, policy)
+        }),
         OwnshipSelectionPolicy::Auto => {
-            if let Some(found) = pick_by_priority(sources, &policy.source_priority, now_epoch_ms, policy) {
+            if let Some(found) =
+                pick_by_priority(sources, &policy.source_priority, now_epoch_ms, policy)
+            {
                 Some(found)
             } else {
                 sources
@@ -455,7 +481,10 @@ fn pick_by_priority<'a>(
 fn is_candidate(source: &OwnshipSourceStatus, now_epoch_ms: i64, policy: &OwnshipPolicy) -> bool {
     source.enabled
         && source.auto_eligible
-        && source.latest_sample.as_ref().is_some_and(|sample| sample.position.is_some())
+        && source
+            .latest_sample
+            .as_ref()
+            .is_some_and(|sample| sample.position.is_some())
         && is_fresh(source, now_epoch_ms)
         && match mode_for_kind(source.source_kind) {
             OwnshipMode::Replay => policy.allow_auto_replay,
@@ -491,6 +520,14 @@ fn project_render_state(resolved: &ResolvedOwnshipState) -> OwnshipRenderState {
         .kinematics
         .as_ref()
         .and_then(|kinematics| kinematics.ground_speed_kt);
+    let altitude_msl_ft = resolved
+        .kinematics
+        .as_ref()
+        .and_then(|kinematics| kinematics.altitude_msl_ft);
+    let pressure_altitude_ft = resolved
+        .kinematics
+        .as_ref()
+        .and_then(|kinematics| kinematics.pressure_altitude_ft);
 
     OwnshipRenderState {
         mode: resolved.mode,
@@ -499,9 +536,14 @@ fn project_render_state(resolved: &ResolvedOwnshipState) -> OwnshipRenderState {
         draw_aircraft: resolved.kinematics.is_some(),
         draw_predictor: resolved.kinematics.is_some() && speed_kt.is_some(),
         draw_cdi: resolved.guidance_enabled,
-        position: resolved.kinematics.as_ref().map(|kinematics| kinematics.position),
+        position: resolved
+            .kinematics
+            .as_ref()
+            .map(|kinematics| kinematics.position),
         orientation_deg,
         speed_kt,
+        altitude_msl_ft,
+        pressure_altitude_ft,
     }
 }
 
@@ -545,7 +587,10 @@ mod tests {
                 source_kind: OwnshipSourceKind::DeviceGps,
                 event_time_epoch_ms: 10_000,
                 received_time_epoch_ms: 10_000,
-                position: Some(LatLon { lat: 47.0, lon: -122.0 }),
+                position: Some(LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                }),
                 track_deg_true: Some(90.0),
                 heading_deg_true: None,
                 ground_speed_kt: Some(120.0),
@@ -584,7 +629,10 @@ mod tests {
                 source_kind: OwnshipSourceKind::DeviceGps,
                 event_time_epoch_ms: 1_000,
                 received_time_epoch_ms: 1_000,
-                position: Some(LatLon { lat: 47.0, lon: -122.0 }),
+                position: Some(LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                }),
                 track_deg_true: Some(90.0),
                 heading_deg_true: None,
                 ground_speed_kt: Some(120.0),
@@ -599,7 +647,10 @@ mod tests {
                 source_kind: OwnshipSourceKind::FlightPlanSimulator,
                 event_time_epoch_ms: 2_000,
                 received_time_epoch_ms: 2_000,
-                position: Some(LatLon { lat: 48.0, lon: -123.0 }),
+                position: Some(LatLon {
+                    lat: 48.0,
+                    lon: -123.0,
+                }),
                 track_deg_true: Some(180.0),
                 heading_deg_true: Some(180.0),
                 ground_speed_kt: Some(100.0),

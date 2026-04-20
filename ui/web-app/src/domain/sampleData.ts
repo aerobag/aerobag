@@ -79,6 +79,8 @@ export const emptyState: AppState = {
       position: null,
       orientation_deg: null,
       speed_kt: null,
+      altitude_msl_ft: null,
+      pressure_altitude_ft: null,
     },
     controls: {
       mode: "none",

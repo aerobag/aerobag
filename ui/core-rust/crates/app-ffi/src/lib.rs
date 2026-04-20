@@ -5,8 +5,7 @@ use jni::JNIEnv;
 use std::path::Path;
 
 pub fn load_catalog_json(catalog_json: &str) -> Result<String, String> {
-    let handle =
-        app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
+    let handle = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
     serde_json::to_string(&handle).map_err(|err| err.to_string())
 }
 
@@ -39,8 +38,8 @@ pub fn move_component_ui_json(
 ) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation =
-        app_core::move_component_ui(&plan, component_index, delta).map_err(|err| err.to_string())?;
+    let mutation = app_core::move_component_ui(&plan, component_index, delta)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
@@ -54,8 +53,8 @@ pub fn insert_waypoint_ui_json(
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let waypoint: app_core::NavRef =
         serde_json::from_str(waypoint_json).map_err(|err| err.to_string())?;
-    let mutation =
-        app_core::insert_waypoint_ui(&plan, component_index, before, waypoint).map_err(|err| err.to_string())?;
+    let mutation = app_core::insert_waypoint_ui(&plan, component_index, before, waypoint)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
@@ -115,19 +114,27 @@ pub fn suggest_airways_near_json(
 }
 
 pub fn resolve_nav_ref_position_json(db_path: &str, nav_ref_json: &str) -> Result<String, String> {
-    let nav_ref: app_core::NavRef = serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
-    let position = app_core::resolve_nav_ref_position(Path::new(db_path), &nav_ref).map_err(|err| err.to_string())?;
+    let nav_ref: app_core::NavRef =
+        serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
+    let position = app_core::resolve_nav_ref_position(Path::new(db_path), &nav_ref)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&position).map_err(|err| err.to_string())
 }
 
 pub fn resolve_nav_ref_identifier_json(db_path: &str, identifier: &str) -> Result<String, String> {
-    let nav_ref = app_core::resolve_nav_ref_identifier(Path::new(db_path), identifier).map_err(|err| err.to_string())?;
+    let nav_ref = app_core::resolve_nav_ref_identifier(Path::new(db_path), identifier)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&nav_ref).map_err(|err| err.to_string())
 }
 
-pub fn resolve_nav_symbol_feature_json(db_path: &str, nav_ref_json: &str) -> Result<String, String> {
-    let nav_ref: app_core::NavRef = serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
-    let feature = app_core::resolve_nav_symbol_feature(Path::new(db_path), &nav_ref).map_err(|err| err.to_string())?;
+pub fn resolve_nav_symbol_feature_json(
+    db_path: &str,
+    nav_ref_json: &str,
+) -> Result<String, String> {
+    let nav_ref: app_core::NavRef =
+        serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
+    let feature = app_core::resolve_nav_symbol_feature(Path::new(db_path), &nav_ref)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&feature).map_err(|err| err.to_string())
 }
 
@@ -158,8 +165,10 @@ pub fn resolve_nav_ref_position_with_airport_json(
     nav_ref_json: &str,
     airport_id_json: &str,
 ) -> Result<String, String> {
-    let nav_ref: app_core::NavRef = serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
-    let airport_id: Option<String> = serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
+    let nav_ref: app_core::NavRef =
+        serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
+    let airport_id: Option<String> =
+        serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
     let position = app_core::resolve_nav_ref_position_with_procedure_airport(
         Path::new(db_path),
         &nav_ref,
@@ -233,9 +242,13 @@ pub fn describe_procedure_options_json(
 ) -> Result<String, String> {
     let kind: app_core::ProcedureKind =
         serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
-    let options =
-        app_core::describe_procedure_options(std::path::Path::new(db_path), airport_id, procedure_id, kind)
-            .map_err(|err| err.to_string())?;
+    let options = app_core::describe_procedure_options(
+        std::path::Path::new(db_path),
+        airport_id,
+        procedure_id,
+        kind,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&options).map_err(|err| err.to_string())
 }
 
@@ -275,12 +288,9 @@ pub fn activate_direct_to_leg_ui_json(
 ) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::activate_direct_to_leg_ui(
-        &plan,
-        app_core::LatLon { lat, lon },
-        target_leg_id,
-    )
-    .map_err(|err| err.to_string())?;
+    let mutation =
+        app_core::activate_direct_to_leg_ui(&plan, app_core::LatLon { lat, lon }, target_leg_id)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
@@ -547,8 +557,8 @@ pub fn derive_chart_page_json(
     resource_index_json: &str,
     plan_json: &str,
 ) -> Result<String, String> {
-    let resource_index =
-        app_core::load_resource_index_chart_page_input(resource_index_json).map_err(|err| err.to_string())?;
+    let resource_index = app_core::load_resource_index_chart_page_input(resource_index_json)
+        .map_err(|err| err.to_string())?;
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let chart_page = app_core::derive_chart_page(&resource_index, &plan);
@@ -556,8 +566,8 @@ pub fn derive_chart_page_json(
 }
 
 pub fn derive_chart_catalog_json(resource_index_json: &str) -> Result<String, String> {
-    let resource_index =
-        app_core::load_resource_index_chart_page_input(resource_index_json).map_err(|err| err.to_string())?;
+    let resource_index = app_core::load_resource_index_chart_page_input(resource_index_json)
+        .map_err(|err| err.to_string())?;
     let chart_catalog = app_core::build_chart_catalog(&resource_index);
     serde_json::to_string(&chart_catalog).map_err(|err| err.to_string())
 }
@@ -569,8 +579,8 @@ pub fn derive_chart_page_state_json(
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
 ) -> Result<String, String> {
-    let resource_index =
-        app_core::load_resource_index_chart_page_input(resource_index_json).map_err(|err| err.to_string())?;
+    let resource_index = app_core::load_resource_index_chart_page_input(resource_index_json)
+        .map_err(|err| err.to_string())?;
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let recent_airport_ids: Vec<String> =
@@ -718,8 +728,9 @@ pub fn describe_procedure_options_from_rows_json(
         serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
     let rows: Vec<app_core::ProcedureDistinctRow> =
         serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
-    let options = app_core::describe_procedure_options_from_rows(airport_id, procedure_id, kind, rows)
-        .map_err(|err| err.to_string())?;
+    let options =
+        app_core::describe_procedure_options_from_rows(airport_id, procedure_id, kind, rows)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&options).map_err(|err| err.to_string())
 }
 
@@ -777,9 +788,14 @@ pub fn describe_load_procedure_from_plate_json(
         serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
     let options: app_core::ProcedureOptions =
         serde_json::from_str(options_json).map_err(|err| err.to_string())?;
-    let description =
-        app_core::describe_load_procedure_from_plate(&plan, airport_id, procedure_id, kind, options)
-            .map_err(|err| err.to_string())?;
+    let description = app_core::describe_load_procedure_from_plate(
+        &plan,
+        airport_id,
+        procedure_id,
+        kind,
+        options,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&description).map_err(|err| err.to_string())
 }
 
@@ -812,15 +828,16 @@ pub fn create_ui_session_json(
 }
 
 pub fn remove_leg_in_session_json(handle: u64, index: usize) -> Result<String, String> {
-    let snapshot = app_core::remove_leg_in_session(handle as u32, index).map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::remove_leg_in_session(handle as u32, index).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 pub fn replace_flight_plan_in_session_json(handle: u64, plan_json: &str) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let snapshot =
-        app_core::replace_flight_plan_in_session(handle as u32, plan).map_err(|err| err.to_string())?;
+    let snapshot = app_core::replace_flight_plan_in_session(handle as u32, plan)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -845,10 +862,14 @@ pub fn move_waypoint_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-pub fn select_airport_in_session_json(handle: u64, airport_id_json: &str) -> Result<String, String> {
-    let airport_id: String = serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
-    let snapshot =
-        app_core::select_airport_in_session(handle as u32, &airport_id).map_err(|err| err.to_string())?;
+pub fn select_airport_in_session_json(
+    handle: u64,
+    airport_id_json: &str,
+) -> Result<String, String> {
+    let airport_id: String =
+        serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::select_airport_in_session(handle as u32, &airport_id)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -902,8 +923,8 @@ pub fn engage_map_follow_in_session_json(
 ) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
-    let snapshot =
-        app_core::engage_map_follow_in_session(handle as u32, viewport).map_err(|err| err.to_string())?;
+    let snapshot = app_core::engage_map_follow_in_session(handle as u32, viewport)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -913,8 +934,8 @@ pub fn disengage_map_follow_in_session_json(
 ) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
-    let snapshot =
-        app_core::disengage_map_follow_in_session(handle as u32, viewport).map_err(|err| err.to_string())?;
+    let snapshot = app_core::disengage_map_follow_in_session(handle as u32, viewport)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -943,20 +964,21 @@ pub fn load_playback_trace_in_session_json(
 ) -> Result<String, String> {
     let source_path: String =
         serde_json::from_str(source_path_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::load_playback_trace_in_session(handle as u32, &source_path, trace_json)
-        .map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::load_playback_trace_in_session(handle as u32, &source_path, trace_json)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 pub fn play_playback_in_session_json(handle: u64, now_epoch_ms: f64) -> Result<String, String> {
-    let snapshot =
-        app_core::play_playback_in_session(handle as u32, now_epoch_ms).map_err(|err| err.to_string())?;
+    let snapshot = app_core::play_playback_in_session(handle as u32, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 pub fn pause_playback_in_session_json(handle: u64, now_epoch_ms: f64) -> Result<String, String> {
-    let snapshot =
-        app_core::pause_playback_in_session(handle as u32, now_epoch_ms).map_err(|err| err.to_string())?;
+    let snapshot = app_core::pause_playback_in_session(handle as u32, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -981,15 +1003,15 @@ pub fn set_playback_rate_in_session_json(
 }
 
 pub fn tick_playback_in_session_json(handle: u64, now_epoch_ms: f64) -> Result<String, String> {
-    let snapshot =
-        app_core::tick_playback_in_session(handle as u32, now_epoch_ms).map_err(|err| err.to_string())?;
+    let snapshot = app_core::tick_playback_in_session(handle as u32, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 pub fn select_chart_in_session_json(handle: u64, chart_id_json: &str) -> Result<String, String> {
     let chart_id: String = serde_json::from_str(chart_id_json).map_err(|err| err.to_string())?;
-    let snapshot =
-        app_core::select_chart_in_session(handle as u32, &chart_id).map_err(|err| err.to_string())?;
+    let snapshot = app_core::select_chart_in_session(handle as u32, &chart_id)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -1023,7 +1045,8 @@ pub fn restore_chart_page_state_in_session_json(
 pub fn ingest_point_tiles_in_session_json(handle: u64, tiles_json: &str) -> Result<String, String> {
     let tiles: Vec<app_core::PointTilePayload> =
         serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
-    app_core::ingest_point_tiles_in_session(handle as u32, &tiles).map_err(|err| err.to_string())?;
+    app_core::ingest_point_tiles_in_session(handle as u32, &tiles)
+        .map_err(|err| err.to_string())?;
     Ok("null".to_string())
 }
 
@@ -1035,8 +1058,9 @@ pub fn get_map_overlay_in_session_json(
 ) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
-    let overlay = app_core::get_map_overlay_in_session(handle as u32, viewport, width_px, height_px)
-        .map_err(|err| err.to_string())?;
+    let overlay =
+        app_core::get_map_overlay_in_session(handle as u32, viewport, width_px, height_px)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
 }
 
@@ -1048,8 +1072,9 @@ pub fn sync_map_follow_in_session_json(
 ) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::sync_map_follow_in_session(handle as u32, viewport, width_px, height_px)
-        .map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::sync_map_follow_in_session(handle as u32, viewport, width_px, height_px)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -1358,7 +1383,12 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_lis
         let airway_name = get_java_string(&mut env, airway_name)?;
         let entry_json = get_java_string(&mut env, entry_json)?;
         let destination_anchor_json = get_java_string(&mut env, destination_anchor_json)?;
-        list_airway_exit_candidates_json(&db_path, &airway_name, &entry_json, &destination_anchor_json)
+        list_airway_exit_candidates_json(
+            &db_path,
+            &airway_name,
+            &entry_json,
+            &destination_anchor_json,
+        )
     })();
     return_string(&mut env, result)
 }
@@ -1741,7 +1771,12 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_des
         let procedure_id = get_java_string(&mut env, procedure_id)?;
         let kind_json = get_java_string(&mut env, kind_json)?;
         let rows_json = get_java_string(&mut env, rows_json)?;
-        describe_procedure_options_from_rows_json(&airport_id, &procedure_id, &kind_json, &rows_json)
+        describe_procedure_options_from_rows_json(
+            &airport_id,
+            &procedure_id,
+            &kind_json,
+            &rows_json,
+        )
     })();
     return_string(&mut env, result)
 }
@@ -1873,7 +1908,10 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_rem
     handle: i64,
     index: i32,
 ) -> jstring {
-    return_string(&mut env, remove_leg_in_session_json(handle as u64, index as usize))
+    return_string(
+        &mut env,
+        remove_leg_in_session_json(handle as u64, index as usize),
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -2457,8 +2495,18 @@ mod tests {
         let next_json = activate_leg_ui_json(&plan_json, 1).unwrap();
         let next: app_core::FlightPlanUiMutation = serde_json::from_str(&next_json).unwrap();
 
-        assert_eq!(next.ui_state.guidance.as_ref().unwrap().active_leg_index, Some(1));
-        assert_eq!(next.ui_state.guidance.as_ref().unwrap().active_component_index, Some(1));
+        assert_eq!(
+            next.ui_state.guidance.as_ref().unwrap().active_leg_index,
+            Some(1)
+        );
+        assert_eq!(
+            next.ui_state
+                .guidance
+                .as_ref()
+                .unwrap()
+                .active_component_index,
+            Some(1)
+        );
     }
 
     #[test]
@@ -2497,7 +2545,10 @@ mod tests {
         let next: app_core::AirwayPlanUiMutation = serde_json::from_str(&next_json).unwrap();
 
         assert_eq!(next.mutation.component_index, 1);
-        assert!(matches!(next.ui_state.components[1].kind, app_core::RouteComponentViewKind::Airway));
+        assert!(matches!(
+            next.ui_state.components[1].kind,
+            app_core::RouteComponentViewKind::Airway
+        ));
     }
 
     #[test]
@@ -2537,7 +2588,10 @@ mod tests {
         let next: app_core::ProcedurePlanUiMutation = serde_json::from_str(&next_json).unwrap();
 
         assert_eq!(next.mutation.component_index, 1);
-        assert!(matches!(next.ui_state.components[1].kind, app_core::RouteComponentViewKind::Procedure));
+        assert!(matches!(
+            next.ui_state.components[1].kind,
+            app_core::RouteComponentViewKind::Procedure
+        ));
     }
 
     #[test]
@@ -2569,7 +2623,12 @@ mod tests {
         .unwrap();
 
         let refreshed: app_core::AppState = serde_json::from_str(&refreshed_json).unwrap();
-        assert!(refreshed.last_content_report.as_ref().unwrap().fully_satisfied);
+        assert!(
+            refreshed
+                .last_content_report
+                .as_ref()
+                .unwrap()
+                .fully_satisfied
+        );
     }
-
 }

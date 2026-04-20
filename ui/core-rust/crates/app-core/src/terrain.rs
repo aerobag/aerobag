@@ -1,0 +1,543 @@
+use serde::{Deserialize, Serialize};
+
+const ABT1_MAGIC: &[u8; 4] = b"ABT1";
+const HEADER_BYTES: usize = 20;
+const MIN_TERRAIN_ZOOM: u32 = 0;
+const MAX_TERRAIN_ZOOM: u32 = 10;
+const WORLD_SIZE: f64 = 256.0;
+const MAX_LATITUDE: f64 = 85.051_128_78;
+const MAX_TERRAIN_TILES: usize = 512;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TerrainProductCoverage {
+    product_id: &'static str,
+    x_min: u32,
+    x_max: u32,
+    y_tms_min: u32,
+    y_tms_max: u32,
+}
+
+const TERRAIN_PRODUCTS: &[TerrainProductCoverage] = &[
+    TerrainProductCoverage {
+        product_id: "terrain-ak",
+        x_min: 0,
+        x_max: 153,
+        y_tms_min: 681,
+        y_tms_max: 803,
+    },
+    TerrainProductCoverage {
+        product_id: "terrain-pac",
+        x_min: 51,
+        x_max: 79,
+        y_tms_min: 564,
+        y_tms_max: 582,
+    },
+    TerrainProductCoverage {
+        product_id: "terrain-sw",
+        x_min: 156,
+        x_max: 219,
+        y_tms_min: 555,
+        y_tms_max: 636,
+    },
+    TerrainProductCoverage {
+        product_id: "terrain-nw",
+        x_min: 156,
+        x_max: 219,
+        y_tms_min: 637,
+        y_tms_max: 676,
+    },
+    TerrainProductCoverage {
+        product_id: "terrain-sc",
+        x_min: 199,
+        x_max: 256,
+        y_tms_min: 555,
+        y_tms_max: 625,
+    },
+    TerrainProductCoverage {
+        product_id: "terrain-nc",
+        x_min: 213,
+        x_max: 256,
+        y_tms_min: 626,
+        y_tms_max: 676,
+    },
+    TerrainProductCoverage {
+        product_id: "terrain-se",
+        x_min: 257,
+        x_max: 341,
+        y_tms_min: 555,
+        y_tms_max: 625,
+    },
+    TerrainProductCoverage {
+        product_id: "terrain-ec",
+        x_min: 257,
+        x_max: 284,
+        y_tms_min: 626,
+        y_tms_max: 676,
+    },
+    TerrainProductCoverage {
+        product_id: "terrain-ne",
+        x_min: 285,
+        x_max: 341,
+        y_tms_min: 626,
+        y_tms_max: 676,
+    },
+];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TerrainTileInfo {
+    pub width: u16,
+    pub height: u16,
+    pub nodata: i16,
+    pub scale: f32,
+    pub offset: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TerrainOverlayQueryResult {
+    pub status: TerrainOverlayStatus,
+    pub tile_requests: Vec<TerrainOverlayTileRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum TerrainOverlayStatus {
+    NoPosition,
+    NoAltitude,
+    TooManyTiles { count: usize },
+    Ready { count: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TerrainOverlayTileRequest {
+    pub key: String,
+    pub product_id: String,
+    pub path: String,
+    pub source_tiles: Vec<TerrainOverlaySourceTile>,
+    pub z: u32,
+    pub x: u32,
+    pub y_tms: u32,
+    pub left: f64,
+    pub top: f64,
+    pub size: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TerrainOverlaySourceTile {
+    pub product_id: String,
+    pub path: String,
+}
+
+pub fn query_terrain_overlay(
+    viewport: &crate::MapViewport,
+    width_px: f64,
+    height_px: f64,
+    has_position: bool,
+    has_altitude: bool,
+) -> TerrainOverlayQueryResult {
+    if !has_position {
+        return TerrainOverlayQueryResult {
+            status: TerrainOverlayStatus::NoPosition,
+            tile_requests: Vec::new(),
+        };
+    }
+    if !has_altitude {
+        return TerrainOverlayQueryResult {
+            status: TerrainOverlayStatus::NoAltitude,
+            tile_requests: Vec::new(),
+        };
+    }
+    let tile_requests = terrain_tile_requests(viewport, width_px, height_px);
+    let count = tile_requests.len();
+    if count > MAX_TERRAIN_TILES {
+        return TerrainOverlayQueryResult {
+            status: TerrainOverlayStatus::TooManyTiles { count },
+            tile_requests: Vec::new(),
+        };
+    }
+    TerrainOverlayQueryResult {
+        status: TerrainOverlayStatus::Ready { count },
+        tile_requests,
+    }
+}
+
+pub fn render_terrain_warning_png(
+    tile_bytes: &[u8],
+    aircraft_altitude_ft: f64,
+) -> Result<Vec<u8>, String> {
+    let (info, rgba) = render_terrain_warning_rgba(tile_bytes, aircraft_altitude_ft)?;
+    encode_terrain_warning_png(&info, &rgba)
+}
+
+pub fn render_terrain_warning_png_from_tiles(
+    tile_bytes_list: &[&[u8]],
+    aircraft_altitude_ft: f64,
+) -> Result<Vec<u8>, String> {
+    if tile_bytes_list.is_empty() {
+        return Err("no terrain source tiles supplied".to_string());
+    }
+    let parsed_tiles = tile_bytes_list
+        .iter()
+        .map(|tile_bytes| parse_abt1_tile(tile_bytes))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (info, samples) = composite_terrain_samples(&parsed_tiles)?;
+    let rgba = render_terrain_warning_samples(&info, &samples, aircraft_altitude_ft);
+    encode_terrain_warning_png(&info, &rgba)
+}
+
+fn encode_terrain_warning_png(info: &TerrainTileInfo, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    let mut png_bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png_bytes, info.width as u32, info.height as u32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::NoCompression);
+        encoder.set_filter(png::Filter::NoFilter);
+        let mut writer = encoder.write_header().map_err(|err| err.to_string())?;
+        writer
+            .write_image_data(&rgba)
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(png_bytes)
+}
+
+pub fn render_terrain_warning_rgba(
+    tile_bytes: &[u8],
+    aircraft_altitude_ft: f64,
+) -> Result<(TerrainTileInfo, Vec<u8>), String> {
+    let (info, samples) = parse_abt1_tile(tile_bytes)?;
+    Ok((
+        info.clone(),
+        render_terrain_warning_samples(&info, &samples, aircraft_altitude_ft),
+    ))
+}
+
+fn render_terrain_warning_samples(
+    info: &TerrainTileInfo,
+    samples: &[i16],
+    aircraft_altitude_ft: f64,
+) -> Vec<u8> {
+    let width = info.width as usize;
+    let height = info.height as usize;
+    let mut rgba = vec![0_u8; width * height * 4];
+    for (index, sample) in samples.iter().copied().enumerate() {
+        let pixel = index * 4;
+        if sample == info.nodata {
+            let x = index % width;
+            let y = index / width;
+            if (x + y) % 12 < 6 {
+                rgba[pixel] = 0;
+                rgba[pixel + 1] = 82;
+                rgba[pixel + 2] = 150;
+                rgba[pixel + 3] = 70;
+            }
+            continue;
+        }
+        let elevation_ft = sample as f64 * info.scale as f64 + info.offset as f64;
+        let clearance_ft = aircraft_altitude_ft - elevation_ft;
+        if clearance_ft <= 0.0 {
+            rgba[pixel] = 185;
+            rgba[pixel + 1] = 0;
+            rgba[pixel + 2] = 45;
+            rgba[pixel + 3] = 190;
+        } else if clearance_ft <= 1000.0 {
+            rgba[pixel] = 255;
+            rgba[pixel + 1] = 220;
+            rgba[pixel + 2] = 0;
+            rgba[pixel + 3] = 125;
+        }
+    }
+    rgba
+}
+
+fn composite_terrain_samples(
+    parsed_tiles: &[(TerrainTileInfo, Vec<i16>)],
+) -> Result<(TerrainTileInfo, Vec<i16>), String> {
+    let (first_info, first_samples) = parsed_tiles
+        .first()
+        .ok_or_else(|| "no terrain source tiles supplied".to_string())?;
+    let sample_count = first_samples.len();
+    let mut composite = vec![first_info.nodata; sample_count];
+    let mut composite_elevations = vec![f64::NEG_INFINITY; sample_count];
+
+    for (info, samples) in parsed_tiles {
+        if info.width != first_info.width || info.height != first_info.height {
+            return Err("terrain source tile dimensions do not match".to_string());
+        }
+        if samples.len() != sample_count {
+            return Err("terrain source tile sample counts do not match".to_string());
+        }
+        for (index, sample) in samples.iter().copied().enumerate() {
+            if sample == info.nodata {
+                continue;
+            }
+            let elevation_ft = sample as f64 * info.scale as f64 + info.offset as f64;
+            if elevation_ft > composite_elevations[index] {
+                let first_scale = first_info.scale as f64;
+                let first_offset = first_info.offset as f64;
+                let encoded_sample = ((elevation_ft - first_offset) / first_scale)
+                    .round()
+                    .clamp(i16::MIN as f64, i16::MAX as f64)
+                    as i16;
+                composite[index] = encoded_sample;
+                composite_elevations[index] = elevation_ft;
+            }
+        }
+    }
+
+    Ok((first_info.clone(), composite))
+}
+
+pub fn parse_abt1_tile(tile_bytes: &[u8]) -> Result<(TerrainTileInfo, Vec<i16>), String> {
+    if tile_bytes.len() < HEADER_BYTES || &tile_bytes[0..4] != ABT1_MAGIC {
+        return Err("invalid ABT1 terrain tile header".to_string());
+    }
+    let width = u16::from_le_bytes([tile_bytes[4], tile_bytes[5]]);
+    let height = u16::from_le_bytes([tile_bytes[6], tile_bytes[7]]);
+    let nodata = i16::from_le_bytes([tile_bytes[8], tile_bytes[9]]);
+    let scale = f32::from_le_bytes([
+        tile_bytes[12],
+        tile_bytes[13],
+        tile_bytes[14],
+        tile_bytes[15],
+    ]);
+    let offset = f32::from_le_bytes([
+        tile_bytes[16],
+        tile_bytes[17],
+        tile_bytes[18],
+        tile_bytes[19],
+    ]);
+    let sample_count = width as usize * height as usize;
+    let expected_bytes = HEADER_BYTES + sample_count * 2;
+    if tile_bytes.len() < expected_bytes {
+        return Err(format!(
+            "truncated ABT1 terrain tile: expected {expected_bytes} bytes, got {}",
+            tile_bytes.len()
+        ));
+    }
+    let mut samples = Vec::with_capacity(sample_count);
+    for chunk in tile_bytes[HEADER_BYTES..expected_bytes].chunks_exact(2) {
+        samples.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+    }
+    Ok((
+        TerrainTileInfo {
+            width,
+            height,
+            nodata,
+            scale,
+            offset,
+        },
+        samples,
+    ))
+}
+
+fn terrain_tile_requests(
+    viewport: &crate::MapViewport,
+    width_px: f64,
+    height_px: f64,
+) -> Vec<TerrainOverlayTileRequest> {
+    if width_px <= 0.0 || height_px <= 0.0 {
+        return Vec::new();
+    }
+    let center_world = lat_lon_to_world(viewport.center.lat, viewport.center.lon);
+    let scale = scale_for_zoom(viewport.zoom);
+    let min_world_x = center_world.0 - width_px / 2.0 / scale;
+    let max_world_x = center_world.0 + width_px / 2.0 / scale;
+    let min_world_y = center_world.1 - height_px / 2.0 / scale;
+    let max_world_y = center_world.1 + height_px / 2.0 / scale;
+    let terrain_zoom = terrain_zoom_for_viewport(viewport.zoom);
+    let tiles_at_zoom = 2_u32.pow(terrain_zoom);
+    let tile_world_size = WORLD_SIZE / tiles_at_zoom as f64;
+    let tile_screen_size = tile_world_size * scale;
+    let x_start = (min_world_x / tile_world_size).floor().max(0.0) as u32;
+    let x_end = (max_world_x / tile_world_size)
+        .floor()
+        .min((tiles_at_zoom - 1) as f64)
+        .max(0.0) as u32;
+    let y_start = (min_world_y / tile_world_size).floor().max(0.0) as u32;
+    let y_end = (max_world_y / tile_world_size)
+        .floor()
+        .min((tiles_at_zoom - 1) as f64)
+        .max(0.0) as u32;
+    if x_end < x_start || y_end < y_start {
+        return Vec::new();
+    }
+    let mut requests = Vec::new();
+    for y_xyz in y_start..=y_end {
+        for x in x_start..=x_end {
+            let y_tms = (tiles_at_zoom - 1) - y_xyz;
+            let product_ids = terrain_product_ids_for_tile(terrain_zoom, x, y_tms);
+            if let Some(product_id) = product_ids.first() {
+                let path = format!("tiles/{terrain_zoom}/{x}/{y_tms}.terrain");
+                requests.push(TerrainOverlayTileRequest {
+                    key: format!("terrain/{path}"),
+                    product_id: (*product_id).to_string(),
+                    path: path.clone(),
+                    source_tiles: product_ids
+                        .iter()
+                        .map(|source_product_id| TerrainOverlaySourceTile {
+                            product_id: (*source_product_id).to_string(),
+                            path: path.clone(),
+                        })
+                        .collect(),
+                    z: terrain_zoom,
+                    x,
+                    y_tms,
+                    left: (x as f64 * tile_world_size - center_world.0) * scale + width_px / 2.0,
+                    top: (y_xyz as f64 * tile_world_size - center_world.1) * scale
+                        + height_px / 2.0,
+                    size: tile_screen_size,
+                });
+            }
+        }
+    }
+    requests
+}
+
+fn terrain_zoom_for_viewport(view_zoom: f64) -> u32 {
+    (view_zoom - 1.0)
+        .floor()
+        .clamp(MIN_TERRAIN_ZOOM as f64, MAX_TERRAIN_ZOOM as f64) as u32
+}
+
+fn terrain_product_ids_for_tile(zoom: u32, x: u32, y_tms: u32) -> Vec<&'static str> {
+    let zoom_delta = MAX_TERRAIN_ZOOM.saturating_sub(zoom);
+    let x_min = x << zoom_delta;
+    let x_max = ((x + 1) << zoom_delta).saturating_sub(1);
+    let y_tms_min = y_tms << zoom_delta;
+    let y_tms_max = ((y_tms + 1) << zoom_delta).saturating_sub(1);
+
+    let mut products = TERRAIN_PRODUCTS
+        .iter()
+        .filter_map(|coverage| {
+            let overlap_x_min = coverage.x_min.max(x_min);
+            let overlap_x_max = coverage.x_max.min(x_max);
+            let overlap_y_min = coverage.y_tms_min.max(y_tms_min);
+            let overlap_y_max = coverage.y_tms_max.min(y_tms_max);
+            if overlap_x_min > overlap_x_max || overlap_y_min > overlap_y_max {
+                return None;
+            }
+            let overlap_x = overlap_x_max - overlap_x_min + 1;
+            let overlap_y = overlap_y_max - overlap_y_min + 1;
+            Some((u64::from(overlap_x) * u64::from(overlap_y), coverage.product_id))
+        })
+        .collect::<Vec<_>>();
+    products.sort_by(|(left_area, left_id), (right_area, right_id)| {
+        right_area
+            .cmp(left_area)
+            .then_with(|| left_id.cmp(right_id))
+    });
+    products
+        .into_iter()
+        .map(|(_, product_id)| product_id)
+        .collect()
+}
+
+fn scale_for_zoom(zoom: f64) -> f64 {
+    2.0_f64.powf(zoom)
+}
+
+fn lat_lon_to_world(lat: f64, lon: f64) -> (f64, f64) {
+    let clamped_lat = lat.clamp(-MAX_LATITUDE, MAX_LATITUDE);
+    let lat_rad = clamped_lat.to_radians();
+    (
+        ((lon + 180.0) / 360.0) * WORLD_SIZE,
+        ((1.0 - lat_rad.tan().asinh() / std::f64::consts::PI) / 2.0) * WORLD_SIZE,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_abt1_tile_against_aircraft_altitude() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"ABT1");
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&(-32768_i16).to_le_bytes());
+        bytes.extend_from_slice(&0_i16.to_le_bytes());
+        bytes.extend_from_slice(&1.0_f32.to_le_bytes());
+        bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+        for sample in [1000_i16, 1600_i16, 2600_i16, -32768_i16] {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+
+        let (_, rgba) = render_terrain_warning_rgba(&bytes, 2000.0).expect("render terrain");
+        assert_eq!(&rgba[0..4], &[255, 220, 0, 125]);
+        assert_eq!(&rgba[4..8], &[255, 220, 0, 125]);
+        assert_eq!(&rgba[8..12], &[185, 0, 45, 190]);
+        assert_eq!(&rgba[12..16], &[0, 82, 150, 70]);
+    }
+
+    #[test]
+    fn writes_warning_png() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"ABT1");
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&(-32768_i16).to_le_bytes());
+        bytes.extend_from_slice(&0_i16.to_le_bytes());
+        bytes.extend_from_slice(&1.0_f32.to_le_bytes());
+        bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+        bytes.extend_from_slice(&2500_i16.to_le_bytes());
+
+        let png = render_terrain_warning_png(&bytes, 2000.0).expect("render png");
+        assert_eq!(&png[0..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
+    }
+
+    #[test]
+    fn selects_southwest_terrain_for_palo_alto_tile() {
+        assert_eq!(terrain_product_ids_for_tile(10, 164, 627), vec!["terrain-sw"]);
+    }
+
+    #[test]
+    fn selects_view_zoom_instead_of_always_base_zoom() {
+        assert_eq!(terrain_zoom_for_viewport(8.4), 7);
+        assert_eq!(terrain_zoom_for_viewport(8.6), 7);
+        assert_eq!(terrain_zoom_for_viewport(10.0), 9);
+        assert_eq!(terrain_zoom_for_viewport(12.0), MAX_TERRAIN_ZOOM);
+    }
+
+    #[test]
+    fn selects_southwest_terrain_for_palo_alto_parent_tile() {
+        assert_eq!(terrain_product_ids_for_tile(8, 41, 156), vec!["terrain-sw"]);
+    }
+
+    #[test]
+    fn orders_overlapping_parent_tile_by_dominant_product() {
+        assert_eq!(
+            terrain_product_ids_for_tile(7, 27, 78),
+            vec!["terrain-nc", "terrain-sw", "terrain-sc"]
+        );
+    }
+
+    #[test]
+    fn composites_overlapping_terrain_tiles_by_valid_highest_sample() {
+        let tile = |samples: [i16; 4]| {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"ABT1");
+            bytes.extend_from_slice(&2_u16.to_le_bytes());
+            bytes.extend_from_slice(&2_u16.to_le_bytes());
+            bytes.extend_from_slice(&(-32768_i16).to_le_bytes());
+            bytes.extend_from_slice(&0_i16.to_le_bytes());
+            bytes.extend_from_slice(&1.0_f32.to_le_bytes());
+            bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+            for sample in samples {
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
+            bytes
+        };
+        let southwest = tile([100, -32768, 300, -32768]);
+        let northwest = tile([-32768, 200, 250, -32768]);
+
+        let (info, samples) = composite_terrain_samples(&[
+            parse_abt1_tile(&southwest).expect("parse southwest"),
+            parse_abt1_tile(&northwest).expect("parse northwest"),
+        ])
+        .expect("composite terrain");
+
+        assert_eq!(info.nodata, -32768);
+        assert_eq!(samples, vec![100, 200, 300, -32768]);
+    }
+}

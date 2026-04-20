@@ -669,6 +669,8 @@ export type OwnshipRenderState = {
   position: LatLon | null;
   orientation_deg: number | null;
   speed_kt: number | null;
+  altitude_msl_ft: number | null;
+  pressure_altitude_ft: number | null;
 };
 
 export type OwnshipControlModel = {

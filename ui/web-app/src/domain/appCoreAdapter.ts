@@ -144,6 +144,33 @@ export type MapOverlayQueryResult = {
   }>;
 };
 
+export type TerrainOverlayStatus =
+  | { state: "no_position" }
+  | { state: "no_altitude" }
+  | { state: "too_many_tiles"; count: number }
+  | { state: "ready"; count: number };
+
+export type TerrainOverlayTileRequest = {
+  key: string;
+  product_id: string;
+  path: string;
+  source_tiles: Array<{
+    product_id: string;
+    path: string;
+  }>;
+  z: number;
+  x: number;
+  y_tms: number;
+  left: number;
+  top: number;
+  size: number;
+};
+
+export type TerrainOverlayQueryResult = {
+  status: TerrainOverlayStatus;
+  tile_requests: TerrainOverlayTileRequest[];
+};
+
 export interface UiSession {
   chartCatalog: ChartPageData;
   snapshot(): Promise<UiSessionSnapshot>;
@@ -170,6 +197,9 @@ export interface UiSession {
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
   queryMapOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<MapOverlayQueryResult>;
+  queryTerrainOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<TerrainOverlayQueryResult>;
+  renderTerrainOverlayTile(tileBytes: Uint8Array, aircraftAltitudeFt: number): Promise<Uint8Array>;
+  renderTerrainOverlayTiles(packedTileBytes: Uint8Array, aircraftAltitudeFt: number): Promise<Uint8Array>;
   restoreChartPageState(recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
   destroy(): Promise<void>;
 }
@@ -299,6 +329,9 @@ type WasmModule = {
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
   ingest_point_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
+  get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
+  render_terrain_overlay_tile_in_session(handle: number, terrainTileBytes: Uint8Array, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
+  render_terrain_overlay_tiles_in_session(handle: number, packedTerrainTileBytes: Uint8Array, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
   get_session_snapshot(handle: number): Promise<string> | string;
   restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   destroy_session(handle: number): void;
@@ -710,6 +743,25 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               heightPx,
             ),
           ) as MapOverlayQueryResult,
+        ),
+      queryTerrainOverlay: async (viewport, widthPx, heightPx) =>
+        withSessionRetry(async () =>
+          JSON.parse(
+            await this.module.get_terrain_overlay_in_session(
+              handle,
+              JSON.stringify(coreViewportForMap(viewport)),
+              widthPx,
+              heightPx,
+            ),
+          ) as TerrainOverlayQueryResult,
+        ),
+      renderTerrainOverlayTile: async (tileBytes, aircraftAltitudeFt) =>
+        withSessionRetry(async () =>
+          new Uint8Array(await this.module.render_terrain_overlay_tile_in_session(handle, tileBytes, aircraftAltitudeFt)),
+        ),
+      renderTerrainOverlayTiles: async (packedTileBytes, aircraftAltitudeFt) =>
+        withSessionRetry(async () =>
+          new Uint8Array(await this.module.render_terrain_overlay_tiles_in_session(handle, packedTileBytes, aircraftAltitudeFt)),
         ),
       restoreChartPageState: async (nextRecentAirportIds, nextSelectedAirportId, nextSelectedChartId) => {
         snapshot = await withSessionRetry(async () =>
@@ -1228,6 +1280,9 @@ export async function loadBestAvailableAdapter(
     typeof mod.select_chart_in_session !== "function" ||
     typeof mod.ingest_point_tiles_in_session !== "function" ||
     typeof mod.get_map_overlay_in_session !== "function" ||
+    typeof mod.get_terrain_overlay_in_session !== "function" ||
+    typeof mod.render_terrain_overlay_tile_in_session !== "function" ||
+    typeof mod.render_terrain_overlay_tiles_in_session !== "function" ||
     typeof mod.get_session_snapshot !== "function" ||
     typeof mod.restore_chart_page_state_in_session !== "function" ||
     typeof mod.destroy_session !== "function" ||

@@ -471,6 +471,14 @@ enum ProductTaskValue {
         source_fetched_at_utc: Option<String>,
         tile_levels: Vec<TileLevelRecord>,
     },
+    BuiltWaterMask {
+        zip_path: PathBuf,
+        mask_tiles_dir: PathBuf,
+        zip_sha256: Option<String>,
+        zip_size_bytes: Option<u64>,
+        source_version: String,
+        source_fetched_at_utc: Option<String>,
+    },
     TerrainDiscovery {
         index_path: PathBuf,
         source_fetched_at_utc: Option<String>,
@@ -613,8 +621,11 @@ const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
 const TERRAIN_PIPELINE_VERSION: &str = "v4";
 const SHADED_RELIEF_PIPELINE_VERSION: &str = "v5";
+const WATER_MASK_PIPELINE_VERSION: &str = "v1";
 const TERRAIN_TILE_WORKERS: u32 = 16;
-const SHADED_RELIEF_TILE_WORKERS: u32 = 4;
+const SHADED_RELIEF_TILE_WORKERS: u32 = 16;
+const WATER_MASK_FETCH_WORKERS: u32 = 16;
+const WATER_MASK_TILE_WORKERS: u32 = 16;
 const TERRAIN_MIN_ZOOM: u32 = 0;
 const TERRAIN_ZOOM: u32 = 10;
 const TERRAIN_TILE_SIZE: u32 = 512;
@@ -755,6 +766,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             region: Region,
         },
         TerrainPublish {
+            region: Region,
+        },
+        WaterMaskBuild {
+            region: Region,
+        },
+        WaterMaskPublish {
             region: Region,
         },
         ShadedReliefBuild {
@@ -1086,9 +1103,24 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 kind: ProductScheduledTaskKind::TerrainPublish { region: *region },
             });
             pending_tasks.push(ProductScheduledTask {
+                id: format!("build-water-mask-{region_id}"),
+                deps: vec![],
+                weight: 6,
+                kind: ProductScheduledTaskKind::WaterMaskBuild { region: *region },
+            });
+            pending_tasks.push(ProductScheduledTask {
+                id: format!("publish-water-mask-{region_id}"),
+                deps: vec![format!("build-water-mask-{region_id}")],
+                weight: 1,
+                kind: ProductScheduledTaskKind::WaterMaskPublish { region: *region },
+            });
+            pending_tasks.push(ProductScheduledTask {
                 id: format!("build-shaded-relief-{region_id}"),
-                deps: vec!["terrain-discovery".to_string()],
-                weight: 2,
+                deps: vec![
+                    "terrain-discovery".to_string(),
+                    format!("build-water-mask-{region_id}"),
+                ],
+                weight: 6,
                 kind: ProductScheduledTaskKind::ShadedReliefBuild { region: *region },
             });
             pending_tasks.push(ProductScheduledTask {
@@ -1110,6 +1142,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 .chain(std::iter::once("publish-geo".to_string()))
                 .chain(config.profile.terrain_regions().iter().map(|region| {
                     format!("publish-terrain-{}", region.code().to_ascii_lowercase())
+                }))
+                .chain(config.profile.terrain_regions().iter().map(|region| {
+                    format!("publish-water-mask-{}", region.code().to_ascii_lowercase())
                 }))
                 .chain(config.profile.terrain_regions().iter().map(|region| {
                     format!(
@@ -1136,6 +1171,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 .iter()
                 .map(|region| format!("publish-terrain-{}", region.code().to_ascii_lowercase())),
         );
+        product_unpack_deps.extend(config.profile.terrain_regions().iter().map(|region| {
+            format!("publish-water-mask-{}", region.code().to_ascii_lowercase())
+        }));
         product_unpack_deps.extend(config.profile.terrain_regions().iter().map(|region| {
             format!(
                 "publish-shaded-relief-{}",
@@ -2039,6 +2077,30 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 completion_detail: format!("cache_hit={cache_hit}"),
                             })
                         }
+                        ProductScheduledTaskKind::WaterMaskBuild { region } => {
+                            let (
+                                zip_path,
+                                mask_tiles_dir,
+                                source_version,
+                                source_fetched_at_utc,
+                                record,
+                            ) = build_water_mask_product(&config, region)?;
+                            let cache_hit = record.cache_hit;
+                            let (zip_sha256, zip_size_bytes) =
+                                node_output_file_detail(&record, "zip");
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![record],
+                                value: ProductTaskValue::BuiltWaterMask {
+                                    zip_path,
+                                    mask_tiles_dir,
+                                    zip_sha256,
+                                    zip_size_bytes,
+                                    source_version,
+                                    source_fetched_at_utc,
+                                },
+                                completion_detail: format!("cache_hit={cache_hit}"),
+                            })
+                        }
                         ProductScheduledTaskKind::ShadedReliefBuild { region } => {
                             let (index_path, source_fetched_at_utc) =
                                 match task_values_snapshot.get("terrain-discovery") {
@@ -2048,12 +2110,31 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     }) => (index_path.clone(), source_fetched_at_utc.clone()),
                                     _ => bail!("missing terrain discovery output"),
                                 };
-                            let (zip_path, source_version, source_fetched_at_utc, tile_levels, record) =
+                            let region_id = region.code().to_ascii_lowercase();
+                            let (water_mask_dir, water_mask_version) = match task_values_snapshot
+                                .get(&format!("build-water-mask-{region_id}"))
+                            {
+                                Some(ProductTaskValue::BuiltWaterMask {
+                                    mask_tiles_dir,
+                                    source_version,
+                                    ..
+                                }) => (mask_tiles_dir.clone(), source_version.clone()),
+                                _ => bail!("missing water mask output for {}", region.code()),
+                            };
+                            let (
+                                zip_path,
+                                source_version,
+                                source_fetched_at_utc,
+                                tile_levels,
+                                record,
+                            ) =
                                 build_shaded_relief_product(
                                     &config,
                                     region,
                                     &index_path,
                                     source_fetched_at_utc,
+                                    &water_mask_dir,
+                                    &water_mask_version,
                                 )?;
                             let cache_hit = record.cache_hit;
                             let (zip_sha256, zip_size_bytes) =
@@ -2274,6 +2355,49 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 completion_detail: "published".to_string(),
                             })
                         }
+                        ProductScheduledTaskKind::WaterMaskPublish { region } => {
+                            let region_id = region.code().to_ascii_lowercase();
+                            let task_id = format!("build-water-mask-{region_id}");
+                            let built = match task_values_snapshot.get(&task_id) {
+                                Some(ProductTaskValue::BuiltWaterMask {
+                                    zip_path,
+                                    zip_sha256,
+                                    zip_size_bytes,
+                                    source_version,
+                                    source_fetched_at_utc,
+                                    ..
+                                }) => (
+                                    zip_path.clone(),
+                                    zip_sha256.clone(),
+                                    *zip_size_bytes,
+                                    source_version.clone(),
+                                    source_fetched_at_utc.clone(),
+                                ),
+                                _ => bail!("missing water mask build output for {}", region.code()),
+                            };
+                            let product_id = format!("water-mask-{region_id}");
+                            let (published_zip, sha256, size_bytes) =
+                                publish_content_addressed_zip(
+                                    &config.build_root,
+                                    &built.0,
+                                    &product_id,
+                                    built.1.as_deref(),
+                                    built.2,
+                                )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::PublishedStandaloneProduct {
+                                    id: product_id,
+                                    source_zip_path: built.0,
+                                    published_zip,
+                                    sha256,
+                                    size_bytes,
+                                    source_version: built.3,
+                                    source_fetched_at_utc: built.4,
+                                },
+                                completion_detail: "published".to_string(),
+                            })
+                        }
                         ProductScheduledTaskKind::ShadedReliefPublish { region } => {
                             let region_id = region.code().to_ascii_lowercase();
                             let task_id = format!("build-shaded-relief-{region_id}");
@@ -2359,6 +2483,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 .chain(config.profile.terrain_regions().iter().map(|region| {
                                     format!(
                                         "publish-terrain-{}",
+                                        region.code().to_ascii_lowercase()
+                                    )
+                                }))
+                                .chain(config.profile.terrain_regions().iter().map(|region| {
+                                    format!(
+                                        "publish-water-mask-{}",
                                         region.code().to_ascii_lowercase()
                                     )
                                 }))
@@ -6634,11 +6764,140 @@ fn terrain_product_inputs(
     ]))
 }
 
+fn build_water_mask_product(
+    config: &ProductBuildConfig,
+    region: Region,
+) -> anyhow::Result<(PathBuf, PathBuf, String, Option<String>, NodeRecord)> {
+    let region_id = region.code().to_ascii_lowercase();
+    let inputs = water_mask_product_inputs(region)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, &format!("static-water-mask-{region_id}"))?,
+        &format!("static-water-mask-{region_id}"),
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let manifest_path = output_dir.join("manifest.json");
+    if let Some(record) = try_load_node_record(&prepared, &[manifest_path.clone()])? {
+        let (source_version, source_fetched_at_utc) = water_mask_manifest_versions(&manifest_path)?;
+        let zip_path = water_mask_record_zip_path(&prepared.dir, &record)?;
+        return Ok((
+            zip_path,
+            output_dir.join("tiles"),
+            source_version,
+            source_fetched_at_utc,
+            record,
+        ));
+    }
+    let _build_lock = match claim_or_wait_for_node(&prepared, &[manifest_path.clone()])? {
+        NodeCacheState::CacheHit(record) => {
+            let (source_version, source_fetched_at_utc) =
+                water_mask_manifest_versions(&manifest_path)?;
+            let zip_path = water_mask_record_zip_path(&prepared.dir, &record)?;
+            return Ok((
+                zip_path,
+                output_dir.join("tiles"),
+                source_version,
+                source_fetched_at_utc,
+                record,
+            ));
+        }
+        NodeCacheState::Build(lock) => lock,
+    };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir)
+            .with_context(|| format!("failed to clear {}", output_dir.display()))?;
+    }
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    build_water_mask_region_tiles(region, &output_dir)?;
+    let (source_version, source_fetched_at_utc) = water_mask_manifest_versions(&manifest_path)?;
+    let zip_path = output_dir.join(format!(
+        "water_mask_{region_id}_{}.zip",
+        fast_product_version_label(&source_version)
+    ));
+    zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
+    let outputs = BTreeMap::from([
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&manifest_path, &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&zip_path, &config.build_root),
+        ),
+    ]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((
+        zip_path,
+        output_dir.join("tiles"),
+        source_version,
+        source_fetched_at_utc,
+        record,
+    ))
+}
+
+fn water_mask_record_zip_path(node_dir: &Path, record: &NodeRecord) -> anyhow::Result<PathBuf> {
+    let value = record
+        .outputs
+        .get("zip")
+        .context("water mask node record missing zip output")?;
+    resolve_recorded_output_path(node_dir, value)
+        .with_context(|| format!("failed to resolve water mask zip output {value}"))
+}
+
+fn water_mask_manifest_versions(path: &Path) -> anyhow::Result<(String, Option<String>)> {
+    let value: serde_json::Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    let source_fingerprint = value
+        .get("source_fingerprint")
+        .and_then(|value| value.as_str())
+        .context("water mask manifest missing source_fingerprint")?
+        .to_string();
+    let source_fetched_at_utc = value
+        .get("source_fetched_at_utc")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+    Ok((source_fingerprint, source_fetched_at_utc))
+}
+
+fn water_mask_product_inputs(region: Region) -> anyhow::Result<BTreeMap<String, String>> {
+    let region_id = region.code().to_ascii_lowercase();
+    Ok(BTreeMap::from([
+        ("product_id".to_string(), format!("water-mask-{region_id}")),
+        ("region".to_string(), region.code().to_string()),
+        ("min_zoom".to_string(), TERRAIN_MIN_ZOOM.to_string()),
+        ("max_zoom".to_string(), TERRAIN_ZOOM.to_string()),
+        ("tile_size".to_string(), TERRAIN_TILE_SIZE.to_string()),
+        (
+            "water_mask_pipeline".to_string(),
+            WATER_MASK_PIPELINE_VERSION.to_string(),
+        ),
+        (
+            "water_mask_script".to_string(),
+            hash_file(water_mask_tile_script_path())?,
+        ),
+    ]))
+}
+
 fn build_shaded_relief_product(
     config: &ProductBuildConfig,
     region: Region,
     terrain_index_path: &Path,
     source_fetched_at_utc: Option<String>,
+    water_mask_tiles_dir: &Path,
+    water_mask_version: &str,
 ) -> anyhow::Result<(
     PathBuf,
     String,
@@ -6676,7 +6935,7 @@ fn build_shaded_relief_product(
             &cached_selection.selection.missing_cells,
         );
         let version_label = fast_product_version_label(&source_fingerprint);
-        let inputs = shaded_relief_product_inputs(region, &source_fingerprint)?;
+        let inputs = shaded_relief_product_inputs(region, &source_fingerprint, water_mask_version)?;
         let prepared = prepare_node_at(
             &build_shared_node_dir(config, &format!("static-shaded-relief-{region_id}"))?,
             &format!("static-shaded-relief-{region_id}"),
@@ -6721,7 +6980,7 @@ fn build_shaded_relief_product(
         )?
     };
     let version_label = fast_product_version_label(&source_fingerprint);
-    let inputs = shaded_relief_product_inputs(region, &source_fingerprint)?;
+    let inputs = shaded_relief_product_inputs(region, &source_fingerprint, water_mask_version)?;
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, &format!("static-shaded-relief-{region_id}"))?,
         &format!("static-shaded-relief-{region_id}"),
@@ -6759,6 +7018,7 @@ fn build_shaded_relief_product(
         &output_dir,
         &version_label,
         &dem_selection,
+        water_mask_tiles_dir,
     )?;
     let tile_levels = read_static_tile_manifest_levels(&output_dir.join("manifest.json"))?;
     zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
@@ -6793,6 +7053,7 @@ fn build_shaded_relief_product(
 fn shaded_relief_product_inputs(
     region: Region,
     source_fingerprint: &str,
+    water_mask_version: &str,
 ) -> anyhow::Result<BTreeMap<String, String>> {
     let region_id = region.code().to_ascii_lowercase();
     Ok(BTreeMap::from([
@@ -6809,12 +7070,12 @@ fn shaded_relief_product_inputs(
             source_fingerprint.to_string(),
         ),
         (
-            "shaded_relief_pipeline".to_string(),
-            SHADED_RELIEF_PIPELINE_VERSION.to_string(),
+            "water_mask_version".to_string(),
+            water_mask_version.to_string(),
         ),
         (
-            "shaded_relief_workers".to_string(),
-            SHADED_RELIEF_TILE_WORKERS.to_string(),
+            "shaded_relief_pipeline".to_string(),
+            SHADED_RELIEF_PIPELINE_VERSION.to_string(),
         ),
         (
             "shaded_relief_script".to_string(),
@@ -7595,12 +7856,46 @@ fn build_terrain_region_tiles(
     Ok(())
 }
 
+fn build_water_mask_region_tiles(region: Region, output_dir: &Path) -> anyhow::Result<()> {
+    let script_path = water_mask_tile_script_path();
+    let bounds = region.bounds();
+    let output = Command::new("python3")
+        .arg(&script_path)
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--region")
+        .arg(region.code())
+        .arg(format!(
+            "--bbox={},{},{},{}",
+            bounds.lon_min, bounds.lat_min, bounds.lon_max, bounds.lat_max
+        ))
+        .arg("--zoom")
+        .arg(TERRAIN_ZOOM.to_string())
+        .arg("--tile-size")
+        .arg(TERRAIN_TILE_SIZE.to_string())
+        .arg("--fetch-workers")
+        .arg(WATER_MASK_FETCH_WORKERS.to_string())
+        .arg("--tile-workers")
+        .arg(WATER_MASK_TILE_WORKERS.to_string())
+        .output()
+        .with_context(|| format!("failed to run {}", script_path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "water mask tile builder failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
 fn build_shaded_relief_region_tiles(
     region: Region,
     vrt_path: &Path,
     output_dir: &Path,
     version_label: &str,
     dem_selection: &TerrainDemSelection,
+    water_mask_tiles_dir: &Path,
 ) -> anyhow::Result<()> {
     let script_path = shaded_relief_tile_script_path();
     let bounds = region.bounds();
@@ -7626,6 +7921,8 @@ fn build_shaded_relief_region_tiles(
         .arg(dem_selection.urls.len().to_string())
         .arg("--missing-cells")
         .arg(dem_selection.missing_cells.join(","))
+        .arg("--water-mask-dir")
+        .arg(water_mask_tiles_dir)
         .arg("--workers")
         .arg(SHADED_RELIEF_TILE_WORKERS.to_string())
         .output()
@@ -7644,6 +7941,12 @@ fn shaded_relief_tile_script_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("scripts")
         .join("build_shaded_relief_tiles.py")
+}
+
+fn water_mask_tile_script_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("scripts")
+        .join("build_water_mask_tiles.py")
 }
 
 fn zip_directory_deterministic(

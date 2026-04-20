@@ -27,6 +27,7 @@ COLOR_STOPS = [
 
 WORKER_DS = None
 WORKER_TILES_ROOT = None
+WORKER_WATER_MASK_ROOT = None
 WORKER_ZOOM = None
 WORKER_TILE_SIZE = None
 WORKER_RESOLUTION = None
@@ -120,6 +121,15 @@ def write_webp(path, rgba):
     save_webp(path, Image.fromarray(rgba, mode="RGBA"))
 
 
+def read_water_mask(x, y):
+    if WORKER_WATER_MASK_ROOT is None:
+        return None
+    path = WORKER_WATER_MASK_ROOT / str(WORKER_ZOOM) / str(x) / f"{y}.water.png"
+    if not path.exists():
+        return None
+    return np.array(Image.open(path).convert("L"))
+
+
 def resampling_filter():
     return getattr(getattr(Image, "Resampling", Image), "BOX")
 
@@ -184,12 +194,13 @@ def scan_tile_levels(tiles_root):
     return levels
 
 
-def init_worker(vrt_path, tiles_root, zoom, tile_size, resolution):
-    global WORKER_DS, WORKER_TILES_ROOT, WORKER_ZOOM, WORKER_TILE_SIZE, WORKER_RESOLUTION
+def init_worker(vrt_path, tiles_root, water_mask_root, zoom, tile_size, resolution):
+    global WORKER_DS, WORKER_TILES_ROOT, WORKER_WATER_MASK_ROOT, WORKER_ZOOM, WORKER_TILE_SIZE, WORKER_RESOLUTION
     WORKER_DS = gdal.Open(vrt_path)
     if WORKER_DS is None:
         raise RuntimeError(f"failed to open {vrt_path}")
     WORKER_TILES_ROOT = Path(tiles_root)
+    WORKER_WATER_MASK_ROOT = Path(water_mask_root) if water_mask_root else None
     WORKER_ZOOM = zoom
     WORKER_TILE_SIZE = tile_size
     WORKER_RESOLUTION = resolution
@@ -220,6 +231,13 @@ def render_tile(task):
     lit = np.clip(rgb * shade[:, :, None], 0, 255).astype(np.uint8)
     alpha = np.where(invalid, 0, 255).astype(np.uint8)
     rgba = np.dstack([lit, alpha])[1:-1, 1:-1, :]
+    water_mask = read_water_mask(x, y)
+    if water_mask is not None:
+        water = water_mask > 0
+        rgba[water, 0] = WATER_RGB[0]
+        rgba[water, 1] = WATER_RGB[1]
+        rgba[water, 2] = WATER_RGB[2]
+        rgba[water, 3] = water_mask[water]
     write_webp(WORKER_TILES_ROOT / str(WORKER_ZOOM) / str(x) / f"{y}.webp", rgba)
     return 1
 
@@ -235,6 +253,7 @@ def main():
     ap.add_argument("--version-label", required=True)
     ap.add_argument("--source-count", required=True, type=int)
     ap.add_argument("--missing-cells", default="")
+    ap.add_argument("--water-mask-dir")
     ap.add_argument("--workers", required=True, type=int)
     args = ap.parse_args()
     west, south, east, north = [float(x) for x in args.bbox.split(",")]
@@ -248,13 +267,27 @@ def main():
     tasks = [(x, y) for x in x_range for y in y_range]
     workers = max(1, args.workers)
     if workers == 1:
-        init_worker(args.vrt, str(tiles_root), args.zoom, args.tile_size, resolution)
+        init_worker(
+            args.vrt,
+            str(tiles_root),
+            args.water_mask_dir,
+            args.zoom,
+            args.tile_size,
+            resolution,
+        )
         count = sum(render_tile(task) for task in tasks)
     else:
         with ProcessPoolExecutor(
             max_workers=workers,
             initializer=init_worker,
-            initargs=(args.vrt, str(tiles_root), args.zoom, args.tile_size, resolution),
+            initargs=(
+                args.vrt,
+                str(tiles_root),
+                args.water_mask_dir,
+                args.zoom,
+                args.tile_size,
+                resolution,
+            ),
         ) as pool:
             count = sum(pool.map(render_tile, tasks, chunksize=8))
     level_counts = build_parent_pyramid(tiles_root, args.zoom, args.tile_size)
@@ -292,9 +325,10 @@ def main():
             "note": "first-cut DEM hillshade multiplied over elevation color buckets",
         },
         "water_glacier_mask": {
-            "water": "DEM-derived sea-level flat-water heuristic; not an authoritative hydrography mask",
+            "water": "USGS NHD water mask when available, with DEM-derived sea-level flat-water heuristic for remaining water",
             "rgb": WATER_RGB,
             "elevation_meters": [-5.0, 1.0],
+            "mask_tiles": bool(args.water_mask_dir),
         },
         "source_dem_count": args.source_count,
         "missing_dem_cells": [cell for cell in args.missing_cells.split(",") if cell],

@@ -626,7 +626,7 @@ const TERRAIN_TILE_WORKERS: u32 = 16;
 const SHADED_RELIEF_TILE_WORKERS: u32 = 16;
 const WATER_MASK_FETCH_WORKERS: u32 = 16;
 const WATER_MASK_TILE_WORKERS: u32 = 16;
-const WATER_MASK_PAGE_SIZE: u32 = 1000;
+const WATER_MASK_PAGE_SIZE: usize = 500;
 const WATER_MASK_NHD_SERVICE: &str = "https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer";
 const WATER_MASK_NHD_LAYERS: &[(u32, &str)] =
     &[(9, "Area - Large Scale"), (12, "Waterbody - Large Scale")];
@@ -7884,9 +7884,9 @@ fn percent_encode_query_value(value: &str) -> String {
     encoded
 }
 
-fn water_mask_count_url(layer: u32, bbox: &str) -> String {
+fn water_mask_ids_url(layer: u32, bbox: &str) -> String {
     format!(
-        "{}#logical_name=layer_{layer}_count.json",
+        "{}#logical_name=layer_{layer}_ids.json",
         water_mask_query_url(
             layer,
             &[
@@ -7895,30 +7895,31 @@ fn water_mask_count_url(layer: u32, bbox: &str) -> String {
                 ("geometryType", "esriGeometryEnvelope".to_string()),
                 ("inSR", "4326".to_string()),
                 ("spatialRel", "esriSpatialRelIntersects".to_string()),
-                ("returnCountOnly", "true".to_string()),
+                ("returnIdsOnly", "true".to_string()),
                 ("f", "json".to_string()),
             ],
         )
     )
 }
 
-fn water_mask_page_url(layer: u32, bbox: &str, offset: u32) -> String {
+fn water_mask_page_url(layer: u32, chunk_index: usize, object_ids: &[u64]) -> String {
     format!(
-        "{}#logical_name=layer_{layer}_offset_{offset}.geojson",
+        "{}#logical_name=layer_{layer}_chunk_{chunk_index:05}.geojson",
         water_mask_query_url(
             layer,
             &[
-                ("where", "1=1".to_string()),
+                (
+                    "objectIds",
+                    object_ids
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
                 ("outFields", "FTYPE,FCODE,GNIS_NAME".to_string()),
-                ("geometry", bbox.to_string()),
-                ("geometryType", "esriGeometryEnvelope".to_string()),
-                ("inSR", "4326".to_string()),
-                ("spatialRel", "esriSpatialRelIntersects".to_string()),
                 ("outSR", "4326".to_string()),
                 ("returnGeometry", "true".to_string()),
                 ("f", "geojson".to_string()),
-                ("resultRecordCount", WATER_MASK_PAGE_SIZE.to_string()),
-                ("resultOffset", offset.to_string()),
                 ("orderByFields", "OBJECTID".to_string()),
             ],
         )
@@ -7945,30 +7946,36 @@ fn water_mask_cached_source_dir(
         .join("provenance")
         .join(format!("water-mask-{region_id}"));
     let fetch_cache = fetch_cache_config(config)?;
-    let count_urls = WATER_MASK_NHD_LAYERS
+    let ids_urls = WATER_MASK_NHD_LAYERS
         .iter()
-        .map(|(layer, _name)| water_mask_count_url(*layer, &bbox))
+        .map(|(layer, _name)| water_mask_ids_url(*layer, &bbox))
         .collect::<Vec<_>>();
     prefetch_archives_with_provenance(
-        &count_urls,
+        &ids_urls,
         &source_dir,
         WATER_MASK_FETCH_WORKERS as usize,
         Some(&fetch_cache),
         &provenance_dir,
-        &format!("water-mask-{region_id}-count"),
+        &format!("water-mask-{region_id}-ids"),
     )?;
 
     let mut page_urls = Vec::new();
     for (layer, _name) in WATER_MASK_NHD_LAYERS {
-        let count_path = source_dir.join(format!("layer_{layer}_count.json"));
+        let ids_path = source_dir.join(format!("layer_{layer}_ids.json"));
         let value: serde_json::Value = serde_json::from_slice(
-            &fs::read(&count_path)
-                .with_context(|| format!("failed to read {}", count_path.display()))?,
+            &fs::read(&ids_path).with_context(|| format!("failed to read {}", ids_path.display()))?,
         )
-        .with_context(|| format!("failed to parse {}", count_path.display()))?;
-        let count = value.get("count").and_then(|value| value.as_u64()).unwrap_or(0);
-        for offset in (0..count).step_by(WATER_MASK_PAGE_SIZE as usize) {
-            page_urls.push(water_mask_page_url(*layer, &bbox, offset as u32));
+        .with_context(|| format!("failed to parse {}", ids_path.display()))?;
+        let mut object_ids = value
+            .get("objectIds")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|value| value.as_u64())
+            .collect::<Vec<_>>();
+        object_ids.sort_unstable();
+        for (chunk_index, chunk) in object_ids.chunks(WATER_MASK_PAGE_SIZE).enumerate() {
+            page_urls.push(water_mask_page_url(*layer, chunk_index, chunk));
         }
     }
     prefetch_archives_with_provenance(

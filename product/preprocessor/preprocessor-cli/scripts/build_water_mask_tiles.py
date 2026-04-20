@@ -145,21 +145,24 @@ def source_count_path(source_dir, layer):
     return source_dir / f"layer_{layer}_count.json"
 
 
-def source_page_path(source_dir, layer, offset):
-    return source_dir / f"layer_{layer}_offset_{offset}.geojson"
+def source_ids_path(source_dir, layer):
+    return source_dir / f"layer_{layer}_ids.json"
+
+
+def source_page_path(source_dir, layer, chunk_index):
+    return source_dir / f"layer_{layer}_chunk_{chunk_index:05d}.geojson"
 
 
 def read_region_features(source_dir):
     all_features = []
     layer_counts = {}
     for layer, name in NHD_LAYERS:
-        count_path = source_count_path(source_dir, layer)
-        with open(count_path) as f:
-            count_value = json.load(f)
-        count = int(count_value.get("count", 0))
-        layer_counts[str(layer)] = {"name": name, "count": count}
-        for offset in range(0, count, PAGE_SIZE):
-            page_path = source_page_path(source_dir, layer, offset)
+        ids_path = source_ids_path(source_dir, layer)
+        with open(ids_path) as f:
+            ids_value = json.load(f)
+        ids = sorted(int(value) for value in ids_value.get("objectIds", []))
+        layer_counts[str(layer)] = {"name": name, "count": len(ids)}
+        for page_path in sorted(source_dir.glob(f"layer_{layer}_chunk_*.geojson")):
             with open(page_path) as f:
                 page_value = json.load(f)
             features = page_value.get("features", [])

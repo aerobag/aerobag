@@ -628,8 +628,18 @@ const WATER_MASK_FETCH_WORKERS: u32 = 2;
 const WATER_MASK_TILE_WORKERS: u32 = 16;
 const WATER_MASK_PAGE_SIZE: usize = 10;
 const WATER_MASK_NHD_SERVICE: &str = "https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer";
-const WATER_MASK_NHD_LAYERS: &[(u32, &str)] =
-    &[(9, "Area - Large Scale"), (12, "Waterbody - Large Scale")];
+const WATER_MASK_NHD_LAYERS: &[(u32, &str, &str)] = &[
+    (
+        9,
+        "Area - Large Scale",
+        "AREASQKM >= 1 AND FTYPE IN (312,445,460)",
+    ),
+    (
+        12,
+        "Waterbody - Large Scale",
+        "AREASQKM >= 1 AND FTYPE IN (390,436,493)",
+    ),
+];
 const TERRAIN_MIN_ZOOM: u32 = 0;
 const TERRAIN_ZOOM: u32 = 10;
 const TERRAIN_TILE_SIZE: u32 = 512;
@@ -6897,7 +6907,7 @@ fn water_mask_product_inputs(region: Region) -> anyhow::Result<BTreeMap<String, 
                 WATER_MASK_FETCH_WORKERS,
                 WATER_MASK_NHD_LAYERS
                     .iter()
-                    .map(|(layer, _name)| layer.to_string())
+                    .map(|(layer, _name, where_clause)| format!("{layer}:{where_clause}"))
                     .collect::<Vec<_>>()
                     .join(",")
             ),
@@ -7897,13 +7907,13 @@ fn percent_encode_query_value(value: &str) -> String {
     encoded
 }
 
-fn water_mask_ids_url(layer: u32, bbox: &str) -> String {
+fn water_mask_ids_url(layer: u32, bbox: &str, where_clause: &str) -> String {
     format!(
         "{}#logical_name=layer_{layer}_ids.json",
         water_mask_query_url(
             layer,
             &[
-                ("where", "1=1".to_string()),
+                ("where", where_clause.to_string()),
                 ("geometry", bbox.to_string()),
                 ("geometryType", "esriGeometryEnvelope".to_string()),
                 ("inSR", "4326".to_string()),
@@ -7962,7 +7972,7 @@ fn water_mask_cached_source_dir(
     let fetch_cache = fetch_cache_config(config)?;
     let ids_urls = WATER_MASK_NHD_LAYERS
         .iter()
-        .map(|(layer, _name)| water_mask_ids_url(*layer, &bbox))
+        .map(|(layer, _name, where_clause)| water_mask_ids_url(*layer, &bbox, where_clause))
         .collect::<Vec<_>>();
     prefetch_water_mask_source_urls(
         &ids_urls,
@@ -7973,7 +7983,7 @@ fn water_mask_cached_source_dir(
     )?;
 
     let mut page_urls = Vec::new();
-    for (layer, _name) in WATER_MASK_NHD_LAYERS {
+    for (layer, _name, _where_clause) in WATER_MASK_NHD_LAYERS {
         let ids_path = source_dir.join(format!("layer_{layer}_ids.json"));
         let value: serde_json::Value = serde_json::from_slice(
             &fs::read(&ids_path).with_context(|| format!("failed to read {}", ids_path.display()))?,

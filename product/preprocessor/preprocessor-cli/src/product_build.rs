@@ -5085,6 +5085,9 @@ struct NavLookupContext {
     airport_positions: BTreeMap<String, serde_json::Value>,
     navaid_positions: BTreeMap<String, serde_json::Value>,
     fix_positions: BTreeMap<String, serde_json::Value>,
+    airport_positions_by_coord: BTreeMap<(i64, i64), String>,
+    navaid_positions_by_coord: BTreeMap<(i64, i64), String>,
+    fix_positions_by_coord: BTreeMap<(i64, i64), String>,
     runway_positions: BTreeMap<(String, String), serde_json::Value>,
     navaid_variation: BTreeMap<String, Option<f64>>,
     airport_variation: BTreeMap<String, Option<f64>>,
@@ -5092,20 +5095,19 @@ struct NavLookupContext {
 
 impl NavLookupContext {
     fn load(connection: &rusqlite::Connection) -> anyhow::Result<Self> {
+        let airport_positions =
+            load_nav_position_map(connection, "airports", "ARPLatitude", "ARPLongitude")?;
+        let navaid_positions =
+            load_nav_position_map(connection, "nav", "ARPLatitude", "ARPLongitude")?;
+        let fix_positions =
+            load_nav_position_map(connection, "fix", "ARPLatitude", "ARPLongitude")?;
         Ok(Self {
-            airport_positions: load_nav_position_map(
-                connection,
-                "airports",
-                "ARPLatitude",
-                "ARPLongitude",
-            )?,
-            navaid_positions: load_nav_position_map(
-                connection,
-                "nav",
-                "ARPLatitude",
-                "ARPLongitude",
-            )?,
-            fix_positions: load_nav_position_map(connection, "fix", "ARPLatitude", "ARPLongitude")?,
+            airport_positions_by_coord: build_position_lookup(&airport_positions),
+            navaid_positions_by_coord: build_position_lookup(&navaid_positions),
+            fix_positions_by_coord: build_position_lookup(&fix_positions),
+            airport_positions,
+            navaid_positions,
+            fix_positions,
             runway_positions: load_runway_position_map(connection)?,
             navaid_variation: load_variation_map(connection, "nav", "Variation", false)?,
             airport_variation: load_variation_map(
@@ -5135,6 +5137,43 @@ impl NavLookupContext {
             return serde_json::json!({ "Fix": trimmed });
         }
         serde_json::Value::Null
+    }
+
+    fn classify_airway_point_json(
+        &self,
+        identifier: &str,
+        lat: f64,
+        lon: f64,
+    ) -> serde_json::Value {
+        if let Some(nav_ref) = self.classify_by_position_json(lat, lon) {
+            return nav_ref;
+        }
+
+        let nav_ref = self.classify_json(identifier);
+        if !nav_ref.is_null() {
+            return nav_ref;
+        }
+
+        let trimmed = identifier.trim().to_ascii_uppercase();
+        if trimmed.is_empty() {
+            serde_json::json!({ "LatLon": { "lat": lat, "lon": lon } })
+        } else {
+            serde_json::json!({ "Fix": trimmed })
+        }
+    }
+
+    fn classify_by_position_json(&self, lat: f64, lon: f64) -> Option<serde_json::Value> {
+        let key = position_lookup_key(lat, lon);
+        if let Some(id) = self.fix_positions_by_coord.get(&key) {
+            return Some(serde_json::json!({ "Fix": id }));
+        }
+        if let Some(id) = self.navaid_positions_by_coord.get(&key) {
+            return Some(serde_json::json!({ "Navaid": id }));
+        }
+        if let Some(id) = self.airport_positions_by_coord.get(&key) {
+            return Some(serde_json::json!({ "Airport": id }));
+        }
+        None
     }
 
     fn resolve_position_json(
@@ -5218,6 +5257,31 @@ fn load_nav_position_map(
             .or_insert_with(|| serde_json::json!({ "lat": lat, "lon": lon }));
     }
     Ok(map)
+}
+
+fn position_lookup_key(lat: f64, lon: f64) -> (i64, i64) {
+    (
+        (lat * 1_000_000.0).round() as i64,
+        (lon * 1_000_000.0).round() as i64,
+    )
+}
+
+fn build_position_lookup(
+    positions: &BTreeMap<String, serde_json::Value>,
+) -> BTreeMap<(i64, i64), String> {
+    let mut lookup = BTreeMap::new();
+    for (id, position) in positions {
+        let Some(lat) = position.get("lat").and_then(|value| value.as_f64()) else {
+            continue;
+        };
+        let Some(lon) = position.get("lon").and_then(|value| value.as_f64()) else {
+            continue;
+        };
+        lookup
+            .entry(position_lookup_key(lat, lon))
+            .or_insert_with(|| id.clone());
+    }
+    lookup
 }
 
 fn load_runway_position_map(
@@ -5359,17 +5423,7 @@ fn build_nav_kv_airway_pairs(connection: &rusqlite::Connection) -> anyhow::Resul
     for row in rows {
         let (name, branch_key, sequence, point_name, lat, lon) = row?;
         let position = serde_json::json!({ "lat": lat, "lon": lon });
-        let nav_ref = nav_context.classify_json(&point_name);
-        let nav_ref = if nav_ref.is_null() {
-            let trimmed_point_name = point_name.trim().to_ascii_uppercase();
-            if trimmed_point_name.is_empty() {
-                serde_json::json!({ "LatLon": { "lat": lat, "lon": lon } })
-            } else {
-                serde_json::json!({ "Fix": trimmed_point_name })
-            }
-        } else {
-            nav_ref
-        };
+        let nav_ref = nav_context.classify_airway_point_json(&point_name, lat, lon);
         let point = serde_json::json!({
             "airway_name": name,
             "sequence": sequence,
@@ -12237,11 +12291,15 @@ mod tests {
                 INSERT INTO fix VALUES ('RAWER', 45.235644444444446, -122.79431666666666);
                 INSERT INTO fix VALUES ('CANBY', 45.31056944444444, -122.76489166666667);
                 INSERT INTO fix VALUES ('HARPR', 42.480555555555554, -122.88376111111111);
+                INSERT INTO nav VALUES ('ILA', 39.0711736111111, -122.027269722222, '14.0');
+                INSERT INTO nav VALUES ('OAK', 37.7259255555556, -122.223591944444, '14.0');
                 INSERT INTO airways_branch VALUES ('V23', '', 690, '690', 'RAWER', 45.235644444444446, -122.79431666666666);
                 INSERT INTO airways_branch VALUES ('V23', '', 700, '700', 'CANBY', 45.31056944444444, -122.76489166666667);
                 INSERT INTO airways_branch VALUES ('V23', '', 710, '710', 'NAMEDBUTMISSING', 45.4, -122.7);
                 INSERT INTO airways_branch VALUES ('V23', '', 720, '720', '', 45.5, -122.6);
                 INSERT INTO airways_branch VALUES ('Q801', 'A', 10, '10', 'HARPR', 42.480555555555554, -122.88376111111111);
+                INSERT INTO airways_branch VALUES ('V195', 'RAGGS-JINGO', 220, '220', 'OAKLAND', 37.7259255555556, -122.223591944444);
+                INSERT INTO airways_branch VALUES ('V195', 'RAGGS-JINGO', 300, '300', 'WILLIAMS', 39.0711736111111, -122.027269722222);
                 ",
             )
             .unwrap();
@@ -12276,6 +12334,16 @@ mod tests {
 
         let q801 = pair_value("airway/Q801");
         assert_eq!(q801[0]["branch_key"], "A");
+
+        let v195 = pair_value("airway/V195");
+        assert_eq!(
+            v195[0]["points"][0]["nav_ref"],
+            serde_json::json!({ "Navaid": "OAK" })
+        );
+        assert_eq!(
+            v195[0]["points"][1]["nav_ref"],
+            serde_json::json!({ "Navaid": "ILA" })
+        );
 
         let rawer_tile = pair_value("airway/spatial/45/-123");
         assert!(rawer_tile

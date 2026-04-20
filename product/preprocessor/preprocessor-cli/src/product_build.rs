@@ -11476,6 +11476,88 @@ mod tests {
     }
 
     #[test]
+    fn nav_kv_airway_pairs_preserve_empty_branch_keys() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE airports (
+                    LocationID TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL,
+                    MagneticVariation TEXT
+                );
+                CREATE TABLE nav (
+                    LocationID TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL,
+                    Variation TEXT
+                );
+                CREATE TABLE fix (
+                    LocationID TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL
+                );
+                CREATE TABLE airportrunways (
+                    LocationID TEXT,
+                    LEIdent TEXT,
+                    LELatitude REAL,
+                    LELongitude REAL,
+                    HEIdent TEXT,
+                    HELatitude REAL,
+                    HELongitude REAL
+                );
+                CREATE TABLE airways_branch (
+                    name TEXT,
+                    branch_key TEXT,
+                    sequence_number INTEGER,
+                    sequence_token TEXT,
+                    point_name TEXT,
+                    Latitude REAL,
+                    Longitude REAL
+                );
+                INSERT INTO fix VALUES ('RAWER', 45.235644444444446, -122.79431666666666);
+                INSERT INTO fix VALUES ('CANBY', 45.31056944444444, -122.76489166666667);
+                INSERT INTO fix VALUES ('HARPR', 42.480555555555554, -122.88376111111111);
+                INSERT INTO airways_branch VALUES ('V23', '', 690, '690', 'RAWER', 45.235644444444446, -122.79431666666666);
+                INSERT INTO airways_branch VALUES ('V23', '', 700, '700', 'CANBY', 45.31056944444444, -122.76489166666667);
+                INSERT INTO airways_branch VALUES ('Q801', 'A', 10, '10', 'HARPR', 42.480555555555554, -122.88376111111111);
+                ",
+            )
+            .unwrap();
+
+        let pairs = build_nav_kv_airway_pairs(&connection).unwrap();
+        let pair_value = |key: &str| -> serde_json::Value {
+            let pair = pairs
+                .iter()
+                .find(|pair| pair.key == key)
+                .unwrap_or_else(|| panic!("missing nav_kv pair {key}"));
+            serde_json::from_slice(&pair.value).unwrap()
+        };
+
+        let v23 = pair_value("airway/V23");
+        assert_eq!(v23[0]["branch_key"], "");
+        assert_eq!(
+            v23[0]["points"][0]["nav_ref"],
+            serde_json::json!({ "Fix": "RAWER" })
+        );
+        assert_eq!(
+            v23[0]["points"][1]["nav_ref"],
+            serde_json::json!({ "Fix": "CANBY" })
+        );
+
+        let q801 = pair_value("airway/Q801");
+        assert_eq!(q801[0]["branch_key"], "A");
+
+        let rawer_tile = pair_value("airway/spatial/45/-123");
+        assert!(rawer_tile
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|point| point["airway_name"] == "V23" && point["branch_key"] == ""));
+    }
+
+    #[test]
     fn derives_distinct_vintage_labels_from_source_urls() {
         let temp = tempdir().unwrap();
         write_source_urls(

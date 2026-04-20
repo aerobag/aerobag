@@ -5327,7 +5327,12 @@ fn build_nav_kv_airway_pairs(connection: &rusqlite::Connection) -> anyhow::Resul
         let position = serde_json::json!({ "lat": lat, "lon": lon });
         let nav_ref = nav_context.classify_json(&point_name);
         let nav_ref = if nav_ref.is_null() {
-            serde_json::json!({ "LatLon": { "lat": lat, "lon": lon } })
+            let trimmed_point_name = point_name.trim().to_ascii_uppercase();
+            if trimmed_point_name.is_empty() {
+                serde_json::json!({ "LatLon": { "lat": lat, "lon": lon } })
+            } else {
+                serde_json::json!({ "Fix": trimmed_point_name })
+            }
         } else {
             nav_ref
         };
@@ -12192,6 +12197,8 @@ mod tests {
                 INSERT INTO fix VALUES ('HARPR', 42.480555555555554, -122.88376111111111);
                 INSERT INTO airways_branch VALUES ('V23', '', 690, '690', 'RAWER', 45.235644444444446, -122.79431666666666);
                 INSERT INTO airways_branch VALUES ('V23', '', 700, '700', 'CANBY', 45.31056944444444, -122.76489166666667);
+                INSERT INTO airways_branch VALUES ('V23', '', 710, '710', 'NAMEDBUTMISSING', 45.4, -122.7);
+                INSERT INTO airways_branch VALUES ('V23', '', 720, '720', '', 45.5, -122.6);
                 INSERT INTO airways_branch VALUES ('Q801', 'A', 10, '10', 'HARPR', 42.480555555555554, -122.88376111111111);
                 ",
             )
@@ -12215,6 +12222,14 @@ mod tests {
         assert_eq!(
             v23[0]["points"][1]["nav_ref"],
             serde_json::json!({ "Fix": "CANBY" })
+        );
+        assert_eq!(
+            v23[0]["points"][2]["nav_ref"],
+            serde_json::json!({ "Fix": "NAMEDBUTMISSING" })
+        );
+        assert_eq!(
+            v23[0]["points"][3]["nav_ref"],
+            serde_json::json!({ "LatLon": { "lat": 45.5, "lon": -122.6 } })
         );
 
         let q801 = pair_value("airway/Q801");

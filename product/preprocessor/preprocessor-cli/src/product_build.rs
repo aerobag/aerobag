@@ -472,12 +472,8 @@ enum ProductTaskValue {
         tile_levels: Vec<TileLevelRecord>,
     },
     BuiltWaterMask {
-        zip_path: PathBuf,
         mask_tiles_dir: PathBuf,
-        zip_sha256: Option<String>,
-        zip_size_bytes: Option<u64>,
         source_version: String,
-        source_fetched_at_utc: Option<String>,
     },
     TerrainDiscovery {
         index_path: PathBuf,
@@ -786,9 +782,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             region: Region,
         },
         WaterMaskBuild {
-            region: Region,
-        },
-        WaterMaskPublish {
             region: Region,
         },
         ShadedReliefBuild {
@@ -1129,12 +1122,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     kind: ProductScheduledTaskKind::WaterMaskBuild { region: *region },
                 });
                 pending_tasks.push(ProductScheduledTask {
-                    id: format!("publish-water-mask-{region_id}"),
-                    deps: vec![format!("build-water-mask-{region_id}")],
-                    weight: 1,
-                    kind: ProductScheduledTaskKind::WaterMaskPublish { region: *region },
-                });
-                pending_tasks.push(ProductScheduledTask {
                     id: format!("build-shaded-relief-{region_id}"),
                     deps: vec![
                         "terrain-discovery".to_string(),
@@ -1167,9 +1154,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 }),
             );
             current_artifacts_deps.extend(config.profile.terrain_regions().iter().map(|region| {
-                format!("publish-water-mask-{}", region.code().to_ascii_lowercase())
-            }));
-            current_artifacts_deps.extend(config.profile.terrain_regions().iter().map(|region| {
                 format!(
                     "publish-shaded-relief-{}",
                     region.code().to_ascii_lowercase()
@@ -1196,9 +1180,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     format!("publish-terrain-{}", region.code().to_ascii_lowercase())
                 }),
             );
-            product_unpack_deps.extend(config.profile.terrain_regions().iter().map(|region| {
-                format!("publish-water-mask-{}", region.code().to_ascii_lowercase())
-            }));
             product_unpack_deps.extend(config.profile.terrain_regions().iter().map(|region| {
                 format!(
                     "publish-shaded-relief-{}",
@@ -2107,25 +2088,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             })
                         }
                         ProductScheduledTaskKind::WaterMaskBuild { region } => {
-                            let (
-                                zip_path,
-                                mask_tiles_dir,
-                                source_version,
-                                source_fetched_at_utc,
-                                record,
-                            ) = build_water_mask_product(&config, region)?;
+                            let (_zip_path, mask_tiles_dir, source_version, _source_fetched_at_utc, record) =
+                                build_water_mask_product(&config, region)?;
                             let cache_hit = record.cache_hit;
-                            let (zip_sha256, zip_size_bytes) =
-                                node_output_file_detail(&record, "zip");
                             Ok(ProductTaskCompletion {
                                 node_records: vec![record],
                                 value: ProductTaskValue::BuiltWaterMask {
-                                    zip_path,
                                     mask_tiles_dir,
-                                    zip_sha256,
-                                    zip_size_bytes,
                                     source_version,
-                                    source_fetched_at_utc,
                                 },
                                 completion_detail: format!("cache_hit={cache_hit}"),
                             })
@@ -2146,7 +2116,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 Some(ProductTaskValue::BuiltWaterMask {
                                     mask_tiles_dir,
                                     source_version,
-                                    ..
                                 }) => (mask_tiles_dir.clone(), source_version.clone()),
                                 _ => bail!("missing water mask output for {}", region.code()),
                             };
@@ -2384,49 +2353,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 completion_detail: "published".to_string(),
                             })
                         }
-                        ProductScheduledTaskKind::WaterMaskPublish { region } => {
-                            let region_id = region.code().to_ascii_lowercase();
-                            let task_id = format!("build-water-mask-{region_id}");
-                            let built = match task_values_snapshot.get(&task_id) {
-                                Some(ProductTaskValue::BuiltWaterMask {
-                                    zip_path,
-                                    zip_sha256,
-                                    zip_size_bytes,
-                                    source_version,
-                                    source_fetched_at_utc,
-                                    ..
-                                }) => (
-                                    zip_path.clone(),
-                                    zip_sha256.clone(),
-                                    *zip_size_bytes,
-                                    source_version.clone(),
-                                    source_fetched_at_utc.clone(),
-                                ),
-                                _ => bail!("missing water mask build output for {}", region.code()),
-                            };
-                            let product_id = format!("water-mask-{region_id}");
-                            let (published_zip, sha256, size_bytes) =
-                                publish_content_addressed_zip(
-                                    &config.build_root,
-                                    &built.0,
-                                    &product_id,
-                                    built.1.as_deref(),
-                                    built.2,
-                                )?;
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![],
-                                value: ProductTaskValue::PublishedStandaloneProduct {
-                                    id: product_id,
-                                    source_zip_path: built.0,
-                                    published_zip,
-                                    sha256,
-                                    size_bytes,
-                                    source_version: built.3,
-                                    source_fetched_at_utc: built.4,
-                                },
-                                completion_detail: "published".to_string(),
-                            })
-                        }
                         ProductScheduledTaskKind::ShadedReliefPublish { region } => {
                             let region_id = region.code().to_ascii_lowercase();
                             let task_id = format!("build-shaded-relief-{region_id}");
@@ -2514,12 +2440,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
                                     format!(
                                         "publish-terrain-{}",
-                                        region.code().to_ascii_lowercase()
-                                    )
-                                }));
-                                static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
-                                    format!(
-                                        "publish-water-mask-{}",
                                         region.code().to_ascii_lowercase()
                                     )
                                 }));
@@ -2614,12 +2534,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
                                     format!(
                                         "publish-terrain-{}",
-                                        region.code().to_ascii_lowercase()
-                                    )
-                                }));
-                                static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
-                                    format!(
-                                        "publish-water-mask-{}",
                                         region.code().to_ascii_lowercase()
                                     )
                                 }));

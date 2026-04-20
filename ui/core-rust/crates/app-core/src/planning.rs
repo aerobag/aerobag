@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use crate::errors::{AppError, AppErrorKind, AppResult};
 use crate::geometry::LatLon;
 use crate::ids::AirportId;
+use crate::map_overlay::NavSymbolFeature;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlan {
@@ -335,8 +336,12 @@ pub struct FlightPlanDisplayRowUiView {
     pub distance_nm: Option<f64>,
     #[serde(default)]
     pub course_deg: Option<f64>,
+    #[serde(default)]
+    pub show_plate_target_id: Option<String>,
     pub chart_airport_id: Option<String>,
     pub nav_ref: Option<NavRef>,
+    #[serde(default)]
+    pub symbol_feature: Option<NavSymbolFeature>,
     pub depth: usize,
     pub active: bool,
     pub can_add_airway_after: bool,
@@ -947,8 +952,13 @@ fn project_display_rows(
         let chart_airport_id = component.chart_airport_id.clone();
         if component.kind == RouteComponentViewKind::Waypoint {
             let nav_ref = component_waypoint_nav_ref(component);
-            let origin_anchor = component.preceding_waypoint.clone().or(nav_ref.clone());
+            let origin_anchor = nav_ref.clone();
             let destination_anchor = component.following_waypoint.clone();
+            let end_component_index = if destination_anchor.is_some() {
+                Some(component.component_index + 1)
+            } else {
+                None
+            };
             rows.push(FlightPlanDisplayRowUiView {
                 label: nav_ref
                     .as_ref()
@@ -962,8 +972,10 @@ fn project_display_rows(
                 leg_index: None,
                 distance_nm: None,
                 course_deg: None,
+                show_plate_target_id: None,
                 chart_airport_id,
                 nav_ref,
+                symbol_feature: None,
                 depth: 0,
                 active: component.active,
                 can_add_airway_after: component.can_add_airway_after,
@@ -975,7 +987,7 @@ fn project_display_rows(
                 can_reorder_down: component.can_reorder_down,
                 replace_procedure_component_index: component.replace_procedure_component_index,
                 start_component_index: Some(component.component_index),
-                end_component_index: Some(component.component_index + 1),
+                end_component_index,
                 origin_anchor,
                 destination_anchor,
                 preceding_waypoint: component.preceding_waypoint.clone(),
@@ -995,8 +1007,10 @@ fn project_display_rows(
                 leg_index: None,
                 distance_nm: None,
                 course_deg: None,
+                show_plate_target_id: None,
                 chart_airport_id,
                 nav_ref: None,
+                symbol_feature: None,
                 depth: 0,
                 active: component.active,
                 can_add_airway_after: component.can_add_airway_after,
@@ -1028,8 +1042,10 @@ fn project_display_rows(
                             leg_index: None,
                             distance_nm: None,
                             course_deg: None,
+                            show_plate_target_id: None,
                             chart_airport_id: airport_id_from_nav_ref(nav_ref),
                             nav_ref: Some(nav_ref.clone()),
+                            symbol_feature: None,
                             depth: 1,
                             active: component.active,
                             can_add_airway_after: false,
@@ -1060,8 +1076,10 @@ fn project_display_rows(
                             leg_index: None,
                             distance_nm: None,
                             course_deg: None,
+                            show_plate_target_id: None,
                             chart_airport_id: None,
                             nav_ref: None,
+                            symbol_feature: None,
                             depth: 1,
                             active: false,
                             can_add_airway_after: false,
@@ -4133,6 +4151,95 @@ mod tests {
         let last_leg = inserted.resolved_legs.last().unwrap();
         assert_eq!(last_leg.from, NavRef::Fix("SUMMA".to_string()));
         assert_eq!(last_leg.to, NavRef::Fix("VAMPS".to_string()));
+    }
+
+    #[test]
+    fn final_waypoint_add_airway_row_projects_open_ended_insert_span() {
+        let ui = project_ui_state(&sample_waypoint_only_plan());
+        let middle_row = ui
+            .display_rows
+            .iter()
+            .find(|row| row.component_index == Some(1) && row.depth == 0)
+            .expect("middle waypoint row");
+        assert_eq!(middle_row.start_component_index, Some(1));
+        assert_eq!(middle_row.end_component_index, Some(2));
+        assert_eq!(
+            middle_row.origin_anchor,
+            Some(NavRef::Airport("KUAO".to_string()))
+        );
+        assert_eq!(
+            middle_row.destination_anchor,
+            Some(NavRef::Airport("KHIO".to_string()))
+        );
+
+        let row = ui
+            .display_rows
+            .iter()
+            .find(|row| row.component_index == Some(2) && row.depth == 0)
+            .expect("final waypoint row");
+
+        assert!(row
+            .actions
+            .iter()
+            .any(|action| action.id == FlightPlanRowActionId::AddAirway && action.enabled));
+        assert_eq!(row.start_component_index, Some(2));
+        assert_eq!(row.end_component_index, None);
+        assert_eq!(row.origin_anchor, Some(NavRef::Airport("KHIO".to_string())));
+        assert_eq!(row.destination_anchor, None);
+    }
+
+    #[test]
+    fn materialized_airway_insert_accepts_projected_final_waypoint_span() {
+        let ui = project_ui_state(&sample_waypoint_only_plan());
+        let row = ui
+            .display_rows
+            .iter()
+            .find(|row| row.component_index == Some(2) && row.depth == 0)
+            .expect("final waypoint row");
+        let selection = crate::AirwayAutoSelection {
+            airway_name: "V2".to_string(),
+            branch_key: "V2-A".to_string(),
+            entry: crate::AirwayEntryCandidate {
+                airway_name: "V2".to_string(),
+                branch_key: "V2-A".to_string(),
+                branch_point_index: 0,
+                sequence: 0,
+                nav_ref: NavRef::Navaid("SEA".to_string()),
+                distance_from_anchor_nm: 0.0,
+                previous_nav_ref: None,
+                next_nav_ref: Some(NavRef::Fix("SUMMA".to_string())),
+            },
+            exit: crate::AirwayExitCandidate {
+                airway_name: "V2".to_string(),
+                branch_key: "V2-A".to_string(),
+                branch_point_index: 2,
+                sequence: 2,
+                nav_ref: NavRef::Fix("VAMPS".to_string()),
+                leg_offset_from_entry: 2,
+                distance_from_target_nm: None,
+                is_entry: false,
+            },
+            origin_distance_nm: 0.0,
+            destination_distance_nm: 0.0,
+            total_anchor_distance_nm: 0.0,
+        };
+        let (airway, airway_legs) = sample_inserted_airway();
+
+        let mutation = crate::insert_airway_materialized_ui(
+            &sample_waypoint_only_plan(),
+            row.start_component_index.unwrap(),
+            row.end_component_index,
+            selection,
+            airway,
+            airway_legs,
+        )
+        .unwrap();
+
+        assert_eq!(mutation.mutation.component_index, 3);
+        assert!(matches!(
+            mutation.mutation.plan.route_components.last(),
+            Some(RouteComponent::Airway { .. })
+        ));
     }
 
     #[test]

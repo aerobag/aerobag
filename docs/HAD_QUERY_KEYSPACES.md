@@ -8,10 +8,11 @@ case-insensitive, such as airport ids, CIFP ids, airway names, and procedure
 kinds, are trimmed and uppercased before encoding. Opaque published ids, such as
 plate ids, are trimmed and encoded without case changes.
 
-## Implemented Client Key Builders
+## Implemented Key Builders
 
-The web client key builders live in `ui/web-app/src/domain/navHad.ts`. They are
-the current aspirational consumer contract for the preprocessor HAD writer.
+HAD query-to-key construction lives in shared Rust core
+(`ui/core-rust/crates/app-core/src/navkv.rs`). Platform code sends query structs
+to core and fetches the opaque value pages core requests.
 
 ## Raster Chart Startup
 

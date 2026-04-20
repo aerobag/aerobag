@@ -441,115 +441,85 @@ pub fn replace_procedure_from_selection_ui_json(
 
 pub fn replace_flight_plan_state_json(
     state_json: &str,
-    catalog_json: &str,
+    _catalog_json: &str,
     plan_json: &str,
 ) -> Result<String, String> {
     let state: app_core::AppState =
         serde_json::from_str(state_json).map_err(|err| err.to_string())?;
-    let catalog = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let next = app_core::state::reduce(
-        &state,
-        app_core::AppEvent::ReplaceFlightPlan(plan),
-        &catalog,
-    )
-    .map_err(|err| err.to_string())?;
+    let next = app_core::state::reduce(&state, app_core::AppEvent::ReplaceFlightPlan(plan))
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&next).map_err(|err| err.to_string())
 }
 
 pub fn replace_flight_plan_ui_state_json(
     state_json: &str,
-    catalog_json: &str,
+    _catalog_json: &str,
     plan_json: &str,
 ) -> Result<String, String> {
     let state: app_core::AppState =
         serde_json::from_str(state_json).map_err(|err| err.to_string())?;
-    let catalog = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let next = app_core::state::reduce(
-        &state,
-        app_core::AppEvent::ReplaceFlightPlan(plan),
-        &catalog,
-    )
-    .map_err(|err| err.to_string())?;
+    let next = app_core::state::reduce(&state, app_core::AppEvent::ReplaceFlightPlan(plan))
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&app_core::project_app_ui_state(&next)).map_err(|err| err.to_string())
 }
 
 pub fn set_content_policy_state_json(
     state_json: &str,
-    catalog_json: &str,
+    _catalog_json: &str,
     policy_json: &str,
 ) -> Result<String, String> {
     let state: app_core::AppState =
         serde_json::from_str(state_json).map_err(|err| err.to_string())?;
-    let catalog = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
     let policy: app_core::ContentPolicy =
         serde_json::from_str(policy_json).map_err(|err| err.to_string())?;
-    let next = app_core::state::reduce(
-        &state,
-        app_core::AppEvent::SetContentPolicy(policy),
-        &catalog,
-    )
-    .map_err(|err| err.to_string())?;
+    let next = app_core::state::reduce(&state, app_core::AppEvent::SetContentPolicy(policy))
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&next).map_err(|err| err.to_string())
 }
 
 pub fn set_content_policy_ui_state_json(
     state_json: &str,
-    catalog_json: &str,
+    _catalog_json: &str,
     policy_json: &str,
 ) -> Result<String, String> {
     let state: app_core::AppState =
         serde_json::from_str(state_json).map_err(|err| err.to_string())?;
-    let catalog = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
     let policy: app_core::ContentPolicy =
         serde_json::from_str(policy_json).map_err(|err| err.to_string())?;
-    let next = app_core::state::reduce(
-        &state,
-        app_core::AppEvent::SetContentPolicy(policy),
-        &catalog,
-    )
-    .map_err(|err| err.to_string())?;
+    let next = app_core::state::reduce(&state, app_core::AppEvent::SetContentPolicy(policy))
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&app_core::project_app_ui_state(&next)).map_err(|err| err.to_string())
 }
 
 pub fn refresh_content_state_json(
     state_json: &str,
-    catalog_json: &str,
+    _catalog_json: &str,
     inventory_json: &str,
 ) -> Result<String, String> {
     let state: app_core::AppState =
         serde_json::from_str(state_json).map_err(|err| err.to_string())?;
-    let catalog = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
     let inventory: app_core::ContentInventory =
         serde_json::from_str(inventory_json).map_err(|err| err.to_string())?;
-    let next = app_core::state::reduce(
-        &state,
-        app_core::AppEvent::RefreshContent { inventory },
-        &catalog,
-    )
-    .map_err(|err| err.to_string())?;
+    let next = app_core::state::reduce(&state, app_core::AppEvent::RefreshContent { inventory })
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&next).map_err(|err| err.to_string())
 }
 
 pub fn refresh_content_ui_state_json(
     state_json: &str,
-    catalog_json: &str,
+    _catalog_json: &str,
     inventory_json: &str,
 ) -> Result<String, String> {
     let state: app_core::AppState =
         serde_json::from_str(state_json).map_err(|err| err.to_string())?;
-    let catalog = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
     let inventory: app_core::ContentInventory =
         serde_json::from_str(inventory_json).map_err(|err| err.to_string())?;
-    let next = app_core::state::reduce(
-        &state,
-        app_core::AppEvent::RefreshContent { inventory },
-        &catalog,
-    )
-    .map_err(|err| err.to_string())?;
+    let next = app_core::state::reduce(&state, app_core::AppEvent::RefreshContent { inventory })
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&app_core::project_app_ui_state(&next)).map_err(|err| err.to_string())
 }
 
@@ -2439,7 +2409,7 @@ mod tests {
     }
 
     #[test]
-    fn replace_flight_plan_state_json_populates_requirements() {
+    fn replace_flight_plan_state_json_sets_active_plan() {
         let next_json = replace_flight_plan_state_json(
             &empty_state_json(),
             &sample_catalog_json(),
@@ -2449,7 +2419,6 @@ mod tests {
         let next: app_core::AppState = serde_json::from_str(&next_json).unwrap();
 
         assert!(next.active_plan.is_some());
-        assert_eq!(next.last_content_requirements.len(), 1);
     }
 
     #[test]
@@ -2463,7 +2432,6 @@ mod tests {
         let next: app_core::AppUiState = serde_json::from_str(&next_json).unwrap();
 
         assert!(next.active_plan.is_some());
-        assert_eq!(next.last_content_requirements.len(), 1);
     }
 
     #[test]

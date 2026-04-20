@@ -1,5 +1,4 @@
 import type {
-  AppState,
   UiSnapshotAppState,
   AppUiState,
   AirwayAutoSelection,
@@ -9,11 +8,8 @@ import type {
   AirwayPresentationPlan,
   AirwaySuggestion,
   AirwaySegment,
-  CatalogJson,
   CifpTppMatch,
   ChartPageData,
-  ContentInventory,
-  ContentPolicy,
   FlightPlan,
   FlightPlanRouteSegment,
   FlightPlanUiMutation,
@@ -26,13 +22,11 @@ import type {
   MapFollowUiState,
   MaterializedProcedure,
   NavRef,
-  NavSymbolFeature,
   OwnshipSelectionCommand,
   OwnshipSourceRegistration,
   OwnshipSourceStatusUpdate,
   PlanLeg,
   PlaybackUiState,
-  PlateProcedureLoadCandidateInput,
   ProcedureLoadOption,
   ProcedureOptions,
   ProcedureSummary,
@@ -44,24 +38,9 @@ import type {
   SituationSample,
   WaypointIdentifierSuggestion,
 } from "./types";
-import catalogJson from "@product-catalog";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
-import {
-  loadHadAirwayBranches,
-  loadHadAirwaySpatialTile,
-  loadHadCifpPlateMatches,
-  loadHadNavRefPosition,
-  loadHadNavSymbolFeature,
-  loadHadPlateProcedureCandidates,
-  loadHadProcedureDistinctRows,
-  loadHadProcedureList,
-  loadHadProcedureMaterializationRows,
-  loadHadWaypointIdentifier,
-  loadHadWaypointPrefix,
-  navRefPositionKey,
-} from "./navHad";
-
-const sampleCatalog = catalogJson as CatalogJson;
+import { runCoreHadOperation } from "./navKv";
+import { debugLog, debugTiming } from "./debugLog";
 
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];
@@ -89,10 +68,6 @@ export type UiChartPageState = {
   recent_airport_ids: string[];
   selected_airport_id: string;
   selected_chart_id: string;
-};
-
-type FlightPlanDisplayRowWithShowPlateTarget = FlightPlanUiState["display_rows"][number] & {
-  show_plate_target_id?: string | null;
 };
 
 export type PointTilePayload = {
@@ -213,13 +188,6 @@ export interface AppCoreAdapter {
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<UiSession>;
-  replaceFlightPlanState(state: AppState, catalog: CatalogJson, plan: FlightPlan): Promise<AppState>;
-  removeFlightPlanLeg(plan: FlightPlan, index: number): Promise<FlightPlan>;
-  deriveChartCatalog(resourceIndex: unknown): Promise<ChartPageData>;
-  deriveChartPage(resourceIndex: unknown, plan: FlightPlan): Promise<ChartPageData>;
-  deriveChartPageState(resourceIndex: unknown, plan: FlightPlan, recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<DerivedChartPageState>;
-  setContentPolicyState(state: AppState, catalog: CatalogJson, policy: ContentPolicy): Promise<AppState>;
-  refreshContentState(state: AppState, catalog: CatalogJson, inventory: ContentInventory): Promise<AppState>;
   projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]>;
   activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation>;
   activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
@@ -231,12 +199,6 @@ export interface AppCoreAdapter {
   suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   unsuspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   sequenceActiveLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
-  prepareAirwayPresentation(
-    airwayName: string,
-    branches: AirwayBranch[],
-    originPosition: LatLon,
-    destinationPosition: LatLon | null,
-  ): Promise<AirwayPresentationPlan>;
   suggestAirwaysNearAnchor(anchor: NavRef, limit?: number): Promise<AirwaySuggestion[]>;
   prepareAirwayPresentationForAnchors(
     airwayName: string,
@@ -254,7 +216,6 @@ export interface AppCoreAdapter {
     airway: AirwaySegment;
     resolvedLegs: ResolvedLeg[];
   }>;
-  sortAirwaySuggestionsForUi(suggestions: AirwaySuggestion[]): Promise<AirwaySuggestion[]>;
   insertAirwayMaterializedUi(
     plan: FlightPlan,
     startComponentIndex: number,
@@ -306,6 +267,7 @@ export type LoadedAdapter = {
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
   create_ui_session(catalogJson: string, chartCatalogJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
+  create_ui_session_profiled?: (catalogJson: string, chartCatalogJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
   remove_leg_in_session(handle: number, index: number): Promise<string> | string;
   move_waypoint_in_session(handle: number, waypointIndex: number, delta: number): Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
@@ -335,13 +297,10 @@ type WasmModule = {
   get_session_snapshot(handle: number): Promise<string> | string;
   restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   destroy_session(handle: number): void;
-  remove_flight_plan_leg(planJson: string, index: number): Promise<string> | string;
-  derive_chart_catalog(resourceIndexJson: string): Promise<string> | string;
-  derive_chart_page(resourceIndexJson: string, planJson: string): Promise<string> | string;
-  derive_chart_page_state(resourceIndexJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
-  replace_flight_plan_state(stateJson: string, catalogJson: string, planJson: string): Promise<string> | string;
-  set_content_policy_state(stateJson: string, catalogJson: string, policyJson: string): Promise<string> | string;
-  refresh_content_state(stateJson: string, catalogJson: string, inventoryJson: string): Promise<string> | string;
+  nav_kv_open(rootBytes: Uint8Array): Promise<number> | number;
+  nav_kv_insert_page(handle: number, pageIndex: number, pageBytes: Uint8Array): Promise<void> | void;
+  nav_kv_destroy(handle: number): Promise<void> | void;
+  core_had_operation(handle: number, operationJson: string): Promise<string> | string;
   activate_leg_ui(planJson: string, legIndex: number): Promise<string> | string;
   activate_next_leg_ui(planJson: string): Promise<string> | string;
   delete_component_ui(planJson: string, componentIndex: number): Promise<string> | string;
@@ -350,13 +309,6 @@ type WasmModule = {
   suspend_sequencing_ui(planJson: string): Promise<string> | string;
   unsuspend_sequencing_ui(planJson: string): Promise<string> | string;
   sequence_active_leg_ui(planJson: string): Promise<string> | string;
-  prepare_airway_presentation(
-    airwayName: string,
-    branchesJson: string,
-    originPositionJson: string,
-    destinationPositionJson: string,
-  ): Promise<string> | string;
-  sort_airway_suggestions_for_ui(suggestionsJson: string): Promise<string> | string;
   insert_airway_materialized_ui(
     planJson: string,
     startComponentIndex: number,
@@ -383,64 +335,6 @@ type WasmModule = {
     componentIndex: number,
     builtJson: string,
   ): Promise<string> | string;
-  describe_procedure_options_from_rows(
-    airportId: string,
-    procedureId: string,
-    kindJson: string,
-    rowsJson: string,
-  ): Promise<string> | string;
-  list_approach_procedures_from_match_rows(
-    airportId: string,
-    rowsJson: string,
-  ): Promise<string> | string;
-  materialize_procedure_from_records(
-    airportId: string,
-    procedureId: string,
-    kindJson: string,
-    runwayTransitionJson: string,
-    enrouteTransitionJson: string,
-    componentIndex: number,
-    rowsJson: string,
-    legsJson: string,
-  ): Promise<string> | string;
-  select_preferred_cifp_tpp_match(rowsJson: string): Promise<string> | string;
-  describe_show_plate_for_procedure(rowsJson: string): Promise<string> | string;
-  describe_load_procedure_from_plate(
-    planJson: string,
-    airportId: string,
-    procedureId: string,
-    kindJson: string,
-    optionsJson: string,
-  ): Promise<string> | string;
-  describe_plate_procedure_load_options(
-    planJson: string,
-    candidatesJson: string,
-  ): Promise<string> | string;
-  airway_spatial_tile_keys(anchorPositionJson: string, radiusNm: number): Promise<string> | string;
-  flight_plan_insert_anchor(planJson: string, componentIndex: number, before: boolean): Promise<string> | string;
-  materialize_airway_selection_from_branches(
-    startComponentIndex: number,
-    entryJson: string,
-    exitJson: string,
-    branchesJson: string,
-    originPositionJson: string,
-    destinationPositionJson: string,
-  ): Promise<string> | string;
-  project_flight_plan_route_from_positions(planJson: string, positionByKeyJson: string): Promise<string> | string;
-  suggest_airways_near_from_points(
-    anchorPositionJson: string,
-    pointsJson: string,
-    limit: number,
-  ): Promise<string> | string;
-  suggest_waypoint_identifiers_from_candidates(
-    planJson: string,
-    componentIndex: number,
-    before: boolean,
-    prefix: string,
-    limit: number,
-    candidatesJson: string,
-    anchorPositionJson: string,
-  ): Promise<string> | string;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
@@ -448,43 +342,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
 
   async prewarm(): Promise<void> {}
 
-  private async enrichFlightPlanUiState(plan: FlightPlan, uiState: FlightPlanUiState): Promise<FlightPlanUiState> {
-    const routeSegments = await this.projectFlightPlanRoute(plan, uiState);
-    const display_rows = await Promise.all(uiState.display_rows.map(async (row) => {
-      const showPlateAction = row.actions.find((action) => action.id === "show_plate");
-      const legMetrics = row.leg_index !== null ? routeSegments[row.leg_index] ?? null : null;
-      const symbol_feature = row.nav_ref ? await loadHadNavSymbolFeature(row.nav_ref) : null;
-      if (!showPlateAction || !row.chart_airport_id || !row.procedure_id) {
-        return {
-          ...row,
-          symbol_feature,
-          distance_nm: legMetrics?.distance_nm ?? null,
-          course_deg: legMetrics?.course_deg ?? null,
-        } as FlightPlanDisplayRowWithShowPlateTarget;
-      }
-      const rows = await loadHadCifpPlateMatches(row.chart_airport_id, row.procedure_id);
-      const match = rows
-        ? JSON.parse(
-          await this.module.describe_show_plate_for_procedure(JSON.stringify(rows)),
-        ) as CifpTppMatch | null
-        : null;
-      return {
-        ...row,
-        symbol_feature,
-        distance_nm: legMetrics?.distance_nm ?? null,
-        course_deg: legMetrics?.course_deg ?? null,
-        show_plate_target_id: match?.plate_id ?? null,
-        actions: row.actions.map((action) =>
-          action.id === "show_plate"
-            ? { ...action, enabled: match !== null }
-            : action,
-        ),
-      } satisfies FlightPlanDisplayRowWithShowPlateTarget;
-    }));
-    return {
-      ...uiState,
-      display_rows,
-    };
+  private async enrichFlightPlanUiState(plan: FlightPlan, _uiState: FlightPlanUiState): Promise<FlightPlanUiState> {
+    return runCoreHadOperation<FlightPlanUiState>({ kind: "flight_plan_ui_state", plan });
   }
 
   private async enrichUiSessionSnapshot(snapshot: UiSessionSnapshot): Promise<UiSessionSnapshot> {
@@ -501,10 +360,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   private async enrichFlightPlanUiMutation(mutation: FlightPlanUiMutation): Promise<FlightPlanUiMutation> {
-    return {
-      ...mutation,
-      ui_state: await this.enrichFlightPlanUiState(mutation.plan, mutation.ui_state),
-    };
+    return runCoreHadOperation<FlightPlanUiMutation>({ kind: "flight_plan_ui_mutation", mutation });
   }
 
   async createUiSession(
@@ -514,7 +370,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<UiSession> {
-    const catalogJson = JSON.stringify(sampleCatalogLike());
+    const catalogJson = "{}";
     const chartCatalogJson = JSON.stringify(chartCatalog);
     const module = this.module;
     const createSession = async (
@@ -523,19 +379,27 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       nextSelectedAirportId?: string,
       nextSelectedChartId?: string,
     ) => {
-      const created = JSON.parse(
-        await module.create_ui_session(
-          catalogJson,
-          chartCatalogJson,
-          JSON.stringify(nextPlan),
-          JSON.stringify(nextRecentAirportIds),
-          JSON.stringify(nextSelectedAirportId ?? null),
-          JSON.stringify(nextSelectedChartId ?? null),
-        ),
-      ) as { handle: number; chart_catalog: ChartPageData; snapshot: UiSessionSnapshot };
+      const planJson = debugTiming("startup.session.stringify.plan", () => JSON.stringify(nextPlan));
+      const recentAirportIdsJson = debugTiming("startup.session.stringify.recent_airports", () => JSON.stringify(nextRecentAirportIds));
+      const selectedAirportIdJson = JSON.stringify(nextSelectedAirportId ?? null);
+      const selectedChartIdJson = JSON.stringify(nextSelectedChartId ?? null);
+      const createUiSession = module.create_ui_session_profiled ?? module.create_ui_session;
+      const createdJson = await debugTiming("startup.session.wasm_call", () => createUiSession(
+        catalogJson,
+        chartCatalogJson,
+        planJson,
+        recentAirportIdsJson,
+        selectedAirportIdJson,
+        selectedChartIdJson,
+      ), { profiled: Boolean(module.create_ui_session_profiled) });
+      const createdEnvelope = debugTiming("startup.session.parse_result", () => JSON.parse(createdJson)) as { result?: { handle: number; chart_catalog: ChartPageData; snapshot: UiSessionSnapshot }; timings?: Array<{ label: string; elapsed_ms: number }>; handle: number; chart_catalog: ChartPageData; snapshot: UiSessionSnapshot };
+      if (createdEnvelope.timings) {
+        debugLog("startup.session.core_profile", { timings: createdEnvelope.timings });
+      }
+      const created = createdEnvelope.result ?? createdEnvelope;
       return {
         ...created,
-        snapshot: await this.enrichUiSessionSnapshot(created.snapshot),
+        snapshot: await debugTiming("startup.session.enrich_snapshot", () => this.enrichUiSessionSnapshot(created.snapshot)),
       };
     };
     const init = await createSession(plan, recentAirportIds, selectedAirportId, selectedChartId);
@@ -782,96 +646,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     };
   }
 
-  async removeFlightPlanLeg(plan: FlightPlan, index: number): Promise<FlightPlan> {
-    return JSON.parse(
-      await this.module.remove_flight_plan_leg(
-        JSON.stringify(plan),
-        index,
-      ),
-    ) as FlightPlan;
-  }
-
-  async deriveChartPage(resourceIndex: unknown, plan: FlightPlan): Promise<ChartPageData> {
-    return JSON.parse(
-      await this.module.derive_chart_page(
-        JSON.stringify(resourceIndex),
-        JSON.stringify(plan),
-      ),
-    ) as ChartPageData;
-  }
-
-  async deriveChartCatalog(resourceIndex: unknown): Promise<ChartPageData> {
-    return JSON.parse(
-      await this.module.derive_chart_catalog(
-        JSON.stringify(resourceIndex),
-      ),
-    ) as ChartPageData;
-  }
-
-  async deriveChartPageState(resourceIndex: unknown, plan: FlightPlan, recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<DerivedChartPageState> {
-    return JSON.parse(
-      await this.module.derive_chart_page_state(
-        JSON.stringify(resourceIndex),
-        JSON.stringify(plan),
-        JSON.stringify(recentAirportIds),
-        JSON.stringify(selectedAirportId ?? null),
-        JSON.stringify(selectedChartId ?? null),
-      ),
-    ) as DerivedChartPageState;
-  }
-
-  async replaceFlightPlanState(state: AppState, catalog: CatalogJson, plan: FlightPlan): Promise<AppState> {
-    return JSON.parse(
-      await this.module.replace_flight_plan_state(
-        JSON.stringify(state),
-        JSON.stringify(catalog),
-        JSON.stringify(plan),
-      ),
-    ) as AppState;
-  }
-
-  async setContentPolicyState(state: AppState, catalog: CatalogJson, policy: ContentPolicy): Promise<AppState> {
-    return JSON.parse(
-      await this.module.set_content_policy_state(
-        JSON.stringify(state),
-        JSON.stringify(catalog),
-        JSON.stringify(policy),
-      ),
-    ) as AppState;
-  }
-
-  async refreshContentState(state: AppState, catalog: CatalogJson, inventory: ContentInventory): Promise<AppState> {
-    return JSON.parse(
-      await this.module.refresh_content_state(
-        JSON.stringify(state),
-        JSON.stringify(catalog),
-        JSON.stringify(inventory),
-      ),
-    ) as AppState;
-  }
-
   async projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]> {
     void planUiState;
-    const positionByKey: Record<string, LatLon> = {};
-    for (const leg of plan.resolved_legs) {
-      const procedureAirportId = leg.procedure_airport_id ?? null;
-      for (const navRef of [leg.from, leg.to]) {
-        if ("LatLon" in navRef) {
-          continue;
-        }
-        const key = navRefPositionKey(navRef, procedureAirportId);
-        if (positionByKey[key]) {
-          continue;
-        }
-        positionByKey[key] = await loadHadNavRefPosition(navRef, procedureAirportId);
-      }
-    }
-    return JSON.parse(
-      await this.module.project_flight_plan_route_from_positions(
-        JSON.stringify(plan),
-        JSON.stringify(positionByKey),
-      ),
-    ) as FlightPlanRouteSegment[];
+    return runCoreHadOperation<FlightPlanRouteSegment[]>({ kind: "project_flight_plan_route", plan });
   }
 
   async activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation> {
@@ -899,7 +676,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async resolveWaypointIdentifier(identifier: string): Promise<NavRef | null> {
-    return loadHadWaypointIdentifier(identifier);
+    return runCoreHadOperation<NavRef | null>({ kind: "resolve_waypoint_identifier", identifier });
   }
 
   async suggestWaypointIdentifiers(
@@ -909,27 +686,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     prefix: string,
     limit = 8,
   ): Promise<WaypointIdentifierSuggestion[]> {
-    if (prefix.trim() === "" || limit === 0) {
-      return [];
-    }
-    const candidates = (await loadHadWaypointPrefix(prefix)).filter((candidate) =>
-      candidate.identifier.toUpperCase().startsWith(prefix.trim().toUpperCase()),
-    );
-    const anchor = JSON.parse(
-      await this.module.flight_plan_insert_anchor(JSON.stringify(plan), componentIndex, before),
-    ) as NavRef;
-    const anchorPosition = await loadHadNavRefPosition(anchor);
-    return JSON.parse(
-      await this.module.suggest_waypoint_identifiers_from_candidates(
-        JSON.stringify(plan),
-        componentIndex,
-        before,
-        prefix,
-        limit,
-        JSON.stringify(candidates),
-        JSON.stringify(anchorPosition),
-      ),
-    ) as WaypointIdentifierSuggestion[];
+    return runCoreHadOperation<WaypointIdentifierSuggestion[]>({
+      kind: "suggest_waypoint_identifiers",
+      plan,
+      component_index: componentIndex,
+      before,
+      prefix,
+      limit,
+    });
   }
 
   async insertWaypointUi(plan: FlightPlan, componentIndex: number, before: boolean, waypoint: NavRef): Promise<FlightPlanUiMutation> {
@@ -956,53 +720,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     ) as FlightPlanUiMutation);
   }
 
-  async prepareAirwayPresentation(
-    airwayName: string,
-    branches: AirwayBranch[],
-    originPosition: LatLon,
-    destinationPosition: LatLon | null,
-  ): Promise<AirwayPresentationPlan> {
-    return JSON.parse(
-      await this.module.prepare_airway_presentation(
-        airwayName,
-        JSON.stringify(branches),
-        JSON.stringify(originPosition),
-        JSON.stringify(destinationPosition),
-      ),
-    ) as AirwayPresentationPlan;
-  }
-
   async suggestAirwaysNearAnchor(anchor: NavRef, limit = 5): Promise<AirwaySuggestion[]> {
-    if (limit === 0) {
-      return [];
-    }
-    const anchorPosition = await loadHadNavRefPosition(anchor);
-    let points: unknown[] = [];
-    for (const radiusNm of [25, 50, 100, 200, 400]) {
-      const keys = JSON.parse(
-        await this.module.airway_spatial_tile_keys(JSON.stringify(anchorPosition), radiusNm),
-      ) as string[];
-      points = (await Promise.all(keys.map((key) => loadHadAirwaySpatialTile(key)))).flat();
-      const suggestions = JSON.parse(
-        await this.module.suggest_airways_near_from_points(
-          JSON.stringify(anchorPosition),
-          JSON.stringify(points),
-          limit,
-        ),
-      ) as AirwaySuggestion[];
-      if (suggestions.length >= limit || radiusNm === 400) {
-        return suggestions;
-      }
-    }
-    return [];
-  }
-
-  private async navRefPositionOrNull(navRef: NavRef | null): Promise<LatLon | null> {
-    return navRef ? loadHadNavRefPosition(navRef) : null;
+    return runCoreHadOperation<AirwaySuggestion[]>({ kind: "suggest_airways_near_anchor", anchor, limit });
   }
 
   async airwayBranches(airwayName: string): Promise<AirwayBranch[]> {
-    return loadHadAirwayBranches(airwayName);
+    return runCoreHadOperation<AirwayBranch[]>({ kind: "airway_branches", airway_name: airwayName });
   }
 
   async prepareAirwayPresentationForAnchors(
@@ -1010,19 +733,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     originAnchor: NavRef,
     destinationAnchor: NavRef | null,
   ): Promise<AirwayPresentationPlan> {
-    const [branches, originPosition, destinationPosition] = await Promise.all([
-      this.airwayBranches(airwayName),
-      loadHadNavRefPosition(originAnchor),
-      this.navRefPositionOrNull(destinationAnchor),
-    ]);
-    return JSON.parse(
-      await this.module.prepare_airway_presentation(
-        airwayName,
-        JSON.stringify(branches),
-        JSON.stringify(originPosition),
-        JSON.stringify(destinationPosition),
-      ),
-    ) as AirwayPresentationPlan;
+    return runCoreHadOperation<AirwayPresentationPlan>({
+      kind: "prepare_airway_presentation_for_anchors",
+      airway_name: airwayName,
+      origin_anchor: originAnchor,
+      destination_anchor: destinationAnchor,
+    });
   }
 
   async materializeAirwaySelection(
@@ -1036,31 +752,18 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     airway: AirwaySegment;
     resolvedLegs: ResolvedLeg[];
   }> {
-    const [branches, originPosition, destinationPosition] = await Promise.all([
-      this.airwayBranches(entry.airway_name),
-      loadHadNavRefPosition(originAnchor),
-      this.navRefPositionOrNull(destinationAnchor),
-    ]);
-    return JSON.parse(
-      await this.module.materialize_airway_selection_from_branches(
-        startComponentIndex,
-        JSON.stringify(entry),
-        JSON.stringify(exit),
-        JSON.stringify(branches),
-        JSON.stringify(originPosition),
-        JSON.stringify(destinationPosition),
-      ),
-    ) as {
+    return runCoreHadOperation<{
       selection: AirwayAutoSelection;
       airway: AirwaySegment;
       resolvedLegs: ResolvedLeg[];
-    };
-  }
-
-  async sortAirwaySuggestionsForUi(suggestions: AirwaySuggestion[]): Promise<AirwaySuggestion[]> {
-    return JSON.parse(
-      await this.module.sort_airway_suggestions_for_ui(JSON.stringify(suggestions)),
-    ) as AirwaySuggestion[];
+    }>({
+      kind: "materialize_airway_selection",
+      start_component_index: startComponentIndex,
+      entry,
+      exit,
+      origin_anchor: originAnchor,
+      destination_anchor: destinationAnchor,
+    });
   }
 
   async insertAirwayMaterializedUi(
@@ -1110,26 +813,20 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async listProcedures(airportId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureSummary[]> {
-    const procedures = await loadHadProcedureList(airportId, kind);
-    if (!procedures) {
-      throw new Error(`HAD missing required procedure list key for ${airportId} ${kind}`);
-    }
-    return procedures;
+    return runCoreHadOperation<ProcedureSummary[]>({
+      kind: "list_procedures",
+      airport_id: airportId,
+      procedure_kind: kind,
+    });
   }
 
   async describeProcedureOptions(airportId: string, procedureId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureOptions> {
-    const rows = await loadHadProcedureDistinctRows(airportId, procedureId);
-    if (!rows) {
-      throw new Error(`HAD missing required procedure distinct rows key for ${airportId} ${procedureId}`);
-    }
-    return JSON.parse(
-      await this.module.describe_procedure_options_from_rows(
-        airportId,
-        procedureId,
-        JSON.stringify(kind),
-        JSON.stringify(rows),
-      ),
-    ) as ProcedureOptions;
+    return runCoreHadOperation<ProcedureOptions>({
+      kind: "describe_procedure_options",
+      airport_id: airportId,
+      procedure_id: procedureId,
+      procedure_kind: kind,
+    });
   }
 
   async insertProcedureMaterializedUi(
@@ -1178,83 +875,42 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     enrouteTransition: string | null,
     componentIndex: number,
   ): Promise<MaterializedProcedure> {
-    const rows = await loadHadProcedureDistinctRows(airportId, procedureId);
-    if (!rows) {
-      throw new Error(`HAD missing required procedure distinct rows key for ${airportId} ${procedureId}`);
-    }
-    const legs = await loadHadProcedureMaterializationRows(airportId, procedureId);
-    if (!legs) {
-      throw new Error(`HAD missing required procedure materialization rows key for ${airportId} ${procedureId}`);
-    }
-    return JSON.parse(
-      await this.module.materialize_procedure_from_records(
-        airportId,
-        procedureId,
-        JSON.stringify(kind),
-        JSON.stringify(runwayTransition),
-        JSON.stringify(enrouteTransition),
-        componentIndex,
-        JSON.stringify(rows),
-        JSON.stringify(legs),
-      ),
-    ) as MaterializedProcedure;
+    return runCoreHadOperation<MaterializedProcedure>({
+      kind: "materialize_procedure",
+      airport_id: airportId,
+      procedure_id: procedureId,
+      procedure_kind: kind,
+      runway_transition: runwayTransition,
+      enroute_transition: enrouteTransition,
+      component_index: componentIndex,
+    });
   }
 
   async findProcedurePlateMatch(airportId: string, cifpId: string): Promise<CifpTppMatch | null> {
-    const rows = await loadHadCifpPlateMatches(airportId, cifpId);
-    if (!rows) {
-      return null;
-    }
-    return JSON.parse(
-      await this.module.describe_show_plate_for_procedure(JSON.stringify(rows)),
-    ) as CifpTppMatch | null;
+    return runCoreHadOperation<CifpTppMatch | null>({
+      kind: "find_procedure_plate_match",
+      airport_id: airportId,
+      cifp_id: cifpId,
+    });
   }
 
   async describePlateProcedureLoads(plan: FlightPlan, plateId: string): Promise<ProcedureLoadOption[]> {
-    const rows = await loadHadPlateProcedureCandidates(plateId);
-    if (!rows) {
-      return [];
-    }
-    const grouped = new Map<string, typeof rows>();
-    for (const row of rows) {
-      const key = `${row.airport_id}:${row.cifp_id}`;
-      grouped.set(key, [...(grouped.get(key) ?? []), row]);
-    }
-    const candidates: PlateProcedureLoadCandidateInput[] = [];
-    for (const matchRows of grouped.values()) {
-      const preferred = JSON.parse(
-        await this.module.select_preferred_cifp_tpp_match(JSON.stringify(matchRows)),
-      ) as CifpTppMatch | null;
-      if (!preferred) {
-        continue;
-      }
-      const distinctRows = await loadHadProcedureDistinctRows(preferred.airport_id, preferred.cifp_id);
-      if (!distinctRows || distinctRows.length === 0) {
-        continue;
-      }
-      candidates.push({
-        airport_id: preferred.airport_id,
-        cifp_id: preferred.cifp_id,
-        match_rows: matchRows,
-        distinct_rows: distinctRows,
-      });
-    }
-    return JSON.parse(
-      await this.module.describe_plate_procedure_load_options(
-        JSON.stringify(plan),
-        JSON.stringify(candidates),
-      ),
-    ) as ProcedureLoadOption[];
+    return runCoreHadOperation<ProcedureLoadOption[]>({
+      kind: "describe_plate_procedure_loads",
+      plan,
+      plate_id: plateId,
+    });
   }
 }
 
 export async function loadBestAvailableAdapter(
   importer: () => Promise<unknown> = () => import("@generated/app_wasm.js"),
 ): Promise<LoadedAdapter> {
-  const mod = (await importer()) as Partial<WasmModule>;
+  const mod = (await debugTiming("wasm.import", importer)) as Partial<WasmModule>;
   if (typeof mod.default === "function") {
-    await mod.default();
+    await debugTiming("wasm.init", () => mod.default?.());
   }
+  debugLog("wasm.exports.check.start");
   if (
     typeof mod.create_ui_session !== "function" ||
     typeof mod.remove_leg_in_session !== "function" ||
@@ -1286,8 +942,6 @@ export async function loadBestAvailableAdapter(
     typeof mod.get_session_snapshot !== "function" ||
     typeof mod.restore_chart_page_state_in_session !== "function" ||
     typeof mod.destroy_session !== "function" ||
-    typeof mod.replace_flight_plan_state !== "function" ||
-    typeof mod.remove_flight_plan_leg !== "function" ||
     typeof mod.activate_leg_ui !== "function" ||
     typeof mod.activate_next_leg_ui !== "function" ||
     typeof mod.delete_component_ui !== "function" ||
@@ -1296,33 +950,18 @@ export async function loadBestAvailableAdapter(
     typeof mod.suspend_sequencing_ui !== "function" ||
     typeof mod.unsuspend_sequencing_ui !== "function" ||
     typeof mod.sequence_active_leg_ui !== "function" ||
-    typeof mod.prepare_airway_presentation !== "function" ||
-    typeof mod.sort_airway_suggestions_for_ui !== "function" ||
     typeof mod.insert_airway_materialized_ui !== "function" ||
     typeof mod.replace_airway_materialized_ui !== "function" ||
     typeof mod.insert_procedure_materialized_ui !== "function" ||
     typeof mod.replace_procedure_materialized_ui !== "function" ||
-    typeof mod.describe_procedure_options_from_rows !== "function" ||
-    typeof mod.list_approach_procedures_from_match_rows !== "function" ||
-    typeof mod.materialize_procedure_from_records !== "function" ||
-    typeof mod.select_preferred_cifp_tpp_match !== "function" ||
-    typeof mod.describe_show_plate_for_procedure !== "function" ||
-    typeof mod.describe_load_procedure_from_plate !== "function" ||
-    typeof mod.describe_plate_procedure_load_options !== "function" ||
-    typeof mod.airway_spatial_tile_keys !== "function" ||
-    typeof mod.flight_plan_insert_anchor !== "function" ||
-    typeof mod.materialize_airway_selection_from_branches !== "function" ||
-    typeof mod.project_flight_plan_route_from_positions !== "function" ||
-    typeof mod.suggest_airways_near_from_points !== "function" ||
-    typeof mod.suggest_waypoint_identifiers_from_candidates !== "function" ||
-    typeof mod.derive_chart_catalog !== "function" ||
-    typeof mod.derive_chart_page !== "function" ||
-    typeof mod.derive_chart_page_state !== "function" ||
-    typeof mod.set_content_policy_state !== "function" ||
-    typeof mod.refresh_content_state !== "function"
+    typeof mod.nav_kv_open !== "function" ||
+    typeof mod.nav_kv_insert_page !== "function" ||
+    typeof mod.nav_kv_destroy !== "function" ||
+    typeof mod.core_had_operation !== "function"
   ) {
     throw new Error("generated wasm module is missing required exports");
   }
+  debugLog("wasm.exports.check.done");
 
   return {
     adapter: new WasmAppCoreAdapter(mod as WasmModule),
@@ -1338,45 +977,5 @@ function coreViewportForMap(viewport: MapViewportState) {
     zoom: viewport.zoom,
     rotation_deg: 0,
     pitch_deg: 0,
-  };
-}
-
-function sampleCatalogLike(): CatalogJson {
-  return {
-    ...({
-      schema_version: sampleCatalog.schema_version,
-      cycle: sampleCatalog.cycle,
-      catalog_revision: sampleCatalog.catalog_revision,
-      families: sampleCatalog.families,
-      regions: sampleCatalog.regions,
-      packages: sampleCatalog.packages,
-      charts: sampleCatalog.charts,
-      plates: sampleCatalog.plates,
-      supplements: sampleCatalog.supplements,
-    } as CatalogJson),
-  };
-}
-
-function moveAirportToFront(
-  recentAirportIds: string[],
-  airportId: string,
-  airports: ChartPageData["airports"],
-): string[] {
-  const validIds = new Set(airports.map((airport) => airport.id));
-  const next = [airportId, ...recentAirportIds.filter((id) => id !== airportId && validIds.has(id))];
-  for (const airport of airports) {
-    if (!next.includes(airport.id)) {
-      next.push(airport.id);
-    }
-  }
-  return next;
-}
-
-function compactChartPageState(state: DerivedChartPageState): UiChartPageState {
-  return {
-    ordered_airport_ids: state.airports.map((airport) => airport.id),
-    recent_airport_ids: state.recent_airport_ids,
-    selected_airport_id: state.selected_airport_id,
-    selected_chart_id: state.selected_chart_id,
   };
 }

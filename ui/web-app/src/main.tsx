@@ -74,6 +74,7 @@ function logStartupResources() {
           url.includes("/node_modules/") ||
           url.includes(".wasm") ||
           url.includes("/nav-db/") ||
+          url.includes("/nav-kv/") ||
           url.includes("/vectors/") ||
           url.includes("/plates/") ||
           url.includes("/afd/") ||

@@ -29,6 +29,15 @@ pub struct AirwayBranch {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirwaySpatialPoint {
+    pub airway_name: String,
+    pub branch_key: String,
+    pub sequence: i32,
+    pub position: LatLon,
+    pub nav_ref: NavRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirwaySuggestion {
     pub airway_name: String,
     pub nearest_branch_key: Option<String>,
@@ -44,6 +53,17 @@ pub struct WaypointIdentifierSuggestion {
     pub kind: String,
     pub display_name: String,
     pub distance_from_anchor_nm: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WaypointIdentifierRecord {
+    pub identifier: String,
+    pub nav_ref: NavRef,
+    pub kind: String,
+    pub city: String,
+    pub state: String,
+    pub facility_name: String,
+    pub position: LatLon,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -385,6 +385,7 @@ export type FlightPlanDisplayRowUiView = {
   leg_index: number | null;
   distance_nm: number | null;
   course_deg: number | null;
+  show_plate_target_id: string | null;
   chart_airport_id: string | null;
   nav_ref: NavRef | null;
   symbol_feature: NavSymbolFeature | null;
@@ -536,15 +537,6 @@ export type AppState = {
   active_plan: FlightPlan | null;
   ownship: OwnshipState;
   content_policy: ContentPolicy;
-  last_content_requirements: Array<{
-    package_ids: Array<{
-      region: RegionId;
-      family: ChartFamilyId;
-      cycle: string;
-    }>;
-    chart_ids: unknown[];
-    plate_ids: unknown[];
-  }>;
   last_content_report: {
     fully_satisfied: boolean;
     items: Array<{
@@ -563,7 +555,6 @@ export type AppState = {
 export type UiSnapshotAppState = {
   active_plan: FlightPlan | null;
   content_policy: ContentPolicy;
-  last_content_requirements: AppState["last_content_requirements"];
   last_content_report: AppState["last_content_report"];
 };
 
@@ -609,7 +600,6 @@ export type AppUiState = {
   active_plan: FlightPlanUiState | null;
   ownship: OwnshipUiState;
   content_policy: ContentPolicy;
-  last_content_requirements: AppState["last_content_requirements"];
   last_content_report: AppState["last_content_report"];
 };
 

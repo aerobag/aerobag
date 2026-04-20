@@ -15,38 +15,12 @@ class ContentLogicTest {
     }
 
     @Test
-    fun streamAllowedTreatsRemoteOnlyContentAsSatisfied() {
+    fun refreshContentDoesNotFabricateReportWithoutHadRequirements() {
         var state = appCore.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
         state = appCore.setContentPolicy(state, ContentPolicy.StreamAllowed)
         state = appCore.refreshContent(state, SampleDataFixture.remoteOnlyInventory)
 
-        assertTrue(state.lastContentReport!!.fullySatisfied)
-        assertEquals(
-            ContentAvailability.RemoteOnly,
-            state.lastContentReport!!.items.first().availability.availability,
-        )
-    }
-
-    @Test
-    fun offlineRequiredNeedsInstalledContent() {
-        var state = appCore.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
-        state = appCore.setContentPolicy(state, ContentPolicy.OfflineRequired)
-        state = appCore.refreshContent(state, SampleDataFixture.remoteOnlyInventory)
-
-        assertEquals(
-            ContentAvailability.Unavailable,
-            state.lastContentReport!!.items.first().availability.availability,
-        )
-    }
-
-    @Test
-    fun installedContentIsOfflineUsable() {
-        var state = appCore.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
-        state = appCore.setContentPolicy(state, ContentPolicy.OfflineRequired)
-        state = appCore.refreshContent(state, SampleDataFixture.installedInventory)
-
-        assertTrue(state.lastContentReport!!.fullySatisfied)
-        assertTrue(state.lastContentReport!!.items.first().availability.offlineUsable)
+        assertNull(state.lastContentReport)
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -456,7 +430,7 @@ private class FakeNativeBridge(
         selectedAirportIdJson: String,
         selectedChartIdJson: String,
     ): String {
-        return """{"handle":1,"chart_catalog":{"airports":[]},"snapshot":{"app_state":{"active_plan":null,"content_policy":"PreferLocal","last_content_requirements":[],"last_content_report":null},"chart_page_state":{"ordered_airport_ids":[],"recent_airport_ids":[],"selected_airport_id":"","selected_chart_id":""}}}"""
+        return """{"handle":1,"chart_catalog":{"airports":[]},"snapshot":{"app_state":{"active_plan":null,"content_policy":"PreferLocal","last_content_report":null},"chart_page_state":{"ordered_airport_ids":[],"recent_airport_ids":[],"selected_airport_id":"","selected_chart_id":""}}}"""
     }
 
     override fun removeLegInSessionJson(handle: Long, index: Int): String = getSessionSnapshotJson(handle)
@@ -512,7 +486,7 @@ private class FakeNativeBridge(
     override fun selectChartInSessionJson(handle: Long, chartIdJson: String): String = getSessionSnapshotJson(handle)
 
     override fun getSessionSnapshotJson(handle: Long): String {
-        return """{"app_state":{"active_plan":null,"content_policy":"PreferLocal","last_content_requirements":[],"last_content_report":null},"chart_page_state":{"ordered_airport_ids":[],"recent_airport_ids":[],"selected_airport_id":"","selected_chart_id":""}}"""
+        return """{"app_state":{"active_plan":null,"content_policy":"PreferLocal","last_content_report":null},"chart_page_state":{"ordered_airport_ids":[],"recent_airport_ids":[],"selected_airport_id":"","selected_chart_id":""}}"""
     }
 
     override fun replaceFlightPlanInSessionJson(handle: Long, planJson: String): String = getSessionSnapshotJson(handle)

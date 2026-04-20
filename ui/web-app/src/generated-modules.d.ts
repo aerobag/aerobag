@@ -38,21 +38,6 @@ declare module "@generated/app_wasm.js" {
   export const replace_airway_materialized_ui: (...args: unknown[]) => string;
   export const insert_procedure_materialized_ui: (...args: unknown[]) => string;
   export const replace_procedure_materialized_ui: (...args: unknown[]) => string;
-  export const describe_procedure_options_from_rows: (...args: unknown[]) => string;
-  export const list_approach_procedures_from_match_rows: (...args: unknown[]) => string;
-  export const materialize_procedure_from_records: (...args: unknown[]) => string;
-  export const select_preferred_cifp_tpp_match: (...args: unknown[]) => string;
-  export const describe_show_plate_for_procedure: (...args: unknown[]) => string;
-  export const describe_load_procedure_from_plate: (...args: unknown[]) => string;
-  export const describe_plate_procedure_load_options: (...args: unknown[]) => string;
-  export const airway_spatial_tile_keys: (...args: unknown[]) => string;
-  export const flight_plan_insert_anchor: (...args: unknown[]) => string;
-  export const materialize_airway_selection_from_branches: (...args: unknown[]) => string;
-  export const prepare_airway_presentation: (...args: unknown[]) => string;
-  export const sort_airway_suggestions_for_ui: (...args: unknown[]) => string;
-  export const project_flight_plan_route_from_positions: (...args: unknown[]) => string;
-  export const suggest_airways_near_from_points: (...args: unknown[]) => string;
-  export const suggest_waypoint_identifiers_from_candidates: (...args: unknown[]) => string;
   export const create_ui_session: (...args: unknown[]) => string;
   export const remove_leg_in_session: (...args: unknown[]) => string;
   export const set_guidance_leg_geometry_in_session: (...args: unknown[]) => string;
@@ -85,12 +70,10 @@ declare module "@generated/app_wasm.js" {
   export const get_session_snapshot: (...args: unknown[]) => string;
   export const restore_chart_page_state_in_session: (...args: unknown[]) => string;
   export const destroy_session: (...args: unknown[]) => void;
-  export const derive_chart_catalog: (...args: unknown[]) => string;
-  export const derive_chart_page: (...args: unknown[]) => string;
-  export const derive_chart_page_state: (...args: unknown[]) => string;
-  export const replace_flight_plan_state: (...args: unknown[]) => string;
-  export const set_content_policy_state: (...args: unknown[]) => string;
-  export const refresh_content_state: (...args: unknown[]) => string;
+  export const nav_kv_open: (...args: unknown[]) => number;
+  export const nav_kv_insert_page: (...args: unknown[]) => void;
+  export const nav_kv_destroy: (...args: unknown[]) => void;
+  export const core_had_operation: (...args: unknown[]) => string;
 }
 
 declare module "*.svg" {

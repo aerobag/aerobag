@@ -1,11 +1,9 @@
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import bootstrapJson from "@shared-bootstrap";
-import catalogJson from "@product-catalog";
 import type {
   AirwayPresentationPlan,
   AirwaySuggestion,
-  CatalogJson,
   ChartPageData,
   ChartFamilyId,
   DevBootstrapJson,
@@ -28,7 +26,7 @@ import type {
   ProcedureSummary,
   WaypointIdentifierSuggestion,
 } from "./domain/types";
-import { loadHadChartCatalog, loadHadPlateAirport, loadHadPlateById } from "./domain/navHad";
+import { runCoreHadOperation } from "./domain/navKv";
 import uiTheme from "@shared-ui-theme";
 import planViewIcon from "./assets/plan-view-icon.svg";
 import {
@@ -66,7 +64,7 @@ import {
 import { pointTileUrl, type PointTilePayload } from "./domain/vectorTiles";
 import type { MapOverlayQueryResult, TerrainOverlayQueryResult, TerrainOverlayTileRequest } from "./domain/appCoreAdapter";
 import { airwayEntryCandidateFromPresentation, airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
-import { debugLog } from "./domain/debugLog";
+import { debugLog, debugTiming } from "./domain/debugLog";
 import { TerrainRenderWorkerClient } from "./domain/terrainRenderWorkerClient";
 
 type SurfaceSize = {
@@ -138,7 +136,6 @@ type NexradFrame = {
 };
 
 const bootstrap = bootstrapJson as DevBootstrapJson;
-const sampleCatalog = catalogJson as CatalogJson;
 const samplePlan = bootstrap.flight_plan;
 const emptyChartPage: ChartPageData = { airports: [] };
 
@@ -739,7 +736,6 @@ export default function App() {
     app_state: {
       active_plan: null,
       content_policy: "PreferLocal",
-      last_content_requirements: [],
       last_content_report: null,
     },
     app_ui_state: {
@@ -765,7 +761,6 @@ export default function App() {
         },
       },
       content_policy: "PreferLocal",
-      last_content_requirements: [],
       last_content_report: null,
     },
     playback_ui_state: emptyPlaybackUiState(),
@@ -957,15 +952,15 @@ export default function App() {
     if (!appCoreAdapter || !chartPageCatalog) {
       return;
     }
-    buildSeededDevPlan().then(async (initialPlan) => {
-      const created = await appCoreAdapter.createUiSession(
+    debugTiming("startup.session.create", () => buildSeededDevPlan().then(async (initialPlan) => {
+      const created = await debugTiming("startup.session.create.core", () => appCoreAdapter.createUiSession(
         chartPageCatalog,
         initialPlan.plan,
         initialRecentAirportIds,
         initialChartPageState.selected_airport_id,
         initialChartPageState.selected_chart_id,
-      );
-      const createdSnapshot = await created.snapshot();
+      ));
+      const createdSnapshot = await debugTiming("startup.session.snapshot", () => created.snapshot());
       debugLog("session.create.snapshot", {
         app_state_active_plan: createdSnapshot.app_state.active_plan?.id ?? null,
         app_ui_state_nav_element: createdSnapshot.app_ui_state.active_plan?.guidance?.nav_element ?? null,
@@ -975,7 +970,7 @@ export default function App() {
         setUiSession(created);
         setSessionSnapshot(createdSnapshot);
       }
-    }).catch((error) => {
+    })).catch((error) => {
       console.error("failed to initialize web ui session", error);
     });
     return () => {
@@ -986,7 +981,7 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    loadHadChartCatalog().then((loaded) => {
+    debugTiming("startup.chart_catalog.load", () => runCoreHadOperation<MapViewOptionJson[] | null>({ kind: "chart_catalog" })).then((loaded) => {
       if (cancelled) {
         return;
       }
@@ -1011,22 +1006,30 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    buildSeededDevPlan().then(async ({ plan }) => {
+    debugTiming("startup.chart_page_catalog.load", () => buildSeededDevPlan().then(async ({ plan }) => {
       const airportIds = airportIdsNeededForInitialChartPage(
         plan,
         initialRecentAirportIds,
         persistedUiState.selectedAirportId,
       );
       if (persistedUiState.selectedChartId) {
-        const selectedChart = await loadHadPlateById(persistedUiState.selectedChartId);
+        const selectedChart = await runCoreHadOperation<ChartPageData["airports"][number]["charts"][number] | null>({
+          kind: "plate_by_id",
+          plate_id: persistedUiState.selectedChartId,
+        });
         if (selectedChart?.airport_id) {
           airportIds.add(selectedChart.airport_id);
         }
       }
-      const airports = (await Promise.all([...airportIds].map((airportId) => loadHadPlateAirport(airportId))))
+      debugLog("startup.chart_page_catalog.airports", { count: airportIds.size, airport_ids: [...airportIds] });
+      const airports = (await Promise.all([...airportIds].map((airportId) => debugTiming(
+        "startup.chart_page_catalog.airport.load",
+        () => runCoreHadOperation<ChartPageData["airports"][number] | null>({ kind: "plate_airport", airport_id: airportId }),
+        { airport_id: airportId },
+      ))))
         .filter((airport): airport is ChartPageData["airports"][number] => airport !== null);
       return { airports };
-    }).then((loaded) => {
+    })).then((loaded) => {
       if (cancelled) {
         return;
       }

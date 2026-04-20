@@ -15,3 +15,7 @@ of the current implementation unless explicitly pulled into scope.
   `deriveMapViews` shape to make migration easy. Once the app consumes
   `chart/catalog` through core, remove the old UI-side resource-index adapter and
   keep the chart catalog schema owned by core/preproc.
+- The shared Rust HAD reader now owns root parsing, binary search, page math,
+  value extraction, page-byte caching, and domain key construction. The web
+  `navHad.ts` helper layer is gone; keep pushing toward explicit
+  `NeedHadPages`/resume APIs so platform code only fetches opaque page bytes.

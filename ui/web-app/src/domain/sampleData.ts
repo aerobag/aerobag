@@ -90,6 +90,5 @@ export const emptyState: AppState = {
     sources: [],
   },
   content_policy: bootstrap.content_policy,
-  last_content_requirements: [],
   last_content_report: null,
 };

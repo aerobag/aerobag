@@ -172,7 +172,8 @@ pub fn render_terrain_warning_png_from_tiles(
     tile_bytes_list: &[&[u8]],
     aircraft_altitude_ft: f64,
 ) -> Result<Vec<u8>, String> {
-    let (info, rgba) = render_terrain_warning_rgba_from_tiles(tile_bytes_list, aircraft_altitude_ft)?;
+    let (info, rgba) =
+        render_terrain_warning_rgba_from_tiles(tile_bytes_list, aircraft_altitude_ft)?;
     encode_terrain_warning_png(&info, &rgba)
 }
 
@@ -196,7 +197,8 @@ pub fn render_terrain_warning_raw_rgba_from_tiles(
     tile_bytes_list: &[&[u8]],
     aircraft_altitude_ft: f64,
 ) -> Result<Vec<u8>, String> {
-    let (info, rgba) = render_terrain_warning_rgba_from_tiles(tile_bytes_list, aircraft_altitude_ft)?;
+    let (info, rgba) =
+        render_terrain_warning_rgba_from_tiles(tile_bytes_list, aircraft_altitude_ft)?;
     Ok(pack_raw_rgba(downsample_terrain_warning_rgba(&info, &rgba)))
 }
 
@@ -277,7 +279,8 @@ fn downsample_terrain_warning_rgba(info: &TerrainTileInfo, rgba: &[u8]) -> (u16,
             let mut chosen = [0_u8; 4];
             for dy in 0..DOWNSAMPLE {
                 for dx in 0..DOWNSAMPLE {
-                    let source_pixel = ((y * DOWNSAMPLE + dy) * source_width + (x * DOWNSAMPLE + dx)) * 4;
+                    let source_pixel =
+                        ((y * DOWNSAMPLE + dy) * source_width + (x * DOWNSAMPLE + dx)) * 4;
                     let candidate = [
                         rgba[source_pixel],
                         rgba[source_pixel + 1],
@@ -482,7 +485,10 @@ fn terrain_product_ids_for_tile(zoom: u32, x: u32, y_tms: u32) -> Vec<&'static s
             }
             let overlap_x = overlap_x_max - overlap_x_min + 1;
             let overlap_y = overlap_y_max - overlap_y_min + 1;
-            Some((u64::from(overlap_x) * u64::from(overlap_y), coverage.product_id))
+            Some((
+                u64::from(overlap_x) * u64::from(overlap_y),
+                coverage.product_id,
+            ))
         })
         .collect::<Vec<_>>();
     products.sort_by(|(left_area, left_id), (right_area, right_id)| {
@@ -552,7 +558,10 @@ mod tests {
 
     #[test]
     fn selects_southwest_terrain_for_palo_alto_tile() {
-        assert_eq!(terrain_product_ids_for_tile(10, 164, 627), vec!["terrain-sw"]);
+        assert_eq!(
+            terrain_product_ids_for_tile(10, 164, 627),
+            vec!["terrain-sw"]
+        );
     }
 
     #[test]

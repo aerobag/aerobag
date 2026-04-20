@@ -52,3 +52,42 @@ export function debugLog(tag: string, data?: unknown) {
   scheduleFlush();
 }
 
+export function debugTiming<T>(
+  tag: string,
+  work: () => T,
+  data?: unknown,
+): T {
+  if (typeof performance === "undefined") {
+    return work();
+  }
+  const start = performance.now();
+  debugLog(`${tag}.start`, data);
+  try {
+    const result = work();
+    if (isPromiseLike(result)) {
+      return result.then(
+        (value) => {
+          debugLog(`${tag}.done`, { ...objectData(data), elapsed_ms: Math.round(performance.now() - start) });
+          return value;
+        },
+        (error) => {
+          debugLog(`${tag}.error`, { ...objectData(data), elapsed_ms: Math.round(performance.now() - start), message: error instanceof Error ? error.message : String(error) });
+          throw error;
+        },
+      ) as T;
+    }
+    debugLog(`${tag}.done`, { ...objectData(data), elapsed_ms: Math.round(performance.now() - start) });
+    return result;
+  } catch (error) {
+    debugLog(`${tag}.error`, { ...objectData(data), elapsed_ms: Math.round(performance.now() - start), message: error instanceof Error ? error.message : String(error) });
+    throw error;
+  }
+}
+
+function objectData(data: unknown): Record<string, unknown> {
+  return data && typeof data === "object" && !Array.isArray(data) ? data as Record<string, unknown> : {};
+}
+
+function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
+  return value !== null && typeof value === "object" && "then" in value && typeof value.then === "function";
+}

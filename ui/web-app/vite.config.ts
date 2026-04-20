@@ -147,7 +147,7 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number }
             ? "application/vnd.aerobag.terrain"
             : "application/octet-stream";
     const acceptEncoding = req.headers?.["accept-encoding"] ?? "";
-    const shouldCompress = extension === ".db" || extension === ".json";
+    const shouldCompress = extension === ".db" || extension === ".json" || sourceRoot === navKvRoot;
     const supportsBrotli = typeof acceptEncoding === "string" && /\bbr\b/.test(acceptEncoding);
     const supportsGzip = typeof acceptEncoding === "string" && /\bgzip\b/.test(acceptEncoding);
     res.setHeader("Content-Type", contentType);
@@ -328,58 +328,65 @@ function ensureLinkedTree(sourceRoot: string, targetRoot: string) {
 }
 
 function aerobagStaticPlugin(): Plugin {
+  function installMiddlewares(server: { middlewares: { use: (...args: unknown[]) => void } }) {
+    server.middlewares.use("/__debug_log", (req, res, next) => {
+      if (req.method !== "POST") {
+        next();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      req.on("end", () => {
+        try {
+          const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown[];
+          const lines = payload.map((entry) => JSON.stringify(entry)).join("\n");
+          if (lines.length > 0) {
+            fs.appendFileSync(debugLogPath, `${lines}\n`);
+            fs.appendFileSync(requestLogPath, `${JSON.stringify({ ts: Date.now(), kind: "client_debug_post", count: payload.length })}\n`);
+          }
+          res.statusCode = 204;
+          res.end();
+        } catch (error) {
+          res.statusCode = 400;
+          res.end(error instanceof Error ? error.message : String(error));
+        }
+      });
+    });
+    server.middlewares.use("/__ping", (req, res, next) => {
+      const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
+      if (requestPath !== "/") {
+        next();
+        return;
+      }
+      fs.appendFileSync(
+        requestLogPath,
+        `${JSON.stringify({ ts: Date.now(), kind: "ping", url: req.url ?? "" })}\n`,
+      );
+      res.statusCode = 204;
+      res.end();
+    });
+    server.middlewares.use("/sectional-packages", mountStaticTree(sectionalRoot));
+    server.middlewares.use("/plates", mountStaticTree(plateRoot));
+    server.middlewares.use("/afd", mountStaticTree(csupRoot));
+    server.middlewares.use("/thumbnails", mountStaticTree(thumbnailRoot));
+    server.middlewares.use("/nav-db", mountStaticTree(navDbRoot));
+    server.middlewares.use("/nav-kv", mountStaticTree(navKvRoot, { missingStatus: 404 }));
+    server.middlewares.use("/vectors", mountStaticTree(vectorRoot));
+    server.middlewares.use("/fast-products", mountFastProducts());
+    server.middlewares.use("/terrain-products", mountTerrainProducts());
+    server.middlewares.use("/shaded-relief-products", mountShadedReliefProducts());
+    server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot));
+  }
+
   return {
     name: "aerobag-static-assets",
     configureServer(server) {
-      server.middlewares.use("/__debug_log", (req, res, next) => {
-        if (req.method !== "POST") {
-          next();
-          return;
-        }
-        const chunks: Buffer[] = [];
-        req.on("data", (chunk) => {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        });
-        req.on("end", () => {
-          try {
-            const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown[];
-            const lines = payload.map((entry) => JSON.stringify(entry)).join("\n");
-            if (lines.length > 0) {
-              fs.appendFileSync(debugLogPath, `${lines}\n`);
-              fs.appendFileSync(requestLogPath, `${JSON.stringify({ ts: Date.now(), kind: "client_debug_post", count: payload.length })}\n`);
-            }
-            res.statusCode = 204;
-            res.end();
-          } catch (error) {
-            res.statusCode = 400;
-            res.end(error instanceof Error ? error.message : String(error));
-          }
-        });
-      });
-      server.middlewares.use("/__ping", (req, res, next) => {
-        const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
-        if (requestPath !== "/") {
-          next();
-          return;
-        }
-        fs.appendFileSync(
-          requestLogPath,
-          `${JSON.stringify({ ts: Date.now(), kind: "ping", url: req.url ?? "" })}\n`,
-        );
-        res.statusCode = 204;
-        res.end();
-      });
-      server.middlewares.use("/sectional-packages", mountStaticTree(sectionalRoot));
-      server.middlewares.use("/plates", mountStaticTree(plateRoot));
-      server.middlewares.use("/afd", mountStaticTree(csupRoot));
-      server.middlewares.use("/thumbnails", mountStaticTree(thumbnailRoot));
-      server.middlewares.use("/nav-db", mountStaticTree(navDbRoot));
-      server.middlewares.use("/nav-kv", mountStaticTree(navKvRoot, { missingStatus: 404 }));
-      server.middlewares.use("/vectors", mountStaticTree(vectorRoot));
-      server.middlewares.use("/fast-products", mountFastProducts());
-      server.middlewares.use("/terrain-products", mountTerrainProducts());
-      server.middlewares.use("/shaded-relief-products", mountShadedReliefProducts());
-      server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot));
+      installMiddlewares(server);
+    },
+    configurePreviewServer(server) {
+      installMiddlewares(server);
     },
     writeBundle(outputOptions) {
       const outputDir = outputOptions.dir;
@@ -447,6 +454,9 @@ export default defineConfig({
         adsbTraceRoot,
       ],
     },
+  },
+  preview: {
+    allowedHosts: ["aerobag-dev.iac.jonh.net"],
   },
   build: {
     outDir: path.join(webTargetRoot, "dist"),

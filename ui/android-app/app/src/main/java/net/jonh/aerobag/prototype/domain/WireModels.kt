@@ -22,7 +22,6 @@ data class WireAppState(
     val active_plan: WireFlightPlan? = null,
     val ownship: WireOwnshipState = WireOwnshipState(),
     val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
-    val last_content_requirements: List<WireContentRequirement> = emptyList(),
     val last_content_report: WireContentReport? = null,
 )
 
@@ -31,7 +30,6 @@ data class WireAppUiState(
     val active_plan: WireFlightPlanUiState? = null,
     val ownship: WireOwnshipUiState = WireOwnshipUiState(),
     val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
-    val last_content_requirements: List<WireContentRequirement> = emptyList(),
     val last_content_report: WireContentReport? = null,
 )
 
@@ -39,7 +37,6 @@ data class WireAppUiState(
 data class WireUiSnapshotAppState(
     val active_plan: WireFlightPlan? = null,
     val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
-    val last_content_requirements: List<WireContentRequirement> = emptyList(),
     val last_content_report: WireContentReport? = null,
 )
 

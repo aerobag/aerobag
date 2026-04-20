@@ -5,12 +5,14 @@ pub mod chart_page;
 pub mod content;
 pub mod errors;
 pub mod geometry;
+pub mod had_ops;
 pub mod ids;
 pub mod map_follow;
 pub mod map_overlay;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod navdb;
 pub mod navdb_types;
+pub mod navkv;
 pub mod ownship;
 pub mod planning;
 pub mod playback;
@@ -37,6 +39,7 @@ pub use content::{
 };
 pub use errors::{AppError, AppErrorKind, AppResult};
 pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord};
+pub use had_ops::{run_had_operation, HadOperation, HadOperationOutcome};
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use map_follow::MapFollowUiState;
 pub use map_overlay::{
@@ -58,11 +61,12 @@ pub use navdb::{
 pub use navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
     AirwayExitSelection, AirwayFixPoint, AirwayPoint, AirwayPresentationPlan,
-    AirwayPresentationPoint, AirwaySuggestion, CifpTppMatch, CifpTppMatchRow,
+    AirwayPresentationPoint, AirwaySpatialPoint, AirwaySuggestion, CifpTppMatch, CifpTppMatchRow,
     MaterializedProcedure, ProcedureDistinctRow, ProcedureLegMaterializationRecord,
     ProcedureLegRecord, ProcedureOptions, ProcedureSpecChoice, ProcedureSummary,
-    ProcedureVariantKey, WaypointIdentifierSuggestion,
+    ProcedureVariantKey, WaypointIdentifierRecord, WaypointIdentifierSuggestion,
 };
+pub use navkv::{nav_kv_key_for_query, NavKvLookup, NavKvQuery, NavKvRoot, NavKvStore};
 pub use ownship::{
     push_sample, register_source, set_policy, update_source_status, OwnshipBannerSeverity,
     OwnshipControlModel, OwnshipMode, OwnshipPolicy, OwnshipRenderState, OwnshipSelectionCommand,
@@ -93,13 +97,13 @@ pub use procedure_legs::{
     parse_cifp_altitude_ft, parse_cifp_tenths_value, terminal_procedure_discontinuity,
 };
 pub use session::{
-    create_ui_session, destroy_session, disengage_map_follow_in_session,
-    engage_map_follow_in_session, get_map_overlay_in_session, get_session_snapshot,
-    get_terrain_overlay_in_session, ingest_point_tiles_in_session, load_playback_trace_in_session,
-    move_waypoint_in_session, pause_playback_in_session, play_playback_in_session,
-    push_situation_sample_in_session, register_ownship_source_in_session, remove_leg_in_session,
-    render_terrain_overlay_tile_in_session, render_terrain_overlay_tiles_in_session,
-    replace_flight_plan_in_session,
+    create_ui_session, create_ui_session_profiled, destroy_session,
+    disengage_map_follow_in_session, engage_map_follow_in_session, get_map_overlay_in_session,
+    get_session_snapshot, get_terrain_overlay_in_session, ingest_point_tiles_in_session,
+    load_playback_trace_in_session, move_waypoint_in_session, pause_playback_in_session,
+    play_playback_in_session, push_situation_sample_in_session, register_ownship_source_in_session,
+    remove_leg_in_session, render_terrain_overlay_tile_in_session,
+    render_terrain_overlay_tiles_in_session, replace_flight_plan_in_session,
     restore_chart_page_state_in_session, seek_playback_in_session, select_airport_in_session,
     select_chart_in_session, select_ownship_source_in_session,
     set_guidance_leg_geometry_in_session, set_map_follow_offset_in_session,

@@ -765,11 +765,6 @@ private fun AppState.toWire() = WireAppState(
     active_plan = activePlan?.toWire(),
     ownship = WireOwnshipState(),
     content_policy = contentPolicy.toWire(),
-    last_content_requirements = lastContentRequirements.map { requirement ->
-        WireContentRequirement(
-            package_ids = requirement.packageIds.map { it.toWire() },
-        )
-    },
     last_content_report = lastContentReport?.let { report ->
         WireContentReport(
             fully_satisfied = report.fullySatisfied,
@@ -823,11 +818,6 @@ private fun OwnshipSourceMenuItem.toWire() = WireOwnshipSourceMenuItem(
 private fun WireAppState.toUi() = AppState(
     activePlan = active_plan?.toUiFlightPlan(),
     contentPolicy = content_policy.toUi(),
-    lastContentRequirements = last_content_requirements.map { requirement ->
-        ContentRequirement(
-            packageIds = requirement.package_ids.map { it.toUi() },
-        )
-    },
     lastContentReport = last_content_report?.let { report ->
         ContentReport(
             fullySatisfied = report.fully_satisfied,
@@ -851,11 +841,6 @@ private fun WireAppUiState.toUi() = AppUiState(
     activePlan = active_plan?.toUi(),
     ownship = ownship.toUi(),
     contentPolicy = content_policy.toUi(),
-    lastContentRequirements = last_content_requirements.map { requirement ->
-        ContentRequirement(
-            packageIds = requirement.package_ids.map { it.toUi() },
-        )
-    },
     lastContentReport = last_content_report?.let { report ->
         ContentReport(
             fullySatisfied = report.fully_satisfied,
@@ -879,11 +864,6 @@ private fun WireAppUiState.toUi() = AppUiState(
 private fun WireUiSnapshotAppState.toUi() = UiSnapshotAppState(
     activePlan = active_plan?.toUiFlightPlan(),
     contentPolicy = content_policy.toUi(),
-    lastContentRequirements = last_content_requirements.map { requirement ->
-        ContentRequirement(
-            packageIds = requirement.package_ids.map { it.toUi() },
-        )
-    },
     lastContentReport = last_content_report?.let { report ->
         ContentReport(
             fullySatisfied = report.fully_satisfied,

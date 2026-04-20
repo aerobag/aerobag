@@ -560,7 +560,6 @@ data class ContentReport(
 data class AppState(
     val activePlan: FlightPlan? = null,
     val contentPolicy: ContentPolicy = ContentPolicy.PreferLocal,
-    val lastContentRequirements: List<ContentRequirement> = emptyList(),
     val lastContentReport: ContentReport? = null,
 )
 
@@ -568,14 +567,12 @@ data class AppUiState(
     val activePlan: FlightPlanUiState? = null,
     val ownship: OwnshipUiState = OwnshipUiState(),
     val contentPolicy: ContentPolicy = ContentPolicy.PreferLocal,
-    val lastContentRequirements: List<ContentRequirement> = emptyList(),
     val lastContentReport: ContentReport? = null,
 )
 
 data class UiSnapshotAppState(
     val activePlan: FlightPlan? = null,
     val contentPolicy: ContentPolicy = ContentPolicy.PreferLocal,
-    val lastContentRequirements: List<ContentRequirement> = emptyList(),
     val lastContentReport: ContentReport? = null,
 )
 

@@ -9,14 +9,14 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    derive_chart_page_state_from_catalog, load_catalog,
+    derive_chart_page_state_from_catalog,
     map_follow::{MapFollowSessionState, MapFollowUiState},
     move_flight_plan_waypoint,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
     query_map_overlay, remove_flight_plan_leg, state, AppError, AppErrorKind, AppEvent, AppResult,
-    AppState, AppUiState, CatalogHandle, DerivedChartCatalog, DerivedChartPageState, FlightPlan,
-    LatLon, MapOverlayQueryResult, MapViewport, NavRef, PlanLeg, PlaybackUiState, PointTilePayload,
+    AppState, AppUiState, DerivedChartCatalog, DerivedChartPageState, FlightPlan, LatLon,
+    MapOverlayQueryResult, MapViewport, NavRef, PlanLeg, PlaybackUiState, PointTilePayload,
     SequencingMode, TerrainOverlayQueryResult, UiSnapshotAppState,
 };
 
@@ -45,8 +45,13 @@ pub struct UiSessionInitResult {
     pub snapshot: UiSessionSnapshot,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiSessionCreateTiming {
+    pub label: &'static str,
+    pub elapsed_ms: f64,
+}
+
 struct UiSession {
-    catalog: CatalogHandle,
     chart_catalog: DerivedChartCatalog,
     app_state: AppState,
     playback: PlaybackSessionState,
@@ -83,17 +88,64 @@ pub fn create_ui_session(
     selected_airport_id: Option<&str>,
     selected_chart_id: Option<&str>,
 ) -> AppResult<UiSessionInitResult> {
-    let catalog = load_catalog(catalog_json)?;
+    create_ui_session_inner(
+        catalog_json,
+        chart_catalog_json,
+        plan,
+        recent_airport_ids,
+        selected_airport_id,
+        selected_chart_id,
+        None,
+    )
+}
+
+pub fn create_ui_session_profiled(
+    catalog_json: &str,
+    chart_catalog_json: &str,
+    plan: FlightPlan,
+    recent_airport_ids: &[String],
+    selected_airport_id: Option<&str>,
+    selected_chart_id: Option<&str>,
+    mark: &mut dyn FnMut(&'static str),
+) -> AppResult<UiSessionInitResult> {
+    create_ui_session_inner(
+        catalog_json,
+        chart_catalog_json,
+        plan,
+        recent_airport_ids,
+        selected_airport_id,
+        selected_chart_id,
+        Some(mark),
+    )
+}
+
+fn create_ui_session_inner(
+    _catalog_json: &str,
+    chart_catalog_json: &str,
+    plan: FlightPlan,
+    recent_airport_ids: &[String],
+    selected_airport_id: Option<&str>,
+    selected_chart_id: Option<&str>,
+    mut mark: Option<&mut dyn FnMut(&'static str)>,
+) -> AppResult<UiSessionInitResult> {
+    if let Some(mark) = mark.as_deref_mut() {
+        mark("core_skip_catalog_load");
+    }
     let chart_catalog: DerivedChartCatalog =
         serde_json::from_str(chart_catalog_json).map_err(|err| AppError {
             kind: AppErrorKind::InvalidCatalog,
             message: format!("failed to parse chart catalog json: {err}"),
         })?;
+    if let Some(mark) = mark.as_deref_mut() {
+        mark("core_parse_chart_catalog");
+    }
     let app_state = state::reduce(
         &AppState::default(),
         AppEvent::ReplaceFlightPlan(plan.clone()),
-        &catalog,
     )?;
+    if let Some(mark) = mark.as_deref_mut() {
+        mark("core_reduce_replace_flight_plan");
+    }
     let chart_page_state = derive_chart_page_state_from_catalog(
         &chart_catalog,
         &plan,
@@ -101,21 +153,42 @@ pub fn create_ui_session(
         selected_airport_id,
         selected_chart_id,
     );
+    if let Some(mark) = mark.as_deref_mut() {
+        mark("core_derive_chart_page_state");
+    }
     let playback = PlaybackSessionState::default();
     let map_follow = MapFollowSessionState::default();
+    if let Some(mark) = mark.as_deref_mut() {
+        mark("core_default_session_state");
+    }
+    let snapshot_app_state = state::project_ui_snapshot_app_state(&app_state);
+    if let Some(mark) = mark.as_deref_mut() {
+        mark("core_project_snapshot_app_state");
+    }
+    let app_ui_state = state::project_app_ui_state(&app_state);
+    if let Some(mark) = mark.as_deref_mut() {
+        mark("core_project_app_ui_state");
+    }
+    let playback_ui_state = playback.ui_state();
+    let map_follow_ui_state = map_follow.ui_state(&app_state.ownship.render);
+    let map_follow_target_viewport = map_follow.target_viewport(&app_state.ownship.render);
+    let compact_chart_page_state = compact_chart_page_state(&chart_page_state);
+    if let Some(mark) = mark.as_deref_mut() {
+        mark("core_project_other_ui_state");
+    }
     let snapshot = UiSessionSnapshot {
-        app_state: state::project_ui_snapshot_app_state(&app_state),
-        app_ui_state: state::project_app_ui_state(&app_state),
-        playback_ui_state: playback.ui_state(),
-        map_follow_ui_state: map_follow.ui_state(&app_state.ownship.render),
-        map_follow_target_viewport: map_follow.target_viewport(&app_state.ownship.render),
-        chart_page_state: compact_chart_page_state(&chart_page_state),
+        app_state: snapshot_app_state,
+        app_ui_state,
+        playback_ui_state,
+        map_follow_ui_state,
+        map_follow_target_viewport,
+        chart_page_state: compact_chart_page_state,
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+    let result_chart_catalog = chart_catalog.clone();
     sessions().lock().expect("session store poisoned").insert(
         handle,
         UiSession {
-            catalog,
             chart_catalog: chart_catalog.clone(),
             app_state,
             playback,
@@ -125,9 +198,12 @@ pub fn create_ui_session(
             point_tile_cache: HashMap::new(),
         },
     );
+    if let Some(mark) = mark.as_deref_mut() {
+        mark("core_store_session");
+    }
     Ok(UiSessionInitResult {
         handle,
-        chart_catalog: chart_catalog.clone(),
+        chart_catalog: result_chart_catalog,
         snapshot,
     })
 }
@@ -140,7 +216,6 @@ pub fn remove_leg_in_session(handle: u32, index: usize) -> AppResult<UiSessionSn
     session.app_state = state::reduce(
         &session.app_state,
         AppEvent::ReplaceFlightPlan(next_plan.clone()),
-        &session.catalog,
     )?;
     session.guidance_leg_geometry.clear();
     session.chart_page_state = derive_chart_page_state_from_catalog(
@@ -165,7 +240,6 @@ pub fn move_waypoint_in_session(
     session.app_state = state::reduce(
         &session.app_state,
         AppEvent::ReplaceFlightPlan(next_plan.clone()),
-        &session.catalog,
     )?;
     session.guidance_leg_geometry.clear();
     session.chart_page_state = derive_chart_page_state_from_catalog(
@@ -237,7 +311,6 @@ pub fn register_ownship_source_in_session(
     session.app_state = state::reduce(
         &session.app_state,
         AppEvent::RegisterOwnshipSource(registration),
-        &session.catalog,
     )?;
     Ok(snapshot_for_session(session))
 }
@@ -251,7 +324,6 @@ pub fn update_ownship_source_status_in_session(
     session.app_state = state::reduce(
         &session.app_state,
         AppEvent::UpdateOwnshipSourceStatus(update),
-        &session.catalog,
     )?;
     Ok(snapshot_for_session(session))
 }
@@ -262,11 +334,7 @@ pub fn push_situation_sample_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::PushSituationSample(sample),
-        &session.catalog,
-    )?;
+    session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
     Ok(snapshot_for_session(session))
 }
 
@@ -276,11 +344,7 @@ pub fn set_ownship_policy_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::SetOwnshipPolicy(policy),
-        &session.catalog,
-    )?;
+    session.app_state = state::reduce(&session.app_state, AppEvent::SetOwnshipPolicy(policy))?;
     Ok(snapshot_for_session(session))
 }
 
@@ -290,11 +354,8 @@ pub fn select_ownship_source_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::SelectOwnshipSource(selection),
-        &session.catalog,
-    )?;
+    session.app_state =
+        state::reduce(&session.app_state, AppEvent::SelectOwnshipSource(selection))?;
     Ok(snapshot_for_session(session))
 }
 
@@ -433,7 +494,6 @@ pub fn replace_flight_plan_in_session(
     session.app_state = state::reduce(
         &session.app_state,
         AppEvent::ReplaceFlightPlan(plan.clone()),
-        &session.catalog,
     )?;
     session.guidance_leg_geometry.clear();
     session.chart_page_state = derive_chart_page_state_from_catalog(
@@ -586,9 +646,11 @@ pub fn render_terrain_overlay_tile_in_session(
             kind: AppErrorKind::UnsupportedOperation,
             message: "ownship altitude unavailable for terrain overlay".to_string(),
         })?;
-    crate::render_terrain_warning_raw_rgba_from_tiles(&[tile_bytes], altitude_ft).map_err(|err| AppError {
-        kind: AppErrorKind::InvalidManifest,
-        message: err,
+    crate::render_terrain_warning_raw_rgba_from_tiles(&[tile_bytes], altitude_ft).map_err(|err| {
+        AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: err,
+        }
     })
 }
 
@@ -606,17 +668,17 @@ pub fn render_terrain_overlay_tiles_in_session(
             kind: AppErrorKind::UnsupportedOperation,
             message: "ownship altitude unavailable for terrain overlay".to_string(),
         })?;
-    let unpacked_tiles = unpack_packed_terrain_tiles(packed_tile_bytes).map_err(|err| AppError {
-        kind: AppErrorKind::InvalidManifest,
-        message: err,
-    })?;
-    let tile_refs = unpacked_tiles
-        .iter()
-        .map(Vec::as_slice)
-        .collect::<Vec<_>>();
-    crate::render_terrain_warning_raw_rgba_from_tiles(&tile_refs, altitude_ft).map_err(|err| AppError {
-        kind: AppErrorKind::InvalidManifest,
-        message: err,
+    let unpacked_tiles =
+        unpack_packed_terrain_tiles(packed_tile_bytes).map_err(|err| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: err,
+        })?;
+    let tile_refs = unpacked_tiles.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    crate::render_terrain_warning_raw_rgba_from_tiles(&tile_refs, altitude_ft).map_err(|err| {
+        AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: err,
+        }
     })
 }
 
@@ -867,7 +929,6 @@ fn apply_situation_to_ownship(
             selectable: true,
             auto_eligible: true,
         }),
-        &session.catalog,
     )?;
     session.app_state = state::reduce(
         &session.app_state,
@@ -879,7 +940,6 @@ fn apply_situation_to_ownship(
             allow_auto_replay: true,
             allow_auto_simulated: true,
         }),
-        &session.catalog,
     )?;
     session.app_state = state::reduce(
         &session.app_state,
@@ -895,7 +955,6 @@ fn apply_situation_to_ownship(
             altitude_msl_ft: situation.altitude_msl_ft,
             pressure_altitude_ft: None,
         }),
-        &session.catalog,
     )?;
     Ok(())
 }

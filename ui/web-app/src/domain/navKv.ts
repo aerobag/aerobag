@@ -123,9 +123,12 @@ export class NavKvRoot {
     const startPage = Math.floor(range.start / this.pageSize);
     const endPage = Math.floor((range.end - 1) / this.pageSize);
     const out = new Uint8Array(range.end - range.start);
+    const pages = await Promise.all(
+      Array.from({ length: endPage - startPage + 1 }, (_, offset) => pageProvider(startPage + offset)),
+    );
     let writeOffset = 0;
     for (let pageIndex = startPage; pageIndex <= endPage; pageIndex += 1) {
-      const page = await pageProvider(pageIndex);
+      const page = pages[pageIndex - startPage];
       const pageStart = pageIndex * this.pageSize;
       const sliceStart = Math.max(0, range.start - pageStart);
       const sliceEnd = Math.min(this.pageSize, range.end - pageStart);
@@ -152,30 +155,62 @@ export class NavKvRoot {
   }
 }
 
-export async function loadNavKvJson<T>(key: string): Promise<T | null> {
-  const rootResponse = await fetch("/nav-kv/root");
-  if (!rootResponse.ok) {
-    return null;
+let sharedNavKvStorePromise: Promise<NavKvStore | null> | null = null;
+
+export class NavKvStore {
+  private readonly pageCache = new Map<number, Promise<Uint8Array>>();
+
+  constructor(readonly root: NavKvRoot) {}
+
+  static async open(): Promise<NavKvStore | null> {
+    const rootResponse = await fetch("/nav-kv/root");
+    if (!rootResponse.ok) {
+      return null;
+    }
+    return new NavKvStore(NavKvRoot.parse(new Uint8Array(await rootResponse.arrayBuffer())));
   }
-  const root = NavKvRoot.parse(new Uint8Array(await rootResponse.arrayBuffer()));
-  const pageCache = new Map<number, Uint8Array>();
-  const value = await root.extractValue(key, async (pageIndex) => {
-    const cached = pageCache.get(pageIndex);
+
+  async getBytes(key: string): Promise<Uint8Array | null> {
+    return this.root.extractValue(key, (pageIndex) => this.getPage(pageIndex));
+  }
+
+  async getJson<T>(key: string): Promise<T | null> {
+    const value = await this.getBytes(key);
+    if (!value) {
+      return null;
+    }
+    return JSON.parse(new TextDecoder().decode(value)) as T;
+  }
+
+  private getPage(pageIndex: number): Promise<Uint8Array> {
+    const cached = this.pageCache.get(pageIndex);
     if (cached) {
       return cached;
     }
-    const response = await fetch(`/nav-kv/values/${pageIndex.toString().padStart(4, "0")}`);
-    if (!response.ok) {
-      throw new Error(`failed to fetch nav_kv page ${pageIndex}: ${response.status}`);
-    }
-    const page = new Uint8Array(await response.arrayBuffer());
-    pageCache.set(pageIndex, page);
+    const page = fetch(`/nav-kv/values/${pageIndex.toString().padStart(4, "0")}`).then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`failed to fetch nav_kv page ${pageIndex}: ${response.status}`);
+      }
+      return new Uint8Array(await response.arrayBuffer());
+    });
+    this.pageCache.set(pageIndex, page);
     return page;
-  });
-  if (!value) {
+  }
+}
+
+export async function getNavKvStore(): Promise<NavKvStore | null> {
+  if (!sharedNavKvStorePromise) {
+    sharedNavKvStorePromise = NavKvStore.open();
+  }
+  return sharedNavKvStorePromise;
+}
+
+export async function loadNavKvJson<T>(key: string): Promise<T | null> {
+  const store = await getNavKvStore();
+  if (!store) {
     return null;
   }
-  return JSON.parse(new TextDecoder().decode(value)) as T;
+  return store.getJson<T>(key);
 }
 
 function validateParts(entries: Entry[], keyBytes: Uint8Array, valueBytesLen: number) {

@@ -75,7 +75,6 @@ Start with chart startup bundled into `nav_kv`:
 
 ```text
 chart/catalog
-chart/page/catalog
 ```
 
 `chart/catalog` is the app-ready raster chart catalog. It should contain the
@@ -93,22 +92,23 @@ exact data core/UI need to offer and render raster charts:
 
 The UI should not derive this from `resource_index`.
 
-`chart/page/catalog` is the app-ready plates/chart-page catalog used by session
-creation and PLT state. It has the core/UI `DerivedChartCatalog` shape:
-`{ "airports": [...] }`. The UI should pass this directly to core instead of
-loading `resource_index` and asking core to derive the same shape at startup.
+Plate-page data must not be one large `{ "airports": [...] }` value. It is
+looked up by airport, by plate id, and by CIFP procedure id, so those query
+shapes are separate HAD keyspaces. See `docs/HAD_QUERY_KEYSPACES.md` for the
+current consumer-derived key inventory.
 
-Future `nav_kv` keys should cover map-shaped lookup needs:
+Future `nav_kv` keys should cover map-shaped and spatial lookup needs:
 
 ```text
-waypoint/id/KRDD
-waypoint/id/OLM
-waypoint/suggest/KR
-airport/charts/KRDD
+waypoint/ident/KRDD
+waypoint/prefix/KR
+plate/airport/KRDD
+plate/by-id/plate%3AKRDD%3AIAP-CA-ILS%20OR%20LOC%20RWY%2034.png
 plate/cifp/KRDD/I34
-procedure/airport/KRDD/iap
-procedure/id/KRDD/I34
-airway/id/V23
+procedure/list/KRDD/APPROACH
+procedure/distinct-rows/KRDD/I34
+procedure/materialization-rows/KRDD/I34
+airway/V23
 ```
 
 The values may contain internal structure. For example, a waypoint suggestion
@@ -405,18 +405,19 @@ variant.
 
 1. Add the redesign doc.
 2. Add a preproc writer for `nav_kv_YYCC.root` and value pages.
-3. Populate the first keys, `chart/catalog` and `chart/page/catalog`, from
-   existing published metadata.
+3. Populate the first key, `chart/catalog`, from existing published metadata.
 4. Add `nav_kv` to `bundle_YYCC.json` and contract validation.
 5. Add a small web/core loader for `nav_kv`.
-6. Replace web startup raster chart and chart-page derivation from
-   `resource_index` with `nav_kv.get_json("chart/catalog")` and
-   `nav_kv.get_json("chart/page/catalog")`.
-7. Measure:
+6. Replace web startup raster chart derivation from `resource_index` with
+   `nav_kv.get_json("chart/catalog")`.
+7. Add the plate/procedure keyspaces in `docs/HAD_QUERY_KEYSPACES.md` and change
+   the session boundary so core can ingest only the airport/plate records it
+   needs.
+8. Measure:
    - fetch time
    - index parse time
    - `chart/catalog` value parse time
    - splash-to-first-chart time
 
-Only after those measurements should we decide whether to shard `nav_kv` or keep
-the one-blob model.
+The one-blob `chart/page/catalog` experiment proved the wire format but kept the
+wrong query shape; sharding by actual lookup key is now required.

@@ -3879,23 +3879,13 @@ fn write_nav_kv_artifact(
     let chart_catalog = build_nav_kv_chart_catalog(resource_index);
     let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
         .context("failed to encode nav_kv chart/catalog value")?;
-    let chart_page_catalog = build_nav_kv_chart_page_catalog(resource_index);
-    let chart_page_catalog_bytes = serde_json::to_vec(&chart_page_catalog)
-        .context("failed to encode nav_kv chart/page/catalog value")?;
-    let built = build_nav_kv_sorted(
-        vec![
-            NavKvPair {
-                key: "chart/catalog".to_string(),
-                value: chart_catalog_bytes,
-            },
-            NavKvPair {
-                key: "chart/page/catalog".to_string(),
-                value: chart_page_catalog_bytes,
-            },
-        ],
-        64 * 1024,
-    )
-    .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
+    let mut pairs = vec![NavKvPair {
+        key: "chart/catalog".to_string(),
+        value: chart_catalog_bytes,
+    }];
+    pairs.extend(build_nav_kv_plate_pairs(resource_index)?);
+    let built = build_nav_kv_sorted(pairs, 64 * 1024)
+        .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
 
     let source_dir = artifact_root_from_build_root(&config.build_root)
         .join("private-work")
@@ -3992,7 +3982,50 @@ fn build_nav_kv_chart_catalog(resource_index: &ResourceIndex) -> serde_json::Val
     serde_json::Value::Array(collections)
 }
 
-fn build_nav_kv_chart_page_catalog(resource_index: &ResourceIndex) -> serde_json::Value {
+fn build_nav_kv_plate_pairs(resource_index: &ResourceIndex) -> anyhow::Result<Vec<NavKvPair>> {
+    let airports = build_nav_kv_plate_airports(resource_index);
+    let airport_index = airports
+        .iter()
+        .map(|airport| {
+            serde_json::json!({
+                "id": airport.get("id").and_then(|value| value.as_str()).unwrap_or_default(),
+                "label": airport.get("label").and_then(|value| value.as_str()).unwrap_or_default(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut pairs = vec![NavKvPair {
+        key: "plate/airport-index".to_string(),
+        value: serde_json::to_vec(&airport_index)
+            .context("failed to encode nav_kv plate/airport-index value")?,
+    }];
+    for airport in airports {
+        let Some(airport_id) = airport.get("id").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        pairs.push(NavKvPair {
+            key: format!("plate/airport/{}", had_upper_key_component(airport_id)),
+            value: serde_json::to_vec(&airport).with_context(|| {
+                format!("failed to encode nav_kv plate/airport/{airport_id} value")
+            })?,
+        });
+        if let Some(charts) = airport.get("charts").and_then(|value| value.as_array()) {
+            for chart in charts {
+                let Some(plate_id) = chart.get("id").and_then(|value| value.as_str()) else {
+                    continue;
+                };
+                pairs.push(NavKvPair {
+                    key: format!("plate/by-id/{}", had_key_component(plate_id)),
+                    value: serde_json::to_vec(chart).with_context(|| {
+                        format!("failed to encode nav_kv plate/by-id/{plate_id} value")
+                    })?,
+                });
+            }
+        }
+    }
+    Ok(pairs)
+}
+
+fn build_nav_kv_plate_airports(resource_index: &ResourceIndex) -> Vec<serde_json::Value> {
     let plate_by_id = resource_index
         .plates
         .iter()
@@ -4003,7 +4036,7 @@ fn build_nav_kv_chart_page_catalog(resource_index: &ResourceIndex) -> serde_json
         .iter()
         .map(|csup| (csup.id.as_str(), csup))
         .collect::<BTreeMap<_, _>>();
-    let airports = resource_index
+    resource_index
         .airport_resources
         .iter()
         .filter_map(|airport_resources| {
@@ -4049,8 +4082,7 @@ fn build_nav_kv_chart_page_catalog(resource_index: &ResourceIndex) -> serde_json
                 "charts": charts,
             }))
         })
-        .collect::<Vec<_>>();
-    serde_json::json!({ "airports": airports })
+        .collect::<Vec<_>>()
 }
 
 fn nav_kv_plate_asset(
@@ -4113,6 +4145,25 @@ fn non_empty_string(value: &str) -> Option<&str> {
     } else {
         Some(value)
     }
+}
+
+fn had_upper_key_component(value: &str) -> String {
+    had_key_component(&value.trim().to_ascii_uppercase())
+}
+
+fn had_key_component(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.trim().as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            _ => {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    out
 }
 
 fn folder_category_for_document_type(document_type: &str) -> &'static str {

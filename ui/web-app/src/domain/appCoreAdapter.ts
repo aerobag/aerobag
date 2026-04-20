@@ -32,6 +32,7 @@ import type {
   OwnshipSourceStatusUpdate,
   PlanLeg,
   PlaybackUiState,
+  PlateProcedureLoadCandidateInput,
   ProcedureLoadOption,
   ProcedureOptions,
   ProcedureSummary,
@@ -46,6 +47,7 @@ import type {
 import catalogJson from "@product-catalog";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { installBrowserNavDbQueryHost } from "./webNavDb";
+import { loadHadCifpPlateMatches, loadHadPlateProcedureCandidates, loadHadProcedureDistinctRows } from "./navHad";
 
 const sampleCatalog = catalogJson as CatalogJson;
 
@@ -447,9 +449,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           course_deg: legMetrics?.course_deg ?? null,
         } as FlightPlanDisplayRowWithShowPlateTarget;
       }
-      const match = JSON.parse(
-        await this.module.web_find_procedure_plate_match(row.chart_airport_id, row.procedure_id),
-      ) as CifpTppMatch | null;
+      const rows = await loadHadCifpPlateMatches(row.chart_airport_id, row.procedure_id);
+      const match = rows
+        ? JSON.parse(
+          await this.module.describe_show_plate_for_procedure(JSON.stringify(rows)),
+        ) as CifpTppMatch | null
+        : null;
       return {
         ...row,
         symbol_feature,
@@ -1090,18 +1095,48 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async findProcedurePlateMatch(airportId: string, cifpId: string): Promise<CifpTppMatch | null> {
-    await this.ensureNavDbHost();
+    const rows = await loadHadCifpPlateMatches(airportId, cifpId);
+    if (!rows) {
+      return null;
+    }
     return JSON.parse(
-      await this.module.web_find_procedure_plate_match(airportId, cifpId),
+      await this.module.describe_show_plate_for_procedure(JSON.stringify(rows)),
     ) as CifpTppMatch | null;
   }
 
   async describePlateProcedureLoads(plan: FlightPlan, plateId: string): Promise<ProcedureLoadOption[]> {
-    await this.ensureNavDbHost();
+    const rows = await loadHadPlateProcedureCandidates(plateId);
+    if (!rows) {
+      return [];
+    }
+    const grouped = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const key = `${row.airport_id}:${row.cifp_id}`;
+      grouped.set(key, [...(grouped.get(key) ?? []), row]);
+    }
+    const candidates: PlateProcedureLoadCandidateInput[] = [];
+    for (const matchRows of grouped.values()) {
+      const preferred = JSON.parse(
+        await this.module.select_preferred_cifp_tpp_match(JSON.stringify(matchRows)),
+      ) as CifpTppMatch | null;
+      if (!preferred) {
+        continue;
+      }
+      const distinctRows = await loadHadProcedureDistinctRows(preferred.airport_id, preferred.cifp_id);
+      if (!distinctRows || distinctRows.length === 0) {
+        continue;
+      }
+      candidates.push({
+        airport_id: preferred.airport_id,
+        cifp_id: preferred.cifp_id,
+        match_rows: matchRows,
+        distinct_rows: distinctRows,
+      });
+    }
     return JSON.parse(
-      await this.module.web_describe_plate_procedure_loads(
+      await this.module.describe_plate_procedure_load_options(
         JSON.stringify(plan),
-        plateId,
+        JSON.stringify(candidates),
       ),
     ) as ProcedureLoadOption[];
   }

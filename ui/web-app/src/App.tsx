@@ -28,7 +28,7 @@ import type {
   ProcedureSummary,
   WaypointIdentifierSuggestion,
 } from "./domain/types";
-import { loadNavKvJson } from "./domain/navKv";
+import { loadHadChartCatalog, loadHadPlateAirport, loadHadPlateById } from "./domain/navHad";
 import uiTheme from "@shared-ui-theme";
 import planViewIcon from "./assets/plan-view-icon.svg";
 import {
@@ -765,7 +765,7 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    loadNavKvJson<MapViewOptionJson[]>("chart/catalog").then((loaded) => {
+    loadHadChartCatalog().then((loaded) => {
       if (cancelled) {
         return;
       }
@@ -790,12 +790,24 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    loadNavKvJson<ChartPageData>("chart/page/catalog").then((loaded) => {
+    buildSeededDevPlan().then(async ({ plan }) => {
+      const airportIds = airportIdsNeededForInitialChartPage(
+        plan,
+        initialRecentAirportIds,
+        persistedUiState.selectedAirportId,
+      );
+      if (persistedUiState.selectedChartId) {
+        const selectedChart = await loadHadPlateById(persistedUiState.selectedChartId);
+        if (selectedChart?.airport_id) {
+          airportIds.add(selectedChart.airport_id);
+        }
+      }
+      const airports = (await Promise.all([...airportIds].map((airportId) => loadHadPlateAirport(airportId))))
+        .filter((airport): airport is ChartPageData["airports"][number] => airport !== null);
+      return { airports };
+    }).then((loaded) => {
       if (cancelled) {
         return;
-      }
-      if (!loaded) {
-        throw new Error("nav_kv chart/page/catalog is missing");
       }
       setChartPageCatalog(loaded);
     }).catch((error) => {
@@ -806,7 +818,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [initialRecentAirportIds, persistedUiState.selectedAirportId, persistedUiState.selectedChartId]);
 
   useEffect(() => {
     if (!selectedMap) {
@@ -5105,6 +5117,48 @@ async function buildSeededDevPlan(): Promise<{ plan: FlightPlan }> {
   return {
     plan,
   };
+}
+
+function airportIdsNeededForInitialChartPage(
+  plan: FlightPlan,
+  recentAirportIds: string[],
+  selectedAirportId: string | null | undefined,
+) {
+  const airportIds = new Set<string>();
+  const add = (airportId: string | null | undefined) => {
+    const normalized = airportId?.trim().toUpperCase();
+    if (normalized) {
+      airportIds.add(normalized);
+    }
+  };
+  add(plan.departure);
+  add(plan.destination);
+  add(plan.alternate);
+  for (const component of plan.route_components) {
+    switch (component.kind) {
+      case "waypoint":
+        if ("Airport" in component.waypoint) {
+          add(component.waypoint.Airport);
+        }
+        break;
+      case "airway":
+        if ("Airport" in component.airway.entry) {
+          add(component.airway.entry.Airport);
+        }
+        if ("Airport" in component.airway.exit) {
+          add(component.airway.exit.Airport);
+        }
+        break;
+      case "procedure":
+        add(component.procedure.airport_id);
+        break;
+    }
+  }
+  for (const airportId of recentAirportIds) {
+    add(airportId);
+  }
+  add(selectedAirportId);
+  return airportIds;
 }
 
 function concretizedNavItemLabel(item: FlightPlanUiState["components"][number]["items"][number]) {

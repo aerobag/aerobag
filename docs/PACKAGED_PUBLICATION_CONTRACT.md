@@ -227,17 +227,18 @@ The initial required keys are:
 
 ```text
 chart/catalog
-chart/page/catalog
 ```
 
 `chart/catalog` is JSON for the app-ready raster chart catalog. Consumers
 should use this instead of parsing `resource_index_YYCC.json` to discover raster
 chart packages and tile metadata.
 
-`chart/page/catalog` is JSON for the app-ready plates/chart-page catalog. It has
-the same shape as the UI/core `DerivedChartCatalog` (`{ "airports": [...] }`) and
-is used to initialize chart-page/session state without parsing
-`resource_index_YYCC.json`.
+Plate and procedure data are not published as one bulk chart-page catalog. They
+are published under consumer-shaped HAD keyspaces such as
+`plate/airport/{airport_id}`, `plate/by-id/{plate_id}`,
+`plate/cifp/{airport_id}/{cifp_id}`, and
+`procedure/materialization-rows/{airport_id}/{procedure_id}`. The current
+keyspace inventory lives in `docs/HAD_QUERY_KEYSPACES.md`.
 
 
 ### `data_YYCC.zip`

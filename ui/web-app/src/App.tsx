@@ -495,6 +495,8 @@ export default function App() {
   const highLatencyWarningTimerRef = useRef<number | null>(null);
   const [mapViews, setMapViews] = useState<MapViewOptionJson[]>([]);
   const [mapViewsLoadError, setMapViewsLoadError] = useState<string | null>(null);
+  const [chartPageCatalog, setChartPageCatalog] = useState<ChartPageData | null>(null);
+  const [chartPageCatalogLoadError, setChartPageCatalogLoadError] = useState<string | null>(null);
   const [selectedMapId, setSelectedMapId] = useState<string>("");
   const initialRecentAirportIds = useMemo(
     () => mergeRecentAirportIds(emptyChartPage.airports, persistedUiState.recentAirportIds ?? []),
@@ -587,7 +589,7 @@ export default function App() {
   const appUiState = sessionSnapshot.app_ui_state;
   const playbackUiState = sessionSnapshot.playback_ui_state;
   const mapFollowUiState = sessionSnapshot.map_follow_ui_state;
-  const chartCatalog: ChartPageData = uiSession?.chartCatalog ?? emptyChartPage;
+  const chartCatalog: ChartPageData = uiSession?.chartCatalog ?? chartPageCatalog ?? emptyChartPage;
   const chartAirportById = useMemo(
     () => new Map(chartCatalog.airports.map((airport) => [airport.id, airport])),
     [chartCatalog],
@@ -731,13 +733,12 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     let nextSession: UiSession | null = null;
-    if (!appCoreAdapter) {
+    if (!appCoreAdapter || !chartPageCatalog) {
       return;
     }
     buildSeededDevPlan().then(async (initialPlan) => {
-      const { resourceIndex } = await import("./domain/productResourceIndex");
       const created = await appCoreAdapter.createUiSession(
-        resourceIndex,
+        chartPageCatalog,
         initialPlan.plan,
         initialRecentAirportIds,
         initialChartPageState.selected_airport_id,
@@ -760,7 +761,7 @@ export default function App() {
       cancelled = true;
       void nextSession?.destroy();
     };
-  }, [adapterBackend, appCoreAdapter, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialRecentAirportIds]);
+  }, [adapterBackend, appCoreAdapter, chartPageCatalog, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialRecentAirportIds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -780,6 +781,26 @@ export default function App() {
     }).catch((error) => {
       if (!cancelled) {
         setMapViewsLoadError(`failed to load chart catalog: ${errorMessage(error)}`);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadNavKvJson<ChartPageData>("chart/page/catalog").then((loaded) => {
+      if (cancelled) {
+        return;
+      }
+      if (!loaded) {
+        throw new Error("nav_kv chart/page/catalog is missing");
+      }
+      setChartPageCatalog(loaded);
+    }).catch((error) => {
+      if (!cancelled) {
+        setChartPageCatalogLoadError(`failed to load chart page catalog: ${errorMessage(error)}`);
       }
     });
     return () => {
@@ -946,11 +967,11 @@ export default function App() {
     }
   }, [appReady, currentPlan, planUiState, sessionInitError]);
 
-  if (sessionInitError || mapViewsLoadError) {
+  if (sessionInitError || mapViewsLoadError || chartPageCatalogLoadError) {
     return (
       <main className="appFrame">
         <section className="appPage planPage">
-          <div className="planGuidanceSummary">{sessionInitError ?? mapViewsLoadError}</div>
+          <div className="planGuidanceSummary">{sessionInitError ?? mapViewsLoadError ?? chartPageCatalogLoadError}</div>
         </section>
       </main>
     );

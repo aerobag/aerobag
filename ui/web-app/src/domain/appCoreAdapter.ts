@@ -163,7 +163,7 @@ export interface UiSession {
 export interface AppCoreAdapter {
   prewarm(): Promise<void>;
   createUiSession(
-    resourceIndex: unknown,
+    chartCatalog: ChartPageData,
     plan: FlightPlan,
     recentAirportIds: string[],
     selectedAirportId?: string,
@@ -490,14 +490,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async createUiSession(
-    resourceIndex: unknown,
+    chartCatalog: ChartPageData,
     plan: FlightPlan,
     recentAirportIds: string[],
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<UiSession> {
-    const catalogJson = JSON.stringify(sampleCatalogLike(resourceIndex));
-    const chartCatalog = await this.deriveChartCatalog(resourceIndex);
+    const catalogJson = JSON.stringify(sampleCatalogLike());
     const chartCatalogJson = JSON.stringify(chartCatalog);
     const module = this.module;
     const createSession = async (
@@ -1204,7 +1203,7 @@ function coreViewportForMap(viewport: MapViewportState) {
   };
 }
 
-function sampleCatalogLike(_resourceIndex: unknown): CatalogJson {
+function sampleCatalogLike(): CatalogJson {
   return {
     ...({
       schema_version: sampleCatalog.schema_version,

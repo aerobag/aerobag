@@ -75,6 +75,7 @@ Start with chart startup bundled into `nav_kv`:
 
 ```text
 chart/catalog
+chart/page/catalog
 ```
 
 `chart/catalog` is the app-ready raster chart catalog. It should contain the
@@ -91,6 +92,11 @@ exact data core/UI need to offer and render raster charts:
 - min/max zoom
 
 The UI should not derive this from `resource_index`.
+
+`chart/page/catalog` is the app-ready plates/chart-page catalog used by session
+creation and PLT state. It has the core/UI `DerivedChartCatalog` shape:
+`{ "airports": [...] }`. The UI should pass this directly to core instead of
+loading `resource_index` and asking core to derive the same shape at startup.
 
 Future `nav_kv` keys should cover map-shaped lookup needs:
 
@@ -399,12 +405,13 @@ variant.
 
 1. Add the redesign doc.
 2. Add a preproc writer for `nav_kv_YYCC.root` and value pages.
-3. Populate the first key, `chart/catalog`, from existing chart collection
-   metadata.
+3. Populate the first keys, `chart/catalog` and `chart/page/catalog`, from
+   existing published metadata.
 4. Add `nav_kv` to `bundle_YYCC.json` and contract validation.
 5. Add a small web/core loader for `nav_kv`.
-6. Replace web startup raster chart derivation from `resource_index` with
-   `nav_kv.get_json("chart/catalog")`.
+6. Replace web startup raster chart and chart-page derivation from
+   `resource_index` with `nav_kv.get_json("chart/catalog")` and
+   `nav_kv.get_json("chart/page/catalog")`.
 7. Measure:
    - fetch time
    - index parse time

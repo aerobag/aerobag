@@ -223,15 +223,21 @@ contain fixed-size pages of the logical value byte stream. The bundle manifest's
 `nav_kv` entry lists the root file, all value pages in page-index order, the page
 size, and the logical value byte length.
 
-The initial required key is:
+The initial required keys are:
 
 ```text
 chart/catalog
+chart/page/catalog
 ```
 
-Its value is JSON for the app-ready raster chart catalog. Consumers should use
-this instead of parsing `resource_index_YYCC.json` to discover raster chart
-packages and tile metadata.
+`chart/catalog` is JSON for the app-ready raster chart catalog. Consumers
+should use this instead of parsing `resource_index_YYCC.json` to discover raster
+chart packages and tile metadata.
+
+`chart/page/catalog` is JSON for the app-ready plates/chart-page catalog. It has
+the same shape as the UI/core `DerivedChartCatalog` (`{ "airports": [...] }`) and
+is used to initialize chart-page/session state without parsing
+`resource_index_YYCC.json`.
 
 
 ### `data_YYCC.zip`

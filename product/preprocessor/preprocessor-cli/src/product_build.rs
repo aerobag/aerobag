@@ -3879,11 +3879,20 @@ fn write_nav_kv_artifact(
     let chart_catalog = build_nav_kv_chart_catalog(resource_index);
     let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
         .context("failed to encode nav_kv chart/catalog value")?;
+    let chart_page_catalog = build_nav_kv_chart_page_catalog(resource_index);
+    let chart_page_catalog_bytes = serde_json::to_vec(&chart_page_catalog)
+        .context("failed to encode nav_kv chart/page/catalog value")?;
     let built = build_nav_kv_sorted(
-        vec![NavKvPair {
-            key: "chart/catalog".to_string(),
-            value: chart_catalog_bytes,
-        }],
+        vec![
+            NavKvPair {
+                key: "chart/catalog".to_string(),
+                value: chart_catalog_bytes,
+            },
+            NavKvPair {
+                key: "chart/page/catalog".to_string(),
+                value: chart_page_catalog_bytes,
+            },
+        ],
         64 * 1024,
     )
     .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
@@ -3981,6 +3990,154 @@ fn build_nav_kv_chart_catalog(resource_index: &ResourceIndex) -> serde_json::Val
         })
         .collect::<Vec<_>>();
     serde_json::Value::Array(collections)
+}
+
+fn build_nav_kv_chart_page_catalog(resource_index: &ResourceIndex) -> serde_json::Value {
+    let plate_by_id = resource_index
+        .plates
+        .iter()
+        .map(|plate| (plate.id.as_str(), plate))
+        .collect::<BTreeMap<_, _>>();
+    let csup_by_id = resource_index
+        .csups
+        .iter()
+        .map(|csup| (csup.id.as_str(), csup))
+        .collect::<BTreeMap<_, _>>();
+    let airports = resource_index
+        .airport_resources
+        .iter()
+        .filter_map(|airport_resources| {
+            let airport_id = &airport_resources.airport_id;
+            let mut charts = Vec::new();
+            for plate_id in &airport_resources.plate_ids {
+                if let Some(plate) = plate_by_id.get(plate_id.as_str()) {
+                    charts.push(nav_kv_plate_asset(airport_id, plate));
+                }
+            }
+            for csup_id in &airport_resources.csup_ids {
+                if let Some(csup) = csup_by_id.get(csup_id.as_str()) {
+                    charts.push(nav_kv_csup_asset(airport_id, csup));
+                }
+            }
+            charts.sort_by(|left, right| {
+                let left_category = left
+                    .get("folder_category")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                let right_category = right
+                    .get("folder_category")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                let left_label = left
+                    .get("label")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                let right_label = right
+                    .get("label")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                folder_category_rank(left_category)
+                    .cmp(&folder_category_rank(right_category))
+                    .then_with(|| left_label.cmp(right_label))
+            });
+            if charts.is_empty() {
+                return None;
+            }
+            Some(serde_json::json!({
+                "id": airport_id,
+                "label": airport_id,
+                "charts": charts,
+            }))
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({ "airports": airports })
+}
+
+fn nav_kv_plate_asset(
+    airport_id: &str,
+    plate: &preprocessor_resource_index::PlateRecord,
+) -> serde_json::Value {
+    let filename = plate
+        .asset_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&plate.asset_path);
+    let thumbnail_path = non_empty_string(&plate.thumbnail_path);
+    serde_json::json!({
+        "id": format!("plate:{airport_id}:{filename}"),
+        "airport_id": airport_id,
+        "package_id": plate.package_id,
+        "label": plate.label,
+        "kind": "plate",
+        "folder_category": folder_category_for_document_type(&plate.document_type),
+        "source_asset_path": plate.asset_path,
+        "asset_path": plate.asset_path,
+        "asset_url": format!("/{}", plate.asset_path),
+        "thumbnail_source_path": thumbnail_path,
+        "thumbnail_path": thumbnail_path,
+        "thumbnail_url": thumbnail_path.map(|path| format!("/{path}")),
+        "georef": plate.georef,
+    })
+}
+
+fn nav_kv_csup_asset(
+    airport_id: &str,
+    csup: &preprocessor_resource_index::CsupRecord,
+) -> serde_json::Value {
+    let filename = csup
+        .asset_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&csup.asset_path);
+    let thumbnail_path = non_empty_string(&csup.thumbnail_path);
+    serde_json::json!({
+        "id": format!("csup:{airport_id}:{filename}"),
+        "airport_id": airport_id,
+        "package_id": csup.package_id,
+        "label": csup.label,
+        "kind": "csup",
+        "folder_category": "csup",
+        "source_asset_path": csup.asset_path,
+        "asset_path": csup.asset_path,
+        "asset_url": format!("/{}", csup.asset_path),
+        "thumbnail_source_path": thumbnail_path,
+        "thumbnail_path": thumbnail_path,
+        "thumbnail_url": thumbnail_path.map(|path| format!("/{path}")),
+        "georef": serde_json::Value::Null,
+    })
+}
+
+fn non_empty_string(value: &str) -> Option<&str> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn folder_category_for_document_type(document_type: &str) -> &'static str {
+    match document_type {
+        "airport_diagram" => "airport-diagram",
+        "takeoff_minimums" | "alternate_minimums" | "minimums" => "takeoff-mins",
+        "departure" => "departure",
+        "star" => "star",
+        "csup" => "csup",
+        "approach" | "other" => "approach",
+        _ => "approach",
+    }
+}
+
+fn folder_category_rank(category: &str) -> usize {
+    match category {
+        "approach" => 0,
+        "departure" => 1,
+        "star" => 2,
+        "airport-diagram" => 3,
+        "csup" => 4,
+        "takeoff-mins" => 5,
+        "hotspot" => 6,
+        _ => 7,
+    }
 }
 
 fn family_display_name(resource_index: &ResourceIndex, family_id: &str) -> String {

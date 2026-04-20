@@ -13,7 +13,11 @@ use std::{
     process::Command,
     sync::{Arc, Mutex},
     thread,
+    time::Duration,
 };
+
+const NETWORK_FETCH_OUTER_ATTEMPTS: u32 = 3;
+const NETWORK_FETCH_OUTER_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 pub fn manifest_path_for_run(run_root: &str) -> String {
     format!("{run_root}/meta/manifest.json")
@@ -519,6 +523,36 @@ fn fetch_network_with_cache(
     dest_dir: &Path,
     archive_path: &Path,
 ) -> anyhow::Result<&'static str> {
+    let mut last_error = None;
+    for attempt in 1..=NETWORK_FETCH_OUTER_ATTEMPTS {
+        match fetch_network_with_cache_once(
+            layout,
+            cache_key,
+            network_url,
+            file_name,
+            dest_dir,
+            archive_path,
+        ) {
+            Ok(source) => return Ok(source),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < NETWORK_FETCH_OUTER_ATTEMPTS {
+                    thread::sleep(NETWORK_FETCH_OUTER_RETRY_DELAY);
+                }
+            }
+        }
+    }
+    Err(last_error.expect("network fetch should have run at least once"))
+}
+
+fn fetch_network_with_cache_once(
+    layout: &CacheLayout,
+    cache_key: &str,
+    network_url: &str,
+    file_name: &str,
+    dest_dir: &Path,
+    archive_path: &Path,
+) -> anyhow::Result<&'static str> {
     let metadata = read_cache_metadata(layout, cache_key)?;
     let temp_path = temporary_download_path(archive_path);
     let headers_path = temp_path.with_extension("headers");
@@ -624,6 +658,22 @@ fn parse_logical_download(url: &str) -> anyhow::Result<LogicalDownload> {
 }
 
 fn fetch_network(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Result<()> {
+    let mut last_error = None;
+    for attempt in 1..=NETWORK_FETCH_OUTER_ATTEMPTS {
+        match fetch_network_once(url, file_name, dest_dir) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < NETWORK_FETCH_OUTER_ATTEMPTS {
+                    thread::sleep(NETWORK_FETCH_OUTER_RETRY_DELAY);
+                }
+            }
+        }
+    }
+    Err(last_error.expect("network fetch should have run at least once"))
+}
+
+fn fetch_network_once(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Result<()> {
     let archive_path = dest_dir.join(file_name);
     let temp_path = temporary_download_path(&archive_path);
     let status = Command::new("curl")
@@ -787,9 +837,10 @@ fn relink_existing_cached_download(
     }
     let archive_metadata = fs::metadata(archive_path)
         .with_context(|| format!("failed to stat {}", archive_path.display()))?;
-    let blob_metadata =
-        fs::metadata(&blob_path).with_context(|| format!("failed to stat {}", blob_path.display()))?;
-    if archive_metadata.dev() == blob_metadata.dev() && archive_metadata.ino() == blob_metadata.ino()
+    let blob_metadata = fs::metadata(&blob_path)
+        .with_context(|| format!("failed to stat {}", blob_path.display()))?;
+    if archive_metadata.dev() == blob_metadata.dev()
+        && archive_metadata.ino() == blob_metadata.ino()
     {
         return Ok(());
     }

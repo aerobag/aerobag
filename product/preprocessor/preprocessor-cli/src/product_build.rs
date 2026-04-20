@@ -625,7 +625,7 @@ const WATER_MASK_PIPELINE_VERSION: &str = "v1";
 const TERRAIN_TILE_WORKERS: u32 = 16;
 const SHADED_RELIEF_TILE_WORKERS: u32 = 16;
 const WATER_MASK_FETCH_WORKERS: u32 = 2;
-const WATER_MASK_TILE_WORKERS: u32 = 16;
+const WATER_MASK_TILE_WORKERS: u32 = 4;
 const WATER_MASK_PAGE_SIZE: usize = 10;
 const WATER_MASK_MAX_SPLIT_SOURCE_PAGES: usize = 64;
 const WATER_MASK_MAX_OMITTED_OBJECTS: usize = 16;
@@ -1026,9 +1026,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 cycle_task_id(cycle, "resource-index"),
                 cycle_task_id(cycle, "vectors"),
             ];
-            bundle_manifest_deps.extend(config.profile.terrain_regions().iter().map(|region| {
-                format!("build-shaded-relief-{}", region.code().to_ascii_lowercase())
-            }));
+            if include_static_terrain_products() {
+                bundle_manifest_deps.extend(config.profile.terrain_regions().iter().map(
+                    |region| format!("build-shaded-relief-{}", region.code().to_ascii_lowercase()),
+                ));
+            }
             pending_tasks.push(ProductScheduledTask {
                 id: cycle_task_id(cycle, "bundle-manifest"),
                 deps: bundle_manifest_deps,
@@ -1099,77 +1101,84 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             weight: 1,
             kind: ProductScheduledTaskKind::GeoPublish,
         });
-        pending_tasks.push(ProductScheduledTask {
-            id: "terrain-discovery".to_string(),
-            deps: vec![],
-            weight: 1,
-            kind: ProductScheduledTaskKind::TerrainDiscovery,
-        });
-        for region in config.profile.terrain_regions() {
-            let region_id = region.code().to_ascii_lowercase();
+        if include_static_terrain_products() {
             pending_tasks.push(ProductScheduledTask {
-                id: format!("build-terrain-{region_id}"),
-                deps: vec!["terrain-discovery".to_string()],
-                weight: 6,
-                kind: ProductScheduledTaskKind::TerrainBuild { region: *region },
-            });
-            pending_tasks.push(ProductScheduledTask {
-                id: format!("publish-terrain-{region_id}"),
-                deps: vec![format!("build-terrain-{region_id}")],
-                weight: 1,
-                kind: ProductScheduledTaskKind::TerrainPublish { region: *region },
-            });
-            pending_tasks.push(ProductScheduledTask {
-                id: format!("build-water-mask-{region_id}"),
+                id: "terrain-discovery".to_string(),
                 deps: vec![],
-                weight: 18,
-                kind: ProductScheduledTaskKind::WaterMaskBuild { region: *region },
-            });
-            pending_tasks.push(ProductScheduledTask {
-                id: format!("publish-water-mask-{region_id}"),
-                deps: vec![format!("build-water-mask-{region_id}")],
                 weight: 1,
-                kind: ProductScheduledTaskKind::WaterMaskPublish { region: *region },
+                kind: ProductScheduledTaskKind::TerrainDiscovery,
             });
-            pending_tasks.push(ProductScheduledTask {
-                id: format!("build-shaded-relief-{region_id}"),
-                deps: vec![
-                    "terrain-discovery".to_string(),
-                    format!("build-water-mask-{region_id}"),
-                ],
-                weight: 6,
-                kind: ProductScheduledTaskKind::ShadedReliefBuild { region: *region },
-            });
-            pending_tasks.push(ProductScheduledTask {
-                id: format!("publish-shaded-relief-{region_id}"),
-                deps: vec![format!("build-shaded-relief-{region_id}")],
-                weight: 1,
-                kind: ProductScheduledTaskKind::ShadedReliefPublish { region: *region },
-            });
+            for region in config.profile.terrain_regions() {
+                let region_id = region.code().to_ascii_lowercase();
+                pending_tasks.push(ProductScheduledTask {
+                    id: format!("build-terrain-{region_id}"),
+                    deps: vec!["terrain-discovery".to_string()],
+                    weight: 6,
+                    kind: ProductScheduledTaskKind::TerrainBuild { region: *region },
+                });
+                pending_tasks.push(ProductScheduledTask {
+                    id: format!("publish-terrain-{region_id}"),
+                    deps: vec![format!("build-terrain-{region_id}")],
+                    weight: 1,
+                    kind: ProductScheduledTaskKind::TerrainPublish { region: *region },
+                });
+                pending_tasks.push(ProductScheduledTask {
+                    id: format!("build-water-mask-{region_id}"),
+                    deps: vec![],
+                    weight: 4,
+                    kind: ProductScheduledTaskKind::WaterMaskBuild { region: *region },
+                });
+                pending_tasks.push(ProductScheduledTask {
+                    id: format!("publish-water-mask-{region_id}"),
+                    deps: vec![format!("build-water-mask-{region_id}")],
+                    weight: 1,
+                    kind: ProductScheduledTaskKind::WaterMaskPublish { region: *region },
+                });
+                pending_tasks.push(ProductScheduledTask {
+                    id: format!("build-shaded-relief-{region_id}"),
+                    deps: vec![
+                        "terrain-discovery".to_string(),
+                        format!("build-water-mask-{region_id}"),
+                    ],
+                    weight: 6,
+                    kind: ProductScheduledTaskKind::ShadedReliefBuild { region: *region },
+                });
+                pending_tasks.push(ProductScheduledTask {
+                    id: format!("publish-shaded-relief-{region_id}"),
+                    deps: vec![format!("build-shaded-relief-{region_id}")],
+                    weight: 1,
+                    kind: ProductScheduledTaskKind::ShadedReliefPublish { region: *region },
+                });
+            }
+        }
+        let mut current_artifacts_deps = cycles
+            .iter()
+            .map(|cycle| cycle_task_id(cycle, "bundle-manifest"))
+            .chain(std::iter::once("publish-obstacles".to_string()))
+            .chain(std::iter::once("publish-tfrs".to_string()))
+            .chain(std::iter::once("publish-metars".to_string()))
+            .chain(std::iter::once("publish-nexrad".to_string()))
+            .chain(std::iter::once("publish-geo".to_string()))
+            .collect::<Vec<_>>();
+        if include_static_terrain_products() {
+            current_artifacts_deps.extend(
+                config.profile.terrain_regions().iter().map(|region| {
+                    format!("publish-terrain-{}", region.code().to_ascii_lowercase())
+                }),
+            );
+            current_artifacts_deps.extend(config.profile.terrain_regions().iter().map(|region| {
+                format!("publish-water-mask-{}", region.code().to_ascii_lowercase())
+            }));
+            current_artifacts_deps.extend(config.profile.terrain_regions().iter().map(|region| {
+                format!(
+                    "publish-shaded-relief-{}",
+                    region.code().to_ascii_lowercase()
+                )
+            }));
         }
         pending_tasks.push(ProductScheduledTask {
             id: "current-artifacts".to_string(),
-            deps: cycles
-                .iter()
-                .map(|cycle| cycle_task_id(cycle, "bundle-manifest"))
-                .chain(std::iter::once("publish-obstacles".to_string()))
-                .chain(std::iter::once("publish-tfrs".to_string()))
-                .chain(std::iter::once("publish-metars".to_string()))
-                .chain(std::iter::once("publish-nexrad".to_string()))
-                .chain(std::iter::once("publish-geo".to_string()))
-                .chain(config.profile.terrain_regions().iter().map(|region| {
-                    format!("publish-terrain-{}", region.code().to_ascii_lowercase())
-                }))
-                .chain(config.profile.terrain_regions().iter().map(|region| {
-                    format!("publish-water-mask-{}", region.code().to_ascii_lowercase())
-                }))
-                .chain(config.profile.terrain_regions().iter().map(|region| {
-                    format!(
-                        "publish-shaded-relief-{}",
-                        region.code().to_ascii_lowercase()
-                    )
-                }))
-                .collect(),
+            deps: current_artifacts_deps,
             weight: 1,
             kind: ProductScheduledTaskKind::CurrentArtifacts,
         });
@@ -1181,26 +1190,22 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             "publish-nexrad".to_string(),
             "publish-geo".to_string(),
         ];
-        product_unpack_deps.extend(
-            config
-                .profile
-                .terrain_regions()
-                .iter()
-                .map(|region| format!("publish-terrain-{}", region.code().to_ascii_lowercase())),
-        );
-        product_unpack_deps.extend(
-            config
-                .profile
-                .terrain_regions()
-                .iter()
-                .map(|region| format!("publish-water-mask-{}", region.code().to_ascii_lowercase())),
-        );
-        product_unpack_deps.extend(config.profile.terrain_regions().iter().map(|region| {
-            format!(
-                "publish-shaded-relief-{}",
-                region.code().to_ascii_lowercase()
-            )
-        }));
+        if include_static_terrain_products() {
+            product_unpack_deps.extend(
+                config.profile.terrain_regions().iter().map(|region| {
+                    format!("publish-terrain-{}", region.code().to_ascii_lowercase())
+                }),
+            );
+            product_unpack_deps.extend(config.profile.terrain_regions().iter().map(|region| {
+                format!("publish-water-mask-{}", region.code().to_ascii_lowercase())
+            }));
+            product_unpack_deps.extend(config.profile.terrain_regions().iter().map(|region| {
+                format!(
+                    "publish-shaded-relief-{}",
+                    region.code().to_ascii_lowercase()
+                )
+            }));
+        }
         pending_tasks.push(ProductScheduledTask {
             id: "product-unpack".to_string(),
             deps: product_unpack_deps,
@@ -1921,8 +1926,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             .with_context(|| {
                                 format!("failed to write {}", build_manifest_path.display())
                             })?;
-                            let shaded_relief_tile_levels =
-                                collect_shaded_relief_tile_levels(&task_values_snapshot, &cycle_config)?;
+                            let shaded_relief_tile_levels = if include_static_terrain_products() {
+                                collect_shaded_relief_tile_levels(&task_values_snapshot, &cycle_config)?
+                            } else {
+                                Vec::new()
+                            };
                             let bundle_manifest = build_bundle_manifest(
                                 &cycle_config,
                                 &build_manifest,
@@ -2500,26 +2508,28 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     _ => bail!("missing published fast product output for {}", task_id),
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
-                            let static_product_task_ids = std::iter::once("publish-geo".to_string())
-                                .chain(config.profile.terrain_regions().iter().map(|region| {
+                            let mut static_product_task_ids =
+                                vec!["publish-geo".to_string()];
+                            if include_static_terrain_products() {
+                                static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
                                     format!(
                                         "publish-terrain-{}",
                                         region.code().to_ascii_lowercase()
                                     )
-                                }))
-                                .chain(config.profile.terrain_regions().iter().map(|region| {
+                                }));
+                                static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
                                     format!(
                                         "publish-water-mask-{}",
                                         region.code().to_ascii_lowercase()
                                     )
-                                }))
-                                .chain(config.profile.terrain_regions().iter().map(|region| {
+                                }));
+                                static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
                                     format!(
                                         "publish-shaded-relief-{}",
                                         region.code().to_ascii_lowercase()
                                     )
-                                }))
-                                .collect::<Vec<_>>();
+                                }));
+                            }
                             let static_products = static_product_task_ids
                                 .iter()
                                 .map(|task_id| match task_values_snapshot.get(task_id) {
@@ -2598,20 +2608,22 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     _ => bail!("missing published fast product output for {}", task_id),
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
-                            let static_product_task_ids = std::iter::once("publish-geo".to_string())
-                                .chain(config.profile.terrain_regions().iter().map(|region| {
+                            let mut static_product_task_ids =
+                                vec!["publish-geo".to_string()];
+                            if include_static_terrain_products() {
+                                static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
                                     format!(
                                         "publish-terrain-{}",
                                         region.code().to_ascii_lowercase()
                                     )
-                                }))
-                                .chain(config.profile.terrain_regions().iter().map(|region| {
+                                }));
+                                static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
                                     format!(
                                         "publish-shaded-relief-{}",
                                         region.code().to_ascii_lowercase()
                                     )
-                                }))
-                                .collect::<Vec<_>>();
+                                }));
+                            }
                             let static_products = static_product_task_ids
                                 .iter()
                                 .map(|task_id| match task_values_snapshot.get(task_id) {
@@ -9828,6 +9840,12 @@ fn terrain_fetch_cache_config(config: &ProductBuildConfig) -> anyhow::Result<Fet
         root: config.fetch_cache_root.clone(),
         mode: FetchCacheMode::parse(&mode)?,
     })
+}
+
+fn include_static_terrain_products() -> bool {
+    env::var("AEROBAG_SKIP_STATIC_TERRAIN_PRODUCTS")
+        .map(|value| value != "1" && !value.eq_ignore_ascii_case("true"))
+        .unwrap_or(true)
 }
 
 fn build_overridden_source_urls_node(

@@ -7993,7 +7993,7 @@ fn water_mask_cached_source_dir(
         .join("meta")
         .join("provenance")
         .join(format!("water-mask-{region_id}"));
-    let fetch_cache = fetch_cache_config(config)?;
+    let fetch_cache = static_source_fetch_cache_config(config)?;
     let ids_urls = WATER_MASK_NHD_LAYERS
         .iter()
         .map(|(layer, _name, where_clause)| water_mask_ids_url(*layer, &bbox, where_clause))

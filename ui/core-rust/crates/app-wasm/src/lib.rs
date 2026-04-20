@@ -783,6 +783,67 @@ pub fn render_terrain_overlay_tiles_in_session(
     .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
+#[wasm_bindgen]
+pub fn render_terrain_warning_raw_rgba(
+    terrain_tile_bytes: &[u8],
+    aircraft_altitude_ft: f64,
+) -> Result<Vec<u8>, JsValue> {
+    app_core::render_terrain_warning_raw_rgba_from_tiles(
+        &[terrain_tile_bytes],
+        aircraft_altitude_ft,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn render_terrain_warning_raw_rgba_from_packed_tiles(
+    packed_terrain_tile_bytes: &[u8],
+    aircraft_altitude_ft: f64,
+) -> Result<Vec<u8>, JsValue> {
+    let tile_bytes = unpack_packed_terrain_tile_bytes(packed_terrain_tile_bytes)
+        .map_err(|err| JsValue::from_str(&err))?;
+    let tile_refs = tile_bytes
+        .iter()
+        .map(Vec::as_slice)
+        .collect::<Vec<_>>();
+    app_core::render_terrain_warning_raw_rgba_from_tiles(
+        &tile_refs,
+        aircraft_altitude_ft,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+fn unpack_packed_terrain_tile_bytes(packed_terrain_tile_bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    if packed_terrain_tile_bytes.len() < 4 {
+        return Err("packed terrain tile bytes missing count".to_string());
+    }
+    let mut cursor = 0;
+    let read_u32 = |bytes: &[u8], cursor: &mut usize| -> Result<u32, String> {
+        let end = *cursor + 4;
+        let chunk = bytes
+            .get(*cursor..end)
+            .ok_or_else(|| "packed terrain tile bytes truncated".to_string())?;
+        *cursor = end;
+        Ok(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+    };
+    let count = read_u32(packed_terrain_tile_bytes, &mut cursor)? as usize;
+    let mut lengths = Vec::with_capacity(count);
+    for _ in 0..count {
+        lengths.push(read_u32(packed_terrain_tile_bytes, &mut cursor)? as usize);
+    }
+    let mut tiles = Vec::with_capacity(count);
+    for length in lengths {
+        let end = cursor + length;
+        let tile = packed_terrain_tile_bytes
+            .get(cursor..end)
+            .ok_or_else(|| "packed terrain tile payload truncated".to_string())?
+            .to_vec();
+        cursor = end;
+        tiles.push(tile);
+    }
+    Ok(tiles)
+}
+
 fn load_catalog_json(catalog_json: &str) -> Result<String, String> {
     let handle = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
     serde_json::to_string(&handle).map_err(|err| err.to_string())

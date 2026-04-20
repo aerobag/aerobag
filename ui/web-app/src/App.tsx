@@ -67,6 +67,7 @@ import { pointTileUrl, type PointTilePayload } from "./domain/vectorTiles";
 import type { MapOverlayQueryResult, TerrainOverlayQueryResult, TerrainOverlayTileRequest } from "./domain/appCoreAdapter";
 import { airwayEntryCandidateFromPresentation, airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import { debugLog } from "./domain/debugLog";
+import { TerrainRenderWorkerClient } from "./domain/terrainRenderWorkerClient";
 
 type SurfaceSize = {
   width: number;
@@ -1579,6 +1580,7 @@ function MapPage(props: {
   const terrainRenderQueueRef = useRef<Map<string, TerrainTileRenderTask>>(new Map());
   const terrainRenderPumpActiveRef = useRef(false);
   const terrainRenderSessionRef = useRef<UiSession | null>(null);
+  const terrainRenderWorkerRef = useRef<TerrainRenderWorkerClient | null>(null);
   const terrainCurrentBucketRef = useRef<number | null>(null);
   const terrainFrameStartRef = useRef<Map<string, number>>(new Map());
   const lastTerrainRenderPlanKeyRef = useRef("");
@@ -1656,9 +1658,18 @@ function MapPage(props: {
               continue;
             }
             const renderStartedAt = performance.now();
-            const rawBytes = tileBytesList.length === 1
-              ? await session.renderTerrainOverlayTile(tileBytesList[0], task.altitudeBucket ?? Number.NaN)
-              : await session.renderTerrainOverlayTiles(packTerrainTileBytes(tileBytesList), task.altitudeBucket ?? Number.NaN);
+            const worker = terrainRenderWorkerRef.current;
+            const rawBytes = worker
+              ? (
+                  tileBytesList.length === 1
+                    ? await worker.renderTile(tileBytesList[0].slice(), task.altitudeBucket ?? Number.NaN)
+                    : await worker.renderPackedTiles(packTerrainTileBytes(tileBytesList), task.altitudeBucket ?? Number.NaN)
+                )
+              : (
+                  tileBytesList.length === 1
+                    ? await session.renderTerrainOverlayTile(tileBytesList[0], task.altitudeBucket ?? Number.NaN)
+                    : await session.renderTerrainOverlayTiles(packTerrainTileBytes(tileBytesList), task.altitudeBucket ?? Number.NaN)
+                );
             const renderElapsedMs = performance.now() - renderStartedAt;
             const parsed = parseTerrainRawRgba(rawBytes);
             terrainTileCacheRef.current.set(cacheKey, parsed);
@@ -1672,6 +1683,7 @@ function MapPage(props: {
               fetch_ms: Math.round(fetchElapsedMs),
               render_ms: Math.round(renderElapsedMs),
               elapsed_ms: Math.round(performance.now() - tileStartedAt),
+              render_thread: worker ? "worker" : "main",
             });
             setTerrainOverlay((current) => {
               if (!current.query?.tile_requests.some((request) => terrainCacheKey(request, task.altitudeBucket) === cacheKey)) {
@@ -1888,9 +1900,12 @@ function MapPage(props: {
   useEffect(() => {
     const cache = terrainTileCacheRef.current;
     const sourceCache = terrainSourceByteCacheRef.current;
+    terrainRenderWorkerRef.current = new TerrainRenderWorkerClient();
     return () => {
       cache.clear();
       sourceCache.clear();
+      terrainRenderWorkerRef.current?.destroy();
+      terrainRenderWorkerRef.current = null;
       terrainFrameStartRef.current.clear();
       terrainTileInFlightRef.current.clear();
       terrainRenderQueueRef.current.clear();

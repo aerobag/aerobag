@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FlightPlan, ResourceIndexJson } from "./types";
-import { deriveChartPage, deriveMapViews } from "./resourceIndexAdapters";
+import { appendShadedReliefMapViews, deriveChartPage, deriveMapViews } from "./resourceIndexAdapters";
 
 const resourceIndex: ResourceIndexJson = {
   schema_version: 1,
@@ -126,6 +126,17 @@ describe("resourceIndexAdapters", () => {
     expect(mapViews[0].map_view.tile_path_template).toBe("{z}/{x}/{y}.webp");
     expect(mapViews[0].map_view.storage_kind).toBe("static_product");
     expect(mapViews[0].map_view.levels.map((level) => level.zoom)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  it("appends shaded relief map views to HAD-loaded chart catalogs", () => {
+    const chartMapViews = deriveMapViews(resourceIndex, ["sec:nw"]);
+    const mapViews = appendShadedReliefMapViews(chartMapViews, {
+      static_products: [{ id: "shaded-relief-nw", filename: "shaded_relief_nw.zip" }],
+    });
+
+    expect(mapViews.map((entry) => entry.id)).toEqual(["sec:nw", "shaded-relief-nw"]);
+    expect(mapViews[1].label).toBe("Northwest Shaded Relief");
+    expect(mapViews[1].map_view.initial_viewport).toEqual(chartMapViews[0].map_view.initial_viewport);
   });
 
   it("derives chart page assets from plates and csups", () => {

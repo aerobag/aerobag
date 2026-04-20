@@ -65,6 +65,12 @@ function regionDisplayName(resourceIndex: ResourceIndexJson, regionId: RegionId)
   return resourceIndex.regions.find((entry) => entry.id === regionId)?.display_name ?? regionId.toUpperCase();
 }
 
+function regionDisplayNameFromMapViews(mapViews: MapViewOption[], regionId: RegionId): string {
+  const reference = mapViews.find((view) => view.region_id === regionId);
+  const chartName = reference?.map_view.chart_name ?? reference?.label ?? "";
+  return chartName.replace(/\s+(Sectional|TAC|IFR-Low|IFR-High|IFR-LOW|IFR-HIGH)$/i, "") || regionId.toUpperCase();
+}
+
 function deriveMapView(
   resourceIndex: ResourceIndexJson,
   collection: ResourceIndexJson["chart_collections"][number] & { family_id: SupportedChartFamily },
@@ -118,6 +124,13 @@ function defaultViewportForRegion(resourceIndex: ResourceIndexJson, regionId: Re
   return referenceCollection?.default_view ?? { lat: 39, lon: -98, zoom: 4 };
 }
 
+function defaultViewportFromMapViews(mapViews: MapViewOption[], regionId: RegionId): MapView["initial_viewport"] {
+  const reference =
+    mapViews.find((view) => view.region_id === regionId && view.map_view.chart_family === "sec")
+    ?? mapViews.find((view) => view.region_id === regionId);
+  return reference?.map_view.initial_viewport ?? { lat: 39, lon: -98, zoom: 4 };
+}
+
 function deriveShadedReliefMapView(resourceIndex: ResourceIndexJson, product: ShadedReliefProduct, regionId: RegionId): MapView {
   const levels = fullPyramidLevels(0, 10);
   return {
@@ -137,6 +150,25 @@ function deriveShadedReliefMapView(resourceIndex: ResourceIndexJson, product: Sh
   };
 }
 
+function deriveShadedReliefMapViewFromCatalog(mapViews: MapViewOption[], product: ShadedReliefProduct, regionId: RegionId): MapView {
+  const levels = fullPyramidLevels(0, 10);
+  return {
+    chart_family: "shaded-relief",
+    chart_name: `${regionDisplayNameFromMapViews(mapViews, regionId)} Shaded Relief`,
+    chart_index: 0,
+    tile_root: "tiles",
+    tile_url_root: `/shaded-relief-products/${product.id}/tiles`,
+    tile_path_template: "{z}/{x}/{y}.webp",
+    tile_size: 512,
+    min_zoom: 0,
+    max_zoom: 10.8,
+    storage_kind: "static_product",
+    package_name: product.id,
+    initial_viewport: defaultViewportFromMapViews(mapViews, regionId),
+    levels,
+  };
+}
+
 function deriveShadedReliefMapViews(resourceIndex: ResourceIndexJson, currentArtifacts?: CurrentArtifactsJson): MapViewOption[] {
   return (currentArtifacts?.static_products ?? [])
     .flatMap((product): Array<{ product: ShadedReliefProduct; regionId: RegionId }> => {
@@ -152,6 +184,28 @@ function deriveShadedReliefMapViews(resourceIndex: ResourceIndexJson, currentArt
       region_id: regionId,
       map_view: deriveShadedReliefMapView(resourceIndex, product, regionId),
     }));
+}
+
+export function appendShadedReliefMapViews(
+  mapViews: MapViewOption[],
+  currentArtifacts?: CurrentArtifactsJson,
+): MapViewOption[] {
+  const existingIds = new Set(mapViews.map((view) => view.id));
+  const shadedReliefMapViews = (currentArtifacts?.static_products ?? [])
+    .flatMap((product): Array<{ product: ShadedReliefProduct; regionId: RegionId }> => {
+      if (!product.id?.startsWith("shaded-relief-") || existingIds.has(product.id)) {
+        return [];
+      }
+      const regionId = shadedReliefRegionId(product.id);
+      return regionId ? [{ product: product as ShadedReliefProduct, regionId }] : [];
+    })
+    .map(({ product, regionId }) => ({
+      id: product.id,
+      label: `${regionDisplayNameFromMapViews(mapViews, regionId)} Shaded Relief`,
+      region_id: regionId,
+      map_view: deriveShadedReliefMapViewFromCatalog(mapViews, product, regionId),
+    }));
+  return [...mapViews, ...shadedReliefMapViews];
 }
 
 export function deriveMapViews(

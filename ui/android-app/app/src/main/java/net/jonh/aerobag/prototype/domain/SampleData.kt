@@ -4,6 +4,9 @@ import android.content.Context
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.put
 
 data class ContentFixture(
     val catalogJson: String,
@@ -16,6 +19,7 @@ data class ContentFixture(
     val samplePlan: FlightPlan,
     val remoteOnlyInventory: ContentInventory,
     val installedInventory: ContentInventory,
+    val navKvStore: NavKvStore,
 )
 
 @Serializable
@@ -40,13 +44,38 @@ object SampleData {
         val bootstrapPayload = context.assets.open(BOOTSTRAP_ASSET_PATH).bufferedReader().use { it.readText() }
         val resourceIndexPayload = context.assets.open(RESOURCE_INDEX_ASSET_PATH).bufferedReader().use { it.readText() }
         val bootstrap = json.decodeFromString<WireDevBootstrap>(bootstrapPayload)
-        val resourceIndex = json.decodeFromString<WireResourceIndex>(resourceIndexPayload)
-        val mapViews = deriveMapViews(resourceIndex, emptyList())
+        val navKvStore = NavKvStore.open(context)
+        val mapViews =
+            json.decodeFromJsonElement<List<WireMapViewOption>>(
+                navKvStore.runCoreOperationElement(
+                    buildJsonObject {
+                        put("kind", "chart_catalog")
+                    },
+                ),
+            ).map { it.toUi() }
         val mapView = mapViews.first().mapView
         val samplePlan = bootstrap.flight_plan.toUiFlightPlan()
+        val resourceIndex = json.decodeFromString<WireResourceIndex>(resourceIndexPayload)
         val catalogJson = json.encodeToString(deriveWireCatalog(resourceIndex))
-        val chartCatalog = NativeAppCoreAdapter(catalogJson, """{"airports":[]}""").deriveChartCatalog(resourceIndexPayload)
-        val chartPage = NativeAppCoreAdapter(catalogJson, json.encodeToString(chartCatalog.toWire())).deriveChartPage(resourceIndexPayload, samplePlan)
+        val airportIds = buildSet {
+            addAll(bootstrap.recent_airport_ids)
+            bootstrap.selected_airport_id?.let(::add)
+            samplePlan.departure?.let(::add)
+            samplePlan.destination?.let(::add)
+        }
+        val chartCatalog = WireDerivedChartPage(
+            airports = airportIds.mapNotNull { airportId ->
+                json.decodeFromJsonElement<WireDerivedChartAirport?>(
+                    navKvStore.runCoreOperationElement(
+                        buildJsonObject {
+                            put("kind", "plate_airport")
+                            put("airport_id", airportId)
+                        },
+                    ),
+                )
+            },
+        ).toUi()
+        val chartPage = chartCatalog
         val defaultLevel = mapView.levels.maxBy { it.zoom }
         return ContentFixture(
             catalogJson = catalogJson,
@@ -71,8 +100,69 @@ object SampleData {
             samplePlan = samplePlan,
             remoteOnlyInventory = ContentInventory(installedPackages = emptyList()),
             installedInventory = ContentInventory(installedPackages = emptyList()),
+            navKvStore = navKvStore,
         )
     }
+}
+
+private fun WireMapViewOption.toUi() = MapViewOption(
+    id = id,
+    label = label,
+    regionId = region_id.toCode(),
+    mapView = map_view.toUi(),
+)
+
+private fun WireMapView.toUi() = MapView(
+    chartFamily = chart_family.toUi(),
+    chartName = chart_name,
+    chartIndex = chart_index,
+    tileRoot = tile_root,
+    tileUrlRoot = tile_url_root,
+    tileSize = tile_size,
+    minZoom = min_zoom,
+    maxZoom = max_zoom,
+    storageKind = storage_kind.toUi(),
+    packageName = package_name,
+    initialViewport = MapViewportSeed(
+        lat = initial_viewport.lat,
+        lon = initial_viewport.lon,
+        zoom = initial_viewport.zoom,
+    ),
+    levels = levels.map { level ->
+        TileLevelAvailability(
+            zoom = level.zoom,
+            xMin = level.x_min,
+            xMax = level.x_max,
+            yTmsMin = level.y_tms_min,
+            yTmsMax = level.y_tms_max,
+        )
+    },
+)
+
+private fun WireChartFamilyId.toUi() = when (this) {
+    WireChartFamilyId.Sec -> MapChartFamily.Sec
+    WireChartFamilyId.Tac -> MapChartFamily.Tac
+    WireChartFamilyId.EnrL -> MapChartFamily.EnrL
+    WireChartFamilyId.EnrH -> MapChartFamily.EnrH
+    WireChartFamilyId.ShadedRelief -> MapChartFamily.ShadedRelief
+}
+
+private fun WireTileStorageKind.toUi() = when (this) {
+    WireTileStorageKind.AssetTree -> TileStorageKind.AssetTree
+    WireTileStorageKind.SectionalPackage -> TileStorageKind.SectionalPackage
+    WireTileStorageKind.StaticProduct -> TileStorageKind.StaticProduct
+}
+
+private fun WireRegionId.toCode() = when (this) {
+    WireRegionId.Ne -> "ne"
+    WireRegionId.Nc -> "nc"
+    WireRegionId.Nw -> "nw"
+    WireRegionId.Se -> "se"
+    WireRegionId.Sc -> "sc"
+    WireRegionId.Sw -> "sw"
+    WireRegionId.Ec -> "ec"
+    WireRegionId.Ak -> "ak"
+    WireRegionId.Pac -> "pac"
 }
 
 private fun ChartPageFixture.toWire() = WireDerivedChartPage(

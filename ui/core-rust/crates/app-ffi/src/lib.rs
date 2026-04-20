@@ -1,8 +1,11 @@
 pub use app_core::*;
-use jni::objects::{JClass, JString};
+use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::jstring;
 use jni::JNIEnv;
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 pub fn load_catalog_json(catalog_json: &str) -> Result<String, String> {
     let handle = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
@@ -1052,10 +1055,66 @@ pub fn destroy_session_json(handle: u64) {
     app_core::destroy_session(handle as u32);
 }
 
+static NEXT_NAV_KV_HANDLE: AtomicU32 = AtomicU32::new(1);
+static NAV_KV_STORES: OnceLock<Mutex<HashMap<u32, app_core::NavKvStore>>> = OnceLock::new();
+
+fn nav_kv_stores() -> &'static Mutex<HashMap<u32, app_core::NavKvStore>> {
+    NAV_KV_STORES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn nav_kv_open_bytes(root_bytes: &[u8]) -> Result<u64, String> {
+    let root = app_core::NavKvRoot::parse(root_bytes)?;
+    let handle = NEXT_NAV_KV_HANDLE.fetch_add(1, Ordering::Relaxed);
+    nav_kv_stores()
+        .lock()
+        .map_err(|_| "nav kv store poisoned".to_string())?
+        .insert(handle, app_core::NavKvStore::new(root));
+    Ok(handle as u64)
+}
+
+pub fn nav_kv_insert_page_bytes(
+    handle: u64,
+    page_index: u32,
+    page_bytes: &[u8],
+) -> Result<(), String> {
+    let mut stores = nav_kv_stores()
+        .lock()
+        .map_err(|_| "nav kv store poisoned".to_string())?;
+    let store = stores
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid nav kv handle: {handle}"))?;
+    store.insert_page(page_index, page_bytes.to_vec());
+    Ok(())
+}
+
+pub fn nav_kv_destroy_handle(handle: u64) {
+    let _ = nav_kv_stores()
+        .lock()
+        .expect("nav kv store poisoned")
+        .remove(&(handle as u32));
+}
+
+pub fn core_had_operation_json(handle: u64, operation_json: &str) -> Result<String, String> {
+    let operation: app_core::HadOperation =
+        serde_json::from_str(operation_json).map_err(|err| err.to_string())?;
+    let stores = nav_kv_stores()
+        .lock()
+        .map_err(|_| "nav kv store poisoned".to_string())?;
+    let store = stores
+        .get(&(handle as u32))
+        .ok_or_else(|| format!("invalid nav kv handle: {handle}"))?;
+    let outcome = app_core::run_had_operation(store, operation).map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 fn get_java_string(env: &mut JNIEnv, value: JString) -> Result<String, String> {
     env.get_string(&value)
         .map(|s| s.into())
         .map_err(|err| err.to_string())
+}
+
+fn get_java_byte_array(env: &mut JNIEnv, value: JByteArray) -> Result<Vec<u8>, String> {
+    env.convert_byte_array(value).map_err(|err| err.to_string())
 }
 
 fn return_string(env: &mut JNIEnv, value: Result<String, String>) -> jstring {
@@ -2227,6 +2286,60 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_des
     handle: i64,
 ) {
     destroy_session_json(handle as u64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navKvOpen(
+    mut env: JNIEnv,
+    _class: JClass,
+    root_bytes: JByteArray,
+) -> i64 {
+    match get_java_byte_array(&mut env, root_bytes).and_then(|bytes| nav_kv_open_bytes(&bytes)) {
+        Ok(handle) => handle as i64,
+        Err(message) => {
+            let _ = env.throw_new("java/lang/RuntimeException", message);
+            0
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navKvInsertPage(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    page_index: i32,
+    page_bytes: JByteArray,
+) {
+    let result = get_java_byte_array(&mut env, page_bytes).and_then(|bytes| {
+        nav_kv_insert_page_bytes(handle as u64, page_index as u32, &bytes)
+    });
+    if let Err(message) = result {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_navKvDestroy(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) {
+    nav_kv_destroy_handle(handle as u64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_coreHadOperation(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    operation_json: JString,
+) -> jstring {
+    let result = (|| {
+        let operation_json = get_java_string(&mut env, operation_json)?;
+        core_had_operation_json(handle as u64, &operation_json)
+    })();
+    return_string(&mut env, result)
 }
 
 #[cfg(test)]

@@ -67,6 +67,12 @@ object SectionalPackages {
                     context.assets.open(tileAssetPath(tile)).use { it.readBytes() }
                 }.getOrNull()
 
+            TileStorageKind.StaticProduct ->
+                runCatching {
+                    val productName = tile.mapView.packageName ?: return@runCatching null
+                    context.assets.open("$productName/${tileRelativePath(tile, tile.mapView)}").use { it.readBytes() }
+                }.getOrNull()
+
             TileStorageKind.SectionalPackage -> {
                 val candidates = tile.candidateMapViews
                     .distinctBy { "${it.packageName}:${it.tileRoot}:${it.chartIndex}" }

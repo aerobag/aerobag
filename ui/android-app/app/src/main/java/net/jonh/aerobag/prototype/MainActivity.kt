@@ -140,8 +140,7 @@ import net.jonh.aerobag.prototype.domain.ChartAirport
 import net.jonh.aerobag.prototype.domain.ChartAsset
 import net.jonh.aerobag.prototype.domain.ChartPackages
 import net.jonh.aerobag.prototype.domain.AppState
-import net.jonh.aerobag.prototype.domain.AirwayEntryCandidate
-import net.jonh.aerobag.prototype.domain.AirwayExitCandidate
+import net.jonh.aerobag.prototype.domain.AirwayPresentationPlan
 import net.jonh.aerobag.prototype.domain.AirwaySuggestion
 import net.jonh.aerobag.prototype.domain.WaypointIdentifierSuggestion
 import net.jonh.aerobag.prototype.domain.ConcretizedNavItem
@@ -437,9 +436,8 @@ private data class AndroidAirwayPickerState(
     val destinationAnchor: NavRef?,
     val suggestions: List<AirwaySuggestion>,
     val selectedAirwayName: String?,
-    val entries: List<AirwayEntryCandidate>,
+    val presentation: AirwayPresentationPlan?,
     val selectedEntryIndex: Int?,
-    val exits: List<AirwayExitCandidate>,
 )
 
 private data class AndroidProcedurePickerState(
@@ -626,27 +624,8 @@ private fun demoSituationSample() =
         pressureAltitudeFt = null,
     )
 
-private fun ensureNavDbPath(context: Context): String {
-    val target = java.io.File(context.filesDir, "nav-db/main.db")
-    val needsRefresh =
-        !target.isFile ||
-            runCatching {
-                target.inputStream().use { input ->
-                    input.readNBytes(16).decodeToString() != "SQLite format 3\u0000"
-                }
-            }.getOrDefault(true)
-    if (needsRefresh) {
-        target.parentFile?.mkdirs()
-        context.assets.open("nav-db/main.db").use { input ->
-            target.outputStream().use { output -> input.copyTo(output) }
-        }
-    }
-    return target.absolutePath
-}
-
 private fun buildSeededDevPlan(
     adapter: NativeAppCoreAdapter,
-    dbPath: String,
     plan: net.jonh.aerobag.prototype.domain.FlightPlan,
 ): FlightPlanUiMutation {
     return runCatching {
@@ -1080,12 +1059,11 @@ private fun AerobagApp() {
     val context = LocalContext.current
     val fixture = remember(context) { SampleData.load(context.applicationContext) }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
-    val navDbPath = remember(context) { ensureNavDbPath(context.applicationContext) }
-    val appCore = remember(fixture.catalogJson, fixture.chartCatalogJson, navDbPath) {
-        NativeAppCoreAdapter(fixture.catalogJson, fixture.chartCatalogJson, navDbPath)
+    val appCore = remember(fixture.catalogJson, fixture.chartCatalogJson, fixture.navKvStore) {
+        NativeAppCoreAdapter(fixture.catalogJson, fixture.chartCatalogJson, navKvStore = fixture.navKvStore)
     }
-    val initialPlanMutation = remember(appCore, navDbPath, fixture.samplePlan) {
-        buildSeededDevPlan(appCore, navDbPath, fixture.samplePlan)
+    val initialPlanMutation = remember(appCore, fixture.samplePlan) {
+        buildSeededDevPlan(appCore, fixture.samplePlan)
     }
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
     val sessionStartElapsedMs = remember { SystemClock.elapsedRealtime() }
@@ -1237,7 +1215,6 @@ private fun AerobagApp() {
             AppPage.Map -> {
                 MapExplorerPage(
                     appCore = appCore,
-                    navDbPath = navDbPath,
                     page = page,
                     pageHistory = pageHistory,
                     uptimeLabel = uptimeLabel,
@@ -1273,7 +1250,6 @@ private fun AerobagApp() {
             AppPage.Plan -> {
                 FlightPlanPage(
                     appCore = appCore,
-                    navDbPath = navDbPath,
                     page = page,
                     pageHistory = pageHistory,
                     uptimeLabel = uptimeLabel,
@@ -1359,7 +1335,6 @@ private fun AerobagApp() {
 @Composable
 private fun MapExplorerPage(
     appCore: NativeAppCoreAdapter,
-    navDbPath: String,
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
@@ -1679,7 +1654,7 @@ private fun MapExplorerPage(
     }
 
     LaunchedEffect(selectedMap.id) { chartTrayOpen = false }
-    LaunchedEffect(appCore, navDbPath, uiSession, plan.id, plan.version, plan.guidance, plan.resolvedLegs) {
+    LaunchedEffect(appCore, uiSession, plan.id, plan.version, plan.guidance, plan.resolvedLegs) {
         if (plan.resolvedLegs.isEmpty()) {
             flightPlanRoute = emptyList()
             if (guidanceGeometryKey != "") {
@@ -1691,7 +1666,7 @@ private fun MapExplorerPage(
             return@LaunchedEffect
         }
         runCatching {
-            appCore.projectFlightPlanRoute(navDbPath, plan)
+            appCore.projectFlightPlanRoute(plan)
         }.onSuccess {
             flightPlanRoute = it
             val nextKey =
@@ -2401,7 +2376,6 @@ private fun AirportInsertPanel(
 @Composable
 private fun FlightPlanPage(
     appCore: NativeAppCoreAdapter,
-    navDbPath: String,
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
@@ -2478,8 +2452,8 @@ private fun FlightPlanPage(
                             when {
                                 picker.loading || picker.error != null -> 2
                                 picker.selectedAirwayName == null -> 1 + picker.suggestions.size
-                                picker.selectedEntryIndex == null -> 1 + picker.entries.size
-                                else -> 1 + picker.exits.size
+                                picker.selectedEntryIndex == null -> 1 + (picker.presentation?.points?.size ?: 0)
+                                else -> 1 + (picker.presentation?.points?.size ?: 0)
                             }
                         }
                         else -> selectedRow?.actions?.size ?: 1
@@ -2513,8 +2487,8 @@ private fun FlightPlanPage(
                             when {
                                 picker.loading || picker.error != null -> 2
                                 picker.selectedAirwayName == null -> 1 + picker.suggestions.size
-                                picker.selectedEntryIndex == null -> 1 + picker.entries.size
-                                else -> 1 + picker.exits.size
+                                picker.selectedEntryIndex == null -> 1 + (picker.presentation?.points?.size ?: 0)
+                                else -> 1 + (picker.presentation?.points?.size ?: 0)
                             }
                         }
                         else -> selectedRow.actions.size
@@ -2651,7 +2625,7 @@ private fun FlightPlanPage(
         airportInsert = editor.copy(loading = true)
         runCatching {
             withContext(Dispatchers.IO) {
-                appCore.suggestWaypointIdentifiers(navDbPath, samplePlan, editor.componentIndex, editor.before, prefix, 8)
+                appCore.suggestWaypointIdentifiers(samplePlan, editor.componentIndex, editor.before, prefix, 8)
             }
         }.onSuccess { suggestions ->
             airportInsert = airportInsert?.copy(loading = false, suggestions = suggestions)
@@ -2946,7 +2920,7 @@ private fun FlightPlanPage(
                                 return@AirportInsertPanel
                             }
                             runCatching {
-                                val waypoint = appCore.resolveNavRefIdentifier(navDbPath, airportId)
+                                val waypoint = appCore.resolveNavRefIdentifier(airportId)
                                 appCore.insertWaypointUi(samplePlan, editor.componentIndex, editor.before, waypoint)
                             }.onSuccess { mutation ->
                                 onApplyMutation(mutation)
@@ -2992,7 +2966,6 @@ private fun FlightPlanPage(
                                     procedurePicker = picker.copy(loading = true, error = null)
                                     runCatching {
                                         appCore.describeProcedureOptions(
-                                            navDbPath,
                                             picker.airportId,
                                             procedure.procedureId,
                                             ProcedureKind.Approach,
@@ -3021,7 +2994,6 @@ private fun FlightPlanPage(
                                     procedurePicker = picker.copy(loading = true, error = null)
                                     runCatching {
                                         appCore.materializeProcedureSelection(
-                                            navDbPath,
                                             picker.airportId,
                                             picker.selectedProcedureId,
                                             ProcedureKind.Approach,
@@ -3094,15 +3066,18 @@ private fun FlightPlanPage(
                                 onSelect = {
                                     airwayPicker = picker.copy(loading = true, error = null)
                                     runCatching {
-                                        appCore.listAirwayEntryCandidates(navDbPath, suggestion.airwayName, picker.originAnchor)
-                                    }.onSuccess { entries ->
+                                        appCore.prepareAirwayPresentationForAnchors(
+                                            suggestion.airwayName,
+                                            picker.originAnchor,
+                                            picker.destinationAnchor,
+                                        )
+                                    }.onSuccess { presentation ->
                                         airwayPicker =
                                             picker.copy(
                                                 loading = false,
                                                 selectedAirwayName = suggestion.airwayName,
-                                                entries = entries,
+                                                presentation = presentation,
                                                 selectedEntryIndex = null,
-                                                exits = emptyList(),
                                             )
                                     }.onFailure { error ->
                                         airwayPicker = picker.copy(loading = false, error = error.message ?: error.toString())
@@ -3111,60 +3086,59 @@ private fun FlightPlanPage(
                             )
                         }
                     } else if (picker.selectedEntryIndex == null) {
-                        picker.entries.forEachIndexed { index, entry ->
+                        picker.presentation?.points?.forEachIndexed { index, point ->
                             MenuPanelRow(
-                                label = navRefLabel(entry.navRef),
-                                active = index == picker.entries.indexOfFirst { it.branchPointIndex == entry.branchPointIndex && it.sequence == entry.sequence },
+                                label = navRefLabel(point.navRef),
+                                active = index == picker.presentation.suggestedEntryIndex,
                                 enabled = true,
                                 onSelect = {
-                                    val destination = picker.destinationAnchor
-                                    if (destination == null) {
-                                        airwayPicker = picker.copy(error = "airway insertion needs a following waypoint")
-                                        return@MenuPanelRow
-                                    }
-                                    airwayPicker = picker.copy(loading = true, error = null)
-                                    runCatching {
-                                        appCore.listAirwayExitCandidates(navDbPath, picker.selectedAirwayName, entry, destination)
-                                    }.onSuccess { exits ->
-                                        airwayPicker =
-                                            picker.copy(
-                                                loading = false,
-                                                selectedEntryIndex = index,
-                                                exits = exits,
-                                            )
-                                    }.onFailure { error ->
-                                        airwayPicker = picker.copy(loading = false, error = error.message ?: error.toString())
-                                    }
+                                    airwayPicker = picker.copy(selectedEntryIndex = index)
                                 },
                             )
                         }
-                        MenuPanelRow(label = "Back", active = false, enabled = true, onSelect = { airwayPicker = picker.copy(selectedAirwayName = null, entries = emptyList()) })
+                        MenuPanelRow(label = "Back", active = false, enabled = true, onSelect = { airwayPicker = picker.copy(selectedAirwayName = null, presentation = null) })
                     } else {
-                        val entry = picker.entries[picker.selectedEntryIndex]
-                        picker.exits.forEach { exit ->
+                        val presentation = picker.presentation
+                        presentation?.points?.forEachIndexed { exitIndex, point ->
+                            val isEntry = exitIndex == picker.selectedEntryIndex
                             MenuPanelRow(
-                                label = navRefLabel(exit.navRef),
-                                active = false,
-                                enabled = !exit.isEntry,
+                                label = navRefLabel(point.navRef),
+                                active = exitIndex == presentation.suggestedExitIndex,
+                                enabled = !isEntry,
                                 onSelect = {
-                                    if (exit.isEntry) return@MenuPanelRow
+                                    if (isEntry) return@MenuPanelRow
+                                    airwayPicker = picker.copy(loading = true, error = null)
                                     runCatching {
+                                        val startComponentIndex = if (picker.mode == "replace" && picker.componentIndex != null) {
+                                            picker.componentIndex
+                                        } else {
+                                            picker.startComponentIndex ?: error("missing insertion start")
+                                        }
+                                        appCore.materializeAirwayPresentationSelection(
+                                            startComponentIndex,
+                                            presentation,
+                                            picker.selectedEntryIndex,
+                                            exitIndex,
+                                            picker.originAnchor,
+                                            picker.destinationAnchor,
+                                        )
+                                    }.map { built ->
                                         if (picker.mode == "replace" && picker.componentIndex != null) {
-                                            appCore.replaceAirwayFromSelectionUi(
-                                                navDbPath,
+                                            appCore.replaceAirwayMaterializedUi(
                                                 samplePlan,
                                                 picker.componentIndex,
-                                                entry,
-                                                exit,
+                                                built.selection,
+                                                built.airway,
+                                                built.resolvedLegs,
                                             )
                                         } else {
-                                            appCore.insertAirwayFromSelectionUi(
-                                                navDbPath,
+                                            appCore.insertAirwayMaterializedUi(
                                                 samplePlan,
                                                 picker.startComponentIndex ?: error("missing insertion start"),
-                                                picker.endComponentIndex ?: error("missing insertion end"),
-                                                entry,
-                                                exit,
+                                                picker.endComponentIndex,
+                                                built.selection,
+                                                built.airway,
+                                                built.resolvedLegs,
                                             )
                                         }
                                     }.onSuccess { mutation ->
@@ -3176,7 +3150,7 @@ private fun FlightPlanPage(
                                 },
                             )
                         }
-                        MenuPanelRow(label = "Back", active = false, enabled = true, onSelect = { airwayPicker = picker.copy(selectedEntryIndex = null, exits = emptyList()) })
+                        MenuPanelRow(label = "Back", active = false, enabled = true, onSelect = { airwayPicker = picker.copy(selectedEntryIndex = null) })
                     }
                 }
             } else if (reorderOpen) {
@@ -3293,12 +3267,11 @@ private fun FlightPlanPage(
                                                 destinationAnchor = selectedRow.destinationAnchor,
                                                 suggestions = emptyList(),
                                                 selectedAirwayName = null,
-                                                entries = emptyList(),
+                                                presentation = null,
                                                 selectedEntryIndex = null,
-                                                exits = emptyList(),
                                             )
                                         runCatching {
-                                            appCore.suggestAirwaysNear(navDbPath, selectedRow.originAnchor!!)
+                                            appCore.suggestAirwaysNear(selectedRow.originAnchor!!)
                                         }.onSuccess { suggestions ->
                                             airwayPicker = airwayPicker?.copy(loading = false, suggestions = suggestions)
                                         }.onFailure { error ->
@@ -3319,12 +3292,11 @@ private fun FlightPlanPage(
                                                 destinationAnchor = selectedRow.destinationAnchor,
                                                 suggestions = emptyList(),
                                                 selectedAirwayName = null,
-                                                entries = emptyList(),
+                                                presentation = null,
                                                 selectedEntryIndex = null,
-                                                exits = emptyList(),
                                             )
                                         runCatching {
-                                            appCore.suggestAirwaysNear(navDbPath, selectedRow.originAnchor!!)
+                                            appCore.suggestAirwaysNear(selectedRow.originAnchor!!)
                                         }.onSuccess { suggestions ->
                                             airwayPicker = airwayPicker?.copy(loading = false, suggestions = suggestions)
                                         }.onFailure { error ->
@@ -3346,7 +3318,7 @@ private fun FlightPlanPage(
                                                 options = null,
                                             )
                                         runCatching {
-                                            appCore.listProcedures(navDbPath, airportId, ProcedureKind.Approach)
+                                            appCore.listProcedures(airportId, ProcedureKind.Approach)
                                         }.onSuccess { procedures ->
                                             procedurePicker = procedurePicker?.copy(loading = false, procedures = procedures)
                                         }.onFailure { error ->

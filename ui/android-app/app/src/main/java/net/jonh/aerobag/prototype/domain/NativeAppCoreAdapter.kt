@@ -2,6 +2,11 @@ package net.jonh.aerobag.prototype.domain
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.put
 import android.util.Log
 
 data class VectorTileRequest(
@@ -77,7 +82,7 @@ data class MapOverlayQueryResult(
 class NativeAppCoreAdapter(
     private val catalogJson: String,
     private val chartCatalogJson: String,
-    private val navDbPath: String? = null,
+    private val navKvStore: NavKvStore? = null,
     private val bridge: NativeBridge = NativeBindings,
     private val json: Json = Json {
         encodeDefaults = true
@@ -103,7 +108,7 @@ class NativeAppCoreAdapter(
             handle = result.handle,
             bridge = bridge,
             json = json,
-            navDbPath = navDbPath,
+            navKvStore = navKvStore,
             chartCatalog = result.chart_catalog.toUi(),
             initialSnapshot = enrichUiSessionSnapshot(result.snapshot.toUi()),
         )
@@ -165,44 +170,65 @@ class NativeAppCoreAdapter(
         return json.decodeFromString<WireAppState>(nextJson).toUi()
     }
 
-    fun suggestAirwaysNear(dbPath: String, anchor: NavRef, limit: Int = 5): List<AirwaySuggestion> {
-        val nextJson = bridge.suggestAirwaysNearJson(dbPath, json.encodeToString(anchor.toWire()), limit)
-        return json.decodeFromString<List<WireAirwaySuggestion>>(nextJson).map { it.toUi() }
+    fun suggestAirwaysNear(anchor: NavRef, limit: Int = 5): List<AirwaySuggestion> {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "suggest_airways_near_anchor")
+                put("anchor", json.encodeToJsonElement(anchor.toWire()))
+                put("limit", limit)
+            },
+        )
+        return json.decodeFromJsonElement<List<WireAirwaySuggestion>>(result).map { it.toUi() }
     }
 
-    fun resolveNavRefPosition(dbPath: String, navRef: NavRef): LatLonPoint {
-        val nextJson = bridge.resolveNavRefPositionJson(dbPath, json.encodeToString(navRef.toWire()))
-        return json.decodeFromString<WireLatLon>(nextJson).toUi()
+    fun resolveNavRefPosition(navRef: NavRef): LatLonPoint {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "resolve_nav_ref_position")
+                put("nav_ref", json.encodeToJsonElement(navRef.toWire()))
+            },
+        )
+        return json.decodeFromJsonElement<WireLatLon>(result).toUi()
     }
 
-    fun resolveNavRefIdentifier(dbPath: String, identifier: String): NavRef {
-        val nextJson = bridge.resolveNavRefIdentifierJson(dbPath, identifier)
-        return json.decodeFromString<WireNavRef>(nextJson).toUi()
+    fun resolveNavRefIdentifier(identifier: String): NavRef {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "resolve_waypoint_identifier")
+                put("identifier", identifier)
+            },
+        )
+        return json.decodeFromJsonElement<WireNavRef>(result).toUi()
     }
 
-    fun resolveNavSymbolFeature(dbPath: String, navRef: NavRef): NavSymbolFeature? {
-        val nextJson = bridge.resolveNavSymbolFeatureJson(dbPath, json.encodeToString(navRef.toWire()))
-        return json.decodeFromString<WireNavSymbolFeature?>(nextJson)?.toUi()
+    fun resolveNavSymbolFeature(navRef: NavRef): NavSymbolFeature? {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "resolve_nav_symbol_feature")
+                put("nav_ref", json.encodeToJsonElement(navRef.toWire()))
+            },
+        )
+        return json.decodeFromJsonElement<WireNavSymbolFeature?>(result)?.toUi()
     }
 
     fun suggestWaypointIdentifiers(
-        dbPath: String,
         plan: FlightPlan,
         componentIndex: Int,
         before: Boolean,
         prefix: String,
         limit: Int = 8,
     ): List<WaypointIdentifierSuggestion> {
-        val nextJson =
-            bridge.suggestWaypointIdentifiersJson(
-                dbPath,
-                json.encodeToString(plan.toWire()),
-                componentIndex,
-                before,
-                prefix,
-                limit,
-            )
-        return json.decodeFromString<List<WireWaypointIdentifierSuggestion>>(nextJson).map { it.toUi() }
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "suggest_waypoint_identifiers")
+                put("plan", json.encodeToJsonElement(plan.toWire()))
+                put("component_index", componentIndex)
+                put("before", before)
+                put("prefix", prefix)
+                put("limit", limit)
+            },
+        )
+        return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result).map { it.toUi() }
     }
 
     fun resolveNavRefPosition(dbPath: String, navRef: NavRef, procedureAirportId: String?): LatLonPoint {
@@ -215,9 +241,14 @@ class NativeAppCoreAdapter(
         return json.decodeFromString<WireLatLon>(nextJson).toUi()
     }
 
-    fun projectFlightPlanRoute(dbPath: String, plan: FlightPlan): List<FlightPlanRouteSegment> {
-        val nextJson = bridge.projectFlightPlanRouteJson(dbPath, json.encodeToString(plan.toWire()))
-        return json.decodeFromString<List<WireFlightPlanRouteSegment>>(nextJson).map { it.toUi() }
+    fun projectFlightPlanRoute(plan: FlightPlan): List<FlightPlanRouteSegment> {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "project_flight_plan_route")
+                put("plan", json.encodeToJsonElement(plan.toWire()))
+            },
+        )
+        return json.decodeFromJsonElement<List<WireFlightPlanRouteSegment>>(result).map { it.toUi() }
     }
 
     fun loadAirwayBranches(dbPath: String, airwayName: String): List<AirwayBranch> {
@@ -225,44 +256,73 @@ class NativeAppCoreAdapter(
         return json.decodeFromString<List<WireAirwayBranch>>(nextJson).map { it.toUi() }
     }
 
-    fun listAirwayEntryCandidates(dbPath: String, airwayName: String, originAnchor: NavRef): List<AirwayEntryCandidate> {
-        val nextJson = bridge.listAirwayEntryCandidatesJson(dbPath, airwayName, json.encodeToString(originAnchor.toWire()))
-        return json.decodeFromString<List<WireAirwayEntryCandidate>>(nextJson).map { it.toUi() }
-    }
-
-    fun listAirwayExitCandidates(
-        dbPath: String,
+    fun prepareAirwayPresentationForAnchors(
         airwayName: String,
-        entry: AirwayEntryCandidate,
-        destinationAnchor: NavRef,
-    ): List<AirwayExitCandidate> {
-        val nextJson =
-            bridge.listAirwayExitCandidatesJson(
-                dbPath,
-                airwayName,
-                json.encodeToString(entry.toWire()),
-                json.encodeToString(destinationAnchor.toWire()),
-            )
-        return json.decodeFromString<List<WireAirwayExitCandidate>>(nextJson).map { it.toUi() }
+        originAnchor: NavRef,
+        destinationAnchor: NavRef?,
+    ): AirwayPresentationPlan {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "prepare_airway_presentation_for_anchors")
+                put("airway_name", airwayName)
+                put("origin_anchor", json.encodeToJsonElement(originAnchor.toWire()))
+                put("destination_anchor", json.encodeToJsonElement(destinationAnchor?.toWire()))
+            },
+        )
+        return json.decodeFromJsonElement<WireAirwayPresentationPlan>(result).toUi()
     }
 
-    fun listProcedures(dbPath: String, airportId: String, kind: ProcedureKind): List<ProcedureSummary> {
-        val nextJson = bridge.listProceduresJson(dbPath, airportId, json.encodeToString(kind.toWire()))
-        return json.decodeFromString<List<WireProcedureSummary>>(nextJson).map { it.toUi() }
+    fun materializeAirwayPresentationSelection(
+        startComponentIndex: Int,
+        presentation: AirwayPresentationPlan,
+        entryIndex: Int,
+        exitIndex: Int,
+        originAnchor: NavRef,
+        destinationAnchor: NavRef?,
+    ): MaterializedAirway {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "materialize_airway_presentation_selection")
+                put("start_component_index", startComponentIndex)
+                put("presentation", json.encodeToJsonElement(presentation.toWire()))
+                put("entry_index", entryIndex)
+                put("exit_index", exitIndex)
+                put("origin_anchor", json.encodeToJsonElement(originAnchor.toWire()))
+                put("destination_anchor", json.encodeToJsonElement(destinationAnchor?.toWire()))
+            },
+        )
+        return json.decodeFromJsonElement<WireMaterializedAirway>(result).toUi()
     }
 
-    fun describeProcedureOptions(dbPath: String, airportId: String, procedureId: String, kind: ProcedureKind): ProcedureOptions {
-        val nextJson = bridge.describeProcedureOptionsJson(dbPath, airportId, procedureId, json.encodeToString(kind.toWire()))
+    fun listProcedures(airportId: String, kind: ProcedureKind): List<ProcedureSummary> {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "list_procedures")
+                put("airport_id", airportId)
+                put("procedure_kind", json.encodeToJsonElement(kind.toWire()))
+            },
+        )
+        return json.decodeFromJsonElement<List<WireProcedureSummary>>(result).map { it.toUi() }
+    }
+
+    fun describeProcedureOptions(airportId: String, procedureId: String, kind: ProcedureKind): ProcedureOptions {
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "describe_procedure_options")
+                put("airport_id", airportId)
+                put("procedure_id", procedureId)
+                put("procedure_kind", json.encodeToJsonElement(kind.toWire()))
+            },
+        )
         return runCatching {
-            json.decodeFromString<WireProcedureOptions>(nextJson).toUi()
+            json.decodeFromJsonElement<WireProcedureOptions>(result).toUi()
         }.getOrElse { error ->
-            Log.e("AerobagProcedure", "describeProcedureOptions decode failed airport=$airportId procedure=$procedureId json=$nextJson", error)
+            Log.e("AerobagProcedure", "describeProcedureOptions decode failed airport=$airportId procedure=$procedureId json=$result", error)
             throw error
         }
     }
 
     fun materializeProcedureSelection(
-        dbPath: String,
         airportId: String,
         procedureId: String,
         kind: ProcedureKind,
@@ -270,22 +330,23 @@ class NativeAppCoreAdapter(
         enrouteTransition: String?,
         componentIndex: Int,
     ): MaterializedProcedure {
-        val nextJson =
-            bridge.materializeProcedureSelectionJson(
-                dbPath,
-                airportId,
-                procedureId,
-                json.encodeToString(kind.toWire()),
-                json.encodeToString(runwayTransition),
-                json.encodeToString(enrouteTransition),
-                componentIndex,
-            )
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "materialize_procedure")
+                put("airport_id", airportId)
+                put("procedure_id", procedureId)
+                put("procedure_kind", json.encodeToJsonElement(kind.toWire()))
+                put("runway_transition", json.encodeToJsonElement(runwayTransition))
+                put("enroute_transition", json.encodeToJsonElement(enrouteTransition))
+                put("component_index", componentIndex)
+            },
+        )
         return runCatching {
-            json.decodeFromString<WireMaterializedProcedure>(nextJson).toUi()
+            json.decodeFromJsonElement<WireMaterializedProcedure>(result).toUi()
         }.getOrElse { error ->
             Log.e(
                 "AerobagProcedure",
-                "materializeProcedureSelection decode failed airport=$airportId procedure=$procedureId runway=$runwayTransition enroute=$enrouteTransition json=$nextJson",
+                "materializeProcedureSelection decode failed airport=$airportId procedure=$procedureId runway=$runwayTransition enroute=$enrouteTransition json=$result",
                 error,
             )
             throw error
@@ -293,19 +354,18 @@ class NativeAppCoreAdapter(
     }
 
     private fun enrichFlightPlanUiState(uiState: FlightPlanUiState, plan: FlightPlan): FlightPlanUiState {
-        val dbPath = navDbPath ?: return uiState
-        val routeSegments = projectFlightPlanRoute(dbPath, plan)
-        return uiState.copy(
-            displayRows = uiState.displayRows.map { row ->
-                val legMetrics = row.legIndex?.let { routeSegments.getOrNull(it) }
-                row.copy(
-                    symbolFeature = row.navRef?.let { resolveNavSymbolFeature(dbPath, it) },
-                    distanceNm = legMetrics?.distanceNm,
-                    courseDeg = legMetrics?.courseDeg,
-                )
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "flight_plan_ui_state")
+                put("plan", json.encodeToJsonElement(plan.toWire()))
             },
         )
+        return json.decodeFromJsonElement<WireFlightPlanUiState>(result).toUi()
     }
+
+    private fun runHadOperationElement(operation: kotlinx.serialization.json.JsonObject): JsonElement =
+        navKvStore?.runCoreOperationElement(operation)
+            ?: error("nav_kv store is required for core data operation ${operation["kind"]}")
 
     private fun enrichUiSessionSnapshot(snapshot: UiSessionSnapshot): UiSessionSnapshot {
         val plan = snapshot.appState.activePlan ?: return snapshot
@@ -370,44 +430,6 @@ class NativeAppCoreAdapter(
                 json.encodeToString(destinationPosition?.toWire()),
             )
         return json.decodeFromString<WireAirwayPresentationPlan>(nextJson).toUi()
-    }
-
-    fun insertAirwayFromSelectionUi(
-        dbPath: String,
-        plan: FlightPlan,
-        startComponentIndex: Int,
-        endComponentIndex: Int,
-        entry: AirwayEntryCandidate,
-        exit: AirwayExitCandidate,
-    ): FlightPlanUiMutation {
-        val nextJson =
-            bridge.insertAirwayFromSelectionUiJson(
-                dbPath,
-                json.encodeToString(plan.toWire()),
-                startComponentIndex,
-                endComponentIndex,
-                json.encodeToString(entry.toWire()),
-                json.encodeToString(exit.toWire()),
-            )
-        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
-    }
-
-    fun replaceAirwayFromSelectionUi(
-        dbPath: String,
-        plan: FlightPlan,
-        componentIndex: Int,
-        entry: AirwayEntryCandidate,
-        exit: AirwayExitCandidate,
-    ): FlightPlanUiMutation {
-        val nextJson =
-            bridge.replaceAirwayFromSelectionUiJson(
-                dbPath,
-                json.encodeToString(plan.toWire()),
-                componentIndex,
-                json.encodeToString(entry.toWire()),
-                json.encodeToString(exit.toWire()),
-            )
-        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
     }
 
     fun sortAirwaySuggestionsForUi(suggestions: List<AirwaySuggestion>): List<AirwaySuggestion> {
@@ -506,7 +528,7 @@ class NativeUiSession internal constructor(
     private val handle: Long,
     private val bridge: NativeBridge,
     private val json: Json,
-    private val navDbPath: String?,
+    private val navKvStore: NavKvStore?,
     val chartCatalog: ChartPageFixture,
     initialSnapshot: UiSessionSnapshot,
 ) {
@@ -674,36 +696,23 @@ class NativeUiSession internal constructor(
     private fun decodeSnapshot(snapshotJson: String): UiSessionSnapshot =
         enrichSnapshot(json.decodeFromString<WireUiSessionSnapshot>(snapshotJson).toUi())
 
-    private fun projectFlightPlanRoute(dbPath: String, plan: FlightPlan): List<FlightPlanRouteSegment> {
-        val nextJson = bridge.projectFlightPlanRouteJson(dbPath, json.encodeToString(plan.toWire()))
-        return json.decodeFromString<List<WireFlightPlanRouteSegment>>(nextJson).map { it.toUi() }
-    }
-
     private fun enrichSnapshot(snapshot: UiSessionSnapshot): UiSessionSnapshot {
-        val dbPath = navDbPath ?: return snapshot
+        val store = navKvStore ?: return snapshot
         val plan = snapshot.appState.activePlan ?: return snapshot
-        val routeSegments = projectFlightPlanRoute(dbPath, plan)
+        val uiState =
+            json.decodeFromJsonElement<WireFlightPlanUiState>(
+                store.runCoreOperationElement(
+                    buildJsonObject {
+                        put("kind", "flight_plan_ui_state")
+                        put("plan", json.encodeToJsonElement(plan.toWire()))
+                    },
+                ),
+            ).toUi()
         return snapshot.copy(
             appUiState = snapshot.appUiState.copy(
-                activePlan = snapshot.appUiState.activePlan?.let { uiState ->
-                    uiState.copy(
-                        displayRows = uiState.displayRows.map { row ->
-                            val legMetrics = row.legIndex?.let { routeSegments.getOrNull(it) }
-                            row.copy(
-                                symbolFeature = row.navRef?.let { navRef -> resolveNavSymbolFeature(dbPath, navRef) },
-                                distanceNm = legMetrics?.distanceNm,
-                                courseDeg = legMetrics?.courseDeg,
-                            )
-                        },
-                    )
-                },
+                activePlan = uiState,
             ),
         )
-    }
-
-    private fun resolveNavSymbolFeature(dbPath: String, navRef: NavRef): NavSymbolFeature? {
-        val nextJson = bridge.resolveNavSymbolFeatureJson(dbPath, json.encodeToString(navRef.toWire()))
-        return json.decodeFromString<WireNavSymbolFeature?>(nextJson)?.toUi()
     }
 }
 
@@ -1147,7 +1156,7 @@ internal data class WireDerivedChartAsset(
     val thumbnail_url: String? = null,
 )
 
-private fun WireDerivedChartPage.toUi() = ChartPageFixture(
+internal fun WireDerivedChartPage.toUi() = ChartPageFixture(
     airports = airports.map { it.toUi() },
 )
 
@@ -1197,13 +1206,13 @@ private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     chartPageState = chart_page_state.toUi(),
 )
 
-private fun WireDerivedChartAirport.toUi() = ChartAirport(
+internal fun WireDerivedChartAirport.toUi() = ChartAirport(
     id = id,
     label = label,
     charts = charts.map { it.toUi() },
 )
 
-private fun WireDerivedChartAsset.toUi() = ChartAsset(
+internal fun WireDerivedChartAsset.toUi() = ChartAsset(
     id = id,
     airportId = airport_id,
     packageId = package_id,
@@ -1387,6 +1396,16 @@ private fun AirwayAutoSelection.toWire() = WireAirwayAutoSelection(
     total_anchor_distance_nm = totalAnchorDistanceNm,
 )
 
+private fun WireAirwayAutoSelection.toUi() = AirwayAutoSelection(
+    airwayName = airway_name,
+    branchKey = branch_key,
+    entry = entry.toUi(),
+    exit = exit.toUi(),
+    originDistanceNm = origin_distance_nm,
+    destinationDistanceNm = destination_distance_nm,
+    totalAnchorDistanceNm = total_anchor_distance_nm,
+)
+
 private fun AirwaySegment.toWire() = WireAirwaySegment(
     name = name,
     branch_key = branchKey,
@@ -1435,10 +1454,30 @@ private fun WireAirwayPresentationPlan.toUi() = AirwayPresentationPlan(
     suggestedExitIndex = suggested_exit_index,
 )
 
+private fun AirwayPresentationPlan.toWire() = WireAirwayPresentationPlan(
+    airway_name = airwayName,
+    branch_key = branchKey,
+    points = points.map { it.toWire() },
+    suggested_entry_index = suggestedEntryIndex,
+    suggested_exit_index = suggestedExitIndex,
+)
+
 private fun WireAirwayPresentationPoint.toUi() = AirwayPresentationPoint(
     branchPointIndex = branch_point_index,
     sequence = sequence,
     navRef = nav_ref.toUi(),
+)
+
+private fun AirwayPresentationPoint.toWire() = WireAirwayPresentationPoint(
+    branch_point_index = branchPointIndex,
+    sequence = sequence,
+    nav_ref = navRef.toWire(),
+)
+
+private fun WireMaterializedAirway.toUi() = MaterializedAirway(
+    selection = selection.toUi(),
+    airway = airway.toUi(),
+    resolvedLegs = resolvedLegs.map { it.toUi() },
 )
 
 private fun LatLonPoint.toWire() = WireLatLon(lat = lat, lon = lon)
@@ -1820,6 +1859,7 @@ private fun PackageId.toWire() = WirePackageId(
         "tac" -> WireChartFamilyId.Tac
         "enr-l" -> WireChartFamilyId.EnrL
         "enr-h" -> WireChartFamilyId.EnrH
+        "shaded-relief" -> WireChartFamilyId.ShadedRelief
         else -> error("Unsupported family: $family")
     },
     cycle = cycle,
@@ -1832,6 +1872,7 @@ private fun WirePackageId.toUi() = PackageId(
         WireChartFamilyId.Tac -> "tac"
         WireChartFamilyId.EnrL -> "enr-l"
         WireChartFamilyId.EnrH -> "enr-h"
+        WireChartFamilyId.ShadedRelief -> "shaded-relief"
     },
     cycle = cycle,
 )
@@ -1918,6 +1959,7 @@ internal fun Catalog.toWireForTesting() = WireCatalog(
                 "tac" -> WireChartFamilyId.Tac
                 "enr-l" -> WireChartFamilyId.EnrL
                 "enr-h" -> WireChartFamilyId.EnrH
+                "shaded-relief" -> WireChartFamilyId.ShadedRelief
                 else -> error("Unsupported family: $family")
             },
             display_name = family,

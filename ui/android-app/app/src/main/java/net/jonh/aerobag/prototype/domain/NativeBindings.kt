@@ -1,6 +1,14 @@
 package net.jonh.aerobag.prototype.domain
 
 interface NativeBridge {
+    fun navKvOpen(rootBytes: ByteArray): Long
+
+    fun navKvInsertPage(handle: Long, pageIndex: Int, pageBytes: ByteArray)
+
+    fun navKvDestroy(handle: Long)
+
+    fun coreHadOperation(handle: Long, operationJson: String): String
+
     fun suggestAirwaysNearJson(
         dbPath: String,
         anchorJson: String,
@@ -47,19 +55,6 @@ interface NativeBridge {
         airwayName: String,
     ): String
 
-    fun listAirwayEntryCandidatesJson(
-        dbPath: String,
-        airwayName: String,
-        originAnchorJson: String,
-    ): String
-
-    fun listAirwayExitCandidatesJson(
-        dbPath: String,
-        airwayName: String,
-        entryJson: String,
-        destinationAnchorJson: String,
-    ): String
-
     fun listProceduresJson(
         dbPath: String,
         airportId: String,
@@ -104,23 +99,6 @@ interface NativeBridge {
         branchesJson: String,
         originPositionJson: String,
         destinationPositionJson: String,
-    ): String
-
-    fun insertAirwayFromSelectionUiJson(
-        dbPath: String,
-        planJson: String,
-        startComponentIndex: Int,
-        endComponentIndex: Int,
-        entryJson: String,
-        exitJson: String,
-    ): String
-
-    fun replaceAirwayFromSelectionUiJson(
-        dbPath: String,
-        planJson: String,
-        componentIndex: Int,
-        entryJson: String,
-        exitJson: String,
     ): String
 
     fun sortAirwaySuggestionsForUiJson(suggestionsJson: String): String
@@ -359,6 +337,14 @@ object NativeBindings : NativeBridge {
         System.loadLibrary("app_ffi")
     }
 
+    external override fun navKvOpen(rootBytes: ByteArray): Long
+
+    external override fun navKvInsertPage(handle: Long, pageIndex: Int, pageBytes: ByteArray)
+
+    external override fun navKvDestroy(handle: Long)
+
+    external override fun coreHadOperation(handle: Long, operationJson: String): String
+
     external override fun suggestAirwaysNearJson(
         dbPath: String,
         anchorJson: String,
@@ -405,19 +391,6 @@ object NativeBindings : NativeBridge {
         airwayName: String,
     ): String
 
-    external override fun listAirwayEntryCandidatesJson(
-        dbPath: String,
-        airwayName: String,
-        originAnchorJson: String,
-    ): String
-
-    external override fun listAirwayExitCandidatesJson(
-        dbPath: String,
-        airwayName: String,
-        entryJson: String,
-        destinationAnchorJson: String,
-    ): String
-
     external override fun listProceduresJson(
         dbPath: String,
         airportId: String,
@@ -462,23 +435,6 @@ object NativeBindings : NativeBridge {
         branchesJson: String,
         originPositionJson: String,
         destinationPositionJson: String,
-    ): String
-
-    external override fun insertAirwayFromSelectionUiJson(
-        dbPath: String,
-        planJson: String,
-        startComponentIndex: Int,
-        endComponentIndex: Int,
-        entryJson: String,
-        exitJson: String,
-    ): String
-
-    external override fun replaceAirwayFromSelectionUiJson(
-        dbPath: String,
-        planJson: String,
-        componentIndex: Int,
-        entryJson: String,
-        exitJson: String,
     ): String
 
     external override fun sortAirwaySuggestionsForUiJson(suggestionsJson: String): String

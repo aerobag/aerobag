@@ -391,6 +391,9 @@ enum class WireChartFamilyId {
 
     @SerialName("enr-h")
     EnrH,
+
+    @SerialName("shaded-relief")
+    ShadedRelief,
 }
 
 @Serializable
@@ -400,6 +403,9 @@ enum class WireTileStorageKind {
 
     @SerialName("sectional_package")
     SectionalPackage,
+
+    @SerialName("static_product")
+    StaticProduct,
 }
 
 @Serializable
@@ -1117,6 +1123,13 @@ data class WireAirwayPlanMutation(
     val selection: WireAirwayAutoSelection,
     val airway: WireAirwaySegment,
     val resolved_legs: List<WireResolvedLeg>,
+)
+
+@Serializable
+data class WireMaterializedAirway(
+    val selection: WireAirwayAutoSelection,
+    val airway: WireAirwaySegment,
+    val resolvedLegs: List<WireResolvedLeg>,
 )
 
 @Serializable

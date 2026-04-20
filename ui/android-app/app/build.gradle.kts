@@ -2,7 +2,6 @@ import org.gradle.api.tasks.Exec
 import groovy.json.JsonSlurper
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
-import java.util.zip.ZipFile
 
 plugins {
     id("com.android.application")
@@ -134,10 +133,23 @@ fun resolveProductBuildOutput(nodeName: String, outputName: String): File {
 }
 
 val resourceIndexFile = resolveProductBuildOutput("resource_index", "resource_index")
-val dataZipFile = resolveProductBuildOutput("data", "zip")
 val vectorsZipFile = resolveProductBuildOutput("vectors", "zip")
+val navKvPayload by lazy {
+    productBuildPayload["nav_kv"] as? Map<*, *>
+        ?: throw GradleException("missing nav_kv in ${productBuildFile.absolutePath}")
+}
 val uiThemeFile = file("../../shared-fixtures/ui-theme.json")
 val devBootstrapFile = file("../../shared/dev-bootstrap.json")
+
+fun linkOrCopy(source: File, target: File) {
+    target.parentFile.mkdirs()
+    Files.deleteIfExists(target.toPath())
+    try {
+        Files.createLink(target.toPath(), source.toPath())
+    } catch (_: Exception) {
+        Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+    }
+}
 
 val buildRustX86_64Android by tasks.registering(Exec::class) {
     workingDir = rustProjectDir
@@ -171,20 +183,29 @@ val stageCanonicalAndroidAssets by tasks.registering {
     doLast {
         val assetRoot = generatedPrototypeAssetsDir.get().asFile
         val fixturesDir = assetRoot.resolve("fixtures")
-        val navDbDir = assetRoot.resolve("nav-db")
+        val navKvDir = assetRoot.resolve("nav-kv")
         fixturesDir.mkdirs()
-        navDbDir.mkdirs()
-        Files.copy(resourceIndexFile.toPath(), fixturesDir.resolve("resource-index.json").toPath(), StandardCopyOption.REPLACE_EXISTING)
-        Files.copy(vectorsZipFile.toPath(), fixturesDir.resolve("vectors.zip").toPath(), StandardCopyOption.REPLACE_EXISTING)
-        Files.copy(uiThemeFile.toPath(), fixturesDir.resolve("ui-theme.json").toPath(), StandardCopyOption.REPLACE_EXISTING)
-        Files.copy(devBootstrapFile.toPath(), fixturesDir.resolve("dev-bootstrap.json").toPath(), StandardCopyOption.REPLACE_EXISTING)
+        navKvDir.mkdirs()
+        linkOrCopy(resourceIndexFile, fixturesDir.resolve("resource-index.json"))
+        linkOrCopy(vectorsZipFile, fixturesDir.resolve("vectors.zip"))
+        linkOrCopy(uiThemeFile, fixturesDir.resolve("ui-theme.json"))
+        linkOrCopy(devBootstrapFile, fixturesDir.resolve("dev-bootstrap.json"))
         fixturesDir.resolve("android-dev-server-base-url.txt").writeText(androidDevServerBaseUrl)
-        ZipFile(dataZipFile).use { zip ->
-            val entry = zip.getEntry("main.db")
-                ?: throw GradleException("missing main.db in packaged data zip ${dataZipFile.absolutePath}")
-            zip.getInputStream(entry).use { input ->
-                Files.copy(input, navDbDir.resolve("main.db").toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }
+        val navKvRoot = navKvPayload["root"] as? Map<*, *>
+            ?: throw GradleException("nav_kv.root missing in ${productBuildFile.absolutePath}")
+        val navKvRootPath = navKvRoot["relative_path"] as? String
+            ?: throw GradleException("nav_kv.root.relative_path missing in ${productBuildFile.absolutePath}")
+        linkOrCopy(resolvePublishedFilename(navKvRootPath), navKvDir.resolve("root"))
+        val navKvValuesDir = navKvDir.resolve("values")
+        navKvValuesDir.mkdirs()
+        val pages = navKvPayload["value_pages"] as? List<*>
+            ?: throw GradleException("nav_kv.value_pages missing in ${productBuildFile.absolutePath}")
+        pages.forEachIndexed { index, page ->
+            val pageMap = page as? Map<*, *>
+                ?: throw GradleException("nav_kv value page $index is not an object")
+            val relativePath = pageMap["relative_path"] as? String
+                ?: throw GradleException("nav_kv value page $index missing relative_path")
+            linkOrCopy(resolvePublishedFilename(relativePath), navKvValuesDir.resolve(index.toString().padStart(4, '0')))
         }
     }
 }

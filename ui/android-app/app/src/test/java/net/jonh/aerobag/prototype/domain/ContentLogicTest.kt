@@ -283,6 +283,11 @@ private class FakeNativeBridge(
 ) : NativeBridge {
     private val mock = MockAppCoreAdapter()
 
+    override fun navKvOpen(rootBytes: ByteArray): Long = 1
+    override fun navKvInsertPage(handle: Long, pageIndex: Int, pageBytes: ByteArray) = Unit
+    override fun navKvDestroy(handle: Long) = Unit
+    override fun coreHadOperation(handle: Long, operationJson: String): String = """{"state":"complete","result":null}"""
+
     override fun suggestAirwaysNearJson(dbPath: String, anchorJson: String, limit: Int): String = "[]"
 
     override fun resolveNavRefPositionJson(dbPath: String, navRefJson: String): String = """{"lat":0.0,"lon":0.0}"""
@@ -301,15 +306,6 @@ private class FakeNativeBridge(
     override fun projectFlightPlanRouteJson(dbPath: String, planJson: String): String = "[]"
 
     override fun loadAirwayBranchesJson(dbPath: String, airwayName: String): String = "[]"
-
-    override fun listAirwayEntryCandidatesJson(dbPath: String, airwayName: String, originAnchorJson: String): String = "[]"
-
-    override fun listAirwayExitCandidatesJson(
-        dbPath: String,
-        airwayName: String,
-        entryJson: String,
-        destinationAnchorJson: String,
-    ): String = "[]"
 
     override fun listProceduresJson(dbPath: String, airportId: String, kindJson: String): String = "[]"
 
@@ -354,23 +350,6 @@ private class FakeNativeBridge(
         originPositionJson: String,
         destinationPositionJson: String,
     ): String = """{"airway_name":"","branch_key":"","points":[]}"""
-
-    override fun insertAirwayFromSelectionUiJson(
-        dbPath: String,
-        planJson: String,
-        startComponentIndex: Int,
-        endComponentIndex: Int,
-        entryJson: String,
-        exitJson: String,
-    ): String = activateLegUiJson(planJson, 0)
-
-    override fun replaceAirwayFromSelectionUiJson(
-        dbPath: String,
-        planJson: String,
-        componentIndex: Int,
-        entryJson: String,
-        exitJson: String,
-    ): String = activateLegUiJson(planJson, 0)
 
     override fun sortAirwaySuggestionsForUiJson(suggestionsJson: String): String = suggestionsJson
 
@@ -628,4 +607,5 @@ private fun MapChartFamily.toWireFamilyForTesting() = when (this) {
     MapChartFamily.Tac -> WireChartFamilyId.Tac
     MapChartFamily.EnrL -> WireChartFamilyId.EnrL
     MapChartFamily.EnrH -> WireChartFamilyId.EnrH
+    MapChartFamily.ShadedRelief -> WireChartFamilyId.ShadedRelief
 }

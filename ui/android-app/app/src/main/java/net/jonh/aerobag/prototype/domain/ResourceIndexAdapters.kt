@@ -118,6 +118,7 @@ private fun WireChartFamilyId.toUiMapFamily() = when (this) {
     WireChartFamilyId.Tac -> MapChartFamily.Tac
     WireChartFamilyId.EnrL -> MapChartFamily.EnrL
     WireChartFamilyId.EnrH -> MapChartFamily.EnrH
+    WireChartFamilyId.ShadedRelief -> MapChartFamily.ShadedRelief
 }
 
 private fun WireChartFamilyId.toResourceId() = when (this) {
@@ -125,6 +126,7 @@ private fun WireChartFamilyId.toResourceId() = when (this) {
     WireChartFamilyId.Tac -> "tac"
     WireChartFamilyId.EnrL -> "enr-l"
     WireChartFamilyId.EnrH -> "enr-h"
+    WireChartFamilyId.ShadedRelief -> "shaded-relief"
 }
 
 private fun WireRegionId.toCode() = when (this) {

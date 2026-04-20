@@ -47,6 +47,12 @@ pub enum HadOperation {
     ResolveWaypointIdentifier {
         identifier: String,
     },
+    ResolveNavRefPosition {
+        nav_ref: NavRef,
+    },
+    ResolveNavSymbolFeature {
+        nav_ref: NavRef,
+    },
     SuggestWaypointIdentifiers {
         plan: FlightPlan,
         component_index: usize,
@@ -70,6 +76,14 @@ pub enum HadOperation {
         start_component_index: usize,
         entry: AirwayEntryCandidate,
         exit: AirwayExitCandidate,
+        origin_anchor: NavRef,
+        destination_anchor: Option<NavRef>,
+    },
+    MaterializeAirwayPresentationSelection {
+        start_component_index: usize,
+        presentation: AirwayPresentationPlan,
+        entry_index: usize,
+        exit_index: usize,
         origin_anchor: NavRef,
         destination_anchor: Option<NavRef>,
     },
@@ -151,6 +165,12 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
         HadOperation::ResolveWaypointIdentifier { identifier } => serde_json::to_value(
             read_optional::<NavRef>(store, NavKvQuery::WaypointIdentifier { identifier })?,
         )?,
+        HadOperation::ResolveNavRefPosition { nav_ref } => {
+            serde_json::to_value(nav_ref_position(store, &nav_ref, None)?)?
+        }
+        HadOperation::ResolveNavSymbolFeature { nav_ref } => {
+            serde_json::to_value(nav_symbol_feature(store, &nav_ref)?)?
+        }
         HadOperation::SuggestWaypointIdentifiers {
             plan,
             component_index,
@@ -196,6 +216,22 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
             start_component_index,
             entry,
             exit,
+            &origin_anchor,
+            destination_anchor.as_ref(),
+        )?)?,
+        HadOperation::MaterializeAirwayPresentationSelection {
+            start_component_index,
+            presentation,
+            entry_index,
+            exit_index,
+            origin_anchor,
+            destination_anchor,
+        } => serde_json::to_value(materialize_airway_presentation_selection(
+            store,
+            start_component_index,
+            presentation,
+            entry_index,
+            exit_index,
             &origin_anchor,
             destination_anchor.as_ref(),
         )?)?,
@@ -691,6 +727,83 @@ fn materialize_airway_selection(
         airway,
         resolved_legs,
     })
+}
+
+fn materialize_airway_presentation_selection(
+    store: &NavKvStore,
+    start_component_index: usize,
+    presentation: AirwayPresentationPlan,
+    entry_index: usize,
+    exit_index: usize,
+    origin_anchor: &NavRef,
+    destination_anchor: Option<&NavRef>,
+) -> Result<MaterializedAirwayResponse, HadReadError> {
+    if entry_index >= presentation.points.len() {
+        return Err(HadReadError::Fatal(format!(
+            "airway presentation entry index {entry_index} is out of bounds"
+        )));
+    }
+    if exit_index >= presentation.points.len() {
+        return Err(HadReadError::Fatal(format!(
+            "airway presentation exit index {exit_index} is out of bounds"
+        )));
+    }
+    if entry_index == exit_index {
+        return Err(HadReadError::Fatal(
+            "airway presentation exit cannot be the entry point".to_string(),
+        ));
+    }
+    let entry = airway_entry_candidate_from_presentation(&presentation, entry_index);
+    let exit = airway_exit_candidate_from_presentation(&presentation, entry_index, exit_index);
+    materialize_airway_selection(
+        store,
+        start_component_index,
+        entry,
+        exit,
+        origin_anchor,
+        destination_anchor,
+    )
+}
+
+fn airway_entry_candidate_from_presentation(
+    presentation: &AirwayPresentationPlan,
+    point_index: usize,
+) -> AirwayEntryCandidate {
+    let point = &presentation.points[point_index];
+    AirwayEntryCandidate {
+        airway_name: presentation.airway_name.clone(),
+        branch_key: presentation.branch_key.clone(),
+        branch_point_index: point.branch_point_index,
+        sequence: point.sequence,
+        nav_ref: point.nav_ref.clone(),
+        distance_from_anchor_nm: 0.0,
+        previous_nav_ref: point_index
+            .checked_sub(1)
+            .and_then(|index| presentation.points.get(index))
+            .map(|point| point.nav_ref.clone()),
+        next_nav_ref: presentation
+            .points
+            .get(point_index + 1)
+            .map(|point| point.nav_ref.clone()),
+    }
+}
+
+fn airway_exit_candidate_from_presentation(
+    presentation: &AirwayPresentationPlan,
+    entry_index: usize,
+    point_index: usize,
+) -> AirwayExitCandidate {
+    let point = &presentation.points[point_index];
+    AirwayExitCandidate {
+        airway_name: presentation.airway_name.clone(),
+        branch_key: presentation.branch_key.clone(),
+        branch_point_index: point.branch_point_index,
+        sequence: point.sequence,
+        nav_ref: point.nav_ref.clone(),
+        leg_offset_from_entry: point_index as isize - entry_index as isize,
+        is_entry: point_index == entry_index,
+        distance_from_target_nm: None,
+    }
 }
 
 fn materialize_airway_from_branches(

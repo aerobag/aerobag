@@ -131,6 +131,12 @@ data class AirwayAutoSelection(
     val totalAnchorDistanceNm: Double,
 )
 
+data class MaterializedAirway(
+    val selection: AirwayAutoSelection,
+    val airway: AirwaySegment,
+    val resolvedLegs: List<ResolvedLeg>,
+)
+
 data class AirwayFixPoint(
     val airwayName: String,
     val sequence: Int,
@@ -445,11 +451,13 @@ enum class MapChartFamily {
     Tac,
     EnrL,
     EnrH,
+    ShadedRelief,
 }
 
 enum class TileStorageKind {
     AssetTree,
     SectionalPackage,
+    StaticProduct,
 }
 
 data class MapViewportSeed(

@@ -15,6 +15,9 @@ FEET_PER_METER = 3.280839895
 WEBP_QUALITY = 75
 WEBP_METHOD = 4
 WATER_RGB = (104, 154, 185)
+GLACIER_RGB = (242, 242, 242)
+MASK_ICE_MIN = 64
+MASK_WATER_MIN = 192
 
 COLOR_STOPS = [
     (0.0, (198, 221, 154)),
@@ -71,15 +74,6 @@ def colorize(elev_ft, invalid):
     rgb[below, :] = COLOR_STOPS[0][1]
     rgb[invalid, :] = 0
     return rgb
-
-
-def sea_level_water_mask(elev_m, invalid):
-    valid = ~invalid
-    if not np.any(valid):
-        return np.zeros(elev_m.shape, dtype=bool)
-    gy, gx = np.gradient(np.where(valid, elev_m, np.nan))
-    slope = np.nan_to_num(np.hypot(gx, gy), nan=np.inf)
-    return valid & (elev_m >= -5.0) & (elev_m <= 1.0) & (slope <= 0.25)
 
 
 def hillshade(elev_m, invalid, pixel_size_m):
@@ -223,21 +217,24 @@ def render_tile(task):
     )
     arr = warped.ReadAsArray().astype(np.float64)
     invalid = (arr <= -999998.0) | np.isnan(arr)
-    water = sea_level_water_mask(arr, invalid)
     elev_ft = arr * FEET_PER_METER
     rgb = colorize(elev_ft, invalid)
-    rgb[water, :] = WATER_RGB
+    water_mask = read_water_mask(x, y)
+    water = None
+    if water_mask is not None:
+        water = water_mask >= MASK_WATER_MIN
+        ice = (water_mask >= MASK_ICE_MIN) & (water_mask < MASK_WATER_MIN)
+        rgb_inner = rgb[1:-1, 1:-1, :]
+        rgb_inner[ice, :] = GLACIER_RGB
     shade = hillshade(arr, invalid, WORKER_RESOLUTION)
     lit = np.clip(rgb * shade[:, :, None], 0, 255).astype(np.uint8)
     alpha = np.where(invalid, 0, 255).astype(np.uint8)
     rgba = np.dstack([lit, alpha])[1:-1, 1:-1, :]
-    water_mask = read_water_mask(x, y)
-    if water_mask is not None:
-        water = water_mask > 0
+    if water is not None:
         rgba[water, 0] = WATER_RGB[0]
         rgba[water, 1] = WATER_RGB[1]
         rgba[water, 2] = WATER_RGB[2]
-        rgba[water, 3] = water_mask[water]
+        rgba[water, 3] = 255
     write_webp(WORKER_TILES_ROOT / str(WORKER_ZOOM) / str(x) / f"{y}.webp", rgba)
     return 1
 
@@ -325,9 +322,10 @@ def main():
             "note": "first-cut DEM hillshade multiplied over elevation color buckets",
         },
         "water_glacier_mask": {
-            "water": "USGS NHD water mask when available, with DEM-derived sea-level flat-water heuristic for remaining water",
+            "water": "USGS NHD water mask when available",
             "rgb": WATER_RGB,
-            "elevation_meters": [-5.0, 1.0],
+            "ice_mass": "USGS NHD Ice Mass mask when available",
+            "ice_rgb": GLACIER_RGB,
             "mask_tiles": bool(args.water_mask_dir),
         },
         "source_dem_count": args.source_count,

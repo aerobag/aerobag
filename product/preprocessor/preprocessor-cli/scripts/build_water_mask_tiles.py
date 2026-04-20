@@ -20,6 +20,10 @@ NHD_LAYERS = [
     (9, "Area - Large Scale"),
     (12, "Waterbody - Large Scale"),
 ]
+MASK_NONE = 0
+MASK_ICE = 128
+MASK_WATER = 255
+ICE_MASS_FTYPE = 378
 PAGE_SIZE = 1000
 FETCH_ATTEMPTS = 5
 RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}
@@ -244,27 +248,35 @@ def draw_ring(draw, ring, fill, minx, maxy, resolution):
         draw.polygon(points, fill=fill)
 
 
-def draw_polygon(draw, rings, minx, maxy, resolution):
+def draw_polygon(draw, rings, fill, minx, maxy, resolution):
     if not rings:
         return
-    draw_ring(draw, rings[0], 255, minx, maxy, resolution)
+    draw_ring(draw, rings[0], fill, minx, maxy, resolution)
     for hole in rings[1:]:
-        draw_ring(draw, hole, 0, minx, maxy, resolution)
+        draw_ring(draw, hole, MASK_NONE, minx, maxy, resolution)
+
+
+def feature_mask_value(feature):
+    properties = feature.get("properties") or {}
+    if int(properties.get("FTYPE") or properties.get("FType") or 0) == ICE_MASS_FTYPE:
+        return MASK_ICE
+    return MASK_WATER
 
 
 def draw_feature(draw, feature, minx, maxy, resolution):
     geometry = feature.get("geometry") or {}
     coords = geometry.get("coordinates") or []
+    fill = feature_mask_value(feature)
     if geometry.get("type") == "Polygon":
-        draw_polygon(draw, coords, minx, maxy, resolution)
+        draw_polygon(draw, coords, fill, minx, maxy, resolution)
     elif geometry.get("type") == "MultiPolygon":
         for polygon in coords:
-            draw_polygon(draw, polygon, minx, maxy, resolution)
+            draw_polygon(draw, polygon, fill, minx, maxy, resolution)
 
 
 def render_base_tile(task):
     x, y, feature_indices = task
-    image = Image.new("L", (WORKER_TILE_SIZE, WORKER_TILE_SIZE), 0)
+    image = Image.new("L", (WORKER_TILE_SIZE, WORKER_TILE_SIZE), MASK_NONE)
     draw = ImageDraw.Draw(image)
     minx, miny, maxx, maxy = tile_bounds(x, y, WORKER_ZOOM, WORKER_TILE_SIZE)
     resolution = (maxx - minx) / WORKER_TILE_SIZE
@@ -281,7 +293,7 @@ def resampling_filter():
 
 
 def build_parent_tile(tiles_root, z, x, y, tile_size):
-    mosaic = Image.new("L", (tile_size * 2, tile_size * 2), 0)
+    mosaic = Image.new("L", (tile_size * 2, tile_size * 2), MASK_NONE)
     children = [
         (x * 2, y * 2 + 1, 0, 0),
         (x * 2 + 1, y * 2 + 1, tile_size, 0),
@@ -376,7 +388,11 @@ def main():
         "tile_format": "png_l",
         "tile_content_encoding": "identity",
         "zip_member_compression": "stored_png",
-        "mask_semantics": {"0": "not water", "255": "water"},
+        "mask_semantics": {
+            str(MASK_NONE): "not water or ice",
+            str(MASK_ICE): "ice mass / glacier",
+            str(MASK_WATER): "water",
+        },
         "feature_count": len(features),
         "base_tile_count": base_count,
         "tile_count": sum(level_counts.values()),

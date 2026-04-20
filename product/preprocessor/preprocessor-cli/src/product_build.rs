@@ -617,7 +617,7 @@ const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
 const TERRAIN_PIPELINE_VERSION: &str = "v4";
 const SHADED_RELIEF_PIPELINE_VERSION: &str = "v5";
-const WATER_MASK_PIPELINE_VERSION: &str = "v1";
+const WATER_MASK_PIPELINE_VERSION: &str = "v2";
 const TERRAIN_TILE_WORKERS: u32 = 16;
 const SHADED_RELIEF_TILE_WORKERS: u32 = 16;
 const WATER_MASK_FETCH_WORKERS: u32 = 2;
@@ -636,7 +636,7 @@ const WATER_MASK_NHD_LAYERS: &[(u32, &str, &str)] = &[
     (
         12,
         "Waterbody - Large Scale",
-        "AREASQKM >= 1 AND FTYPE IN (390,436,493)",
+        "AREASQKM >= 1 AND FTYPE IN (378,390,436,493)",
     ),
 ];
 const TERRAIN_MIN_ZOOM: u32 = 0;

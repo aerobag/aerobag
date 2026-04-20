@@ -626,7 +626,7 @@ const TERRAIN_TILE_WORKERS: u32 = 16;
 const SHADED_RELIEF_TILE_WORKERS: u32 = 16;
 const WATER_MASK_FETCH_WORKERS: u32 = 2;
 const WATER_MASK_TILE_WORKERS: u32 = 16;
-const WATER_MASK_PAGE_SIZE: usize = 50;
+const WATER_MASK_PAGE_SIZE: usize = 10;
 const WATER_MASK_NHD_SERVICE: &str = "https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer";
 const WATER_MASK_NHD_LAYERS: &[(u32, &str)] =
     &[(9, "Area - Large Scale"), (12, "Waterbody - Large Scale")];
@@ -6892,7 +6892,7 @@ fn water_mask_product_inputs(region: Region) -> anyhow::Result<BTreeMap<String, 
         (
             "water_mask_source_fetch".to_string(),
             format!(
-                "nhd-object-ids-v1-page-size-{}-fetch-workers-{}-layers-{}",
+                "nhd-object-ids-v1-precision-6-page-size-{}-fetch-workers-{}-layers-{}",
                 WATER_MASK_PAGE_SIZE,
                 WATER_MASK_FETCH_WORKERS,
                 WATER_MASK_NHD_LAYERS
@@ -7932,6 +7932,7 @@ fn water_mask_page_url(layer: u32, chunk_index: usize, object_ids: &[u64]) -> St
                 ("outFields", "FTYPE,FCODE,GNIS_NAME".to_string()),
                 ("outSR", "4326".to_string()),
                 ("returnGeometry", "true".to_string()),
+                ("geometryPrecision", "6".to_string()),
                 ("f", "geojson".to_string()),
                 ("orderByFields", "OBJECTID".to_string()),
             ],

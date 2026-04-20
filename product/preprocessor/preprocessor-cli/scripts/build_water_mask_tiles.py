@@ -141,6 +141,40 @@ def fetch_region_features(bbox, fetch_workers):
     return all_features, layer_counts
 
 
+def source_count_path(source_dir, layer):
+    return source_dir / f"layer_{layer}_count.json"
+
+
+def source_page_path(source_dir, layer, offset):
+    return source_dir / f"layer_{layer}_offset_{offset}.geojson"
+
+
+def read_region_features(source_dir):
+    all_features = []
+    layer_counts = {}
+    for layer, name in NHD_LAYERS:
+        count_path = source_count_path(source_dir, layer)
+        with open(count_path) as f:
+            count_value = json.load(f)
+        count = int(count_value.get("count", 0))
+        layer_counts[str(layer)] = {"name": name, "count": count}
+        for offset in range(0, count, PAGE_SIZE):
+            page_path = source_page_path(source_dir, layer, offset)
+            with open(page_path) as f:
+                page_value = json.load(f)
+            features = page_value.get("features", [])
+            for feature in features:
+                feature.setdefault("properties", {})["_nhd_layer"] = layer
+            all_features.extend(features)
+    all_features.sort(
+        key=lambda feature: (
+            feature.get("properties", {}).get("_nhd_layer", 0),
+            json.dumps(feature.get("geometry"), sort_keys=True, separators=(",", ":")),
+        )
+    )
+    return all_features, layer_counts
+
+
 def feature_bbox(feature):
     xs = []
     ys = []
@@ -289,6 +323,7 @@ def main():
     ap.add_argument("--bbox", required=True)
     ap.add_argument("--zoom", required=True, type=int)
     ap.add_argument("--tile-size", required=True, type=int)
+    ap.add_argument("--source-dir")
     ap.add_argument("--fetch-workers", required=True, type=int)
     ap.add_argument("--tile-workers", required=True, type=int)
     args = ap.parse_args()
@@ -298,7 +333,10 @@ def main():
     root.mkdir(parents=True, exist_ok=True)
     tiles_root = root / "tiles"
     source_fetched_at_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    features, layer_counts = fetch_region_features(bbox, max(1, args.fetch_workers))
+    if args.source_dir:
+        features, layer_counts = read_region_features(Path(args.source_dir))
+    else:
+        features, layer_counts = fetch_region_features(bbox, max(1, args.fetch_workers))
     fingerprint = source_fingerprint(features)
     (root / "source.geojson").write_text(
         json.dumps({"type": "FeatureCollection", "features": features}, sort_keys=True)

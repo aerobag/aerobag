@@ -626,6 +626,10 @@ const TERRAIN_TILE_WORKERS: u32 = 16;
 const SHADED_RELIEF_TILE_WORKERS: u32 = 16;
 const WATER_MASK_FETCH_WORKERS: u32 = 16;
 const WATER_MASK_TILE_WORKERS: u32 = 16;
+const WATER_MASK_PAGE_SIZE: u32 = 1000;
+const WATER_MASK_NHD_SERVICE: &str = "https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer";
+const WATER_MASK_NHD_LAYERS: &[(u32, &str)] =
+    &[(9, "Area - Large Scale"), (12, "Waterbody - Large Scale")];
 const TERRAIN_MIN_ZOOM: u32 = 0;
 const TERRAIN_ZOOM: u32 = 10;
 const TERRAIN_TILE_SIZE: u32 = 512;
@@ -6811,7 +6815,8 @@ fn build_water_mask_product(
     }
     fs::create_dir_all(&output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
-    build_water_mask_region_tiles(region, &output_dir)?;
+    let source_dir = water_mask_cached_source_dir(config, region, &output_dir)?;
+    build_water_mask_region_tiles(region, &output_dir, &source_dir)?;
     let (source_version, source_fetched_at_utc) = water_mask_manifest_versions(&manifest_path)?;
     let zip_path = output_dir.join(format!(
         "water_mask_{region_id}_{}.zip",
@@ -7856,7 +7861,132 @@ fn build_terrain_region_tiles(
     Ok(())
 }
 
-fn build_water_mask_region_tiles(region: Region, output_dir: &Path) -> anyhow::Result<()> {
+fn water_mask_query_url(layer: u32, params: &[(&str, String)]) -> String {
+    let query = params
+        .iter()
+        .map(|(key, value)| format!("{key}={}", percent_encode_query_value(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{WATER_MASK_NHD_SERVICE}/{layer}/query?{query}")
+}
+
+fn percent_encode_query_value(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            b' ' => encoded.push('+'),
+            other => encoded.push_str(&format!("%{other:02X}")),
+        }
+    }
+    encoded
+}
+
+fn water_mask_count_url(layer: u32, bbox: &str) -> String {
+    format!(
+        "{}#logical_name=layer_{layer}_count.json",
+        water_mask_query_url(
+            layer,
+            &[
+                ("where", "1=1".to_string()),
+                ("geometry", bbox.to_string()),
+                ("geometryType", "esriGeometryEnvelope".to_string()),
+                ("inSR", "4326".to_string()),
+                ("spatialRel", "esriSpatialRelIntersects".to_string()),
+                ("returnCountOnly", "true".to_string()),
+                ("f", "json".to_string()),
+            ],
+        )
+    )
+}
+
+fn water_mask_page_url(layer: u32, bbox: &str, offset: u32) -> String {
+    format!(
+        "{}#logical_name=layer_{layer}_offset_{offset}.geojson",
+        water_mask_query_url(
+            layer,
+            &[
+                ("where", "1=1".to_string()),
+                ("outFields", "FTYPE,FCODE,GNIS_NAME".to_string()),
+                ("geometry", bbox.to_string()),
+                ("geometryType", "esriGeometryEnvelope".to_string()),
+                ("inSR", "4326".to_string()),
+                ("spatialRel", "esriSpatialRelIntersects".to_string()),
+                ("outSR", "4326".to_string()),
+                ("returnGeometry", "true".to_string()),
+                ("f", "geojson".to_string()),
+                ("resultRecordCount", WATER_MASK_PAGE_SIZE.to_string()),
+                ("resultOffset", offset.to_string()),
+                ("orderByFields", "OBJECTID".to_string()),
+            ],
+        )
+    )
+}
+
+fn water_mask_cached_source_dir(
+    config: &ProductBuildConfig,
+    region: Region,
+    output_dir: &Path,
+) -> anyhow::Result<PathBuf> {
+    let region_id = region.code().to_ascii_lowercase();
+    let bounds = region.bounds();
+    let bbox = format!(
+        "{},{},{},{}",
+        bounds.lon_min, bounds.lat_min, bounds.lon_max, bounds.lat_max
+    );
+    let source_dir = output_dir.join("source-pages");
+    fs::create_dir_all(&source_dir)
+        .with_context(|| format!("failed to create {}", source_dir.display()))?;
+    let provenance_dir = config
+        .build_root
+        .join("meta")
+        .join("provenance")
+        .join(format!("water-mask-{region_id}"));
+    let fetch_cache = fetch_cache_config(config)?;
+    let count_urls = WATER_MASK_NHD_LAYERS
+        .iter()
+        .map(|(layer, _name)| water_mask_count_url(*layer, &bbox))
+        .collect::<Vec<_>>();
+    prefetch_archives_with_provenance(
+        &count_urls,
+        &source_dir,
+        WATER_MASK_FETCH_WORKERS as usize,
+        Some(&fetch_cache),
+        &provenance_dir,
+        &format!("water-mask-{region_id}-count"),
+    )?;
+
+    let mut page_urls = Vec::new();
+    for (layer, _name) in WATER_MASK_NHD_LAYERS {
+        let count_path = source_dir.join(format!("layer_{layer}_count.json"));
+        let value: serde_json::Value = serde_json::from_slice(
+            &fs::read(&count_path)
+                .with_context(|| format!("failed to read {}", count_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", count_path.display()))?;
+        let count = value.get("count").and_then(|value| value.as_u64()).unwrap_or(0);
+        for offset in (0..count).step_by(WATER_MASK_PAGE_SIZE as usize) {
+            page_urls.push(water_mask_page_url(*layer, &bbox, offset as u32));
+        }
+    }
+    prefetch_archives_with_provenance(
+        &page_urls,
+        &source_dir,
+        WATER_MASK_FETCH_WORKERS as usize,
+        Some(&fetch_cache),
+        &provenance_dir,
+        &format!("water-mask-{region_id}-page"),
+    )?;
+    Ok(source_dir)
+}
+
+fn build_water_mask_region_tiles(
+    region: Region,
+    output_dir: &Path,
+    source_dir: &Path,
+) -> anyhow::Result<()> {
     let script_path = water_mask_tile_script_path();
     let bounds = region.bounds();
     let output = Command::new("python3")
@@ -7873,6 +8003,8 @@ fn build_water_mask_region_tiles(region: Region, output_dir: &Path) -> anyhow::R
         .arg(TERRAIN_ZOOM.to_string())
         .arg("--tile-size")
         .arg(TERRAIN_TILE_SIZE.to_string())
+        .arg("--source-dir")
+        .arg(source_dir)
         .arg("--fetch-workers")
         .arg(WATER_MASK_FETCH_WORKERS.to_string())
         .arg("--tile-workers")

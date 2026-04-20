@@ -92,6 +92,18 @@ export function pointTileUrl(layer: string, zoom: number, x: number, y: number) 
   return `/vectors/points/${layer}/${zoom}/${x}/${y}.json`;
 }
 
+export function airspaceReferenceTileUrl(zoom: number, x: number, y: number) {
+  return `/vectors/airspace/refs/${zoom}/${x}/${y}.json`;
+}
+
+export function airspaceLabelTileUrl(zoom: number, x: number, y: number) {
+  return `/vectors/airspace/labels/${zoom}/${x}/${y}.json`;
+}
+
+export function airspaceFeatureUrl(path: string) {
+  return `/vectors/${path}`;
+}
+
 export function tileKey(z: number, x: number, y: number) {
   return `${z}/${x}/${y}`;
 }

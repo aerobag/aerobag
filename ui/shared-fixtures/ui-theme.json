@@ -11,6 +11,12 @@
     "chart_surface_bg": "#8c9dad",
     "cdi_pointer": "#d45a7a"
   },
+  "aviation": {
+    "class_b_d_blue": "#245ee0",
+    "class_c_magenta": "#be32a0",
+    "intersection_cyan": "#39d9ff",
+    "dark_gray": "#202a31"
+  },
   "plate_folder": {
     "thumbnail_bg": "#303030",
     "label_colors": {

@@ -111,6 +111,54 @@ button {
   overflow: visible;
 }
 
+.airspaceOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.airspaceLabel {
+  paint-order: stroke;
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 2px;
+  fill: var(--theme-class-b-d-blue);
+  font: 700 14px/1 "Avenir Next Condensed", "Arial Narrow", sans-serif;
+  letter-spacing: 0.04em;
+  text-anchor: middle;
+  dominant-baseline: central;
+}
+
+.airspaceLabelDivider {
+  stroke: var(--theme-class-b-d-blue);
+  stroke-width: 1.6px;
+  stroke-linecap: square;
+}
+
+.airspaceLabelDividerContrast {
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 4px;
+  stroke-linecap: square;
+}
+
+.airspaceLabel-class_c,
+.airspaceLabel-class_d {
+  fill: var(--theme-class-c-magenta);
+}
+
+.airspaceLabel-class_c .airspaceLabelDivider {
+  stroke: var(--theme-class-c-magenta);
+}
+
+.airspaceLabel-class_d {
+  fill: var(--theme-class-b-d-blue);
+}
+
+.airspaceLabel-class_d .airspaceLabelDivider {
+  stroke: var(--theme-class-b-d-blue);
+}
+
 .nexradOverlay {
   position: absolute;
   inset: 0;
@@ -165,7 +213,7 @@ button {
 }
 
 .fixMarker {
-  fill: #39d9ff;
+  fill: var(--theme-intersection-cyan);
   stroke: rgba(8, 18, 24, 0.7);
   stroke-width: 2.5px;
   stroke-linejoin: round;
@@ -183,7 +231,7 @@ button {
 }
 
 .vorBand {
-  fill: #4aa3ff;
+  fill: var(--theme-class-b-d-blue);
   stroke: rgba(8, 18, 24, 0.82);
   stroke-width: 1.6px;
   stroke-linejoin: round;
@@ -214,11 +262,11 @@ button {
 }
 
 .airportTowered {
-  fill: #4aa3ff;
+  fill: var(--theme-class-c-magenta);
 }
 
 .airportUntowered {
-  fill: #ff4fd8;
+  fill: var(--theme-class-c-magenta);
 }
 
 .airportLabel {

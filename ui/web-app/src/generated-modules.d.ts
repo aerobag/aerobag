@@ -61,6 +61,9 @@ declare module "@generated/app_wasm.js" {
   export const select_airport_in_session: (...args: unknown[]) => string;
   export const select_chart_in_session: (...args: unknown[]) => string;
   export const ingest_point_tiles_in_session: (...args: unknown[]) => void;
+  export const ingest_airspace_ref_tiles_in_session: (...args: unknown[]) => void;
+  export const ingest_airspace_features_in_session: (...args: unknown[]) => void;
+  export const ingest_airspace_label_tiles_in_session: (...args: unknown[]) => void;
   export const get_map_overlay_in_session: (...args: unknown[]) => string;
   export const get_terrain_overlay_in_session: (...args: unknown[]) => string;
   export const render_terrain_overlay_tile_in_session: (...args: unknown[]) => Uint8Array;

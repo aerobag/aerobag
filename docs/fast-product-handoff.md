@@ -56,3 +56,17 @@ The draft web flow is:
 - Web paints the returned PNG at core-provided `left/top/size`.
 
 For Android parity, implement the same adapter boundary: satisfy core's static product file requests from the Android product/cache layer, pass bytes back to core, and draw the returned PNG/bitmap. Avoid duplicating ABT1 parsing, clearance thresholds, or nodata styling in Android UI code.
+
+## Appendix: airspace overlay parity
+
+Web now treats airspace as a core-owned vector overlay model. The UI fetches missing vector resources from `/vectors`, ingests them into the core session, and paints the returned screen-space display model:
+
+- Reference tiles: `/vectors/airspace/refs/{z}/{x}/{y}.json`.
+- Label tiles: `/vectors/airspace/labels/8/{x}/{y}.json`.
+- Full HAD features: `/vectors/had/...`, using the path returned by core in `needed_airspace_features`.
+
+Core owns the reusable pieces: visible reference tile selection, feature dedupe, HAD feature cache, lon/lat to viewport pixel projection, simple projected-point simplification, label projection, draw-order by returned array order, and style tokens. Web only converts returned point arrays to SVG paths and applies core-provided stroke/fill/dash values.
+
+Android should mirror that seam rather than parse SVG. Add the new wire fields from `MapOverlayQueryResult`: `needed_airspace_ref_tiles`, `needed_airspace_features`, `needed_airspace_label_tiles`, `airspace_paths`, and `airspace_labels`. Add native bridge calls equivalent to web's `ingestAirspaceRefTiles`, `ingestAirspaceFeatures`, and `ingestAirspaceLabelTiles`. Fetch the requested files from Android's vector product/cache layer, ingest them, re-query core, then draw `airspace_paths` into Compose `Path` objects using the returned screen-pixel coordinates and style tokens. Draw `airspace_labels` with native text at `screen_x/screen_y`.
+
+The coordinate system is the same one Android already uses for point overlays: viewport-local pixels, origin at the top left, x increasing right, y increasing down. Android should continue applying its density conversion at the final Canvas boundary, not in core.

@@ -43,9 +43,14 @@ pub use had_ops::{run_had_operation, HadOperation, HadOperationOutcome};
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use map_follow::MapFollowUiState;
 pub use map_overlay::{
+    airspace_feature_path, airspace_label_tile_key, airspace_ref_tile_key,
     point_vector_record_to_symbol_feature, query_map_overlay, tile_key, visible_point_tile_window,
-    MapOverlayQueryResult, MapOverlayWarning, NavSymbolFeature, PointTilePayload,
-    PointVectorRecord, VectorTileRequest, VisibleMapFeature, VECTOR_DISPLAY_FEATURE_LIMIT,
+    AirspaceDisplayLabel, AirspaceDisplayPath, AirspaceDisplayStroke, AirspaceDisplayStyle,
+    AirspaceDisplaySubpath, AirspaceFeaturePath, AirspaceFeaturePayload, AirspaceFeatureRequest,
+    AirspaceLabelRecord, AirspaceLabelTilePayload, AirspaceReferenceTilePayload,
+    AirspaceScreenPoint, MapOverlayQueryResult, MapOverlayWarning, NavSymbolFeature,
+    PointTilePayload, PointVectorRecord, VectorTileRequest, VisibleMapFeature,
+    AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use navdb::{
@@ -99,13 +104,14 @@ pub use procedure_legs::{
 pub use session::{
     create_ui_session, create_ui_session_profiled, destroy_session,
     disengage_map_follow_in_session, engage_map_follow_in_session, get_map_overlay_in_session,
-    get_session_snapshot, get_terrain_overlay_in_session, ingest_point_tiles_in_session,
-    load_playback_trace_in_session, move_waypoint_in_session, pause_playback_in_session,
-    play_playback_in_session, push_situation_sample_in_session, register_ownship_source_in_session,
-    remove_leg_in_session, render_terrain_overlay_tile_in_session,
-    render_terrain_overlay_tiles_in_session, replace_flight_plan_in_session,
-    restore_chart_page_state_in_session, seek_playback_in_session, select_airport_in_session,
-    select_chart_in_session, select_ownship_source_in_session,
+    get_session_snapshot, get_terrain_overlay_in_session, ingest_airspace_features_in_session,
+    ingest_airspace_label_tiles_in_session, ingest_airspace_ref_tiles_in_session,
+    ingest_point_tiles_in_session, load_playback_trace_in_session, move_waypoint_in_session,
+    pause_playback_in_session, play_playback_in_session, push_situation_sample_in_session,
+    register_ownship_source_in_session, remove_leg_in_session,
+    render_terrain_overlay_tile_in_session, render_terrain_overlay_tiles_in_session,
+    replace_flight_plan_in_session, restore_chart_page_state_in_session, seek_playback_in_session,
+    select_airport_in_session, select_chart_in_session, select_ownship_source_in_session,
     set_guidance_leg_geometry_in_session, set_map_follow_offset_in_session,
     set_playback_rate_in_session, set_situation_in_session, sync_map_follow_in_session,
     tick_playback_in_session, update_ownship_source_status_in_session, GuidanceLegGeometry,

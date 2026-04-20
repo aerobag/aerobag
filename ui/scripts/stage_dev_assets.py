@@ -283,10 +283,16 @@ def stage_chart_assets() -> None:
 def stage_vectors() -> None:
     target = WEB_STATIC_ROOT / "vectors"
     reset_dir(target)
-    vectors_root = unpacked_dir_from_relative_zip(VECTOR_ZIP_RELATIVE_PATH) / "points"
-    if not vectors_root.is_dir():
-        raise RuntimeError(f"missing published vector points dir {vectors_root}")
-    ensure_symlink(vectors_root, target / "points")
+    vectors_root = unpacked_dir_from_relative_zip(VECTOR_ZIP_RELATIVE_PATH)
+    for relative_root in ("points", "airspace", "had"):
+        source = vectors_root / relative_root
+        if not source.is_dir():
+            raise RuntimeError(f"missing published vector dir {source}")
+        ensure_symlink(source, target / relative_root)
+    manifest = vectors_root / "vectors"
+    if not manifest.is_file():
+        raise RuntimeError(f"missing published vector manifest {manifest}")
+    ensure_hard_link(manifest, target / "vectors")
 
 
 def stage_nav_db() -> None:
@@ -347,7 +353,7 @@ def current_stage_stamp() -> dict:
 
     return {
         "resource_index": file_stamp(RESOURCE_INDEX_PATH),
-        "vectors_points": file_stamp(unpacked_dir_from_relative_zip(VECTOR_ZIP_RELATIVE_PATH) / "points"),
+        "vectors_root": file_stamp(unpacked_dir_from_relative_zip(VECTOR_ZIP_RELATIVE_PATH)),
         "nav_db": file_stamp(NAV_DB_PATH),
         "current_artifacts": file_stamp(CURRENT_ARTIFACTS_FILE),
         "bundle_manifest": file_stamp(PRODUCT_BUILD_FILE),
@@ -361,7 +367,7 @@ def current_stage_stamp() -> dict:
             if isinstance(product, dict)
         ],
         "nav_kv": NAV_KV,
-        "version": 4,
+        "version": 5,
     }
 
 

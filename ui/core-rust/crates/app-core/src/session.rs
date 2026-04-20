@@ -14,9 +14,10 @@ use crate::{
     move_flight_plan_waypoint,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
-    query_map_overlay, remove_flight_plan_leg, state, AppError, AppErrorKind, AppEvent, AppResult,
-    AppState, AppUiState, DerivedChartCatalog, DerivedChartPageState, FlightPlan, LatLon,
-    MapOverlayQueryResult, MapViewport, NavRef, PlanLeg, PlaybackUiState, PointTilePayload,
+    query_map_overlay, remove_flight_plan_leg, state, AirspaceFeaturePayload,
+    AirspaceLabelTilePayload, AirspaceReferenceTilePayload, AppError, AppErrorKind, AppEvent,
+    AppResult, AppState, AppUiState, DerivedChartCatalog, DerivedChartPageState, FlightPlan,
+    LatLon, MapOverlayQueryResult, MapViewport, NavRef, PlanLeg, PlaybackUiState, PointTilePayload,
     SequencingMode, TerrainOverlayQueryResult, UiSnapshotAppState,
 };
 
@@ -59,6 +60,9 @@ struct UiSession {
     guidance_leg_geometry: HashMap<String, GuidanceLegGeometry>,
     chart_page_state: DerivedChartPageState,
     point_tile_cache: HashMap<String, PointTilePayload>,
+    airspace_ref_tile_cache: HashMap<String, AirspaceReferenceTilePayload>,
+    airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
+    airspace_label_tile_cache: HashMap<String, AirspaceLabelTilePayload>,
 }
 
 const DIRECT_SITUATION_SOURCE_ID: &str = "__direct_situation__";
@@ -196,6 +200,9 @@ fn create_ui_session_inner(
             guidance_leg_geometry: HashMap::new(),
             chart_page_state,
             point_tile_cache: HashMap::new(),
+            airspace_ref_tile_cache: HashMap::new(),
+            airspace_feature_cache: HashMap::new(),
+            airspace_label_tile_cache: HashMap::new(),
         },
     );
     if let Some(mark) = mark.as_deref_mut() {
@@ -594,6 +601,50 @@ pub fn ingest_point_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) ->
     Ok(())
 }
 
+pub fn ingest_airspace_ref_tiles_in_session(
+    handle: u32,
+    tiles: &[AirspaceReferenceTilePayload],
+) -> AppResult<()> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    for tile in tiles {
+        session.airspace_ref_tile_cache.insert(
+            crate::airspace_ref_tile_key(tile.z, tile.x, tile.y),
+            tile.clone(),
+        );
+    }
+    Ok(())
+}
+
+pub fn ingest_airspace_features_in_session(
+    handle: u32,
+    features: &[AirspaceFeaturePayload],
+) -> AppResult<()> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    for feature in features {
+        session
+            .airspace_feature_cache
+            .insert(feature.id.clone(), feature.clone());
+    }
+    Ok(())
+}
+
+pub fn ingest_airspace_label_tiles_in_session(
+    handle: u32,
+    tiles: &[AirspaceLabelTilePayload],
+) -> AppResult<()> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    for tile in tiles {
+        session.airspace_label_tile_cache.insert(
+            crate::airspace_label_tile_key(tile.z, tile.x, tile.y),
+            tile.clone(),
+        );
+    }
+    Ok(())
+}
+
 pub fn get_map_overlay_in_session(
     handle: u32,
     viewport: MapViewport,
@@ -607,6 +658,9 @@ pub fn get_map_overlay_in_session(
         width_px,
         height_px,
         &session.point_tile_cache,
+        &session.airspace_ref_tile_cache,
+        &session.airspace_feature_cache,
+        &session.airspace_label_tile_cache,
     ))
 }
 
@@ -1014,14 +1068,8 @@ mod tests {
             cdi_offscale_readout(9.95),
             Some("9.9nm\u{2192}".to_string())
         );
-        assert_eq!(
-            cdi_offscale_readout(10.0),
-            Some("10nm\u{2192}".to_string())
-        );
-        assert_eq!(
-            cdi_offscale_readout(11.4),
-            Some("11nm\u{2192}".to_string())
-        );
+        assert_eq!(cdi_offscale_readout(10.0), Some("10nm\u{2192}".to_string()));
+        assert_eq!(cdi_offscale_readout(11.4), Some("11nm\u{2192}".to_string()));
     }
 
     #[test]

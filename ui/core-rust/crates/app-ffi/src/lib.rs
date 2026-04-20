@@ -1023,6 +1023,39 @@ pub fn ingest_point_tiles_in_session_json(handle: u64, tiles_json: &str) -> Resu
     Ok("null".to_string())
 }
 
+pub fn ingest_airspace_ref_tiles_in_session_json(
+    handle: u64,
+    tiles_json: &str,
+) -> Result<String, String> {
+    let tiles: Vec<app_core::AirspaceReferenceTilePayload> =
+        serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
+    app_core::ingest_airspace_ref_tiles_in_session(handle as u32, &tiles)
+        .map_err(|err| err.to_string())?;
+    Ok("null".to_string())
+}
+
+pub fn ingest_airspace_features_in_session_json(
+    handle: u64,
+    features_json: &str,
+) -> Result<String, String> {
+    let features: Vec<app_core::AirspaceFeaturePayload> =
+        serde_json::from_str(features_json).map_err(|err| err.to_string())?;
+    app_core::ingest_airspace_features_in_session(handle as u32, &features)
+        .map_err(|err| err.to_string())?;
+    Ok("null".to_string())
+}
+
+pub fn ingest_airspace_label_tiles_in_session_json(
+    handle: u64,
+    tiles_json: &str,
+) -> Result<String, String> {
+    let tiles: Vec<app_core::AirspaceLabelTilePayload> =
+        serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
+    app_core::ingest_airspace_label_tiles_in_session(handle as u32, &tiles)
+        .map_err(|err| err.to_string())?;
+    Ok("null".to_string())
+}
+
 pub fn get_map_overlay_in_session_json(
     handle: u64,
     viewport_json: &str,

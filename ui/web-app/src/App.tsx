@@ -61,8 +61,22 @@ import {
   zoomImageAroundPoint,
   type ImageViewportState,
 } from "./domain/imageViewport";
-import { pointTileUrl, type PointTilePayload } from "./domain/vectorTiles";
-import type { MapOverlayQueryResult, TerrainOverlayQueryResult, TerrainOverlayTileRequest } from "./domain/appCoreAdapter";
+import {
+  airspaceFeatureUrl,
+  airspaceLabelTileUrl,
+  airspaceReferenceTileUrl,
+  pointTileUrl,
+  type PointTilePayload,
+} from "./domain/vectorTiles";
+import type {
+  AirspaceDisplayPath,
+  AirspaceFeaturePayload,
+  AirspaceLabelTilePayload,
+  AirspaceReferenceTilePayload,
+  MapOverlayQueryResult,
+  TerrainOverlayQueryResult,
+  TerrainOverlayTileRequest,
+} from "./domain/appCoreAdapter";
 import { airwayEntryCandidateFromPresentation, airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import { debugLog, debugTiming } from "./domain/debugLog";
 import { TerrainRenderWorkerClient } from "./domain/terrainRenderWorkerClient";
@@ -78,6 +92,54 @@ function errorMessage(error: unknown): string {
 
 function isInvalidUiSessionHandleError(error: unknown): boolean {
   return error instanceof Error && error.message.includes("invalid ui session handle");
+}
+
+function airspaceSvgPathD(path: AirspaceDisplayPath["paths"][number]): string {
+  if (path.points.length === 0) {
+    return "";
+  }
+  const [first, ...rest] = path.points;
+  const segments = [`M ${first.x} ${first.y}`];
+  for (const point of rest) {
+    segments.push(`L ${point.x} ${point.y}`);
+  }
+  if (path.closed) {
+    segments.push("Z");
+  }
+  return segments.join(" ");
+}
+
+function airspaceDashArray(dashPx: number[]): string | undefined {
+  return dashPx.length > 0 ? dashPx.join(" ") : undefined;
+}
+
+function svgStrokeLinecap(lineCap: string): "butt" | "round" | "square" {
+  return lineCap === "butt" || lineCap === "square" ? lineCap : "round";
+}
+
+function airspaceLabelParts(text: string): { upper: string; lower: string } | null {
+  const parts = text.split("/");
+  if (parts.length !== 2) {
+    return null;
+  }
+  const upper = parts[0].trim();
+  const lower = parts[1].trim();
+  if (!upper || !lower) {
+    return null;
+  }
+  return { upper, lower };
+}
+
+function airspaceLabelDividerWidth(parts: { upper: string; lower: string }): number {
+  return Math.max(parts.upper.length, parts.lower.length, 2) * 7.2 + 6;
+}
+
+function colorWithOpacity(color: string, opacity: number): string {
+  return `color-mix(in srgb, ${color} ${Math.round(opacity * 100)}%, transparent)`;
+}
+
+function aviationThemeColor(colorKey: string): string {
+  return loadedUiTheme.aviation[colorKey as AviationThemeColorKey] ?? loadedUiTheme.aviation.dark_gray;
 }
 
 type AppPage = "map" | "plan" | "charts" | "settings";
@@ -105,11 +167,19 @@ type UiThemeJson = {
     chart_surface_bg: string;
     cdi_pointer: string;
   };
+  aviation: {
+    class_b_d_blue: string;
+    class_c_magenta: string;
+    intersection_cyan: string;
+    dark_gray: string;
+  };
   plate_folder: {
     thumbnail_bg: string;
     label_colors: Record<string, string>;
   };
 };
+
+type AviationThemeColorKey = keyof UiThemeJson["aviation"];
 
 type TrayDockStyle = "compact" | "plate_narrow" | "plate_wide";
 type PlateFolderCategory = ChartAsset["folder_category"];
@@ -1186,6 +1256,10 @@ export default function App() {
         "--theme-panel-muted": controlTheme.panel_muted,
         "--theme-chart-surface-bg": controlTheme.chart_surface_bg,
         "--theme-cdi-pointer": controlTheme.cdi_pointer,
+        "--theme-class-b-d-blue": loadedUiTheme.aviation.class_b_d_blue,
+        "--theme-class-c-magenta": loadedUiTheme.aviation.class_c_magenta,
+        "--theme-intersection-cyan": loadedUiTheme.aviation.intersection_cyan,
+        "--theme-aviation-dark-gray": loadedUiTheme.aviation.dark_gray,
       }) as CSSProperties,
     [],
   );
@@ -1580,7 +1654,12 @@ function MapPage(props: {
   const [debugOpen, setDebugOpen] = useState(false);
   const [mapOverlay, setMapOverlay] = useState<MapOverlayQueryResult>({
     needed_point_tiles: [],
+    needed_airspace_ref_tiles: [],
+    needed_airspace_features: [],
+    needed_airspace_label_tiles: [],
     visible_features: [],
+    airspace_paths: [],
+    airspace_labels: [],
     warnings: [],
   });
   const [nexradFrames, setNexradFrames] = useState<NexradOverlayFrame[]>([]);
@@ -2166,7 +2245,12 @@ function MapPage(props: {
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       setMapOverlay({
         needed_point_tiles: [],
+        needed_airspace_ref_tiles: [],
+        needed_airspace_features: [],
+        needed_airspace_label_tiles: [],
         visible_features: [],
+        airspace_paths: [],
+        airspace_labels: [],
         warnings: [],
       });
       return;
@@ -2192,40 +2276,17 @@ function MapPage(props: {
       });
     }
 
-    async function syncMapOverlay() {
-      let overlay: MapOverlayQueryResult;
-      const startedAt = performance.now();
-      try {
-        debugLog("map.overlay.query.start", {
-          zoom: viewport.zoom,
-          width: surfaceSize.width,
-          height: surfaceSize.height,
-        });
-        overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
-        debugLog("map.overlay.query.done", {
-          zoom: viewport.zoom,
-          elapsed_ms: Math.round(performance.now() - startedAt),
-          needed_point_tiles: overlay.needed_point_tiles.length,
-          visible_features: overlay.visible_features.length,
-          warnings: overlay.warnings.map((warning) => warning.code),
-        });
-        reportOverlayWarnings(overlay, "initial");
-      } catch (error) {
-        if (isInvalidUiSessionHandleError(error)) {
-          debugLog("map.overlay.query.stale_session", {
-            zoom: viewport.zoom,
-            elapsed_ms: Math.round(performance.now() - startedAt),
-            error: errorMessage(error),
-          });
-          return;
-        }
-        debugLog("map.overlay.query.error", {
-          zoom: viewport.zoom,
-          elapsed_ms: Math.round(performance.now() - startedAt),
-          error: errorMessage(error),
-        });
-        throw error;
-      }
+    function overlayNeedsInputs(overlay: MapOverlayQueryResult): boolean {
+      return (
+        overlay.needed_point_tiles.length > 0 ||
+        overlay.needed_airspace_ref_tiles.length > 0 ||
+        overlay.needed_airspace_features.length > 0 ||
+        overlay.needed_airspace_label_tiles.length > 0
+      );
+    }
+
+    async function fetchMissingOverlayInputs(overlay: MapOverlayQueryResult): Promise<boolean> {
+      let ingested = false;
       if (overlay.needed_point_tiles.length > 0) {
         const tileFetchStartedAt = performance.now();
         debugLog("map.overlay.tiles.fetch.start", {
@@ -2265,6 +2326,158 @@ function MapPage(props: {
           count: tiles.length,
           elapsed_ms: Math.round(performance.now() - ingestStartedAt),
         });
+        ingested = true;
+      }
+      if (overlay.needed_airspace_ref_tiles.length > 0) {
+        const startedAt = performance.now();
+        const tiles = await Promise.all(
+          overlay.needed_airspace_ref_tiles.map(async (tile) => {
+            const response = await fetch(airspaceReferenceTileUrl(tile.z, tile.x, tile.y), {
+              signal: controller.signal,
+            });
+            if (response.status === 404) {
+              return {
+                schema_version: 1,
+                layer: "airspace",
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+                refs: [],
+              } satisfies AirspaceReferenceTilePayload;
+            }
+            if (!response.ok) {
+              throw new Error(`failed to load airspace ref tile ${tile.z}/${tile.x}/${tile.y}: ${response.status}`);
+            }
+            return (await response.json()) as AirspaceReferenceTilePayload;
+          }),
+        );
+        await session.ingestAirspaceRefTiles(tiles);
+        debugLog("map.overlay.airspace_refs.done", {
+          zoom: viewport.zoom,
+          count: tiles.length,
+          elapsed_ms: Math.round(performance.now() - startedAt),
+        });
+        ingested = true;
+      }
+      if (overlay.needed_airspace_features.length > 0) {
+        const startedAt = performance.now();
+        const features = (
+          await Promise.all(
+            overlay.needed_airspace_features.map(async (feature) => {
+              const response = await fetch(airspaceFeatureUrl(feature.path), {
+                signal: controller.signal,
+              });
+              if (response.status === 404) {
+                debugLog("map.overlay.airspace_feature.missing", {
+                  id: feature.id,
+                  path: feature.path,
+                });
+                return null;
+              }
+              if (!response.ok) {
+                throw new Error(`failed to load airspace feature ${feature.path}: ${response.status}`);
+              }
+              return (await response.json()) as AirspaceFeaturePayload;
+            }),
+          )
+        ).filter((feature): feature is AirspaceFeaturePayload => feature !== null);
+        if (features.length > 0) {
+          await session.ingestAirspaceFeatures(features);
+          ingested = true;
+        }
+        debugLog("map.overlay.airspace_features.done", {
+          zoom: viewport.zoom,
+          count: features.length,
+          missing: overlay.needed_airspace_features.length - features.length,
+          elapsed_ms: Math.round(performance.now() - startedAt),
+        });
+      }
+      if (overlay.needed_airspace_label_tiles.length > 0) {
+        const startedAt = performance.now();
+        const tiles = await Promise.all(
+          overlay.needed_airspace_label_tiles.map(async (tile) => {
+            const response = await fetch(airspaceLabelTileUrl(tile.z, tile.x, tile.y), {
+              signal: controller.signal,
+            });
+            if (response.status === 404) {
+              return {
+                schema_version: 1,
+                layer: "airspace-labels",
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+                labels: [],
+              } satisfies AirspaceLabelTilePayload;
+            }
+            if (!response.ok) {
+              throw new Error(`failed to load airspace label tile ${tile.z}/${tile.x}/${tile.y}: ${response.status}`);
+            }
+            return (await response.json()) as AirspaceLabelTilePayload;
+          }),
+        );
+        await session.ingestAirspaceLabelTiles(tiles);
+        debugLog("map.overlay.airspace_labels.done", {
+          zoom: viewport.zoom,
+          count: tiles.length,
+          elapsed_ms: Math.round(performance.now() - startedAt),
+        });
+        ingested = true;
+      }
+      return ingested;
+    }
+
+    async function syncMapOverlay() {
+      let overlay: MapOverlayQueryResult;
+      const startedAt = performance.now();
+      function publishOverlay(nextOverlay: MapOverlayQueryResult) {
+        if (cancelled) {
+          return;
+        }
+        setMapOverlay(nextOverlay);
+        setMapOverlayViewport(viewport);
+      }
+      try {
+        debugLog("map.overlay.query.start", {
+          zoom: viewport.zoom,
+          width: surfaceSize.width,
+          height: surfaceSize.height,
+        });
+        overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
+        debugLog("map.overlay.query.done", {
+          zoom: viewport.zoom,
+          elapsed_ms: Math.round(performance.now() - startedAt),
+          needed_point_tiles: overlay.needed_point_tiles.length,
+          needed_airspace_ref_tiles: overlay.needed_airspace_ref_tiles.length,
+          needed_airspace_features: overlay.needed_airspace_features.length,
+          needed_airspace_label_tiles: overlay.needed_airspace_label_tiles.length,
+          visible_features: overlay.visible_features.length,
+          airspace_paths: overlay.airspace_paths.length,
+          airspace_labels: overlay.airspace_labels.length,
+          warnings: overlay.warnings.map((warning) => warning.code),
+        });
+        reportOverlayWarnings(overlay, "initial");
+        publishOverlay(overlay);
+      } catch (error) {
+        if (isInvalidUiSessionHandleError(error)) {
+          debugLog("map.overlay.query.stale_session", {
+            zoom: viewport.zoom,
+            elapsed_ms: Math.round(performance.now() - startedAt),
+            error: errorMessage(error),
+          });
+          return;
+        }
+        debugLog("map.overlay.query.error", {
+          zoom: viewport.zoom,
+          elapsed_ms: Math.round(performance.now() - startedAt),
+          error: errorMessage(error),
+        });
+        throw error;
+      }
+      for (let pass = 0; pass < 4 && overlayNeedsInputs(overlay); pass += 1) {
+        const ingested = await fetchMissingOverlayInputs(overlay);
+        if (!ingested) {
+          break;
+        }
         const refreshStartedAt = performance.now();
         try {
           overlay = await session.queryMapOverlay(viewport, surfaceSize.width, surfaceSize.height);
@@ -2283,14 +2496,16 @@ function MapPage(props: {
           zoom: viewport.zoom,
           elapsed_ms: Math.round(performance.now() - refreshStartedAt),
           needed_point_tiles: overlay.needed_point_tiles.length,
+          needed_airspace_ref_tiles: overlay.needed_airspace_ref_tiles.length,
+          needed_airspace_features: overlay.needed_airspace_features.length,
+          needed_airspace_label_tiles: overlay.needed_airspace_label_tiles.length,
           visible_features: overlay.visible_features.length,
+          airspace_paths: overlay.airspace_paths.length,
+          airspace_labels: overlay.airspace_labels.length,
           warnings: overlay.warnings.map((warning) => warning.code),
         });
         reportOverlayWarnings(overlay, "refresh");
-      }
-      if (!cancelled) {
-        setMapOverlay(overlay);
-        setMapOverlayViewport(viewport);
+        publishOverlay(overlay);
       }
     }
 
@@ -2556,6 +2771,86 @@ function MapPage(props: {
             ))}
           </div>
         ) : null}
+        {mapIsVisible && (mapOverlay.airspace_paths.length > 0 || mapOverlay.airspace_labels.length > 0) ? (
+          <svg
+            className="airspaceOverlay"
+            viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+            preserveAspectRatio="none"
+            style={overlayTransform ? { transform: overlayTransform, transformOrigin: "center center" } : undefined}
+          >
+            {mapOverlay.airspace_paths.map((feature) => (
+              <g key={feature.id}>
+                {feature.paths.map((path, index) => (
+                  <Fragment key={`${feature.id}:${index}`}>
+                    <path
+                      d={airspaceSvgPathD(path)}
+                      fill={path.closed ? colorWithOpacity(aviationThemeColor(feature.style.fill_color_key), feature.style.fill_opacity) : "none"}
+                      stroke="none"
+                    />
+                    {feature.style.strokes.map((stroke, strokeIndex) => (
+                      <path
+                        key={strokeIndex}
+                        d={airspaceSvgPathD(path)}
+                        fill="none"
+                        stroke={aviationThemeColor(stroke.color_key)}
+                        strokeWidth={stroke.width_px}
+                        strokeDasharray={airspaceDashArray(stroke.dash_px)}
+                        strokeLinecap={svgStrokeLinecap(stroke.line_cap)}
+                        strokeLinejoin="round"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    ))}
+                  </Fragment>
+                ))}
+              </g>
+            ))}
+            {mapOverlay.airspace_labels.map((label) => {
+              const parts = airspaceLabelParts(label.text);
+              if (!parts) {
+                return (
+                  <g
+                    key={`${label.feature_id}:${label.text}:${label.screen_x}:${label.screen_y}`}
+                    className={`airspaceLabel airspaceLabel-${label.style_key}`}
+                    transform={`translate(${label.screen_x} ${label.screen_y})`}
+                  >
+                    <text className="airspaceLabel" x="0" y="0">
+                      {label.text}
+                    </text>
+                  </g>
+                );
+              }
+              const dividerWidth = airspaceLabelDividerWidth(parts);
+              return (
+                <g
+                  key={`${label.feature_id}:${label.text}:${label.screen_x}:${label.screen_y}`}
+                  className={`airspaceFractionLabel airspaceLabel-${label.style_key}`}
+                  transform={`translate(${label.screen_x} ${label.screen_y})`}
+                >
+                  <text className="airspaceLabel" x="0" y="-7">
+                    {parts.upper}
+                  </text>
+                  <line
+                    className="airspaceLabelDividerContrast"
+                    x1={-dividerWidth / 2}
+                    y1="0"
+                    x2={dividerWidth / 2}
+                    y2="0"
+                  />
+                  <line
+                    className="airspaceLabelDivider"
+                    x1={-dividerWidth / 2}
+                    y1="0"
+                    x2={dividerWidth / 2}
+                    y2="0"
+                  />
+                  <text className="airspaceLabel" x="0" y="9">
+                    {parts.lower}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+        ) : null}
         {mapIsVisible && routeScreenSegments.length > 0 ? (
           <svg className="vectorOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
             {routeScreenSegments.map((segment) => (
@@ -2818,6 +3113,7 @@ function MapPage(props: {
             {nexradStatus.state === "unavailable" ? <div className="debugLine">nexrad reason {nexradStatus.reason}</div> : null}
             <div className="debugLine">terrain {terrainOverlay.query ? terrainOverlay.query.status.state : "idle"} img={terrainOverlay.images.length}</div>
             <div className="debugLine">vec pts={mapOverlay.visible_features.length} need={mapOverlay.needed_point_tiles.length} warn={mapOverlay.warnings.length}</div>
+            <div className="debugLine">airspace paths={mapOverlay.airspace_paths.length} labels={mapOverlay.airspace_labels.length} need={mapOverlay.needed_airspace_ref_tiles.length + mapOverlay.needed_airspace_features.length + mapOverlay.needed_airspace_label_tiles.length}</div>
             {mapOverlay.warnings.map((warning) => (
               <div key={warning.code} className="debugLine">warn {warning.code}</div>
             ))}

@@ -90,6 +90,47 @@ export type PointTilePayload = {
   }>;
 };
 
+export type AirspaceReferenceTilePayload = {
+  schema_version: number;
+  layer: string;
+  z: number;
+  x: number;
+  y: number;
+  refs: string[];
+};
+
+export type AirspaceLabelTilePayload = {
+  schema_version: number;
+  layer: string;
+  z: number;
+  x: number;
+  y: number;
+  labels: Array<{
+    feature_id: string;
+    text: string;
+    lon: number;
+    lat: number;
+    style_hint: string;
+  }>;
+};
+
+export type AirspaceFeaturePayload = {
+  schema_version: number;
+  id: string;
+  kind: string;
+  name: string;
+  ident: string;
+  airspace_class: string;
+  style_hint: string;
+  vertical_label: string;
+  bbox: [number, number, number, number];
+  paths: Array<{
+    role: string;
+    closed: boolean;
+    points: Array<[number, number]>;
+  }>;
+};
+
 export type VectorTileRequest = {
   layer: string;
   z: number;
@@ -110,9 +151,48 @@ export type VisibleMapFeature = {
   longest_runway_heading_true_deg: number | null;
 };
 
+export type AirspaceFeatureRequest = {
+  id: string;
+  path: string;
+};
+
+export type AirspaceDisplayPath = {
+  id: string;
+  name: string;
+  label: string;
+  style_key: string;
+  style: {
+    fill_color_key: string;
+    fill_opacity: number;
+    strokes: Array<{
+      color_key: string;
+      width_px: number;
+      dash_px: number[];
+      line_cap: "butt" | "round" | "square" | string;
+    }>;
+  };
+  paths: Array<{
+    closed: boolean;
+    points: Array<{ x: number; y: number }>;
+  }>;
+};
+
+export type AirspaceDisplayLabel = {
+  feature_id: string;
+  text: string;
+  style_key: string;
+  screen_x: number;
+  screen_y: number;
+};
+
 export type MapOverlayQueryResult = {
   needed_point_tiles: VectorTileRequest[];
+  needed_airspace_ref_tiles: VectorTileRequest[];
+  needed_airspace_features: AirspaceFeatureRequest[];
+  needed_airspace_label_tiles: VectorTileRequest[];
   visible_features: VisibleMapFeature[];
+  airspace_paths: AirspaceDisplayPath[];
+  airspace_labels: AirspaceDisplayLabel[];
   warnings: Array<{
     code: string;
     message: string;
@@ -171,6 +251,9 @@ export interface UiSession {
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
+  ingestAirspaceRefTiles(tiles: AirspaceReferenceTilePayload[]): Promise<void>;
+  ingestAirspaceFeatures(features: AirspaceFeaturePayload[]): Promise<void>;
+  ingestAirspaceLabelTiles(tiles: AirspaceLabelTilePayload[]): Promise<void>;
   queryMapOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<MapOverlayQueryResult>;
   queryTerrainOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<TerrainOverlayQueryResult>;
   renderTerrainOverlayTile(tileBytes: Uint8Array, aircraftAltitudeFt: number): Promise<Uint8Array>;
@@ -290,6 +373,9 @@ type WasmModule = {
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
   ingest_point_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
+  ingest_airspace_ref_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
+  ingest_airspace_features_in_session(handle: number, featuresJson: string): Promise<void> | void;
+  ingest_airspace_label_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   render_terrain_overlay_tile_in_session(handle: number, terrainTileBytes: Uint8Array, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
@@ -595,6 +681,21 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       ingestPointTiles: async (tiles) => {
         await withSessionRetry(async () => {
           await this.module.ingest_point_tiles_in_session(handle, JSON.stringify(tiles));
+        });
+      },
+      ingestAirspaceRefTiles: async (tiles) => {
+        await withSessionRetry(async () => {
+          await this.module.ingest_airspace_ref_tiles_in_session(handle, JSON.stringify(tiles));
+        });
+      },
+      ingestAirspaceFeatures: async (features) => {
+        await withSessionRetry(async () => {
+          await this.module.ingest_airspace_features_in_session(handle, JSON.stringify(features));
+        });
+      },
+      ingestAirspaceLabelTiles: async (tiles) => {
+        await withSessionRetry(async () => {
+          await this.module.ingest_airspace_label_tiles_in_session(handle, JSON.stringify(tiles));
         });
       },
       queryMapOverlay: async (viewport, widthPx, heightPx) =>
@@ -935,6 +1036,9 @@ export async function loadBestAvailableAdapter(
     typeof mod.select_airport_in_session !== "function" ||
     typeof mod.select_chart_in_session !== "function" ||
     typeof mod.ingest_point_tiles_in_session !== "function" ||
+    typeof mod.ingest_airspace_ref_tiles_in_session !== "function" ||
+    typeof mod.ingest_airspace_features_in_session !== "function" ||
+    typeof mod.ingest_airspace_label_tiles_in_session !== "function" ||
     typeof mod.get_map_overlay_in_session !== "function" ||
     typeof mod.get_terrain_overlay_in_session !== "function" ||
     typeof mod.render_terrain_overlay_tile_in_session !== "function" ||

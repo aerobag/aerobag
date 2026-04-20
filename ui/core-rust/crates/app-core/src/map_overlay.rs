@@ -1,11 +1,17 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{geometry::LatLon, MapViewport};
 
 pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 300;
+pub const AIRSPACE_DISPLAY_FEATURE_LIMIT: usize = 700;
 const POINT_TILE_ZOOM: u32 = 9;
+const AIRSPACE_MIN_DISPLAY_ZOOM: f64 = 6.0;
+const AIRSPACE_REF_MIN_ZOOM: u32 = 0;
+const AIRSPACE_REF_MAX_ZOOM: u32 = 8;
+const AIRSPACE_LABEL_MIN_ZOOM: u32 = 0;
+const AIRSPACE_LABEL_MAX_ZOOM: u32 = 12;
 const AIRPORT_MIN_DISPLAY_ZOOM: f64 = 8.0;
 const FIX_MIN_DISPLAY_ZOOM: f64 = 9.0;
 const NAV_MIN_DISPLAY_ZOOM: f64 = 7.0;
@@ -59,6 +65,62 @@ pub struct PointTilePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceReferenceTilePayload {
+    pub schema_version: u32,
+    pub layer: String,
+    pub z: u32,
+    pub x: u32,
+    pub y: u32,
+    pub refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceLabelTilePayload {
+    pub schema_version: u32,
+    pub layer: String,
+    pub z: u32,
+    pub x: u32,
+    pub y: u32,
+    pub labels: Vec<AirspaceLabelRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceLabelRecord {
+    pub feature_id: String,
+    pub text: String,
+    pub lon: f64,
+    pub lat: f64,
+    pub style_hint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceFeaturePayload {
+    pub schema_version: u32,
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub ident: String,
+    pub airspace_class: String,
+    pub style_hint: String,
+    pub vertical_label: String,
+    pub bbox: [f64; 4],
+    pub paths: Vec<AirspaceFeaturePath>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceFeaturePath {
+    pub role: String,
+    pub closed: bool,
+    pub points: Vec<[f64; 2]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceFeatureRequest {
+    pub id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VisibleMapFeature {
     pub id: String,
     pub kind: String,
@@ -70,6 +132,52 @@ pub struct VisibleMapFeature {
     pub fuel_available: bool,
     pub runway_length_ratio: f64,
     pub longest_runway_heading_true_deg: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceDisplayStyle {
+    pub fill_color_key: String,
+    pub fill_opacity: f64,
+    pub strokes: Vec<AirspaceDisplayStroke>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceDisplayStroke {
+    pub color_key: String,
+    pub width_px: f64,
+    pub dash_px: Vec<f64>,
+    pub line_cap: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceScreenPoint {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceDisplaySubpath {
+    pub closed: bool,
+    pub points: Vec<AirspaceScreenPoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceDisplayPath {
+    pub id: String,
+    pub name: String,
+    pub label: String,
+    pub style_key: String,
+    pub style: AirspaceDisplayStyle,
+    pub paths: Vec<AirspaceDisplaySubpath>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceDisplayLabel {
+    pub feature_id: String,
+    pub text: String,
+    pub style_key: String,
+    pub screen_x: f64,
+    pub screen_y: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -92,7 +200,12 @@ pub struct MapOverlayWarning {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapOverlayQueryResult {
     pub needed_point_tiles: Vec<VectorTileRequest>,
+    pub needed_airspace_ref_tiles: Vec<VectorTileRequest>,
+    pub needed_airspace_features: Vec<AirspaceFeatureRequest>,
+    pub needed_airspace_label_tiles: Vec<VectorTileRequest>,
     pub visible_features: Vec<VisibleMapFeature>,
+    pub airspace_paths: Vec<AirspaceDisplayPath>,
+    pub airspace_labels: Vec<AirspaceDisplayLabel>,
     pub warnings: Vec<MapOverlayWarning>,
 }
 
@@ -175,6 +288,9 @@ pub fn query_map_overlay(
     width_px: f64,
     height_px: f64,
     point_tile_cache: &HashMap<String, PointTilePayload>,
+    airspace_ref_tile_cache: &HashMap<String, AirspaceReferenceTilePayload>,
+    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
+    airspace_label_tile_cache: &HashMap<String, AirspaceLabelTilePayload>,
 ) -> MapOverlayQueryResult {
     let tile_window = visible_point_tile_window(viewport, width_px, height_px);
     let mut needed_point_tiles = Vec::new();
@@ -240,10 +356,379 @@ pub fn query_map_overlay(
         Vec::new()
     };
 
+    let airspace = query_airspace_overlay(
+        viewport,
+        width_px,
+        height_px,
+        center_world,
+        scale,
+        airspace_ref_tile_cache,
+        airspace_feature_cache,
+        airspace_label_tile_cache,
+    );
+    let mut warnings = warnings;
+    warnings.extend(airspace.warnings);
+
     MapOverlayQueryResult {
         needed_point_tiles,
+        needed_airspace_ref_tiles: airspace.needed_ref_tiles,
+        needed_airspace_features: airspace.needed_features,
+        needed_airspace_label_tiles: airspace.needed_label_tiles,
         visible_features,
+        airspace_paths: airspace.paths,
+        airspace_labels: airspace.labels,
         warnings,
+    }
+}
+
+struct AirspaceOverlayProjection {
+    needed_ref_tiles: Vec<VectorTileRequest>,
+    needed_features: Vec<AirspaceFeatureRequest>,
+    needed_label_tiles: Vec<VectorTileRequest>,
+    paths: Vec<AirspaceDisplayPath>,
+    labels: Vec<AirspaceDisplayLabel>,
+    warnings: Vec<MapOverlayWarning>,
+}
+
+fn query_airspace_overlay(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    center_world: WorldPoint,
+    scale: f64,
+    ref_tile_cache: &HashMap<String, AirspaceReferenceTilePayload>,
+    feature_cache: &HashMap<String, AirspaceFeaturePayload>,
+    label_tile_cache: &HashMap<String, AirspaceLabelTilePayload>,
+) -> AirspaceOverlayProjection {
+    if viewport.zoom < AIRSPACE_MIN_DISPLAY_ZOOM || width_px <= 0.0 || height_px <= 0.0 {
+        return AirspaceOverlayProjection {
+            needed_ref_tiles: Vec::new(),
+            needed_features: Vec::new(),
+            needed_label_tiles: Vec::new(),
+            paths: Vec::new(),
+            labels: Vec::new(),
+            warnings: Vec::new(),
+        };
+    }
+
+    let ref_zoom = airspace_reference_zoom(viewport.zoom);
+    let ref_tiles = visible_layer_tile_window("airspace", ref_zoom, viewport, width_px, height_px);
+    let mut needed_ref_tiles = Vec::new();
+    let mut feature_ids = BTreeSet::new();
+    for tile in ref_tiles {
+        let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
+        let Some(payload) = ref_tile_cache.get(&key) else {
+            needed_ref_tiles.push(tile);
+            continue;
+        };
+        feature_ids.extend(payload.refs.iter().cloned());
+    }
+
+    let mut needed_features = Vec::new();
+    let mut paths = Vec::new();
+    let mut limit_hit = false;
+    for feature_id in feature_ids {
+        if paths.len() >= AIRSPACE_DISPLAY_FEATURE_LIMIT {
+            limit_hit = true;
+            break;
+        }
+        let Some(feature) = feature_cache.get(&feature_id) else {
+            needed_features.push(AirspaceFeatureRequest {
+                path: airspace_feature_path(&feature_id),
+                id: feature_id,
+            });
+            continue;
+        };
+        if !airspace_bbox_may_intersect_screen(
+            feature.bbox,
+            center_world,
+            scale,
+            width_px,
+            height_px,
+        ) {
+            continue;
+        }
+        let projected = project_airspace_feature(feature, center_world, scale, width_px, height_px);
+        if !projected.paths.is_empty() {
+            paths.push(projected);
+        }
+    }
+
+    let label_zoom = airspace_label_zoom(viewport.zoom);
+    let label_tiles =
+        visible_layer_tile_window("airspace-labels", label_zoom, viewport, width_px, height_px);
+    let mut needed_label_tiles = Vec::new();
+    let mut labels = Vec::new();
+    for tile in label_tiles {
+        let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
+        let Some(payload) = label_tile_cache.get(&key) else {
+            needed_label_tiles.push(tile);
+            continue;
+        };
+        for label in &payload.labels {
+            let point = world_to_screen(
+                center_world,
+                scale,
+                width_px,
+                height_px,
+                LatLon {
+                    lat: label.lat,
+                    lon: label.lon,
+                },
+            );
+            if point.x < -80.0
+                || point.x > width_px + 80.0
+                || point.y < -40.0
+                || point.y > height_px + 40.0
+            {
+                continue;
+            }
+            labels.push(AirspaceDisplayLabel {
+                feature_id: label.feature_id.clone(),
+                text: label.text.trim().to_string(),
+                style_key: airspace_style_key(&label.style_hint),
+                screen_x: point.x,
+                screen_y: point.y,
+            });
+        }
+    }
+
+    let warnings = if limit_hit {
+        vec![MapOverlayWarning {
+            code: "airspace_display_feature_limit".to_string(),
+            message: format!(
+                "display capped at {} visible airspace features",
+                AIRSPACE_DISPLAY_FEATURE_LIMIT
+            ),
+        }]
+    } else {
+        Vec::new()
+    };
+
+    AirspaceOverlayProjection {
+        needed_ref_tiles,
+        needed_features,
+        needed_label_tiles,
+        paths,
+        labels,
+        warnings,
+    }
+}
+
+fn airspace_reference_zoom(display_zoom: f64) -> u32 {
+    display_zoom
+        .floor()
+        .clamp(AIRSPACE_REF_MIN_ZOOM as f64, AIRSPACE_REF_MAX_ZOOM as f64) as u32
+}
+
+fn airspace_label_zoom(display_zoom: f64) -> u32 {
+    display_zoom.floor().clamp(
+        AIRSPACE_LABEL_MIN_ZOOM as f64,
+        AIRSPACE_LABEL_MAX_ZOOM as f64,
+    ) as u32
+}
+
+pub fn airspace_ref_tile_key(z: u32, x: u32, y: u32) -> String {
+    tile_key("airspace", z, x, y)
+}
+
+pub fn airspace_label_tile_key(z: u32, x: u32, y: u32) -> String {
+    tile_key("airspace-labels", z, x, y)
+}
+
+pub fn airspace_feature_path(id: &str) -> String {
+    format!("had/{}.json", id.replace(':', "/"))
+}
+
+fn project_airspace_feature(
+    feature: &AirspaceFeaturePayload,
+    center_world: WorldPoint,
+    scale: f64,
+    width_px: f64,
+    height_px: f64,
+) -> AirspaceDisplayPath {
+    let paths = feature
+        .paths
+        .iter()
+        .filter_map(|path| {
+            let points = path
+                .points
+                .iter()
+                .filter_map(|point| {
+                    let lon = point[0];
+                    let lat = point[1];
+                    if !lon.is_finite() || !lat.is_finite() {
+                        return None;
+                    }
+                    let screen = world_to_screen(
+                        center_world,
+                        scale,
+                        width_px,
+                        height_px,
+                        LatLon { lat, lon },
+                    );
+                    Some(AirspaceScreenPoint {
+                        x: round_screen_coordinate(screen.x),
+                        y: round_screen_coordinate(screen.y),
+                    })
+                })
+                .collect::<Vec<_>>();
+            let points = simplify_projected_points(points);
+            (points.len() >= 2).then_some(AirspaceDisplaySubpath {
+                closed: path.closed,
+                points,
+            })
+        })
+        .collect::<Vec<_>>();
+    let style_key = airspace_style_key(&feature.style_hint);
+    AirspaceDisplayPath {
+        id: feature.id.clone(),
+        name: feature.name.clone(),
+        label: feature.vertical_label.clone(),
+        style: airspace_display_style(&style_key),
+        style_key,
+        paths,
+    }
+}
+
+fn airspace_bbox_may_intersect_screen(
+    bbox: [f64; 4],
+    center_world: WorldPoint,
+    scale: f64,
+    width_px: f64,
+    height_px: f64,
+) -> bool {
+    let corners = [
+        LatLon {
+            lat: bbox[1],
+            lon: bbox[0],
+        },
+        LatLon {
+            lat: bbox[3],
+            lon: bbox[0],
+        },
+        LatLon {
+            lat: bbox[1],
+            lon: bbox[2],
+        },
+        LatLon {
+            lat: bbox[3],
+            lon: bbox[2],
+        },
+    ];
+    let mut min_x = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for corner in corners {
+        let point = world_to_screen(center_world, scale, width_px, height_px, corner);
+        min_x = min_x.min(point.x);
+        max_x = max_x.max(point.x);
+        min_y = min_y.min(point.y);
+        max_y = max_y.max(point.y);
+    }
+    let margin = 64.0;
+    max_x >= -margin
+        && min_x <= width_px + margin
+        && max_y >= -margin
+        && min_y <= height_px + margin
+}
+
+fn simplify_projected_points(points: Vec<AirspaceScreenPoint>) -> Vec<AirspaceScreenPoint> {
+    let mut simplified: Vec<AirspaceScreenPoint> = Vec::with_capacity(points.len());
+    for point in points {
+        let keep = simplified.last().map_or(true, |last| {
+            (point.x - last.x).abs() >= 0.35 || (point.y - last.y).abs() >= 0.35
+        });
+        if keep {
+            simplified.push(point);
+        }
+    }
+    simplified
+}
+
+fn round_screen_coordinate(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+fn airspace_style_key(style_hint: &str) -> String {
+    match style_hint.to_ascii_lowercase().as_str() {
+        "class_b" => "class_b",
+        "class_c" => "class_c",
+        "class_d" => "class_d",
+        "restricted" => "restricted",
+        "prohibited" => "prohibited",
+        "moa" => "moa",
+        "warning" => "warning",
+        "alert" => "alert",
+        "national_security" => "national_security",
+        _ => "airspace",
+    }
+    .to_string()
+}
+
+fn airspace_display_style(style_key: &str) -> AirspaceDisplayStyle {
+    match style_key {
+        "class_b" => AirspaceDisplayStyle {
+            fill_color_key: "class_b_d_blue".to_string(),
+            fill_opacity: 0.035,
+            strokes: vec![AirspaceDisplayStroke {
+                color_key: "class_b_d_blue".to_string(),
+                width_px: 4.8,
+                dash_px: Vec::new(),
+                line_cap: "round".to_string(),
+            }],
+        },
+        "class_c" => AirspaceDisplayStyle {
+            fill_color_key: "class_c_magenta".to_string(),
+            fill_opacity: 0.03,
+            strokes: vec![AirspaceDisplayStroke {
+                color_key: "class_c_magenta".to_string(),
+                width_px: 4.0,
+                dash_px: Vec::new(),
+                line_cap: "round".to_string(),
+            }],
+        },
+        "class_d" => AirspaceDisplayStyle {
+            fill_color_key: "class_b_d_blue".to_string(),
+            fill_opacity: 0.02,
+            strokes: vec![AirspaceDisplayStroke {
+                color_key: "class_b_d_blue".to_string(),
+                width_px: 4.0,
+                dash_px: vec![8.0, 8.0],
+                line_cap: "butt".to_string(),
+            }],
+        },
+        "restricted" | "prohibited" => AirspaceDisplayStyle {
+            fill_color_key: "class_b_d_blue".to_string(),
+            fill_opacity: 0.025,
+            strokes: vec![AirspaceDisplayStroke {
+                color_key: "class_b_d_blue".to_string(),
+                width_px: 4.0,
+                dash_px: vec![8.0, 4.0],
+                line_cap: "butt".to_string(),
+            }],
+        },
+        "moa" | "warning" | "alert" | "national_security" => AirspaceDisplayStyle {
+            fill_color_key: "class_b_d_blue".to_string(),
+            fill_opacity: 0.018,
+            strokes: vec![AirspaceDisplayStroke {
+                color_key: "class_b_d_blue".to_string(),
+                width_px: 3.6,
+                dash_px: vec![6.0, 4.0],
+                line_cap: "butt".to_string(),
+            }],
+        },
+        _ => AirspaceDisplayStyle {
+            fill_color_key: "class_b_d_blue".to_string(),
+            fill_opacity: 0.018,
+            strokes: vec![AirspaceDisplayStroke {
+                color_key: "class_b_d_blue".to_string(),
+                width_px: 3.2,
+                dash_px: Vec::new(),
+                line_cap: "round".to_string(),
+            }],
+        },
     }
 }
 
@@ -377,6 +862,50 @@ mod tests {
     }
 
     #[test]
+    fn airspace_label_tiles_follow_display_zoom_with_max_clamp() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 37.62,
+                lon: -122.38,
+            },
+            zoom: 11.7,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let result = query_map_overlay(
+            &viewport,
+            1200.0,
+            900.0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(result
+            .needed_airspace_label_tiles
+            .iter()
+            .all(|tile| tile.z == 11));
+
+        let overzoomed = MapViewport {
+            zoom: 13.2,
+            ..viewport
+        };
+        let result = query_map_overlay(
+            &overzoomed,
+            1200.0,
+            900.0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(result
+            .needed_airspace_label_tiles
+            .iter()
+            .all(|tile| tile.z == AIRSPACE_LABEL_MAX_ZOOM));
+    }
+
+    #[test]
     fn caps_visible_features_and_warns() {
         let viewport = MapViewport {
             center: LatLon {
@@ -422,7 +951,15 @@ mod tests {
                     .collect(),
             },
         );
-        let result = query_map_overlay(&viewport, 1200.0, 900.0, &cache);
+        let result = query_map_overlay(
+            &viewport,
+            1200.0,
+            900.0,
+            &cache,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert_eq!(result.visible_features.len(), VECTOR_DISPLAY_FEATURE_LIMIT);
         assert_eq!(result.warnings.len(), 1);
         assert_eq!(result.warnings[0].code, "vector_display_feature_limit");
@@ -481,7 +1018,15 @@ mod tests {
             cache.insert(tile_key(&tile.layer, tile.z, tile.x, tile.y), payload);
         }
 
-        let result = query_map_overlay(&viewport, 1200.0, 900.0, &cache);
+        let result = query_map_overlay(
+            &viewport,
+            1200.0,
+            900.0,
+            &cache,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert!(
             !result.visible_features.is_empty(),
             "expected visible fix features for VAMPS viewport"
@@ -590,7 +1135,15 @@ mod tests {
             },
         );
 
-        let result = query_map_overlay(&viewport, 1200.0, 900.0, &cache);
+        let result = query_map_overlay(
+            &viewport,
+            1200.0,
+            900.0,
+            &cache,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert_eq!(result.visible_features.len(), 1);
         assert_eq!(result.visible_features[0].id, "airports:KSEA");
     }

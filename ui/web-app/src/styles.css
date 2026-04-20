@@ -172,12 +172,12 @@ button {
 }
 
 .fixLabel {
-  fill: #39d9ff;
+  fill: white;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.08em;
   paint-order: stroke;
-  stroke: rgba(8, 18, 24, 0.7);
+  stroke: rgba(8, 18, 24, 0.82);
   stroke-width: 3px;
   stroke-linejoin: round;
 }
@@ -198,12 +198,12 @@ button {
 }
 
 .vorLabel {
-  fill: #4aa3ff;
+  fill: white;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.08em;
   paint-order: stroke;
-  stroke: rgba(8, 18, 24, 0.7);
+  stroke: rgba(8, 18, 24, 0.82);
   stroke-width: 3px;
   stroke-linejoin: round;
 }
@@ -222,21 +222,22 @@ button {
 }
 
 .airportLabel {
+  fill: white;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.08em;
   paint-order: stroke;
-  stroke: rgba(8, 18, 24, 0.7);
+  stroke: rgba(8, 18, 24, 0.82);
   stroke-width: 3px;
   stroke-linejoin: round;
 }
 
 .airportToweredLabel {
-  fill: #4aa3ff;
+  fill: white;
 }
 
 .airportUntoweredLabel {
-  fill: #ff4fd8;
+  fill: white;
 }
 
 .airportRunwayBarUnder {

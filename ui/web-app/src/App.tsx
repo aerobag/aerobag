@@ -573,6 +573,9 @@ const airportCircleMarkerPath = [
   "A 12 12 0 1 1 0 -12",
   "Z",
 ].join(" ");
+const airportLabelY = -24;
+const vorLabelY = -24;
+const fixLabelY = -15;
 
 type VectorPointSymbolFeature = {
   kind: string;
@@ -618,7 +621,7 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
           </>
         ) : null}
         {showLabel ? (
-          <text x="18" y="5" textAnchor="start" className={airportLabelClass}>
+          <text x="0" y={airportLabelY} textAnchor="middle" className={airportLabelClass}>
             {feature.label}
           </text>
         ) : null}
@@ -631,7 +634,7 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
         <path d={vorBandPath} className="vorBand" fillRule="evenodd" />
         <path d={vorOuterHexPath} className="vorBorder" />
         {showLabel ? (
-          <text x="0" y="20" textAnchor="middle" className="vorLabel">
+          <text x="0" y={vorLabelY} textAnchor="middle" className="vorLabel">
             {feature.label}
           </text>
         ) : null}
@@ -642,7 +645,7 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
     <>
       <path d="M 0 -8 L 7 6 L -7 6 Z" className="fixMarker" />
       {showLabel ? (
-        <text x="0" y="20" textAnchor="middle" className="fixLabel">
+        <text x="0" y={fixLabelY} textAnchor="middle" className="fixLabel">
           {feature.label}
         </text>
       ) : null}

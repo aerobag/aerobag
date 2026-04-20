@@ -282,19 +282,13 @@ fn display_label(record: &PointVectorRecord) -> String {
         }
     }
     if record.style_class == "nav" && is_vor_family_kind(&record.kind) {
-        let ident = record
+        if let Some(ident) = record
             .id
             .strip_prefix("nav:")
             .map(|tail| tail.split(':').next().unwrap_or(tail).trim())
-            .filter(|value| !value.is_empty());
-        let frequency = record
-            .label
-            .split_whitespace()
-            .last()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        if let (Some(ident), Some(frequency)) = (ident, frequency) {
-            return format!("{ident} {frequency}").to_uppercase();
+            .filter(|value| !value.is_empty())
+        {
+            return ident.to_uppercase();
         }
     }
     record.label.trim().to_uppercase()
@@ -432,6 +426,30 @@ mod tests {
         assert_eq!(result.visible_features.len(), VECTOR_DISPLAY_FEATURE_LIMIT);
         assert_eq!(result.warnings.len(), 1);
         assert_eq!(result.warnings[0].code, "vector_display_feature_limit");
+    }
+
+    #[test]
+    fn vor_symbol_labels_omit_frequency() {
+        let feature = point_vector_record_to_symbol_feature(&PointVectorRecord {
+            id: "nav:ELN:VOR".to_string(),
+            kind: "VORTAC".to_string(),
+            lat: 47.024,
+            lon: -120.459,
+            label: "ELLENSBURG 117.9".to_string(),
+            style_class: "nav".to_string(),
+            towered: None,
+            fuel_available: None,
+            public_use: None,
+            private_use: None,
+            has_paved_runway: None,
+            heliport: None,
+            has_water_runway: None,
+            longest_runway_length_ft: None,
+            longest_runway_heading_true_deg: None,
+        })
+        .expect("VORTAC should be displayed");
+
+        assert_eq!(feature.label, "ELN");
     }
 
     #[test]

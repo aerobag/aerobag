@@ -12,6 +12,8 @@ from PIL import Image
 RADIUS = 6378137.0
 ORIGIN_SHIFT = math.pi * RADIUS
 FEET_PER_METER = 3.280839895
+WEBP_QUALITY = 75
+WEBP_METHOD = 4
 
 COLOR_STOPS = [
     (0.0, (198, 221, 154)),
@@ -92,9 +94,18 @@ def hillshade(elev_m, invalid, pixel_size_m):
     return 0.62 + 0.46 * shade
 
 
-def write_png(path, rgba):
+def save_webp(path, image):
     path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(rgba, mode="RGBA").save(path, optimize=False)
+    image.save(
+        path,
+        format="WEBP",
+        quality=WEBP_QUALITY,
+        method=WEBP_METHOD,
+    )
+
+
+def write_webp(path, rgba):
+    save_webp(path, Image.fromarray(rgba, mode="RGBA"))
 
 
 def resampling_filter():
@@ -111,21 +122,19 @@ def build_parent_tile(tiles_root, z, x, y, tile_size):
         (x * 2 + 1, y * 2, half, half),
     ]
     for child_x, child_y, dst_x, dst_y in children:
-        child_path = tiles_root / str(z + 1) / str(child_x) / f"{child_y}.png"
+        child_path = tiles_root / str(z + 1) / str(child_x) / f"{child_y}.webp"
         if child_path.exists():
             child = Image.open(child_path).convert("RGBA")
             parent.paste(child.resize((half, half), resampling_filter()), (dst_x, dst_y))
-    path = tiles_root / str(z) / str(x) / f"{y}.png"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    parent.save(path, optimize=False)
+    save_webp(tiles_root / str(z) / str(x) / f"{y}.webp", parent)
 
 
 def build_parent_pyramid(tiles_root, max_zoom, tile_size):
-    counts = {max_zoom: sum(1 for _ in (tiles_root / str(max_zoom)).glob("*/*.png"))}
+    counts = {max_zoom: sum(1 for _ in (tiles_root / str(max_zoom)).glob("*/*.webp"))}
     for z in range(max_zoom - 1, -1, -1):
         child_root = tiles_root / str(z + 1)
         parents = set()
-        for child_path in child_root.glob("*/*.png"):
+        for child_path in child_root.glob("*/*.webp"):
             child_x = int(child_path.parent.name)
             child_y = int(child_path.stem)
             parents.add((child_x // 2, child_y // 2))
@@ -197,7 +206,7 @@ def render_tile(task):
     lit = np.clip(rgb * shade[:, :, None], 0, 255).astype(np.uint8)
     alpha = np.where(invalid, 0, 255).astype(np.uint8)
     rgba = np.dstack([lit, alpha])[1:-1, 1:-1, :]
-    write_png(WORKER_TILES_ROOT / str(WORKER_ZOOM) / str(x) / f"{y}.png", rgba)
+    write_webp(WORKER_TILES_ROOT / str(WORKER_ZOOM) / str(x) / f"{y}.webp", rgba)
     return 1
 
 
@@ -246,9 +255,11 @@ def main():
         "max_zoom": args.zoom,
         "base_zoom": args.zoom,
         "tile_size": args.tile_size,
-        "tile_format": "png_rgba",
+        "tile_format": "webp_rgba",
         "tile_content_encoding": "identity",
-        "zip_member_compression": "stored_png",
+        "zip_member_compression": "stored_webp",
+        "webp_quality": WEBP_QUALITY,
+        "webp_method": WEBP_METHOD,
         "parent_tile_policy": "alpha-preserving RGBA downsample from child tiles",
         "worker_count": workers,
         "source_dem": "USGS 3DEP 1 arc-second DEM",

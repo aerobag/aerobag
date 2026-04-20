@@ -96,7 +96,7 @@ Its first-cut package layout is:
 ```text
 shaded-relief-<region>_<sha256>.zip
   manifest.json
-  tiles/<z>/<x>/<y>.png
+  tiles/<z>/<x>/<y>.webp
 ```
 
 The first-cut shaded-relief renderer derives directly from the same USGS 3DEP
@@ -108,7 +108,9 @@ northwest hillshade. Nodata is transparent. Water and glacier masks are not
 included yet.
 
 The shaded-relief source/max zoom is z10, with alpha-preserving RGBA parent
-tiles generated down to z0 for scalable zoomed-out rendering.
+tiles generated down to z0 for scalable zoomed-out rendering. Tiles are WebP
+RGBA because this is a visual background product and should use the same compact
+image format as the existing chart tile tree.
 
 Terrain refresh state lives in `current_artifacts`, not inside the terrain ZIP.
 That keeps product identity stable: if a later poll checks TNMAccess/DEM inputs

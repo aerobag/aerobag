@@ -612,7 +612,7 @@ const TPP_RENDER_JOBS_PER_RUN: usize = 8;
 const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
 const TERRAIN_PIPELINE_VERSION: &str = "v3";
-const SHADED_RELIEF_PIPELINE_VERSION: &str = "v3";
+const SHADED_RELIEF_PIPELINE_VERSION: &str = "v4";
 const SHADED_RELIEF_TILE_WORKERS: u32 = 4;
 const TERRAIN_MIN_ZOOM: u32 = 0;
 const TERRAIN_ZOOM: u32 = 10;
@@ -7656,11 +7656,12 @@ fn zip_directory_deterministic(
         .with_context(|| format!("failed to create {}", zip_path.display()))?;
     let mut writer = ZipWriter::new(file);
     for (name, path) in files {
-        let compression = if name.ends_with(".terrain") || name.ends_with(".png") {
-            CompressionMethod::Stored
-        } else {
-            CompressionMethod::Deflated
-        };
+        let compression =
+            if name.ends_with(".terrain") || name.ends_with(".png") || name.ends_with(".webp") {
+                CompressionMethod::Stored
+            } else {
+                CompressionMethod::Deflated
+            };
         let options = SimpleFileOptions::default()
             .compression_method(compression)
             .last_modified_time(ZipDateTime::default());

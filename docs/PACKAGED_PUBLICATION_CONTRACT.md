@@ -303,9 +303,9 @@ It is referenced from `current_artifacts_YYYYMMDD.json` under `static_products[]
 Consumers fetch it only if they explicitly need a terrain-background visual
 layer.
 
-The package contains `manifest.json` plus `tiles/<z>/<x>/<y>.png` members.
+The package contains `manifest.json` plus `tiles/<z>/<x>/<y>.webp` members.
 The source/max zoom uses the same `z10` / `512x512` grid as the numeric terrain
-product, with alpha-preserving RGBA parent tiles generated down to z0. PNG tile
+product, with alpha-preserving RGBA parent tiles generated down to z0. WebP tile
 members are already image-compressed and are stored in the outer zip without
 another deflate pass.
 

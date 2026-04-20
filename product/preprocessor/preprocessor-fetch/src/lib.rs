@@ -17,7 +17,7 @@ use std::{
 };
 
 const NETWORK_FETCH_OUTER_ATTEMPTS: u32 = 3;
-const NETWORK_FETCH_OUTER_RETRY_DELAY: Duration = Duration::from_secs(30);
+const NETWORK_FETCH_OUTER_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 pub fn manifest_path_for_run(run_root: &str) -> String {
     format!("{run_root}/meta/manifest.json")
@@ -561,9 +561,6 @@ fn fetch_network_with_cache_once(
         .arg("-L")
         .arg("--silent")
         .arg("--show-error")
-        .arg("--retry")
-        .arg("3")
-        .arg("--retry-all-errors")
         .arg("--dump-header")
         .arg(&headers_path)
         .arg("--output")
@@ -681,9 +678,6 @@ fn fetch_network_once(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Re
         .arg("--fail")
         .arg("--silent")
         .arg("--show-error")
-        .arg("--retry")
-        .arg("3")
-        .arg("--retry-all-errors")
         .arg("--output")
         .arg(&temp_path)
         .arg(url)

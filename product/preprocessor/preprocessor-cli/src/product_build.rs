@@ -8047,26 +8047,14 @@ fn prefetch_water_mask_source_urls(
     label: &str,
     fetch_cache: &FetchCacheConfig,
 ) -> anyhow::Result<()> {
-    let mut last_error = None;
-    for attempt in 1..=3 {
-        match prefetch_archives_with_provenance(
-            urls,
-            source_dir,
-            WATER_MASK_FETCH_WORKERS as usize,
-            Some(fetch_cache),
-            provenance_dir,
-            label,
-        ) {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                last_error = Some(error);
-                if attempt < 3 {
-                    thread::sleep(Duration::from_secs(30 * attempt));
-                }
-            }
-        }
-    }
-    Err(last_error.expect("water mask prefetch should have recorded an error"))
+    prefetch_archives_with_provenance(
+        urls,
+        source_dir,
+        WATER_MASK_FETCH_WORKERS as usize,
+        Some(fetch_cache),
+        provenance_dir,
+        label,
+    )
 }
 
 fn prefetch_water_mask_source_pages(

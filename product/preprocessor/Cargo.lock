@@ -645,6 +645,7 @@ name = "preprocessor-vectors"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "quick-xml",
  "rusqlite",
  "serde",
  "serde_json",

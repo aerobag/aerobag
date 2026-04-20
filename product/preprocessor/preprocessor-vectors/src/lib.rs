@@ -1,26 +1,30 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use quick_xml::events::Event;
+use quick_xml::Reader;
 use rusqlite::Connection;
 use serde::Serialize;
-use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
-const POINT_LAYER_ZOOM_POLICY: &[(&str, u8)] = &[
-    ("airport", 9),
-    ("fix", 9),
-    ("nav", 9),
-    ("awos", 9),
-];
+const POINT_LAYER_ZOOM_POLICY: &[(&str, u8)] =
+    &[("airport", 9), ("fix", 9), ("nav", 9), ("awos", 9)];
 const OBSTACLE_LAYER_ZOOM: u8 = 12;
+const AIRSPACE_REF_MIN_ZOOM: u8 = 0;
+const AIRSPACE_REF_MAX_ZOOM: u8 = 8;
+const AIRSPACE_REF_MIN_PIXEL_SPAN: f64 = 3.0;
+const AIRSPACE_LABEL_ZOOM: u8 = 8;
 
 #[derive(Debug, Clone)]
 pub struct BuildVectorsRequest {
     pub main_db: PathBuf,
+    pub data_input_dir: Option<PathBuf>,
     pub output_dir: PathBuf,
     pub version_label: String,
+    pub include_class_e_airspace: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +53,8 @@ struct VectorManifest {
     schema_version: u32,
     version_label: String,
     point_layers: BTreeMap<String, PointLayerManifest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    airspace: Option<AirspaceManifest>,
     files: BTreeMap<String, String>,
 }
 
@@ -57,6 +63,8 @@ struct VectorStats {
     schema_version: u32,
     version_label: String,
     points: PointStats,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    airspace: Option<AirspaceStats>,
     warnings: Vec<String>,
 }
 
@@ -78,6 +86,30 @@ struct PointLayerStats {
     zoom: u8,
     tile_count: usize,
     max_points_in_tile: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AirspaceManifest {
+    source: String,
+    source_path: String,
+    feature_path_template: String,
+    reference_tile_path_template: String,
+    label_tile_path_template: String,
+    reference_tile_min_zoom: u8,
+    reference_tile_max_zoom: u8,
+    label_tile_zoom: u8,
+    geometry_encoding: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AirspaceStats {
+    source_found: bool,
+    feature_count: usize,
+    class_counts: BTreeMap<String, usize>,
+    reference_tile_count: usize,
+    label_tile_count: usize,
+    max_refs_in_tile: usize,
+    max_labels_in_tile: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -126,6 +158,89 @@ struct PointRecord {
     longest_runway_heading_true_deg: Option<f64>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct AirspaceFeature {
+    schema_version: u32,
+    id: String,
+    kind: String,
+    source: String,
+    cycle: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ident: Option<String>,
+    airspace_class: String,
+    local_type: String,
+    style_hint: String,
+    vertical_label: String,
+    vertical: AirspaceVertical,
+    bbox: [f64; 4],
+    label: AirspaceLabel,
+    paths: Vec<AirspacePath>,
+    source_properties: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AirspaceVertical {
+    lower: AirspaceLimit,
+    upper: AirspaceLimit,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AirspaceLimit {
+    display: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    feet: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AirspaceLabel {
+    text: String,
+    lon: f64,
+    lat: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AirspacePath {
+    role: String,
+    closed: bool,
+    points: Vec<[f64; 2]>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AirspaceReferenceTileFile {
+    schema_version: u32,
+    layer: String,
+    z: u8,
+    x: u32,
+    y: u32,
+    refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AirspaceLabelTileFile {
+    schema_version: u32,
+    layer: String,
+    z: u8,
+    x: u32,
+    y: u32,
+    labels: Vec<AirspaceTileLabel>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AirspaceTileLabel {
+    feature_id: String,
+    text: String,
+    lon: f64,
+    lat: f64,
+    style_hint: String,
+}
+
 pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<BuildVectorsResult> {
     if request.output_dir.exists() {
         fs::remove_dir_all(&request.output_dir)
@@ -137,6 +252,29 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
     let conn = Connection::open(&request.main_db)
         .with_context(|| format!("failed to open {}", request.main_db.display()))?;
     let points = load_points(&conn)?;
+    let airspace_source = request
+        .data_input_dir
+        .as_ref()
+        .map(|dir| dir.join("Additional_Data/Shape_Files/Class_Airspace.shp"));
+    let saa_source = request
+        .data_input_dir
+        .as_ref()
+        .map(|dir| dir.join("SAA-AIXM_5_Schema/SaaSubscriberFile.zip"));
+    let mut airspace_features = match airspace_source.as_deref() {
+        Some(path) if path.exists() => load_class_airspace_features(
+            path,
+            &request.version_label,
+            request.include_class_e_airspace,
+        )
+        .with_context(|| format!("failed to load airspace shapefile {}", path.display()))?,
+        _ => Vec::new(),
+    };
+    if let Some(path) = saa_source.as_ref().filter(|path| path.exists()) {
+        airspace_features.extend(
+            load_saa_airspace_features(path, &request.version_label)
+                .with_context(|| format!("failed to load SAA AIXM {}", path.display()))?,
+        );
+    }
     let stats_path = request.output_dir.join("stats.json");
     let manifest_path = request
         .output_dir
@@ -173,7 +311,10 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             )?;
             zip_members.push((relative_path, points_path));
         }
-        files.insert(format!("point_tiles_{layer_name}"), tile_path_template.clone());
+        files.insert(
+            format!("point_tiles_{layer_name}"),
+            tile_path_template.clone(),
+        );
         point_layers.insert(
             layer_name.clone(),
             PointLayerManifest {
@@ -195,6 +336,139 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
         );
     }
 
+    let mut airspace_manifest = None;
+    let mut airspace_stats = None;
+    if !airspace_features.is_empty() {
+        let feature_path_template = "had/{id}.json".to_string();
+        let reference_tile_path_template = "airspace/refs/{z}/{x}/{y}.json".to_string();
+        let label_tile_path_template =
+            format!("airspace/labels/{}/{{x}}/{{y}}.json", AIRSPACE_LABEL_ZOOM);
+        let mut reference_tiles = BTreeMap::<(u8, u32, u32), Vec<String>>::new();
+        let mut label_tiles = BTreeMap::<(u8, u32, u32), Vec<AirspaceTileLabel>>::new();
+        let mut class_counts = BTreeMap::<String, usize>::new();
+
+        for feature in &airspace_features {
+            *class_counts
+                .entry(feature.airspace_class.clone())
+                .or_insert(0) += 1;
+            let feature_path = request
+                .output_dir
+                .join(airspace_feature_relative_path(&feature.id));
+            write_json_compact(&feature_path, feature)?;
+            zip_members.push((airspace_feature_relative_path(&feature.id), feature_path));
+
+            for zoom in AIRSPACE_REF_MIN_ZOOM..=AIRSPACE_REF_MAX_ZOOM {
+                if !bbox_is_visible_at_zoom(feature.bbox, zoom, AIRSPACE_REF_MIN_PIXEL_SPAN) {
+                    continue;
+                }
+                for tile in tiles_for_bbox(feature.bbox, zoom) {
+                    reference_tiles
+                        .entry(tile)
+                        .or_default()
+                        .push(feature.id.clone());
+                }
+            }
+            let (label_x, label_y) =
+                slippy_tile(feature.label.lat, feature.label.lon, AIRSPACE_LABEL_ZOOM);
+            label_tiles
+                .entry((AIRSPACE_LABEL_ZOOM, label_x, label_y))
+                .or_default()
+                .push(AirspaceTileLabel {
+                    feature_id: feature.id.clone(),
+                    text: feature.label.text.clone(),
+                    lon: feature.label.lon,
+                    lat: feature.label.lat,
+                    style_hint: feature.style_hint.clone(),
+                });
+        }
+
+        let mut max_refs_in_tile = 0usize;
+        for ((z, x, y), mut refs) in reference_tiles {
+            refs.sort();
+            refs.dedup();
+            max_refs_in_tile = max_refs_in_tile.max(refs.len());
+            let relative_path = airspace_ref_tile_relative_path(z, x, y);
+            let path = request.output_dir.join(&relative_path);
+            write_json_compact(
+                &path,
+                &AirspaceReferenceTileFile {
+                    schema_version: 1,
+                    layer: "airspace".to_string(),
+                    z,
+                    x,
+                    y,
+                    refs,
+                },
+            )?;
+            zip_members.push((relative_path, path));
+        }
+
+        let mut max_labels_in_tile = 0usize;
+        let label_tile_count = label_tiles.len();
+        for ((z, x, y), labels) in label_tiles {
+            max_labels_in_tile = max_labels_in_tile.max(labels.len());
+            let relative_path = airspace_label_tile_relative_path(z, x, y);
+            let path = request.output_dir.join(&relative_path);
+            write_json_compact(
+                &path,
+                &AirspaceLabelTileFile {
+                    schema_version: 1,
+                    layer: "airspace-labels".to_string(),
+                    z,
+                    x,
+                    y,
+                    labels,
+                },
+            )?;
+            zip_members.push((relative_path, path));
+        }
+
+        files.insert(
+            "airspace_features".to_string(),
+            feature_path_template.clone(),
+        );
+        files.insert(
+            "airspace_reference_tiles".to_string(),
+            reference_tile_path_template.clone(),
+        );
+        files.insert(
+            "airspace_label_tiles".to_string(),
+            label_tile_path_template.clone(),
+        );
+        airspace_manifest = Some(AirspaceManifest {
+            source: "FAA NASR Class B,C,D,E Airspace Shape Files and SAA AIXM".to_string(),
+            source_path:
+                "Additional_Data/Shape_Files/Class_Airspace.shp; SAA-AIXM_5_Schema/SaaSubscriberFile.zip"
+                    .to_string(),
+            feature_path_template,
+            reference_tile_path_template,
+            label_tile_path_template,
+            reference_tile_min_zoom: AIRSPACE_REF_MIN_ZOOM,
+            reference_tile_max_zoom: AIRSPACE_REF_MAX_ZOOM,
+            label_tile_zoom: AIRSPACE_LABEL_ZOOM,
+            geometry_encoding:
+                "lon/lat point arrays; current shapefile arcs are FAA-densified line segments"
+                    .to_string(),
+        });
+        airspace_stats = Some(AirspaceStats {
+            source_found: true,
+            feature_count: airspace_features.len(),
+            class_counts,
+            reference_tile_count: files
+                .get("airspace_reference_tiles")
+                .map(|_| {
+                    zip_members
+                        .iter()
+                        .filter(|(name, _)| name.starts_with("airspace/refs/"))
+                        .count()
+                })
+                .unwrap_or(0),
+            label_tile_count,
+            max_refs_in_tile,
+            max_labels_in_tile,
+        });
+    }
+
     let stats = VectorStats {
         schema_version: 1,
         version_label: request.version_label.clone(),
@@ -203,10 +477,8 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             layer_counts: point_layer_counts(&points),
             layers: layer_stats,
         },
-        warnings: vec![
-            "first-cut vectors dataset includes only point layers".to_string(),
-            "non-point FAA boundary features are not yet ingested".to_string(),
-        ],
+        airspace: airspace_stats,
+        warnings: Vec::new(),
     };
     write_json_pretty(&stats_path, &stats)?;
 
@@ -217,6 +489,7 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             schema_version: 1,
             version_label: request.version_label.clone(),
             point_layers,
+            airspace: airspace_manifest,
             files,
         },
     )?;
@@ -276,7 +549,10 @@ pub fn build_obstacle_dataset(
         zip_members.push((relative_path, points_path));
     }
 
-    files.insert("point_tiles_obstacle".to_string(), tile_path_template.clone());
+    files.insert(
+        "point_tiles_obstacle".to_string(),
+        tile_path_template.clone(),
+    );
     files.insert("stats".to_string(), "stats.json".to_string());
     point_layers.insert(
         "obstacle".to_string(),
@@ -307,7 +583,10 @@ pub fn build_obstacle_dataset(
                     },
                 )]),
             },
-            warnings: vec!["obstacle dataset is published separately from the cycle bundle".to_string()],
+            airspace: None,
+            warnings: vec![
+                "obstacle dataset is published separately from the cycle bundle".to_string(),
+            ],
         },
     )?;
 
@@ -317,6 +596,7 @@ pub fn build_obstacle_dataset(
             schema_version: 1,
             version_label: request.version_label.clone(),
             point_layers,
+            airspace: None,
             files,
         },
     )?;
@@ -373,21 +653,22 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
             let lon: f64 = parse_f64_cell(row, 2)?;
             let label: String = row.get::<_, String>(3)?;
             let kind: String = row.get::<_, String>(4)?;
-            let (towered, fuel_available, public_use, private_use, heliport) = if table_name == "airports" {
-                let atct: String = row.get::<_, String>(5)?;
-                let fuel_types: String = row.get::<_, String>(6)?;
-                let use_code: String = row.get::<_, String>(7)?;
-                let type_upper = kind.trim().to_ascii_uppercase();
-                (
-                    Some(atct.trim().eq_ignore_ascii_case("Y")),
-                    Some(!fuel_types.trim().is_empty()),
-                    Some(use_code.trim().eq_ignore_ascii_case("PU")),
-                    Some(use_code.trim().eq_ignore_ascii_case("PR")),
-                    Some(type_upper.contains("HELIPORT")),
-                )
-            } else {
-                (None, None, None, None, None)
-            };
+            let (towered, fuel_available, public_use, private_use, heliport) =
+                if table_name == "airports" {
+                    let atct: String = row.get::<_, String>(5)?;
+                    let fuel_types: String = row.get::<_, String>(6)?;
+                    let use_code: String = row.get::<_, String>(7)?;
+                    let type_upper = kind.trim().to_ascii_uppercase();
+                    (
+                        Some(atct.trim().eq_ignore_ascii_case("Y")),
+                        Some(!fuel_types.trim().is_empty()),
+                        Some(use_code.trim().eq_ignore_ascii_case("PU")),
+                        Some(use_code.trim().eq_ignore_ascii_case("PR")),
+                        Some(type_upper.contains("HELIPORT")),
+                    )
+                } else {
+                    (None, None, None, None, None)
+                };
             Ok((
                 id,
                 lat,
@@ -518,6 +799,439 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<PointRecord>> {
     Ok(points)
 }
 
+fn load_class_airspace_features(
+    shp_path: &Path,
+    version_label: &str,
+    include_class_e: bool,
+) -> anyhow::Result<Vec<AirspaceFeature>> {
+    let dbf_path = shp_path.with_extension("dbf");
+    let dbf_records = read_dbf_records(&dbf_path)?;
+    let shapes = read_shapefile_polygons(shp_path)?;
+    let mut features = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for (index, shape) in shapes.into_iter().enumerate() {
+        if shape.parts.is_empty() || !bbox_is_valid(shape.bbox) {
+            continue;
+        }
+        let properties = dbf_records.get(index).cloned().unwrap_or_default();
+        let class = property(&properties, "CLASS").unwrap_or("unknown");
+        if !include_class_e && class.eq_ignore_ascii_case("E") {
+            continue;
+        }
+        let local_type = property(&properties, "LOCAL_TYPE").unwrap_or("");
+        let name = property(&properties, "NAME")
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Unnamed airspace")
+            .to_string();
+        let ident = property(&properties, "IDENT")
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let vertical = AirspaceVertical {
+            lower: airspace_limit(&properties, "LOWER"),
+            upper: airspace_limit(&properties, "UPPER"),
+        };
+        let vertical_label = vertical_label(&vertical);
+        let label_anchor = polygon_label_anchor(&shape.parts);
+        let id_base = format!(
+            "airspace:{}:{}:{}:{}:{}",
+            version_label,
+            class.to_ascii_lowercase(),
+            ident.as_deref().unwrap_or("anon"),
+            local_type.to_ascii_lowercase(),
+            index + 1
+        );
+        let id = dedup_airspace_id(&mut seen, &id_base);
+        let paths = shape
+            .parts
+            .iter()
+            .filter_map(|part| airspace_path_from_points(part, "boundary"))
+            .collect::<Vec<_>>();
+
+        features.push(AirspaceFeature {
+            schema_version: 1,
+            id,
+            kind: "airspace".to_string(),
+            source: "faa_nasr_class_airspace_shapefile".to_string(),
+            cycle: version_label.trim_start_matches("data_").to_string(),
+            name,
+            ident,
+            airspace_class: class.to_string(),
+            local_type: local_type.to_string(),
+            style_hint: airspace_style_hint(class, local_type),
+            vertical_label: vertical_label.clone(),
+            vertical,
+            bbox: shape.bbox,
+            label: AirspaceLabel {
+                text: vertical_label,
+                lon: label_anchor[0],
+                lat: label_anchor[1],
+            },
+            paths,
+            source_properties: properties,
+        });
+    }
+
+    Ok(features)
+}
+
+fn load_saa_airspace_features(
+    path: &Path,
+    version_label: &str,
+) -> anyhow::Result<Vec<AirspaceFeature>> {
+    let outer_file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut outer = ZipArchive::new(outer_file)
+        .with_context(|| format!("failed to read zip {}", path.display()))?;
+    let mut nested_bytes = Vec::new();
+    outer
+        .by_name("Saa_Sub_File.zip")
+        .context("SAA package missing Saa_Sub_File.zip")?
+        .read_to_end(&mut nested_bytes)?;
+    let mut inner =
+        ZipArchive::new(Cursor::new(nested_bytes)).context("failed to read nested SAA zip")?;
+    let mut features = Vec::new();
+    let mut seen = BTreeSet::new();
+    for index in 0..inner.len() {
+        let mut file = inner.by_index(index)?;
+        if !file.name().to_ascii_lowercase().ends_with(".xml") {
+            continue;
+        }
+        let mut xml = String::new();
+        file.read_to_string(&mut xml)?;
+        if let Some(feature) = parse_saa_xml(&xml, file.name(), version_label, &mut seen)? {
+            features.push(feature);
+        }
+    }
+    Ok(features)
+}
+
+#[derive(Default)]
+struct SaaParseState {
+    in_airspace: bool,
+    in_extension: bool,
+    in_circle_by_center_point: bool,
+    current_tag: Option<String>,
+    designator: Option<String>,
+    name: Option<String>,
+    upper_value: Option<String>,
+    upper_unit: Option<String>,
+    upper_ref: Option<String>,
+    lower_value: Option<String>,
+    lower_unit: Option<String>,
+    lower_ref: Option<String>,
+    saa_type: Option<String>,
+    points: Vec<[f64; 2]>,
+    paths: Vec<Vec<[f64; 2]>>,
+    circle_center: Option<[f64; 2]>,
+    circle_radius_unit: Option<String>,
+}
+
+fn parse_saa_xml(
+    xml: &str,
+    source_name: &str,
+    version_label: &str,
+    seen: &mut BTreeSet<String>,
+) -> anyhow::Result<Option<AirspaceFeature>> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut state = SaaParseState::default();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(event)) => {
+                let name = String::from_utf8_lossy(event.local_name().as_ref()).into_owned();
+                if name == "Airspace" {
+                    state.in_airspace = true;
+                } else if state.in_airspace {
+                    if name == "AirspaceExtension" {
+                        state.in_extension = true;
+                    }
+                    if name == "CircleByCenterPoint" {
+                        state.in_circle_by_center_point = true;
+                        state.circle_center = None;
+                        state.circle_radius_unit = None;
+                    }
+                    state.current_tag = Some(name.clone());
+                    if name == "upperLimit" {
+                        state.upper_unit = event
+                            .attributes()
+                            .flatten()
+                            .find(|attr| attr.key.as_ref() == b"uom")
+                            .map(|attr| String::from_utf8_lossy(&attr.value).into_owned());
+                    } else if name == "lowerLimit" {
+                        state.lower_unit = event
+                            .attributes()
+                            .flatten()
+                            .find(|attr| attr.key.as_ref() == b"uom")
+                            .map(|attr| String::from_utf8_lossy(&attr.value).into_owned());
+                    } else if name == "radius" {
+                        state.circle_radius_unit = event
+                            .attributes()
+                            .flatten()
+                            .find(|attr| attr.key.as_ref() == b"uom")
+                            .map(|attr| String::from_utf8_lossy(&attr.value).into_owned());
+                    }
+                }
+            }
+            Ok(Event::Text(event)) => {
+                if state.in_airspace {
+                    let text = event.decode()?.trim().to_string();
+                    if !text.is_empty() {
+                        match state.current_tag.as_deref() {
+                            Some("designator") => state.designator = Some(text),
+                            Some("name") => state.name = Some(text),
+                            Some("upperLimit") => state.upper_value = Some(text),
+                            Some("upperLimitReference") => state.upper_ref = Some(text),
+                            Some("lowerLimit") => state.lower_value = Some(text),
+                            Some("lowerLimitReference") => state.lower_ref = Some(text),
+                            Some("suaType") => state.saa_type = Some(text),
+                            Some("pos") => {
+                                if let Some(point) = parse_aixm_pos(&text) {
+                                    if state.in_circle_by_center_point {
+                                        state.circle_center = Some(point);
+                                    } else {
+                                        state.points.push(point);
+                                    }
+                                }
+                            }
+                            Some("radius") => {
+                                if state.in_circle_by_center_point {
+                                    if let Some(center) = state.circle_center {
+                                        if let Some(path) = approximate_aixm_circle(
+                                            center,
+                                            &text,
+                                            state.circle_radius_unit.as_deref(),
+                                        ) {
+                                            state.paths.push(path);
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Ok(Event::End(event)) => {
+                let name = String::from_utf8_lossy(event.local_name().as_ref()).into_owned();
+                if name == "Airspace" {
+                    break;
+                }
+                if name == "AirspaceExtension" {
+                    state.in_extension = false;
+                }
+                if name == "CircleByCenterPoint" {
+                    state.in_circle_by_center_point = false;
+                    state.circle_center = None;
+                    state.circle_radius_unit = None;
+                }
+                if state.current_tag.as_deref() == Some(name.as_str()) {
+                    state.current_tag = None;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed parsing {source_name}"))
+            }
+            _ => {}
+        }
+    }
+    if !state.points.is_empty() {
+        state.paths.push(state.points);
+    }
+    let all_points = state.paths.iter().flatten().copied().collect::<Vec<_>>();
+    if all_points.len() < 2 {
+        return Ok(None);
+    }
+    let bbox = points_bbox(&all_points);
+    let designator = state
+        .designator
+        .unwrap_or_else(|| source_name.trim_end_matches(".xml").to_string());
+    let name = state.name.unwrap_or_else(|| designator.clone());
+    let saa_type = state.saa_type.unwrap_or_else(|| "SAA".to_string());
+    let lower = aixm_limit(
+        state.lower_value.as_deref().unwrap_or(""),
+        state.lower_unit.as_deref(),
+        state.lower_ref.as_deref(),
+    );
+    let upper = aixm_limit(
+        state.upper_value.as_deref().unwrap_or(""),
+        state.upper_unit.as_deref(),
+        state.upper_ref.as_deref(),
+    );
+    let vertical = AirspaceVertical { lower, upper };
+    let vertical_label = vertical_label(&vertical);
+    let id = dedup_airspace_id(
+        seen,
+        &format!(
+            "airspace:{}:saa:{}:{}",
+            version_label,
+            saa_type.to_ascii_lowercase(),
+            designator
+        ),
+    );
+    let mut properties = BTreeMap::new();
+    properties.insert("SOURCE_FILE".to_string(), source_name.to_string());
+    properties.insert("SAA_TYPE".to_string(), saa_type.clone());
+    properties.insert("DESIGNATOR".to_string(), designator.clone());
+    let paths = state
+        .paths
+        .iter()
+        .filter_map(|points| airspace_path_from_points(points, "boundary"))
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let anchor = polygon_label_anchor(&state.paths);
+    Ok(Some(AirspaceFeature {
+        schema_version: 1,
+        id,
+        kind: "airspace".to_string(),
+        source: "faa_nasr_saa_aixm".to_string(),
+        cycle: version_label.trim_start_matches("data_").to_string(),
+        name,
+        ident: Some(designator),
+        airspace_class: saa_type.clone(),
+        local_type: "SAA".to_string(),
+        style_hint: saa_style_hint(&saa_type),
+        vertical_label: vertical_label.clone(),
+        vertical,
+        bbox,
+        label: AirspaceLabel {
+            text: vertical_label,
+            lon: anchor[0],
+            lat: anchor[1],
+        },
+        paths,
+        source_properties: properties,
+    }))
+}
+
+#[derive(Debug, Clone)]
+struct ShapefilePolygon {
+    bbox: [f64; 4],
+    parts: Vec<Vec<[f64; 2]>>,
+}
+
+fn read_shapefile_polygons(path: &Path) -> anyhow::Result<Vec<ShapefilePolygon>> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    if bytes.len() < 100 {
+        anyhow::bail!("shapefile {} is too short", path.display());
+    }
+    let mut offset = 100usize;
+    let mut shapes = Vec::new();
+    while offset + 8 <= bytes.len() {
+        let content_words = read_i32_be(&bytes, offset + 4)? as usize;
+        offset += 8;
+        let content_len = content_words
+            .checked_mul(2)
+            .context("shapefile record length overflow")?;
+        if offset + content_len > bytes.len() {
+            anyhow::bail!("shapefile record exceeds file length in {}", path.display());
+        }
+        if content_len >= 4 {
+            let shape_type = read_i32_le(&bytes, offset)?;
+            if matches!(shape_type, 5 | 15) {
+                shapes.push(read_polygon_record(&bytes[offset..offset + content_len])?);
+            }
+        }
+        offset += content_len;
+    }
+    Ok(shapes)
+}
+
+fn read_polygon_record(bytes: &[u8]) -> anyhow::Result<ShapefilePolygon> {
+    if bytes.len() < 44 {
+        anyhow::bail!("polygon shapefile record is too short");
+    }
+    let bbox = [
+        round_coord(read_f64_le(bytes, 4)?),
+        round_coord(read_f64_le(bytes, 12)?),
+        round_coord(read_f64_le(bytes, 20)?),
+        round_coord(read_f64_le(bytes, 28)?),
+    ];
+    let num_parts = read_i32_le(bytes, 36)? as usize;
+    let num_points = read_i32_le(bytes, 40)? as usize;
+    let parts_offset = 44usize;
+    let points_offset = parts_offset + num_parts * 4;
+    if points_offset + num_points * 16 > bytes.len() {
+        anyhow::bail!("polygon shapefile record has invalid part/point lengths");
+    }
+    let mut part_starts = Vec::with_capacity(num_parts);
+    for index in 0..num_parts {
+        part_starts.push(read_i32_le(bytes, parts_offset + index * 4)? as usize);
+    }
+    let mut points = Vec::with_capacity(num_points);
+    for index in 0..num_points {
+        let base = points_offset + index * 16;
+        points.push([
+            round_coord(read_f64_le(bytes, base)?),
+            round_coord(read_f64_le(bytes, base + 8)?),
+        ]);
+    }
+    let mut parts = Vec::with_capacity(num_parts);
+    for (part_index, start) in part_starts.iter().copied().enumerate() {
+        let end = part_starts
+            .get(part_index + 1)
+            .copied()
+            .unwrap_or(num_points);
+        if start < end && end <= points.len() {
+            parts.push(points[start..end].to_vec());
+        }
+    }
+    Ok(ShapefilePolygon { bbox, parts })
+}
+
+fn read_dbf_records(path: &Path) -> anyhow::Result<Vec<BTreeMap<String, String>>> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    if bytes.len() < 32 {
+        anyhow::bail!("dbf {} is too short", path.display());
+    }
+    let record_count = read_u32_le(&bytes, 4)? as usize;
+    let header_len = read_u16_le(&bytes, 8)? as usize;
+    let record_len = read_u16_le(&bytes, 10)? as usize;
+    let mut fields = Vec::new();
+    let mut offset = 32usize;
+    while offset + 32 <= header_len && bytes[offset] != 0x0d {
+        let name_end = bytes[offset..offset + 11]
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(11);
+        let name = String::from_utf8_lossy(&bytes[offset..offset + name_end])
+            .trim()
+            .to_string();
+        let len = bytes[offset + 16] as usize;
+        fields.push((name, len));
+        offset += 32;
+    }
+    let mut records = Vec::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_start = header_len + record_index * record_len;
+        if record_start + record_len > bytes.len() {
+            break;
+        }
+        if bytes[record_start] == b'*' {
+            records.push(BTreeMap::new());
+            continue;
+        }
+        let mut field_offset = record_start + 1;
+        let mut record = BTreeMap::new();
+        for (name, len) in &fields {
+            let end = (field_offset + *len).min(bytes.len());
+            let value = String::from_utf8_lossy(&bytes[field_offset..end])
+                .trim()
+                .trim_matches('\0')
+                .to_string();
+            if !value.is_empty() {
+                record.insert(name.clone(), value);
+            }
+            field_offset += *len;
+        }
+        records.push(record);
+    }
+    Ok(records)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct LongestRunwayInfo {
     length_ft: f64,
@@ -526,7 +1240,9 @@ struct LongestRunwayInfo {
     has_water_runway: bool,
 }
 
-fn load_airport_runway_info(conn: &Connection) -> anyhow::Result<BTreeMap<String, LongestRunwayInfo>> {
+fn load_airport_runway_info(
+    conn: &Connection,
+) -> anyhow::Result<BTreeMap<String, LongestRunwayInfo>> {
     let mut stmt = conn.prepare(
         "SELECT LocationID, Length, Surface, LEHeadingT, LELatitude, LELongitude, HELatitude, HELongitude
          FROM airportrunways",
@@ -634,6 +1350,10 @@ fn parse_float(value: &str) -> f64 {
     value.trim().parse::<f64>().unwrap_or(0.0)
 }
 
+fn round_coord(value: f64) -> f64 {
+    (value * 10_000_000.0).round() / 10_000_000.0
+}
+
 fn build_point_tiles(points: &[PointRecord], zoom: u8) -> Vec<PointTileRecord> {
     let mut tiles = BTreeMap::<(u8, u32, u32), Vec<PointRecord>>::new();
     for point in points {
@@ -676,14 +1396,277 @@ fn point_layer_counts(points: &[PointRecord]) -> BTreeMap<String, usize> {
     counts
 }
 
+fn airspace_feature_relative_path(id: &str) -> String {
+    format!("had/{}.json", id.replace(':', "/"))
+}
+
+fn airspace_ref_tile_relative_path(z: u8, x: u32, y: u32) -> String {
+    format!("airspace/refs/{z}/{x}/{y}.json")
+}
+
+fn airspace_label_tile_relative_path(z: u8, x: u32, y: u32) -> String {
+    format!("airspace/labels/{z}/{x}/{y}.json")
+}
+
+fn tiles_for_bbox(bbox: [f64; 4], zoom: u8) -> Vec<(u8, u32, u32)> {
+    let [west, south, east, north] = bbox;
+    if !bbox_is_valid(bbox) {
+        return Vec::new();
+    }
+    let (x_min, y_north) = slippy_tile(north, west, zoom);
+    let (x_max, y_south) = slippy_tile(south, east, zoom);
+    let x0 = x_min.min(x_max);
+    let x1 = x_min.max(x_max);
+    let y0 = y_north.min(y_south);
+    let y1 = y_north.max(y_south);
+    let mut tiles = Vec::new();
+    for x in x0..=x1 {
+        for y in y0..=y1 {
+            tiles.push((zoom, x, y));
+        }
+    }
+    tiles
+}
+
+fn bbox_is_visible_at_zoom(bbox: [f64; 4], zoom: u8, min_pixel_span: f64) -> bool {
+    if !bbox_is_valid(bbox) {
+        return false;
+    }
+    let [west, south, east, north] = bbox;
+    let (west_px, north_px) = slippy_pixel(north, west, zoom);
+    let (east_px, south_px) = slippy_pixel(south, east, zoom);
+    (east_px - west_px).abs() >= min_pixel_span && (south_px - north_px).abs() >= min_pixel_span
+}
+
+fn bbox_is_valid(bbox: [f64; 4]) -> bool {
+    bbox.iter().all(|value| value.is_finite())
+        && bbox[0] >= -180.0
+        && bbox[2] <= 180.0
+        && bbox[1] >= -90.0
+        && bbox[3] <= 90.0
+        && bbox[0] <= bbox[2]
+        && bbox[1] <= bbox[3]
+}
+
+fn property<'a>(properties: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
+    properties.get(key).map(|value| value.trim())
+}
+
+fn airspace_limit(properties: &BTreeMap<String, String>, prefix: &str) -> AirspaceLimit {
+    let desc = property(properties, &format!("{prefix}_DESC"))
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let raw_value = property(properties, &format!("{prefix}_VAL")).unwrap_or("");
+    let unit = property(properties, &format!("{prefix}_UOM"))
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let reference = property(properties, &format!("{prefix}_CODE"))
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let feet = raw_value.parse::<i32>().ok().filter(|value| *value >= 0);
+    AirspaceLimit {
+        display: limit_display(raw_value, reference.as_deref()),
+        feet,
+        unit,
+        reference,
+        description: desc,
+    }
+}
+
+fn aixm_limit(value: &str, unit: Option<&str>, reference: Option<&str>) -> AirspaceLimit {
+    let is_flight_level = unit
+        .map(|value| value.trim().eq_ignore_ascii_case("FL"))
+        .unwrap_or(false);
+    let feet = value
+        .parse::<i32>()
+        .ok()
+        .filter(|value| *value >= 0)
+        .map(|value| if is_flight_level { value * 100 } else { value });
+    AirspaceLimit {
+        display: if is_flight_level {
+            format!("FL{}", value.trim())
+        } else {
+            limit_display(value, reference)
+        },
+        feet,
+        unit: unit.filter(|value| !value.is_empty()).map(str::to_string),
+        reference: reference
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        description: None,
+    }
+}
+
+fn limit_display(raw_value: &str, reference: Option<&str>) -> String {
+    match reference.unwrap_or("").trim().to_ascii_uppercase().as_str() {
+        "SFC" => "SFC".to_string(),
+        "FL" => format!("FL{}", raw_value.trim()),
+        _ => raw_value
+            .trim()
+            .parse::<i32>()
+            .ok()
+            .map(|feet| {
+                if feet == 0 {
+                    "SFC".to_string()
+                } else if feet % 100 == 0 {
+                    (feet / 100).to_string()
+                } else {
+                    feet.to_string()
+                }
+            })
+            .unwrap_or_else(|| raw_value.trim().to_string()),
+    }
+}
+
+fn vertical_label(vertical: &AirspaceVertical) -> String {
+    format!("{}/{}", vertical.upper.display, vertical.lower.display)
+}
+
+fn airspace_style_hint(class: &str, local_type: &str) -> String {
+    let class = class.trim().to_ascii_lowercase();
+    let raw_local = local_type.trim().to_ascii_lowercase();
+    if raw_local.starts_with("class_") {
+        raw_local
+    } else if !class.is_empty() {
+        format!("class_{class}")
+    } else if !raw_local.is_empty() {
+        raw_local
+    } else {
+        "airspace".to_string()
+    }
+}
+
+fn saa_style_hint(saa_type: &str) -> String {
+    match saa_type.trim().to_ascii_uppercase().as_str() {
+        "RA" => "restricted".to_string(),
+        "PA" => "prohibited".to_string(),
+        "MOA" => "moa".to_string(),
+        "WA" => "warning".to_string(),
+        "AA" => "alert".to_string(),
+        "NSA" => "national_security".to_string(),
+        other => format!("saa_{}", other.to_ascii_lowercase()),
+    }
+}
+
+fn polygon_label_anchor(parts: &[Vec<[f64; 2]>]) -> [f64; 2] {
+    let mut sum_lon = 0.0;
+    let mut sum_lat = 0.0;
+    let mut count = 0.0;
+    for point in parts.iter().flatten() {
+        sum_lon += point[0];
+        sum_lat += point[1];
+        count += 1.0;
+    }
+    if count > 0.0 {
+        [sum_lon / count, sum_lat / count]
+    } else {
+        [0.0, 0.0]
+    }
+}
+
+fn parse_aixm_pos(text: &str) -> Option<[f64; 2]> {
+    let mut parts = text.split_whitespace();
+    let lon = round_coord(parts.next()?.parse::<f64>().ok()?);
+    let lat = round_coord(parts.next()?.parse::<f64>().ok()?);
+    valid_lat_lon(lat, lon).then_some([lon, lat])
+}
+
+fn approximate_aixm_circle(
+    center: [f64; 2],
+    radius_value: &str,
+    radius_unit: Option<&str>,
+) -> Option<Vec<[f64; 2]>> {
+    let radius = radius_value.trim().parse::<f64>().ok()?;
+    if radius <= 0.0 {
+        return None;
+    }
+    let radius_nm = match radius_unit
+        .unwrap_or("")
+        .trim()
+        .to_ascii_uppercase()
+        .as_str()
+    {
+        "NM" => radius,
+        "M" => radius / 1852.0,
+        "KM" => radius / 1.852,
+        "FT" => radius / 6076.11549,
+        _ => return None,
+    };
+    let lat_radius_degrees = radius_nm / 60.0;
+    let cos_lat = center[1].to_radians().cos().abs().max(0.000_001);
+    let lon_radius_degrees = lat_radius_degrees / cos_lat;
+    let sample_count = 96;
+    let mut points = Vec::with_capacity(sample_count + 1);
+    for index in 0..=sample_count {
+        let angle = std::f64::consts::TAU * (index as f64) / (sample_count as f64);
+        let lon = round_coord(center[0] + lon_radius_degrees * angle.cos());
+        let lat = round_coord(center[1] + lat_radius_degrees * angle.sin());
+        if valid_lat_lon(lat, lon) {
+            points.push([lon, lat]);
+        }
+    }
+    (points.len() > 3).then_some(points)
+}
+
+fn airspace_path_from_points(points: &[[f64; 2]], role: &str) -> Option<AirspacePath> {
+    let _ = points.first()?;
+    Some(AirspacePath {
+        role: role.to_string(),
+        closed: points.first() == points.last(),
+        points: points.to_vec(),
+    })
+}
+
+fn points_bbox(points: &[[f64; 2]]) -> [f64; 4] {
+    let mut west = f64::INFINITY;
+    let mut south = f64::INFINITY;
+    let mut east = f64::NEG_INFINITY;
+    let mut north = f64::NEG_INFINITY;
+    for point in points {
+        west = west.min(point[0]);
+        east = east.max(point[0]);
+        south = south.min(point[1]);
+        north = north.max(point[1]);
+    }
+    [west, south, east, north]
+}
+
+fn dedup_airspace_id(seen: &mut BTreeSet<String>, base: &str) -> String {
+    let normalized = base
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == ':' || ch == '-' || ch == '_' {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if seen.insert(normalized.clone()) {
+        return normalized;
+    }
+    let mut index = 2usize;
+    loop {
+        let candidate = format!("{normalized}:{index}");
+        if seen.insert(candidate.clone()) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
 fn slippy_tile(lat: f64, lon: f64, zoom: u8) -> (u32, u32) {
+    let (x, y) = slippy_pixel(lat, lon, zoom);
+    (clamp_tile(x / 256.0, zoom), clamp_tile(y / 256.0, zoom))
+}
+
+fn slippy_pixel(lat: f64, lon: f64, zoom: u8) -> (f64, f64) {
     let lat_rad = lat.to_radians();
-    let n = 2_f64.powi(zoom as i32);
-    let x = ((lon + 180.0) / 360.0 * n).floor();
+    let scale = 256.0 * 2_f64.powi(zoom as i32);
+    let x = (lon + 180.0) / 360.0 * scale;
     let y =
-        ((1.0 - ((lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI)) / 2.0 * n)
-            .floor();
-    (clamp_tile(x, zoom), clamp_tile(y, zoom))
+        (1.0 - ((lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI)) / 2.0 * scale;
+    (x, y)
 }
 
 fn clamp_tile(value: f64, zoom: u8) -> u32 {
@@ -722,6 +1705,36 @@ fn parse_f64_cell(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<f64
     }
 }
 
+fn read_i32_be(bytes: &[u8], offset: usize) -> anyhow::Result<i32> {
+    Ok(i32::from_be_bytes(read_array(bytes, offset)?))
+}
+
+fn read_i32_le(bytes: &[u8], offset: usize) -> anyhow::Result<i32> {
+    Ok(i32::from_le_bytes(read_array(bytes, offset)?))
+}
+
+fn read_u16_le(bytes: &[u8], offset: usize) -> anyhow::Result<u16> {
+    Ok(u16::from_le_bytes(read_array(bytes, offset)?))
+}
+
+fn read_u32_le(bytes: &[u8], offset: usize) -> anyhow::Result<u32> {
+    Ok(u32::from_le_bytes(read_array(bytes, offset)?))
+}
+
+fn read_f64_le(bytes: &[u8], offset: usize) -> anyhow::Result<f64> {
+    Ok(f64::from_le_bytes(read_array(bytes, offset)?))
+}
+
+fn read_array<const N: usize>(bytes: &[u8], offset: usize) -> anyhow::Result<[u8; N]> {
+    let end = offset + N;
+    let slice = bytes
+        .get(offset..end)
+        .with_context(|| format!("buffer too short at offset {offset} for {N} bytes"))?;
+    let mut out = [0_u8; N];
+    out.copy_from_slice(slice);
+    Ok(out)
+}
+
 fn write_json_pretty<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -730,6 +1743,18 @@ fn write_json_pretty<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()>
     fs::write(
         path,
         serde_json::to_vec_pretty(value).context("failed to encode json")?,
+    )
+    .with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn write_json_compact<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(
+        path,
+        serde_json::to_vec(value).context("failed to encode json")?,
     )
     .with_context(|| format!("failed to write {}", path.display()))
 }

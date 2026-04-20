@@ -407,6 +407,7 @@ enum TaskValue {
     CsupSource(AssetSource),
     FingerprintedData {
         main_db: PathBuf,
+        source_input_dir: PathBuf,
         zip: PathBuf,
         fingerprint: String,
     },
@@ -438,6 +439,7 @@ enum ProductTaskValue {
     CsupSource(AssetSource),
     FingerprintedData {
         main_db: PathBuf,
+        source_input_dir: PathBuf,
         zip: PathBuf,
         fingerprint: String,
     },
@@ -1442,8 +1444,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 .find(|record| record.name == "data-base")
                                 .cloned()
                                 .context("data-base task missing data node record")?;
+                            let staging_record = records
+                                .iter()
+                                .find(|record| record.name == "data-input-staging")
+                                .cloned()
+                                .context("data-base task missing data input staging node record")?;
                             let zip = resolve_artifact_path(&cycle_config, output_path(&data_record, "zip")?);
                             let main_db = resolve_artifact_path(&cycle_config, output_path(&data_record, "main_db")?);
+                            let source_input_dir = resolve_artifact_path(&cycle_config, output_path(&staging_record, "staged_input_dir")?);
                             Ok(ProductTaskCompletion {
                                 node_records: records
                                     .into_iter()
@@ -1451,6 +1459,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     .collect(),
                                 value: ProductTaskValue::FingerprintedData {
                                     main_db,
+                                    source_input_dir,
                                     zip,
                                     fingerprint: data_record.fingerprint,
                                 },
@@ -1581,8 +1590,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 _ => bail!("missing source urls for cycle {cycle}"),
                             };
                             let raw_data = match task_values_snapshot.get(&cycle_task_id(&cycle, "data-base")) {
-                                Some(ProductTaskValue::FingerprintedData { main_db, zip, fingerprint }) => {
-                                    (main_db.clone(), zip.clone(), fingerprint.clone())
+                                Some(ProductTaskValue::FingerprintedData { main_db, source_input_dir, zip, fingerprint }) => {
+                                    (main_db.clone(), source_input_dir.clone(), zip.clone(), fingerprint.clone())
                                 }
                                 _ => bail!("missing data-base output for cycle {cycle}"),
                             };
@@ -1608,9 +1617,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             let record = build_data_match_node(
                                 &cycle_config,
                                 &raw_data.0,
-                                &raw_data.1,
-                                &source_urls,
                                 &raw_data.2,
+                                &source_urls,
+                                &raw_data.3,
                                 &tpp_sources,
                             )?;
                             let cache_hit = record.cache_hit;
@@ -1621,6 +1630,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
                                 value: ProductTaskValue::FingerprintedData {
                                     main_db,
+                                    source_input_dir: raw_data.1,
                                     zip,
                                     fingerprint,
                                 },
@@ -1628,9 +1638,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             })
                         }
                         ProductScheduledTaskKind::Vectors { cycle } => {
-                            let (data, data_fingerprint) = match task_values_snapshot.get(&cycle_task_id(&cycle, "data")) {
-                                Some(ProductTaskValue::FingerprintedData { main_db, fingerprint, .. }) => {
-                                    (main_db.clone(), fingerprint.clone())
+                            let (data, source_input_dir, data_fingerprint) = match task_values_snapshot.get(&cycle_task_id(&cycle, "data")) {
+                                Some(ProductTaskValue::FingerprintedData { main_db, source_input_dir, fingerprint, .. }) => {
+                                    (main_db.clone(), source_input_dir.clone(), fingerprint.clone())
                                 }
                                 _ => bail!("missing data output for cycle {cycle}"),
                             };
@@ -1644,7 +1654,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             };
                             let mut cycle_config = config.clone();
                             cycle_config.target_cycle = Some(cycle);
-                            let record = build_vectors_node(&cycle_config, &data, &data_fingerprint, &data_version)?;
+                            let record = build_vectors_node(&cycle_config, &data, &source_input_dir, &data_fingerprint, &data_version)?;
                             let cache_hit = record.cache_hit;
                             let zip = resolve_artifact_path(&cycle_config, output_path(&record, "zip")?);
                             Ok(ProductTaskCompletion {
@@ -3302,16 +3312,26 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 .find(|record| record.name == "data-base")
                                 .cloned()
                                 .context("data-base task missing data node record")?;
+                            let staging_record = records
+                                .iter()
+                                .find(|record| record.name == "data-input-staging")
+                                .cloned()
+                                .context("data-base task missing data input staging node record")?;
                             let zip =
                                 resolve_artifact_path(&config, output_path(&data_record, "zip")?);
                             let main_db = resolve_artifact_path(
                                 &config,
                                 output_path(&data_record, "main_db")?,
                             );
+                            let source_input_dir = resolve_artifact_path(
+                                &config,
+                                output_path(&staging_record, "staged_input_dir")?,
+                            );
                             Ok(TaskCompletion {
                                 node_records: records,
                                 value: TaskValue::FingerprintedData {
                                     main_db,
+                                    source_input_dir,
                                     zip,
                                     fingerprint: data_record.fingerprint,
                                 },
@@ -3322,9 +3342,15 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             let raw_data = match task_values_snapshot.get("data-base") {
                                 Some(TaskValue::FingerprintedData {
                                     main_db,
+                                    source_input_dir,
                                     zip,
                                     fingerprint,
-                                }) => (main_db.clone(), zip.clone(), fingerprint.clone()),
+                                }) => (
+                                    main_db.clone(),
+                                    source_input_dir.clone(),
+                                    zip.clone(),
+                                    fingerprint.clone(),
+                                ),
                                 _ => unreachable!("data-base dependency should have completed"),
                             };
                             let tpp_sources = config
@@ -3346,9 +3372,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             let record = build_data_match_node(
                                 &config,
                                 &raw_data.0,
-                                &raw_data.1,
-                                &data_version,
                                 &raw_data.2,
+                                &data_version,
+                                &raw_data.3,
                                 &tpp_sources,
                             )?;
                             let cache_hit = record.cache_hit;
@@ -3360,6 +3386,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 node_records: vec![record],
                                 value: TaskValue::FingerprintedData {
                                     main_db,
+                                    source_input_dir: raw_data.1,
                                     zip,
                                     fingerprint,
                                 },
@@ -3434,16 +3461,23 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             })
                         }
                         ScheduledTaskKind::Vectors => {
-                            let (data, data_fingerprint) = match task_values_snapshot.get("data") {
-                                Some(TaskValue::FingerprintedData {
-                                    main_db,
-                                    fingerprint,
-                                    ..
-                                }) => (main_db, fingerprint),
-                                _ => unreachable!("data dependency should have completed"),
-                            };
-                            let record =
-                                build_vectors_node(&config, data, data_fingerprint, &data_version)?;
+                            let (data, source_input_dir, data_fingerprint) =
+                                match task_values_snapshot.get("data") {
+                                    Some(TaskValue::FingerprintedData {
+                                        main_db,
+                                        source_input_dir,
+                                        fingerprint,
+                                        ..
+                                    }) => (main_db, source_input_dir, fingerprint),
+                                    _ => unreachable!("data dependency should have completed"),
+                                };
+                            let record = build_vectors_node(
+                                &config,
+                                data,
+                                source_input_dir,
+                                data_fingerprint,
+                                &data_version,
+                            )?;
                             let cache_hit = record.cache_hit;
                             let zip = resolve_artifact_path(&config, output_path(&record, "zip")?);
                             Ok(TaskCompletion {
@@ -10835,11 +10869,17 @@ fn build_data_match_node(
 fn build_vectors_node(
     config: &ProductBuildConfig,
     main_db: &Path,
+    source_input_dir: &Path,
     data_fingerprint: &str,
     version_label: &str,
 ) -> anyhow::Result<NodeRecord> {
     let inputs = BTreeMap::from([
         ("data_fingerprint".to_string(), data_fingerprint.to_string()),
+        ("include_class_e_airspace".to_string(), "false".to_string()),
+        (
+            "source_input_dir".to_string(),
+            relative_artifact_path(source_input_dir, &config.build_root),
+        ),
         ("version_label".to_string(), version_label.to_string()),
         (
             "vectors_lib".to_string(),
@@ -10859,8 +10899,10 @@ fn build_vectors_node(
     let output_dir = prepared.dir.join("output");
     let request = BuildVectorsRequest {
         main_db: main_db.to_path_buf(),
+        data_input_dir: Some(source_input_dir.to_path_buf()),
         output_dir: output_dir.clone(),
         version_label: version_label.to_string(),
+        include_class_e_airspace: false,
     };
     let zip_path = output_dir.join(format!("vectors_{version_label}.zip"));
     let stats_path = output_dir.join("stats.json");

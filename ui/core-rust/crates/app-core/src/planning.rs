@@ -418,6 +418,7 @@ pub struct GuidanceUiView {
 pub struct NavElementUiView {
     pub active_leg_summary: String,
     pub cdi_indicator_dots: Option<f32>,
+    pub cdi_offscale_readout: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -932,6 +933,7 @@ fn project_nav_element_ui(plan: &FlightPlan) -> NavElementUiView {
             })
             .unwrap_or_default(),
         cdi_indicator_dots: None,
+        cdi_offscale_readout: None,
     }
 }
 

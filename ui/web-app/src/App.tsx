@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import bootstrapJson from "@shared-bootstrap";
 import catalogJson from "@product-catalog";
@@ -2760,16 +2760,13 @@ function MapPage(props: {
           />
         </div>
 
-        <button
-          type="button"
-          className="navElement"
+        <NavElementButton
+          navElement={planUiState?.guidance?.nav_element}
           onPointerDown={stopPointer}
           onPointerUp={stopPointer}
           onDoubleClick={stopDoubleClick}
           onClick={onOpenPlan}
-        >
-          <NavElementView navElement={planUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
-        </button>
+        />
 
         <PlaybackWidget
           uiSession={uiSession}
@@ -2831,6 +2828,32 @@ function MapPage(props: {
   );
 }
 
+function NavElementButton(props: {
+  navElement: NavElementUiView | null | undefined;
+  className?: string;
+  onClick?: () => void;
+  onPointerDown?: (event: PointerEvent<HTMLElement>) => void;
+  onPointerUp?: (event: PointerEvent<HTMLElement>) => void;
+  onDoubleClick?: (event: MouseEvent<HTMLElement>) => void;
+}) {
+  const { navElement, className = "navElement", onClick, onPointerDown, onPointerUp, onDoubleClick } = props;
+  if (!navElement) {
+    return null;
+  }
+  return (
+    <button
+      type="button"
+      className={className}
+      onPointerDown={onPointerDown}
+      onPointerUp={onPointerUp}
+      onDoubleClick={onDoubleClick}
+      onClick={onClick}
+    >
+      <NavElementView navElement={navElement} />
+    </button>
+  );
+}
+
 function NavElementView(props: { navElement: NavElementUiView }) {
   const { navElement } = props;
   const width = 180;
@@ -2869,6 +2892,13 @@ function NavElementView(props: { navElement: NavElementUiView }) {
   const offscaleTrianglePoints = offscaleDirection && offscaleBaseX !== null && offscaleTipX !== null
     ? `${offscaleBaseX},${height * 0.18} ${offscaleBaseX},${height * 0.82} ${offscaleTipX},${baselineY}`
     : null;
+  const offscaleReadout = navElement.cdi_offscale_readout;
+  const offscaleReadoutDotIndex = offscaleReadout && offscaleDirection === "R"
+    ? 2
+    : offscaleReadout && offscaleDirection === "L"
+      ? 1
+      : null;
+  const offscaleReadoutX = offscaleReadoutDotIndex === null ? null : dotXs[offscaleReadoutDotIndex];
   const cdiTitle =
     pointerPosition === null
       ? "No CDI deviation"
@@ -2883,10 +2913,19 @@ function NavElementView(props: { navElement: NavElementUiView }) {
           d={`M ${centerX - centerTriangleHalfWidth} ${centerTriangleBottomY} L ${centerX + centerTriangleHalfWidth} ${centerTriangleBottomY} L ${centerX} ${centerTriangleTopY} Z`}
         />
         {dotXs.map((x, index) => (
-          <circle key={index} className="navElementCdiDot" cx={x} cy={baselineY} r={dotRadius} />
+          index === offscaleReadoutDotIndex ? null : (
+            <circle key={index} className="navElementCdiDot" cx={x} cy={baselineY} r={dotRadius} />
+          )
         ))}
         {offscaleTrianglePoints ? (
-          <polygon className="navElementCdiOffscalePointer" points={offscaleTrianglePoints} />
+          <>
+            {offscaleReadout ? (
+              <text className="navElementCdiOffscaleReadout" x={offscaleReadoutX ?? centerX} y={baselineY} textAnchor="middle" dominantBaseline="central">
+                {offscaleReadout}
+              </text>
+            ) : null}
+            <polygon className="navElementCdiOffscalePointer" points={offscaleTrianglePoints} />
+          </>
         ) : pointerX !== null ? (
           <line className="navElementCdiPointer" x1={pointerX} y1={0} x2={pointerX} y2={height} />
         ) : null}
@@ -3926,9 +3965,11 @@ function FlightPlanPage(props: {
       </div>
 
       <div className="planFooter">
-        <button type="button" className="navElement navElementStatic" onClick={props.onOpenPlan}>
-          <NavElementView navElement={planUiState.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
-        </button>
+        <NavElementButton
+          navElement={planUiState.guidance?.nav_element}
+          className="navElement navElementStatic"
+          onClick={props.onOpenPlan}
+        />
       </div>
 
       <div className="debugDock">
@@ -5044,16 +5085,13 @@ function ChartsPage(props: {
           </button>
         </div>
 
-        <button
-          type="button"
-          className="navElement"
+        <NavElementButton
+          navElement={planUiState?.guidance?.nav_element}
           onPointerDown={stopPointer}
           onPointerUp={stopPointer}
           onDoubleClick={stopDoubleClick}
           onClick={onOpenPlan}
-        >
-          <NavElementView navElement={planUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
-        </button>
+        />
 
         <PlaybackWidget
           uiSession={props.uiSession}
@@ -5124,16 +5162,13 @@ function SettingsPage(props: {
         ))}
       </div>
 
-      <button
-        type="button"
-        className="navElement"
+      <NavElementButton
+        navElement={planUiState?.guidance?.nav_element}
         onPointerDown={stopPointer}
         onPointerUp={stopPointer}
         onDoubleClick={stopDoubleClick}
         onClick={onOpenPlan}
-      >
-        <NavElementView navElement={planUiState?.guidance?.nav_element ?? { active_leg_summary: "", cdi_indicator_dots: null }} />
-      </button>
+      />
 
       <div className="debugDock">
         <DebugDock open={debugOpen} warn={debugWarningActive} onToggle={() => setDebugOpen((open) => !open)}>

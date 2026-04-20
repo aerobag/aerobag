@@ -687,6 +687,17 @@ button {
   stroke-linejoin: round;
 }
 
+.navElementCdiOffscaleReadout {
+  fill: #d45a7a;
+  font-size: 14.4px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  paint-order: stroke;
+  stroke: rgba(8, 18, 24, 0.82);
+  stroke-width: 2.6px;
+  stroke-linejoin: round;
+}
+
 .playbackWidget {
   position: absolute;
   right: var(--thumb-gap);

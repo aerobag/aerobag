@@ -343,6 +343,7 @@ export type GuidanceUiView = {
 export type NavElementUiView = {
   active_leg_summary: string;
   cdi_indicator_dots: number | null;
+  cdi_offscale_readout: string | null;
 };
 
 export type FlightPlanUiState = {

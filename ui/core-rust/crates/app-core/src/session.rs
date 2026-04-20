@@ -59,6 +59,7 @@ struct UiSession {
 const DIRECT_SITUATION_SOURCE_ID: &str = "__direct_situation__";
 const PLAYBACK_SOURCE_ID: &str = "__playback_trace__";
 const CDI_NM_PER_DOT: f64 = 1.0;
+const CDI_OFFSCALE_DOTS: f64 = 2.1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GuidanceLegGeometry {
@@ -735,6 +736,7 @@ fn project_active_leg_nav_element(session: &UiSession) -> NavElementUiView {
                 nav_ref_label(&active_leg.to)
             ),
             cdi_indicator_dots: None,
+            cdi_offscale_readout: None,
         };
     };
     let course_deg = bearing_degrees(from, to);
@@ -744,6 +746,7 @@ fn project_active_leg_nav_element(session: &UiSession) -> NavElementUiView {
         .render
         .position
         .map(|position| cdi_dots_for_leg(from, to, position));
+    let cdi_offscale_readout = cdi_indicator_dots.and_then(cdi_offscale_readout);
 
     NavElementUiView {
         active_leg_summary: format!(
@@ -753,6 +756,7 @@ fn project_active_leg_nav_element(session: &UiSession) -> NavElementUiView {
             course_deg.round().rem_euclid(360.0),
         ),
         cdi_indicator_dots,
+        cdi_offscale_readout,
     }
 }
 
@@ -800,6 +804,24 @@ fn cdi_dots_for_leg(from: LatLon, to: LatLon, position: LatLon) -> f32 {
     let (pos_east, pos_north) = local_delta_nm(from, position);
     let signed_cross_track_nm = unit_east * pos_north - unit_north * pos_east;
     (signed_cross_track_nm / CDI_NM_PER_DOT) as f32
+}
+
+fn cdi_offscale_readout(cdi_indicator_dots: f32) -> Option<String> {
+    let dots = f64::from(cdi_indicator_dots);
+    if dots.abs() <= CDI_OFFSCALE_DOTS {
+        return None;
+    }
+    let distance = dots.abs() * CDI_NM_PER_DOT;
+    let distance_label = if distance >= 10.0 {
+        format!("{distance:.0}nm")
+    } else {
+        format!("{distance:.1}nm")
+    };
+    if dots > 0.0 {
+        Some(format!("{distance_label}\u{2192}"))
+    } else {
+        Some(format!("\u{2190}{distance_label}"))
+    }
 }
 
 fn local_delta_nm(origin: LatLon, point: LatLon) -> (f64, f64) {
@@ -916,6 +938,31 @@ mod tests {
 
         assert!(cdi_dots_for_leg(from, to, right_of_course) < 0.0);
         assert!(cdi_dots_for_leg(from, to, left_of_course) > 0.0);
+    }
+
+    #[test]
+    fn cdi_offscale_readout_reports_core_owned_distance() {
+        assert_eq!(cdi_offscale_readout(2.0), None);
+        assert_eq!(
+            cdi_offscale_readout(6.84),
+            Some("6.8nm\u{2192}".to_string())
+        );
+        assert_eq!(
+            cdi_offscale_readout(-6.84),
+            Some("\u{2190}6.8nm".to_string())
+        );
+        assert_eq!(
+            cdi_offscale_readout(9.95),
+            Some("9.9nm\u{2192}".to_string())
+        );
+        assert_eq!(
+            cdi_offscale_readout(10.0),
+            Some("10nm\u{2192}".to_string())
+        );
+        assert_eq!(
+            cdi_offscale_readout(11.4),
+            Some("11nm\u{2192}".to_string())
+        );
     }
 
     #[test]

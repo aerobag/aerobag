@@ -30,7 +30,8 @@ const WORLD_SIZE = 256;
 const MAX_LATITUDE = 85.05112878;
 
 function tileSrcForMapView(mapView: MapView, zoom: number, x: number, yTms: number): string {
-  const path = mapView.tile_path_template
+  const template = mapView.tile_path_template ?? `${mapView.chart_index}/{z}/{x}/{y}.webp`;
+  const path = template
     .replaceAll("{z}", String(zoom))
     .replaceAll("{x}", String(x))
     .replaceAll("{y}", String(yTms))

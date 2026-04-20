@@ -113,6 +113,16 @@ describe("mapViewport", () => {
     expect(tiles[0].src).not.toContain("/tiles/0/8/");
   });
 
+  it("renders persisted chart map views that predate tile path templates", () => {
+    const persistedMapView = { ...mapView, id: "persisted" };
+    delete (persistedMapView as { tile_path_template?: string }).tile_path_template;
+    const viewport = createInitialViewport(persistedMapView);
+    const tiles = renderTiles([persistedMapView], viewport, 1200, 900);
+
+    expect(tiles.length).toBeGreaterThan(0);
+    expect(tiles[0].src).toContain(`/${persistedMapView.chart_index}/${tiles[0].zoom}/${tiles[0].x}/${tiles[0].yTms}.webp`);
+  });
+
   it("double-click style zoom-in still preserves the clicked anchor", () => {
     const viewport = createInitialViewport(mapView);
     const width = 1280;

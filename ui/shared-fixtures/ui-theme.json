@@ -8,7 +8,8 @@
     "panel_border": "#d7d1c5",
     "panel_fg": "#132129",
     "panel_muted": "#52656d",
-    "chart_surface_bg": "#8c9dad"
+    "chart_surface_bg": "#8c9dad",
+    "cdi_pointer": "#d45a7a"
   },
   "plate_folder": {
     "thumbnail_bg": "#303030",

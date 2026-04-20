@@ -105,6 +105,7 @@ type UiThemeJson = {
     panel_fg: string;
     panel_muted: string;
     chart_surface_bg: string;
+    cdi_pointer: string;
   };
   plate_folder: {
     thumbnail_bg: string;
@@ -1181,6 +1182,7 @@ export default function App() {
         "--theme-panel-fg": controlTheme.panel_fg,
         "--theme-panel-muted": controlTheme.panel_muted,
         "--theme-chart-surface-bg": controlTheme.chart_surface_bg,
+        "--theme-cdi-pointer": controlTheme.cdi_pointer,
       }) as CSSProperties,
     [],
   );

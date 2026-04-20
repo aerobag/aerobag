@@ -19,6 +19,7 @@ data class ControlsTheme(
     val panelFg: Color,
     val panelMuted: Color,
     val chartSurfaceBg: Color,
+    val cdiPointer: Color,
 )
 
 data class PlateFolderTheme(
@@ -42,6 +43,7 @@ private data class WireControlsTheme(
     val panel_fg: String,
     val panel_muted: String,
     val chart_surface_bg: String,
+    val cdi_pointer: String,
 )
 
 @Serializable
@@ -70,6 +72,7 @@ object UiThemeLoader {
                 panelFg = wire.controls.panel_fg.toColor(),
                 panelMuted = wire.controls.panel_muted.toColor(),
                 chartSurfaceBg = wire.controls.chart_surface_bg.toColor(),
+                cdiPointer = wire.controls.cdi_pointer.toColor(),
             ),
             plateFolder = PlateFolderTheme(
                 thumbnailBg = wire.plate_folder.thumbnail_bg.toColor(),

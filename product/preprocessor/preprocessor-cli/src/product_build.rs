@@ -627,7 +627,10 @@ const SHADED_RELIEF_TILE_WORKERS: u32 = 16;
 const WATER_MASK_FETCH_WORKERS: u32 = 2;
 const WATER_MASK_TILE_WORKERS: u32 = 16;
 const WATER_MASK_PAGE_SIZE: usize = 10;
-const WATER_MASK_NHD_SERVICE: &str = "https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer";
+const WATER_MASK_MAX_SPLIT_SOURCE_PAGES: usize = 64;
+const WATER_MASK_MAX_OMITTED_OBJECTS: usize = 16;
+const WATER_MASK_NHD_SERVICE: &str =
+    "https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer";
 const WATER_MASK_NHD_LAYERS: &[(u32, &str, &str)] = &[
     (
         9,
@@ -1185,9 +1188,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 .iter()
                 .map(|region| format!("publish-terrain-{}", region.code().to_ascii_lowercase())),
         );
-        product_unpack_deps.extend(config.profile.terrain_regions().iter().map(|region| {
-            format!("publish-water-mask-{}", region.code().to_ascii_lowercase())
-        }));
+        product_unpack_deps.extend(
+            config
+                .profile
+                .terrain_regions()
+                .iter()
+                .map(|region| format!("publish-water-mask-{}", region.code().to_ascii_lowercase())),
+        );
         product_unpack_deps.extend(config.profile.terrain_regions().iter().map(|region| {
             format!(
                 "publish-shaded-relief-{}",
@@ -7925,9 +7932,26 @@ fn water_mask_ids_url(layer: u32, bbox: &str, where_clause: &str) -> String {
     )
 }
 
-fn water_mask_page_url(layer: u32, chunk_index: usize, object_ids: &[u64]) -> String {
+#[derive(Debug, Clone)]
+struct WaterMaskPageRequest {
+    layer: u32,
+    label: String,
+    object_ids: Vec<u64>,
+}
+
+impl WaterMaskPageRequest {
+    fn file_name(&self) -> String {
+        format!("layer_{}_chunk_{}.geojson", self.layer, self.label)
+    }
+
+    fn url(&self) -> String {
+        water_mask_page_url(self.layer, &self.label, &self.object_ids)
+    }
+}
+
+fn water_mask_page_url(layer: u32, page_label: &str, object_ids: &[u64]) -> String {
     format!(
-        "{}#logical_name=layer_{layer}_chunk_{chunk_index:05}.geojson",
+        "{}#logical_name=layer_{layer}_chunk_{page_label}.geojson",
         water_mask_query_url(
             layer,
             &[
@@ -7982,11 +8006,12 @@ fn water_mask_cached_source_dir(
         &fetch_cache,
     )?;
 
-    let mut page_urls = Vec::new();
+    let mut page_requests = Vec::new();
     for (layer, _name, _where_clause) in WATER_MASK_NHD_LAYERS {
         let ids_path = source_dir.join(format!("layer_{layer}_ids.json"));
         let value: serde_json::Value = serde_json::from_slice(
-            &fs::read(&ids_path).with_context(|| format!("failed to read {}", ids_path.display()))?,
+            &fs::read(&ids_path)
+                .with_context(|| format!("failed to read {}", ids_path.display()))?,
         )
         .with_context(|| format!("failed to parse {}", ids_path.display()))?;
         let mut object_ids = value
@@ -7998,11 +8023,15 @@ fn water_mask_cached_source_dir(
             .collect::<Vec<_>>();
         object_ids.sort_unstable();
         for (chunk_index, chunk) in object_ids.chunks(WATER_MASK_PAGE_SIZE).enumerate() {
-            page_urls.push(water_mask_page_url(*layer, chunk_index, chunk));
+            page_requests.push(WaterMaskPageRequest {
+                layer: *layer,
+                label: format!("{chunk_index:05}"),
+                object_ids: chunk.to_vec(),
+            });
         }
     }
-    prefetch_water_mask_source_urls(
-        &page_urls,
+    prefetch_water_mask_source_pages(
+        &page_requests,
         &source_dir,
         &provenance_dir,
         &format!("water-mask-{region_id}-page"),
@@ -8038,6 +8067,132 @@ fn prefetch_water_mask_source_urls(
         }
     }
     Err(last_error.expect("water mask prefetch should have recorded an error"))
+}
+
+fn prefetch_water_mask_source_pages(
+    pages: &[WaterMaskPageRequest],
+    source_dir: &Path,
+    provenance_dir: &Path,
+    label: &str,
+    fetch_cache: &FetchCacheConfig,
+) -> anyhow::Result<()> {
+    let mut split_page_fetches = 0usize;
+    let mut omitted_objects = Vec::new();
+    let urls = pages
+        .iter()
+        .map(WaterMaskPageRequest::url)
+        .collect::<Vec<_>>();
+    if prefetch_water_mask_source_urls(&urls, source_dir, provenance_dir, label, fetch_cache)
+        .is_err()
+    {
+        for page in pages {
+            prefetch_water_mask_source_page_split(
+                page,
+                source_dir,
+                provenance_dir,
+                label,
+                fetch_cache,
+                &mut split_page_fetches,
+                &mut omitted_objects,
+            )?;
+        }
+    }
+    if !omitted_objects.is_empty() {
+        eprintln!(
+            "water mask omitted {} persistent failing NHD object(s): {:?}",
+            omitted_objects.len(),
+            omitted_objects
+        );
+    }
+    Ok(())
+}
+
+fn prefetch_water_mask_source_page_split(
+    page: &WaterMaskPageRequest,
+    source_dir: &Path,
+    provenance_dir: &Path,
+    label: &str,
+    fetch_cache: &FetchCacheConfig,
+    split_page_fetches: &mut usize,
+    omitted_objects: &mut Vec<u64>,
+) -> anyhow::Result<()> {
+    let urls = [page.url()];
+    match prefetch_water_mask_source_urls(&urls, source_dir, provenance_dir, label, fetch_cache) {
+        Ok(()) => return Ok(()),
+        Err(error) => {
+            if page.object_ids.len() > 1 {
+                if *split_page_fetches >= WATER_MASK_MAX_SPLIT_SOURCE_PAGES {
+                    bail!(
+                        "water mask source page splitting exceeded {} split pages after failure: {error}",
+                        WATER_MASK_MAX_SPLIT_SOURCE_PAGES
+                    );
+                }
+                let midpoint = page.object_ids.len() / 2;
+                let split_pages = [
+                    WaterMaskPageRequest {
+                        layer: page.layer,
+                        label: format!("{}_a", page.label),
+                        object_ids: page.object_ids[..midpoint].to_vec(),
+                    },
+                    WaterMaskPageRequest {
+                        layer: page.layer,
+                        label: format!("{}_b", page.label),
+                        object_ids: page.object_ids[midpoint..].to_vec(),
+                    },
+                ];
+                *split_page_fetches += split_pages.len();
+                for split_page in split_pages {
+                    prefetch_water_mask_source_page_split(
+                        &split_page,
+                        source_dir,
+                        provenance_dir,
+                        label,
+                        fetch_cache,
+                        split_page_fetches,
+                        omitted_objects,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "failed while splitting water mask page {} after: {error}",
+                            page.file_name()
+                        )
+                    })?;
+                }
+                return Ok(());
+            }
+            if omitted_objects.len() >= WATER_MASK_MAX_OMITTED_OBJECTS {
+                bail!(
+                    "water mask source omitted object cap exceeded after persistent failure for {}: {error}",
+                    page.file_name()
+                );
+            }
+            omitted_objects.push(page.object_ids[0]);
+            write_empty_water_mask_page(source_dir, page).with_context(|| {
+                format!(
+                    "wrote empty water mask page for persistent failing object {} after: {error}",
+                    page.object_ids[0]
+                )
+            })?;
+            Ok(())
+        }
+    }
+}
+
+fn write_empty_water_mask_page(
+    source_dir: &Path,
+    page: &WaterMaskPageRequest,
+) -> anyhow::Result<()> {
+    let path = source_dir.join(page.file_name());
+    let value = serde_json::json!({
+        "type": "FeatureCollection",
+        "features": [],
+    });
+    fs::write(
+        &path,
+        serde_json::to_vec(&value).context("failed to encode empty water mask page")?,
+    )
+    .with_context(|| format!("failed to write empty water mask page {}", path.display()))?;
+    Ok(())
 }
 
 fn build_water_mask_region_tiles(

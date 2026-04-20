@@ -129,8 +129,6 @@ data class WirePlaybackUiState(
 data class WirePlaybackGapSpan(
     val start_seconds: Double,
     val end_seconds: Double,
-    val start_ratio: Double,
-    val end_ratio: Double,
 )
 
 @Serializable
@@ -1008,6 +1006,7 @@ data class WireGuidanceUiView(
 data class WireNavElementUiView(
     val active_leg_summary: String = "",
     val cdi_indicator_dots: Float? = null,
+    val cdi_offscale_readout: String? = null,
 )
 
 @Serializable

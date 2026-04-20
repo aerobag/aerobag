@@ -3,6 +3,7 @@ package net.jonh.aerobag.prototype
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.Paint
+import android.graphics.Typeface
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -91,6 +92,7 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -151,6 +153,8 @@ import net.jonh.aerobag.prototype.domain.FlightPlanRowActionId
 import net.jonh.aerobag.prototype.domain.FlightPlanRowActionUiView
 import net.jonh.aerobag.prototype.domain.FlightPlanRouteSegment
 import net.jonh.aerobag.prototype.domain.FlightPlanUiState
+import net.jonh.aerobag.prototype.domain.GuidanceLegGeometry
+import net.jonh.aerobag.prototype.domain.GuidanceState
 import net.jonh.aerobag.prototype.domain.LatLonPoint
 import net.jonh.aerobag.prototype.domain.MapChartFamily
 import net.jonh.aerobag.prototype.domain.MapFollowUiState
@@ -172,12 +176,16 @@ import net.jonh.aerobag.prototype.domain.PointTilePayload
 import net.jonh.aerobag.prototype.domain.ProcedureKind
 import net.jonh.aerobag.prototype.domain.ProcedureOptions
 import net.jonh.aerobag.prototype.domain.ProcedureSummary
+import net.jonh.aerobag.prototype.domain.ResolvedLeg
+import net.jonh.aerobag.prototype.domain.ResolvedLegSource
 import net.jonh.aerobag.prototype.domain.RouteSegmentStatus
 import net.jonh.aerobag.prototype.domain.RouteComponentUiView
 import net.jonh.aerobag.prototype.domain.RouteComponentViewKind
+import net.jonh.aerobag.prototype.domain.RouteComponent
 import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
 import net.jonh.aerobag.prototype.domain.SampleData
+import net.jonh.aerobag.prototype.domain.SequencingMode
 import net.jonh.aerobag.prototype.domain.SituationSample
 import net.jonh.aerobag.prototype.domain.SourceConnectionState
 import net.jonh.aerobag.prototype.domain.TileStorageKind
@@ -220,7 +228,7 @@ private val ThumbSize = 56.dp
 private val ThumbGap = 5.6.dp
 private val PlanGridGap = 2.dp
 private const val DefaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json"
-private const val AndroidDevServerBaseUrl = "http://10.0.2.2:8082"
+private const val DefaultAndroidDevServerBaseUrl = "http://10.0.2.2:8080"
 private val VampsPosition = LatLon(47.3648944444444, -121.980275)
 private val SituationRingSizesNm = listOf(0.25, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 150.0, 200.0)
 
@@ -332,6 +340,16 @@ private data class AppViewSnapshot(
     val recentAirportIds: List<String>,
     val chartViewport: net.jonh.aerobag.prototype.domain.ImageViewportState?,
     val chartFolderOpen: Boolean,
+)
+
+private data class HardwareZoomState(
+    val selectedMap: MapView,
+    val viewport: MapViewportState,
+    val widthUnits: Float,
+    val heightUnits: Float,
+    val pageTrayOpen: Boolean,
+    val chartTrayOpen: Boolean,
+    val updateViewport: (MapViewportState) -> Unit,
 )
 
 private data class FlightPlanDisplayRow(
@@ -632,81 +650,39 @@ private fun buildSeededDevPlan(
     plan: net.jonh.aerobag.prototype.domain.FlightPlan,
 ): FlightPlanUiMutation {
     return runCatching {
-        val originAnchor = NavRef.Airport("KRNT")
-        val destinationAnchor = NavRef.Airport("KUAO")
-        val airwayName = "V23"
-        val branches = adapter.loadAirwayBranches(dbPath, airwayName)
-        val presentation =
-            adapter.prepareAirwayPresentation(
-                airwayName,
-                branches,
-                adapter.resolveNavRefPosition(dbPath, originAnchor),
-                adapter.resolveNavRefPosition(dbPath, destinationAnchor),
-            )
-        val entryIndex = presentation.points.indexOfFirst { navRefLabel(it.navRef) == "SEA" }
-        require(entryIndex >= 0) { "failed to seed V23 airway: SEA not found in presentation" }
-        val exitIndex = presentation.points.indexOfFirst { navRefLabel(it.navRef) == "RAWER" }
-        require(exitIndex > entryIndex) { "failed to seed V23 airway: RAWER not found in presentation" }
-        val entry = AirwayEntryCandidate(
-            airwayName = presentation.airwayName,
-            branchKey = presentation.branchKey,
-            branchPointIndex = presentation.points[entryIndex].branchPointIndex,
-            sequence = presentation.points[entryIndex].sequence,
-            navRef = presentation.points[entryIndex].navRef,
-            distanceFromAnchorNm = 0.0,
-            previousNavRef = presentation.points.getOrNull(entryIndex - 1)?.navRef,
-            nextNavRef = presentation.points.getOrNull(entryIndex + 1)?.navRef,
+        val waypoints = listOf(
+            NavRef.Airport("KPAO"),
+            NavRef.Fix("VPDUB"),
+            NavRef.Airport("KVCB"),
+            NavRef.Airport("KWLW"),
         )
-        val exit = AirwayExitCandidate(
-            airwayName = presentation.airwayName,
-            branchKey = presentation.branchKey,
-            branchPointIndex = presentation.points[exitIndex].branchPointIndex,
-            sequence = presentation.points[exitIndex].sequence,
-            navRef = presentation.points[exitIndex].navRef,
-            legOffsetFromEntry = exitIndex - entryIndex,
-            isEntry = false,
-            distanceFromTargetNm = null,
-        )
-        val selection =
-            net.jonh.aerobag.prototype.domain.AirwayAutoSelection(
-                airwayName = presentation.airwayName,
-                branchKey = presentation.branchKey,
-                entry = entry,
-                exit = exit,
-                originDistanceNm = 0.0,
-                destinationDistanceNm = 0.0,
-                totalAnchorDistanceNm = 0.0,
-            )
-        val airway =
-            net.jonh.aerobag.prototype.domain.AirwaySegment(
-                name = presentation.airwayName,
-                branchKey = presentation.branchKey,
-                entry = entry.navRef,
-                exit = exit.navRef,
-            )
         val resolvedLegs =
-            presentation.points
-                .subList(entryIndex, exitIndex + 1)
-                .zipWithNext()
-                .mapIndexed { index, (fromPoint, toPoint) ->
-                    net.jonh.aerobag.prototype.domain.ResolvedLeg(
-                        id = "airway:${presentation.airwayName}:${presentation.branchKey}:$index",
-                        from = fromPoint.navRef,
-                        to = toPoint.navRef,
-                        source =
-                            net.jonh.aerobag.prototype.domain.ResolvedLegSource.RouteComponent(
-                                componentIndex = 1,
-                            ),
-                    )
-                }
-        adapter.insertAirwayMaterializedUi(
-            plan = plan,
-            startComponentIndex = 0,
-            endComponentIndex = 1,
-            selection = selection,
-            airway = airway,
-            resolvedLegs = resolvedLegs,
-        )
+            waypoints.zipWithNext().mapIndexed { index, (from, to) ->
+                ResolvedLeg(
+                    id = "component-$index-${index + 1}",
+                    from = from,
+                    to = to,
+                    source = ResolvedLegSource.RouteComponent(componentIndex = index),
+                )
+            }
+        val seededPlan =
+            plan.copy(
+                id = "dev-kpao-vpdub-kvcb-kwlw",
+                name = "KPAO VPDUB KVCB KWLW",
+                legs = resolvedLegs.map { leg -> net.jonh.aerobag.prototype.domain.FlightPlanLeg(leg.from, leg.to, null) },
+                routeComponents = waypoints.map { waypoint -> RouteComponent.Waypoint(waypoint) },
+                resolvedLegs = resolvedLegs,
+                guidance = GuidanceState(
+                    activeLegIndex = 0,
+                    sequencingMode = SequencingMode.FollowPlan,
+                    directTo = null,
+                ),
+                departure = "KPAO",
+                destination = "KWLW",
+                updatedAtEpochMs = System.currentTimeMillis(),
+                version = plan.version + 1,
+            )
+        adapter.activateLegUi(seededPlan, 0)
     }.getOrElse {
         Log.e("AerobagSeed", "buildSeededDevPlan fell back to sample plan", it)
         FlightPlanUiMutation(
@@ -1190,7 +1166,7 @@ private fun AerobagApp() {
     val sessionPlanUiState = requireNotNull(sessionSnapshot.appUiState.activePlan) {
         "UiSessionSnapshot must provide active flight-plan UI state"
     }
-    val navElement = sessionPlanUiState?.guidance?.navElement ?: NavElementUiView("", null)
+    val navElement = sessionPlanUiState.guidance?.navElement
 
     LaunchedEffect(selectedMap.id) {
         mapViewport = preserveViewportForMap(mapViewport, selectedMap.mapView)
@@ -1403,7 +1379,7 @@ private fun MapExplorerPage(
     onSelectMapId: (String) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
-    navElement: NavElementUiView,
+    navElement: NavElementUiView?,
     plan: net.jonh.aerobag.prototype.domain.FlightPlan,
     planUiState: FlightPlanUiState?,
 ) {
@@ -1428,12 +1404,11 @@ private fun MapExplorerPage(
     var committedOverlayViewport by remember(uiSession) { mutableStateOf<MapViewportState?>(null) }
     var committedOverlaySurfaceUnits by remember(uiSession) { mutableStateOf<OverlaySurfaceUnits?>(null) }
     var mapOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
-    var flightPlanRoute by remember(plan.id, plan.version, planUiState) { mutableStateOf<List<FlightPlanRouteSegment>>(emptyList()) }
+    var flightPlanRoute by remember(plan.id, plan.version) { mutableStateOf<List<FlightPlanRouteSegment>>(emptyList()) }
+    var guidanceGeometryKey by remember(uiSession) { mutableStateOf<String?>(null) }
+    var mapGestureActive by remember { mutableStateOf(false) }
     var installingPackage by remember { mutableStateOf<String?>(null) }
     var installRevision by remember { mutableStateOf(0) }
-    var motionDragActive by remember { mutableStateOf(false) }
-    var motionDragLastX by remember { mutableStateOf(0f) }
-    var motionDragLastY by remember { mutableStateOf(0f) }
     val selectedMap = remember(selectedMapId, fixture.mapViews) {
         fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
     }
@@ -1562,9 +1537,11 @@ private fun MapExplorerPage(
         }.onSuccess(onSessionSnapshotChange)
     }
 
-    fun updateViewport(nextViewport: MapViewportState) {
+    fun updateViewport(nextViewport: MapViewportState, syncFollow: Boolean = true) {
         onViewportChange(nextViewport)
-        syncFollowStateForViewport(nextViewport)
+        if (syncFollow) {
+            syncFollowStateForViewport(nextViewport)
+        }
     }
 
     val aircraftDrawable = remember(context) { AppCompatResources.getDrawable(context, R.drawable.plan_view_icon)?.mutate() }
@@ -1655,64 +1632,90 @@ private fun MapExplorerPage(
             style = Paint.Style.STROKE
             strokeJoin = Paint.Join.ROUND
             strokeWidth = 3f
-            textAlign = Paint.Align.LEFT
+            textAlign = Paint.Align.CENTER
             textSize = 14f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
+            typeface = Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD)
         }
     }
     val vorLabelFillPaint = remember {
         Paint().apply {
             isAntiAlias = true
-            color = android.graphics.Color.rgb(74, 163, 255)
+            color = android.graphics.Color.WHITE
             style = Paint.Style.FILL
             textAlign = Paint.Align.CENTER
             textSize = 14f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
+            typeface = Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD)
         }
     }
     val fixLabelFillPaint = remember {
         Paint().apply {
             isAntiAlias = true
-            color = android.graphics.Color.rgb(57, 217, 255)
+            color = android.graphics.Color.WHITE
             style = Paint.Style.FILL
             textAlign = Paint.Align.CENTER
             textSize = 14f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
+            typeface = Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD)
         }
     }
     val airportToweredLabelFillPaint = remember {
         Paint().apply {
             isAntiAlias = true
-            color = android.graphics.Color.rgb(74, 163, 255)
+            color = android.graphics.Color.WHITE
             style = Paint.Style.FILL
-            textAlign = Paint.Align.LEFT
+            textAlign = Paint.Align.CENTER
             textSize = 14f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
+            typeface = Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD)
         }
     }
     val airportUntoweredLabelFillPaint = remember {
         Paint().apply {
             isAntiAlias = true
-            color = android.graphics.Color.rgb(255, 79, 216)
+            color = android.graphics.Color.WHITE
             style = Paint.Style.FILL
-            textAlign = Paint.Align.LEFT
+            textAlign = Paint.Align.CENTER
             textSize = 14f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
+            typeface = Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD)
         }
     }
 
     LaunchedEffect(selectedMap.id) { chartTrayOpen = false }
-    LaunchedEffect(appCore, navDbPath, plan, planUiState) {
-        if (plan.resolvedLegs.isEmpty() || planUiState?.resolvedLegs.isNullOrEmpty()) {
+    LaunchedEffect(appCore, navDbPath, uiSession, plan.id, plan.version, plan.guidance, plan.resolvedLegs) {
+        if (plan.resolvedLegs.isEmpty()) {
             flightPlanRoute = emptyList()
+            if (guidanceGeometryKey != "") {
+                guidanceGeometryKey = ""
+                runCatching { uiSession.setGuidanceLegGeometry(emptyList()) }
+                    .onSuccess(onSessionSnapshotChange)
+                    .onFailure { Log.e("AerobagGuidance", "failed to clear guidance geometry", it) }
+            }
             return@LaunchedEffect
         }
         runCatching {
             appCore.projectFlightPlanRoute(navDbPath, plan)
         }.onSuccess {
             flightPlanRoute = it
+            val nextKey =
+                it.joinToString("|") { segment ->
+                    "${segment.id}:${segment.from.lat},${segment.from.lon}:${segment.to.lat},${segment.to.lon}"
+                }
+            if (nextKey != guidanceGeometryKey) {
+                guidanceGeometryKey = nextKey
+                runCatching {
+                    uiSession.setGuidanceLegGeometry(
+                        it.map { segment ->
+                            GuidanceLegGeometry(
+                                legId = segment.id,
+                                from = segment.from,
+                                to = segment.to,
+                            )
+                        },
+                    )
+                }.onSuccess(onSessionSnapshotChange)
+                    .onFailure { error -> Log.e("AerobagGuidance", "failed to set guidance geometry", error) }
+            }
         }.onFailure {
             flightPlanRoute = emptyList()
+            Log.e("AerobagGuidance", "failed to project flight plan route", it)
         }
     }
     LaunchedEffect(selectedMap.id, pageTrayOpen, chartTrayOpen) {
@@ -1726,8 +1729,11 @@ private fun MapExplorerPage(
             runCatching { uiSession.engageMapFollow(viewport) }.onSuccess(onSessionSnapshotChange)
         }
     }
-    LaunchedEffect(mapFollowUiState.following, mapFollowTargetViewport) {
+    LaunchedEffect(mapFollowUiState.following, mapFollowTargetViewport, mapGestureActive) {
         if (!mapFollowUiState.following) {
+            return@LaunchedEffect
+        }
+        if (mapGestureActive) {
             return@LaunchedEffect
         }
         val target = mapFollowTargetViewport ?: return@LaunchedEffect
@@ -1791,20 +1797,32 @@ private fun MapExplorerPage(
             }
         }
     }
-    DisposableEffect(activity, selectedMap.mapView, surfaceWidthUnits, surfaceHeightUnits, viewport, pageTrayOpen, chartTrayOpen) {
+    val hardwareZoomState = rememberUpdatedState(
+        HardwareZoomState(
+            selectedMap = selectedMap.mapView,
+            viewport = viewport,
+            widthUnits = surfaceWidthUnits,
+            heightUnits = surfaceHeightUnits,
+            pageTrayOpen = pageTrayOpen,
+            chartTrayOpen = chartTrayOpen,
+            updateViewport = { nextViewport -> updateViewport(nextViewport) },
+        ),
+    )
+    DisposableEffect(activity) {
         if (activity != null) {
             activity.onHardwareZoomDelta = { delta ->
-                if (surfaceWidthUnits == 0f || surfaceHeightUnits == 0f || pageTrayOpen || chartTrayOpen) {
+                val state = hardwareZoomState.value
+                if (state.widthUnits == 0f || state.heightUnits == 0f || state.pageTrayOpen || state.chartTrayOpen) {
                     false
                 } else {
-                    updateViewport(
+                    state.updateViewport(
                         zoomAroundPoint(
-                            viewport = viewport,
-                            mapView = selectedMap.mapView,
-                            anchor = ScreenPoint(surfaceWidthUnits / 2f, surfaceHeightUnits / 2f),
-                            widthPx = surfaceWidthUnits,
-                            heightPx = surfaceHeightUnits,
-                            nextZoom = clampZoom(viewport.zoom + delta, selectedMap.mapView),
+                            viewport = state.viewport,
+                            mapView = state.selectedMap,
+                            anchor = ScreenPoint(state.widthUnits / 2f, state.heightUnits / 2f),
+                            widthPx = state.widthUnits,
+                            heightPx = state.heightUnits,
+                            nextZoom = clampZoom(state.viewport.zoom + delta, state.selectedMap),
                         ),
                     )
                     true
@@ -1878,97 +1896,74 @@ private fun MapExplorerPage(
                     var dragPointerId: PointerId? = null
                     var dragLastPosition: Offset? = null
                     var pinchSnapshot: net.jonh.aerobag.prototype.domain.PinchSnapshot? = null
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val pressed = event.changes.filter { it.pressed && !it.isConsumed }
-                        if (pressed.isEmpty()) break
-                        if (topLeftTrayOpen) {
-                            pressed.forEach { it.consume() }
-                            continue
-                        }
-                        if (pressed.size == 1) {
-                            val change = pressed.first()
-                            if (dragPointerId != change.id || dragLastPosition == null) {
-                                dragPointerId = change.id
-                                dragLastPosition = change.position
-                                pinchSnapshot = null
-                            } else {
-                                val last = dragLastPosition ?: change.position
-                                updateViewport(
-                                    dragViewport(
-                                        viewportState.value,
+                    var gestureViewport = viewportState.value
+                    var movedViewportDuringGesture = false
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val pressed = event.changes.filter { it.pressed && !it.isConsumed }
+                            if (pressed.isEmpty()) break
+                            if (topLeftTrayOpen) {
+                                pressed.forEach { it.consume() }
+                                continue
+                            }
+                            mapGestureActive = true
+                            if (pressed.size == 1) {
+                                val change = pressed.first()
+                                if (dragPointerId != change.id || dragLastPosition == null) {
+                                    dragPointerId = change.id
+                                    dragLastPosition = change.position
+                                    pinchSnapshot = null
+                                } else {
+                                    val last = dragLastPosition ?: change.position
+                                    gestureViewport = dragViewport(
+                                        gestureViewport,
                                         dx = with(density) { (change.position.x - last.x).toDp().value },
                                         dy = with(density) { (change.position.y - last.y).toDp().value },
-                                    ),
-                                )
-                                dragLastPosition = change.position
+                                    )
+                                    movedViewportDuringGesture = true
+                                    updateViewport(gestureViewport)
+                                    dragLastPosition = change.position
+                                }
+                                change.consume()
+                            } else {
+                                val first = pressed[0]
+                                val second = pressed[1]
+                                if (pinchSnapshot == null) {
+                                    pinchSnapshot = createPinchSnapshot(
+                                        viewport = gestureViewport,
+                                        first = ScreenPoint(with(density) { first.position.x.toDp().value }, with(density) { first.position.y.toDp().value }),
+                                        second = ScreenPoint(with(density) { second.position.x.toDp().value }, with(density) { second.position.y.toDp().value }),
+                                        widthPx = surfaceWidthUnits,
+                                        heightPx = surfaceHeightUnits,
+                                    )
+                                }
+                                gestureViewport =
+                                    applyPinchGesture(
+                                        snapshot = pinchSnapshot,
+                                        currentFirst = ScreenPoint(with(density) { first.position.x.toDp().value }, with(density) { first.position.y.toDp().value }),
+                                        currentSecond = ScreenPoint(with(density) { second.position.x.toDp().value }, with(density) { second.position.y.toDp().value }),
+                                        mapView = selectedMap.mapView,
+                                        widthPx = surfaceWidthUnits,
+                                        heightPx = surfaceHeightUnits,
+                                    )
+                                movedViewportDuringGesture = true
+                                updateViewport(gestureViewport)
+                                first.consume()
+                                second.consume()
                             }
-                            change.consume()
-                        } else {
-                            val first = pressed[0]
-                            val second = pressed[1]
-                            if (pinchSnapshot == null) {
-                                pinchSnapshot = createPinchSnapshot(
-                                    viewport = viewportState.value,
-                                    first = ScreenPoint(with(density) { first.position.x.toDp().value }, with(density) { first.position.y.toDp().value }),
-                                    second = ScreenPoint(with(density) { second.position.x.toDp().value }, with(density) { second.position.y.toDp().value }),
-                                    widthPx = surfaceWidthUnits,
-                                    heightPx = surfaceHeightUnits,
-                                )
-                            }
-                            updateViewport(
-                                applyPinchGesture(
-                                    snapshot = pinchSnapshot,
-                                    currentFirst = ScreenPoint(with(density) { first.position.x.toDp().value }, with(density) { first.position.y.toDp().value }),
-                                    currentSecond = ScreenPoint(with(density) { second.position.x.toDp().value }, with(density) { second.position.y.toDp().value }),
-                                    mapView = selectedMap.mapView,
-                                    widthPx = surfaceWidthUnits,
-                                    heightPx = surfaceHeightUnits,
-                                ),
-                            )
-                            first.consume()
-                            second.consume()
                         }
+                    } finally {
+                        if (movedViewportDuringGesture) {
+                            syncFollowStateForViewport(gestureViewport)
+                        }
+                        mapGestureActive = false
                     }
                 }
             }
             .pointerInteropFilter { event ->
                 if (surfaceWidthUnits == 0f || surfaceHeightUnits == 0f) {
                     return@pointerInteropFilter false
-                }
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        if (topLeftTrayOpen) {
-                            return@pointerInteropFilter false
-                        }
-                        focusRequester.requestFocus()
-                        motionDragActive = true
-                        motionDragLastX = event.x
-                        motionDragLastY = event.y
-                        true
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        if (!motionDragActive || topLeftTrayOpen) {
-                            return@pointerInteropFilter false
-                        }
-                        val dxPx = event.x - motionDragLastX
-                        val dyPx = event.y - motionDragLastY
-                        updateViewport(
-                            dragViewport(
-                                viewportState.value,
-                                dx = with(density) { dxPx.toDp().value },
-                                dy = with(density) { dyPx.toDp().value },
-                            ),
-                        )
-                        motionDragLastX = event.x
-                        motionDragLastY = event.y
-                        true
-                    }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        val wasDragging = motionDragActive
-                        motionDragActive = false
-                        wasDragging
-                    }
                 }
                 if (event.action == MotionEvent.ACTION_SCROLL) {
                     val wheelDelta = event.getAxisValue(MotionEvent.AXIS_VSCROLL).takeIf { it != 0f }
@@ -2089,8 +2084,8 @@ private fun MapExplorerPage(
                             )
                         }
                         drawContext.canvas.nativeCanvas.apply {
-                            val textX = center.x + 18f * densityScale
-                            val textY = center.y + 5f * densityScale
+                            val textX = center.x
+                            val textY = center.y - 24f * densityScale
                             drawText(feature.label, textX, textY, airportLabelStrokePaint)
                             drawText(feature.label, textX, textY, airportLabelPaint)
                         }
@@ -2102,7 +2097,7 @@ private fun MapExplorerPage(
                         drawPath(band, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
                         drawPath(outerHex, vorMarkerStrokeColor, style = Stroke(width = 1.6f * densityScale))
                         drawContext.canvas.nativeCanvas.apply {
-                            val textY = center.y + 20f * densityScale
+                            val textY = center.y - 24f * densityScale
                             drawText(feature.label, center.x, textY, fixLabelStrokePaint)
                             drawText(feature.label, center.x, textY, vorLabelFillPaint)
                         }
@@ -2111,7 +2106,7 @@ private fun MapExplorerPage(
                         drawPath(triangle, fixMarkerFillColor)
                         drawPath(triangle, fixMarkerStrokeColor, style = Stroke(width = 2.5f * densityScale))
                         drawContext.canvas.nativeCanvas.apply {
-                            val textY = center.y + 20f * densityScale
+                            val textY = center.y - 15f * densityScale
                             drawText(feature.label, center.x, textY, fixLabelStrokePaint)
                             drawText(feature.label, center.x, textY, fixLabelFillPaint)
                         }
@@ -2410,7 +2405,7 @@ private fun FlightPlanPage(
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
-    navElement: NavElementUiView,
+    navElement: NavElementUiView?,
     samplePlan: net.jonh.aerobag.prototype.domain.FlightPlan,
     planUiState: FlightPlanUiState?,
     planListState: LazyListState,
@@ -3386,7 +3381,7 @@ private fun ChartsPage(
     selectedChart: ChartAsset?,
     uiTheme: UiTheme,
     ownship: OwnshipRenderState,
-    navElement: NavElementUiView,
+    navElement: NavElementUiView?,
     folderOpen: Boolean,
     viewport: net.jonh.aerobag.prototype.domain.ImageViewportState?,
     onViewportChange: (net.jonh.aerobag.prototype.domain.ImageViewportState?) -> Unit,
@@ -4046,7 +4041,7 @@ private fun MenuPanelRow(
 
 @Composable
 private fun NavElementDock(
-    navElement: NavElementUiView,
+    navElement: NavElementUiView?,
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
 ) {
@@ -4083,7 +4078,7 @@ private fun NavElementDock(
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = navElement.activeLegSummary,
+                    text = navElement?.activeLegSummary.orEmpty(),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.labelSmall,
@@ -4101,8 +4096,23 @@ private fun NavElementDock(
                 val baselineY = size.height * 0.5f
                 val dotXs = listOf(0.25f, 1.25f, 3.25f, 4.25f).map { it * unit }
                 val dotRadius = unit * 0.04375f
-                val pointerPosition = navElement.cdiIndicatorDots
-                val pointerX = pointerPosition?.let { ((it + 2.25f).coerceIn(0.25f, 4.25f)) * unit }
+                val pointerPosition = navElement?.cdiIndicatorDots
+                val fullScaleDots = 2f
+                val offscaleDots = 2.1f
+                val clampedPointerPosition = pointerPosition?.coerceIn(-fullScaleDots, fullScaleDots)
+                val pointerX = clampedPointerPosition?.let { (it + 2.25f) * unit }
+                val offscaleDirection = when {
+                    pointerPosition == null || abs(pointerPosition) <= offscaleDots -> null
+                    pointerPosition > 0f -> 1
+                    else -> -1
+                }
+                val offscaleReadout = navElement?.cdiOffscaleReadout
+                val offscaleReadoutDotIndex = when {
+                    offscaleReadout == null -> null
+                    offscaleDirection == 1 -> 2
+                    offscaleDirection == -1 -> 1
+                    else -> null
+                }
                 val triangleHalfWidth = unit * 0.25f
                 drawPath(
                     path =
@@ -4114,7 +4124,10 @@ private fun NavElementDock(
                         },
                     color = Color.White,
                 )
-                dotXs.forEach { x ->
+                dotXs.forEachIndexed { index, x ->
+                    if (index == offscaleReadoutDotIndex) {
+                        return@forEachIndexed
+                    }
                     drawCircle(
                         color = Color.White,
                         radius = dotRadius,
@@ -4122,9 +4135,49 @@ private fun NavElementDock(
                         style = Stroke(width = unit * 0.05f),
                     )
                 }
-                if (pointerX != null) {
+                if (offscaleDirection != null) {
+                    val baseX = (2.25f + offscaleDirection * offscaleDots) * unit
+                    val tipX = if (offscaleDirection > 0) size.width else 0f
+                    drawPath(
+                        path =
+                            Path().apply {
+                                moveTo(baseX, size.height * 0.18f)
+                                lineTo(baseX, size.height * 0.82f)
+                                lineTo(tipX, baselineY)
+                                close()
+                            },
+                        color = uiTheme.controls.cdiPointer,
+                    )
+                    if (offscaleReadout != null && offscaleReadoutDotIndex != null) {
+                        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                            color = uiTheme.controls.cdiPointer.toArgb()
+                            textAlign = Paint.Align.CENTER
+                            textSize = size.height * 0.8f
+                            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                        }
+                        val strokePaint = Paint(textPaint).apply {
+                            style = Paint.Style.STROKE
+                            strokeWidth = size.height * 0.14f
+                            strokeJoin = Paint.Join.ROUND
+                            color = Color(0xD1081218).toArgb()
+                        }
+                        val textY = baselineY - (textPaint.descent() + textPaint.ascent()) / 2f
+                        drawContext.canvas.nativeCanvas.drawText(
+                            offscaleReadout,
+                            dotXs[offscaleReadoutDotIndex],
+                            textY,
+                            strokePaint,
+                        )
+                        drawContext.canvas.nativeCanvas.drawText(
+                            offscaleReadout,
+                            dotXs[offscaleReadoutDotIndex],
+                            textY,
+                            textPaint,
+                        )
+                    }
+                } else if (pointerX != null) {
                     drawLine(
-                        color = Color(0xFFD45A7A),
+                        color = uiTheme.controls.cdiPointer,
                         start = Offset(pointerX, 0f),
                         end = Offset(pointerX, size.height),
                         strokeWidth = unit * 0.14f,
@@ -4145,6 +4198,10 @@ private fun PlaybackWidget(
     onSnapshotChange: (UiSessionSnapshot) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+    val devServerBaseUrl = remember(context) {
+        loadAndroidDevServerBaseUrl(context.applicationContext)
+    }
     val scope = rememberCoroutineScope()
     var isBusy by remember { mutableStateOf(false) }
     var scrubCursorSeconds by remember { mutableStateOf<Double?>(null) }
@@ -4228,7 +4285,7 @@ private fun PlaybackWidget(
                                 try {
                                     val traceJson =
                                         withContext(Dispatchers.IO) {
-                                            URL(resolvePlaybackTraceUrl(sourcePath)).readText()
+                                            URL(resolvePlaybackTraceUrl(sourcePath, devServerBaseUrl)).readText()
                                         }
                                     onSnapshotChange(uiSession.loadPlaybackTrace(sourcePath, traceJson))
                                 } catch (error: Throwable) {
@@ -4575,8 +4632,8 @@ private fun PlaybackOverview(
             drawProfile(playbackUiState.speedProfileNorm, Color(0xEBD45A7A))
             if (durationSeconds > 0.0) {
                 playbackUiState.gapSpans.forEach { gap ->
-                    val startRatio = gap.startRatio.coerceIn(0.0, 1.0).toFloat()
-                    val endRatio = gap.endRatio.coerceIn(0.0, 1.0).toFloat()
+                    val startRatio = (gap.startSeconds / durationSeconds).coerceIn(0.0, 1.0).toFloat()
+                    val endRatio = (gap.endSeconds / durationSeconds).coerceIn(0.0, 1.0).toFloat()
                     val startX = knobRadius + startRatio * usableWidth
                     val endX = knobRadius + endRatio * usableWidth
                     if (endX > startX) {
@@ -4624,11 +4681,19 @@ private fun PlaybackOverview(
     }
 }
 
-private fun resolvePlaybackTraceUrl(sourcePath: String): String =
+private fun loadAndroidDevServerBaseUrl(context: Context): String =
+    runCatching {
+        context.assets.open("fixtures/android-dev-server-base-url.txt")
+            .bufferedReader()
+            .use { it.readText().trim() }
+            .takeIf { it.isNotBlank() }
+    }.getOrNull() ?: DefaultAndroidDevServerBaseUrl
+
+private fun resolvePlaybackTraceUrl(sourcePath: String, devServerBaseUrl: String): String =
     when {
         sourcePath.startsWith("http://") || sourcePath.startsWith("https://") -> sourcePath
-        sourcePath.startsWith("/") -> "$AndroidDevServerBaseUrl$sourcePath"
-        else -> "$AndroidDevServerBaseUrl/$sourcePath"
+        sourcePath.startsWith("/") -> "$devServerBaseUrl$sourcePath"
+        else -> "$devServerBaseUrl/$sourcePath"
     }
 
 @Composable

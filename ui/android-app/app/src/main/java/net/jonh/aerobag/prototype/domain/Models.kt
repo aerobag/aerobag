@@ -346,6 +346,7 @@ data class GuidanceUiView(
 data class NavElementUiView(
     val activeLegSummary: String,
     val cdiIndicatorDots: Float?,
+    val cdiOffscaleReadout: String?,
 )
 
 data class FlightPlanUiState(
@@ -710,6 +711,4 @@ data class PlaybackUiState(
 data class PlaybackGapSpan(
     val startSeconds: Double,
     val endSeconds: Double,
-    val startRatio: Double,
-    val endRatio: Double,
 )

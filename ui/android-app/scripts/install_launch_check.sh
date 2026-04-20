@@ -2,6 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+INSTANCE_CONFIG="$ROOT/../INSTANCE_CONFIG"
+if [[ -f "$INSTANCE_CONFIG" ]]; then
+  # shellcheck source=/dev/null
+  source "$INSTANCE_CONFIG"
+fi
+
 APP_DIR="$ROOT/ui/android-app"
 APP_ID="net.jonh.aerobag.prototype"
 ACTIVITY="$APP_ID/.MainActivity"
@@ -26,35 +32,45 @@ AEROBAG_UI_TARGET_ROOT="${AEROBAG_UI_TARGET_ROOT:-$DEFAULT_UI_TARGET_ROOT}"
 GRADLE_USER_HOME="${GRADLE_USER_HOME:-$AEROBAG_UI_TARGET_ROOT/android/gradle-user-home}"
 PROJECT_CACHE_DIR="${PROJECT_CACHE_DIR:-$AEROBAG_UI_TARGET_ROOT/android/project-cache}"
 WAIT_SECONDS="${WAIT_SECONDS:-2}"
+VNC_PORT="${VNC_PORT:-5900}"
+DEFAULT_EMULATOR_CONSOLE_PORT="$(python3 - <<'PY' "$VNC_PORT"
+import sys
+port = int(sys.argv[1])
+index = max(port - 5900, 0)
+print(5554 + index * 2)
+PY
+)"
+EMULATOR_CONSOLE_PORT="${EMULATOR_CONSOLE_PORT:-$DEFAULT_EMULATOR_CONSOLE_PORT}"
+ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-${EMULATOR_CONSOLE_PORT}}"
 
 mkdir -p "$GRADLE_USER_HOME" "$PROJECT_CACHE_DIR"
 
 echo "[1/6] installDebug"
 (
   cd "$ROOT"
-  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" "$APP_DIR/gradlew" --project-cache-dir "$PROJECT_CACHE_DIR" -p "$APP_DIR" installDebug
+  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" ANDROID_SERIAL="$ANDROID_SERIAL" "$APP_DIR/gradlew" --project-cache-dir "$PROJECT_CACHE_DIR" -p "$APP_DIR" installDebug
 )
 
 echo "[2/6] seed chart payloads"
 (
   cd "$ROOT"
-  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" "$APP_DIR/gradlew" --project-cache-dir "$PROJECT_CACHE_DIR" -p "$APP_DIR" seedPrototypeSectionalPackages seedPrototypeChartPackages
+  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" ANDROID_SERIAL="$ANDROID_SERIAL" "$APP_DIR/gradlew" --project-cache-dir "$PROJECT_CACHE_DIR" -p "$APP_DIR" seedPrototypeSectionalPackages seedPrototypeChartPackages
 )
 
 echo "[3/6] clear logcat"
-adb logcat -c
+adb -s "$ANDROID_SERIAL" logcat -c
 
 echo "[4/6] force-stop"
-adb shell am force-stop "$APP_ID"
+adb -s "$ANDROID_SERIAL" shell am force-stop "$APP_ID"
 
 echo "[5/6] launch"
-adb shell am start -W -n "$ACTIVITY"
+adb -s "$ANDROID_SERIAL" shell am start -W -n "$ACTIVITY"
 
 echo "[6/6] wait ${WAIT_SECONDS}s and inspect"
 sleep "$WAIT_SECONDS"
 
-RESUMED="$(adb shell dumpsys activity activities | grep -E 'topResumedActivity|ResumedActivity' || true)"
-CRASH_LINES="$(adb logcat -d | grep -E 'AndroidRuntime|FATAL EXCEPTION|FileNotFoundException|app died|Force removing|OutOfMemory|SQLite|Exception|libc|tombstoned|DEBUG' || true)"
+RESUMED="$(adb -s "$ANDROID_SERIAL" shell dumpsys activity activities | grep -E 'topResumedActivity|ResumedActivity' || true)"
+CRASH_LINES="$(adb -s "$ANDROID_SERIAL" logcat -d | grep -E 'AndroidRuntime|FATAL EXCEPTION|FileNotFoundException|app died|Force removing|OutOfMemory|SQLite|Exception|libc|tombstoned|DEBUG' || true)"
 
 echo
 echo "Resumed activity:"

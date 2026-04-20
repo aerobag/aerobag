@@ -33,6 +33,25 @@ val generatedPrototypeAssetsDir = project.objects.directoryProperty().convention
 val generatedPrototypeSeedPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedPackages")
 val generatedPrototypeSeedChartPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedChartPackages")
 val repoRoot = rootDir.parentFile.parentFile
+val instanceConfigFile = repoRoot.parentFile.resolve("INSTANCE_CONFIG")
+fun readInstanceConfigValue(key: String): String? {
+    if (!instanceConfigFile.isFile) return null
+    return instanceConfigFile.readLines()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.startsWith("#") }
+        .firstNotNullOfOrNull { line ->
+            val separator = line.indexOf('=')
+            if (separator <= 0) return@firstNotNullOfOrNull null
+            val parsedKey = line.substring(0, separator).trim()
+            if (parsedKey != key) return@firstNotNullOfOrNull null
+            line.substring(separator + 1).trim().trim('"', '\'')
+        }
+}
+
+val webPort = System.getenv("WEB_PORT")
+    ?: readInstanceConfigValue("WEB_PORT")
+    ?: "8080"
+val androidDevServerBaseUrl = "http://10.0.2.2:$webPort"
 val artifactReadPathConfigFile = repoRoot.resolve(".aerobag-artifact-read-path")
 val configuredArtifactRoot = artifactReadPathConfigFile.readText().trim()
 val defaultArtifactRoot =
@@ -159,6 +178,7 @@ val stageCanonicalAndroidAssets by tasks.registering {
         Files.copy(vectorsZipFile.toPath(), fixturesDir.resolve("vectors.zip").toPath(), StandardCopyOption.REPLACE_EXISTING)
         Files.copy(uiThemeFile.toPath(), fixturesDir.resolve("ui-theme.json").toPath(), StandardCopyOption.REPLACE_EXISTING)
         Files.copy(devBootstrapFile.toPath(), fixturesDir.resolve("dev-bootstrap.json").toPath(), StandardCopyOption.REPLACE_EXISTING)
+        fixturesDir.resolve("android-dev-server-base-url.txt").writeText(androidDevServerBaseUrl)
         ZipFile(dataZipFile).use { zip ->
             val entry = zip.getEntry("main.db")
                 ?: throw GradleException("missing main.db in packaged data zip ${dataZipFile.absolutePath}")

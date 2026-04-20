@@ -2,6 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+INSTANCE_CONFIG="$ROOT/../INSTANCE_CONFIG"
+if [[ -f "$INSTANCE_CONFIG" ]]; then
+  # shellcheck source=/dev/null
+  source "$INSTANCE_CONFIG"
+fi
+
 TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
 DEFAULT_UI_TARGET_ROOT="$(python3 - <<'PY' "$ROOT" "$TARGET_ROOT_FILE"
 from pathlib import Path
@@ -13,7 +19,17 @@ PY
 )"
 
 AEROBAG_UI_TARGET_ROOT="${AEROBAG_UI_TARGET_ROOT:-$DEFAULT_UI_TARGET_ROOT}"
-STATE_DIR="${AEROBAG_UI_TARGET_ROOT}/android/emulator-stack"
+VNC_PORT="${VNC_PORT:-5900}"
+DEFAULT_EMULATOR_CONSOLE_PORT="$(python3 - <<'PY' "$VNC_PORT"
+import sys
+port = int(sys.argv[1])
+index = max(port - 5900, 0)
+print(5554 + index * 2)
+PY
+)"
+EMULATOR_CONSOLE_PORT="${EMULATOR_CONSOLE_PORT:-$DEFAULT_EMULATOR_CONSOLE_PORT}"
+ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-${EMULATOR_CONSOLE_PORT}}"
+STATE_DIR="${AEROBAG_UI_TARGET_ROOT}/android/emulator-stack-${VNC_PORT}"
 XVFB_PID_FILE="${STATE_DIR}/xvfb.pid"
 X11VNC_PID_FILE="${STATE_DIR}/x11vnc.pid"
 EMULATOR_PID_FILE="${STATE_DIR}/emulator.pid"
@@ -42,9 +58,8 @@ stop_pid_file() {
   rm -f "$pid_file"
 }
 
-adb_devices="$(adb devices 2>/dev/null || true)"
-if grep -q '^emulator-' <<<"$adb_devices"; then
-  adb emu kill >/dev/null 2>&1 || true
+if adb -s "$ANDROID_SERIAL" get-state >/dev/null 2>&1; then
+  adb -s "$ANDROID_SERIAL" emu kill >/dev/null 2>&1 || true
   sleep 2
 fi
 

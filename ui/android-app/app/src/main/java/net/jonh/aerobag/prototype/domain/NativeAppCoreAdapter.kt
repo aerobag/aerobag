@@ -932,7 +932,7 @@ private fun WirePlaybackUiState.toUi() = PlaybackUiState(
     rate = rate,
     speedProfileNorm = speed_profile_norm,
     altitudeProfileNorm = altitude_profile_norm,
-    gapSpans = gap_spans.map { PlaybackGapSpan(it.start_seconds, it.end_seconds, it.start_ratio, it.end_ratio) },
+    gapSpans = gap_spans.map { PlaybackGapSpan(it.start_seconds, it.end_seconds) },
 )
 
 private fun WireOwnshipSourceMenuItem.toUi() = OwnshipSourceMenuItem(
@@ -1671,6 +1671,7 @@ private fun WireGuidanceUiView.toUi() = GuidanceUiView(
 private fun WireNavElementUiView.toUi() = NavElementUiView(
     activeLegSummary = active_leg_summary,
     cdiIndicatorDots = cdi_indicator_dots,
+    cdiOffscaleReadout = cdi_offscale_readout,
 )
 
 private fun WireSequencingMode.toUi() = when (this) {

@@ -115,8 +115,9 @@ Current old source:
 
 - For approaches, `cifp_tpp_matches` by airport, interpreted as approach
   procedures.
-- For SID/STAR, `cifp_sid_star_app` distinct procedure rows, with kind coming
-  from published metadata rather than UI route-type inference.
+- For SID/STAR, the current producer emits route-type-derived procedure lists
+  until published procedure-kind metadata is available in the product contract.
+  This inference belongs in preproc, not UI.
 
 Value: `ProcedureSummary[]`, already filtered to the requested kind and sorted
 by `procedure_id`.
@@ -184,14 +185,14 @@ This should be a tile product, not a prefix-scan over all airways.
 
 ## Waypoint and Symbol Data
 
-`waypoint/ident/{identifier}`
+`waypoint/identifier/{identifier}`
 
 Current consumer: insert waypoint validation and exact identifier resolution.
 
 Current old source: exact lookup across `airports`, `nav`, and `fix`.
 
-Value: candidates for that identifier in core priority order, including
-`NavRef`, position, kind, and friendly display name.
+Value: the resolved `NavRef` for that identifier using core's established
+priority order, or no key if the identifier is unknown.
 
 `waypoint/prefix/{prefix_shard}`
 
@@ -203,7 +204,8 @@ Value: sorted waypoint records for that prefix shard. Core filters the requested
 prefix, computes distance from the insertion anchor, and truncates.
 
 This can be a trie-like shard layout later. The important contract is that the
-UI asks core for suggestions; core asks HAD for a prefix shard and does the
+UI fetches the shard and passes the candidate records to core. Core filters the
+requested prefix, computes distance from the insertion anchor, and does the
 ranking.
 
 `navref/position/{kind}/{identifier}`

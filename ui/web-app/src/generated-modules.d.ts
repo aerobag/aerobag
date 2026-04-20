@@ -40,8 +40,11 @@ declare module "@generated/app_wasm.js" {
   export const describe_show_plate_for_procedure: (...args: unknown[]) => string;
   export const describe_load_procedure_from_plate: (...args: unknown[]) => string;
   export const describe_plate_procedure_load_options: (...args: unknown[]) => string;
+  export const flight_plan_insert_anchor: (...args: unknown[]) => string;
   export const prepare_airway_presentation: (...args: unknown[]) => string;
   export const sort_airway_suggestions_for_ui: (...args: unknown[]) => string;
+  export const project_flight_plan_route_from_positions: (...args: unknown[]) => string;
+  export const suggest_waypoint_identifiers_from_candidates: (...args: unknown[]) => string;
   export const web_project_flight_plan_route: (...args: unknown[]) => string;
   export const web_suggest_airways_near: (...args: unknown[]) => string;
   export const web_prepare_airway_presentation_for_anchors: (...args: unknown[]) => string;

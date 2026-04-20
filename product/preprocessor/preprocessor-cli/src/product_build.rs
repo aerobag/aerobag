@@ -3851,7 +3851,8 @@ fn build_bundle_manifest(
             .join(format!("resource_index_{cycle}.json")),
         &public_resource_index,
     )?;
-    let nav_kv = write_nav_kv_artifact(config, &public_resource_index, &cycle)?;
+    let data_db_path = resolve_artifact_path(config, output_path(data_record, "main_db")?);
+    let nav_kv = write_nav_kv_artifact(config, &public_resource_index, &cycle, &data_db_path)?;
 
     Ok(BundleManifest {
         schema_version: 1,
@@ -3875,6 +3876,7 @@ fn write_nav_kv_artifact(
     config: &ProductBuildConfig,
     resource_index: &ResourceIndex,
     cycle: &str,
+    main_db_path: &Path,
 ) -> anyhow::Result<BundleNavKvArtifact> {
     let chart_catalog = build_nav_kv_chart_catalog(resource_index);
     let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
@@ -3884,6 +3886,7 @@ fn write_nav_kv_artifact(
         value: chart_catalog_bytes,
     }];
     pairs.extend(build_nav_kv_plate_pairs(resource_index)?);
+    pairs.extend(build_nav_kv_navref_pairs(main_db_path)?);
     let built = build_nav_kv_sorted(pairs, 64 * 1024)
         .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
 
@@ -4085,6 +4088,1078 @@ fn build_nav_kv_plate_airports(resource_index: &ResourceIndex) -> Vec<serde_json
         .collect::<Vec<_>>()
 }
 
+fn build_nav_kv_navref_pairs(main_db_path: &Path) -> anyhow::Result<Vec<NavKvPair>> {
+    let connection = rusqlite::Connection::open(main_db_path)
+        .with_context(|| format!("failed to open {}", main_db_path.display()))?;
+    let mut pairs = Vec::new();
+    pairs.extend(build_nav_kv_airport_navref_pairs(&connection)?);
+    pairs.extend(build_nav_kv_navaid_navref_pairs(&connection)?);
+    pairs.extend(build_nav_kv_fix_navref_pairs(&connection)?);
+    pairs.extend(build_nav_kv_runway_position_pairs(&connection)?);
+    pairs.extend(build_nav_kv_waypoint_lookup_pairs(&connection)?);
+    pairs.extend(build_nav_kv_procedure_pairs(&connection)?);
+    let mut deduped = BTreeMap::<String, Vec<u8>>::new();
+    for pair in pairs {
+        deduped.entry(pair.key).or_insert(pair.value);
+    }
+    Ok(deduped
+        .into_iter()
+        .map(|(key, value)| NavKvPair { key, value })
+        .collect())
+}
+
+fn build_nav_kv_airport_navref_pairs(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(LocationID), CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL),
+               trim(FacilityName), trim(Type), trim(ATCT), trim(FuelTypes), trim(Use)
+        FROM airports
+        WHERE trim(LocationID) <> ''
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, f64>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+        ))
+    })?;
+    let runway_info = airport_runway_symbol_info_by_airport(connection)?;
+    let mut pairs = Vec::new();
+    for row in rows {
+        let (id, lat, lon, facility_name, kind, atct, fuel_types, use_code) = row?;
+        let key_id = had_upper_key_component(&id);
+        pairs.push(json_pair(
+            format!("navref/position/airport/{key_id}"),
+            &serde_json::json!({ "lat": lat, "lon": lon }),
+            "navref airport position",
+        )?);
+        let info = runway_info.get(&id.trim().to_ascii_uppercase());
+        let kind_upper = kind.trim().to_ascii_uppercase();
+        let private_use = use_code.trim().eq_ignore_ascii_case("PR");
+        let heliport = kind_upper.contains("HELIPORT");
+        let has_water_runway = info.map(|info| info.has_water_runway).unwrap_or(false)
+            || kind.trim().eq_ignore_ascii_case("SEAPLANE BAS");
+        if private_use || heliport || has_water_runway {
+            continue;
+        }
+        pairs.push(json_pair(
+            format!("navref/symbol/airport/{key_id}"),
+            &serde_json::json!({
+                "kind": kind.to_ascii_lowercase(),
+                "label": airport_display_label(&id),
+                "style_class": "airport",
+                "towered": atct.trim().eq_ignore_ascii_case("Y"),
+                "fuel_available": !fuel_types.trim().is_empty(),
+                "runway_length_ratio": runway_length_ratio(info.map(|info| info.length_ft)),
+                "longest_runway_heading_true_deg": info.map(|info| info.heading_true_deg),
+            }),
+            "navref airport symbol",
+        )?);
+        let _ = facility_name;
+    }
+    Ok(pairs)
+}
+
+fn build_nav_kv_navaid_navref_pairs(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(LocationID), CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL),
+               trim(FacilityName), trim(Type)
+        FROM nav
+        WHERE trim(LocationID) <> ''
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, f64>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+        ))
+    })?;
+    let mut pairs = Vec::new();
+    for row in rows {
+        let (id, lat, lon, facility_name, kind) = row?;
+        let key_id = had_upper_key_component(&id);
+        pairs.push(json_pair(
+            format!("navref/position/navaid/{key_id}"),
+            &serde_json::json!({ "lat": lat, "lon": lon }),
+            "navref navaid position",
+        )?);
+        if matches!(
+            kind.trim().to_ascii_uppercase().as_str(),
+            "VOR" | "VOR/DME" | "VORTAC"
+        ) {
+            pairs.push(json_pair(
+                format!("navref/symbol/navaid/{key_id}"),
+                &serde_json::json!({
+                    "kind": kind.to_ascii_lowercase(),
+                    "label": navaid_display_label(&id, &facility_name),
+                    "style_class": "nav",
+                    "towered": false,
+                    "fuel_available": false,
+                    "runway_length_ratio": 0.0,
+                    "longest_runway_heading_true_deg": serde_json::Value::Null,
+                }),
+                "navref navaid symbol",
+            )?);
+        }
+    }
+    Ok(pairs)
+}
+
+fn build_nav_kv_fix_navref_pairs(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(LocationID), CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL),
+               trim(FacilityName), trim(Type)
+        FROM fix
+        WHERE trim(LocationID) <> ''
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, f64>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+        ))
+    })?;
+    let mut pairs = Vec::new();
+    for row in rows {
+        let (id, lat, lon, facility_name, kind) = row?;
+        let key_id = had_upper_key_component(&id);
+        pairs.push(json_pair(
+            format!("navref/position/fix/{key_id}"),
+            &serde_json::json!({ "lat": lat, "lon": lon }),
+            "navref fix position",
+        )?);
+        pairs.push(json_pair(
+            format!("navref/symbol/fix/{key_id}"),
+            &serde_json::json!({
+                "kind": kind.to_ascii_lowercase(),
+                "label": titlecase_nav_label(&facility_name).to_ascii_uppercase(),
+                "style_class": "fix",
+                "towered": false,
+                "fuel_available": false,
+                "runway_length_ratio": 0.0,
+                "longest_runway_heading_true_deg": serde_json::Value::Null,
+            }),
+            "navref fix symbol",
+        )?);
+    }
+    Ok(pairs)
+}
+
+fn build_nav_kv_runway_position_pairs(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(LocationID), trim(LEIdent), CAST(LELatitude AS REAL), CAST(LELongitude AS REAL),
+               trim(HEIdent), CAST(HELatitude AS REAL), CAST(HELongitude AS REAL)
+        FROM airportrunways
+        WHERE trim(LocationID) <> ''
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, f64>(5)?,
+            row.get::<_, f64>(6)?,
+        ))
+    })?;
+    let mut pairs = Vec::new();
+    for row in rows {
+        let (airport_id, le_ident, le_lat, le_lon, he_ident, he_lat, he_lon) = row?;
+        for (ident, lat, lon) in [(le_ident, le_lat, le_lon), (he_ident, he_lat, he_lon)] {
+            let ident = ident.trim();
+            if ident.is_empty() {
+                continue;
+            }
+            pairs.push(json_pair(
+                format!(
+                    "navref/position/runway/{}/{}",
+                    had_upper_key_component(&airport_id),
+                    had_upper_key_component(&format!("RW{ident}")),
+                ),
+                &serde_json::json!({ "lat": lat, "lon": lon }),
+                "navref runway position",
+            )?);
+        }
+    }
+    Ok(pairs)
+}
+
+fn build_nav_kv_waypoint_lookup_pairs(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let mut candidates = Vec::<serde_json::Value>::new();
+    let mut exists_by_identifier = BTreeMap::<String, (bool, bool, bool)>::new();
+    collect_waypoint_candidates(
+        connection,
+        "airports",
+        "airport",
+        &mut candidates,
+        &mut exists_by_identifier,
+    )?;
+    collect_waypoint_candidates(
+        connection,
+        "nav",
+        "navaid",
+        &mut candidates,
+        &mut exists_by_identifier,
+    )?;
+    collect_waypoint_candidates(
+        connection,
+        "fix",
+        "fix",
+        &mut candidates,
+        &mut exists_by_identifier,
+    )?;
+
+    let mut pairs = Vec::new();
+    for (identifier, (exists_as_airport, exists_as_navaid, exists_as_fix)) in exists_by_identifier {
+        let nav_ref = if identifier.starts_with("RW") {
+            Some(serde_json::json!({ "Fix": identifier }))
+        } else if exists_as_navaid {
+            Some(serde_json::json!({ "Navaid": identifier }))
+        } else if exists_as_airport {
+            Some(serde_json::json!({ "Airport": identifier }))
+        } else if exists_as_fix {
+            Some(serde_json::json!({ "Fix": identifier }))
+        } else {
+            None
+        };
+        pairs.push(json_pair(
+            format!(
+                "waypoint/identifier/{}",
+                had_upper_key_component(&identifier)
+            ),
+            &nav_ref.unwrap_or(serde_json::Value::Null),
+            "waypoint identifier",
+        )?);
+    }
+
+    candidates.sort_by(|left, right| {
+        let left_identifier = left
+            .get("identifier")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let right_identifier = right
+            .get("identifier")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let left_kind = left
+            .get("kind")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let right_kind = right
+            .get("kind")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        left_identifier
+            .len()
+            .cmp(&right_identifier.len())
+            .then_with(|| left_identifier.cmp(right_identifier))
+            .then_with(|| waypoint_kind_rank(left_kind).cmp(&waypoint_kind_rank(right_kind)))
+    });
+
+    let mut by_prefix = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    for candidate in candidates {
+        let Some(identifier) = candidate.get("identifier").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let chars = identifier.chars().collect::<Vec<_>>();
+        for length in 1..=2.min(chars.len()) {
+            let prefix = chars.iter().take(length).collect::<String>();
+            by_prefix.entry(prefix).or_default().push(candidate.clone());
+        }
+    }
+    for (prefix, candidates) in by_prefix {
+        pairs.push(json_pair(
+            format!("waypoint/prefix/{}", had_upper_key_component(&prefix)),
+            &serde_json::Value::Array(candidates),
+            "waypoint prefix",
+        )?);
+    }
+
+    Ok(pairs)
+}
+
+fn collect_waypoint_candidates(
+    connection: &rusqlite::Connection,
+    table: &str,
+    kind: &str,
+    candidates: &mut Vec<serde_json::Value>,
+    exists_by_identifier: &mut BTreeMap<String, (bool, bool, bool)>,
+) -> anyhow::Result<()> {
+    let sql = if kind == "airport" {
+        format!(
+            "
+        SELECT trim(LocationID), trim(City), trim(State), trim(FacilityName),
+               CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL)
+        FROM {table}
+        WHERE trim(LocationID) <> ''
+        "
+        )
+    } else {
+        format!(
+            "
+        SELECT trim(LocationID), '', '', trim(FacilityName),
+               CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL)
+        FROM {table}
+        WHERE trim(LocationID) <> ''
+        "
+        )
+    };
+    let mut stmt = connection.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1).unwrap_or_default(),
+            row.get::<_, String>(2).unwrap_or_default(),
+            row.get::<_, String>(3)?,
+            row.get::<_, f64>(4)?,
+            row.get::<_, f64>(5)?,
+        ))
+    })?;
+    for row in rows {
+        let (identifier, city, state, facility_name, lat, lon) = row?;
+        let identifier = identifier.trim().to_ascii_uppercase();
+        if identifier.is_empty() {
+            continue;
+        }
+        let entry = exists_by_identifier.entry(identifier.clone()).or_default();
+        match kind {
+            "airport" => entry.0 = true,
+            "navaid" => entry.1 = true,
+            "fix" => entry.2 = true,
+            _ => {}
+        }
+        let nav_ref = match kind {
+            "airport" => serde_json::json!({ "Airport": identifier }),
+            "navaid" => serde_json::json!({ "Navaid": identifier }),
+            _ => serde_json::json!({ "Fix": identifier }),
+        };
+        candidates.push(serde_json::json!({
+            "identifier": identifier,
+            "nav_ref": nav_ref,
+            "kind": kind,
+            "city": city,
+            "state": state,
+            "facility_name": facility_name,
+            "position": { "lat": lat, "lon": lon },
+        }));
+    }
+    Ok(())
+}
+
+fn waypoint_kind_rank(kind: &str) -> usize {
+    match kind {
+        "navaid" => 0,
+        "airport" => 1,
+        "fix" => 2,
+        _ => 3,
+    }
+}
+
+fn build_nav_kv_procedure_pairs(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let mut pairs = Vec::new();
+    let airport_ids = load_nav_kv_airport_ids(connection)?;
+    let cifp_matches = load_nav_kv_cifp_tpp_matches(connection)?;
+    let mut matches_by_procedure = BTreeMap::<(String, String), Vec<serde_json::Value>>::new();
+    let mut matches_by_plate = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    let mut approach_lists = BTreeMap::<String, BTreeSet<String>>::new();
+    for row in cifp_matches {
+        let airport_id = row
+            .get("airport_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let cifp_id = row
+            .get("cifp_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let plate_id = row
+            .get("plate_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if !airport_id.is_empty() && !cifp_id.is_empty() {
+            matches_by_procedure
+                .entry((airport_id.clone(), cifp_id.clone()))
+                .or_default()
+                .push(row.clone());
+            approach_lists
+                .entry(airport_id)
+                .or_default()
+                .insert(cifp_id);
+        }
+        if !plate_id.is_empty() {
+            matches_by_plate.entry(plate_id).or_default().push(row);
+        }
+    }
+    for ((airport_id, cifp_id), rows) in matches_by_procedure {
+        pairs.push(json_pair(
+            format!(
+                "plate/cifp/{}/{}",
+                had_upper_key_component(&airport_id),
+                had_upper_key_component(&cifp_id)
+            ),
+            &serde_json::Value::Array(rows),
+            "plate cifp matches",
+        )?);
+    }
+    for (plate_id, rows) in matches_by_plate {
+        pairs.push(json_pair(
+            format!(
+                "plate/procedure-candidates/{}",
+                had_key_component(&plate_id)
+            ),
+            &serde_json::Value::Array(rows),
+            "plate procedure candidates",
+        )?);
+    }
+    for airport_id in &airport_ids {
+        let procedure_ids = approach_lists.remove(airport_id).unwrap_or_default();
+        let rows = procedure_ids
+            .into_iter()
+            .map(|procedure_id| {
+                serde_json::json!({
+                    "airport_id": airport_id,
+                    "procedure_id": procedure_id,
+                    "kind": "approach",
+                })
+            })
+            .collect::<Vec<_>>();
+        pairs.push(json_pair(
+            format!(
+                "procedure/list/{}/APPROACH",
+                had_upper_key_component(&airport_id)
+            ),
+            &serde_json::Value::Array(rows),
+            "approach procedure list",
+        )?);
+    }
+
+    let mut sid_lists = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut star_lists = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut distinct_by_procedure = BTreeMap::<(String, String), Vec<serde_json::Value>>::new();
+    let mut materialization_by_procedure =
+        BTreeMap::<(String, String), Vec<serde_json::Value>>::new();
+    load_nav_kv_procedure_rows(
+        connection,
+        &mut sid_lists,
+        &mut star_lists,
+        &mut distinct_by_procedure,
+        &mut materialization_by_procedure,
+    )?;
+    for airport_id in &airport_ids {
+        pairs.push(nav_kv_procedure_list_pair(
+            airport_id,
+            "SID",
+            "sid",
+            sid_lists.remove(airport_id).unwrap_or_default(),
+        )?);
+        pairs.push(nav_kv_procedure_list_pair(
+            airport_id,
+            "STAR",
+            "star",
+            star_lists.remove(airport_id).unwrap_or_default(),
+        )?);
+    }
+    for ((airport_id, procedure_id), rows) in distinct_by_procedure {
+        pairs.push(json_pair(
+            format!(
+                "procedure/distinct-rows/{}/{}",
+                had_upper_key_component(&airport_id),
+                had_upper_key_component(&procedure_id)
+            ),
+            &serde_json::Value::Array(rows),
+            "procedure distinct rows",
+        )?);
+    }
+    for ((airport_id, procedure_id), rows) in materialization_by_procedure {
+        pairs.push(json_pair(
+            format!(
+                "procedure/materialization-rows/{}/{}",
+                had_upper_key_component(&airport_id),
+                had_upper_key_component(&procedure_id)
+            ),
+            &serde_json::Value::Array(rows),
+            "procedure materialization rows",
+        )?);
+    }
+
+    Ok(pairs)
+}
+
+fn load_nav_kv_airport_ids(connection: &rusqlite::Connection) -> anyhow::Result<Vec<String>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(LocationID)
+        FROM airports
+        WHERE trim(LocationID) <> ''
+        ORDER BY trim(LocationID)
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(row.get::<_, String>(0)?.trim().to_ascii_uppercase())
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn load_nav_kv_cifp_tpp_matches(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(airport_id), trim(cifp_id), trim(plate_id), trim(plate_label),
+               trim(package_id), CAST(public AS INTEGER), CAST(priority AS INTEGER),
+               trim(match_kind), CAST(is_primary AS INTEGER)
+        FROM cifp_tpp_matches
+        ORDER BY trim(cifp_id), CAST(is_primary AS INTEGER) DESC, CAST(priority AS INTEGER), trim(plate_label)
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(serde_json::json!({
+            "airport_id": row.get::<_, String>(0)?,
+            "cifp_id": row.get::<_, String>(1)?,
+            "plate_id": row.get::<_, String>(2)?,
+            "plate_label": row.get::<_, String>(3)?,
+            "package_id": row.get::<_, String>(4)?,
+            "public": row.get::<_, i64>(5)?,
+            "priority": row.get::<_, i64>(6)?,
+            "match_kind": row.get::<_, String>(7)?,
+            "is_primary": row.get::<_, i64>(8)?,
+        }))
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn nav_kv_procedure_list_pair(
+    airport_id: &str,
+    kind_key: &str,
+    kind_value: &str,
+    procedure_ids: BTreeSet<String>,
+) -> anyhow::Result<NavKvPair> {
+    let rows = procedure_ids
+        .into_iter()
+        .map(|procedure_id| {
+            serde_json::json!({
+                "airport_id": airport_id,
+                "procedure_id": procedure_id,
+                "kind": kind_value,
+            })
+        })
+        .collect::<Vec<_>>();
+    json_pair(
+        format!(
+            "procedure/list/{}/{}",
+            had_upper_key_component(airport_id),
+            kind_key
+        ),
+        &serde_json::Value::Array(rows),
+        "procedure list",
+    )
+}
+
+fn load_nav_kv_procedure_rows(
+    connection: &rusqlite::Connection,
+    sid_lists: &mut BTreeMap<String, BTreeSet<String>>,
+    star_lists: &mut BTreeMap<String, BTreeSet<String>>,
+    distinct_by_procedure: &mut BTreeMap<(String, String), Vec<serde_json::Value>>,
+    materialization_by_procedure: &mut BTreeMap<(String, String), Vec<serde_json::Value>>,
+) -> anyhow::Result<()> {
+    let nav_context = NavLookupContext::load(connection)?;
+    let mut distinct_seen = BTreeSet::<(String, String, String, String)>::new();
+    let mut stmt = connection.prepare(
+        "
+        SELECT
+          trim(airport_identifier),
+          trim(sid_star_approach_identifier),
+          trim(route_type),
+          trim(transition_identifier),
+          CAST(sequence_number AS INTEGER),
+          trim(fix_identifier),
+          trim(recommended_navaid),
+          trim(altitude_1),
+          trim(altitude_2),
+          trim(path_and_termination),
+          trim(turn_direction),
+          trim(magnetic_course),
+          trim(route_distance_holding_distance_or_time)
+        FROM cifp_sid_star_app
+        WHERE trim(airport_identifier) <> ''
+          AND trim(sid_star_approach_identifier) <> ''
+        ORDER BY trim(route_type), trim(transition_identifier), CAST(sequence_number AS INTEGER)
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i32>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, String>(10)?,
+            row.get::<_, String>(11)?,
+            row.get::<_, String>(12)?,
+        ))
+    })?;
+    for row in rows {
+        let (
+            airport_id,
+            procedure_id,
+            route_type,
+            transition_id,
+            sequence,
+            fix_identifier,
+            recommended_navaid,
+            altitude_1,
+            altitude_2,
+            path_termination,
+            turn_direction,
+            magnetic_course,
+            route_distance_or_time,
+        ) = row?;
+        match infer_nav_kv_procedure_kind(&route_type) {
+            "sid" => {
+                sid_lists
+                    .entry(airport_id.clone())
+                    .or_default()
+                    .insert(procedure_id.clone());
+            }
+            "star" => {
+                star_lists
+                    .entry(airport_id.clone())
+                    .or_default()
+                    .insert(procedure_id.clone());
+            }
+            _ => {}
+        }
+        if distinct_seen.insert((
+            airport_id.clone(),
+            procedure_id.clone(),
+            route_type.clone(),
+            transition_id.clone(),
+        )) {
+            distinct_by_procedure
+                .entry((airport_id.clone(), procedure_id.clone()))
+                .or_default()
+                .push(serde_json::json!({
+                    "route_type": route_type,
+                    "transition_id": transition_id,
+                }));
+        }
+        if path_termination.trim().is_empty() {
+            continue;
+        }
+        let nav_ref = nav_context.classify_json(&fix_identifier);
+        let defining_nav_ref = nav_context.classify_json(&recommended_navaid);
+        let nav_position = nav_context.resolve_position_json(&nav_ref, Some(&airport_id));
+        let defining_nav_position =
+            nav_context.resolve_position_json(&defining_nav_ref, Some(&airport_id));
+        materialization_by_procedure
+            .entry((airport_id.clone(), procedure_id.clone()))
+            .or_default()
+            .push(serde_json::json!({
+                "key": {
+                    "airport_id": airport_id,
+                    "procedure_id": procedure_id,
+                    "route_type": route_type,
+                    "transition_id": transition_id,
+                },
+                "sequence": sequence,
+                "nav_ref": nav_ref,
+                "nav_position": nav_position,
+                "nav_magnetic_variation_deg": nav_context.variation_for_nav_ref(&nav_ref),
+                "defining_nav_ref": defining_nav_ref,
+                "defining_nav_position": defining_nav_position,
+                "defining_nav_magnetic_variation_deg": nav_context.variation_for_nav_ref(&defining_nav_ref),
+                "airport_magnetic_variation_deg": nav_context.airport_variation.get(&airport_id.trim().to_ascii_uppercase()).copied().flatten(),
+                "altitude_1_ft": parse_nav_kv_cifp_altitude_ft(&altitude_1),
+                "altitude_2_ft": parse_nav_kv_cifp_altitude_ft(&altitude_2),
+                "path_termination": path_termination,
+                "turn_direction": non_empty_json_string(turn_direction),
+                "magnetic_course_deg": parse_nav_kv_cifp_tenths_value(&magnetic_course),
+                "route_distance_or_time": non_empty_json_string(route_distance_or_time),
+            }));
+    }
+    Ok(())
+}
+
+fn infer_nav_kv_procedure_kind(route_type: &str) -> &'static str {
+    match route_type.trim() {
+        "1" | "2" | "3" => "star",
+        "4" | "5" | "6" => "sid",
+        _ => "approach",
+    }
+}
+
+struct NavLookupContext {
+    airport_positions: BTreeMap<String, serde_json::Value>,
+    navaid_positions: BTreeMap<String, serde_json::Value>,
+    fix_positions: BTreeMap<String, serde_json::Value>,
+    runway_positions: BTreeMap<(String, String), serde_json::Value>,
+    navaid_variation: BTreeMap<String, Option<f64>>,
+    airport_variation: BTreeMap<String, Option<f64>>,
+}
+
+impl NavLookupContext {
+    fn load(connection: &rusqlite::Connection) -> anyhow::Result<Self> {
+        Ok(Self {
+            airport_positions: load_nav_position_map(
+                connection,
+                "airports",
+                "ARPLatitude",
+                "ARPLongitude",
+            )?,
+            navaid_positions: load_nav_position_map(
+                connection,
+                "nav",
+                "ARPLatitude",
+                "ARPLongitude",
+            )?,
+            fix_positions: load_nav_position_map(connection, "fix", "ARPLatitude", "ARPLongitude")?,
+            runway_positions: load_runway_position_map(connection)?,
+            navaid_variation: load_variation_map(connection, "nav", "Variation", false)?,
+            airport_variation: load_variation_map(
+                connection,
+                "airports",
+                "MagneticVariation",
+                true,
+            )?,
+        })
+    }
+
+    fn classify_json(&self, identifier: &str) -> serde_json::Value {
+        let trimmed = identifier.trim().to_ascii_uppercase();
+        if trimmed.is_empty() {
+            return serde_json::Value::Null;
+        }
+        if trimmed.starts_with("RW") {
+            return serde_json::json!({ "Fix": trimmed });
+        }
+        if self.navaid_positions.contains_key(&trimmed) {
+            return serde_json::json!({ "Navaid": trimmed });
+        }
+        if self.airport_positions.contains_key(&trimmed) {
+            return serde_json::json!({ "Airport": trimmed });
+        }
+        if self.fix_positions.contains_key(&trimmed) {
+            return serde_json::json!({ "Fix": trimmed });
+        }
+        serde_json::Value::Null
+    }
+
+    fn resolve_position_json(
+        &self,
+        nav_ref: &serde_json::Value,
+        procedure_airport_id: Option<&str>,
+    ) -> serde_json::Value {
+        if let Some(code) = nav_ref.get("Airport").and_then(|value| value.as_str()) {
+            return self
+                .airport_positions
+                .get(&code.trim().to_ascii_uppercase())
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+        }
+        if let Some(code) = nav_ref.get("Navaid").and_then(|value| value.as_str()) {
+            return self
+                .navaid_positions
+                .get(&code.trim().to_ascii_uppercase())
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+        }
+        if let Some(code) = nav_ref.get("Fix").and_then(|value| value.as_str()) {
+            let code = code.trim().to_ascii_uppercase();
+            if let Some(airport_id) = procedure_airport_id {
+                if code.starts_with("RW") {
+                    if let Some(position) = self
+                        .runway_positions
+                        .get(&(airport_id.trim().to_ascii_uppercase(), code.clone()))
+                    {
+                        return position.clone();
+                    }
+                }
+            }
+            return self
+                .fix_positions
+                .get(&code)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+        }
+        serde_json::Value::Null
+    }
+
+    fn variation_for_nav_ref(&self, nav_ref: &serde_json::Value) -> serde_json::Value {
+        if let Some(code) = nav_ref.get("Navaid").and_then(|value| value.as_str()) {
+            return self
+                .navaid_variation
+                .get(&code.trim().to_ascii_uppercase())
+                .copied()
+                .flatten()
+                .map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null);
+        }
+        serde_json::Value::Null
+    }
+}
+
+fn load_nav_position_map(
+    connection: &rusqlite::Connection,
+    table: &str,
+    lat_column: &str,
+    lon_column: &str,
+) -> anyhow::Result<BTreeMap<String, serde_json::Value>> {
+    let mut stmt = connection.prepare(&format!(
+        "
+        SELECT trim(LocationID), CAST({lat_column} AS REAL), CAST({lon_column} AS REAL)
+        FROM {table}
+        WHERE trim(LocationID) <> ''
+        "
+    ))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?.trim().to_ascii_uppercase(),
+            row.get::<_, f64>(1)?,
+            row.get::<_, f64>(2)?,
+        ))
+    })?;
+    let mut map = BTreeMap::new();
+    for row in rows {
+        let (id, lat, lon) = row?;
+        map.entry(id)
+            .or_insert_with(|| serde_json::json!({ "lat": lat, "lon": lon }));
+    }
+    Ok(map)
+}
+
+fn load_runway_position_map(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<BTreeMap<(String, String), serde_json::Value>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(LocationID), trim(LEIdent), CAST(LELatitude AS REAL), CAST(LELongitude AS REAL),
+               trim(HEIdent), CAST(HELatitude AS REAL), CAST(HELongitude AS REAL)
+        FROM airportrunways
+        WHERE trim(LocationID) <> ''
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, f64>(5)?,
+            row.get::<_, f64>(6)?,
+        ))
+    })?;
+    let mut map = BTreeMap::new();
+    for row in rows {
+        let (airport_id, le_ident, le_lat, le_lon, he_ident, he_lat, he_lon) = row?;
+        let airport_id = airport_id.trim().to_ascii_uppercase();
+        for (ident, lat, lon) in [(le_ident, le_lat, le_lon), (he_ident, he_lat, he_lon)] {
+            let ident = ident.trim();
+            if ident.is_empty() {
+                continue;
+            }
+            map.insert(
+                (
+                    airport_id.clone(),
+                    format!("RW{}", ident.to_ascii_uppercase()),
+                ),
+                serde_json::json!({ "lat": lat, "lon": lon }),
+            );
+        }
+    }
+    Ok(map)
+}
+
+fn load_variation_map(
+    connection: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+    airport_format: bool,
+) -> anyhow::Result<BTreeMap<String, Option<f64>>> {
+    let mut stmt = connection.prepare(&format!(
+        "
+        SELECT trim(LocationID), trim({column})
+        FROM {table}
+        WHERE trim(LocationID) <> ''
+        "
+    ))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?.trim().to_ascii_uppercase(),
+            row.get::<_, String>(1)?,
+        ))
+    })?;
+    let mut map = BTreeMap::new();
+    for row in rows {
+        let (id, raw) = row?;
+        let variation = if airport_format {
+            parse_nav_kv_airport_magnetic_variation(&raw)
+        } else {
+            raw.trim().parse::<f64>().ok()
+        };
+        map.entry(id).or_insert(variation);
+    }
+    Ok(map)
+}
+
+fn parse_nav_kv_cifp_tenths_value(raw: &str) -> Option<f64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = trimmed.parse::<f64>().ok()?;
+    Some(parsed / 10.0)
+}
+
+fn parse_nav_kv_cifp_altitude_ft(raw: &str) -> Option<f64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<f64>().ok()
+}
+
+fn parse_nav_kv_airport_magnetic_variation(raw: &str) -> Option<f64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (magnitude_text, suffix) = trimmed.split_at(trimmed.len().saturating_sub(1));
+    match suffix {
+        "E" => magnitude_text.parse::<f64>().ok(),
+        "W" => magnitude_text.parse::<f64>().ok().map(|degrees| -degrees),
+        _ => trimmed.parse::<f64>().ok(),
+    }
+}
+
+fn non_empty_json_string(value: String) -> serde_json::Value {
+    if value.trim().is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(value)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AirportRunwaySymbolInfo {
+    length_ft: f64,
+    heading_true_deg: f64,
+    has_paved_runway: bool,
+    has_water_runway: bool,
+}
+
+fn airport_runway_symbol_info_by_airport(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<BTreeMap<String, AirportRunwaySymbolInfo>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(LocationID), trim(Length), trim(Surface), trim(LEHeadingT),
+               trim(LELatitude), trim(LELongitude), trim(HELatitude), trim(HELongitude)
+        FROM airportrunways
+        WHERE trim(LocationID) <> ''
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+        ))
+    })?;
+    let mut by_airport = BTreeMap::<String, AirportRunwaySymbolInfo>::new();
+    for row in rows {
+        let (airport_id, length, surface, heading, le_lat, le_lon, he_lat, he_lon) = row?;
+        let length = parse_float(&length);
+        if length <= 0.0 {
+            continue;
+        }
+        let surface = surface.trim().to_ascii_uppercase();
+        let has_paved_runway = surface_is_paved(&surface);
+        let has_water_runway = surface.contains("WATER");
+        let heading = parse_float(&heading);
+        let heading = if heading > 0.0 {
+            normalize_heading(heading)
+        } else {
+            let le_lat = parse_float(&le_lat);
+            let le_lon = parse_float(&le_lon);
+            let he_lat = parse_float(&he_lat);
+            let he_lon = parse_float(&he_lon);
+            if !valid_lat_lon(le_lat, le_lon) || !valid_lat_lon(he_lat, he_lon) {
+                continue;
+            }
+            bearing_true_deg(le_lat, le_lon, he_lat, he_lon)
+        };
+        let key = airport_id.trim().to_ascii_uppercase();
+        match by_airport.get_mut(&key) {
+            Some(existing) if existing.length_ft >= length => {
+                existing.has_paved_runway |= has_paved_runway;
+                existing.has_water_runway |= has_water_runway;
+            }
+            _ => {
+                by_airport.insert(
+                    key,
+                    AirportRunwaySymbolInfo {
+                        length_ft: length,
+                        heading_true_deg: heading,
+                        has_paved_runway,
+                        has_water_runway,
+                    },
+                );
+            }
+        }
+    }
+    Ok(by_airport)
+}
+
+fn json_pair(key: String, value: &serde_json::Value, context: &str) -> anyhow::Result<NavKvPair> {
+    Ok(NavKvPair {
+        key,
+        value: serde_json::to_vec(value)
+            .with_context(|| format!("failed to encode nav_kv {context} value"))?,
+    })
+}
+
 fn nav_kv_plate_asset(
     airport_id: &str,
     plate: &preprocessor_resource_index::PlateRecord,
@@ -4164,6 +5239,83 @@ fn had_key_component(value: &str) -> String {
         }
     }
     out
+}
+
+fn airport_display_label(id: &str) -> String {
+    let trimmed = id.trim();
+    if trimmed.len() == 4 && trimmed.starts_with('K') {
+        trimmed[1..].to_ascii_uppercase()
+    } else {
+        trimmed.to_ascii_uppercase()
+    }
+}
+
+fn navaid_display_label(id: &str, facility_name: &str) -> String {
+    let frequency = facility_name
+        .split_whitespace()
+        .last()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(frequency) = frequency {
+        format!("{} {frequency}", id.trim()).to_ascii_uppercase()
+    } else {
+        id.trim().to_ascii_uppercase()
+    }
+}
+
+fn titlecase_nav_label(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut normalized = first.to_uppercase().collect::<String>();
+                    normalized.push_str(&chars.as_str().to_ascii_lowercase());
+                    normalized
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn runway_length_ratio(longest_runway_length_ft: Option<f64>) -> f64 {
+    (longest_runway_length_ft.unwrap_or(0.0) / 5000.0).clamp(0.0, 1.0)
+}
+
+fn surface_is_paved(surface: &str) -> bool {
+    surface
+        .split('-')
+        .any(|part| matches!(part.trim(), "ASPH" | "CONC" | "BIT" | "PEM"))
+}
+
+fn parse_float(value: &str) -> f64 {
+    value.trim().parse::<f64>().unwrap_or(0.0)
+}
+
+fn valid_lat_lon(lat: f64, lon: f64) -> bool {
+    lat.is_finite() && lon.is_finite() && lat.abs() <= 90.0 && lon.abs() <= 180.0
+}
+
+fn bearing_true_deg(start_lat: f64, start_lon: f64, end_lat: f64, end_lon: f64) -> f64 {
+    let start_lat_rad = start_lat.to_radians();
+    let end_lat_rad = end_lat.to_radians();
+    let delta_lon_rad = (end_lon - start_lon).to_radians();
+    let y = delta_lon_rad.sin() * end_lat_rad.cos();
+    let x = start_lat_rad.cos() * end_lat_rad.sin()
+        - start_lat_rad.sin() * end_lat_rad.cos() * delta_lon_rad.cos();
+    normalize_heading(y.atan2(x).to_degrees())
+}
+
+fn normalize_heading(heading: f64) -> f64 {
+    let normalized = heading.rem_euclid(360.0);
+    if normalized == 0.0 {
+        360.0
+    } else {
+        normalized
+    }
 }
 
 fn folder_category_for_document_type(document_type: &str) -> &'static str {

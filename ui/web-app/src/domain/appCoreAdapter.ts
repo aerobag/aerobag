@@ -47,7 +47,18 @@ import type {
 import catalogJson from "@product-catalog";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { installBrowserNavDbQueryHost } from "./webNavDb";
-import { loadHadCifpPlateMatches, loadHadPlateProcedureCandidates, loadHadProcedureDistinctRows } from "./navHad";
+import {
+  loadHadCifpPlateMatches,
+  loadHadNavRefPosition,
+  loadHadNavSymbolFeature,
+  loadHadPlateProcedureCandidates,
+  loadHadProcedureDistinctRows,
+  loadHadProcedureList,
+  loadHadProcedureMaterializationRows,
+  loadHadWaypointIdentifier,
+  loadHadWaypointPrefix,
+  navRefPositionKey,
+} from "./navHad";
 
 const sampleCatalog = catalogJson as CatalogJson;
 
@@ -371,7 +382,17 @@ type WasmModule = {
     planJson: string,
     candidatesJson: string,
   ): Promise<string> | string;
-  web_project_flight_plan_route(planJson: string): Promise<string> | string;
+  flight_plan_insert_anchor(planJson: string, componentIndex: number, before: boolean): Promise<string> | string;
+  project_flight_plan_route_from_positions(planJson: string, positionByKeyJson: string): Promise<string> | string;
+  suggest_waypoint_identifiers_from_candidates(
+    planJson: string,
+    componentIndex: number,
+    before: boolean,
+    prefix: string,
+    limit: number,
+    candidatesJson: string,
+    anchorPositionJson: string,
+  ): Promise<string> | string;
   web_suggest_airways_near(anchorJson: string, limit: number): Promise<string> | string;
   web_prepare_airway_presentation_for_anchors(
     airwayName: string,
@@ -385,31 +406,6 @@ type WasmModule = {
     originAnchorJson: string,
     destinationAnchorJson: string,
   ): Promise<string> | string;
-  web_resolve_waypoint_identifier(identifier: string): Promise<string> | string;
-  web_suggest_waypoint_identifiers(
-    planJson: string,
-    componentIndex: number,
-    before: boolean,
-    prefix: string,
-    limit: number,
-  ): Promise<string> | string;
-  web_resolve_nav_symbol_feature(navRefJson: string): Promise<string> | string;
-  web_list_procedures(airportId: string, kindJson: string): Promise<string> | string;
-  web_describe_procedure_options(
-    airportId: string,
-    procedureId: string,
-    kindJson: string,
-  ): Promise<string> | string;
-  web_materialize_procedure(
-    airportId: string,
-    procedureId: string,
-    kindJson: string,
-    runwayTransitionJson: string,
-    enrouteTransitionJson: string,
-    componentIndex: number,
-  ): Promise<string> | string;
-  web_find_procedure_plate_match(airportId: string, cifpId: string): Promise<string> | string;
-  web_describe_plate_procedure_loads(planJson: string, plateId: string): Promise<string> | string;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
@@ -417,9 +413,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
 
   constructor(private readonly module: WasmModule) {}
 
-  async prewarm(): Promise<void> {
-    await this.ensureNavDbHost();
-  }
+  async prewarm(): Promise<void> {}
 
   private ensureNavDbHost(): Promise<void> {
     if (this.navDbHostPromise === null) {
@@ -429,18 +423,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   private async enrichFlightPlanUiState(plan: FlightPlan, uiState: FlightPlanUiState): Promise<FlightPlanUiState> {
-    await this.ensureNavDbHost();
-    const routeSegments = JSON.parse(
-      await this.module.web_project_flight_plan_route(JSON.stringify(plan)),
-    ) as FlightPlanRouteSegment[];
+    const routeSegments = await this.projectFlightPlanRoute(plan, uiState);
     const display_rows = await Promise.all(uiState.display_rows.map(async (row) => {
       const showPlateAction = row.actions.find((action) => action.id === "show_plate");
       const legMetrics = row.leg_index !== null ? routeSegments[row.leg_index] ?? null : null;
-      const symbol_feature = row.nav_ref
-        ? JSON.parse(
-          await this.module.web_resolve_nav_symbol_feature(JSON.stringify(row.nav_ref)),
-        ) as NavSymbolFeature | null
-        : null;
+      const symbol_feature = row.nav_ref ? await loadHadNavSymbolFeature(row.nav_ref) : null;
       if (!showPlateAction || !row.chart_airport_id || !row.procedure_id) {
         return {
           ...row,
@@ -820,9 +807,25 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
 
   async projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]> {
     void planUiState;
-    await this.ensureNavDbHost();
+    const positionByKey: Record<string, LatLon> = {};
+    for (const leg of plan.resolved_legs) {
+      const procedureAirportId = leg.procedure_airport_id ?? null;
+      for (const navRef of [leg.from, leg.to]) {
+        if ("LatLon" in navRef) {
+          continue;
+        }
+        const key = navRefPositionKey(navRef, procedureAirportId);
+        if (positionByKey[key]) {
+          continue;
+        }
+        positionByKey[key] = await loadHadNavRefPosition(navRef, procedureAirportId);
+      }
+    }
     return JSON.parse(
-      await this.module.web_project_flight_plan_route(JSON.stringify(plan)),
+      await this.module.project_flight_plan_route_from_positions(
+        JSON.stringify(plan),
+        JSON.stringify(positionByKey),
+      ),
     ) as FlightPlanRouteSegment[];
   }
 
@@ -851,10 +854,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async resolveWaypointIdentifier(identifier: string): Promise<NavRef | null> {
-    await this.ensureNavDbHost();
-    return JSON.parse(
-      await this.module.web_resolve_waypoint_identifier(identifier),
-    ) as NavRef | null;
+    return loadHadWaypointIdentifier(identifier);
   }
 
   async suggestWaypointIdentifiers(
@@ -864,14 +864,25 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     prefix: string,
     limit = 8,
   ): Promise<WaypointIdentifierSuggestion[]> {
-    await this.ensureNavDbHost();
+    if (prefix.trim() === "" || limit === 0) {
+      return [];
+    }
+    const candidates = (await loadHadWaypointPrefix(prefix)).filter((candidate) =>
+      candidate.identifier.toUpperCase().startsWith(prefix.trim().toUpperCase()),
+    );
+    const anchor = JSON.parse(
+      await this.module.flight_plan_insert_anchor(JSON.stringify(plan), componentIndex, before),
+    ) as NavRef;
+    const anchorPosition = await loadHadNavRefPosition(anchor);
     return JSON.parse(
-      await this.module.web_suggest_waypoint_identifiers(
+      await this.module.suggest_waypoint_identifiers_from_candidates(
         JSON.stringify(plan),
         componentIndex,
         before,
         prefix,
         limit,
+        JSON.stringify(candidates),
+        JSON.stringify(anchorPosition),
       ),
     ) as WaypointIdentifierSuggestion[];
   }
@@ -1018,19 +1029,24 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async listProcedures(airportId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureSummary[]> {
-    await this.ensureNavDbHost();
-    return JSON.parse(
-      await this.module.web_list_procedures(airportId, JSON.stringify(kind)),
-    ) as ProcedureSummary[];
+    const procedures = await loadHadProcedureList(airportId, kind);
+    if (!procedures) {
+      throw new Error(`HAD missing required procedure list key for ${airportId} ${kind}`);
+    }
+    return procedures;
   }
 
   async describeProcedureOptions(airportId: string, procedureId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureOptions> {
-    await this.ensureNavDbHost();
+    const rows = await loadHadProcedureDistinctRows(airportId, procedureId);
+    if (!rows) {
+      throw new Error(`HAD missing required procedure distinct rows key for ${airportId} ${procedureId}`);
+    }
     return JSON.parse(
-      await this.module.web_describe_procedure_options(
+      await this.module.describe_procedure_options_from_rows(
         airportId,
         procedureId,
         JSON.stringify(kind),
+        JSON.stringify(rows),
       ),
     ) as ProcedureOptions;
   }
@@ -1081,15 +1097,24 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     enrouteTransition: string | null,
     componentIndex: number,
   ): Promise<MaterializedProcedure> {
-    await this.ensureNavDbHost();
+    const rows = await loadHadProcedureDistinctRows(airportId, procedureId);
+    if (!rows) {
+      throw new Error(`HAD missing required procedure distinct rows key for ${airportId} ${procedureId}`);
+    }
+    const legs = await loadHadProcedureMaterializationRows(airportId, procedureId);
+    if (!legs) {
+      throw new Error(`HAD missing required procedure materialization rows key for ${airportId} ${procedureId}`);
+    }
     return JSON.parse(
-      await this.module.web_materialize_procedure(
+      await this.module.materialize_procedure_from_records(
         airportId,
         procedureId,
         JSON.stringify(kind),
         JSON.stringify(runwayTransition),
         JSON.stringify(enrouteTransition),
         componentIndex,
+        JSON.stringify(rows),
+        JSON.stringify(legs),
       ),
     ) as MaterializedProcedure;
   }
@@ -1200,18 +1225,12 @@ export async function loadBestAvailableAdapter(
     typeof mod.describe_show_plate_for_procedure !== "function" ||
     typeof mod.describe_load_procedure_from_plate !== "function" ||
     typeof mod.describe_plate_procedure_load_options !== "function" ||
-    typeof mod.web_project_flight_plan_route !== "function" ||
+    typeof mod.flight_plan_insert_anchor !== "function" ||
+    typeof mod.project_flight_plan_route_from_positions !== "function" ||
+    typeof mod.suggest_waypoint_identifiers_from_candidates !== "function" ||
     typeof mod.web_suggest_airways_near !== "function" ||
     typeof mod.web_prepare_airway_presentation_for_anchors !== "function" ||
     typeof mod.web_materialize_airway_selection !== "function" ||
-    typeof mod.web_resolve_waypoint_identifier !== "function" ||
-    typeof mod.web_suggest_waypoint_identifiers !== "function" ||
-    typeof mod.web_resolve_nav_symbol_feature !== "function" ||
-    typeof mod.web_list_procedures !== "function" ||
-    typeof mod.web_describe_procedure_options !== "function" ||
-    typeof mod.web_materialize_procedure !== "function" ||
-    typeof mod.web_find_procedure_plate_match !== "function" ||
-    typeof mod.web_describe_plate_procedure_loads !== "function" ||
     typeof mod.derive_chart_catalog !== "function" ||
     typeof mod.derive_chart_page !== "function" ||
     typeof mod.derive_chart_page_state !== "function" ||

@@ -1,7 +1,10 @@
 import type {
   ChartPageData,
   CifpTppMatchRow,
+  LatLon,
   MapViewOptionJson,
+  NavRef,
+  NavSymbolFeature,
   ProcedureDistinctRow,
   ProcedureLegMaterializationRecord,
   ProcedureKind,
@@ -19,6 +22,16 @@ export type ProcedureListRecord = {
   airport_id: string;
   procedure_id: string;
   kind: ProcedureKind;
+};
+
+export type WaypointIdentifierRecord = {
+  identifier: string;
+  nav_ref: NavRef;
+  kind: string;
+  city: string;
+  state: string;
+  facility_name: string;
+  position: LatLon;
 };
 
 export function hadKeyComponent(value: string): string {
@@ -65,6 +78,53 @@ export function procedureMaterializationRowsKey(airportId: string, procedureId: 
   return `procedure/materialization-rows/${hadUpperKeyComponent(airportId)}/${hadUpperKeyComponent(procedureId)}`;
 }
 
+export function navRefPositionKey(navRef: NavRef, procedureAirportId?: string | null): string {
+  if ("Airport" in navRef) {
+    return `navref/position/airport/${hadUpperKeyComponent(navRef.Airport)}`;
+  }
+  if ("Navaid" in navRef) {
+    return `navref/position/navaid/${hadUpperKeyComponent(navRef.Navaid)}`;
+  }
+  if ("Fix" in navRef && procedureAirportId && navRef.Fix.trim().toUpperCase().startsWith("RW")) {
+    return `navref/position/runway/${hadUpperKeyComponent(procedureAirportId)}/${hadUpperKeyComponent(navRef.Fix)}`;
+  }
+  if ("Fix" in navRef) {
+    return `navref/position/fix/${hadUpperKeyComponent(navRef.Fix)}`;
+  }
+  throw new Error("LatLon nav refs do not have HAD position keys");
+}
+
+export function navRefSymbolKey(navRef: NavRef): string | null {
+  if ("Airport" in navRef) {
+    return `navref/symbol/airport/${hadUpperKeyComponent(navRef.Airport)}`;
+  }
+  if ("Navaid" in navRef) {
+    return `navref/symbol/navaid/${hadUpperKeyComponent(navRef.Navaid)}`;
+  }
+  if ("Fix" in navRef) {
+    return `navref/symbol/fix/${hadUpperKeyComponent(navRef.Fix)}`;
+  }
+  return null;
+}
+
+export function waypointIdentifierKey(identifier: string): string {
+  return `waypoint/identifier/${hadUpperKeyComponent(identifier)}`;
+}
+
+export function waypointPrefixKey(prefix: string): string {
+  const normalized = prefix.trim().toUpperCase();
+  const shard = normalized.length <= 2 ? normalized : normalized.slice(0, 2);
+  return `waypoint/prefix/${hadUpperKeyComponent(shard)}`;
+}
+
+export async function loadRequiredHadJson<T>(key: string, family: string): Promise<T> {
+  const loaded = await loadNavKvJson<T>(key);
+  if (loaded === null) {
+    throw new Error(`HAD missing required ${family} key: ${key}`);
+  }
+  return loaded;
+}
+
 export async function loadHadChartCatalog(): Promise<MapViewOptionJson[] | null> {
   return loadNavKvJson<MapViewOptionJson[]>(chartCatalogKey());
 }
@@ -105,4 +165,27 @@ export async function loadHadProcedureMaterializationRows(
   procedureId: string,
 ): Promise<ProcedureLegMaterializationRecord[] | null> {
   return loadNavKvJson<ProcedureLegMaterializationRecord[]>(procedureMaterializationRowsKey(airportId, procedureId));
+}
+
+export async function loadHadNavRefPosition(navRef: NavRef, procedureAirportId?: string | null): Promise<LatLon> {
+  if ("LatLon" in navRef) {
+    return navRef.LatLon;
+  }
+  return loadRequiredHadJson<LatLon>(navRefPositionKey(navRef, procedureAirportId), "navref position");
+}
+
+export async function loadHadNavSymbolFeature(navRef: NavRef): Promise<NavSymbolFeature | null> {
+  const key = navRefSymbolKey(navRef);
+  if (!key) {
+    return null;
+  }
+  return loadRequiredHadJson<NavSymbolFeature | null>(key, "navref symbol");
+}
+
+export async function loadHadWaypointIdentifier(identifier: string): Promise<NavRef | null> {
+  return loadNavKvJson<NavRef>(waypointIdentifierKey(identifier));
+}
+
+export async function loadHadWaypointPrefix(prefix: string): Promise<WaypointIdentifierRecord[]> {
+  return loadRequiredHadJson<WaypointIdentifierRecord[]>(waypointPrefixKey(prefix), "waypoint prefix");
 }

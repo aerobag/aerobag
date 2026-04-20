@@ -64,6 +64,16 @@ pub fn insert_waypoint_ui(
 }
 
 #[wasm_bindgen]
+pub fn flight_plan_insert_anchor(
+    plan_json: &str,
+    component_index: usize,
+    before: bool,
+) -> Result<String, JsValue> {
+    flight_plan_insert_anchor_json(plan_json, component_index, before)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn suspend_sequencing_ui(plan_json: &str) -> Result<String, JsValue> {
     suspend_sequencing_ui_json(plan_json).map_err(|err| JsValue::from_str(&err))
 }
@@ -121,8 +131,14 @@ pub fn replace_airway_from_selection_ui(
     entry_json: &str,
     exit_json: &str,
 ) -> Result<String, JsValue> {
-    replace_airway_from_selection_ui_json(db_path, plan_json, component_index, entry_json, exit_json)
-        .map_err(|err| JsValue::from_str(&err))
+    replace_airway_from_selection_ui_json(
+        db_path,
+        plan_json,
+        component_index,
+        entry_json,
+        exit_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -273,14 +289,8 @@ pub fn web_suggest_waypoint_identifiers(
     prefix: &str,
     limit: usize,
 ) -> Result<String, JsValue> {
-    web_navdb::suggest_waypoint_identifiers_json(
-        plan_json,
-        component_index,
-        before,
-        prefix,
-        limit,
-    )
-    .map_err(|err| JsValue::from_str(&err))
+    web_navdb::suggest_waypoint_identifiers_json(plan_json, component_index, before, prefix, limit)
+        .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -394,8 +404,14 @@ pub fn describe_load_procedure_from_plate(
     kind_json: &str,
     options_json: &str,
 ) -> Result<String, JsValue> {
-    describe_load_procedure_from_plate_json(plan_json, airport_id, procedure_id, kind_json, options_json)
-        .map_err(|err| JsValue::from_str(&err))
+    describe_load_procedure_from_plate_json(
+        plan_json,
+        airport_id,
+        procedure_id,
+        kind_json,
+        options_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -408,15 +424,43 @@ pub fn describe_plate_procedure_load_options(
 }
 
 #[wasm_bindgen]
+pub fn project_flight_plan_route_from_positions(
+    plan_json: &str,
+    position_by_key_json: &str,
+) -> Result<String, JsValue> {
+    project_flight_plan_route_from_positions_json(plan_json, position_by_key_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn suggest_waypoint_identifiers_from_candidates(
+    plan_json: &str,
+    component_index: usize,
+    before: bool,
+    prefix: &str,
+    limit: usize,
+    candidates_json: &str,
+    anchor_position_json: &str,
+) -> Result<String, JsValue> {
+    suggest_waypoint_identifiers_from_candidates_json(
+        plan_json,
+        component_index,
+        before,
+        prefix,
+        limit,
+        candidates_json,
+        anchor_position_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn web_project_flight_plan_route(plan_json: &str) -> Result<String, JsValue> {
     web_navdb::project_flight_plan_route_json(plan_json).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
-pub fn web_list_procedures(
-    airport_id: &str,
-    kind_json: &str,
-) -> Result<String, JsValue> {
+pub fn web_list_procedures(airport_id: &str, kind_json: &str) -> Result<String, JsValue> {
     web_navdb::list_procedures_json(airport_id, kind_json).map_err(|err| JsValue::from_str(&err))
 }
 
@@ -451,10 +495,7 @@ pub fn web_materialize_procedure(
 }
 
 #[wasm_bindgen]
-pub fn web_find_procedure_plate_match(
-    airport_id: &str,
-    cifp_id: &str,
-) -> Result<String, JsValue> {
+pub fn web_find_procedure_plate_match(airport_id: &str, cifp_id: &str) -> Result<String, JsValue> {
     web_navdb::find_procedure_plate_match_json(airport_id, cifp_id)
         .map_err(|err| JsValue::from_str(&err))
 }
@@ -615,10 +656,7 @@ pub fn update_ownship_source_status_in_session(
 }
 
 #[wasm_bindgen]
-pub fn push_situation_sample_in_session(
-    handle: u32,
-    sample_json: &str,
-) -> Result<String, JsValue> {
+pub fn push_situation_sample_in_session(handle: u32, sample_json: &str) -> Result<String, JsValue> {
     push_situation_sample_in_session_json(handle, sample_json)
         .map_err(|err| JsValue::from_str(&err))
 }
@@ -643,8 +681,12 @@ pub fn engage_map_follow_in_session(handle: u32, viewport_json: &str) -> Result<
 }
 
 #[wasm_bindgen]
-pub fn disengage_map_follow_in_session(handle: u32, viewport_json: &str) -> Result<String, JsValue> {
-    disengage_map_follow_in_session_json(handle, viewport_json).map_err(|err| JsValue::from_str(&err))
+pub fn disengage_map_follow_in_session(
+    handle: u32,
+    viewport_json: &str,
+) -> Result<String, JsValue> {
+    disengage_map_follow_in_session_json(handle, viewport_json)
+        .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -776,8 +818,7 @@ pub fn destroy_session(handle: u32) {
 }
 
 fn load_catalog_json(catalog_json: &str) -> Result<String, String> {
-    let handle =
-        app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
+    let handle = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
     serde_json::to_string(&handle).map_err(|err| err.to_string())
 }
 
@@ -786,6 +827,284 @@ fn build_flight_plan_json(plan_json: &str) -> Result<String, String> {
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let plan = app_core::build_flight_plan(plan).map_err(|err| err.to_string())?;
     serde_json::to_string(&plan).map_err(|err| err.to_string())
+}
+
+fn flight_plan_insert_anchor_json(
+    plan_json: &str,
+    component_index: usize,
+    before: bool,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let anchor = component_insert_anchor(&plan, component_index, before)?;
+    serde_json::to_string(&anchor).map_err(|err| err.to_string())
+}
+
+#[derive(serde::Deserialize)]
+struct WaypointIdentifierCandidate {
+    identifier: String,
+    nav_ref: app_core::NavRef,
+    kind: String,
+    city: String,
+    state: String,
+    facility_name: String,
+    position: app_core::LatLon,
+}
+
+fn suggest_waypoint_identifiers_from_candidates_json(
+    plan_json: &str,
+    component_index: usize,
+    before: bool,
+    prefix: &str,
+    limit: usize,
+    candidates_json: &str,
+    anchor_position_json: &str,
+) -> Result<String, String> {
+    if limit == 0 {
+        return Ok("[]".to_string());
+    }
+    let prefix = prefix.trim().to_ascii_uppercase();
+    if prefix.is_empty() {
+        return Ok("[]".to_string());
+    }
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let _anchor = component_insert_anchor(&plan, component_index, before)?;
+    let anchor_position: app_core::LatLon =
+        serde_json::from_str(anchor_position_json).map_err(|err| err.to_string())?;
+    let mut suggestions = serde_json::from_str::<Vec<WaypointIdentifierCandidate>>(candidates_json)
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .filter(|candidate| {
+            candidate
+                .identifier
+                .trim()
+                .to_ascii_uppercase()
+                .starts_with(&prefix)
+        })
+        .map(|candidate| app_core::WaypointIdentifierSuggestion {
+            identifier: candidate.identifier,
+            nav_ref: candidate.nav_ref,
+            kind: candidate.kind.clone(),
+            display_name: waypoint_identifier_display_name(
+                &candidate.kind,
+                &candidate.city,
+                &candidate.state,
+                &candidate.facility_name,
+            ),
+            distance_from_anchor_nm: app_core::flight_leg_distance_nm(
+                anchor_position,
+                candidate.position,
+            ),
+        })
+        .collect::<Vec<_>>();
+    suggestions.sort_by(|left, right| {
+        left.distance_from_anchor_nm
+            .partial_cmp(&right.distance_from_anchor_nm)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.identifier.cmp(&right.identifier))
+            .then_with(|| {
+                nav_ref_kind_order(&left.nav_ref).cmp(&nav_ref_kind_order(&right.nav_ref))
+            })
+    });
+    suggestions.truncate(limit);
+    serde_json::to_string(&suggestions).map_err(|err| err.to_string())
+}
+
+fn project_flight_plan_route_from_positions_json(
+    plan_json: &str,
+    position_by_key_json: &str,
+) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let plan = app_core::build_flight_plan(plan).map_err(|err| err.to_string())?;
+    let position_by_key: std::collections::HashMap<String, app_core::LatLon> =
+        serde_json::from_str(position_by_key_json).map_err(|err| err.to_string())?;
+    let ui_state = app_core::project_ui_state(&plan);
+    let route = plan
+        .resolved_legs
+        .iter()
+        .enumerate()
+        .map(|(leg_index, leg)| {
+            let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
+                (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str())
+            });
+            let from = position_for_nav_ref(&leg.from, procedure_airport_id, &position_by_key)?;
+            let to = position_for_nav_ref(&leg.to, procedure_airport_id, &position_by_key)?;
+            Ok(app_core::FlightPlanRouteSegment {
+                id: leg.id.clone(),
+                from,
+                to,
+                distance_nm: app_core::flight_leg_distance_nm(from, to),
+                course_deg: app_core::flight_leg_course_deg(from, to),
+                status: route_status_for_leg(&ui_state, leg_index),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    serde_json::to_string(&route).map_err(|err| err.to_string())
+}
+
+fn position_for_nav_ref(
+    nav_ref: &app_core::NavRef,
+    procedure_airport_id: Option<&str>,
+    position_by_key: &std::collections::HashMap<String, app_core::LatLon>,
+) -> Result<app_core::LatLon, String> {
+    if let app_core::NavRef::LatLon(position) = nav_ref {
+        return Ok(*position);
+    }
+    let key = navref_position_key(nav_ref, procedure_airport_id)?;
+    position_by_key
+        .get(&key)
+        .copied()
+        .ok_or_else(|| format!("HAD missing required navref position key: {key}"))
+}
+
+fn navref_position_key(
+    nav_ref: &app_core::NavRef,
+    procedure_airport_id: Option<&str>,
+) -> Result<String, String> {
+    match nav_ref {
+        app_core::NavRef::Airport(code) => Ok(format!(
+            "navref/position/airport/{}",
+            had_upper_key_component(code)
+        )),
+        app_core::NavRef::Navaid(code) => Ok(format!(
+            "navref/position/navaid/{}",
+            had_upper_key_component(code)
+        )),
+        app_core::NavRef::Fix(code)
+            if procedure_airport_id.is_some()
+                && code.trim().to_ascii_uppercase().starts_with("RW") =>
+        {
+            Ok(format!(
+                "navref/position/runway/{}/{}",
+                had_upper_key_component(procedure_airport_id.unwrap_or_default()),
+                had_upper_key_component(code),
+            ))
+        }
+        app_core::NavRef::Fix(code) => Ok(format!(
+            "navref/position/fix/{}",
+            had_upper_key_component(code)
+        )),
+        app_core::NavRef::LatLon(_) => {
+            Err("LatLon nav refs do not have HAD position keys".to_string())
+        }
+    }
+}
+
+fn had_upper_key_component(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.trim().to_ascii_uppercase().as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn route_status_for_leg(
+    ui_state: &app_core::FlightPlanUiState,
+    leg_index: usize,
+) -> app_core::FlightPlanRouteSegmentStatus {
+    let Some(guidance) = ui_state.guidance.as_ref() else {
+        return app_core::FlightPlanRouteSegmentStatus::Remaining;
+    };
+    if let Some(active_leg_index) = guidance.active_leg_index {
+        return if leg_index < active_leg_index {
+            app_core::FlightPlanRouteSegmentStatus::Completed
+        } else if leg_index == active_leg_index {
+            app_core::FlightPlanRouteSegmentStatus::Active
+        } else {
+            app_core::FlightPlanRouteSegmentStatus::Remaining
+        };
+    }
+    app_core::FlightPlanRouteSegmentStatus::Remaining
+}
+
+fn component_insert_anchor(
+    plan: &app_core::FlightPlan,
+    component_index: usize,
+    before: bool,
+) -> Result<app_core::NavRef, String> {
+    let plan = plan.clone().normalized();
+    let component = plan
+        .route_components
+        .get(component_index)
+        .ok_or_else(|| format!("component index out of bounds: {component_index}"))?;
+    let waypoint = match component {
+        app_core::RouteComponent::Waypoint { waypoint } => Some(waypoint.clone()),
+        app_core::RouteComponent::Airway { airway } => {
+            if before {
+                Some(airway.entry.clone())
+            } else {
+                Some(airway.exit.clone())
+            }
+        }
+        app_core::RouteComponent::Procedure { .. } => {
+            let mut legs = plan.resolved_legs.iter().filter(|leg| {
+                matches!(
+                    leg.source,
+                    app_core::ResolvedLegSource::RouteComponent { component_index: index } if index == component_index
+                )
+            });
+            if before {
+                legs.next().map(|leg| leg.from.clone())
+            } else {
+                legs.last().map(|leg| leg.to.clone())
+            }
+        }
+    };
+    waypoint.ok_or_else(|| "selected component has no waypoint anchor".to_string())
+}
+
+fn nav_ref_kind_order(nav_ref: &app_core::NavRef) -> usize {
+    match nav_ref {
+        app_core::NavRef::Navaid(_) => 0,
+        app_core::NavRef::Airport(_) => 1,
+        app_core::NavRef::Fix(_) => 2,
+        app_core::NavRef::LatLon(_) => 3,
+    }
+}
+
+fn waypoint_identifier_display_name(
+    kind: &str,
+    city: &str,
+    state: &str,
+    facility_name: &str,
+) -> String {
+    let city = city.trim();
+    let state = state.trim();
+    let facility_name = facility_name.trim();
+    if kind == "airport" && !city.is_empty() {
+        let city = titlecase_nav_label(city);
+        return if state.is_empty() {
+            city
+        } else {
+            format!("{city}, {}", state.to_ascii_uppercase())
+        };
+    }
+    titlecase_nav_label(facility_name)
+}
+
+fn titlecase_nav_label(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut normalized = first.to_uppercase().collect::<String>();
+                    normalized.push_str(&chars.as_str().to_ascii_lowercase());
+                    normalized
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn remove_flight_plan_leg_json(plan_json: &str, index: usize) -> Result<String, String> {
@@ -824,8 +1143,8 @@ fn move_component_ui_json(
 ) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation =
-        app_core::move_component_ui(&plan, component_index, delta).map_err(|err| err.to_string())?;
+    let mutation = app_core::move_component_ui(&plan, component_index, delta)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
@@ -873,12 +1192,9 @@ fn activate_direct_to_leg_ui_json(
 ) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation = app_core::activate_direct_to_leg_ui(
-        &plan,
-        app_core::LatLon { lat, lon },
-        target_leg_id,
-    )
-    .map_err(|err| err.to_string())?;
+    let mutation =
+        app_core::activate_direct_to_leg_ui(&plan, app_core::LatLon { lat, lon }, target_leg_id)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
@@ -1133,13 +1449,9 @@ fn describe_procedure_options_from_rows_json(
         serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
     let rows: Vec<app_core::ProcedureDistinctRow> =
         serde_json::from_str(rows_json).map_err(|err| err.to_string())?;
-    let options = app_core::describe_procedure_options_from_rows(
-        airport_id,
-        procedure_id,
-        kind,
-        rows,
-    )
-    .map_err(|err| err.to_string())?;
+    let options =
+        app_core::describe_procedure_options_from_rows(airport_id, procedure_id, kind, rows)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&options).map_err(|err| err.to_string())
 }
 
@@ -1215,9 +1527,14 @@ fn describe_load_procedure_from_plate_json(
         serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
     let options: app_core::ProcedureOptions =
         serde_json::from_str(options_json).map_err(|err| err.to_string())?;
-    let description =
-        app_core::describe_load_procedure_from_plate(&plan, airport_id, procedure_id, kind, options)
-            .map_err(|err| err.to_string())?;
+    let description = app_core::describe_load_procedure_from_plate(
+        &plan,
+        airport_id,
+        procedure_id,
+        kind,
+        options,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&description).map_err(|err| err.to_string())
 }
 
@@ -1363,12 +1680,9 @@ fn refresh_content_ui_state_json(
     serde_json::to_string(&app_core::project_app_ui_state(&next)).map_err(|err| err.to_string())
 }
 
-fn derive_chart_page_json(
-    resource_index_json: &str,
-    plan_json: &str,
-) -> Result<String, String> {
-    let resource_index =
-        app_core::load_resource_index_chart_page_input(resource_index_json).map_err(|err| err.to_string())?;
+fn derive_chart_page_json(resource_index_json: &str, plan_json: &str) -> Result<String, String> {
+    let resource_index = app_core::load_resource_index_chart_page_input(resource_index_json)
+        .map_err(|err| err.to_string())?;
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let chart_page = app_core::derive_chart_page(&resource_index, &plan);
@@ -1376,8 +1690,8 @@ fn derive_chart_page_json(
 }
 
 fn derive_chart_catalog_json(resource_index_json: &str) -> Result<String, String> {
-    let resource_index =
-        app_core::load_resource_index_chart_page_input(resource_index_json).map_err(|err| err.to_string())?;
+    let resource_index = app_core::load_resource_index_chart_page_input(resource_index_json)
+        .map_err(|err| err.to_string())?;
     let chart_catalog = app_core::build_chart_catalog(&resource_index);
     serde_json::to_string(&chart_catalog).map_err(|err| err.to_string())
 }
@@ -1389,8 +1703,8 @@ fn derive_chart_page_state_json(
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
 ) -> Result<String, String> {
-    let resource_index =
-        app_core::load_resource_index_chart_page_input(resource_index_json).map_err(|err| err.to_string())?;
+    let resource_index = app_core::load_resource_index_chart_page_input(resource_index_json)
+        .map_err(|err| err.to_string())?;
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let recent_airport_ids: Vec<String> =
@@ -1453,7 +1767,8 @@ fn move_waypoint_in_session_json(
 }
 
 fn select_airport_in_session_json(handle: u32, airport_id_json: &str) -> Result<String, String> {
-    let airport_id: String = serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
+    let airport_id: String =
+        serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
     let snapshot =
         app_core::select_airport_in_session(handle, &airport_id).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
@@ -1481,10 +1796,7 @@ fn update_ownship_source_status_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn push_situation_sample_in_session_json(
-    handle: u32,
-    sample_json: &str,
-) -> Result<String, String> {
+fn push_situation_sample_in_session_json(handle: u32, sample_json: &str) -> Result<String, String> {
     let sample: app_core::SituationSample =
         serde_json::from_str(sample_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::push_situation_sample_in_session(handle, sample)
@@ -1492,7 +1804,10 @@ fn push_situation_sample_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn select_ownship_source_in_session_json(handle: u32, selection_json: &str) -> Result<String, String> {
+fn select_ownship_source_in_session_json(
+    handle: u32,
+    selection_json: &str,
+) -> Result<String, String> {
     let selection: app_core::OwnshipSelectionCommand =
         serde_json::from_str(selection_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::select_ownship_source_in_session(handle, selection)
@@ -1503,8 +1818,8 @@ fn select_ownship_source_in_session_json(handle: u32, selection_json: &str) -> R
 fn set_situation_in_session_json(handle: u32, situation_json: &str) -> Result<String, String> {
     let situation: app_core::Situation =
         serde_json::from_str(situation_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_situation_in_session(handle, situation)
-        .map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::set_situation_in_session(handle, situation).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -1516,7 +1831,10 @@ fn engage_map_follow_in_session_json(handle: u32, viewport_json: &str) -> Result
     serde_json::to_string(&update).map_err(|err| err.to_string())
 }
 
-fn disengage_map_follow_in_session_json(handle: u32, viewport_json: &str) -> Result<String, String> {
+fn disengage_map_follow_in_session_json(
+    handle: u32,
+    viewport_json: &str,
+) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::disengage_map_follow_in_session(handle, viewport)
@@ -1534,7 +1852,7 @@ fn set_map_follow_offset_in_session_json(
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
     let snapshot =
         app_core::set_map_follow_offset_in_session(handle, viewport, offset_x_px, offset_y_px)
-        .map_err(|err| err.to_string())?;
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -1899,8 +2217,18 @@ mod tests {
         let next_json = activate_leg_ui_json(&plan_json, 1).unwrap();
         let next: app_core::FlightPlanUiMutation = serde_json::from_str(&next_json).unwrap();
 
-        assert_eq!(next.ui_state.guidance.as_ref().unwrap().active_leg_index, Some(1));
-        assert_eq!(next.ui_state.guidance.as_ref().unwrap().active_component_index, Some(1));
+        assert_eq!(
+            next.ui_state.guidance.as_ref().unwrap().active_leg_index,
+            Some(1)
+        );
+        assert_eq!(
+            next.ui_state
+                .guidance
+                .as_ref()
+                .unwrap()
+                .active_component_index,
+            Some(1)
+        );
     }
 
     #[test]
@@ -1939,7 +2267,10 @@ mod tests {
         let next: app_core::AirwayPlanUiMutation = serde_json::from_str(&next_json).unwrap();
 
         assert_eq!(next.mutation.component_index, 1);
-        assert!(matches!(next.ui_state.components[1].kind, app_core::RouteComponentViewKind::Airway));
+        assert!(matches!(
+            next.ui_state.components[1].kind,
+            app_core::RouteComponentViewKind::Airway
+        ));
     }
 
     #[test]
@@ -1979,7 +2310,10 @@ mod tests {
         let next: app_core::ProcedurePlanUiMutation = serde_json::from_str(&next_json).unwrap();
 
         assert_eq!(next.mutation.component_index, 1);
-        assert!(matches!(next.ui_state.components[1].kind, app_core::RouteComponentViewKind::Procedure));
+        assert!(matches!(
+            next.ui_state.components[1].kind,
+            app_core::RouteComponentViewKind::Procedure
+        ));
     }
 
     #[test]
@@ -2011,7 +2345,12 @@ mod tests {
         .unwrap();
 
         let refreshed: app_core::AppState = serde_json::from_str(&refreshed_json).unwrap();
-        assert!(refreshed.last_content_report.as_ref().unwrap().fully_satisfied);
+        assert!(
+            refreshed
+                .last_content_report
+                .as_ref()
+                .unwrap()
+                .fully_satisfied
+        );
     }
-
 }

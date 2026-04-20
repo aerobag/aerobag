@@ -959,13 +959,15 @@ export default function App() {
     }
     const shouldHideStartupShell =
       sessionInitError !== null ||
+      mapViewsLoadError !== null ||
+      chartPageCatalogLoadError !== null ||
       (appReady &&
         currentPlan !== null &&
         planUiState !== null);
     if (shouldHideStartupShell) {
       window.__aerobag_hide_startup_shell?.();
     }
-  }, [appReady, currentPlan, planUiState, sessionInitError]);
+  }, [appReady, chartPageCatalogLoadError, currentPlan, mapViewsLoadError, planUiState, sessionInitError]);
 
   if (sessionInitError || mapViewsLoadError || chartPageCatalogLoadError) {
     return (

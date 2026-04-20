@@ -14,6 +14,7 @@ ORIGIN_SHIFT = math.pi * RADIUS
 FEET_PER_METER = 3.280839895
 WEBP_QUALITY = 75
 WEBP_METHOD = 4
+WATER_RGB = (104, 154, 185)
 
 COLOR_STOPS = [
     (0.0, (198, 221, 154)),
@@ -71,6 +72,15 @@ def colorize(elev_ft, invalid):
     return rgb
 
 
+def sea_level_water_mask(elev_m, invalid):
+    valid = ~invalid
+    if not np.any(valid):
+        return np.zeros(elev_m.shape, dtype=bool)
+    gy, gx = np.gradient(np.where(valid, elev_m, np.nan))
+    slope = np.nan_to_num(np.hypot(gx, gy), nan=np.inf)
+    return valid & (elev_m >= -5.0) & (elev_m <= 1.0) & (slope <= 0.25)
+
+
 def hillshade(elev_m, invalid, pixel_size_m):
     filled = elev_m.astype(np.float64).copy()
     if np.any(invalid):
@@ -101,6 +111,8 @@ def save_webp(path, image):
         format="WEBP",
         quality=WEBP_QUALITY,
         method=WEBP_METHOD,
+        exact=True,
+        alpha_quality=100,
     )
 
 
@@ -109,23 +121,23 @@ def write_webp(path, rgba):
 
 
 def resampling_filter():
-    return getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+    return getattr(getattr(Image, "Resampling", Image), "BOX")
 
 
 def build_parent_tile(tiles_root, z, x, y, tile_size):
-    half = tile_size // 2
-    parent = Image.new("RGBA", (tile_size, tile_size), (0, 0, 0, 0))
+    mosaic = Image.new("RGBA", (tile_size * 2, tile_size * 2), (0, 0, 0, 0))
     children = [
         (x * 2, y * 2 + 1, 0, 0),
-        (x * 2 + 1, y * 2 + 1, half, 0),
-        (x * 2, y * 2, 0, half),
-        (x * 2 + 1, y * 2, half, half),
+        (x * 2 + 1, y * 2 + 1, tile_size, 0),
+        (x * 2, y * 2, 0, tile_size),
+        (x * 2 + 1, y * 2, tile_size, tile_size),
     ]
     for child_x, child_y, dst_x, dst_y in children:
         child_path = tiles_root / str(z + 1) / str(child_x) / f"{child_y}.webp"
         if child_path.exists():
             child = Image.open(child_path).convert("RGBA")
-            parent.paste(child.resize((half, half), resampling_filter()), (dst_x, dst_y))
+            mosaic.paste(child, (dst_x, dst_y))
+    parent = mosaic.resize((tile_size, tile_size), resampling_filter())
     save_webp(tiles_root / str(z) / str(x) / f"{y}.webp", parent)
 
 
@@ -200,8 +212,10 @@ def render_tile(task):
     )
     arr = warped.ReadAsArray().astype(np.float64)
     invalid = (arr <= -999998.0) | np.isnan(arr)
+    water = sea_level_water_mask(arr, invalid)
     elev_ft = arr * FEET_PER_METER
     rgb = colorize(elev_ft, invalid)
+    rgb[water, :] = WATER_RGB
     shade = hillshade(arr, invalid, WORKER_RESOLUTION)
     lit = np.clip(rgb * shade[:, :, None], 0, 255).astype(np.uint8)
     alpha = np.where(invalid, 0, 255).astype(np.uint8)
@@ -260,7 +274,7 @@ def main():
         "zip_member_compression": "stored_webp",
         "webp_quality": WEBP_QUALITY,
         "webp_method": WEBP_METHOD,
-        "parent_tile_policy": "alpha-preserving RGBA downsample from child tiles",
+        "parent_tile_policy": "alpha-preserving 2x2 RGBA mosaic downsample from child tiles",
         "worker_count": workers,
         "source_dem": "USGS 3DEP 1 arc-second DEM",
         "source_dem_vertical_datum": "source tile metadata; generally NAVD88 in CONUS",
@@ -277,7 +291,11 @@ def main():
             "altitude_degrees": 45,
             "note": "first-cut DEM hillshade multiplied over elevation color buckets",
         },
-        "water_glacier_mask": "not applied in first cut",
+        "water_glacier_mask": {
+            "water": "DEM-derived sea-level flat-water heuristic; not an authoritative hydrography mask",
+            "rgb": WATER_RGB,
+            "elevation_meters": [-5.0, 1.0],
+        },
         "source_dem_count": args.source_count,
         "missing_dem_cells": [cell for cell in args.missing_cells.split(",") if cell],
         "nodata": "transparent alpha",

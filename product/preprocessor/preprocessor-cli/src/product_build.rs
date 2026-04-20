@@ -611,8 +611,9 @@ const DEFAULT_PRODUCT_BUILD_MEMORY_MAX: &str = "80G";
 const TPP_RENDER_JOBS_PER_RUN: usize = 8;
 const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
-const TERRAIN_PIPELINE_VERSION: &str = "v3";
-const SHADED_RELIEF_PIPELINE_VERSION: &str = "v4";
+const TERRAIN_PIPELINE_VERSION: &str = "v4";
+const SHADED_RELIEF_PIPELINE_VERSION: &str = "v5";
+const TERRAIN_TILE_WORKERS: u32 = 16;
 const SHADED_RELIEF_TILE_WORKERS: u32 = 4;
 const TERRAIN_MIN_ZOOM: u32 = 0;
 const TERRAIN_ZOOM: u32 = 10;
@@ -1075,7 +1076,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             pending_tasks.push(ProductScheduledTask {
                 id: format!("build-terrain-{region_id}"),
                 deps: vec!["terrain-discovery".to_string()],
-                weight: 2,
+                weight: 6,
                 kind: ProductScheduledTaskKind::TerrainBuild { region: *region },
             });
             pending_tasks.push(ProductScheduledTask {
@@ -7317,11 +7318,12 @@ fn terrain_cell_origin(cell: &str) -> Option<(f64, f64)> {
     let (lon_dir, lon_part) = lon_part_with_dir.split_at(1);
     let lat_abs = lat_part.get(1..)?.parse::<f64>().ok()?;
     let lon_abs = lon_part.parse::<f64>().ok()?;
-    let lat = if lat_part.starts_with('s') {
+    let lat_north_edge = if lat_part.starts_with('s') {
         -lat_abs
     } else {
         lat_abs
     };
+    let lat = lat_north_edge - 1.0;
     let lon = if lon_dir == "w" { -lon_abs } else { lon_abs };
     Some((lat, lon))
 }
@@ -7579,6 +7581,8 @@ fn build_terrain_region_tiles(
         .arg(dem_selection.urls.len().to_string())
         .arg("--missing-cells")
         .arg(dem_selection.missing_cells.join(","))
+        .arg("--workers")
+        .arg(TERRAIN_TILE_WORKERS.to_string())
         .output()
         .with_context(|| format!("failed to run {}", script_path.display()))?;
     if !output.status.success() {
@@ -7707,12 +7711,19 @@ fn collect_zip_files(
 
 const TERRAIN_TILE_SCRIPT: &str = r#"
 import argparse, gzip, json, math, struct
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import numpy as np
 from osgeo import gdal
 
 RADIUS = 6378137.0
 ORIGIN_SHIFT = math.pi * RADIUS
+
+WORKER_DS = None
+WORKER_GEO = None
+WORKER_TILES_ROOT = None
+WORKER_ZOOM = None
+WORKER_TILE_SIZE = None
 
 def mercator(lon, lat):
     lat = max(min(lat, 85.05112878), -85.05112878)
@@ -7823,6 +7834,39 @@ def build_parent_pyramid(tiles_root, max_zoom, tile_size):
         counts[z] = len(parents)
     return counts
 
+def init_worker(vrt_path, geo_csv_path, tiles_root, zoom, tile_size):
+    global WORKER_DS, WORKER_GEO, WORKER_TILES_ROOT, WORKER_ZOOM, WORKER_TILE_SIZE
+    WORKER_DS = gdal.Open(vrt_path)
+    if WORKER_DS is None:
+        raise RuntimeError(f'failed to open {vrt_path}')
+    WORKER_GEO = load_geo(geo_csv_path)
+    WORKER_TILES_ROOT = Path(tiles_root)
+    WORKER_ZOOM = zoom
+    WORKER_TILE_SIZE = tile_size
+
+def render_tile(task):
+    x, y = task
+    minx, miny, maxx, maxy = tile_bounds(x, y, WORKER_ZOOM, WORKER_TILE_SIZE)
+    warped = gdal.Warp(
+        '', WORKER_DS, format='MEM', dstSRS='EPSG:3857',
+        outputBounds=[minx, miny, maxx, maxy],
+        width=WORKER_TILE_SIZE, height=WORKER_TILE_SIZE,
+        resampleAlg='bilinear', dstNodata=-999999.0,
+    )
+    arr = warped.ReadAsArray()
+    center_lon, center_lat = lonlat((minx + maxx) / 2.0, (miny + maxy) / 2.0)
+    tile_geoid_ft = geoid(WORKER_GEO, center_lat, center_lon)
+    invalid = (arr <= -999998.0) | np.isnan(arr)
+    samples = np.rint(arr.astype(np.float64) * 3.280839895 + tile_geoid_ft)
+    samples = np.clip(samples, -32767, 32767).astype('<i2')
+    samples[invalid] = -32768
+    write_tile(
+        WORKER_TILES_ROOT / str(WORKER_ZOOM) / str(x) / f'{y}.terrain',
+        samples.tobytes(),
+        WORKER_TILE_SIZE,
+    )
+    return 1
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--vrt', required=True)
@@ -7835,34 +7879,24 @@ def main():
     ap.add_argument('--version-label', required=True)
     ap.add_argument('--source-count', required=True, type=int)
     ap.add_argument('--missing-cells', default='')
+    ap.add_argument('--workers', required=True, type=int)
     args = ap.parse_args()
     west, south, east, north = [float(x) for x in args.bbox.split(',')]
     root = Path(args.output_dir)
     tiles_root = root / 'tiles'
-    ds = gdal.Open(args.vrt)
-    if ds is None:
-        raise SystemExit(f'failed to open {args.vrt}')
-    geo = load_geo(args.geo_csv)
     x_range, y_range = tile_range(west, south, east, north, args.zoom, args.tile_size)
-    count = 0
-    for x in x_range:
-        for y in y_range:
-            minx, miny, maxx, maxy = tile_bounds(x, y, args.zoom, args.tile_size)
-            warped = gdal.Warp(
-                '', ds, format='MEM', dstSRS='EPSG:3857',
-                outputBounds=[minx, miny, maxx, maxy],
-                width=args.tile_size, height=args.tile_size,
-                resampleAlg='bilinear', dstNodata=-999999.0,
-            )
-            arr = warped.ReadAsArray()
-            center_lon, center_lat = lonlat((minx + maxx) / 2.0, (miny + maxy) / 2.0)
-            tile_geoid_ft = geoid(geo, center_lat, center_lon)
-            invalid = (arr <= -999998.0) | np.isnan(arr)
-            samples = np.rint(arr.astype(np.float64) * 3.280839895 + tile_geoid_ft)
-            samples = np.clip(samples, -32767, 32767).astype('<i2')
-            samples[invalid] = -32768
-            write_tile(tiles_root / str(args.zoom) / str(x) / f'{y}.terrain', samples.tobytes(), args.tile_size)
-            count += 1
+    tasks = [(x, y) for x in x_range for y in y_range]
+    workers = max(1, args.workers)
+    if workers == 1:
+        init_worker(args.vrt, args.geo_csv, str(tiles_root), args.zoom, args.tile_size)
+        count = sum(render_tile(task) for task in tasks)
+    else:
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=init_worker,
+            initargs=(args.vrt, args.geo_csv, str(tiles_root), args.zoom, args.tile_size),
+        ) as pool:
+            count = sum(pool.map(render_tile, tasks, chunksize=8))
     level_counts = build_parent_pyramid(tiles_root, args.zoom, args.tile_size)
     manifest = {
         'schema_version': 1,
@@ -7883,6 +7917,7 @@ def main():
         'source_dem': 'USGS 3DEP 1 arc-second DEM',
         'source_dem_vertical_datum': 'source tile metadata; generally NAVD88 in CONUS',
         'geoid_model': 'avare geo.csv one-degree grid, applied once per tile at tile center (temporary approximation)',
+        'worker_count': workers,
         'refresh_policy': {
             'identity': 'published filename is content-addressed by ZIP bytes',
             'source_fetched_at_utc': 'reported in current_artifacts.static_products[]',
@@ -11686,5 +11721,14 @@ mod tests {
             filtered,
             vec!["https://aeronav.faa.gov/Upload_313-d/cifp/CIFP_260416.zip"]
         );
+    }
+
+    #[test]
+    fn interprets_usgs_dem_cell_names_as_northwest_corners() {
+        assert_eq!(terrain_cell_origin("n36w102"), Some((35.0, -102.0)));
+        assert_eq!(terrain_cell_origin("s01e123"), Some((-2.0, 123.0)));
+
+        assert!(terrain_cell_intersects_region("n37w102", Region::Sc));
+        assert!(terrain_cell_intersects_region("n40w107", Region::Sw));
     }
 }

@@ -170,7 +170,8 @@ forward into HAD.
 Value: `AirwayBranch[]`.
 
 Preproc should emit branch-normalized data only. Do not publish the legacy table
-shape into HAD.
+shape into HAD. Empty `branch_key` values are valid and must be preserved; most
+conventional airway rows use the empty branch key.
 
 `airway/spatial/{tile_key}`
 Implemented key shape: `airway/spatial/{lat_floor}/{lon_floor}`.

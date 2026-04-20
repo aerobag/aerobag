@@ -5239,7 +5239,6 @@ fn build_nav_kv_airway_pairs(connection: &rusqlite::Connection) -> anyhow::Resul
                trim(point_name), Latitude, Longitude
         FROM airways_branch
         WHERE trim(name) <> ''
-          AND trim(branch_key) <> ''
         ORDER BY trim(name), trim(branch_key), CAST(sequence_number AS INTEGER)
         ",
     )?;

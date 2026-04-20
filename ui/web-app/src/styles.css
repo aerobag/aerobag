@@ -125,6 +125,7 @@ button {
   max-width: none;
   opacity: 0.72;
   mix-blend-mode: multiply;
+  image-rendering: pixelated;
   pointer-events: none;
   user-select: none;
 }

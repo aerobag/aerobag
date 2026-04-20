@@ -585,7 +585,7 @@ pub fn render_terrain_overlay_tile_in_session(
             kind: AppErrorKind::UnsupportedOperation,
             message: "ownship altitude unavailable for terrain overlay".to_string(),
         })?;
-    crate::render_terrain_warning_png(tile_bytes, altitude_ft).map_err(|err| AppError {
+    crate::render_terrain_warning_raw_rgba_from_tiles(&[tile_bytes], altitude_ft).map_err(|err| AppError {
         kind: AppErrorKind::InvalidManifest,
         message: err,
     })
@@ -613,7 +613,7 @@ pub fn render_terrain_overlay_tiles_in_session(
         .iter()
         .map(Vec::as_slice)
         .collect::<Vec<_>>();
-    crate::render_terrain_warning_png_from_tiles(&tile_refs, altitude_ft).map_err(|err| AppError {
+    crate::render_terrain_warning_raw_rgba_from_tiles(&tile_refs, altitude_ft).map_err(|err| AppError {
         kind: AppErrorKind::InvalidManifest,
         message: err,
     })

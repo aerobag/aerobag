@@ -114,8 +114,9 @@ pub use state::{
 };
 pub use terrain::{
     parse_abt1_tile, query_terrain_overlay, render_terrain_warning_png,
-    render_terrain_warning_png_from_tiles, render_terrain_warning_rgba, TerrainOverlayQueryResult,
-    TerrainOverlaySourceTile, TerrainOverlayStatus, TerrainOverlayTileRequest, TerrainTileInfo,
+    render_terrain_warning_png_from_tiles, render_terrain_warning_raw_rgba_from_tiles,
+    render_terrain_warning_rgba, TerrainOverlayQueryResult, TerrainOverlaySourceTile,
+    TerrainOverlayStatus, TerrainOverlayTileRequest, TerrainTileInfo,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

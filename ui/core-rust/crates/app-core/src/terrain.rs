@@ -172,6 +172,14 @@ pub fn render_terrain_warning_png_from_tiles(
     tile_bytes_list: &[&[u8]],
     aircraft_altitude_ft: f64,
 ) -> Result<Vec<u8>, String> {
+    let (info, rgba) = render_terrain_warning_rgba_from_tiles(tile_bytes_list, aircraft_altitude_ft)?;
+    encode_terrain_warning_png(&info, &rgba)
+}
+
+pub fn render_terrain_warning_rgba_from_tiles(
+    tile_bytes_list: &[&[u8]],
+    aircraft_altitude_ft: f64,
+) -> Result<(TerrainTileInfo, Vec<u8>), String> {
     if tile_bytes_list.is_empty() {
         return Err("no terrain source tiles supplied".to_string());
     }
@@ -181,7 +189,15 @@ pub fn render_terrain_warning_png_from_tiles(
         .collect::<Result<Vec<_>, _>>()?;
     let (info, samples) = composite_terrain_samples(&parsed_tiles)?;
     let rgba = render_terrain_warning_samples(&info, &samples, aircraft_altitude_ft);
-    encode_terrain_warning_png(&info, &rgba)
+    Ok((info, rgba))
+}
+
+pub fn render_terrain_warning_raw_rgba_from_tiles(
+    tile_bytes_list: &[&[u8]],
+    aircraft_altitude_ft: f64,
+) -> Result<Vec<u8>, String> {
+    let (info, rgba) = render_terrain_warning_rgba_from_tiles(tile_bytes_list, aircraft_altitude_ft)?;
+    Ok(pack_raw_rgba(downsample_terrain_warning_rgba(&info, &rgba)))
 }
 
 fn encode_terrain_warning_png(info: &TerrainTileInfo, rgba: &[u8]) -> Result<Vec<u8>, String> {
@@ -247,6 +263,54 @@ fn render_terrain_warning_samples(
         }
     }
     rgba
+}
+
+fn downsample_terrain_warning_rgba(info: &TerrainTileInfo, rgba: &[u8]) -> (u16, u16, Vec<u8>) {
+    const DOWNSAMPLE: usize = 2;
+    let source_width = info.width as usize;
+    let source_height = info.height as usize;
+    let width = source_width / DOWNSAMPLE;
+    let height = source_height / DOWNSAMPLE;
+    let mut output = vec![0_u8; width * height * 4];
+    for y in 0..height {
+        for x in 0..width {
+            let mut chosen = [0_u8; 4];
+            for dy in 0..DOWNSAMPLE {
+                for dx in 0..DOWNSAMPLE {
+                    let source_pixel = ((y * DOWNSAMPLE + dy) * source_width + (x * DOWNSAMPLE + dx)) * 4;
+                    let candidate = [
+                        rgba[source_pixel],
+                        rgba[source_pixel + 1],
+                        rgba[source_pixel + 2],
+                        rgba[source_pixel + 3],
+                    ];
+                    if terrain_warning_priority(candidate) > terrain_warning_priority(chosen) {
+                        chosen = candidate;
+                    }
+                }
+            }
+            let output_pixel = (y * width + x) * 4;
+            output[output_pixel..output_pixel + 4].copy_from_slice(&chosen);
+        }
+    }
+    (width as u16, height as u16, output)
+}
+
+fn terrain_warning_priority(pixel: [u8; 4]) -> u8 {
+    match pixel {
+        [185, 0, 45, 190] => 3,
+        [255, 220, 0, 125] => 2,
+        [0, 82, 150, 70] => 1,
+        _ => 0,
+    }
+}
+
+fn pack_raw_rgba((width, height, rgba): (u16, u16, Vec<u8>)) -> Vec<u8> {
+    let mut output = Vec::with_capacity(4 + rgba.len());
+    output.extend_from_slice(&width.to_le_bytes());
+    output.extend_from_slice(&height.to_le_bytes());
+    output.extend_from_slice(&rgba);
+    output
 }
 
 fn composite_terrain_samples(

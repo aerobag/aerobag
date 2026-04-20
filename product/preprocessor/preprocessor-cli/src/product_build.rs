@@ -4359,10 +4359,79 @@ fn build_nav_kv_navref_pairs(main_db_path: &Path) -> anyhow::Result<Vec<NavKvPai
     for pair in pairs {
         deduped.entry(pair.key).or_insert(pair.value);
     }
+    validate_airway_navrefs_resolve(&deduped)?;
     Ok(deduped
         .into_iter()
         .map(|(key, value)| NavKvPair { key, value })
         .collect())
+}
+
+fn validate_airway_navrefs_resolve(pairs: &BTreeMap<String, Vec<u8>>) -> anyhow::Result<()> {
+    for (key, value) in pairs {
+        if !key.starts_with("airway/") {
+            continue;
+        }
+        let json: serde_json::Value = serde_json::from_slice(value)
+            .with_context(|| format!("failed to parse nav_kv airway value {key}"))?;
+        validate_airway_navrefs_in_value(pairs, key, &json)?;
+    }
+    Ok(())
+}
+
+fn validate_airway_navrefs_in_value(
+    pairs: &BTreeMap<String, Vec<u8>>,
+    source_key: &str,
+    value: &serde_json::Value,
+) -> anyhow::Result<()> {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                validate_airway_navrefs_in_value(pairs, source_key, value)?;
+            }
+        }
+        serde_json::Value::Object(object) => {
+            if let Some(nav_ref) = object.get("nav_ref") {
+                validate_airway_nav_ref_resolves(pairs, source_key, nav_ref)?;
+            }
+            for value in object.values() {
+                validate_airway_navrefs_in_value(pairs, source_key, value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_airway_nav_ref_resolves(
+    pairs: &BTreeMap<String, Vec<u8>>,
+    source_key: &str,
+    nav_ref: &serde_json::Value,
+) -> anyhow::Result<()> {
+    let required_key = if let Some(id) = nav_ref.get("Airport").and_then(|value| value.as_str()) {
+        Some(format!(
+            "navref/position/airport/{}",
+            id.trim().to_ascii_uppercase()
+        ))
+    } else if let Some(id) = nav_ref.get("Navaid").and_then(|value| value.as_str()) {
+        Some(format!(
+            "navref/position/navaid/{}",
+            id.trim().to_ascii_uppercase()
+        ))
+    } else {
+        nav_ref
+            .get("Fix")
+            .and_then(|value| value.as_str())
+            .map(|id| format!("navref/position/fix/{}", id.trim().to_ascii_uppercase()))
+    };
+
+    let Some(required_key) = required_key else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        pairs.contains_key(&required_key),
+        "nav_kv airway value {source_key} emits unresolved nav_ref {nav_ref}; missing {required_key}"
+    );
+    Ok(())
 }
 
 fn build_nav_kv_airport_navref_pairs(
@@ -5154,12 +5223,7 @@ impl NavLookupContext {
             return nav_ref;
         }
 
-        let trimmed = identifier.trim().to_ascii_uppercase();
-        if trimmed.is_empty() {
-            serde_json::json!({ "LatLon": { "lat": lat, "lon": lon } })
-        } else {
-            serde_json::json!({ "Fix": trimmed })
-        }
+        serde_json::json!({ "LatLon": { "lat": lat, "lon": lon } })
     }
 
     fn classify_by_position_json(&self, lat: f64, lon: f64) -> Option<serde_json::Value> {
@@ -12325,7 +12389,7 @@ mod tests {
         );
         assert_eq!(
             v23[0]["points"][2]["nav_ref"],
-            serde_json::json!({ "Fix": "NAMEDBUTMISSING" })
+            serde_json::json!({ "LatLon": { "lat": 45.4, "lon": -122.7 } })
         );
         assert_eq!(
             v23[0]["points"][3]["nav_ref"],
@@ -12351,6 +12415,32 @@ mod tests {
             .unwrap()
             .iter()
             .any(|point| point["airway_name"] == "V23" && point["branch_key"] == ""));
+    }
+
+    #[test]
+    fn nav_kv_airway_navref_validation_rejects_missing_position_keys() {
+        let mut pairs = BTreeMap::new();
+        pairs.insert(
+            "airway/V195".to_string(),
+            serde_json::to_vec(&serde_json::json!([{
+                "branch_key": "",
+                "points": [{
+                    "nav_ref": { "Navaid": "ILA" }
+                }]
+            }]))
+            .unwrap(),
+        );
+
+        let error = validate_airway_navrefs_resolve(&pairs).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("missing navref/position/navaid/ILA"));
+
+        pairs.insert(
+            "navref/position/navaid/ILA".to_string(),
+            serde_json::to_vec(&serde_json::json!({ "lat": 39.0, "lon": -122.0 })).unwrap(),
+        );
+        validate_airway_navrefs_resolve(&pairs).unwrap();
     }
 
     #[test]

@@ -1,19 +1,16 @@
 import bootstrapJson from "@shared-bootstrap";
 import catalogJson from "@product-catalog";
-import currentArtifactsJson from "@current-artifacts";
 import { resourceIndex } from "./productResourceIndex";
 import { deriveChartPage, deriveMapViews } from "./resourceIndexAdapters";
 import type {
   AppState,
   CatalogJson,
   ContentInventory,
-  CurrentArtifactsJson,
   DevBootstrapJson,
   GeometryJson,
   MapTileViewJson,
 } from "./types";
 
-export const currentArtifacts = currentArtifactsJson as CurrentArtifactsJson;
 export const bootstrap = bootstrapJson as DevBootstrapJson;
 
 export const sampleCatalog = catalogJson as CatalogJson;
@@ -22,7 +19,7 @@ export const sampleGeometry: GeometryJson = {
   polygons: [],
 };
 
-export const mapViews = deriveMapViews(resourceIndex, [], currentArtifacts);
+export const mapViews = deriveMapViews(resourceIndex, []);
 export const mapView = mapViews[0].map_view;
 const defaultLevel = mapView.levels.reduce((best, current) => (current.zoom > best.zoom ? current : best));
 export const mapTileView: MapTileViewJson = {

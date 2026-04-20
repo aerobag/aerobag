@@ -78,13 +78,15 @@ chart/catalog
 ```
 
 `chart/catalog` is the app-ready raster chart catalog. It should contain the
-exact data core/UI need to offer and render raster charts:
+exact data core/UI need to offer and render raster charts, including static
+visual raster products such as shaded relief:
 
 - chart family ids and display labels
 - region ids and display labels
 - chart package ids
 - tile URL/package roots or package references
 - chart index
+- tile path templates
 - tile size
 - zoom levels and bounds
 - default viewport

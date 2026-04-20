@@ -743,16 +743,6 @@ export type MapViewOptionJson = {
   map_view: MapViewJson;
 };
 
-export type CurrentArtifactsJson = {
-  static_products?: Array<{
-    id?: string;
-    filename?: string;
-    sha256?: string;
-    size_bytes?: number;
-    source_fetched_at_utc?: string;
-  }>;
-};
-
 export type MapTileViewJson = {
   chart_family: ChartFamilyId;
   chart_name: string;

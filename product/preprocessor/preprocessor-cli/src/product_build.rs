@@ -3852,7 +3852,13 @@ fn build_bundle_manifest(
         &public_resource_index,
     )?;
     let data_db_path = resolve_artifact_path(config, output_path(data_record, "main_db")?);
-    let nav_kv = write_nav_kv_artifact(config, &public_resource_index, &cycle, &data_db_path)?;
+    let nav_kv = write_nav_kv_artifact(
+        config,
+        &public_resource_index,
+        &cycle,
+        &data_db_path,
+        config.profile.terrain_regions(),
+    )?;
 
     Ok(BundleManifest {
         schema_version: 1,
@@ -3877,8 +3883,9 @@ fn write_nav_kv_artifact(
     resource_index: &ResourceIndex,
     cycle: &str,
     main_db_path: &Path,
+    shaded_relief_regions: &[Region],
 ) -> anyhow::Result<BundleNavKvArtifact> {
-    let chart_catalog = build_nav_kv_chart_catalog(resource_index);
+    let chart_catalog = build_nav_kv_chart_catalog(resource_index, shaded_relief_regions);
     let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
         .context("failed to encode nav_kv chart/catalog value")?;
     let mut pairs = vec![NavKvPair {
@@ -3925,8 +3932,11 @@ fn write_nav_kv_artifact(
     })
 }
 
-fn build_nav_kv_chart_catalog(resource_index: &ResourceIndex) -> serde_json::Value {
-    let collections = resource_index
+fn build_nav_kv_chart_catalog(
+    resource_index: &ResourceIndex,
+    shaded_relief_regions: &[Region],
+) -> serde_json::Value {
+    let mut collections = resource_index
         .chart_collections
         .iter()
         .filter(|collection| {
@@ -3967,6 +3977,7 @@ fn build_nav_kv_chart_catalog(resource_index: &ResourceIndex) -> serde_json::Val
                     "chart_index": collection.chart_index,
                     "tile_root": "tiles",
                     "tile_url_root": format!("/sectional-packages/{}/tiles", collection.package_id),
+                    "tile_path_template": collection.tile_path_template.strip_prefix("tiles/").unwrap_or(&collection.tile_path_template),
                     "tile_size": 512,
                     "min_zoom": min_zoom_for_levels(collection),
                     "max_zoom": max_zoom_for_levels(collection),
@@ -3982,7 +3993,89 @@ fn build_nav_kv_chart_catalog(resource_index: &ResourceIndex) -> serde_json::Val
             })
         })
         .collect::<Vec<_>>();
+    collections.extend(build_nav_kv_shaded_relief_catalog_entries(
+        resource_index,
+        shaded_relief_regions,
+    ));
     serde_json::Value::Array(collections)
+}
+
+fn build_nav_kv_shaded_relief_catalog_entries(
+    resource_index: &ResourceIndex,
+    regions: &[Region],
+) -> Vec<serde_json::Value> {
+    regions
+        .iter()
+        .map(|region| {
+            let region_id = region.code().to_ascii_lowercase();
+            let product_id = format!("shaded-relief-{region_id}");
+            let region_display_name = region_display_name(resource_index, &region_id);
+            let initial_viewport = default_view_for_static_region(resource_index, *region);
+            let levels = (TERRAIN_MIN_ZOOM..=TERRAIN_ZOOM)
+                .map(|zoom| {
+                    let max_tile = (1_u32 << zoom) - 1;
+                    serde_json::json!({
+                        "zoom": zoom,
+                        "x_min": 0,
+                        "x_max": max_tile,
+                        "y_tms_min": 0,
+                        "y_tms_max": max_tile,
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "id": product_id,
+                "label": format!("{region_display_name} Shaded Relief"),
+                "region_id": region_id,
+                "map_view": {
+                    "chart_family": "shaded-relief",
+                    "chart_name": format!("{region_display_name} Shaded Relief"),
+                    "chart_index": 0,
+                    "tile_root": "tiles",
+                    "tile_url_root": format!("/shaded-relief-products/{product_id}/tiles"),
+                    "tile_path_template": "{z}/{x}/{y}.webp",
+                    "tile_size": TERRAIN_TILE_SIZE,
+                    "min_zoom": TERRAIN_MIN_ZOOM,
+                    "max_zoom": f64::from(TERRAIN_ZOOM) + 0.8,
+                    "storage_kind": "static_product",
+                    "package_name": product_id,
+                    "initial_viewport": {
+                        "lat": initial_viewport.lat,
+                        "lon": initial_viewport.lon,
+                        "zoom": initial_viewport.zoom,
+                    },
+                    "levels": levels,
+                },
+            })
+        })
+        .collect()
+}
+
+fn default_view_for_static_region(
+    resource_index: &ResourceIndex,
+    region: Region,
+) -> preprocessor_resource_index::DefaultView {
+    let region_id = region.code().to_ascii_lowercase();
+    if let Some(reference) = resource_index
+        .chart_collections
+        .iter()
+        .find(|collection| collection.region_id == region_id && collection.family_id == "sec")
+        .or_else(|| {
+            resource_index
+                .chart_collections
+                .iter()
+                .find(|collection| collection.region_id == region_id)
+        })
+    {
+        return reference.default_view.clone();
+    }
+
+    let bounds = region.bounds();
+    preprocessor_resource_index::DefaultView {
+        lat: (bounds.lat_min + bounds.lat_max) / 2.0,
+        lon: (bounds.lon_min + bounds.lon_max) / 2.0,
+        zoom: 4.0,
+    }
 }
 
 fn build_nav_kv_plate_pairs(resource_index: &ResourceIndex) -> anyhow::Result<Vec<NavKvPair>> {
@@ -11172,6 +11265,11 @@ fn first_cycle_day(year: i32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use preprocessor_resource_index::{
+        AirportRecord, AirportResourcesRecord, ChartCollectionRecord, CoverageBounds, CsupRecord,
+        DefaultView, NavDbRef, PlateRecord, ResourceFamily, ResourcePackage, ResourceRegion,
+        TemporalSummary, TileLevelRecord,
+    };
     use tempfile::tempdir;
 
     fn write_source_urls(root: &Path, relative: &str, lines: &[&str]) {
@@ -11180,6 +11278,136 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, lines.join("\n") + "\n").unwrap();
+    }
+
+    fn minimal_resource_index() -> ResourceIndex {
+        ResourceIndex {
+            schema_version: 1,
+            cycle: Some("2604".to_string()),
+            generated_at_utc: "2026-04-20T00:00:00Z".to_string(),
+            temporal_summary: TemporalSummary {
+                cycle_codes: vec![],
+                effective_dates: vec![],
+                expiration_dates: vec![],
+                uniform_cycle_code: None,
+                uniform_effective_date: None,
+                uniform_expiration_date: None,
+                uniform_good_beyond_date: None,
+            },
+            nav_db: NavDbRef {
+                artifact_path: None,
+                sqlite_entry: "data.db".to_string(),
+                cycle_code: None,
+                version_label: None,
+                effective_date: None,
+                expiration_date: None,
+            },
+            families: vec![
+                ResourceFamily {
+                    id: "sec".to_string(),
+                    display_name: "Sectional".to_string(),
+                    kind: "tiled_raster".to_string(),
+                },
+                ResourceFamily {
+                    id: "tac".to_string(),
+                    display_name: "TAC".to_string(),
+                    kind: "tiled_raster".to_string(),
+                },
+            ],
+            regions: vec![ResourceRegion {
+                id: "nw".to_string(),
+                display_name: "Northwest".to_string(),
+                sort_order: 0,
+            }],
+            packages: vec![ResourcePackage {
+                id: "NW_SEC".to_string(),
+                family_id: "sec".to_string(),
+                region_id: "nw".to_string(),
+                artifact_path: None,
+                size_bytes: 0,
+                checksum_sha256: String::new(),
+                cycle_code: None,
+                version_label: None,
+                effective_date: None,
+                expiration_date: None,
+            }],
+            chart_collections: vec![ChartCollectionRecord {
+                id: "sec:nw".to_string(),
+                family_id: "sec".to_string(),
+                region_id: "nw".to_string(),
+                package_id: "NW_SEC".to_string(),
+                chart_index: 0,
+                tile_path_template: "tiles/0/{z}/{x}/{y}.webp".to_string(),
+                levels: vec![TileLevelRecord {
+                    zoom: 10,
+                    x_min: 1,
+                    x_max: 2,
+                    y_tms_min: 3,
+                    y_tms_max: 4,
+                }],
+                coverage_bounds: CoverageBounds {
+                    lat_min: 40.0,
+                    lat_max: 50.0,
+                    lon_min: -125.0,
+                    lon_max: -103.0,
+                },
+                default_view: DefaultView {
+                    lat: 45.0,
+                    lon: -122.0,
+                    zoom: 8.0,
+                },
+            }],
+            airports: Vec::<AirportRecord>::new(),
+            airport_resources: Vec::<AirportResourcesRecord>::new(),
+            plates: Vec::<PlateRecord>::new(),
+            csups: Vec::<CsupRecord>::new(),
+        }
+    }
+
+    #[test]
+    fn nav_kv_chart_catalog_includes_shaded_relief_static_products() {
+        let catalog = build_nav_kv_chart_catalog(&minimal_resource_index(), &[Region::Nw]);
+        let entries = catalog
+            .as_array()
+            .expect("chart catalog should be an array");
+        let shaded = entries
+            .iter()
+            .find(|entry| entry["id"] == "shaded-relief-nw")
+            .expect("shaded relief entry");
+
+        assert_eq!(shaded["label"], "Northwest Shaded Relief");
+        assert_eq!(shaded["map_view"]["chart_family"], "shaded-relief");
+        assert_eq!(
+            shaded["map_view"]["tile_url_root"],
+            "/shaded-relief-products/shaded-relief-nw/tiles"
+        );
+        assert_eq!(shaded["map_view"]["tile_path_template"], "{z}/{x}/{y}.webp");
+        assert_eq!(shaded["map_view"]["storage_kind"], "static_product");
+        assert_eq!(shaded["map_view"]["initial_viewport"]["lat"], 45.0);
+        assert_eq!(
+            shaded["map_view"]["levels"]
+                .as_array()
+                .expect("levels should be an array")
+                .len(),
+            11
+        );
+    }
+
+    #[test]
+    fn nav_kv_chart_catalog_emits_tile_path_templates_for_chart_packages() {
+        let catalog = build_nav_kv_chart_catalog(&minimal_resource_index(), &[]);
+        let entries = catalog
+            .as_array()
+            .expect("chart catalog should be an array");
+        let sectional = entries
+            .iter()
+            .find(|entry| entry["id"] == "sec:nw")
+            .expect("sectional entry");
+
+        assert_eq!(
+            sectional["map_view"]["tile_path_template"],
+            "0/{z}/{x}/{y}.webp"
+        );
     }
 
     #[test]

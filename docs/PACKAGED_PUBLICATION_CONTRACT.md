@@ -230,8 +230,10 @@ chart/catalog
 ```
 
 `chart/catalog` is JSON for the app-ready raster chart catalog. Consumers
-should use this instead of parsing `resource_index_YYCC.json` to discover raster
-chart packages and tile metadata.
+should use this instead of parsing `resource_index_YYCC.json` or
+`current_artifacts_YYYYMMDD.json` to discover selectable raster chart layers.
+The catalog includes tiled chart packages and app-visible static visual raster
+products, such as shaded relief.
 
 Plate and procedure data are not published as one bulk chart-page catalog. They
 are published under consumer-shaped HAD keyspaces such as

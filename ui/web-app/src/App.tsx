@@ -2,14 +2,12 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, typ
 import { createPortal } from "react-dom";
 import bootstrapJson from "@shared-bootstrap";
 import catalogJson from "@product-catalog";
-import currentArtifactsJson from "@current-artifacts";
 import type {
   AirwayPresentationPlan,
   AirwaySuggestion,
   CatalogJson,
   ChartPageData,
   ChartFamilyId,
-  CurrentArtifactsJson,
   DevBootstrapJson,
   FlightPlan,
   FlightPlanRouteSegment,
@@ -31,7 +29,6 @@ import type {
   WaypointIdentifierSuggestion,
 } from "./domain/types";
 import { loadHadChartCatalog, loadHadPlateAirport, loadHadPlateById } from "./domain/navHad";
-import { appendShadedReliefMapViews } from "./domain/resourceIndexAdapters";
 import uiTheme from "@shared-ui-theme";
 import planViewIcon from "./assets/plan-view-icon.svg";
 import {
@@ -140,7 +137,6 @@ type NexradFrame = {
 
 const bootstrap = bootstrapJson as DevBootstrapJson;
 const sampleCatalog = catalogJson as CatalogJson;
-const currentArtifacts = currentArtifactsJson as CurrentArtifactsJson;
 const samplePlan = bootstrap.flight_plan;
 const emptyChartPage: ChartPageData = { airports: [] };
 
@@ -777,12 +773,11 @@ export default function App() {
       if (!loaded || loaded.length === 0) {
         throw new Error("nav_kv chart/catalog is missing or empty");
       }
-      const loadedWithStaticProducts = appendShadedReliefMapViews(loaded, currentArtifacts);
-      setMapViews(loadedWithStaticProducts);
+      setMapViews(loaded);
       setSelectedMapId((current) =>
-        loadedWithStaticProducts.some((view) => view.id === current)
+        loaded.some((view) => view.id === current)
           ? current
-          : initialMapId(loadedWithStaticProducts),
+          : initialMapId(loaded),
       );
     }).catch((error) => {
       if (!cancelled) {

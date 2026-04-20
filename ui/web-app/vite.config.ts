@@ -425,7 +425,6 @@ export default defineConfig({
     preserveSymlinks: true,
     alias: {
       "@generated": generatedRoot,
-      "@current-artifacts": currentArtifactsPath,
       "@product-catalog": catalogPath,
       "@product-resource-index": resourceIndexPath,
       "@shared-bootstrap": path.join(sharedRoot, "dev-bootstrap.json"),

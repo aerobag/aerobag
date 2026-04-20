@@ -261,7 +261,7 @@ function mountTerrainProducts() {
       res.end("terrain product unavailable");
       return;
     }
-    return mountStaticTree(productRoot)({ headers: req.headers, url: `/${parts.join("/")}` }, res, next);
+    return mountStaticTree(productRoot, { missingStatus: 404 })({ headers: req.headers, url: `/${parts.join("/")}` }, res, next);
   };
 }
 
@@ -285,7 +285,7 @@ function mountShadedReliefProducts() {
       res.end("shaded relief product unavailable");
       return;
     }
-    return mountStaticTree(productRoot)({ headers: req.headers, url: `/${parts.join("/")}` }, res, next);
+    return mountStaticTree(productRoot, { missingStatus: 404 })({ headers: req.headers, url: `/${parts.join("/")}` }, res, next);
   };
 }
 

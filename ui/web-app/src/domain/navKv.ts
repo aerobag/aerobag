@@ -1,7 +1,15 @@
+import currentArtifactsJson from "@current-artifacts";
+
 const magic = new TextEncoder().encode("AEROBAGNAVKV0001");
 const version = 1;
 const headerLen = 48;
 const entryLen = 8;
+
+const currentArtifacts = currentArtifactsJson as {
+  bundles?: Array<{ checksum_sha256?: string; filename?: string }>;
+};
+const latestBundle = currentArtifacts.bundles?.[currentArtifacts.bundles.length - 1];
+const navKvCacheKey = encodeURIComponent(latestBundle?.checksum_sha256 ?? latestBundle?.filename ?? "unknown");
 
 type Entry = {
   keyOffset: number;
@@ -163,7 +171,7 @@ export class NavKvStore {
   constructor(readonly root: NavKvRoot) {}
 
   static async open(): Promise<NavKvStore | null> {
-    const rootResponse = await fetch("/nav-kv/root");
+    const rootResponse = await fetch(`/nav-kv/root?v=${navKvCacheKey}`);
     if (!rootResponse.ok) {
       return null;
     }
@@ -187,7 +195,7 @@ export class NavKvStore {
     if (cached) {
       return cached;
     }
-    const page = fetch(`/nav-kv/values/${pageIndex.toString().padStart(4, "0")}`).then(async (response) => {
+    const page = fetch(`/nav-kv/values/${pageIndex.toString().padStart(4, "0")}?v=${navKvCacheKey}`).then(async (response) => {
       if (!response.ok) {
         throw new Error(`failed to fetch nav_kv page ${pageIndex}: ${response.status}`);
       }

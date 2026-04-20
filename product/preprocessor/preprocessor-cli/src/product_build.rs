@@ -2619,6 +2619,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 }));
                                 static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
                                     format!(
+                                        "publish-water-mask-{}",
+                                        region.code().to_ascii_lowercase()
+                                    )
+                                }));
+                                static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
+                                    format!(
                                         "publish-shaded-relief-{}",
                                         region.code().to_ascii_lowercase()
                                     )

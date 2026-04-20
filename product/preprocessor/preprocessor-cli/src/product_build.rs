@@ -2194,7 +2194,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         }
                         ProductScheduledTaskKind::MetarsPublish => {
                             let built = match task_values_snapshot.get("build-metars") {
-                                Some(ProductTaskValue::BuiltStaticTileProduct {
+                                Some(ProductTaskValue::BuiltStandaloneProduct {
                                     zip_path,
                                     zip_sha256,
                                     zip_size_bytes,

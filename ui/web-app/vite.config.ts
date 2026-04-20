@@ -457,7 +457,4 @@ export default defineConfig({
     outDir: path.join(webTargetRoot, "dist"),
     emptyOutDir: true,
   },
-  optimizeDeps: {
-    exclude: ["@sqlite.org/sqlite-wasm"],
-  },
 });

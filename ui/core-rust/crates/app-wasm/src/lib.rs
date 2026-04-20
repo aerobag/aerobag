@@ -1,7 +1,5 @@
 use wasm_bindgen::prelude::*;
 
-mod web_navdb;
-
 #[wasm_bindgen]
 pub fn load_catalog(catalog_json: &str) -> Result<String, JsValue> {
     load_catalog_json(catalog_json).map_err(|err| JsValue::from_str(&err))
@@ -235,67 +233,47 @@ pub fn prepare_airway_presentation(
 }
 
 #[wasm_bindgen]
-pub fn sort_airway_suggestions_for_ui(suggestions_json: &str) -> Result<String, JsValue> {
-    sort_airway_suggestions_for_ui_json(suggestions_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn web_suggest_airways_near(anchor_json: &str, limit: usize) -> Result<String, JsValue> {
-    web_navdb::suggest_airways_near_json(anchor_json, limit).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn web_prepare_airway_presentation_for_anchors(
-    airway_name: &str,
-    origin_anchor_json: &str,
-    destination_anchor_json: &str,
+pub fn airway_spatial_tile_keys(
+    anchor_position_json: &str,
+    radius_nm: f64,
 ) -> Result<String, JsValue> {
-    web_navdb::prepare_airway_presentation_for_anchors_json(
-        airway_name,
-        origin_anchor_json,
-        destination_anchor_json,
-    )
-    .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn web_materialize_airway_selection(
-    start_component_index: usize,
-    entry_json: &str,
-    exit_json: &str,
-    origin_anchor_json: &str,
-    destination_anchor_json: &str,
-) -> Result<String, JsValue> {
-    web_navdb::materialize_airway_selection_json(
-        start_component_index,
-        entry_json,
-        exit_json,
-        origin_anchor_json,
-        destination_anchor_json,
-    )
-    .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn web_resolve_waypoint_identifier(identifier: &str) -> Result<String, JsValue> {
-    web_navdb::resolve_waypoint_identifier_json(identifier).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn web_suggest_waypoint_identifiers(
-    plan_json: &str,
-    component_index: usize,
-    before: bool,
-    prefix: &str,
-    limit: usize,
-) -> Result<String, JsValue> {
-    web_navdb::suggest_waypoint_identifiers_json(plan_json, component_index, before, prefix, limit)
+    airway_spatial_tile_keys_json(anchor_position_json, radius_nm)
         .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
-pub fn web_resolve_nav_symbol_feature(nav_ref_json: &str) -> Result<String, JsValue> {
-    web_navdb::resolve_nav_symbol_feature_json(nav_ref_json).map_err(|err| JsValue::from_str(&err))
+pub fn suggest_airways_near_from_points(
+    anchor_position_json: &str,
+    points_json: &str,
+    limit: usize,
+) -> Result<String, JsValue> {
+    suggest_airways_near_from_points_json(anchor_position_json, points_json, limit)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn materialize_airway_selection_from_branches(
+    start_component_index: usize,
+    entry_json: &str,
+    exit_json: &str,
+    branches_json: &str,
+    origin_position_json: &str,
+    destination_position_json: &str,
+) -> Result<String, JsValue> {
+    materialize_airway_selection_from_branches_json(
+        start_component_index,
+        entry_json,
+        exit_json,
+        branches_json,
+        origin_position_json,
+        destination_position_json,
+    )
+    .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn sort_airway_suggestions_for_ui(suggestions_json: &str) -> Result<String, JsValue> {
+    sort_airway_suggestions_for_ui_json(suggestions_json).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -452,61 +430,6 @@ pub fn suggest_waypoint_identifiers_from_candidates(
         anchor_position_json,
     )
     .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn web_project_flight_plan_route(plan_json: &str) -> Result<String, JsValue> {
-    web_navdb::project_flight_plan_route_json(plan_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn web_list_procedures(airport_id: &str, kind_json: &str) -> Result<String, JsValue> {
-    web_navdb::list_procedures_json(airport_id, kind_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn web_describe_procedure_options(
-    airport_id: &str,
-    procedure_id: &str,
-    kind_json: &str,
-) -> Result<String, JsValue> {
-    web_navdb::describe_procedure_options_json(airport_id, procedure_id, kind_json)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn web_materialize_procedure(
-    airport_id: &str,
-    procedure_id: &str,
-    kind_json: &str,
-    runway_transition_json: &str,
-    enroute_transition_json: &str,
-    component_index: usize,
-) -> Result<String, JsValue> {
-    web_navdb::materialize_procedure_json(
-        airport_id,
-        procedure_id,
-        kind_json,
-        runway_transition_json,
-        enroute_transition_json,
-        component_index,
-    )
-    .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn web_find_procedure_plate_match(airport_id: &str, cifp_id: &str) -> Result<String, JsValue> {
-    web_navdb::find_procedure_plate_match_json(airport_id, cifp_id)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn web_describe_plate_procedure_loads(
-    plan_json: &str,
-    plate_id: &str,
-) -> Result<String, JsValue> {
-    web_navdb::describe_plate_procedure_loads_json(plan_json, plate_id)
-        .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -838,6 +761,223 @@ fn flight_plan_insert_anchor_json(
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let anchor = component_insert_anchor(&plan, component_index, before)?;
     serde_json::to_string(&anchor).map_err(|err| err.to_string())
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone)]
+struct AirwaySpatialPoint {
+    airway_name: String,
+    branch_key: String,
+    sequence: i32,
+    position: app_core::LatLon,
+    nav_ref: app_core::NavRef,
+}
+
+#[derive(serde::Serialize)]
+struct MaterializedAirwayResponse {
+    selection: app_core::AirwayAutoSelection,
+    airway: app_core::AirwaySegment,
+    #[serde(rename = "resolvedLegs")]
+    resolved_legs: Vec<app_core::ResolvedLeg>,
+}
+
+fn airway_spatial_tile_keys_json(
+    anchor_position_json: &str,
+    radius_nm: f64,
+) -> Result<String, String> {
+    let anchor_position: app_core::LatLon =
+        serde_json::from_str(anchor_position_json).map_err(|err| err.to_string())?;
+    let bounds = search_bounds(anchor_position, radius_nm);
+    let min_lat = bounds.min_lat.floor() as i32;
+    let max_lat = bounds.max_lat.floor() as i32;
+    let min_lon = bounds.min_lon.floor() as i32;
+    let max_lon = bounds.max_lon.floor() as i32;
+    let mut keys = Vec::new();
+    for lat_tile in min_lat..=max_lat {
+        for lon_tile in min_lon..=max_lon {
+            keys.push(format!("airway/spatial/{lat_tile}/{lon_tile}"));
+        }
+    }
+    serde_json::to_string(&keys).map_err(|err| err.to_string())
+}
+
+fn suggest_airways_near_from_points_json(
+    anchor_position_json: &str,
+    points_json: &str,
+    limit: usize,
+) -> Result<String, String> {
+    if limit == 0 {
+        return Ok("[]".to_string());
+    }
+    let anchor_position: app_core::LatLon =
+        serde_json::from_str(anchor_position_json).map_err(|err| err.to_string())?;
+    let points: Vec<AirwaySpatialPoint> =
+        serde_json::from_str(points_json).map_err(|err| err.to_string())?;
+    let mut seen = std::collections::HashMap::<String, app_core::AirwaySuggestion>::new();
+    for point in points {
+        let distance_from_anchor_nm =
+            app_core::flight_leg_distance_nm(anchor_position, point.position);
+        let suggestion = app_core::AirwaySuggestion {
+            airway_name: point.airway_name.clone(),
+            nearest_branch_key: Some(point.branch_key),
+            nearest_nav_ref: point.nav_ref,
+            nearest_sequence: point.sequence,
+            distance_from_anchor_nm,
+        };
+        match seen.get(&point.airway_name) {
+            Some(existing) if existing.distance_from_anchor_nm <= distance_from_anchor_nm => {}
+            _ => {
+                seen.insert(point.airway_name, suggestion);
+            }
+        }
+    }
+    let mut suggestions = seen.into_values().collect::<Vec<_>>();
+    suggestions.sort_by(|left, right| {
+        left.distance_from_anchor_nm
+            .partial_cmp(&right.distance_from_anchor_nm)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.airway_name.cmp(&right.airway_name))
+    });
+    suggestions.truncate(limit);
+    serde_json::to_string(&suggestions).map_err(|err| err.to_string())
+}
+
+fn materialize_airway_selection_from_branches_json(
+    start_component_index: usize,
+    entry_json: &str,
+    exit_json: &str,
+    branches_json: &str,
+    origin_position_json: &str,
+    destination_position_json: &str,
+) -> Result<String, String> {
+    let entry: app_core::AirwayEntryCandidate =
+        serde_json::from_str(entry_json).map_err(|err| err.to_string())?;
+    let exit: app_core::AirwayExitCandidate =
+        serde_json::from_str(exit_json).map_err(|err| err.to_string())?;
+    let branches: Vec<app_core::AirwayBranch> =
+        serde_json::from_str(branches_json).map_err(|err| err.to_string())?;
+    let origin_position: app_core::LatLon =
+        serde_json::from_str(origin_position_json).map_err(|err| err.to_string())?;
+    let destination_position: Option<app_core::LatLon> =
+        serde_json::from_str(destination_position_json).map_err(|err| err.to_string())?;
+    let (airway, resolved_legs) =
+        materialize_airway_from_branches(start_component_index, &entry, &exit, &branches)?;
+    let entry_position = branches
+        .iter()
+        .find(|branch| branch.branch_key == entry.branch_key)
+        .and_then(|branch| branch.points.get(entry.branch_point_index))
+        .map(|point| point.position)
+        .ok_or_else(|| "selected airway entry point is not on branch".to_string())?;
+    let exit_position = branches
+        .iter()
+        .find(|branch| branch.branch_key == exit.branch_key)
+        .and_then(|branch| branch.points.get(exit.branch_point_index))
+        .map(|point| point.position)
+        .ok_or_else(|| "selected airway exit point is not on branch".to_string())?;
+    let origin_distance_nm = app_core::flight_leg_distance_nm(origin_position, entry_position);
+    let destination_distance_nm = destination_position
+        .map(|position| app_core::flight_leg_distance_nm(position, exit_position))
+        .unwrap_or(0.0);
+    let response = MaterializedAirwayResponse {
+        selection: app_core::AirwayAutoSelection {
+            airway_name: entry.airway_name.clone(),
+            branch_key: entry.branch_key.clone(),
+            entry,
+            exit,
+            origin_distance_nm,
+            destination_distance_nm,
+            total_anchor_distance_nm: origin_distance_nm + destination_distance_nm,
+        },
+        airway,
+        resolved_legs,
+    };
+    serde_json::to_string(&response).map_err(|err| err.to_string())
+}
+
+fn materialize_airway_from_branches(
+    component_index: usize,
+    entry: &app_core::AirwayEntryCandidate,
+    exit: &app_core::AirwayExitCandidate,
+    branches: &[app_core::AirwayBranch],
+) -> Result<(app_core::AirwaySegment, Vec<app_core::ResolvedLeg>), String> {
+    if entry.airway_name != exit.airway_name || entry.branch_key != exit.branch_key {
+        return Err(format!(
+            "entry airway {} branch {} does not match exit airway {} branch {}",
+            entry.airway_name, entry.branch_key, exit.airway_name, exit.branch_key
+        ));
+    }
+    let branch = branches
+        .iter()
+        .find(|branch| branch.branch_key == entry.branch_key)
+        .ok_or_else(|| {
+            format!(
+                "unknown airway branch {} {}",
+                entry.airway_name, entry.branch_key
+            )
+        })?;
+    let entry_point = branch.points.get(entry.branch_point_index).ok_or_else(|| {
+        format!(
+            "entry index {} is out of bounds for airway {} branch {}",
+            entry.branch_point_index, entry.airway_name, entry.branch_key
+        )
+    })?;
+    let exit_point = branch.points.get(exit.branch_point_index).ok_or_else(|| {
+        format!(
+            "exit index {} is out of bounds for airway {} branch {}",
+            exit.branch_point_index, exit.airway_name, exit.branch_key
+        )
+    })?;
+    if entry.branch_point_index == exit.branch_point_index {
+        return Err("airway entry and exit cannot be the same point".to_string());
+    }
+    let slice = if entry.branch_point_index < exit.branch_point_index {
+        &branch.points[entry.branch_point_index..=exit.branch_point_index]
+    } else {
+        &branch.points[exit.branch_point_index..=entry.branch_point_index]
+    };
+    let traversed = if entry.branch_point_index < exit.branch_point_index {
+        slice.to_vec()
+    } else {
+        slice.iter().rev().cloned().collect::<Vec<_>>()
+    };
+    let resolved_legs = traversed
+        .windows(2)
+        .enumerate()
+        .map(|(index, pair)| app_core::ResolvedLeg {
+            id: format!("airway-{}-{index}", branch.branch_key),
+            from: pair[0].nav_ref.clone(),
+            to: pair[1].nav_ref.clone(),
+            source: app_core::ResolvedLegSource::RouteComponent { component_index },
+            procedure_provenance: None,
+        })
+        .collect::<Vec<_>>();
+    Ok((
+        app_core::AirwaySegment {
+            name: branch.display_name.clone(),
+            branch_key: Some(branch.branch_key.clone()),
+            entry: entry_point.nav_ref.clone(),
+            exit: exit_point.nav_ref.clone(),
+        },
+        resolved_legs,
+    ))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SearchBounds {
+    min_lat: f64,
+    max_lat: f64,
+    min_lon: f64,
+    max_lon: f64,
+}
+
+fn search_bounds(anchor: app_core::LatLon, radius_nm: f64) -> SearchBounds {
+    let lat_delta = radius_nm / 60.0;
+    let lon_delta = radius_nm / (60.0 * anchor.lat.to_radians().cos().abs().max(0.1));
+    SearchBounds {
+        min_lat: anchor.lat - lat_delta,
+        max_lat: anchor.lat + lat_delta,
+        min_lon: anchor.lon - lon_delta,
+        max_lon: anchor.lon + lon_delta,
+    }
 }
 
 #[derive(serde::Deserialize)]

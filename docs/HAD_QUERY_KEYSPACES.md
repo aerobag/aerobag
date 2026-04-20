@@ -164,8 +164,8 @@ interpretation.
 
 Current consumer: airway selection and materialization.
 
-Current old source: `airways_branch`, with the legacy `airways` table as an old
-producer shape we should not carry forward.
+Current source: `airways_branch`. The legacy `airways` table is not carried
+forward into HAD.
 
 Value: `AirwayBranch[]`.
 
@@ -173,15 +173,17 @@ Preproc should emit branch-normalized data only. Do not publish the legacy table
 shape into HAD.
 
 `airway/spatial/{tile_key}`
+Implemented key shape: `airway/spatial/{lat_floor}/{lon_floor}`.
 
 Current consumer: `suggestAirwaysNear`.
 
-Current old source: radius SQL over `airways_branch`.
+Current source: `airways_branch`.
 
 Value: spatial tile containing nearby airway points sufficient for core to sort
 and de-duplicate `AirwaySuggestion`s by distance.
 
-This should be a tile product, not a prefix-scan over all airways.
+Core computes the coarse spatial tile keys for the current search radius, UI
+fetches those HAD values, and core ranks/de-duplicates the resulting points.
 
 ## Waypoint and Symbol Data
 

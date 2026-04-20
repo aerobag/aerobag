@@ -4098,6 +4098,7 @@ fn build_nav_kv_navref_pairs(main_db_path: &Path) -> anyhow::Result<Vec<NavKvPai
     pairs.extend(build_nav_kv_runway_position_pairs(&connection)?);
     pairs.extend(build_nav_kv_waypoint_lookup_pairs(&connection)?);
     pairs.extend(build_nav_kv_procedure_pairs(&connection)?);
+    pairs.extend(build_nav_kv_airway_pairs(&connection)?);
     let mut deduped = BTreeMap::<String, Vec<u8>>::new();
     for pair in pairs {
         deduped.entry(pair.key).or_insert(pair.value);
@@ -5074,6 +5075,92 @@ fn non_empty_json_string(value: String) -> serde_json::Value {
     } else {
         serde_json::Value::String(value)
     }
+}
+
+fn build_nav_kv_airway_pairs(connection: &rusqlite::Connection) -> anyhow::Result<Vec<NavKvPair>> {
+    let nav_context = NavLookupContext::load(connection)?;
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(name), trim(branch_key), CAST(sequence_number AS INTEGER),
+               trim(point_name), Latitude, Longitude
+        FROM airways_branch
+        WHERE trim(name) <> ''
+          AND trim(branch_key) <> ''
+        ORDER BY trim(name), trim(branch_key), CAST(sequence_number AS INTEGER)
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i32>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, f64>(4)?,
+            row.get::<_, f64>(5)?,
+        ))
+    })?;
+    let mut branch_points = BTreeMap::<(String, String), Vec<serde_json::Value>>::new();
+    let mut spatial_points = BTreeMap::<(i32, i32), Vec<serde_json::Value>>::new();
+    for row in rows {
+        let (name, branch_key, sequence, point_name, lat, lon) = row?;
+        let position = serde_json::json!({ "lat": lat, "lon": lon });
+        let nav_ref = nav_context.classify_json(&point_name);
+        let nav_ref = if nav_ref.is_null() {
+            serde_json::json!({ "LatLon": { "lat": lat, "lon": lon } })
+        } else {
+            nav_ref
+        };
+        let point = serde_json::json!({
+            "airway_name": name,
+            "sequence": sequence,
+            "position": position,
+            "nav_ref": nav_ref.clone(),
+        });
+        branch_points
+            .entry((name.clone(), branch_key.clone()))
+            .or_default()
+            .push(point);
+        let spatial_point = serde_json::json!({
+            "airway_name": name,
+            "branch_key": branch_key,
+            "sequence": sequence,
+            "position": { "lat": lat, "lon": lon },
+            "nav_ref": nav_ref,
+        });
+        spatial_points
+            .entry((lat.floor() as i32, lon.floor() as i32))
+            .or_default()
+            .push(spatial_point);
+    }
+
+    let mut branches_by_airway = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    for ((name, branch_key), points) in branch_points {
+        branches_by_airway
+            .entry(name.clone())
+            .or_default()
+            .push(serde_json::json!({
+                "display_name": name,
+                "branch_key": branch_key,
+                "points": points,
+            }));
+    }
+
+    let mut pairs = Vec::new();
+    for (airway_name, branches) in branches_by_airway {
+        pairs.push(json_pair(
+            format!("airway/{}", had_upper_key_component(&airway_name)),
+            &serde_json::Value::Array(branches),
+            "airway branches",
+        )?);
+    }
+    for ((lat_tile, lon_tile), points) in spatial_points {
+        pairs.push(json_pair(
+            format!("airway/spatial/{lat_tile}/{lon_tile}"),
+            &serde_json::Value::Array(points),
+            "airway spatial tile",
+        )?);
+    }
+    Ok(pairs)
 }
 
 #[derive(Clone, Copy)]

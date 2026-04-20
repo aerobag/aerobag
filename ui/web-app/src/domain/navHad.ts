@@ -1,5 +1,6 @@
 import type {
   ChartPageData,
+  AirwayBranch,
   CifpTppMatchRow,
   LatLon,
   MapViewOptionJson,
@@ -32,6 +33,14 @@ export type WaypointIdentifierRecord = {
   state: string;
   facility_name: string;
   position: LatLon;
+};
+
+export type AirwaySpatialPoint = {
+  airway_name: string;
+  branch_key: string;
+  sequence: number;
+  position: LatLon;
+  nav_ref: NavRef;
 };
 
 export function hadKeyComponent(value: string): string {
@@ -107,6 +116,14 @@ export function navRefSymbolKey(navRef: NavRef): string | null {
   return null;
 }
 
+export function airwayBranchesKey(airwayName: string): string {
+  return `airway/${hadUpperKeyComponent(airwayName)}`;
+}
+
+export function airwaySpatialKey(latTile: number, lonTile: number): string {
+  return `airway/spatial/${latTile}/${lonTile}`;
+}
+
 export function waypointIdentifierKey(identifier: string): string {
   return `waypoint/identifier/${hadUpperKeyComponent(identifier)}`;
 }
@@ -180,6 +197,14 @@ export async function loadHadNavSymbolFeature(navRef: NavRef): Promise<NavSymbol
     return null;
   }
   return loadRequiredHadJson<NavSymbolFeature | null>(key, "navref symbol");
+}
+
+export async function loadHadAirwayBranches(airwayName: string): Promise<AirwayBranch[]> {
+  return loadRequiredHadJson<AirwayBranch[]>(airwayBranchesKey(airwayName), "airway branches");
+}
+
+export async function loadHadAirwaySpatialTile(key: string): Promise<AirwaySpatialPoint[]> {
+  return (await loadNavKvJson<AirwaySpatialPoint[]>(key)) ?? [];
 }
 
 export async function loadHadWaypointIdentifier(identifier: string): Promise<NavRef | null> {

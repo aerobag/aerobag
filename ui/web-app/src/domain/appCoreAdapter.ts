@@ -46,8 +46,9 @@ import type {
 } from "./types";
 import catalogJson from "@product-catalog";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
-import { installBrowserNavDbQueryHost } from "./webNavDb";
 import {
+  loadHadAirwayBranches,
+  loadHadAirwaySpatialTile,
   loadHadCifpPlateMatches,
   loadHadNavRefPosition,
   loadHadNavSymbolFeature,
@@ -382,8 +383,22 @@ type WasmModule = {
     planJson: string,
     candidatesJson: string,
   ): Promise<string> | string;
+  airway_spatial_tile_keys(anchorPositionJson: string, radiusNm: number): Promise<string> | string;
   flight_plan_insert_anchor(planJson: string, componentIndex: number, before: boolean): Promise<string> | string;
+  materialize_airway_selection_from_branches(
+    startComponentIndex: number,
+    entryJson: string,
+    exitJson: string,
+    branchesJson: string,
+    originPositionJson: string,
+    destinationPositionJson: string,
+  ): Promise<string> | string;
   project_flight_plan_route_from_positions(planJson: string, positionByKeyJson: string): Promise<string> | string;
+  suggest_airways_near_from_points(
+    anchorPositionJson: string,
+    pointsJson: string,
+    limit: number,
+  ): Promise<string> | string;
   suggest_waypoint_identifiers_from_candidates(
     planJson: string,
     componentIndex: number,
@@ -393,34 +408,12 @@ type WasmModule = {
     candidatesJson: string,
     anchorPositionJson: string,
   ): Promise<string> | string;
-  web_suggest_airways_near(anchorJson: string, limit: number): Promise<string> | string;
-  web_prepare_airway_presentation_for_anchors(
-    airwayName: string,
-    originAnchorJson: string,
-    destinationAnchorJson: string,
-  ): Promise<string> | string;
-  web_materialize_airway_selection(
-    startComponentIndex: number,
-    entryJson: string,
-    exitJson: string,
-    originAnchorJson: string,
-    destinationAnchorJson: string,
-  ): Promise<string> | string;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
-  private navDbHostPromise: Promise<void> | null = null;
-
   constructor(private readonly module: WasmModule) {}
 
   async prewarm(): Promise<void> {}
-
-  private ensureNavDbHost(): Promise<void> {
-    if (this.navDbHostPromise === null) {
-      this.navDbHostPromise = installBrowserNavDbQueryHost();
-    }
-    return this.navDbHostPromise;
-  }
 
   private async enrichFlightPlanUiState(plan: FlightPlan, uiState: FlightPlanUiState): Promise<FlightPlanUiState> {
     const routeSegments = await this.projectFlightPlanRoute(plan, uiState);
@@ -928,10 +921,36 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async suggestAirwaysNearAnchor(anchor: NavRef, limit = 5): Promise<AirwaySuggestion[]> {
-    await this.ensureNavDbHost();
-    return JSON.parse(
-      await this.module.web_suggest_airways_near(JSON.stringify(anchor), limit),
-    ) as AirwaySuggestion[];
+    if (limit === 0) {
+      return [];
+    }
+    const anchorPosition = await loadHadNavRefPosition(anchor);
+    let points: unknown[] = [];
+    for (const radiusNm of [25, 50, 100, 200, 400]) {
+      const keys = JSON.parse(
+        await this.module.airway_spatial_tile_keys(JSON.stringify(anchorPosition), radiusNm),
+      ) as string[];
+      points = (await Promise.all(keys.map((key) => loadHadAirwaySpatialTile(key)))).flat();
+      const suggestions = JSON.parse(
+        await this.module.suggest_airways_near_from_points(
+          JSON.stringify(anchorPosition),
+          JSON.stringify(points),
+          limit,
+        ),
+      ) as AirwaySuggestion[];
+      if (suggestions.length >= limit || radiusNm === 400) {
+        return suggestions;
+      }
+    }
+    return [];
+  }
+
+  private async navRefPositionOrNull(navRef: NavRef | null): Promise<LatLon | null> {
+    return navRef ? loadHadNavRefPosition(navRef) : null;
+  }
+
+  async airwayBranches(airwayName: string): Promise<AirwayBranch[]> {
+    return loadHadAirwayBranches(airwayName);
   }
 
   async prepareAirwayPresentationForAnchors(
@@ -939,12 +958,17 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     originAnchor: NavRef,
     destinationAnchor: NavRef | null,
   ): Promise<AirwayPresentationPlan> {
-    await this.ensureNavDbHost();
+    const [branches, originPosition, destinationPosition] = await Promise.all([
+      this.airwayBranches(airwayName),
+      loadHadNavRefPosition(originAnchor),
+      this.navRefPositionOrNull(destinationAnchor),
+    ]);
     return JSON.parse(
-      await this.module.web_prepare_airway_presentation_for_anchors(
+      await this.module.prepare_airway_presentation(
         airwayName,
-        JSON.stringify(originAnchor),
-        JSON.stringify(destinationAnchor),
+        JSON.stringify(branches),
+        JSON.stringify(originPosition),
+        JSON.stringify(destinationPosition),
       ),
     ) as AirwayPresentationPlan;
   }
@@ -960,14 +984,19 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     airway: AirwaySegment;
     resolvedLegs: ResolvedLeg[];
   }> {
-    await this.ensureNavDbHost();
+    const [branches, originPosition, destinationPosition] = await Promise.all([
+      this.airwayBranches(entry.airway_name),
+      loadHadNavRefPosition(originAnchor),
+      this.navRefPositionOrNull(destinationAnchor),
+    ]);
     return JSON.parse(
-      await this.module.web_materialize_airway_selection(
+      await this.module.materialize_airway_selection_from_branches(
         startComponentIndex,
         JSON.stringify(entry),
         JSON.stringify(exit),
-        JSON.stringify(originAnchor),
-        JSON.stringify(destinationAnchor),
+        JSON.stringify(branches),
+        JSON.stringify(originPosition),
+        JSON.stringify(destinationPosition),
       ),
     ) as {
       selection: AirwayAutoSelection;
@@ -1225,12 +1254,12 @@ export async function loadBestAvailableAdapter(
     typeof mod.describe_show_plate_for_procedure !== "function" ||
     typeof mod.describe_load_procedure_from_plate !== "function" ||
     typeof mod.describe_plate_procedure_load_options !== "function" ||
+    typeof mod.airway_spatial_tile_keys !== "function" ||
     typeof mod.flight_plan_insert_anchor !== "function" ||
+    typeof mod.materialize_airway_selection_from_branches !== "function" ||
     typeof mod.project_flight_plan_route_from_positions !== "function" ||
+    typeof mod.suggest_airways_near_from_points !== "function" ||
     typeof mod.suggest_waypoint_identifiers_from_candidates !== "function" ||
-    typeof mod.web_suggest_airways_near !== "function" ||
-    typeof mod.web_prepare_airway_presentation_for_anchors !== "function" ||
-    typeof mod.web_materialize_airway_selection !== "function" ||
     typeof mod.derive_chart_catalog !== "function" ||
     typeof mod.derive_chart_page !== "function" ||
     typeof mod.derive_chart_page_state !== "function" ||

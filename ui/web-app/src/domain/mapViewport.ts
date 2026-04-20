@@ -219,15 +219,7 @@ function renderTilesForMapView(
   height: number,
 ): RenderTile[] {
   const tiles: RenderTile[] = [];
-  const desiredLevel = pickLevel(mapView, viewport.zoom);
-  // Keep coarser levels as a fallback under the desired level.
-  // Do not collapse this back to "desired level only": that regresses real missing-tile
-  // gaps, notably IFR-L in SE Alaska, where lower-zoom tiles are needed to avoid holes.
-  // The TAC gray issue was caused by the per-tile background in App/styles, not by this
-  // multi-level fallback.
-  const levels = mapView.levels
-    .filter((level) => level.zoom <= desiredLevel.zoom)
-    .sort((left, right) => left.zoom - right.zoom);
+  const levels = levelsForMapView(mapView, viewport.zoom);
   const scale = scaleForZoom(viewport.zoom);
   const minWorldX = viewport.centerWorldX - width / 2 / scale;
   const maxWorldX = viewport.centerWorldX + width / 2 / scale;
@@ -268,6 +260,21 @@ function renderTilesForMapView(
   }
 
   return tiles;
+}
+
+function levelsForMapView(mapView: MapView, zoom: number): MapView["levels"] {
+  const desiredLevel = pickLevel(mapView, zoom);
+  if (mapView.storage_kind === "static_product") {
+    return [desiredLevel];
+  }
+  // Keep coarser levels as a fallback under chart-package desired levels.
+  // Do not collapse chart packages to "desired level only": that regresses real
+  // missing-tile gaps, notably IFR-L in SE Alaska, where lower-zoom tiles are
+  // needed to avoid holes. Static visual products publish full pyramids, so
+  // stacking their lower levels only paints stale coarse seams over the target.
+  return mapView.levels
+    .filter((level) => level.zoom <= desiredLevel.zoom)
+    .sort((left, right) => left.zoom - right.zoom);
 }
 
 function dedupeTiles(tiles: RenderTile[]): RenderTile[] {

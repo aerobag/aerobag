@@ -152,6 +152,7 @@ type NexradLayerStatus =
 const WEB_MERCATOR_WORLD_SIZE = 256;
 const WEB_MERCATOR_HALF_WORLD_M = 20037508.342789244;
 const NEXRAD_FRAME_INTERVAL_MS = 900;
+const RASTER_TILE_OVERDRAW_PX = 1;
 
 const chartFamilies: Array<{ id: ChartFamilyId; label: string; launcherLabel: string }> = [
   { id: "sec", label: "SECTIONAL", launcherLabel: "SEC" },
@@ -2019,8 +2020,9 @@ function MapPage(props: {
             style={{
               left: `${tile.left}px`,
               top: `${tile.top}px`,
-              width: `${tile.size}px`,
-              height: `${tile.size}px`,
+              // Fractional overzoomed tile sizes can expose subpixel seams between rasters.
+              width: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
+              height: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
             }}
           >
             <img className="mapTileImage" src={tile.src} alt="" draggable={false} onLoad={reportFirstVisualReady} />

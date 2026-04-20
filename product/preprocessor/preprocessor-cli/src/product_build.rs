@@ -608,6 +608,8 @@ const SHADED_RELIEF_TILE_WORKERS: u32 = 4;
 const TERRAIN_MIN_ZOOM: u32 = 0;
 const TERRAIN_ZOOM: u32 = 10;
 const TERRAIN_TILE_SIZE: u32 = 512;
+const WEB_MERCATOR_RADIUS_M: f64 = 6_378_137.0;
+const WEB_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
 
 pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<String> {
     let mut lines = Vec::new();
@@ -4011,15 +4013,15 @@ fn build_nav_kv_shaded_relief_catalog_entries(
             let product_id = format!("shaded-relief-{region_id}");
             let region_display_name = region_display_name(resource_index, &region_id);
             let initial_viewport = default_view_for_static_region(resource_index, *region);
-            let levels = (TERRAIN_MIN_ZOOM..=TERRAIN_ZOOM)
-                .map(|zoom| {
-                    let max_tile = (1_u32 << zoom) - 1;
+            let levels = shaded_relief_region_levels(*region)
+                .into_iter()
+                .map(|level| {
                     serde_json::json!({
-                        "zoom": zoom,
-                        "x_min": 0,
-                        "x_max": max_tile,
-                        "y_tms_min": 0,
-                        "y_tms_max": max_tile,
+                        "zoom": level.zoom,
+                        "x_min": level.x_min,
+                        "x_max": level.x_max,
+                        "y_tms_min": level.y_tms_min,
+                        "y_tms_max": level.y_tms_max,
                     })
                 })
                 .collect::<Vec<_>>();
@@ -4049,6 +4051,65 @@ fn build_nav_kv_shaded_relief_catalog_entries(
             })
         })
         .collect()
+}
+
+fn shaded_relief_region_levels(
+    region: Region,
+) -> Vec<preprocessor_resource_index::TileLevelRecord> {
+    let bounds = region.bounds();
+    (TERRAIN_MIN_ZOOM..=TERRAIN_ZOOM)
+        .map(|zoom| {
+            let (x_min, x_max, y_tms_min, y_tms_max) = web_mercator_tms_tile_range(
+                bounds.lon_min,
+                bounds.lat_min,
+                bounds.lon_max,
+                bounds.lat_max,
+                zoom,
+                TERRAIN_TILE_SIZE,
+            );
+            preprocessor_resource_index::TileLevelRecord {
+                zoom,
+                x_min,
+                x_max,
+                y_tms_min,
+                y_tms_max,
+            }
+        })
+        .collect()
+}
+
+fn web_mercator_tms_tile_range(
+    west: f64,
+    south: f64,
+    east: f64,
+    north: f64,
+    zoom: u32,
+    tile_size: u32,
+) -> (u32, u32, u32, u32) {
+    let resolution = ((2.0 * std::f64::consts::PI * WEB_MERCATOR_RADIUS_M) / f64::from(tile_size))
+        / f64::from(1_u32 << zoom);
+    let origin_shift = std::f64::consts::PI * WEB_MERCATOR_RADIUS_M;
+    let (west_m, south_m) = web_mercator(west, south);
+    let (east_m, north_m) = web_mercator(east, north);
+    let max_tile = (1_i64 << zoom) - 1;
+    let tile_at = |meters: f64| -> u32 {
+        (((meters + origin_shift) / resolution / f64::from(tile_size)).floor() as i64)
+            .clamp(0, max_tile) as u32
+    };
+    (
+        tile_at(west_m),
+        tile_at(east_m),
+        tile_at(south_m),
+        tile_at(north_m),
+    )
+}
+
+fn web_mercator(lon: f64, lat: f64) -> (f64, f64) {
+    let origin_shift = std::f64::consts::PI * WEB_MERCATOR_RADIUS_M;
+    let clamped_lat = lat.clamp(-WEB_MERCATOR_MAX_LATITUDE, WEB_MERCATOR_MAX_LATITUDE);
+    let mx = lon * origin_shift / 180.0;
+    let my = ((90.0 + clamped_lat).to_radians() / 2.0).tan().ln() * WEB_MERCATOR_RADIUS_M;
+    (mx, my)
 }
 
 fn default_view_for_static_region(
@@ -11384,13 +11445,18 @@ mod tests {
         assert_eq!(shaded["map_view"]["tile_path_template"], "{z}/{x}/{y}.webp");
         assert_eq!(shaded["map_view"]["storage_kind"], "static_product");
         assert_eq!(shaded["map_view"]["initial_viewport"]["lat"], 45.0);
-        assert_eq!(
-            shaded["map_view"]["levels"]
-                .as_array()
-                .expect("levels should be an array")
-                .len(),
-            11
-        );
+        let levels = shaded["map_view"]["levels"]
+            .as_array()
+            .expect("levels should be an array");
+        assert_eq!(levels.len(), 11);
+        let z10 = levels
+            .iter()
+            .find(|level| level["zoom"] == 10)
+            .expect("z10 level");
+        assert_eq!(z10["x_min"], 156);
+        assert_eq!(z10["x_max"], 219);
+        assert_eq!(z10["y_tms_min"], 636);
+        assert_eq!(z10["y_tms_max"], 676);
     }
 
     #[test]

@@ -113,6 +113,32 @@ describe("mapViewport", () => {
     expect(tiles[0].src).not.toContain("/tiles/0/8/");
   });
 
+  it("does not stack lower zoom fallback tiles for static products", () => {
+    const shadedRelief = {
+      ...mapView,
+      id: "shaded-relief-nw",
+      chart_family: "shaded-relief" as const,
+      chart_name: "Northwest Shaded Relief",
+      tile_url_root: "/shaded-relief-products/shaded-relief-nw/tiles",
+      tile_path_template: "{z}/{x}/{y}.webp",
+      storage_kind: "static_product" as const,
+      package_name: "shaded-relief-nw",
+      min_zoom: 0,
+      max_zoom: 10.8,
+      initial_viewport: { lat: 45, lon: -122, zoom: 7.58 },
+      levels: [
+        { zoom: 0, x_min: 0, x_max: 0, y_tms_min: 0, y_tms_max: 0 },
+        { zoom: 7, x_min: 20, x_max: 22, y_tms_min: 80, y_tms_max: 84 },
+        { zoom: 8, x_min: 40, x_max: 44, y_tms_min: 160, y_tms_max: 168 },
+      ],
+    };
+    const viewport = createInitialViewport(shadedRelief);
+    const tiles = renderTiles([shadedRelief], viewport, 1200, 900);
+
+    expect(tiles.length).toBeGreaterThan(0);
+    expect(new Set(tiles.map((tile) => tile.zoom))).toEqual(new Set([8]));
+  });
+
   it("renders persisted chart map views that predate tile path templates", () => {
     const persistedMapView = { ...mapView, id: "persisted" };
     delete (persistedMapView as { tile_path_template?: string }).tile_path_template;

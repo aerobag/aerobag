@@ -1,4 +1,4 @@
-import type { ChartFamilyId, ChartPageData, FlightPlan, MapViewJson, MapViewOptionJson, RegionId, ResourceIndexJson, TileStorageKind } from "./types";
+import type { ChartFamilyId, ChartPageData, CurrentArtifactsJson, FlightPlan, MapViewJson, MapViewOptionJson, RegionId, ResourceIndexJson, TileStorageKind } from "./types";
 
 type MapView = MapViewJson;
 type MapViewOption = MapViewOptionJson;
@@ -6,6 +6,7 @@ type ChartPage = ChartPageData;
 type SupportedChartFamily = Extract<ChartFamilyId, "sec" | "tac" | "enr-l" | "enr-h">;
 type ChartAsset = ChartPage["airports"][number]["charts"][number];
 type FolderCategory = ChartAsset["folder_category"];
+type ShadedReliefProduct = NonNullable<CurrentArtifactsJson["static_products"]>[number] & { id: string };
 
 const supportedChartFamilies = new Set<SupportedChartFamily>(["sec", "tac", "enr-l", "enr-h"]);
 
@@ -23,6 +24,8 @@ function mapLauncherLabel(familyId: string): string {
       return "IFR L";
     case "enr-h":
       return "IFR H";
+    case "shaded-relief":
+      return "RELIEF";
     default:
       return familyId.toUpperCase();
   }
@@ -34,6 +37,10 @@ function tileStorageKindForCollection(_collectionId: string): TileStorageKind {
 
 function tileUrlRoot(packageName: string): string {
   return `/sectional-packages/${packageName}/tiles`;
+}
+
+function tilePathTemplateForCollection(collection: ResourceIndexJson["chart_collections"][number]): string {
+  return collection.tile_path_template.replace(/^tiles\//, "");
 }
 
 function tileSizeForFamily(_resourceIndex: ResourceIndexJson, _familyId: SupportedChartFamily): number {
@@ -75,6 +82,7 @@ function deriveMapView(
     chart_index: collection.chart_index,
     tile_root: "tiles",
     tile_url_root: tileUrlRoot(collection.package_id),
+    tile_path_template: tilePathTemplateForCollection(collection),
     tile_size: tileSizeForFamily(resourceIndex, collection.family_id),
     min_zoom: minZoomForLevels(levels),
     max_zoom: maxZoomForLevels(levels),
@@ -89,25 +97,85 @@ function deriveMapView(
   };
 }
 
+function fullPyramidLevels(minZoom: number, maxZoom: number): MapView["levels"] {
+  const levels: MapView["levels"] = [];
+  for (let zoom = minZoom; zoom <= maxZoom; zoom += 1) {
+    const maxTile = (2 ** zoom) - 1;
+    levels.push({ zoom, x_min: 0, x_max: maxTile, y_tms_min: 0, y_tms_max: maxTile });
+  }
+  return levels;
+}
+
+function shadedReliefRegionId(productId: string): RegionId | null {
+  const regionId = productId.replace(/^shaded-relief-/, "") as RegionId;
+  return ["ne", "nc", "nw", "se", "sc", "sw", "ec", "ak", "pac"].includes(regionId) ? regionId : null;
+}
+
+function defaultViewportForRegion(resourceIndex: ResourceIndexJson, regionId: RegionId): MapView["initial_viewport"] {
+  const referenceCollection =
+    resourceIndex.chart_collections.find((collection) => collection.region_id === regionId && collection.family_id === "sec")
+    ?? resourceIndex.chart_collections.find((collection) => collection.region_id === regionId);
+  return referenceCollection?.default_view ?? { lat: 39, lon: -98, zoom: 4 };
+}
+
+function deriveShadedReliefMapView(resourceIndex: ResourceIndexJson, product: ShadedReliefProduct, regionId: RegionId): MapView {
+  const levels = fullPyramidLevels(0, 10);
+  return {
+    chart_family: "shaded-relief",
+    chart_name: `${regionDisplayName(resourceIndex, regionId)} Shaded Relief`,
+    chart_index: 0,
+    tile_root: "tiles",
+    tile_url_root: `/shaded-relief-products/${product.id}/tiles`,
+    tile_path_template: "{z}/{x}/{y}.webp",
+    tile_size: 512,
+    min_zoom: 0,
+    max_zoom: 10.8,
+    storage_kind: "static_product",
+    package_name: product.id,
+    initial_viewport: defaultViewportForRegion(resourceIndex, regionId),
+    levels,
+  };
+}
+
+function deriveShadedReliefMapViews(resourceIndex: ResourceIndexJson, currentArtifacts?: CurrentArtifactsJson): MapViewOption[] {
+  return (currentArtifacts?.static_products ?? [])
+    .flatMap((product): Array<{ product: ShadedReliefProduct; regionId: RegionId }> => {
+      if (!product.id?.startsWith("shaded-relief-")) {
+        return [];
+      }
+      const regionId = shadedReliefRegionId(product.id);
+      return regionId ? [{ product: product as ShadedReliefProduct, regionId }] : [];
+    })
+    .map(({ product, regionId }) => ({
+      id: product.id,
+      label: `${regionDisplayName(resourceIndex, regionId)} Shaded Relief`,
+      region_id: regionId,
+      map_view: deriveShadedReliefMapView(resourceIndex, product, regionId),
+    }));
+}
+
 export function deriveMapViews(
   resourceIndex: ResourceIndexJson,
   preferredIds: string[],
+  currentArtifacts?: CurrentArtifactsJson,
 ): MapViewOption[] {
   const collections = resourceIndex.chart_collections.flatMap((collection) =>
     isSupportedChartFamily(collection.family_id) ? [{ ...collection, family_id: collection.family_id }] : [],
   );
-  const selectedCollections =
-    preferredIds.length > 0
-      ? preferredIds
-          .map((id) => collections.find((collection) => collection.id === id))
-          .filter((entry): entry is (typeof collections)[number] => entry !== undefined)
-      : collections;
-  return selectedCollections.map((collection) => ({
+  const chartMapViews = collections.map((collection) => ({
     id: collection.id,
     label: `${regionDisplayName(resourceIndex, collection.region_id)} ${familyDisplayName(resourceIndex, collection.family_id)}`,
     region_id: collection.region_id,
     map_view: deriveMapView(resourceIndex, collection),
   }));
+  const allMapViews = [...chartMapViews, ...deriveShadedReliefMapViews(resourceIndex, currentArtifacts)];
+  const selectedCollections =
+    preferredIds.length > 0
+      ? preferredIds
+          .map((id) => allMapViews.find((entry) => entry.id === id))
+          .filter((entry): entry is MapViewOption => entry !== undefined)
+      : allMapViews;
+  return selectedCollections;
 }
 
 function airportIdsFromPlan(plan: FlightPlan): string[] {

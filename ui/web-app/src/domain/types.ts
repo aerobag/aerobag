@@ -7,6 +7,7 @@ export type ChartFamilyId =
   | "enr-a"
   | "flyway"
   | "heli"
+  | "shaded-relief"
   | "misc";
 
 export type RegionId = "ne" | "nc" | "nw" | "se" | "sc" | "sw" | "ec" | "ak" | "pac";
@@ -14,7 +15,7 @@ export type RegionId = "ne" | "nc" | "nw" | "se" | "sc" | "sw" | "ec" | "ak" | "
 export type ContentPolicy = "OfflineRequired" | "PreferLocal" | "StreamAllowed";
 
 export type ContentAvailability = "LocalOnly" | "RemoteOnly" | "LocalAndRemote" | "Unavailable";
-export type TileStorageKind = "asset_tree" | "sectional_package";
+export type TileStorageKind = "asset_tree" | "sectional_package" | "static_product";
 
 export type FlightPlan = {
   id: string;
@@ -715,6 +716,7 @@ export type MapViewJson = {
   chart_index: number;
   tile_root: string;
   tile_url_root: string;
+  tile_path_template: string;
   tile_size: number;
   min_zoom: number;
   max_zoom: number;
@@ -739,6 +741,16 @@ export type MapViewOptionJson = {
   label: string;
   region_id: RegionId;
   map_view: MapViewJson;
+};
+
+export type CurrentArtifactsJson = {
+  static_products?: Array<{
+    id?: string;
+    filename?: string;
+    sha256?: string;
+    size_bytes?: number;
+    source_fetched_at_utc?: string;
+  }>;
 };
 
 export type MapTileViewJson = {

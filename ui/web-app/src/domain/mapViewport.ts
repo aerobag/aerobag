@@ -1,6 +1,6 @@
 import type { MapViewJson } from "./types";
 
-type MapView = MapViewJson;
+type MapView = MapViewJson & { id?: string };
 
 export type MapViewportState = {
   centerWorldX: number;
@@ -28,6 +28,15 @@ export type RenderTile = {
 
 const WORLD_SIZE = 256;
 const MAX_LATITUDE = 85.05112878;
+
+function tileSrcForMapView(mapView: MapView, zoom: number, x: number, yTms: number): string {
+  const path = mapView.tile_path_template
+    .replaceAll("{z}", String(zoom))
+    .replaceAll("{x}", String(x))
+    .replaceAll("{y}", String(yTms))
+    .replaceAll("{y_tms}", String(yTms));
+  return `${mapView.tile_url_root}/${path}`;
+}
 
 export function createInitialViewport(mapView: MapView): MapViewportState {
   const center = latLonToWorld(mapView.initial_viewport.lat, mapView.initial_viewport.lon);
@@ -248,7 +257,7 @@ function renderTilesForMapView(
           top,
           size: tileScreenSize,
           zoom: level.zoom,
-          src: `${mapView.tile_url_root}/${mapView.chart_index}/${level.zoom}/${x}/${yTms}.webp`,
+          src: tileSrcForMapView(mapView, level.zoom, x, yTms),
           mapViewId: mapView.id ?? mapView.chart_name,
           packageName: mapView.package_name,
           chartFamily: mapView.chart_family,
@@ -273,6 +282,8 @@ function dedupeTiles(tiles: RenderTile[]): RenderTile[] {
 
 function chartFamilyRenderPriority(chartFamily: MapView["chart_family"]): number {
   switch (chartFamily) {
+    case "shaded-relief":
+      return -10;
     case "sec":
       return 0;
     case "tac":

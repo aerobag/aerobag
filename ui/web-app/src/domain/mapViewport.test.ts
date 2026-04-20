@@ -89,6 +89,30 @@ describe("mapViewport", () => {
     expect(tiles.some((tile) => tile.packageName === "SW_SEC")).toBe(true);
   });
 
+  it("renders static product tiles without inserting a chart index", () => {
+    const shadedRelief = {
+      ...mapView,
+      id: "shaded-relief-nw",
+      chart_family: "shaded-relief" as const,
+      chart_name: "Northwest Shaded Relief",
+      chart_index: 0,
+      tile_url_root: "/shaded-relief-products/shaded-relief-nw/tiles",
+      tile_path_template: "{z}/{x}/{y}.webp",
+      storage_kind: "static_product" as const,
+      package_name: "shaded-relief-nw",
+      min_zoom: 0,
+      max_zoom: 10.8,
+      initial_viewport: { lat: 45, lon: -122, zoom: 8 },
+      levels: [{ zoom: 8, x_min: 40, x_max: 42, y_tms_min: 160, y_tms_max: 168 }],
+    };
+    const viewport = createInitialViewport(shadedRelief);
+    const tiles = renderTiles([shadedRelief], viewport, 1200, 900);
+
+    expect(tiles.length).toBeGreaterThan(0);
+    expect(tiles[0].src).toMatch(/^\/shaded-relief-products\/shaded-relief-nw\/tiles\/8\/\d+\/\d+\.webp$/);
+    expect(tiles[0].src).not.toContain("/tiles/0/8/");
+  });
+
   it("double-click style zoom-in still preserves the clicked anchor", () => {
     const viewport = createInitialViewport(mapView);
     const width = 1280;

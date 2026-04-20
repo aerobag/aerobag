@@ -49,7 +49,10 @@ function latestCurrentArtifacts(root: string): string | null {
 }
 const artifactReadRoot = configuredArtifactPath;
 const currentArtifactsPath = latestCurrentArtifacts(artifactReadRoot) ?? path.join(artifactReadRoot, packagedDir, "current_artifacts_missing.json");
-const currentArtifacts = JSON.parse(fs.readFileSync(currentArtifactsPath, "utf8")) as { bundles?: Array<{ filename?: string }> };
+const currentArtifacts = JSON.parse(fs.readFileSync(currentArtifactsPath, "utf8")) as {
+  bundles?: Array<{ filename?: string }>;
+  static_products?: Array<{ id?: string; filename?: string }>;
+};
 const activeBundleFilename = currentArtifacts.bundles?.[currentArtifacts.bundles.length - 1]?.filename ?? "bundle_missing.json";
 const productBuildPath = path.join(
   artifactReadRoot,
@@ -210,6 +213,12 @@ function resolveCurrentStaticProductRoot(productId: string): string | null {
     return null;
   }
   return productRoot;
+}
+
+function currentStaticProductIdsWithPrefix(prefix: string): string[] {
+  return (currentArtifacts.static_products ?? []).flatMap((product) =>
+    product.id?.startsWith(prefix) ? [product.id] : [],
+  );
 }
 
 function mountFastProducts() {
@@ -399,6 +408,13 @@ function aerobagStaticPlugin(): Plugin {
         const targetRoot = path.join(outputDir, targetName);
         ensureLinkedTree(sourceRoot, targetRoot);
       }
+      for (const productId of currentStaticProductIdsWithPrefix("shaded-relief-")) {
+        const sourceRoot = resolveCurrentStaticProductRoot(productId);
+        if (!sourceRoot) {
+          continue;
+        }
+        ensureLinkedTree(sourceRoot, path.join(outputDir, "shaded-relief-products", productId));
+      }
     },
   };
 }
@@ -409,6 +425,7 @@ export default defineConfig({
     preserveSymlinks: true,
     alias: {
       "@generated": generatedRoot,
+      "@current-artifacts": currentArtifactsPath,
       "@product-catalog": catalogPath,
       "@product-resource-index": resourceIndexPath,
       "@shared-bootstrap": path.join(sharedRoot, "dev-bootstrap.json"),

@@ -158,6 +158,7 @@ const chartFamilies: Array<{ id: ChartFamilyId; label: string; launcherLabel: st
   { id: "tac", label: "TAC", launcherLabel: "TAC" },
   { id: "enr-l", label: "IFR-LOW", launcherLabel: "IFR L" },
   { id: "enr-h", label: "IFR-HIGH", launcherLabel: "IFR H" },
+  { id: "shaded-relief", label: "SHADED RELIEF", launcherLabel: "RELIEF" },
 ];
 
 function mapViewsForDisplayedFamily(

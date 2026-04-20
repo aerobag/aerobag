@@ -624,7 +624,7 @@ const SHADED_RELIEF_PIPELINE_VERSION: &str = "v5";
 const WATER_MASK_PIPELINE_VERSION: &str = "v1";
 const TERRAIN_TILE_WORKERS: u32 = 16;
 const SHADED_RELIEF_TILE_WORKERS: u32 = 16;
-const WATER_MASK_FETCH_WORKERS: u32 = 16;
+const WATER_MASK_FETCH_WORKERS: u32 = 2;
 const WATER_MASK_TILE_WORKERS: u32 = 16;
 const WATER_MASK_PAGE_SIZE: usize = 50;
 const WATER_MASK_NHD_SERVICE: &str = "https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer";
@@ -1109,7 +1109,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             pending_tasks.push(ProductScheduledTask {
                 id: format!("build-water-mask-{region_id}"),
                 deps: vec![],
-                weight: 6,
+                weight: 18,
                 kind: ProductScheduledTaskKind::WaterMaskBuild { region: *region },
             });
             pending_tasks.push(ProductScheduledTask {
@@ -6892,8 +6892,9 @@ fn water_mask_product_inputs(region: Region) -> anyhow::Result<BTreeMap<String, 
         (
             "water_mask_source_fetch".to_string(),
             format!(
-                "nhd-object-ids-v1-page-size-{}-layers-{}",
+                "nhd-object-ids-v1-page-size-{}-fetch-workers-{}-layers-{}",
                 WATER_MASK_PAGE_SIZE,
+                WATER_MASK_FETCH_WORKERS,
                 WATER_MASK_NHD_LAYERS
                     .iter()
                     .map(|(layer, _name)| layer.to_string())
@@ -7962,13 +7963,12 @@ fn water_mask_cached_source_dir(
         .iter()
         .map(|(layer, _name)| water_mask_ids_url(*layer, &bbox))
         .collect::<Vec<_>>();
-    prefetch_archives_with_provenance(
+    prefetch_water_mask_source_urls(
         &ids_urls,
         &source_dir,
-        WATER_MASK_FETCH_WORKERS as usize,
-        Some(&fetch_cache),
         &provenance_dir,
         &format!("water-mask-{region_id}-ids"),
+        &fetch_cache,
     )?;
 
     let mut page_urls = Vec::new();
@@ -7990,15 +7990,43 @@ fn water_mask_cached_source_dir(
             page_urls.push(water_mask_page_url(*layer, chunk_index, chunk));
         }
     }
-    prefetch_archives_with_provenance(
+    prefetch_water_mask_source_urls(
         &page_urls,
         &source_dir,
-        WATER_MASK_FETCH_WORKERS as usize,
-        Some(&fetch_cache),
         &provenance_dir,
         &format!("water-mask-{region_id}-page"),
+        &fetch_cache,
     )?;
     Ok(source_dir)
+}
+
+fn prefetch_water_mask_source_urls(
+    urls: &[String],
+    source_dir: &Path,
+    provenance_dir: &Path,
+    label: &str,
+    fetch_cache: &FetchCacheConfig,
+) -> anyhow::Result<()> {
+    let mut last_error = None;
+    for attempt in 1..=3 {
+        match prefetch_archives_with_provenance(
+            urls,
+            source_dir,
+            WATER_MASK_FETCH_WORKERS as usize,
+            Some(fetch_cache),
+            provenance_dir,
+            label,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 3 {
+                    thread::sleep(Duration::from_secs(30 * attempt));
+                }
+            }
+        }
+    }
+    Err(last_error.expect("water mask prefetch should have recorded an error"))
 }
 
 fn build_water_mask_region_tiles(

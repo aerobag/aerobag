@@ -814,25 +814,20 @@ pub fn render_terrain_warning_raw_rgba_from_packed_tiles(
 }
 
 fn unpack_packed_terrain_tile_bytes(packed_terrain_tile_bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
-    if packed_terrain_tile_bytes.len() < 4 {
-        return Err("packed terrain tile bytes missing count".to_string());
-    }
-    let mut cursor = 0;
-    let read_u32 = |bytes: &[u8], cursor: &mut usize| -> Result<u32, String> {
+    fn read_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32, String> {
         let end = *cursor + 4;
         let chunk = bytes
             .get(*cursor..end)
             .ok_or_else(|| "packed terrain tile bytes truncated".to_string())?;
         *cursor = end;
         Ok(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-    };
-    let count = read_u32(packed_terrain_tile_bytes, &mut cursor)? as usize;
-    let mut lengths = Vec::with_capacity(count);
-    for _ in 0..count {
-        lengths.push(read_u32(packed_terrain_tile_bytes, &mut cursor)? as usize);
     }
+
+    let mut cursor = 0;
+    let count = read_u32(packed_terrain_tile_bytes, &mut cursor)? as usize;
     let mut tiles = Vec::with_capacity(count);
-    for length in lengths {
+    for _ in 0..count {
+        let length = read_u32(packed_terrain_tile_bytes, &mut cursor)? as usize;
         let end = cursor + length;
         let tile = packed_terrain_tile_bytes
             .get(cursor..end)
@@ -2256,6 +2251,21 @@ fn destroy_session_json(handle: u32) {
 mod tests {
     use super::*;
     use std::sync::OnceLock;
+
+    #[test]
+    fn unpacks_interleaved_packed_terrain_tiles() {
+        let mut packed = Vec::new();
+        packed.extend_from_slice(&2u32.to_le_bytes());
+        packed.extend_from_slice(&3u32.to_le_bytes());
+        packed.extend_from_slice(&[1, 2, 3]);
+        packed.extend_from_slice(&2u32.to_le_bytes());
+        packed.extend_from_slice(&[4, 5]);
+
+        assert_eq!(
+            unpack_packed_terrain_tile_bytes(&packed).unwrap(),
+            vec![vec![1, 2, 3], vec![4, 5]]
+        );
+    }
 
     fn sample_catalog_json() -> String {
         serde_json::json!({

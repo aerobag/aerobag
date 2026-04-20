@@ -450,6 +450,7 @@ fn prefetch_one(
         })?;
     }
 
+    let skip_cache_restore = is_tfr_cookie_gated_url(&parsed.network_url);
     if !archive_path.is_file() {
         if let Some(fetch_cache) = fetch_cache {
             let layout = CacheLayout::new(&fetch_cache.root);
@@ -459,7 +460,8 @@ fn prefetch_one(
                 } else {
                     bail!("cache miss in offline mode for {url}");
                 }
-            } else if fetch_cache.mode.is_cache_first()
+            } else if !skip_cache_restore
+                && fetch_cache.mode.is_cache_first()
                 && restore_cached_download(&layout, &parsed.cache_key, file_name, &archive_path)?
             {
                 source = "cache";
@@ -553,56 +555,64 @@ fn fetch_network_with_cache_once(
     dest_dir: &Path,
     archive_path: &Path,
 ) -> anyhow::Result<&'static str> {
-    let metadata = read_cache_metadata(layout, cache_key)?;
+    let metadata = if is_tfr_cookie_gated_url(network_url) {
+        // The FAA TFR site currently gates direct requests through a banner redirect
+        // with HTML validators. Do not validate against a previously cached banner.
+        None
+    } else {
+        read_cache_metadata(layout, cache_key)?
+    };
     let temp_path = temporary_download_path(archive_path);
     let headers_path = temp_path.with_extension("headers");
-    let mut command = Command::new("curl");
-    command
-        .arg("-L")
-        .arg("--silent")
-        .arg("--show-error")
-        .arg("--dump-header")
-        .arg(&headers_path)
-        .arg("--output")
-        .arg(&temp_path)
-        .arg("--write-out")
-        .arg("%{http_code}")
-        .arg(network_url)
-        .current_dir(dest_dir);
-    if let Some(etag) = metadata
-        .as_ref()
-        .and_then(|value| value.get("etag"))
-        .and_then(|value| value.as_str())
+    let cookies_path = temp_path.with_extension("cookies");
+    let mut result = curl_download_with_status(
+        network_url,
+        dest_dir,
+        &temp_path,
+        &headers_path,
+        &cookies_path,
+        metadata.as_ref(),
+    )?;
+    if is_tfr_cookie_gated_url(network_url)
+        && result.http_status == 200
+        && looks_like_html(&temp_path)?
     {
-        command.arg("-H").arg(format!("If-None-Match: {etag}"));
-    }
-    if let Some(last_modified) = metadata
-        .as_ref()
-        .and_then(|value| value.get("last_modified"))
-        .and_then(|value| value.as_str())
-    {
-        command
-            .arg("-H")
-            .arg(format!("If-Modified-Since: {last_modified}"));
-    }
-    let output = command
-        .output()
-        .with_context(|| format!("failed to fetch {network_url}"))?;
-    let status_text = String::from_utf8_lossy(&output.stdout);
-    let http_status = status_text.trim().parse::<u16>().with_context(|| {
-        format!("curl returned non-numeric HTTP status for {network_url}: {status_text:?}")
-    })?;
-    if !output.status.success() || !(http_status == 304 || (200..300).contains(&http_status)) {
+        // The first request can legitimately end at the FAA banner page while
+        // setting cookies. Re-issue the original request once with the same jar.
         let _ = fs::remove_file(&temp_path);
         let _ = fs::remove_file(&headers_path);
+        result = curl_download_with_status(
+            network_url,
+            dest_dir,
+            &temp_path,
+            &headers_path,
+            &cookies_path,
+            None,
+        )?;
+    }
+    if is_tfr_cookie_gated_url(network_url)
+        && result.http_status == 200
+        && looks_like_html(&temp_path)?
+    {
+        let _ = fs::remove_file(&temp_path);
+        let _ = fs::remove_file(&headers_path);
+        let _ = fs::remove_file(&cookies_path);
+        bail!("FAA TFR site returned banner HTML instead of data for {network_url}");
+    }
+    if !result.success || !(result.http_status == 304 || (200..300).contains(&result.http_status)) {
+        let _ = fs::remove_file(&temp_path);
+        let _ = fs::remove_file(&headers_path);
+        let _ = fs::remove_file(&cookies_path);
         bail!(
-            "curl failed for {network_url} with HTTP {http_status}: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "curl failed for {network_url} with HTTP {}: {}",
+            result.http_status,
+            result.stderr
         );
     }
-    if http_status == 304 {
+    if result.http_status == 304 {
         let _ = fs::remove_file(&temp_path);
         let _ = fs::remove_file(&headers_path);
+        let _ = fs::remove_file(&cookies_path);
         if restore_cached_download(layout, cache_key, file_name, archive_path)? {
             return Ok("validated-cache");
         }
@@ -623,7 +633,67 @@ fn fetch_network_with_cache_once(
         parse_http_validators(&headers_path)?,
     )?;
     let _ = fs::remove_file(&headers_path);
+    let _ = fs::remove_file(&cookies_path);
     Ok("network")
+}
+
+struct CurlDownloadResult {
+    http_status: u16,
+    success: bool,
+    stderr: String,
+}
+
+fn curl_download_with_status(
+    network_url: &str,
+    dest_dir: &Path,
+    temp_path: &Path,
+    headers_path: &Path,
+    cookies_path: &Path,
+    metadata: Option<&serde_json::Value>,
+) -> anyhow::Result<CurlDownloadResult> {
+    let mut command = Command::new("curl");
+    command
+        .arg("-L")
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--cookie-jar")
+        .arg(cookies_path)
+        .arg("--cookie")
+        .arg(cookies_path)
+        .arg("--dump-header")
+        .arg(headers_path)
+        .arg("--output")
+        .arg(temp_path)
+        .arg("--write-out")
+        .arg("%{http_code}")
+        .arg(network_url)
+        .current_dir(dest_dir);
+    if let Some(etag) = metadata
+        .and_then(|value| value.get("etag"))
+        .and_then(|value| value.as_str())
+    {
+        command.arg("-H").arg(format!("If-None-Match: {etag}"));
+    }
+    if let Some(last_modified) = metadata
+        .and_then(|value| value.get("last_modified"))
+        .and_then(|value| value.as_str())
+    {
+        command
+            .arg("-H")
+            .arg(format!("If-Modified-Since: {last_modified}"));
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("failed to fetch {network_url}"))?;
+    let status_text = String::from_utf8_lossy(&output.stdout);
+    let http_status = status_text.trim().parse::<u16>().with_context(|| {
+        format!("curl returned non-numeric HTTP status for {network_url}: {status_text:?}")
+    })?;
+    Ok(CurlDownloadResult {
+        http_status,
+        success: output.status.success(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -673,11 +743,16 @@ fn fetch_network(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Result<
 fn fetch_network_once(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Result<()> {
     let archive_path = dest_dir.join(file_name);
     let temp_path = temporary_download_path(&archive_path);
+    let cookies_path = temp_path.with_extension("cookies");
     let status = Command::new("curl")
         .arg("-L")
         .arg("--fail")
         .arg("--silent")
         .arg("--show-error")
+        .arg("--cookie-jar")
+        .arg(&cookies_path)
+        .arg("--cookie")
+        .arg(&cookies_path)
         .arg("--output")
         .arg(&temp_path)
         .arg(url)
@@ -686,6 +761,7 @@ fn fetch_network_once(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Re
         .with_context(|| format!("failed to fetch {url}"))?;
     if !status.success() {
         let _ = fs::remove_file(&temp_path);
+        let _ = fs::remove_file(&cookies_path);
         bail!("curl failed for {url}");
     }
     fs::rename(&temp_path, &archive_path).with_context(|| {
@@ -695,7 +771,21 @@ fn fetch_network_once(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Re
             archive_path.display()
         )
     })?;
+    let _ = fs::remove_file(&cookies_path);
     Ok(())
+}
+
+fn is_tfr_cookie_gated_url(url: &str) -> bool {
+    url.starts_with("https://tfr.faa.gov/")
+}
+
+fn looks_like_html(path: &Path) -> anyhow::Result<bool> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(bytes
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| byte == b'<'))
 }
 
 fn restore_cached_download(

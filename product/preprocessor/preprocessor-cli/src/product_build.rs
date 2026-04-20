@@ -626,7 +626,7 @@ const TERRAIN_TILE_WORKERS: u32 = 16;
 const SHADED_RELIEF_TILE_WORKERS: u32 = 16;
 const WATER_MASK_FETCH_WORKERS: u32 = 16;
 const WATER_MASK_TILE_WORKERS: u32 = 16;
-const WATER_MASK_PAGE_SIZE: usize = 500;
+const WATER_MASK_PAGE_SIZE: usize = 50;
 const WATER_MASK_NHD_SERVICE: &str = "https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer";
 const WATER_MASK_NHD_LAYERS: &[(u32, &str)] =
     &[(9, "Area - Large Scale"), (12, "Waterbody - Large Scale")];
@@ -6888,6 +6888,18 @@ fn water_mask_product_inputs(region: Region) -> anyhow::Result<BTreeMap<String, 
         (
             "water_mask_pipeline".to_string(),
             WATER_MASK_PIPELINE_VERSION.to_string(),
+        ),
+        (
+            "water_mask_source_fetch".to_string(),
+            format!(
+                "nhd-object-ids-v1-page-size-{}-layers-{}",
+                WATER_MASK_PAGE_SIZE,
+                WATER_MASK_NHD_LAYERS
+                    .iter()
+                    .map(|(layer, _name)| layer.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
         ),
         (
             "water_mask_script".to_string(),

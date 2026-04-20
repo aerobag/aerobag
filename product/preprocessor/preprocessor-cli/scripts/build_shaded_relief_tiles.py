@@ -27,6 +27,7 @@ WORKER_TILES_ROOT = None
 WORKER_ZOOM = None
 WORKER_TILE_SIZE = None
 WORKER_RESOLUTION = None
+RASTER_TILE_SUFFIXES = {".png", ".webp"}
 
 
 def mercator(lon, lat):
@@ -134,6 +135,34 @@ def build_parent_pyramid(tiles_root, max_zoom, tile_size):
     return counts
 
 
+def scan_tile_levels(tiles_root):
+    levels = []
+    for z_dir in sorted((path for path in tiles_root.iterdir() if path.is_dir()), key=lambda path: int(path.name)):
+        zoom = int(z_dir.name)
+        coords = []
+        for x_dir in z_dir.iterdir():
+            if not x_dir.is_dir():
+                continue
+            x = int(x_dir.name)
+            for tile_path in x_dir.iterdir():
+                if tile_path.suffix.lower() not in RASTER_TILE_SUFFIXES:
+                    continue
+                coords.append((x, int(tile_path.stem)))
+        if not coords:
+            continue
+        xs = [x for x, _ in coords]
+        ys = [y for _, y in coords]
+        levels.append({
+            "zoom": zoom,
+            "tile_count": len(coords),
+            "x_min": min(xs),
+            "x_max": max(xs),
+            "y_tms_min": min(ys),
+            "y_tms_max": max(ys),
+        })
+    return levels
+
+
 def init_worker(vrt_path, tiles_root, zoom, tile_size, resolution):
     global WORKER_DS, WORKER_TILES_ROOT, WORKER_ZOOM, WORKER_TILE_SIZE, WORKER_RESOLUTION
     WORKER_DS = gdal.Open(vrt_path)
@@ -206,6 +235,7 @@ def main():
         ) as pool:
             count = sum(pool.map(render_tile, tasks, chunksize=8))
     level_counts = build_parent_pyramid(tiles_root, args.zoom, args.tile_size)
+    levels = scan_tile_levels(tiles_root)
 
     manifest = {
         "schema_version": 1,
@@ -242,7 +272,7 @@ def main():
         "nodata": "transparent alpha",
         "base_tile_count": count,
         "tile_count": sum(level_counts.values()),
-        "levels": [{"zoom": z, "tile_count": level_counts[z]} for z in sorted(level_counts)],
+        "levels": levels,
         "files": {"tiles": "tiles"},
     }
     with open(root / "manifest.json", "w") as f:

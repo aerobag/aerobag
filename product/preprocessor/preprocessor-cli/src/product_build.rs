@@ -39,6 +39,7 @@ use preprocessor_fetch::{
 };
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, ResourceIndex,
+    TileLevelRecord,
 };
 use preprocessor_tpp::{package_native_tpp_versioned, render_native_tpp, NativeTppRunRequest};
 use preprocessor_vectors::{
@@ -462,6 +463,14 @@ enum ProductTaskValue {
         source_version: String,
         source_fetched_at_utc: Option<String>,
     },
+    BuiltStaticTileProduct {
+        zip_path: PathBuf,
+        zip_sha256: Option<String>,
+        zip_size_bytes: Option<u64>,
+        source_version: String,
+        source_fetched_at_utc: Option<String>,
+        tile_levels: Vec<TileLevelRecord>,
+    },
     TerrainDiscovery {
         index_path: PathBuf,
         source_fetched_at_utc: Option<String>,
@@ -608,8 +617,6 @@ const SHADED_RELIEF_TILE_WORKERS: u32 = 4;
 const TERRAIN_MIN_ZOOM: u32 = 0;
 const TERRAIN_ZOOM: u32 = 10;
 const TERRAIN_TILE_SIZE: u32 = 512;
-const WEB_MERCATOR_RADIUS_M: f64 = 6_378_137.0;
-const WEB_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
 
 pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<String> {
     let mut lines = Vec::new();
@@ -980,12 +987,16 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     cycle: cycle.clone(),
                 },
             });
+            let mut bundle_manifest_deps = vec![
+                cycle_task_id(cycle, "resource-index"),
+                cycle_task_id(cycle, "vectors"),
+            ];
+            bundle_manifest_deps.extend(config.profile.terrain_regions().iter().map(|region| {
+                format!("build-shaded-relief-{}", region.code().to_ascii_lowercase())
+            }));
             pending_tasks.push(ProductScheduledTask {
                 id: cycle_task_id(cycle, "bundle-manifest"),
-                deps: vec![
-                    cycle_task_id(cycle, "resource-index"),
-                    cycle_task_id(cycle, "vectors"),
-                ],
+                deps: bundle_manifest_deps,
                 weight: 1,
                 kind: ProductScheduledTaskKind::BundleManifest {
                     cycle: cycle.clone(),
@@ -1850,7 +1861,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             .with_context(|| {
                                 format!("failed to write {}", build_manifest_path.display())
                             })?;
-                            let bundle_manifest = build_bundle_manifest(&cycle_config, &build_manifest)?;
+                            let shaded_relief_tile_levels =
+                                collect_shaded_relief_tile_levels(&task_values_snapshot, &cycle_config)?;
+                            let bundle_manifest = build_bundle_manifest(
+                                &cycle_config,
+                                &build_manifest,
+                                &shaded_relief_tile_levels,
+                            )?;
                             let bundle_manifest_path =
                                 cycle_config.build_root.join(format!("bundle_{source_urls}.json"));
                             fs::write(
@@ -2030,7 +2047,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     }) => (index_path.clone(), source_fetched_at_utc.clone()),
                                     _ => bail!("missing terrain discovery output"),
                                 };
-                            let (zip_path, source_version, source_fetched_at_utc, record) =
+                            let (zip_path, source_version, source_fetched_at_utc, tile_levels, record) =
                                 build_shaded_relief_product(
                                     &config,
                                     region,
@@ -2042,12 +2059,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 node_output_file_detail(&record, "zip");
                             Ok(ProductTaskCompletion {
                                 node_records: vec![record],
-                                value: ProductTaskValue::BuiltStandaloneProduct {
+                                value: ProductTaskValue::BuiltStaticTileProduct {
                                     zip_path,
                                     zip_sha256,
                                     zip_size_bytes,
                                     source_version,
                                     source_fetched_at_utc,
+                                    tile_levels,
                                 },
                                 completion_detail: format!("cache_hit={cache_hit}"),
                             })
@@ -2094,7 +2112,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         }
                         ProductScheduledTaskKind::MetarsPublish => {
                             let built = match task_values_snapshot.get("build-metars") {
-                                Some(ProductTaskValue::BuiltStandaloneProduct {
+                                Some(ProductTaskValue::BuiltStaticTileProduct {
                                     zip_path,
                                     zip_sha256,
                                     zip_size_bytes,
@@ -2259,7 +2277,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             let region_id = region.code().to_ascii_lowercase();
                             let task_id = format!("build-shaded-relief-{region_id}");
                             let built = match task_values_snapshot.get(&task_id) {
-                                Some(ProductTaskValue::BuiltStandaloneProduct {
+                                Some(ProductTaskValue::BuiltStaticTileProduct {
                                     zip_path,
                                     zip_sha256,
                                     zip_size_bytes,
@@ -3731,7 +3749,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         )
         .with_context(|| format!("failed to write {}", build_manifest_path.display()))?;
 
-        let bundle_manifest = build_bundle_manifest(config, &build_manifest)?;
+        let shaded_relief_tile_levels = Vec::new();
+        let bundle_manifest =
+            build_bundle_manifest(config, &build_manifest, &shaded_relief_tile_levels)?;
         let bundle_manifest_path = config
             .build_root
             .join(format!("bundle_{bundle_cycle}.json"));
@@ -3766,9 +3786,32 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
     }
 }
 
+fn collect_shaded_relief_tile_levels(
+    task_values: &BTreeMap<String, ProductTaskValue>,
+    config: &ProductBuildConfig,
+) -> anyhow::Result<Vec<(Region, Vec<TileLevelRecord>)>> {
+    config
+        .profile
+        .terrain_regions()
+        .iter()
+        .map(|region| {
+            let region_id = region.code().to_ascii_lowercase();
+            let task_id = format!("build-shaded-relief-{region_id}");
+            let tile_levels = match task_values.get(&task_id) {
+                Some(ProductTaskValue::BuiltStaticTileProduct { tile_levels, .. }) => {
+                    tile_levels.clone()
+                }
+                _ => bail!("missing shaded relief build output for {}", region.code()),
+            };
+            Ok((*region, tile_levels))
+        })
+        .collect()
+}
+
 fn build_bundle_manifest(
     config: &ProductBuildConfig,
     build_manifest: &BuildManifest,
+    shaded_relief_tile_levels: &[(Region, Vec<TileLevelRecord>)],
 ) -> anyhow::Result<BundleManifest> {
     let resource_index_record = build_manifest
         .nodes
@@ -3859,7 +3902,7 @@ fn build_bundle_manifest(
         &public_resource_index,
         &cycle,
         &data_db_path,
-        config.profile.terrain_regions(),
+        shaded_relief_tile_levels,
     )?;
 
     Ok(BundleManifest {
@@ -3885,9 +3928,9 @@ fn write_nav_kv_artifact(
     resource_index: &ResourceIndex,
     cycle: &str,
     main_db_path: &Path,
-    shaded_relief_regions: &[Region],
+    shaded_relief_tile_levels: &[(Region, Vec<TileLevelRecord>)],
 ) -> anyhow::Result<BundleNavKvArtifact> {
-    let chart_catalog = build_nav_kv_chart_catalog(resource_index, shaded_relief_regions);
+    let chart_catalog = build_nav_kv_chart_catalog(resource_index, shaded_relief_tile_levels);
     let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
         .context("failed to encode nav_kv chart/catalog value")?;
     let mut pairs = vec![NavKvPair {
@@ -3936,7 +3979,7 @@ fn write_nav_kv_artifact(
 
 fn build_nav_kv_chart_catalog(
     resource_index: &ResourceIndex,
-    shaded_relief_regions: &[Region],
+    shaded_relief_tile_levels: &[(Region, Vec<TileLevelRecord>)],
 ) -> serde_json::Value {
     let mut collections = resource_index
         .chart_collections
@@ -3997,24 +4040,24 @@ fn build_nav_kv_chart_catalog(
         .collect::<Vec<_>>();
     collections.extend(build_nav_kv_shaded_relief_catalog_entries(
         resource_index,
-        shaded_relief_regions,
+        shaded_relief_tile_levels,
     ));
     serde_json::Value::Array(collections)
 }
 
 fn build_nav_kv_shaded_relief_catalog_entries(
     resource_index: &ResourceIndex,
-    regions: &[Region],
+    shaded_relief_tile_levels: &[(Region, Vec<TileLevelRecord>)],
 ) -> Vec<serde_json::Value> {
-    regions
+    shaded_relief_tile_levels
         .iter()
-        .map(|region| {
+        .map(|(region, tile_levels)| {
             let region_id = region.code().to_ascii_lowercase();
             let product_id = format!("shaded-relief-{region_id}");
             let region_display_name = region_display_name(resource_index, &region_id);
             let initial_viewport = default_view_for_static_region(resource_index, *region);
-            let levels = shaded_relief_region_levels(*region)
-                .into_iter()
+            let levels = tile_levels
+                .iter()
                 .map(|level| {
                     serde_json::json!({
                         "zoom": level.zoom,
@@ -4051,65 +4094,6 @@ fn build_nav_kv_shaded_relief_catalog_entries(
             })
         })
         .collect()
-}
-
-fn shaded_relief_region_levels(
-    region: Region,
-) -> Vec<preprocessor_resource_index::TileLevelRecord> {
-    let bounds = region.bounds();
-    (TERRAIN_MIN_ZOOM..=TERRAIN_ZOOM)
-        .map(|zoom| {
-            let (x_min, x_max, y_tms_min, y_tms_max) = web_mercator_tms_tile_range(
-                bounds.lon_min,
-                bounds.lat_min,
-                bounds.lon_max,
-                bounds.lat_max,
-                zoom,
-                TERRAIN_TILE_SIZE,
-            );
-            preprocessor_resource_index::TileLevelRecord {
-                zoom,
-                x_min,
-                x_max,
-                y_tms_min,
-                y_tms_max,
-            }
-        })
-        .collect()
-}
-
-fn web_mercator_tms_tile_range(
-    west: f64,
-    south: f64,
-    east: f64,
-    north: f64,
-    zoom: u32,
-    tile_size: u32,
-) -> (u32, u32, u32, u32) {
-    let resolution = ((2.0 * std::f64::consts::PI * WEB_MERCATOR_RADIUS_M) / f64::from(tile_size))
-        / f64::from(1_u32 << zoom);
-    let origin_shift = std::f64::consts::PI * WEB_MERCATOR_RADIUS_M;
-    let (west_m, south_m) = web_mercator(west, south);
-    let (east_m, north_m) = web_mercator(east, north);
-    let max_tile = (1_i64 << zoom) - 1;
-    let tile_at = |meters: f64| -> u32 {
-        (((meters + origin_shift) / resolution / f64::from(tile_size)).floor() as i64)
-            .clamp(0, max_tile) as u32
-    };
-    (
-        tile_at(west_m),
-        tile_at(east_m),
-        tile_at(south_m),
-        tile_at(north_m),
-    )
-}
-
-fn web_mercator(lon: f64, lat: f64) -> (f64, f64) {
-    let origin_shift = std::f64::consts::PI * WEB_MERCATOR_RADIUS_M;
-    let clamped_lat = lat.clamp(-WEB_MERCATOR_MAX_LATITUDE, WEB_MERCATOR_MAX_LATITUDE);
-    let mx = lon * origin_shift / 180.0;
-    let my = ((90.0 + clamped_lat).to_radians() / 2.0).tan().ln() * WEB_MERCATOR_RADIUS_M;
-    (mx, my)
 }
 
 fn default_view_for_static_region(
@@ -6654,7 +6638,13 @@ fn build_shaded_relief_product(
     region: Region,
     terrain_index_path: &Path,
     source_fetched_at_utc: Option<String>,
-) -> anyhow::Result<(PathBuf, String, Option<String>, NodeRecord)> {
+) -> anyhow::Result<(
+    PathBuf,
+    String,
+    Option<String>,
+    Vec<TileLevelRecord>,
+    NodeRecord,
+)> {
     let region_id = region.code().to_ascii_lowercase();
     let input_dir = artifact_root_from_build_root(&config.build_root)
         .join("private-work")
@@ -6695,7 +6685,14 @@ fn build_shaded_relief_product(
         let zip_path = output_dir.join(format!("shaded_relief_{region_id}_{version_label}.zip"));
         let manifest_path = output_dir.join("manifest.json");
         if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path])? {
-            return Ok((zip_path, version_label, source_fetched_at_utc, record));
+            let tile_levels = read_static_tile_manifest_levels(&output_dir.join("manifest.json"))?;
+            return Ok((
+                zip_path,
+                version_label,
+                source_fetched_at_utc,
+                tile_levels,
+                record,
+            ));
         }
     }
     let dem_selection = prefetch_terrain_dems_with_fallback(
@@ -6734,7 +6731,14 @@ fn build_shaded_relief_product(
     let manifest_path = output_dir.join("manifest.json");
     let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path])? {
         NodeCacheState::CacheHit(record) => {
-            return Ok((zip_path, version_label, source_fetched_at_utc, record));
+            let tile_levels = read_static_tile_manifest_levels(&output_dir.join("manifest.json"))?;
+            return Ok((
+                zip_path,
+                version_label,
+                source_fetched_at_utc,
+                tile_levels,
+                record,
+            ));
         }
         NodeCacheState::Build(lock) => lock,
     };
@@ -6755,6 +6759,7 @@ fn build_shaded_relief_product(
         &version_label,
         &dem_selection,
     )?;
+    let tile_levels = read_static_tile_manifest_levels(&output_dir.join("manifest.json"))?;
     zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
     let outputs = BTreeMap::from([
         (
@@ -6775,7 +6780,13 @@ fn build_shaded_relief_product(
         utc_now_string(),
         started.elapsed().as_millis() as u64,
     )?;
-    Ok((zip_path, version_label, source_fetched_at_utc, record))
+    Ok((
+        zip_path,
+        version_label,
+        source_fetched_at_utc,
+        tile_levels,
+        record,
+    ))
 }
 
 fn shaded_relief_product_inputs(
@@ -6809,6 +6820,46 @@ fn shaded_relief_product_inputs(
             hash_file(shaded_relief_tile_script_path())?,
         ),
     ]))
+}
+
+#[derive(Debug, Deserialize)]
+struct StaticTileManifest {
+    levels: Vec<StaticTileManifestLevel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StaticTileManifestLevel {
+    zoom: u32,
+    x_min: u32,
+    x_max: u32,
+    y_tms_min: u32,
+    y_tms_max: u32,
+}
+
+fn read_static_tile_manifest_levels(manifest_path: &Path) -> anyhow::Result<Vec<TileLevelRecord>> {
+    let manifest: StaticTileManifest = serde_json::from_slice(
+        &fs::read(manifest_path)
+            .with_context(|| format!("failed to read {}", manifest_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    let levels = manifest
+        .levels
+        .into_iter()
+        .map(|level| TileLevelRecord {
+            zoom: level.zoom,
+            x_min: level.x_min,
+            x_max: level.x_max,
+            y_tms_min: level.y_tms_min,
+            y_tms_max: level.y_tms_max,
+        })
+        .collect::<Vec<_>>();
+    if levels.is_empty() {
+        bail!(
+            "static tile manifest {} had no levels",
+            manifest_path.display()
+        );
+    }
+    Ok(levels)
 }
 
 fn static_geo_source_path() -> PathBuf {
@@ -11426,7 +11477,17 @@ mod tests {
 
     #[test]
     fn nav_kv_chart_catalog_includes_shaded_relief_static_products() {
-        let catalog = build_nav_kv_chart_catalog(&minimal_resource_index(), &[Region::Nw]);
+        let shaded_relief_levels = vec![(
+            Region::Nw,
+            vec![TileLevelRecord {
+                zoom: 10,
+                x_min: 156,
+                x_max: 219,
+                y_tms_min: 636,
+                y_tms_max: 676,
+            }],
+        )];
+        let catalog = build_nav_kv_chart_catalog(&minimal_resource_index(), &shaded_relief_levels);
         let entries = catalog
             .as_array()
             .expect("chart catalog should be an array");
@@ -11447,7 +11508,7 @@ mod tests {
         let levels = shaded["map_view"]["levels"]
             .as_array()
             .expect("levels should be an array");
-        assert_eq!(levels.len(), 11);
+        assert_eq!(levels.len(), 1);
         let z10 = levels
             .iter()
             .find(|level| level["zoom"] == 10)

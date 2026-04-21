@@ -83,6 +83,29 @@ ensure_avd_instance() {
     --force >/dev/null
 }
 
+ensure_avd_hardware_keyboard() {
+  local avd_home="${ANDROID_AVD_HOME:-$HOME/.android/avd}"
+  local config_file="${avd_home}/${AVD_INSTANCE_NAME}.avd/config.ini"
+  if [[ ! -f "$config_file" ]]; then
+    echo "AVD config not found: $config_file" >&2
+    return 1
+  fi
+
+  # VNC/X11 key events only show up in the guest when the emulator exposes
+  # the qwerty2 hardware-keyboard device. Fresh per-port AVDs defaulted this
+  # off, which left +/- zoom dead even though adb-injected keyevents worked.
+  if grep -q '^hw\.keyboard[[:space:]]*=' "$config_file"; then
+    sed -i 's/^hw\.keyboard[[:space:]]*=.*/hw.keyboard = yes/' "$config_file"
+  else
+    printf '\nhw.keyboard = yes\n' >>"$config_file"
+  fi
+  if grep -q '^hw\.keyboard\.charmap[[:space:]]*=' "$config_file"; then
+    sed -i 's/^hw\.keyboard\.charmap[[:space:]]*=.*/hw.keyboard.charmap = qwerty2/' "$config_file"
+  else
+    printf 'hw.keyboard.charmap = qwerty2\n' >>"$config_file"
+  fi
+}
+
 is_running() {
   local pid_file="$1"
   if [[ ! -f "$pid_file" ]]; then
@@ -141,6 +164,7 @@ if is_running "$EMULATOR_PID_FILE"; then
   echo "emulator already running (pid $(cat "$EMULATOR_PID_FILE"))"
 else
   ensure_avd_instance
+  ensure_avd_hardware_keyboard
   rm -f "$EMULATOR_PID_FILE"
   emulator_args=(
     "@$AVD_INSTANCE_NAME"

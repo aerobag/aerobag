@@ -676,7 +676,10 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
     return (
       <>
         {usesOpenAirportCircle ? (
-          <path d={airportCircleMarkerPath} className={`${airportClass} airportOpenMarker`} />
+          <>
+            <path d={airportCircleMarkerPath} className="airportOpenMarkerUnder" />
+            <path d={airportCircleMarkerPath} className={`${airportClass} airportOpenMarker`} />
+          </>
         ) : feature.fuel_available ? (
           <path d={airportFuelMarkerPath} className={airportClass} />
         ) : (
@@ -688,7 +691,8 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
           </text>
         ) : isSeaplaneBase ? (
           <path
-            d="M 0 -9 L 0 5 M -4 -5 A 4 4 0 1 1 4 -5 M -7 2 C -5 8 5 8 7 2 M -9 2 L -5 2 M 9 2 L 5 2"
+            d="M 0 -9 L 0 5 M -5 -5 L 5 -5 M -7 2 C -5 8 5 8 7 2"
+            transform="rotate(15)"
             className="airportSpecialGlyph airportAnchorGlyph"
           />
         ) : null}
@@ -5973,11 +5977,6 @@ async function buildSeededDevPlan(): Promise<{ plan: FlightPlan }> {
     { Fix: "VPDUB" },
     { Airport: "KVCB" },
     { Airport: "KWLW" },
-    { Airport: "WN08" },
-    { Airport: "4WA9" },
-    { Airport: "W36" },
-    { Airport: "2S1" },
-    { Airport: "WT22" },
   ];
   const routeComponents = waypoints.map((waypoint) => ({ kind: "waypoint" as const, waypoint }));
   const resolvedLegs = waypoints.slice(0, -1).map((from, index) => ({
@@ -5988,14 +5987,14 @@ async function buildSeededDevPlan(): Promise<{ plan: FlightPlan }> {
   }));
   const plan = {
     ...samplePlan,
-    id: "dev-kpao-vpdub-kvcb-kwlw-wn08-4wa9-w36-2s1-wt22",
-    name: "KPAO VPDUB KVCB KWLW WN08 4WA9 W36 2S1 WT22",
+    id: "dev-kpao-vpdub-kvcb-kwlw",
+    name: "KPAO VPDUB KVCB KWLW",
     legs: resolvedLegs.map((leg) => ({ from: leg.from, to: leg.to, airway: null })),
     route_components: routeComponents,
     resolved_legs: resolvedLegs,
     guidance: { active_leg_index: 0, sequencing_mode: "follow_plan" as const, direct_to: null },
     departure: "KPAO",
-    destination: "WT22",
+    destination: "KWLW",
     updated_at_epoch_ms: Date.now(),
     version: samplePlan.version + 1,
   };

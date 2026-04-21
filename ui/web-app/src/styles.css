@@ -271,6 +271,14 @@ button {
 
 .airportOpenMarker {
   fill: none;
+  stroke: var(--theme-class-c-magenta);
+  stroke-width: 2px;
+}
+
+.airportOpenMarkerUnder {
+  fill: none;
+  stroke: rgba(8, 18, 24, 0.7);
+  stroke-width: 4px;
 }
 
 .airportSpecialGlyph {
@@ -282,7 +290,7 @@ button {
 }
 
 .airportHeliportGlyph {
-  fill: white;
+  fill: var(--theme-class-c-magenta);
   stroke: rgba(8, 18, 24, 0.7);
   stroke-width: 1.5px;
   font-size: 17px;
@@ -290,7 +298,7 @@ button {
 }
 
 .airportAnchorGlyph {
-  stroke: white;
+  stroke: var(--theme-class-c-magenta);
   stroke-width: 2.2px;
   filter: drop-shadow(0 0 1px rgba(8, 18, 24, 0.85));
 }

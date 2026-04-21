@@ -19,7 +19,7 @@ const AIRSPACE_REF_MIN_PIXEL_SPAN: f64 = 3.0;
 const AIRSPACE_LABEL_MIN_ZOOM: u8 = 0;
 const AIRSPACE_LABEL_MAX_ZOOM: u8 = 12;
 const AIRSPACE_LABEL_MIN_PIXEL_SPAN: f64 = 50.0;
-const AIRSPACE_LABEL_TILE_EDGE_MARGIN_PX: f64 = 50.0;
+const AIRSPACE_LABEL_MIN_EDGE_CLEARANCE_PX: f64 = 25.0;
 const AIRSPACE_LABEL_SAMPLE_GRID: usize = 10;
 const AIRSPACE_LABEL_CONTAINMENT_RATIO: f64 = 0.98;
 
@@ -411,7 +411,11 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                     continue;
                 }
                 for candidate in &feature.label_candidates {
-                    if label_candidate_is_near_tile_edge(candidate.lat, candidate.lon, zoom) {
+                    if !label_candidate_has_airspace_edge_clearance(
+                        candidate.score,
+                        candidate.lat,
+                        zoom,
+                    ) {
                         continue;
                     }
                     let (label_x, label_y) = slippy_tile(candidate.lat, candidate.lon, zoom);
@@ -1673,42 +1677,17 @@ fn assign_class_airspace_label_candidates(
                         .then_some(other_parts)
                 })
                 .collect::<Vec<_>>();
-            let mut candidates = ranked_label_candidates(&current_parts, &inner_parts);
+            let nearby_airports = nearby_airport_points(&current_parts, airport_points);
+            let candidates = ranked_label_candidates(&current_parts, &inner_parts, &nearby_airports);
             if candidates.is_empty() {
                 diagnostics.class_label_anchor_outside_polygon_count += 1;
                 continue;
-            }
-            if is_surface_shelf(&features[feature_index]) {
-                if let Some(adjusted_anchor) = airport_adjusted_label_anchor(
-                    [candidates[0].lon, candidates[0].lat],
-                    &current_parts,
-                    &features[feature_index].airspace_class,
-                    features[feature_index].ident.as_deref(),
-                    airport_points,
-                ) {
-                    let top_score = candidates[0].score + 1.0;
-                    candidates.insert(
-                        0,
-                        AirspaceLabelCandidate {
-                            rank: 0,
-                            score: top_score,
-                            lon: adjusted_anchor[0],
-                            lat: adjusted_anchor[1],
-                        },
-                    );
-                    rerank_label_candidates(&mut candidates);
-                    diagnostics.class_airport_label_adjustment_count += 1;
-                }
             }
             features[feature_index].label.lon = candidates[0].lon;
             features[feature_index].label.lat = candidates[0].lat;
             features[feature_index].label_candidates = candidates;
         }
     }
-}
-
-fn is_surface_shelf(feature: &AirspaceFeature) -> bool {
-    feature.vertical.lower.display.eq_ignore_ascii_case("SFC")
 }
 
 fn vertical_ranges_overlap(left: &AirspaceVertical, right: &AirspaceVertical) -> bool {
@@ -1754,6 +1733,7 @@ fn feature_parts(feature: &AirspaceFeature) -> Vec<Vec<[f64; 2]>> {
 fn ranked_label_candidates(
     parts: &[Vec<[f64; 2]>],
     inner_parts: &[Vec<Vec<[f64; 2]>>],
+    airport_points: &[[f64; 2]],
 ) -> Vec<AirspaceLabelCandidate> {
     let mut candidates = sampled_label_points(parts)
         .into_iter()
@@ -1764,7 +1744,7 @@ fn ranked_label_candidates(
         })
         .map(|point| AirspaceLabelCandidate {
             rank: 0,
-            score: label_candidate_score(point, parts, inner_parts),
+            score: label_candidate_score(point, parts, inner_parts, airport_points),
             lon: point[0],
             lat: point[1],
         })
@@ -1823,12 +1803,33 @@ fn label_candidate_score(
     point: [f64; 2],
     parts: &[Vec<[f64; 2]>],
     inner_parts: &[Vec<Vec<[f64; 2]>>],
+    airport_points: &[[f64; 2]],
 ) -> f64 {
     let mut score = squared_distance_to_nearest_boundary(point, parts);
     for inner in inner_parts {
         score = score.min(squared_distance_to_nearest_boundary(point, inner));
     }
+    for airport in airport_points {
+        score = score.min(squared_distance(point, *airport));
+    }
     score.sqrt()
+}
+
+fn nearby_airport_points(parts: &[Vec<[f64; 2]>], airport_points: &[PointRecord]) -> Vec<[f64; 2]> {
+    let Some([west, south, east, north]) = parts_bbox(parts) else {
+        return Vec::new();
+    };
+    let margin = 0.25;
+    airport_points
+        .iter()
+        .filter(|airport| {
+            airport.lon >= west - margin
+                && airport.lon <= east + margin
+                && airport.lat >= south - margin
+                && airport.lat <= north + margin
+        })
+        .map(|airport| [airport.lon, airport.lat])
+        .collect()
 }
 
 fn polygon_contains_polygon_by_sampling(
@@ -1846,14 +1847,18 @@ fn polygon_contains_polygon_by_sampling(
     (inside_count as f64 / samples.len() as f64) >= AIRSPACE_LABEL_CONTAINMENT_RATIO
 }
 
-fn label_candidate_is_near_tile_edge(lat: f64, lon: f64, zoom: u8) -> bool {
-    let (pixel_x, pixel_y) = slippy_pixel(lat, lon, zoom);
-    let local_x = pixel_x.rem_euclid(256.0);
-    let local_y = pixel_y.rem_euclid(256.0);
-    local_x < AIRSPACE_LABEL_TILE_EDGE_MARGIN_PX
-        || local_x > 256.0 - AIRSPACE_LABEL_TILE_EDGE_MARGIN_PX
-        || local_y < AIRSPACE_LABEL_TILE_EDGE_MARGIN_PX
-        || local_y > 256.0 - AIRSPACE_LABEL_TILE_EDGE_MARGIN_PX
+fn label_candidate_has_airspace_edge_clearance(
+    score_degrees: f64,
+    latitude: f64,
+    zoom: u8,
+) -> bool {
+    score_degrees * local_pixels_per_degree(latitude, zoom) >= AIRSPACE_LABEL_MIN_EDGE_CLEARANCE_PX
+}
+
+fn local_pixels_per_degree(latitude: f64, zoom: u8) -> f64 {
+    let lon_scale = 256.0 * 2_f64.powi(zoom as i32) / 360.0;
+    let lat_scale = lon_scale / latitude.to_radians().cos().abs().max(0.001);
+    lon_scale.max(lat_scale)
 }
 
 fn polygon_area_centroid(parts: &[Vec<[f64; 2]>]) -> Option<[f64; 2]> {
@@ -2008,27 +2013,6 @@ fn squared_distance_to_nearest_boundary(point: [f64; 2], parts: &[Vec<[f64; 2]>]
     best
 }
 
-fn nearest_boundary_point(point: [f64; 2], parts: &[Vec<[f64; 2]>]) -> Option<[f64; 2]> {
-    let mut best_point = None;
-    let mut best_distance = f64::INFINITY;
-    for part in parts {
-        if part.len() < 2 {
-            continue;
-        }
-        for index in 0..part.len() {
-            let start = part[index];
-            let end = part[(index + 1) % part.len()];
-            let candidate = closest_point_on_segment(point, start, end);
-            let distance = squared_distance(point, candidate);
-            if distance < best_distance {
-                best_distance = distance;
-                best_point = Some(candidate);
-            }
-        }
-    }
-    best_point
-}
-
 fn squared_distance_to_segment(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
     squared_distance(point, closest_point_on_segment(point, start, end))
 }
@@ -2050,82 +2034,6 @@ fn squared_distance(a: [f64; 2], b: [f64; 2]) -> f64 {
     let lon_delta = a[0] - b[0];
     let lat_delta = a[1] - b[1];
     lon_delta * lon_delta + lat_delta * lat_delta
-}
-
-fn airport_adjusted_label_anchor(
-    anchor: [f64; 2],
-    parts: &[Vec<[f64; 2]>],
-    class: &str,
-    ident: Option<&str>,
-    airport_points: &[PointRecord],
-) -> Option<[f64; 2]> {
-    if !matches!(class.trim().to_ascii_uppercase().as_str(), "B" | "C" | "D") {
-        return None;
-    }
-    let airport = matching_airport_in_polygon(parts, ident, anchor, airport_points)?;
-    if squared_distance(anchor, [airport.lon, airport.lat]) > 0.01 {
-        return None;
-    }
-    let edge = nearest_boundary_point([airport.lon, airport.lat], parts)?;
-    for fraction in [0.5, 0.4, 0.6, 0.33, 0.67] {
-        let candidate = [
-            airport.lon + (edge[0] - airport.lon) * fraction,
-            airport.lat + (edge[1] - airport.lat) * fraction,
-        ];
-        if point_in_polygon_parts(candidate, parts) {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn matching_airport_in_polygon<'a>(
-    parts: &[Vec<[f64; 2]>],
-    ident: Option<&str>,
-    anchor: [f64; 2],
-    airport_points: &'a [PointRecord],
-) -> Option<&'a PointRecord> {
-    if let Some(exact_ident) = ident.map(normalize_ident) {
-        if let Some(airport) = airport_points.iter().find(|airport| {
-            normalize_ident(airport_raw_identifier(airport).unwrap_or("")) == exact_ident
-                && point_in_polygon_parts([airport.lon, airport.lat], parts)
-        }) {
-            return Some(airport);
-        }
-    }
-
-    let bbox = parts_bbox(parts)?;
-    airport_points
-        .iter()
-        .filter(|airport| {
-            airport.lon >= bbox[0]
-                && airport.lon <= bbox[2]
-                && airport.lat >= bbox[1]
-                && airport.lat <= bbox[3]
-                && squared_distance(anchor, [airport.lon, airport.lat]) <= 0.01
-                && point_in_polygon_parts([airport.lon, airport.lat], parts)
-        })
-        .min_by(|left, right| {
-            squared_distance(anchor, [left.lon, left.lat])
-                .partial_cmp(&squared_distance(anchor, [right.lon, right.lat]))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-}
-
-fn airport_raw_identifier(airport: &PointRecord) -> Option<&str> {
-    airport
-        .id
-        .strip_prefix("airport:")
-        .and_then(|value| value.split(':').next())
-}
-
-fn normalize_ident(ident: &str) -> String {
-    let ident = ident.trim().to_ascii_uppercase();
-    if ident.len() == 4 && ident.starts_with('K') {
-        ident[1..].to_string()
-    } else {
-        ident
-    }
 }
 
 fn parse_aixm_pos(text: &str) -> Option<[f64; 2]> {

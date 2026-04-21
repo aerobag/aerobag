@@ -888,7 +888,13 @@ fn airspace_display_style(style_key: &str) -> AirspaceDisplayStyle {
 pub fn point_vector_record_to_symbol_feature(
     record: &PointVectorRecord,
 ) -> Option<NavSymbolFeature> {
-    should_display_record(record).then(|| NavSymbolFeature {
+    should_display_record(record).then(|| point_vector_record_to_symbol_feature_unfiltered(record))
+}
+
+pub fn point_vector_record_to_symbol_feature_unfiltered(
+    record: &PointVectorRecord,
+) -> NavSymbolFeature {
+    NavSymbolFeature {
         kind: record.kind.clone(),
         label: display_label(record),
         style_class: record.style_class.clone(),
@@ -896,7 +902,7 @@ pub fn point_vector_record_to_symbol_feature(
         fuel_available: record.fuel_available.unwrap_or(false),
         runway_length_ratio: runway_length_ratio(record.longest_runway_length_ft),
         longest_runway_heading_true_deg: record.longest_runway_heading_true_deg,
-    })
+    }
 }
 
 pub fn tile_key(layer: &str, z: u32, x: u32, y: u32) -> String {
@@ -1221,6 +1227,36 @@ mod tests {
         .expect("VORTAC should be displayed");
 
         assert_eq!(feature.label, "ELN");
+    }
+
+    #[test]
+    fn private_airport_symbols_are_available_when_not_chart_filtered() {
+        let record = PointVectorRecord {
+            id: "airports:WN08".to_string(),
+            kind: "airport".to_string(),
+            lat: 47.0,
+            lon: -122.0,
+            label: "PRIVATE STRIP".to_string(),
+            style_class: "airport".to_string(),
+            towered: Some(false),
+            fuel_available: Some(false),
+            public_use: Some(false),
+            private_use: Some(true),
+            has_paved_runway: Some(true),
+            heliport: Some(false),
+            has_water_runway: Some(false),
+            longest_runway_length_ft: Some(1_900.0),
+            longest_runway_heading_true_deg: Some(120.0),
+        };
+
+        assert!(
+            point_vector_record_to_symbol_feature(&record).is_none(),
+            "private airports remain hidden from the chart overlay"
+        );
+        let feature = point_vector_record_to_symbol_feature_unfiltered(&record);
+        assert_eq!(feature.style_class, "airport");
+        assert_eq!(feature.label, "WN08");
+        assert_eq!(feature.longest_runway_heading_true_deg, Some(120.0));
     }
 
     #[test]

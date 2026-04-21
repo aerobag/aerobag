@@ -4440,7 +4440,7 @@ fn build_nav_kv_airport_navref_pairs(
     let mut stmt = connection.prepare(
         "
         SELECT trim(LocationID), CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL),
-               trim(FacilityName), trim(Type), trim(ATCT), trim(FuelTypes), trim(Use)
+               trim(FacilityName), trim(Type), trim(ATCT), trim(FuelTypes)
         FROM airports
         WHERE trim(LocationID) <> ''
         ",
@@ -4454,13 +4454,12 @@ fn build_nav_kv_airport_navref_pairs(
             row.get::<_, String>(4)?,
             row.get::<_, String>(5)?,
             row.get::<_, String>(6)?,
-            row.get::<_, String>(7)?,
         ))
     })?;
     let runway_info = airport_runway_symbol_info_by_airport(connection)?;
     let mut pairs = Vec::new();
     for row in rows {
-        let (id, lat, lon, facility_name, kind, atct, fuel_types, use_code) = row?;
+        let (id, lat, lon, facility_name, kind, atct, fuel_types) = row?;
         let key_id = had_upper_key_component(&id);
         pairs.push(json_pair(
             format!("navref/position/airport/{key_id}"),
@@ -4468,14 +4467,6 @@ fn build_nav_kv_airport_navref_pairs(
             "navref airport position",
         )?);
         let info = runway_info.get(&id.trim().to_ascii_uppercase());
-        let kind_upper = kind.trim().to_ascii_uppercase();
-        let private_use = use_code.trim().eq_ignore_ascii_case("PR");
-        let heliport = kind_upper.contains("HELIPORT");
-        let has_water_runway = info.map(|info| info.has_water_runway).unwrap_or(false)
-            || kind.trim().eq_ignore_ascii_case("SEAPLANE BAS");
-        if private_use || heliport || has_water_runway {
-            continue;
-        }
         pairs.push(json_pair(
             format!("navref/symbol/airport/{key_id}"),
             &serde_json::json!({

@@ -5953,6 +5953,11 @@ async function buildSeededDevPlan(): Promise<{ plan: FlightPlan }> {
     { Fix: "VPDUB" },
     { Airport: "KVCB" },
     { Airport: "KWLW" },
+    { Airport: "WN08" },
+    { Airport: "4WA9" },
+    { Airport: "W36" },
+    { Airport: "2S1" },
+    { Airport: "WT22" },
   ];
   const routeComponents = waypoints.map((waypoint) => ({ kind: "waypoint" as const, waypoint }));
   const resolvedLegs = waypoints.slice(0, -1).map((from, index) => ({
@@ -5963,14 +5968,14 @@ async function buildSeededDevPlan(): Promise<{ plan: FlightPlan }> {
   }));
   const plan = {
     ...samplePlan,
-    id: "dev-kpao-vpdub-kvcb-kwlw",
-    name: "KPAO VPDUB KVCB KWLW",
+    id: "dev-kpao-vpdub-kvcb-kwlw-wn08-4wa9-w36-2s1-wt22",
+    name: "KPAO VPDUB KVCB KWLW WN08 4WA9 W36 2S1 WT22",
     legs: resolvedLegs.map((leg) => ({ from: leg.from, to: leg.to, airway: null })),
     route_components: routeComponents,
     resolved_legs: resolvedLegs,
     guidance: { active_leg_index: 0, sequencing_mode: "follow_plan" as const, direct_to: null },
     departure: "KPAO",
-    destination: "KWLW",
+    destination: "WT22",
     updated_at_epoch_ms: Date.now(),
     version: samplePlan.version + 1,
   };

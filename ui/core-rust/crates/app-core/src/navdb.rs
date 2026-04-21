@@ -5,7 +5,7 @@ use rusqlite::{params, Connection};
 use crate::errors::{AppError, AppErrorKind, AppResult};
 use crate::geometry::LatLon;
 use crate::map_overlay::{
-    point_vector_record_to_symbol_feature, NavSymbolFeature, PointVectorRecord,
+    point_vector_record_to_symbol_feature_unfiltered, NavSymbolFeature, PointVectorRecord,
 };
 use crate::navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
@@ -1878,7 +1878,7 @@ fn resolve_nav_symbol_feature_in_db(
         NavRef::Fix(code) => fix_symbol_record(connection, code)?,
         NavRef::LatLon(_) => None,
     };
-    Ok(record.and_then(|record| point_vector_record_to_symbol_feature(&record)))
+    Ok(record.map(|record| point_vector_record_to_symbol_feature_unfiltered(&record)))
 }
 
 fn airport_symbol_record(

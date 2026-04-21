@@ -469,6 +469,9 @@ data class WirePointVectorRecord(
     val style_class: String,
     val towered: Boolean? = null,
     val fuel_available: Boolean? = null,
+    val has_paved_runway: Boolean? = null,
+    val heliport: Boolean? = null,
+    val has_water_runway: Boolean? = null,
     val longest_runway_length_ft: Double? = null,
     val longest_runway_heading_true_deg: Double? = null,
 )
@@ -493,6 +496,9 @@ data class WireVisibleMapFeature(
     val screen_y: Double,
     val towered: Boolean,
     val fuel_available: Boolean,
+    val has_paved_runway: Boolean? = null,
+    val heliport: Boolean? = null,
+    val has_water_runway: Boolean? = null,
     val runway_length_ratio: Double,
     val longest_runway_heading_true_deg: Double? = null,
 )
@@ -504,6 +510,9 @@ data class WireNavSymbolFeature(
     val style_class: String,
     val towered: Boolean,
     val fuel_available: Boolean,
+    val has_paved_runway: Boolean? = null,
+    val heliport: Boolean? = null,
+    val has_water_runway: Boolean? = null,
     val runway_length_ratio: Double,
     val longest_runway_heading_true_deg: Double? = null,
 )

@@ -269,6 +269,32 @@ button {
   fill: var(--theme-class-c-magenta);
 }
 
+.airportOpenMarker {
+  fill: none;
+}
+
+.airportSpecialGlyph {
+  fill: none;
+  stroke: white;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  paint-order: stroke;
+}
+
+.airportHeliportGlyph {
+  fill: white;
+  stroke: rgba(8, 18, 24, 0.7);
+  stroke-width: 1.5px;
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.airportAnchorGlyph {
+  stroke: white;
+  stroke-width: 2.2px;
+  filter: drop-shadow(0 0 1px rgba(8, 18, 24, 0.85));
+}
+
 .airportLabel {
   fill: white;
   font-size: 14px;
@@ -1178,7 +1204,8 @@ button {
 .planWaypointSymbol .vorBorder,
 .planWaypointSymbol .fixMarker,
 .planWaypointSymbol .airportRunwayBarUnder,
-.planWaypointSymbol .airportRunwayBar {
+.planWaypointSymbol .airportRunwayBar,
+.planWaypointSymbol .airportAnchorGlyph {
   vector-effect: non-scaling-stroke;
 }
 

@@ -655,6 +655,9 @@ type VectorPointSymbolFeature = {
   style_class: string;
   towered: boolean;
   fuel_available: boolean;
+  has_paved_runway?: boolean | null;
+  heliport?: boolean | null;
+  has_water_runway?: boolean | null;
   runway_length_ratio: number;
   longest_runway_heading_true_deg: number | null;
 };
@@ -666,13 +669,30 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
   const airportClass = feature.towered ? "airportMarker airportTowered" : "airportMarker airportUntowered";
   const airportLabelClass = feature.towered ? "airportLabel airportToweredLabel" : "airportLabel airportUntoweredLabel";
   if (isAirport) {
+    const isHeliport = feature.heliport === true;
+    const isSeaplaneBase = feature.has_water_runway === true;
+    const usesOpenAirportCircle = isHeliport || isSeaplaneBase || feature.has_paved_runway === false;
     const halfLength = 8 * Math.max(feature.runway_length_ratio, 0.2);
     return (
       <>
-        {feature.fuel_available
-          ? <path d={airportFuelMarkerPath} className={airportClass} />
-          : <path d={airportCircleMarkerPath} className={airportClass} />}
-        {feature.longest_runway_heading_true_deg != null ? (
+        {usesOpenAirportCircle ? (
+          <path d={airportCircleMarkerPath} className={`${airportClass} airportOpenMarker`} />
+        ) : feature.fuel_available ? (
+          <path d={airportFuelMarkerPath} className={airportClass} />
+        ) : (
+          <path d={airportCircleMarkerPath} className={airportClass} />
+        )}
+        {isHeliport ? (
+          <text x="0" y="6" textAnchor="middle" className="airportSpecialGlyph airportHeliportGlyph">
+            H
+          </text>
+        ) : isSeaplaneBase ? (
+          <path
+            d="M 0 -9 L 0 5 M -4 -5 A 4 4 0 1 1 4 -5 M -7 2 C -5 8 5 8 7 2 M -9 2 L -5 2 M 9 2 L 5 2"
+            className="airportSpecialGlyph airportAnchorGlyph"
+          />
+        ) : null}
+        {!usesOpenAirportCircle && feature.longest_runway_heading_true_deg != null ? (
           <>
             <line
               x1="0"

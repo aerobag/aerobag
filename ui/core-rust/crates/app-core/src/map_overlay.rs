@@ -131,6 +131,9 @@ pub struct VisibleMapFeature {
     pub screen_y: f64,
     pub towered: bool,
     pub fuel_available: bool,
+    pub has_paved_runway: Option<bool>,
+    pub heliport: Option<bool>,
+    pub has_water_runway: Option<bool>,
     pub runway_length_ratio: f64,
     pub longest_runway_heading_true_deg: Option<f64>,
 }
@@ -197,6 +200,12 @@ pub struct NavSymbolFeature {
     pub style_class: String,
     pub towered: bool,
     pub fuel_available: bool,
+    #[serde(default)]
+    pub has_paved_runway: Option<bool>,
+    #[serde(default)]
+    pub heliport: Option<bool>,
+    #[serde(default)]
+    pub has_water_runway: Option<bool>,
     pub runway_length_ratio: f64,
     pub longest_runway_heading_true_deg: Option<f64>,
 }
@@ -345,6 +354,9 @@ pub fn query_map_overlay(
                 screen_y: point.y,
                 towered: symbol.towered,
                 fuel_available: symbol.fuel_available,
+                has_paved_runway: symbol.has_paved_runway,
+                heliport: symbol.heliport,
+                has_water_runway: symbol.has_water_runway,
                 runway_length_ratio: symbol.runway_length_ratio,
                 longest_runway_heading_true_deg: symbol.longest_runway_heading_true_deg,
             });
@@ -900,6 +912,9 @@ pub fn point_vector_record_to_symbol_feature_unfiltered(
         style_class: record.style_class.clone(),
         towered: record.towered.unwrap_or(false),
         fuel_available: record.fuel_available.unwrap_or(false),
+        has_paved_runway: record.has_paved_runway,
+        heliport: record.heliport,
+        has_water_runway: record.has_water_runway,
         runway_length_ratio: runway_length_ratio(record.longest_runway_length_ft),
         longest_runway_heading_true_deg: record.longest_runway_heading_true_deg,
     }

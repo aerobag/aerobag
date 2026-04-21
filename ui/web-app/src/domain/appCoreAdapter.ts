@@ -85,6 +85,9 @@ export type PointTilePayload = {
     style_class: string;
     towered?: boolean;
     fuel_available?: boolean;
+    has_paved_runway?: boolean | null;
+    heliport?: boolean | null;
+    has_water_runway?: boolean | null;
     longest_runway_length_ft?: number | null;
     longest_runway_heading_true_deg?: number | null;
   }>;
@@ -147,6 +150,9 @@ export type VisibleMapFeature = {
   screen_y: number;
   towered: boolean;
   fuel_available: boolean;
+  has_paved_runway?: boolean | null;
+  heliport?: boolean | null;
+  has_water_runway?: boolean | null;
   runway_length_ratio: number;
   longest_runway_heading_true_deg: number | null;
 };

@@ -4467,6 +4467,10 @@ fn build_nav_kv_airport_navref_pairs(
             "navref airport position",
         )?);
         let info = runway_info.get(&id.trim().to_ascii_uppercase());
+        let has_water_runway = info
+            .map(|info| info.has_water_runway)
+            .unwrap_or(false)
+            || kind.trim().eq_ignore_ascii_case("SEAPLANE BAS");
         pairs.push(json_pair(
             format!("navref/symbol/airport/{key_id}"),
             &serde_json::json!({
@@ -4475,6 +4479,9 @@ fn build_nav_kv_airport_navref_pairs(
                 "style_class": "airport",
                 "towered": atct.trim().eq_ignore_ascii_case("Y"),
                 "fuel_available": !fuel_types.trim().is_empty(),
+                "has_paved_runway": info.map(|info| info.has_paved_runway),
+                "heliport": kind.trim().to_ascii_uppercase().contains("HELIPORT"),
+                "has_water_runway": has_water_runway,
                 "runway_length_ratio": runway_length_ratio(info.map(|info| info.length_ft)),
                 "longest_runway_heading_true_deg": info.map(|info| info.heading_true_deg),
             }),

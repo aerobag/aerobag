@@ -28,6 +28,11 @@ data class PointVectorRecord(
     val towered: Boolean? = null,
     @kotlinx.serialization.SerialName("fuel_available")
     val fuelAvailable: Boolean? = null,
+    @kotlinx.serialization.SerialName("has_paved_runway")
+    val hasPavedRunway: Boolean? = null,
+    val heliport: Boolean? = null,
+    @kotlinx.serialization.SerialName("has_water_runway")
+    val hasWaterRunway: Boolean? = null,
     @kotlinx.serialization.SerialName("longest_runway_length_ft")
     val longestRunwayLengthFt: Double? = null,
     @kotlinx.serialization.SerialName("longest_runway_heading_true_deg")
@@ -54,6 +59,9 @@ data class VisibleMapFeature(
     val screenY: Double,
     val towered: Boolean,
     val fuelAvailable: Boolean,
+    val hasPavedRunway: Boolean?,
+    val heliport: Boolean?,
+    val hasWaterRunway: Boolean?,
     val runwayLengthRatio: Double,
     val longestRunwayHeadingTrueDeg: Double?,
 )
@@ -64,6 +72,9 @@ data class NavSymbolFeature(
     val styleClass: String,
     val towered: Boolean,
     val fuelAvailable: Boolean,
+    val hasPavedRunway: Boolean?,
+    val heliport: Boolean?,
+    val hasWaterRunway: Boolean?,
     val runwayLengthRatio: Double,
     val longestRunwayHeadingTrueDeg: Double?,
 )
@@ -1274,6 +1285,9 @@ private fun PointVectorRecord.toWire() = WirePointVectorRecord(
     style_class = styleClass,
     towered = towered,
     fuel_available = fuelAvailable,
+    has_paved_runway = hasPavedRunway,
+    heliport = heliport,
+    has_water_runway = hasWaterRunway,
     longest_runway_heading_true_deg = longestRunwayHeadingTrueDeg,
 )
 
@@ -1299,6 +1313,9 @@ private fun WireVisibleMapFeature.toUi() = VisibleMapFeature(
     screenY = screen_y,
     towered = towered,
     fuelAvailable = fuel_available,
+    hasPavedRunway = has_paved_runway,
+    heliport = heliport,
+    hasWaterRunway = has_water_runway,
     runwayLengthRatio = runway_length_ratio,
     longestRunwayHeadingTrueDeg = longest_runway_heading_true_deg,
 )
@@ -1309,6 +1326,9 @@ private fun WireNavSymbolFeature.toUi() = NavSymbolFeature(
     styleClass = style_class,
     towered = towered,
     fuelAvailable = fuel_available,
+    hasPavedRunway = has_paved_runway,
+    heliport = heliport,
+    hasWaterRunway = has_water_runway,
     runwayLengthRatio = runway_length_ratio,
     longestRunwayHeadingTrueDeg = longest_runway_heading_true_deg,
 )

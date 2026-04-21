@@ -414,6 +414,9 @@ export type NavSymbolFeature = {
   style_class: string;
   towered: boolean;
   fuel_available: boolean;
+  has_paved_runway?: boolean | null;
+  heliport?: boolean | null;
+  has_water_runway?: boolean | null;
   runway_length_ratio: number;
   longest_runway_heading_true_deg: number | null;
 };

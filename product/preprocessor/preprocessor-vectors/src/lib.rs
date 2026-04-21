@@ -16,7 +16,9 @@ const OBSTACLE_LAYER_ZOOM: u8 = 12;
 const AIRSPACE_REF_MIN_ZOOM: u8 = 0;
 const AIRSPACE_REF_MAX_ZOOM: u8 = 8;
 const AIRSPACE_REF_MIN_PIXEL_SPAN: f64 = 3.0;
-const AIRSPACE_LABEL_ZOOM: u8 = 8;
+const AIRSPACE_LABEL_MIN_ZOOM: u8 = 0;
+const AIRSPACE_LABEL_MAX_ZOOM: u8 = 12;
+const AIRSPACE_LABEL_MIN_PIXEL_SPAN: f64 = 50.0;
 
 #[derive(Debug, Clone)]
 pub struct BuildVectorsRequest {
@@ -97,7 +99,8 @@ struct AirspaceManifest {
     label_tile_path_template: String,
     reference_tile_min_zoom: u8,
     reference_tile_max_zoom: u8,
-    label_tile_zoom: u8,
+    label_tile_min_zoom: u8,
+    label_tile_max_zoom: u8,
     geometry_encoding: String,
 }
 
@@ -110,6 +113,16 @@ struct AirspaceStats {
     label_tile_count: usize,
     max_refs_in_tile: usize,
     max_labels_in_tile: usize,
+    class_label_candidate_outside_polygon_count: usize,
+    class_label_anchor_outside_polygon_count: usize,
+    class_airport_label_adjustment_count: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AirspaceLabelDiagnostics {
+    class_label_candidate_outside_polygon_count: usize,
+    class_label_anchor_outside_polygon_count: usize,
+    class_airport_label_adjustment_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -252,6 +265,11 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
     let conn = Connection::open(&request.main_db)
         .with_context(|| format!("failed to open {}", request.main_db.display()))?;
     let points = load_points(&conn)?;
+    let airport_points = points
+        .iter()
+        .filter(|point| point.style_class == "airport")
+        .cloned()
+        .collect::<Vec<_>>();
     let airspace_source = request
         .data_input_dir
         .as_ref()
@@ -260,13 +278,19 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
         .data_input_dir
         .as_ref()
         .map(|dir| dir.join("SAA-AIXM_5_Schema/SaaSubscriberFile.zip"));
+    let mut airspace_label_diagnostics = AirspaceLabelDiagnostics::default();
     let mut airspace_features = match airspace_source.as_deref() {
-        Some(path) if path.exists() => load_class_airspace_features(
-            path,
-            &request.version_label,
-            request.include_class_e_airspace,
-        )
-        .with_context(|| format!("failed to load airspace shapefile {}", path.display()))?,
+        Some(path) if path.exists() => {
+            let (features, diagnostics) = load_class_airspace_features(
+                path,
+                &request.version_label,
+                request.include_class_e_airspace,
+                &airport_points,
+            )
+            .with_context(|| format!("failed to load airspace shapefile {}", path.display()))?;
+            airspace_label_diagnostics = diagnostics;
+            features
+        }
         _ => Vec::new(),
     };
     if let Some(path) = saa_source.as_ref().filter(|path| path.exists()) {
@@ -341,8 +365,7 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
     if !airspace_features.is_empty() {
         let feature_path_template = "had/{id}.json".to_string();
         let reference_tile_path_template = "airspace/refs/{z}/{x}/{y}.json".to_string();
-        let label_tile_path_template =
-            format!("airspace/labels/{}/{{x}}/{{y}}.json", AIRSPACE_LABEL_ZOOM);
+        let label_tile_path_template = "airspace/labels/{z}/{x}/{y}.json".to_string();
         let mut reference_tiles = BTreeMap::<(u8, u32, u32), Vec<String>>::new();
         let mut label_tiles = BTreeMap::<(u8, u32, u32), Vec<AirspaceTileLabel>>::new();
         let mut class_counts = BTreeMap::<String, usize>::new();
@@ -368,18 +391,22 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                         .push(feature.id.clone());
                 }
             }
-            let (label_x, label_y) =
-                slippy_tile(feature.label.lat, feature.label.lon, AIRSPACE_LABEL_ZOOM);
-            label_tiles
-                .entry((AIRSPACE_LABEL_ZOOM, label_x, label_y))
-                .or_default()
-                .push(AirspaceTileLabel {
-                    feature_id: feature.id.clone(),
-                    text: feature.label.text.clone(),
-                    lon: feature.label.lon,
-                    lat: feature.label.lat,
-                    style_hint: feature.style_hint.clone(),
-                });
+            for zoom in AIRSPACE_LABEL_MIN_ZOOM..=AIRSPACE_LABEL_MAX_ZOOM {
+                if !bbox_is_visible_at_zoom(feature.bbox, zoom, AIRSPACE_LABEL_MIN_PIXEL_SPAN) {
+                    continue;
+                }
+                let (label_x, label_y) = slippy_tile(feature.label.lat, feature.label.lon, zoom);
+                label_tiles
+                    .entry((zoom, label_x, label_y))
+                    .or_default()
+                    .push(AirspaceTileLabel {
+                        feature_id: feature.id.clone(),
+                        text: feature.label.text.clone(),
+                        lon: feature.label.lon,
+                        lat: feature.label.lat,
+                        style_hint: feature.style_hint.clone(),
+                    });
+            }
         }
 
         let mut max_refs_in_tile = 0usize;
@@ -445,7 +472,8 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             label_tile_path_template,
             reference_tile_min_zoom: AIRSPACE_REF_MIN_ZOOM,
             reference_tile_max_zoom: AIRSPACE_REF_MAX_ZOOM,
-            label_tile_zoom: AIRSPACE_LABEL_ZOOM,
+            label_tile_min_zoom: AIRSPACE_LABEL_MIN_ZOOM,
+            label_tile_max_zoom: AIRSPACE_LABEL_MAX_ZOOM,
             geometry_encoding:
                 "lon/lat point arrays; current shapefile arcs are FAA-densified line segments"
                     .to_string(),
@@ -466,6 +494,12 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             label_tile_count,
             max_refs_in_tile,
             max_labels_in_tile,
+            class_label_candidate_outside_polygon_count: airspace_label_diagnostics
+                .class_label_candidate_outside_polygon_count,
+            class_label_anchor_outside_polygon_count: airspace_label_diagnostics
+                .class_label_anchor_outside_polygon_count,
+            class_airport_label_adjustment_count: airspace_label_diagnostics
+                .class_airport_label_adjustment_count,
         });
     }
 
@@ -803,12 +837,14 @@ fn load_class_airspace_features(
     shp_path: &Path,
     version_label: &str,
     include_class_e: bool,
-) -> anyhow::Result<Vec<AirspaceFeature>> {
+    airport_points: &[PointRecord],
+) -> anyhow::Result<(Vec<AirspaceFeature>, AirspaceLabelDiagnostics)> {
     let dbf_path = shp_path.with_extension("dbf");
     let dbf_records = read_dbf_records(&dbf_path)?;
     let shapes = read_shapefile_polygons(shp_path)?;
     let mut features = Vec::new();
     let mut seen = BTreeSet::new();
+    let mut diagnostics = AirspaceLabelDiagnostics::default();
 
     for (index, shape) in shapes.into_iter().enumerate() {
         if shape.parts.is_empty() || !bbox_is_valid(shape.bbox) {
@@ -832,7 +868,25 @@ fn load_class_airspace_features(
             upper: airspace_limit(&properties, "UPPER"),
         };
         let vertical_label = vertical_label(&vertical);
-        let label_anchor = polygon_label_anchor(&shape.parts);
+        if polygon_area_centroid(&shape.parts)
+            .is_some_and(|candidate| !point_in_polygon_parts(candidate, &shape.parts))
+        {
+            diagnostics.class_label_candidate_outside_polygon_count += 1;
+        }
+        let mut label_anchor = polygon_label_anchor(&shape.parts);
+        if let Some(adjusted_anchor) = airport_adjusted_label_anchor(
+            label_anchor,
+            &shape.parts,
+            class,
+            ident.as_deref(),
+            airport_points,
+        ) {
+            label_anchor = adjusted_anchor;
+            diagnostics.class_airport_label_adjustment_count += 1;
+        }
+        if !point_in_polygon_parts(label_anchor, &shape.parts) {
+            diagnostics.class_label_anchor_outside_polygon_count += 1;
+        }
         let id_base = format!(
             "airspace:{}:{}:{}:{}:{}",
             version_label,
@@ -872,7 +926,7 @@ fn load_class_airspace_features(
         });
     }
 
-    Ok(features)
+    Ok((features, diagnostics))
 }
 
 fn load_saa_airspace_features(
@@ -1549,6 +1603,36 @@ fn saa_style_hint(saa_type: &str) -> String {
 }
 
 fn polygon_label_anchor(parts: &[Vec<[f64; 2]>]) -> [f64; 2] {
+    if let Some(candidate) = polygon_area_centroid(parts) {
+        if point_in_polygon_parts(candidate, parts) {
+            return candidate;
+        }
+    }
+    if let Some(candidate) = best_interior_label_point(parts) {
+        return candidate;
+    }
+
+    polygon_vertex_average(parts)
+}
+
+fn polygon_area_centroid(parts: &[Vec<[f64; 2]>]) -> Option<[f64; 2]> {
+    let mut weighted_lon = 0.0;
+    let mut weighted_lat = 0.0;
+    let mut total_area = 0.0;
+    for part in parts {
+        if let Some((centroid, area)) = polygon_ring_centroid(part) {
+            weighted_lon += centroid[0] * area;
+            weighted_lat += centroid[1] * area;
+            total_area += area;
+        }
+    }
+    if total_area > 0.0 {
+        return Some([weighted_lon / total_area, weighted_lat / total_area]);
+    }
+    None
+}
+
+fn polygon_vertex_average(parts: &[Vec<[f64; 2]>]) -> [f64; 2] {
     let mut sum_lon = 0.0;
     let mut sum_lat = 0.0;
     let mut count = 0.0;
@@ -1561,6 +1645,245 @@ fn polygon_label_anchor(parts: &[Vec<[f64; 2]>]) -> [f64; 2] {
         [sum_lon / count, sum_lat / count]
     } else {
         [0.0, 0.0]
+    }
+}
+
+fn best_interior_label_point(parts: &[Vec<[f64; 2]>]) -> Option<[f64; 2]> {
+    let bbox = parts_bbox(parts)?;
+    let samples = 16usize;
+    let lon_step = (bbox[2] - bbox[0]) / samples as f64;
+    let lat_step = (bbox[3] - bbox[1]) / samples as f64;
+    if lon_step <= 0.0 || lat_step <= 0.0 {
+        return None;
+    }
+
+    let mut best_point = None;
+    let mut best_distance = -1.0;
+    for x_index in 0..samples {
+        for y_index in 0..samples {
+            let candidate = [
+                bbox[0] + (x_index as f64 + 0.5) * lon_step,
+                bbox[1] + (y_index as f64 + 0.5) * lat_step,
+            ];
+            if !point_in_polygon_parts(candidate, parts) {
+                continue;
+            }
+            let distance = squared_distance_to_nearest_boundary(candidate, parts);
+            if distance > best_distance {
+                best_distance = distance;
+                best_point = Some(candidate);
+            }
+        }
+    }
+    best_point
+}
+
+fn parts_bbox(parts: &[Vec<[f64; 2]>]) -> Option<[f64; 4]> {
+    let mut bbox = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    let mut found = false;
+    for point in parts.iter().flatten() {
+        bbox[0] = bbox[0].min(point[0]);
+        bbox[1] = bbox[1].min(point[1]);
+        bbox[2] = bbox[2].max(point[0]);
+        bbox[3] = bbox[3].max(point[1]);
+        found = true;
+    }
+    found.then_some(bbox)
+}
+
+fn polygon_ring_centroid(points: &[[f64; 2]]) -> Option<([f64; 2], f64)> {
+    if points.len() < 3 {
+        return None;
+    }
+    let mut twice_area = 0.0;
+    let mut centroid_x = 0.0;
+    let mut centroid_y = 0.0;
+    for index in 0..points.len() {
+        let current = points[index];
+        let next = points[(index + 1) % points.len()];
+        let cross = current[0] * next[1] - next[0] * current[1];
+        twice_area += cross;
+        centroid_x += (current[0] + next[0]) * cross;
+        centroid_y += (current[1] + next[1]) * cross;
+    }
+    if twice_area.abs() < 1.0e-12 {
+        return None;
+    }
+    Some((
+        [
+            centroid_x / (3.0 * twice_area),
+            centroid_y / (3.0 * twice_area),
+        ],
+        twice_area.abs() / 2.0,
+    ))
+}
+
+fn point_in_polygon_parts(point: [f64; 2], parts: &[Vec<[f64; 2]>]) -> bool {
+    parts
+        .iter()
+        .fold(false, |inside, part| inside ^ point_in_ring(point, part))
+}
+
+fn point_in_ring(point: [f64; 2], ring: &[[f64; 2]]) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let x = point[0];
+    let y = point[1];
+    let mut previous = *ring.last().unwrap();
+    for current in ring {
+        let crosses = (current[1] > y) != (previous[1] > y);
+        if crosses {
+            let crossing_x = (previous[0] - current[0]) * (y - current[1])
+                / (previous[1] - current[1])
+                + current[0];
+            if x < crossing_x {
+                inside = !inside;
+            }
+        }
+        previous = *current;
+    }
+    inside
+}
+
+fn squared_distance_to_nearest_boundary(point: [f64; 2], parts: &[Vec<[f64; 2]>]) -> f64 {
+    let mut best = f64::INFINITY;
+    for part in parts {
+        if part.len() < 2 {
+            continue;
+        }
+        for index in 0..part.len() {
+            let start = part[index];
+            let end = part[(index + 1) % part.len()];
+            best = best.min(squared_distance_to_segment(point, start, end));
+        }
+    }
+    best
+}
+
+fn nearest_boundary_point(point: [f64; 2], parts: &[Vec<[f64; 2]>]) -> Option<[f64; 2]> {
+    let mut best_point = None;
+    let mut best_distance = f64::INFINITY;
+    for part in parts {
+        if part.len() < 2 {
+            continue;
+        }
+        for index in 0..part.len() {
+            let start = part[index];
+            let end = part[(index + 1) % part.len()];
+            let candidate = closest_point_on_segment(point, start, end);
+            let distance = squared_distance(point, candidate);
+            if distance < best_distance {
+                best_distance = distance;
+                best_point = Some(candidate);
+            }
+        }
+    }
+    best_point
+}
+
+fn squared_distance_to_segment(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+    squared_distance(point, closest_point_on_segment(point, start, end))
+}
+
+fn closest_point_on_segment(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> [f64; 2] {
+    let segment_lon = end[0] - start[0];
+    let segment_lat = end[1] - start[1];
+    let length_squared = segment_lon * segment_lon + segment_lat * segment_lat;
+    if length_squared <= f64::EPSILON {
+        return start;
+    }
+    let t = ((point[0] - start[0]) * segment_lon + (point[1] - start[1]) * segment_lat)
+        / length_squared;
+    let t = t.clamp(0.0, 1.0);
+    [start[0] + t * segment_lon, start[1] + t * segment_lat]
+}
+
+fn squared_distance(a: [f64; 2], b: [f64; 2]) -> f64 {
+    let lon_delta = a[0] - b[0];
+    let lat_delta = a[1] - b[1];
+    lon_delta * lon_delta + lat_delta * lat_delta
+}
+
+fn airport_adjusted_label_anchor(
+    anchor: [f64; 2],
+    parts: &[Vec<[f64; 2]>],
+    class: &str,
+    ident: Option<&str>,
+    airport_points: &[PointRecord],
+) -> Option<[f64; 2]> {
+    if !matches!(class.trim().to_ascii_uppercase().as_str(), "B" | "C" | "D") {
+        return None;
+    }
+    let airport = matching_airport_in_polygon(parts, ident, anchor, airport_points)?;
+    if squared_distance(anchor, [airport.lon, airport.lat]) > 0.01 {
+        return None;
+    }
+    let edge = nearest_boundary_point([airport.lon, airport.lat], parts)?;
+    for fraction in [0.5, 0.4, 0.6, 0.33, 0.67] {
+        let candidate = [
+            airport.lon + (edge[0] - airport.lon) * fraction,
+            airport.lat + (edge[1] - airport.lat) * fraction,
+        ];
+        if point_in_polygon_parts(candidate, parts) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn matching_airport_in_polygon<'a>(
+    parts: &[Vec<[f64; 2]>],
+    ident: Option<&str>,
+    anchor: [f64; 2],
+    airport_points: &'a [PointRecord],
+) -> Option<&'a PointRecord> {
+    if let Some(exact_ident) = ident.map(normalize_ident) {
+        if let Some(airport) = airport_points.iter().find(|airport| {
+            normalize_ident(airport_raw_identifier(airport).unwrap_or("")) == exact_ident
+                && point_in_polygon_parts([airport.lon, airport.lat], parts)
+        }) {
+            return Some(airport);
+        }
+    }
+
+    let bbox = parts_bbox(parts)?;
+    airport_points
+        .iter()
+        .filter(|airport| {
+            airport.lon >= bbox[0]
+                && airport.lon <= bbox[2]
+                && airport.lat >= bbox[1]
+                && airport.lat <= bbox[3]
+                && squared_distance(anchor, [airport.lon, airport.lat]) <= 0.01
+                && point_in_polygon_parts([airport.lon, airport.lat], parts)
+        })
+        .min_by(|left, right| {
+            squared_distance(anchor, [left.lon, left.lat])
+                .partial_cmp(&squared_distance(anchor, [right.lon, right.lat]))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
+fn airport_raw_identifier(airport: &PointRecord) -> Option<&str> {
+    airport
+        .id
+        .strip_prefix("airport:")
+        .and_then(|value| value.split(':').next())
+}
+
+fn normalize_ident(ident: &str) -> String {
+    let ident = ident.trim().to_ascii_uppercase();
+    if ident.len() == 4 && ident.starts_with('K') {
+        ident[1..].to_string()
+    } else {
+        ident
     }
 }
 

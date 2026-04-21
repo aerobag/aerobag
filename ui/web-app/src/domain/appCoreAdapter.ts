@@ -175,6 +175,15 @@ export type AirspaceDisplayPath = {
     closed: boolean;
     points: Array<{ x: number; y: number }>;
   }>;
+  decorations: Array<{
+    color_key: string;
+    width_px: number;
+    line_cap: "butt" | "round" | "square" | string;
+    paths: Array<{
+      closed: boolean;
+      points: Array<{ x: number; y: number }>;
+    }>;
+  }>;
 };
 
 export type AirspaceDisplayLabel = {

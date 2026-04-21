@@ -109,6 +109,10 @@ function airspaceSvgPathD(path: AirspaceDisplayPath["paths"][number]): string {
   return segments.join(" ");
 }
 
+function airspaceSvgPathListD(paths: AirspaceDisplayPath["paths"]): string {
+  return paths.map(airspaceSvgPathD).filter(Boolean).join(" ");
+}
+
 function airspaceDashArray(dashPx: number[]): string | undefined {
   return dashPx.length > 0 ? dashPx.join(" ") : undefined;
 }
@@ -2801,6 +2805,18 @@ function MapPage(props: {
                       />
                     ))}
                   </Fragment>
+                ))}
+                {feature.decorations.map((decoration, index) => (
+                  <path
+                    key={`${feature.id}:decoration:${index}`}
+                    d={airspaceSvgPathListD(decoration.paths)}
+                    fill="none"
+                    stroke={aviationThemeColor(decoration.color_key)}
+                    strokeWidth={decoration.width_px}
+                    strokeLinecap={svgStrokeLinecap(decoration.line_cap)}
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                  />
                 ))}
               </g>
             ))}

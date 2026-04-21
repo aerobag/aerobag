@@ -6,6 +6,7 @@ use crate::{geometry::LatLon, MapViewport};
 
 pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 300;
 pub const AIRSPACE_DISPLAY_FEATURE_LIMIT: usize = 700;
+pub const AIRSPACE_FEATHER_LIMIT: usize = 5_000;
 const POINT_TILE_ZOOM: u32 = 9;
 const AIRSPACE_MIN_DISPLAY_ZOOM: f64 = 6.0;
 const AIRSPACE_REF_MIN_ZOOM: u32 = 0;
@@ -162,6 +163,14 @@ pub struct AirspaceDisplaySubpath {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceDecorationPath {
+    pub color_key: String,
+    pub width_px: f64,
+    pub line_cap: String,
+    pub paths: Vec<AirspaceDisplaySubpath>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirspaceDisplayPath {
     pub id: String,
     pub name: String,
@@ -169,6 +178,7 @@ pub struct AirspaceDisplayPath {
     pub style_key: String,
     pub style: AirspaceDisplayStyle,
     pub paths: Vec<AirspaceDisplaySubpath>,
+    pub decorations: Vec<AirspaceDecorationPath>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -390,6 +400,12 @@ struct AirspaceOverlayProjection {
     warnings: Vec<MapOverlayWarning>,
 }
 
+#[derive(Debug, Default)]
+struct AirspaceDecorationBudget {
+    used: usize,
+    limit_hit: bool,
+}
+
 fn query_airspace_overlay(
     viewport: &MapViewport,
     width_px: f64,
@@ -427,6 +443,7 @@ fn query_airspace_overlay(
     let mut needed_features = Vec::new();
     let mut paths = Vec::new();
     let mut limit_hit = false;
+    let mut decoration_budget = AirspaceDecorationBudget::default();
     for feature_id in feature_ids {
         if paths.len() >= AIRSPACE_DISPLAY_FEATURE_LIMIT {
             limit_hit = true;
@@ -448,7 +465,14 @@ fn query_airspace_overlay(
         ) {
             continue;
         }
-        let projected = project_airspace_feature(feature, center_world, scale, width_px, height_px);
+        let projected = project_airspace_feature(
+            feature,
+            center_world,
+            scale,
+            width_px,
+            height_px,
+            &mut decoration_budget,
+        );
         if !projected.paths.is_empty() {
             paths.push(projected);
         }
@@ -493,17 +517,25 @@ fn query_airspace_overlay(
         }
     }
 
-    let warnings = if limit_hit {
-        vec![MapOverlayWarning {
+    let mut warnings = Vec::new();
+    if limit_hit {
+        warnings.push(MapOverlayWarning {
             code: "airspace_display_feature_limit".to_string(),
             message: format!(
                 "display capped at {} visible airspace features",
                 AIRSPACE_DISPLAY_FEATURE_LIMIT
             ),
-        }]
-    } else {
-        Vec::new()
-    };
+        });
+    }
+    if decoration_budget.limit_hit {
+        warnings.push(MapOverlayWarning {
+            code: "airspace_feather_limit".to_string(),
+            message: format!(
+                "display capped at {} airspace feather ticks",
+                AIRSPACE_FEATHER_LIMIT
+            ),
+        });
+    }
 
     AirspaceOverlayProjection {
         needed_ref_tiles,
@@ -546,6 +578,7 @@ fn project_airspace_feature(
     scale: f64,
     width_px: f64,
     height_px: f64,
+    decoration_budget: &mut AirspaceDecorationBudget,
 ) -> AirspaceDisplayPath {
     let paths = feature
         .paths
@@ -586,9 +619,109 @@ fn project_airspace_feature(
         name: feature.name.clone(),
         label: feature.vertical_label.clone(),
         style: airspace_display_style(&style_key),
+        decorations: airspace_decorations(&style_key, &paths, decoration_budget),
         style_key,
         paths,
     }
+}
+
+fn airspace_decorations(
+    style_key: &str,
+    paths: &[AirspaceDisplaySubpath],
+    budget: &mut AirspaceDecorationBudget,
+) -> Vec<AirspaceDecorationPath> {
+    let Some((color_key, width_px)) = airspace_feather_style(style_key) else {
+        return Vec::new();
+    };
+    let mut feather_paths = Vec::new();
+    for path in paths {
+        if !path.closed || path.points.len() < 3 {
+            continue;
+        }
+        feather_paths.extend(airspace_feathers_for_path(path, budget));
+        if budget.limit_hit {
+            break;
+        }
+    }
+    if feather_paths.is_empty() {
+        return Vec::new();
+    }
+    vec![AirspaceDecorationPath {
+        color_key,
+        width_px,
+        line_cap: "butt".to_string(),
+        paths: feather_paths,
+    }]
+}
+
+fn airspace_feather_style(style_key: &str) -> Option<(String, f64)> {
+    match style_key {
+        "moa" | "alert" => Some(("class_c_magenta".to_string(), 1.4)),
+        "restricted" | "prohibited" => Some(("class_b_d_blue".to_string(), 1.4)),
+        _ => None,
+    }
+}
+
+fn airspace_feathers_for_path(
+    path: &AirspaceDisplaySubpath,
+    budget: &mut AirspaceDecorationBudget,
+) -> Vec<AirspaceDisplaySubpath> {
+    const FEATHER_SPACING_PX: f64 = 8.0;
+    const FEATHER_LENGTH_PX: f64 = 8.0;
+    let signed_area = polygon_signed_area(&path.points);
+    if signed_area.abs() < 1.0 {
+        return Vec::new();
+    }
+    let inward_sign = if signed_area > 0.0 { 1.0 } else { -1.0 };
+    let mut feathers = Vec::new();
+    for index in 0..path.points.len() {
+        let start = &path.points[index];
+        let end = &path.points[(index + 1) % path.points.len()];
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+        let length = (dx * dx + dy * dy).sqrt();
+        if length < FEATHER_SPACING_PX {
+            continue;
+        }
+        let nx = -dy / length * inward_sign;
+        let ny = dx / length * inward_sign;
+        let mut distance = FEATHER_SPACING_PX * 0.5;
+        while distance < length {
+            if budget.used >= AIRSPACE_FEATHER_LIMIT {
+                budget.limit_hit = true;
+                return feathers;
+            }
+            let t = distance / length;
+            let base_x = start.x + dx * t;
+            let base_y = start.y + dy * t;
+            feathers.push(AirspaceDisplaySubpath {
+                closed: false,
+                points: vec![
+                    AirspaceScreenPoint {
+                        x: round_screen_coordinate(base_x),
+                        y: round_screen_coordinate(base_y),
+                    },
+                    AirspaceScreenPoint {
+                        x: round_screen_coordinate(base_x + nx * FEATHER_LENGTH_PX),
+                        y: round_screen_coordinate(base_y + ny * FEATHER_LENGTH_PX),
+                    },
+                ],
+            });
+            budget.used += 1;
+            distance += FEATHER_SPACING_PX;
+        }
+    }
+    feathers
+}
+
+fn polygon_signed_area(points: &[AirspaceScreenPoint]) -> f64 {
+    let mut area = 0.0;
+    for index in 0..points.len() {
+        let start = &points[index];
+        let end = &points[(index + 1) % points.len()];
+        area += start.x * end.y - end.x * start.y;
+    }
+    area / 2.0
 }
 
 fn airspace_bbox_may_intersect_screen(
@@ -704,16 +837,36 @@ fn airspace_display_style(style_key: &str) -> AirspaceDisplayStyle {
             fill_opacity: 0.025,
             strokes: vec![AirspaceDisplayStroke {
                 color_key: "class_b_d_blue".to_string(),
-                width_px: 4.0,
-                dash_px: vec![8.0, 4.0],
+                width_px: 1.4,
+                dash_px: Vec::new(),
                 line_cap: "butt".to_string(),
             }],
         },
-        "moa" | "warning" | "alert" | "national_security" => AirspaceDisplayStyle {
+        "moa" | "alert" => AirspaceDisplayStyle {
+            fill_color_key: "class_c_magenta".to_string(),
+            fill_opacity: 0.018,
+            strokes: vec![AirspaceDisplayStroke {
+                color_key: "class_c_magenta".to_string(),
+                width_px: 1.4,
+                dash_px: Vec::new(),
+                line_cap: "butt".to_string(),
+            }],
+        },
+        "warning" => AirspaceDisplayStyle {
             fill_color_key: "class_b_d_blue".to_string(),
             fill_opacity: 0.018,
             strokes: vec![AirspaceDisplayStroke {
                 color_key: "class_b_d_blue".to_string(),
+                width_px: 3.6,
+                dash_px: vec![6.0, 4.0],
+                line_cap: "butt".to_string(),
+            }],
+        },
+        "national_security" => AirspaceDisplayStyle {
+            fill_color_key: "class_c_magenta".to_string(),
+            fill_opacity: 0.018,
+            strokes: vec![AirspaceDisplayStroke {
+                color_key: "class_c_magenta".to_string(),
                 width_px: 3.6,
                 dash_px: vec![6.0, 4.0],
                 line_cap: "butt".to_string(),
@@ -903,6 +1056,87 @@ mod tests {
             .needed_airspace_label_tiles
             .iter()
             .all(|tile| tile.z == AIRSPACE_LABEL_MAX_ZOOM));
+    }
+
+    #[test]
+    fn moa_paths_generate_feather_decorations_and_cap_warning() {
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 8.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let mut ref_cache = HashMap::new();
+        ref_cache.insert(
+            airspace_ref_tile_key(8, 128, 128),
+            AirspaceReferenceTilePayload {
+                schema_version: 1,
+                layer: "airspace".to_string(),
+                z: 8,
+                x: 128,
+                y: 128,
+                refs: vec!["airspace:test:moa".to_string()],
+            },
+        );
+        let mut feature_cache = HashMap::new();
+        feature_cache.insert(
+            "airspace:test:moa".to_string(),
+            AirspaceFeaturePayload {
+                schema_version: 1,
+                id: "airspace:test:moa".to_string(),
+                kind: "airspace".to_string(),
+                name: "TEST MOA".to_string(),
+                ident: "TEST".to_string(),
+                airspace_class: "MOA".to_string(),
+                style_hint: "moa".to_string(),
+                vertical_label: "100/50".to_string(),
+                bbox: [-0.1, -0.1, 0.1, 0.1],
+                paths: vec![AirspaceFeaturePath {
+                    role: "boundary".to_string(),
+                    closed: true,
+                    points: vec![[-0.1, -0.1], [0.1, -0.1], [0.1, 0.1], [-0.1, 0.1]],
+                }],
+            },
+        );
+
+        let result = query_map_overlay(
+            &viewport,
+            1200.0,
+            900.0,
+            &HashMap::new(),
+            &ref_cache,
+            &feature_cache,
+            &HashMap::new(),
+        );
+        assert_eq!(result.airspace_paths.len(), 1);
+        assert_eq!(result.airspace_paths[0].style.strokes.len(), 1);
+        assert_eq!(
+            result.airspace_paths[0].style.strokes[0].color_key,
+            "class_c_magenta"
+        );
+        assert_eq!(result.airspace_paths[0].style.strokes[0].width_px, 1.4);
+        assert!(result.airspace_paths[0].style.strokes[0].dash_px.is_empty());
+        assert!(
+            !result.airspace_paths[0].decorations.is_empty(),
+            "MOA should include feather decorations"
+        );
+        assert_eq!(
+            result.airspace_paths[0].decorations[0].color_key,
+            "class_c_magenta"
+        );
+    }
+
+    #[test]
+    fn national_security_uses_heavy_dashed_magenta_style() {
+        let style = airspace_display_style("national_security");
+
+        assert_eq!(style.fill_color_key, "class_c_magenta");
+        assert_eq!(style.strokes.len(), 1);
+        assert_eq!(style.strokes[0].color_key, "class_c_magenta");
+        assert_eq!(style.strokes[0].width_px, 3.6);
+        assert_eq!(style.strokes[0].dash_px, vec![6.0, 4.0]);
+        assert_eq!(style.strokes[0].line_cap, "butt");
+        assert!(airspace_feather_style("national_security").is_none());
     }
 
     #[test]

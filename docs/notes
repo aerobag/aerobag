@@ -61,23 +61,35 @@ x   And for the android side, let's figure out how to spin up an emulator; maybe
 
 ------------------------------------------------------------------------------
 
-   - tpp implementation and parity in Rust
-  - csup implementation and parity in Rust
-  - turning today_s chart validation from _targeted runs plus regression commands_ into a more complete repeatable harness
-  - accounting for legacy artifact families outside the current chart slice: things like WAC/ONC/TPC/terrain/topo/VFR area/CAN_ADS
-    and other avare/extra/ outputs
-  - deciding how much output parity we require beyond structure and provenance, for example sampled visual diffs or stronger
-    artifact-hash expectations
+x   - tpp implementation and parity in Rust
+x   - csup implementation and parity in Rust
+x   - turning today_s chart validation from _targeted runs plus regression commands_ into a more complete repeatable harness
+x   - accounting for legacy artifact families outside the current chart slice: things like WAC/ONC/TPC/terrain/topo/VFR area/CAN_ADS
+x     and other avare/extra/ outputs
+x   - deciding how much output parity we require beyond structure and provenance, for example sampled visual diffs or stronger
+x     artifact-hash expectations
 
 ------------------------------------------------------------------------------
-"The FAA PDF names already encode the output region prefix,"
-Whoah, that sounds brittle! What if the FAA draws the boundaries somewhere
-other than where we drew lat/lon boundaries for tiled charts?
+
+x The procedure names in the UI are ridiculous.
+x APD-CA-AIRPORT DIAGRAM should be displayed as "Airport Diagram"
+x CSup should be displayed as "Chart Supplement"
+x MIN-CA-ALTERNATE MINIMUMS-2 should be "Alt Minimums 2"
+x MIN-CA-ALTERNATE MINIMUMS-22 should be "Alt Minimums 22"
+x IAP-CA-ILS OR LOC RWY 34 should be "ILS or LOC 34"
+x IAP-CA-RNAV (GPS) RWY 16 should be "RNAV 16"
+x IAP-CA-VOR RWY 34 should be "VOR 34"
+x DP-CA-HOMAN THREE should be "HOMAN THREE"
+x 
+x The preprocessor should find or construct these pretty names.
+x I'm hoping that "DP-CA-HOMAN THREE" already lives in a db column
+x intended for human consumption (not a machine identifier), so we're just
+x going to be writing better values there.
 
 ------------------------------------------------------------------------------
-Once we know we're creating equivalent content, we're free to reorganize it.
-Does the avare android app unpack those zip files? I think it would be more
-awesome to just fetch content out of them as we run.
+x Once we know we're creating equivalent content, we're free to reorganize it.
+x Does the avare android app unpack those zip files? I think it would be more
+x awesome to just fetch content out of them as we run.
 
 x You did a bunch of this and found "compatibility-first" wonkinesses where
 x you had to hold your nose to get parity. What features/protocols/conventions
@@ -104,35 +116,55 @@ x (without effecting a change).
 
 ------------------------------------------------------------------------------
 
-At the bottom of the chart, centered, is a Nav Element. It's 2/3thumb high and 3 thumb wide.
-It's split into two rows. The top row summarizes the current leg ("UBG -> OLM crs 342"),
-the bottom row is a CDI depiction ("°  ° ^|  °  °") -- the triangle depicts current position,
-in this case a little left of course. A "dot" deviation has a standard definition depending
-on the flight plan leg (enroute vs approach).
+x Let's replace the placeholder Nav Element with a real one.
+x 
+x Core should send the instructions for what to render.
+x The top row is a description of the active FP leg ("UBG -> OLM crs 342"), or empty if
+x none is active.
+x The bottom is a CDI. It has two open circles, a vertical bar, and two more open circles,
+x all evenly spaced, with a quarter-space more at each end. That is, define the inter-dot
+x spacing as X. Now the whole bar is 4.5X wide: 0.25X, dot, X, dot, X, |, X, dot, X, dot, 0.25X.
+x (The geometry of the CDI is fixed. It should define the width of the nav bar.)
+x When core sends a non-None CDI indicator, we paint a pink isosceles triangle (flat
+x bottom, point on top) in the position it commands. Position is specified such that -2 is the
+x left dot, 0 is the |, +2 is the right dot. The pink pointer is painted behind the dots and
+x bar.
+x 
+x For now, have core stub out the CDI events with just "-0.2 dots", until it has information
+x to compute CDI guidance from.
 
-The next page is the Flight Plan page. We navigate there by tapping the Nav Element.
-This page is a table. On the left are waypoints (1 thumb high by 2.5 thumb wide). To the
-right are columns ("distance (nm)", "ETE (h:m)", "course (°)", ... eventually configurable?).
-Waypoints may be grouped into procedures, in which case the top waypoint in the list is the
-procedure name ("RNTN3 departure"), and the waypoints that belong to the procedure are indented
-0.1 thumb. (Keep this in mind, but we can start with simple flight plans that don't have
-grouped procedures.)
+x For clarity, the nav bar should be reusable; we're probably going to paint it at the bottom
+x center of most or all pages.
 
-Clicking on a waypoint brings up a modal (that covers the remaining columns in the table) with
-actions associated with the waypoint: "remove", "insert", "reorder", "waypoint info", "Add airway",
-"Select procedure", "Charts". Clicking "charts" navigates to the Chart top-level page.
-(don't worry implementing the other actions yet.)
-
-The third page is the Chart page. It displays plates and CSups. These are just flat PNGs,
-not tiled layers. From a UI perspective, they act like the chart page: I can pinch/zoom and
-drag-pan to be able to read small text. Dragging is allowed to pull the image one thumb
-farther onto the screen than the edge of the display, so that we can read features at the
-edge of the image out from under any UI elements we stuck over the display.
-The Chart page has two one-thumb button in the upper-left corner. The left button shows
-which airport we're looking at charts for ("KRNT"); clicking it pulls up a tray of
-several airports that have been recently accessed on the chart page (or also appear
-on the flight plan). The second button displays which chart we're viewing ("RNAV 16 Z", "CSup", "RNTN3").
-Clicking it slides out a tray to select among the available charts for the currently selected airport.
+x At the bottom of the chart, centered, is a Nav Element. It's 2/3thumb high and 3 thumb wide.
+x It's split into two rows. The top row summarizes the current leg ("UBG -> OLM crs 342"),
+x the bottom row is a CDI depiction ("°  ° ^|  °  °") -- the triangle depicts current position,
+x in this case a little left of course. A "dot" deviation has a standard definition depending
+x on the flight plan leg (enroute vs approach).
+x 
+x The next page is the Flight Plan page. We navigate there by tapping the Nav Element.
+x This page is a table. On the left are waypoints (1 thumb high by 2.5 thumb wide). To the
+x right are columns ("distance (nm)", "ETE (h:m)", "course (°)", ... eventually configurable?).
+x Waypoints may be grouped into procedures, in which case the top waypoint in the list is the
+x procedure name ("RNTN3 departure"), and the waypoints that belong to the procedure are indented
+x 0.1 thumb. (Keep this in mind, but we can start with simple flight plans that don't have
+x grouped procedures.)
+x 
+x Clicking on a waypoint brings up a modal (that covers the remaining columns in the table) with
+x actions associated with the waypoint: "remove", "insert", "reorder", "waypoint info", "Add airway",
+x "Select procedure", "Charts". Clicking "charts" navigates to the Chart top-level page.
+x (don't worry implementing the other actions yet.)
+x 
+x The third page is the Chart page. It displays plates and CSups. These are just flat PNGs,
+x not tiled layers. From a UI perspective, they act like the chart page: I can pinch/zoom and
+x drag-pan to be able to read small text. Dragging is allowed to pull the image one thumb
+x farther onto the screen than the edge of the display, so that we can read features at the
+x edge of the image out from under any UI elements we stuck over the display.
+x The Chart page has two one-thumb button in the upper-left corner. The left button shows
+x which airport we're looking at charts for ("KRNT"); clicking it pulls up a tray of
+x several airports that have been recently accessed on the chart page (or also appear
+x on the flight plan). The second button displays which chart we're viewing ("RNAV 16 Z", "CSup", "RNTN3").
+x Clicking it slides out a tray to select among the available charts for the currently selected airport.
 
 
 ------------------------------------------------------------------------------
@@ -289,17 +321,6 @@ x something about the zoom bounds thing racing with subsequent inputs?
 
 (web) dragging plates has a little jank in it.
 x (web) dragging charts has a lot of jank in it.
-
-Airport selector list:
-- flight plan airports
-- we'll maintain an LRU-cache list of "recently touched airports"
-- maybe a list of "first 5 towered airports by distance from airplane."
-
-obstacles -- what do we do with them?
-
-terrain clearance red/yellow -- using terrain tiles? (Can we do the pixel-level subtraction on android?
-on web? Quickly enough? Maybe wasm? In the rust code? Be nice if it were common)
-
 x PLN:remove isn't enabled for first waypoint.
 
 x (web) After the app restarts, the first visit to the Plate page (which might be the first thing
@@ -339,11 +360,6 @@ one top-level build (scons?) with options to:
 - build the android app
 - launch the x11fb-vnc+emulator+android app for interactive UI testing
 
-add pink dashed strokes at the cutline borders of charts, so when two charts
-overlap it's *really* obvious there's a seam in the stitched image.
-(This will also help with the boundary at the edge of a TAF rendered over
-a sectional.)
-
   - core owns:
       - tile request planning
       - tile fetch/load policy
@@ -357,20 +373,20 @@ a sectional.)
       - visible features
       - warnings/status
 
-At Seattle there's SEATTLE 116.80 -- that's the VOR. It should render "SEA 116.80".
-Then there's "SEATTLE-TACOMA 117.50". What is that, the ILS? We don't want to render
-those. Is a failure of labeling/filtering on the preprocessor end that generated
-the tiles?
-
-  - preprocessor should split or filter the nav layer so the “VOR” overlay only contains VOR-family
-    navaids:
-      - vor
-      - vor/dme
-      - vortac
-  - and excludes:
-      - vot
-      - ndb
-      - anything else non-VOR
+x At Seattle there's SEATTLE 116.80 -- that's the VOR. It should render "SEA 116.80".
+x Then there's "SEATTLE-TACOMA 117.50". What is that, the ILS? We don't want to render
+x those. Is a failure of labeling/filtering on the preprocessor end that generated
+x the tiles?
+x 
+x   - preprocessor should split or filter the nav layer so the “VOR” overlay only contains VOR-family
+x     navaids:
+x       - vor
+x       - vor/dme
+x       - vortac
+x   - and excludes:
+x       - vot
+x       - ndb
+x       - anything else non-VOR
 
 
 ------------------------------------------------------------------------------
@@ -572,26 +588,34 @@ Hotspots (UAO HOT_OR_HOT SPOT-0) should be concatenated visually like continued 
 
 iap-matching-handoff.md
 
-Hotspots (UAO HOT_OR_HOT SPOT-0) should be grouped with blue stuff, sorted last after minimums.
-IAPs should sort first, then DPs & STARs, then blue stuff.
-
-
-  Raw PI distance-field histogram from the current DB:
-
-  - 0100: 1023
-  - 0150: 110
-  - 0010: 5
-  - 0050: 5
-  - 0120: 3
-  - 0015: 1
-
+x Hotspots (UAO HOT_OR_HOT SPOT-0) should be grouped with blue stuff, sorted
+x last after minimums.  IAPs should sort first, then DPs & STARs, then blue
+x stuff.
 
 ------------------------------------------------------------------------------
 
-Current position and georeferencing
+x Current position and georeferencing
 
-Validate approach plates by drawing the approaches over them from db with crosshairs at the intersections
-(Special attention to the rotated arrivals like GLASR-THREE).
+xTerrain
+x  product x phase directory bill:
+x    terrain: 229G                      
+x      upstream fetch cache: 70G (1887 blobs)
+x      node cache: 56G
+x        tiles/package nodes: 56G
+x      private work: 73G       
+x        private work: 73G           
+x      published packaged: 8.1G
+x      published unpacked mirror: 22G
+
+xQuestions:
+x- We're consuming 70G and emitting 8.1G. Why the 10x difference?
+x- Why is packaged ~3x smaller than unpacked? Is the issue that unpacked is uncompressed?
+xWhat's the file format?
+x- node cache is duplicating fetch cache? Is this a hardlink opportunity?
+x- why is node cache *smaller* than fetch cache? What 14G did we fetch and don't use?
+x- Is the 73G of private work hardlink-able, or intermediate product? Can we
+xgive it a cleanup treatment like we've used before, where it's cheap to
+xreconsruct from the node or upstream fetch cache?
 
 x Introduce into the core a model of our "current position." Our position can be:
 x - a LatLon (being fed in live),
@@ -682,14 +706,6 @@ x 	With fuel? It gets little square protrusions on the four cardinal edges.
 x 	Draw the a white bar in the orientation of the biggest runway.
 x 	I have updated the vectors tiles to include fuel & long-runway info.
 
-Approaches:
-CEC ILS or LOC RWY 12: 10 nm from SLAMM. We good?
-x BDR ILS or LOC RWY 6: funky
-x HIO ILS or LOC RWY 13R: sharp left at turn BTG-DUCKA-COUVE
-x BHM RNAV RWY 36: BASKN teleports to hold (track 281)
-X CYS RNAV RWY 13: sharp turn at EMOTY -- hold for PT?
-HYR ILS 21: GRASS 250 hdg ; presently jumps direct DAIVE
-
 Let's draw airspace boundaries.
 
   On FAA boundary sources: I found official FAA indications that boundary-ish data is available as services, but not yet a clean
@@ -707,13 +723,196 @@ Let's draw airspace boundaries.
 
 
 
-Let's draw TFRs! We need a data source.
 
 VORs & rings? NDBs? Probably not.
+- Garmin paints low-contrast VOR rings. But it was written back when there were
+still some operative VORs.
+
+x   Let's work through these the way we began the project: inspect the avare
+x   code for one path. Run the avare code. Build an aerobag rust library that
+x   does the same thing. Write a parity check that proves that we can produce
+x   identical results. Then improve the aerobag version (if there's a better
+x   discpline / product versioning scheme) and integrate it into our parallel
+x   production fetch pipeline.
+
+
+x  tile products:
+x shaded relief
+x terrain
+x	-- use the obstactles, too
+
+x terrain clearance red/yellow -- using terrain tiles? (Can we do the pixel-level subtraction on android?
+x on web? Quickly enough? Maybe wasm? In the rust code? Be nice if it were common)
+
+x The DEM tiles are coming in through our cached fetch path, I trust?
+x So there's no harm in fetching
+
+x A matter of taste for the shaded relief:
+x - let's use a color table that matches the sectional:
+x     0- 1000 light green
+x  1000- 2000 darker green
+x  2000- 3000 beige
+x  3000- 5000 tan
+x  5000- 9000 mid brown
+x  9000- up   dark brown
+x (I'll take eyedropper hex code samples for you later)
+x Can we get boundaries of water bodies and glaciers and paint
+x those blue & white? How cool would that be. But don't overthink
+x it because we have the sectional, after all.
+
+x geo magnetic variation & geoid offset
+  Fast products:
+x TFRs
+x METARs
+x NEXRAD graphical radar
+  Winds aloft
+  Icing and other graphical products?
+
+x Right now I can't construct a flight plan except by asking you to hardcode one.
+x Let's fix that!
+x Let's replace the Insert button with Insert Before and Insert After. (Core tells ui
+x which are enabled.) Clicking one brings up an airport selector. Right now, that's
+x just a text box with comically huge letters. On web, it's a blinking cursor, relying
+x on the user's keyboard (or mobile soft keyboard).
+x On android, we'll pop up a custom soft keyboard using half the screen real estate
+x (adaptive to display orientation), just A-Z 0-9 backspace and enter. (Want those
+x targets to be easy to hit in a bouncy plane.)
+ 
+x The entry might be an airport ID, a VOR, or an intersection. Deciding what it is
+x (and giving adaptive feedback to the UI as keystrokes come in) is the core's problem.
+
+x Avare also has two other frequently-updated data sets: METARs (also json) and NEXRAD (raster).
+x Reproduce them, following this same style: Write new rust code that proves (with a test)
+x it can extract something identical to what Avare got. Then discuss the changes we want when
+x packaging for Aerobag, where we're free to design better formats.
+
+x Avare's own bug(s) -- what kinds of errors would they manifest in prouction?
+x Parity is bug-compatible, and thus losing content? Presumably the aerobag version
+x should fix all these bugs, yes?
+x 
+x How are you suggesting we package Nexrad? Should it be a (shallow) tile tree? Or just a flat raster, because it's not big enough to worry about asking the renderer to unpack and carry around?
+
+x When you froze a test fixture for TFRs, was that in /tmp? Or in the source tree?
+x Do we now have frozen fixtures for TFR, METAR and NEXRAD? How big are they?
+x Let's check those into the repo (but in test_fixtures/, not next to the source code
+x under product/ or ui/).
+
+x Write a handoff to tell UI about the new data sources.
+
+x Write a handoff in /tmp/ownship-for-android to describe all the changes we made to web
+x that haven't been to Android yet. I'm going to set another codex on updating for parity.
+
 
 ------------------------------------------------------------------------------
 
+x Refactoring & Cleanups
+
+x disk cleanups:
+x   - Add an explicit GC tool/policy for private-work and cache/nodes: keep
+x     public snapshots durable, keep current reachable/cache-useful nodes, evict
+x     stale render/work outputs by age or root-set reachability.
+
+x   - The staged terrain DEM files have link count 1, so they are real copies,
+x Could we be using hardlinks in our production pipeline to avoid unneeded copies?
+x Is this one such place? Are there more places?
+
+
+x clean up a name
+x 
+x   - we did not invent recommended_navaid in app-core
+x   - it is inherited from the raw CIFP import table schema in preprocessor:
+x       - aerobag/product/preprocessor/preprocessor-data/src/lib.rs
+x       - aerobag/baseline/avare_equivalent/preprocessor-data/src/lib.rs
+x   - those importers preserve the fixed-width FAA/ARINC-style field layout
+x     directly into cifp_sid_star_app
+
+x ** clean up web db accesses
+x 
+x   1. aerobag/ui/web-app/src/domain/airwayPlanner.ts
+x 
+x   - suggest nearby airways
+x   - load airway branches/points
+x   - resolve point names to NavRef
+x   - resolve NavRef -> lat/lon
+x   - materialize airway selections
+x 
+x   2. aerobag/ui/web-app/src/domain/procedurePlanner.ts
+x 
+x   - identify whether a token is airport/nav/fix
+x   - list procedures
+x   - load distinct procedure rows
+x   - load procedure materialization rows
+x 
+x   And then aerobag/ui/web-app/src/App.tsx uses that resolver for chart route drawing.
+x 
+x   So the bad architectural truth is:
+x 
+x   - web still has a browser-side mini nav-db application layer
+x   - Android mostly calls core instead
+x   - that is duplicated policy/data access
+x 
+x   I think the right target is:
+x 
+x   - UI never touches nav DB directly
+x   - core owns:
+x       - airway suggestion/planning
+x       - procedure listing/options/materialization
+x       - NavRef -> position
+x       - chart route projection
+x   - UI just renders projected results and sends user selections back
+x 
+x   The only web-specific thing that should remain is:
+x 
+x   - opening the SQLite file itself in the browser, if core stays in WASM and needs JS to hand it bytes or a
+x     virtual file handle
+x 
+x   But SQL queries and interpretation should not live in TS long-term.
+x 
+x   So the cleanup direction is clear:
+x 
+x   1. move airwayPlanner.ts logic into core/FFI
+x   2. move procedurePlanner.ts logic into core/FFI
+x   3. delete browser-side nav DB querying from the UI layer
+x   4. keep webNavDb.ts only if it remains necessary as a transport/bootstrap layer for WASM SQLite access
+
+------------------------------------------------------------------------------
+Bugs/Incomplete
+
+Approaches:
+CEC ILS or LOC RWY 12: 10 nm from SLAMM. We good?
+x BDR ILS or LOC RWY 6: funky
+x HIO ILS or LOC RWY 13R: sharp left at turn BTG-DUCKA-COUVE
+x BHM RNAV RWY 36: BASKN teleports to hold (track 281)
+X CYS RNAV RWY 13: sharp turn at EMOTY -- hold for PT?
+HYR ILS 21: GRASS 250 hdg ; presently jumps direct DAIVE
+
+Approach data
+  Raw PI distance-field histogram from the current DB:
+  - 0100: 1023
+  - 0150: 110
+  - 0010: 5
+  - 0050: 5
+  - 0120: 3
+  - 0015: 1
+
+/!\ cautions for untrustworthy procedure turns.
+
+Validate approach plates by drawing the approaches over them from db with crosshairs at the intersections
+(Special attention to the rotated arrivals like GLASR-THREE).
+
+aerobag-four:
+Long flight plan lines are straight on web mercator. We're not doing great circles,
+are we? Does this mean our distance computations are wrong, too?
+
+------------------------------------------------------------------------------
 Refactoring & Cleanups
+
+"The FAA PDF names already encode the output region prefix,"
+Whoah, that sounds brittle! What if the FAA draws the boundaries somewhere
+other than where we drew lat/lon boundaries for tiled charts?
+Let's do an experiment where we render TPP sites (using our join table to get
+runway/airport lat lons) on a map, and also render our nine region polygons
+on the same map, and see how well they agree.
 
 Go looking through the source tree for dead code or plumbing for features we
 don't have. Surface it all and let's discuss eliminating it.
@@ -726,62 +925,133 @@ Look through the source tree with an eye towards cleanup. Are there things
 we're doing k times that might be candidates for factoring into a common
 place?
 
-clean up a name
+Go through all the logging. Turn it all off? Maybe comment out stuff that's
+valuable / guard it with a flag we can turn back on.
 
-  - we did not invent recommended_navaid in app-core
-  - it is inherited from the raw CIFP import table schema in preprocessor:
-      - aerobag/product/preprocessor/preprocessor-data/src/lib.rs
-      - aerobag/baseline/avare_equivalent/preprocessor-data/src/lib.rs
-  - those importers preserve the fixed-width FAA/ARINC-style field layout
-    directly into cifp_sid_star_app
+Control any upstream backchannel path so when we deploy this, end-users don't
+find themselves streaming log data back to my server.
 
-** clean up web db accesses
+------------------------------------------------------------------------------
+Major missing features
 
-  1. aerobag/ui/web-app/src/domain/airwayPlanner.ts
+Ownship from real GPS!
 
-  - suggest nearby airways
-  - load airway branches/points
-  - resolve point names to NavRef
-  - resolve NavRef -> lat/lon
-  - materialize airway selections
+  Altitude optimizer!
 
-  2. aerobag/ui/web-app/src/domain/procedurePlanner.ts
+Download manager
 
-  - identify whether a token is airport/nav/fix
-  - list procedures
-  - load distinct procedure rows
-  - load procedure materialization rows
+obstacles -- what do we do with them? Draw them!
 
-  And then aerobag/ui/web-app/src/App.tsx uses that resolver for chart route drawing.
+Airspace boundaries
 
-  So the bad architectural truth is:
+Let's draw TFRs!
+Live SAA activation schedules from sua.faa.gov
 
-  - web still has a browser-side mini nav-db application layer
-  - Android mostly calls core instead
-  - that is duplicated policy/data access
+Ownship-driven Sequencing (see test description)
+Sequence and suspend aren't working right.
 
-  I think the right target is:
+Data banner (GPS/Baro ALT, Track, DTK, ETE, ...)
 
-  - UI never touches nav DB directly
-  - core owns:
-      - airway suggestion/planning
-      - procedure listing/options/materialization
-      - NavRef -> position
-      - chart route projection
-  - UI just renders projected results and sends user selections back
+Cloud Account Server
+	- flight plan sync
+	- offline chart prefs
+	- user / display prefs
+	- aircraft profiles
+	- flight track recordings
+		- viewer
+	- logbook?
 
-  The only web-specific thing that should remain is:
+Track log & upload/sync
 
-  - opening the SQLite file itself in the browser, if core stays in WASM and needs JS to hand it bytes or a
-    virtual file handle
+Logbook page:
+	- record engine start time.
+		- type in hobbs/tach
+	- record shutdown time
+		- type in hobbs/tach
+	- mark enter/exit IMC
+	- count landings or approaches? -- after the fact, using track log and/or flight plan approach activates
 
-  But SQL queries and interpretation should not live in TS long-term.
+NOTAMs
 
-  So the cleanup direction is clear:
+fly2lunch integration
 
-  1. move airwayPlanner.ts logic into core/FFI
-  2. move procedurePlanner.ts logic into core/FFI
-  3. delete browser-side nav DB querying from the UI layer
-  4. keep webNavDb.ts only if it remains necessary as a transport/bootstrap layer for WASM SQLite access
+------------------------------------------------------------------------------
+Fit & Finish
 
+We should replace a lot of buttons with icons! Charts with crops off of samples.
 
+x VORs don't need frequency
+
+x Match label layout to Garmin
+
+Match ring radii to Garmin
+	Available ring radii:
+	{1 1.5 2 3 5 8} x {1, 10, 100} nm
+	500 800 1000 1500 2000 3000 5000 ft
+	(800 is north-up)
+
+Do a nationwide scan of density for each vector object and decide if we should
+change the thresholds. Show me the densest areas (by pointing the map there) for
+each feature type.
+
+Tweak the button layout to optimize flow.
+
+Checkboxes to control overlays:
+	NEXRAD,
+	Metars,
+	Terrain,
+	DB Vector data?
+
+Status boxes:
+	"NEXRAD age: 7 minutes" (computed relative to original data!)
+	"Terrain: +/- 300ft"
+
+Track-up view? (Usable in shaded-relief + vectors mode)
+
+Add mouseovers to explain things.
+
+Add a way to pop up the chart legends!
+
+Make vector features clickable; pop up to add to flight plan.
+
+Arbitrary-waypoint (lat/lon) mode. But shouldn't get it by dragging route
+waypoints off real features. I hate that about Avare.
+
+add pink dashed strokes at the cutline borders of charts, so when two charts
+overlap it's *really* obvious there's a seam in the stitched image.
+(This will also help with the boundary at the edge of a TAF rendered over
+a sectional.)
+Oak Ridge (near TN08) has an NSA whose label is lost under the chart cutline!
+
+Add cutlines for TACs to get rid of margins/legends.
+
+Have renderer draw dashed strokes around edges of TACs. Or really any seam?
+
+Airport selector list:
+- flight plan airports
+- we'll maintain an LRU-cache list of "recently touched airports"
+- maybe a list of "first 5 towered airports by distance from airplane."
+
+Should we make some adjustments to zoom fallback to reduce the phase-in effect
+at startup / improve performance? Maybe it's too little to worry about.
+
+Highlight flight plan waypoint labels on the map.
+Always show their symbols, even if they would be rejected by other rules
+(such as too far zoomed out, or paved/seaplane/heliport filter).
+
+Flight plan munging/hiding. When you select a procedure, does it *replace* the
+airport? (For approaches, I think it does on the 750.) If so, we should put the
+airport name and symbol in the procedure heading.
+
+------------------------------------------------------------------------------
+Android parity gaps
+
+TACs over sectionals
+
+CDI
+
+Shaded relief menu.
+
+Terrain
+
+------------------------------------------------------------------------------

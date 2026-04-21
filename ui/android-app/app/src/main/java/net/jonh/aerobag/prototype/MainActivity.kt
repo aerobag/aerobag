@@ -160,6 +160,7 @@ import net.jonh.aerobag.prototype.domain.MapChartFamily
 import net.jonh.aerobag.prototype.domain.MapFollowUiState
 import net.jonh.aerobag.prototype.domain.MapOverlayQueryResult
 import net.jonh.aerobag.prototype.domain.MapView
+import net.jonh.aerobag.prototype.domain.MapViewOption
 import net.jonh.aerobag.prototype.domain.MapViewportState
 import net.jonh.aerobag.prototype.domain.NativeAppCoreAdapter
 import net.jonh.aerobag.prototype.domain.NativeUiSession
@@ -335,6 +336,7 @@ private enum class AppPage {
     Map,
     Plan,
     Charts,
+    Settings,
 }
 
 private data class AppViewSnapshot(
@@ -474,6 +476,11 @@ private data class PageTrayOption(
     val launcherLabel: String,
 )
 
+private data class OfflinePackageDimension(
+    val id: String,
+    val label: String,
+)
+
 private data class MenuDockOption(
     val key: String,
     val label: String,
@@ -509,6 +516,16 @@ private val PageOptions = listOf(
     PageTrayOption(AppPage.Map, "CHART", "CHT"),
     PageTrayOption(AppPage.Charts, "PLATE", "PLT"),
     PageTrayOption(AppPage.Plan, "PLAN", "PLN"),
+    PageTrayOption(AppPage.Settings, "SETTINGS", "SET"),
+)
+
+private val OfflineProductOptions = listOf(
+    OfflinePackageDimension("sec", "Sectional"),
+    OfflinePackageDimension("tac", "TAC"),
+    OfflinePackageDimension("shaded-relief", "Shaded Relief"),
+    OfflinePackageDimension("enr-l", "IFR-L"),
+    OfflinePackageDimension("enr-h", "IFR-H"),
+    OfflinePackageDimension("plates", "Plates"),
 )
 
 private data class ChartTrayOption(
@@ -1377,9 +1394,293 @@ private fun AerobagApp() {
                     },
                 )
             }
+            AppPage.Settings -> {
+                SettingsPage(
+                    page = page,
+                    pageHistory = pageHistory,
+                    uptimeLabel = uptimeLabel,
+                    fixture = fixture,
+                    onSelectPage = ::navigateToPage,
+                )
+            }
         }
     }
     }
+}
+
+@Composable
+private fun SettingsPage(
+    page: AppPage,
+    pageHistory: List<AppViewSnapshot>,
+    uptimeLabel: String,
+    fixture: net.jonh.aerobag.prototype.domain.ContentFixture,
+    onSelectPage: (AppPage) -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    var pageTrayOpen by remember { mutableStateOf(false) }
+    var offlinePackagesOpen by remember { mutableStateOf(false) }
+    val regionOptions = remember(fixture.mapViews) { offlineRegionOptions(fixture.mapViews) }
+    var selectedRegionIds by remember(regionOptions) { mutableStateOf(regionOptions.map { it.id }.toSet()) }
+    var selectedProductIds by remember { mutableStateOf(OfflineProductOptions.map { it.id }.toSet()) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(uiTheme.controls.chartSurfaceBg),
+    ) {
+        MenuDock(
+            launcherLabel = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: "SET",
+            open = pageTrayOpen,
+            onToggle = { pageTrayOpen = !pageTrayOpen },
+            style = MenuDockStyle.Compact,
+            options = PageOptions.map { option ->
+                MenuDockOption(option.page.name, option.label, active = option.page == page) {
+                    onSelectPage(option.page)
+                    pageTrayOpen = false
+                }
+            },
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(ThumbGap),
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(
+                    start = ThumbGap,
+                    end = ThumbGap,
+                    top = ThumbSize + (ThumbGap * 2f),
+                    bottom = ThumbGap,
+                ),
+            verticalArrangement = Arrangement.spacedBy(ThumbGap),
+        ) {
+            Text(
+                text = "SETTINGS",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.ExtraBold,
+                color = uiTheme.controls.panelFg,
+            )
+            Text(
+                text = "Configure Android-only device behavior. Package downloads are UI-only for now.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = uiTheme.controls.panelMuted,
+            )
+            MenuPanel(modifier = Modifier.fillMaxWidth()) {
+                MenuPanelRow(
+                    label = "OFFLINE PACKAGES",
+                    active = offlinePackagesOpen,
+                    enabled = true,
+                    onSelect = {
+                        pageTrayOpen = false
+                        offlinePackagesOpen = true
+                    },
+                )
+                MenuPanelRow(
+                    label = "DISPLAY",
+                    active = false,
+                    enabled = false,
+                    onSelect = {},
+                )
+                MenuPanelRow(
+                    label = "OWN SHIP",
+                    active = false,
+                    enabled = false,
+                    onSelect = {},
+                )
+            }
+            Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = uiTheme.controls.panelMuted)
+            Text("stack ${formatPageStack(pageHistory, page)}", style = MaterialTheme.typography.labelSmall, color = uiTheme.controls.panelMuted)
+        }
+
+        if (pageTrayOpen) {
+            Scrim { pageTrayOpen = false }
+        }
+
+        if (offlinePackagesOpen) {
+            Scrim { offlinePackagesOpen = false }
+            OfflinePackagesPanel(
+                regionOptions = regionOptions,
+                selectedRegionIds = selectedRegionIds,
+                onRegionSelectionChange = { selectedRegionIds = it },
+                productOptions = OfflineProductOptions,
+                selectedProductIds = selectedProductIds,
+                onProductSelectionChange = { selectedProductIds = it },
+                onClose = { offlinePackagesOpen = false },
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(ThumbGap * 1.4f)
+                    .zIndex(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun OfflinePackagesPanel(
+    regionOptions: List<OfflinePackageDimension>,
+    selectedRegionIds: Set<String>,
+    onRegionSelectionChange: (Set<String>) -> Unit,
+    productOptions: List<OfflinePackageDimension>,
+    selectedProductIds: Set<String>,
+    onProductSelectionChange: (Set<String>) -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Surface(
+        modifier = modifier.fillMaxSize(),
+        shape = RoundedCornerShape(ThumbRadius + 4.dp),
+        color = uiTheme.controls.panelBg,
+        contentColor = uiTheme.controls.panelFg,
+        border = BorderStroke(2.dp, uiTheme.controls.panelBorder),
+        shadowElevation = 12.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(ThumbGap),
+            verticalArrangement = Arrangement.spacedBy(ThumbGap),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "OFFLINE PACKAGES",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = uiTheme.controls.panelFg,
+                    )
+                    Text(
+                        text = "Download set: selected regions x selected products",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = uiTheme.controls.panelMuted,
+                    )
+                }
+                CompactSquareButton(
+                    label = "X",
+                    modifier = Modifier.size(ThumbSize * 0.72f),
+                    onClick = onClose,
+                )
+            }
+
+            Text(
+                text = "${selectedRegionIds.size} regions, ${selectedProductIds.size} products selected",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = uiTheme.controls.panelFg,
+            )
+
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(ThumbGap),
+            ) {
+                item("regions") {
+                    OfflinePackageSection(
+                        title = "REGIONS",
+                        options = regionOptions,
+                        selectedIds = selectedRegionIds,
+                        onSelectionChange = onRegionSelectionChange,
+                    )
+                }
+                item("products") {
+                    OfflinePackageSection(
+                        title = "PRODUCTS",
+                        options = productOptions,
+                        selectedIds = selectedProductIds,
+                        onSelectionChange = onProductSelectionChange,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OfflinePackageSection(
+    title: String,
+    options: List<OfflinePackageDimension>,
+    selectedIds: Set<String>,
+    onSelectionChange: (Set<String>) -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    MenuPanel(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = title,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.ExtraBold,
+            color = uiTheme.controls.panelMuted,
+        )
+        options.forEach { option ->
+            OfflinePackageCheckboxRow(
+                label = option.label,
+                checked = selectedIds.contains(option.id),
+                onCheckedChange = { checked ->
+                    onSelectionChange(if (checked) selectedIds + option.id else selectedIds - option.id)
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun OfflinePackageCheckboxRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(ThumbSize * 0.82f)
+            .clip(RoundedCornerShape(ThumbRadius))
+            .background(if (checked) lerp(uiTheme.controls.buttonBg, Color.White, 0.14f) else uiTheme.controls.buttonBg)
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+            ) { onCheckedChange(!checked) }
+            .padding(horizontal = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Checkbox(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = uiTheme.controls.buttonFg,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private fun offlineRegionOptions(mapViews: List<MapViewOption>): List<OfflinePackageDimension> {
+    val labelById = mapOf(
+        "ak" to "Alaska",
+        "ec" to "East Central",
+        "nc" to "North Central",
+        "ne" to "Northeast",
+        "nw" to "Northwest",
+        "pac" to "Pacific",
+        "sc" to "South Central",
+        "se" to "Southeast",
+        "sw" to "Southwest",
+    )
+    val sortOrder = labelById.keys.withIndex().associate { it.value to it.index }
+    return mapViews
+        .map { it.regionId.lowercase() }
+        .filter { it.isNotBlank() }
+        .distinct()
+        .sortedWith(compareBy({ sortOrder[it] ?: Int.MAX_VALUE }, { it }))
+        .map { id -> OfflinePackageDimension(id, labelById[id] ?: id.uppercase()) }
 }
 
 @OptIn(ExperimentalComposeUiApi::class)

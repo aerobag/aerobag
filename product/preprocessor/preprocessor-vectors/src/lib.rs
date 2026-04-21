@@ -19,6 +19,9 @@ const AIRSPACE_REF_MIN_PIXEL_SPAN: f64 = 3.0;
 const AIRSPACE_LABEL_MIN_ZOOM: u8 = 0;
 const AIRSPACE_LABEL_MAX_ZOOM: u8 = 12;
 const AIRSPACE_LABEL_MIN_PIXEL_SPAN: f64 = 50.0;
+const AIRSPACE_LABEL_TILE_EDGE_MARGIN_PX: f64 = 50.0;
+const AIRSPACE_LABEL_SAMPLE_GRID: usize = 10;
+const AIRSPACE_LABEL_CONTAINMENT_RATIO: f64 = 0.98;
 
 #[derive(Debug, Clone)]
 pub struct BuildVectorsRequest {
@@ -188,6 +191,8 @@ struct AirspaceFeature {
     vertical: AirspaceVertical,
     bbox: [f64; 4],
     label: AirspaceLabel,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    label_candidates: Vec<AirspaceLabelCandidate>,
     paths: Vec<AirspacePath>,
     source_properties: BTreeMap<String, String>,
 }
@@ -214,6 +219,14 @@ struct AirspaceLimit {
 #[derive(Debug, Clone, Serialize)]
 struct AirspaceLabel {
     text: String,
+    lon: f64,
+    lat: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AirspaceLabelCandidate {
+    rank: u32,
+    score: f64,
     lon: f64,
     lat: f64,
 }
@@ -251,6 +264,8 @@ struct AirspaceTileLabel {
     text: String,
     lon: f64,
     lat: f64,
+    rank: u32,
+    score: f64,
     style_hint: String,
 }
 
@@ -395,17 +410,26 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                 if !bbox_is_visible_at_zoom(feature.bbox, zoom, AIRSPACE_LABEL_MIN_PIXEL_SPAN) {
                     continue;
                 }
-                let (label_x, label_y) = slippy_tile(feature.label.lat, feature.label.lon, zoom);
-                label_tiles
-                    .entry((zoom, label_x, label_y))
-                    .or_default()
-                    .push(AirspaceTileLabel {
-                        feature_id: feature.id.clone(),
-                        text: feature.label.text.clone(),
-                        lon: feature.label.lon,
-                        lat: feature.label.lat,
-                        style_hint: feature.style_hint.clone(),
-                    });
+                for candidate in &feature.label_candidates {
+                    if label_candidate_is_near_tile_edge(candidate.lat, candidate.lon, zoom) {
+                        continue;
+                    }
+                    let (label_x, label_y) = slippy_tile(candidate.lat, candidate.lon, zoom);
+                    insert_airspace_tile_label(
+                        label_tiles
+                            .entry((zoom, label_x, label_y))
+                            .or_default(),
+                        AirspaceTileLabel {
+                            feature_id: feature.id.clone(),
+                            text: feature.label.text.clone(),
+                            lon: candidate.lon,
+                            lat: candidate.lat,
+                            rank: candidate.rank,
+                            score: candidate.score,
+                            style_hint: feature.style_hint.clone(),
+                        },
+                    );
+                }
             }
         }
 
@@ -867,26 +891,13 @@ fn load_class_airspace_features(
             lower: airspace_limit(&properties, "LOWER"),
             upper: airspace_limit(&properties, "UPPER"),
         };
-        let vertical_label = vertical_label(&vertical);
         if polygon_area_centroid(&shape.parts)
             .is_some_and(|candidate| !point_in_polygon_parts(candidate, &shape.parts))
         {
             diagnostics.class_label_candidate_outside_polygon_count += 1;
         }
-        let mut label_anchor = polygon_label_anchor(&shape.parts);
-        if let Some(adjusted_anchor) = airport_adjusted_label_anchor(
-            label_anchor,
-            &shape.parts,
-            class,
-            ident.as_deref(),
-            airport_points,
-        ) {
-            label_anchor = adjusted_anchor;
-            diagnostics.class_airport_label_adjustment_count += 1;
-        }
-        if !point_in_polygon_parts(label_anchor, &shape.parts) {
-            diagnostics.class_label_anchor_outside_polygon_count += 1;
-        }
+        let vertical_label = vertical_label(&vertical);
+        let label_anchor = polygon_label_anchor(&shape.parts);
         let id_base = format!(
             "airspace:{}:{}:{}:{}:{}",
             version_label,
@@ -921,10 +932,13 @@ fn load_class_airspace_features(
                 lon: label_anchor[0],
                 lat: label_anchor[1],
             },
+            label_candidates: Vec::new(),
             paths,
             source_properties: properties,
         });
     }
+
+    assign_class_airspace_label_candidates(&mut features, airport_points, &mut diagnostics);
 
     Ok((features, diagnostics))
 }
@@ -1156,6 +1170,12 @@ fn parse_saa_xml(
             lon: anchor[0],
             lat: anchor[1],
         },
+        label_candidates: vec![AirspaceLabelCandidate {
+            rank: 0,
+            score: 0.0,
+            lon: anchor[0],
+            lat: anchor[1],
+        }],
         paths,
         source_properties: properties,
     }))
@@ -1462,6 +1482,19 @@ fn airspace_label_tile_relative_path(z: u8, x: u32, y: u32) -> String {
     format!("airspace/labels/{z}/{x}/{y}.json")
 }
 
+fn insert_airspace_tile_label(labels: &mut Vec<AirspaceTileLabel>, candidate: AirspaceTileLabel) {
+    if let Some(existing) = labels
+        .iter_mut()
+        .find(|label| label.feature_id == candidate.feature_id)
+    {
+        if candidate.rank < existing.rank {
+            *existing = candidate;
+        }
+    } else {
+        labels.push(candidate);
+    }
+}
+
 fn tiles_for_bbox(bbox: [f64; 4], zoom: u8) -> Vec<(u8, u32, u32)> {
     let [west, south, east, north] = bbox;
     if !bbox_is_valid(bbox) {
@@ -1613,6 +1646,214 @@ fn polygon_label_anchor(parts: &[Vec<[f64; 2]>]) -> [f64; 2] {
     }
 
     polygon_vertex_average(parts)
+}
+
+fn assign_class_airspace_label_candidates(
+    features: &mut [AirspaceFeature],
+    airport_points: &[PointRecord],
+    diagnostics: &mut AirspaceLabelDiagnostics,
+) {
+    let groups = airspace_sibling_groups(features);
+    for group in groups {
+        for &feature_index in &group {
+            let current_parts = feature_parts(&features[feature_index]);
+            let inner_parts = group
+                .iter()
+                .copied()
+                .filter(|&other_index| other_index != feature_index)
+                .filter(|&other_index| {
+                    vertical_ranges_overlap(
+                        &features[feature_index].vertical,
+                        &features[other_index].vertical,
+                    )
+                })
+                .filter_map(|other_index| {
+                    let other_parts = feature_parts(&features[other_index]);
+                    polygon_contains_polygon_by_sampling(&current_parts, &other_parts)
+                        .then_some(other_parts)
+                })
+                .collect::<Vec<_>>();
+            let mut candidates = ranked_label_candidates(&current_parts, &inner_parts);
+            if candidates.is_empty() {
+                diagnostics.class_label_anchor_outside_polygon_count += 1;
+                continue;
+            }
+            if is_surface_shelf(&features[feature_index]) {
+                if let Some(adjusted_anchor) = airport_adjusted_label_anchor(
+                    [candidates[0].lon, candidates[0].lat],
+                    &current_parts,
+                    &features[feature_index].airspace_class,
+                    features[feature_index].ident.as_deref(),
+                    airport_points,
+                ) {
+                    let top_score = candidates[0].score + 1.0;
+                    candidates.insert(
+                        0,
+                        AirspaceLabelCandidate {
+                            rank: 0,
+                            score: top_score,
+                            lon: adjusted_anchor[0],
+                            lat: adjusted_anchor[1],
+                        },
+                    );
+                    rerank_label_candidates(&mut candidates);
+                    diagnostics.class_airport_label_adjustment_count += 1;
+                }
+            }
+            features[feature_index].label.lon = candidates[0].lon;
+            features[feature_index].label.lat = candidates[0].lat;
+            features[feature_index].label_candidates = candidates;
+        }
+    }
+}
+
+fn is_surface_shelf(feature: &AirspaceFeature) -> bool {
+    feature.vertical.lower.display.eq_ignore_ascii_case("SFC")
+}
+
+fn vertical_ranges_overlap(left: &AirspaceVertical, right: &AirspaceVertical) -> bool {
+    let Some(left_lower) = left.lower.feet else {
+        return true;
+    };
+    let Some(left_upper) = left.upper.feet else {
+        return true;
+    };
+    let Some(right_lower) = right.lower.feet else {
+        return true;
+    };
+    let Some(right_upper) = right.upper.feet else {
+        return true;
+    };
+    left_lower < right_upper && right_lower < left_upper
+}
+
+fn airspace_sibling_groups(features: &[AirspaceFeature]) -> Vec<Vec<usize>> {
+    let mut groups = BTreeMap::<(String, Option<String>, String), Vec<usize>>::new();
+    for (index, feature) in features.iter().enumerate() {
+        groups
+            .entry((
+                feature.airspace_class.to_ascii_uppercase(),
+                feature.ident.as_ref().map(|value| value.to_ascii_uppercase()),
+                feature.local_type.to_ascii_uppercase(),
+            ))
+            .or_default()
+            .push(index);
+    }
+    groups.into_values().collect()
+}
+
+fn feature_parts(feature: &AirspaceFeature) -> Vec<Vec<[f64; 2]>> {
+    feature
+        .paths
+        .iter()
+        .filter(|path| path.role == "boundary")
+        .map(|path| path.points.clone())
+        .collect()
+}
+
+fn ranked_label_candidates(
+    parts: &[Vec<[f64; 2]>],
+    inner_parts: &[Vec<Vec<[f64; 2]>>],
+) -> Vec<AirspaceLabelCandidate> {
+    let mut candidates = sampled_label_points(parts)
+        .into_iter()
+        .filter(|candidate| {
+            !inner_parts
+                .iter()
+                .any(|inner| point_in_polygon_parts(*candidate, inner))
+        })
+        .map(|point| AirspaceLabelCandidate {
+            rank: 0,
+            score: label_candidate_score(point, parts, inner_parts),
+            lon: point[0],
+            lat: point[1],
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    candidates.dedup_by(|left, right| {
+        (left.lon - right.lon).abs() < 1.0e-10 && (left.lat - right.lat).abs() < 1.0e-10
+    });
+    rerank_label_candidates(&mut candidates);
+    candidates
+}
+
+fn rerank_label_candidates(candidates: &mut [AirspaceLabelCandidate]) {
+    for (rank, candidate) in candidates.iter_mut().enumerate() {
+        candidate.rank = rank as u32;
+    }
+}
+
+fn sampled_label_points(parts: &[Vec<[f64; 2]>]) -> Vec<[f64; 2]> {
+    let Some(bbox) = parts_bbox(parts) else {
+        return Vec::new();
+    };
+    let lon_step = (bbox[2] - bbox[0]) / AIRSPACE_LABEL_SAMPLE_GRID as f64;
+    let lat_step = (bbox[3] - bbox[1]) / AIRSPACE_LABEL_SAMPLE_GRID as f64;
+    if lon_step <= 0.0 || lat_step <= 0.0 {
+        return Vec::new();
+    }
+
+    let mut points = Vec::new();
+    for x_index in 0..AIRSPACE_LABEL_SAMPLE_GRID {
+        for y_index in 0..AIRSPACE_LABEL_SAMPLE_GRID {
+            let candidate = [
+                bbox[0] + (x_index as f64 + 0.5) * lon_step,
+                bbox[1] + (y_index as f64 + 0.5) * lat_step,
+            ];
+            if point_in_polygon_parts(candidate, parts) {
+                points.push(candidate);
+            }
+        }
+    }
+    if let Some(centroid) = polygon_area_centroid(parts) {
+        if point_in_polygon_parts(centroid, parts) {
+            points.push(centroid);
+        }
+    }
+    points
+}
+
+fn label_candidate_score(
+    point: [f64; 2],
+    parts: &[Vec<[f64; 2]>],
+    inner_parts: &[Vec<Vec<[f64; 2]>>],
+) -> f64 {
+    let mut score = squared_distance_to_nearest_boundary(point, parts);
+    for inner in inner_parts {
+        score = score.min(squared_distance_to_nearest_boundary(point, inner));
+    }
+    score.sqrt()
+}
+
+fn polygon_contains_polygon_by_sampling(
+    outer_parts: &[Vec<[f64; 2]>],
+    inner_parts: &[Vec<[f64; 2]>],
+) -> bool {
+    let samples = sampled_label_points(inner_parts);
+    if samples.is_empty() {
+        return false;
+    }
+    let inside_count = samples
+        .iter()
+        .filter(|sample| point_in_polygon_parts(**sample, outer_parts))
+        .count();
+    (inside_count as f64 / samples.len() as f64) >= AIRSPACE_LABEL_CONTAINMENT_RATIO
+}
+
+fn label_candidate_is_near_tile_edge(lat: f64, lon: f64, zoom: u8) -> bool {
+    let (pixel_x, pixel_y) = slippy_pixel(lat, lon, zoom);
+    let local_x = pixel_x.rem_euclid(256.0);
+    let local_y = pixel_y.rem_euclid(256.0);
+    local_x < AIRSPACE_LABEL_TILE_EDGE_MARGIN_PX
+        || local_x > 256.0 - AIRSPACE_LABEL_TILE_EDGE_MARGIN_PX
+        || local_y < AIRSPACE_LABEL_TILE_EDGE_MARGIN_PX
+        || local_y > 256.0 - AIRSPACE_LABEL_TILE_EDGE_MARGIN_PX
 }
 
 fn polygon_area_centroid(parts: &[Vec<[f64; 2]>]) -> Option<[f64; 2]> {

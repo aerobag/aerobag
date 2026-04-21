@@ -481,6 +481,12 @@ private data class OfflinePackageDimension(
     val label: String,
 )
 
+private data class SettingsGridButton(
+    val key: String,
+    val label: String,
+    val enabled: Boolean = false,
+)
+
 private data class MenuDockOption(
     val key: String,
     val label: String,
@@ -526,6 +532,18 @@ private val OfflineProductOptions = listOf(
     OfflinePackageDimension("enr-l", "IFR-L"),
     OfflinePackageDimension("enr-h", "IFR-H"),
     OfflinePackageDimension("plates", "Plates"),
+)
+
+private val SettingsGridButtons = listOf(
+    SettingsGridButton("offline-packages", "OFFLINE\nPKGS", enabled = true),
+    SettingsGridButton("s2", "S2"),
+    SettingsGridButton("s3", "S3"),
+    SettingsGridButton("s4", "S4"),
+    SettingsGridButton("s5", "S5"),
+    SettingsGridButton("s6", "S6"),
+    SettingsGridButton("s7", "S7"),
+    SettingsGridButton("s8", "S8"),
+    SettingsGridButton("s9", "S9"),
 )
 
 private data class ChartTrayOption(
@@ -1400,7 +1418,9 @@ private fun AerobagApp() {
                     pageHistory = pageHistory,
                     uptimeLabel = uptimeLabel,
                     fixture = fixture,
+                    navElement = navElement,
                     onSelectPage = ::navigateToPage,
+                    onOpenPlan = { navigateToPage(AppPage.Plan) },
                 )
             }
         }
@@ -1414,11 +1434,14 @@ private fun SettingsPage(
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
     fixture: net.jonh.aerobag.prototype.domain.ContentFixture,
+    navElement: NavElementUiView?,
     onSelectPage: (AppPage) -> Unit,
+    onOpenPlan: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     var pageTrayOpen by remember { mutableStateOf(false) }
     var offlinePackagesOpen by remember { mutableStateOf(false) }
+    var debugPanelOpen by remember { mutableStateOf(false) }
     val regionOptions = remember(fixture.mapViews) { offlineRegionOptions(fixture.mapViews) }
     var selectedRegionIds by remember(regionOptions) { mutableStateOf(regionOptions.map { it.id }.toSet()) }
     var selectedProductIds by remember { mutableStateOf(OfflineProductOptions.map { it.id }.toSet()) }
@@ -1428,69 +1451,79 @@ private fun SettingsPage(
             .fillMaxSize()
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
-        MenuDock(
-            launcherLabel = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: "SET",
-            open = pageTrayOpen,
-            onToggle = { pageTrayOpen = !pageTrayOpen },
-            style = MenuDockStyle.Compact,
-            options = PageOptions.map { option ->
-                MenuDockOption(option.page.name, option.label, active = option.page == page) {
-                    onSelectPage(option.page)
-                    pageTrayOpen = false
-                }
-            },
+        Box(
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(ThumbGap),
-        )
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(
-                    start = ThumbGap,
-                    end = ThumbGap,
-                    top = ThumbSize + (ThumbGap * 2f),
-                    bottom = ThumbGap,
-                ),
-            verticalArrangement = Arrangement.spacedBy(ThumbGap),
         ) {
-            Text(
-                text = "SETTINGS",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.ExtraBold,
-                color = uiTheme.controls.panelFg,
-            )
-            Text(
-                text = "Configure Android-only device behavior. Package downloads are UI-only for now.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = uiTheme.controls.panelMuted,
-            )
-            MenuPanel(modifier = Modifier.fillMaxWidth()) {
-                MenuPanelRow(
-                    label = "OFFLINE PACKAGES",
-                    active = offlinePackagesOpen,
-                    enabled = true,
-                    onSelect = {
+            MenuDock(
+                launcherLabel = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: "STGS",
+                open = pageTrayOpen,
+                onToggle = { pageTrayOpen = !pageTrayOpen },
+                style = MenuDockStyle.Compact,
+                options = PageOptions.map { option ->
+                    MenuDockOption(option.page.name, option.label, active = option.page == page) {
+                        onSelectPage(option.page)
                         pageTrayOpen = false
-                        offlinePackagesOpen = true
+                    }
+                },
+            )
+        }
+
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(
+                    start = ThumbGap + (ThumbSize * 0.5f),
+                    top = ThumbGap + ThumbSize + (ThumbSize * 0.5f),
+                )
+                .width((ThumbSize * 6f) + (ThumbGap * 2f)),
+            horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+            verticalArrangement = Arrangement.spacedBy(ThumbGap),
+            userScrollEnabled = false,
+        ) {
+            lazyGridItems(SettingsGridButtons, key = { it.key }) { button ->
+                CompactSquareButton(
+                    label = button.label,
+                    modifier = Modifier
+                        .width(ThumbSize * 2f)
+                        .height(ThumbSize),
+                    maxLines = 2,
+                    enabled = button.enabled,
+                    onClick = {
+                        if (button.key == "offline-packages") {
+                            pageTrayOpen = false
+                            offlinePackagesOpen = true
+                        }
                     },
                 )
-                MenuPanelRow(
-                    label = "DISPLAY",
-                    active = false,
-                    enabled = false,
-                    onSelect = {},
-                )
-                MenuPanelRow(
-                    label = "OWN SHIP",
-                    active = false,
-                    enabled = false,
-                    onSelect = {},
-                )
             }
-            Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = uiTheme.controls.panelMuted)
-            Text("stack ${formatPageStack(pageHistory, page)}", style = MaterialTheme.typography.labelSmall, color = uiTheme.controls.panelMuted)
+        }
+
+        NavElementDock(
+            navElement = navElement,
+            onClick = onOpenPlan,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = ThumbGap),
+        )
+
+        DebugDock(
+            open = debugPanelOpen,
+            onToggle = { debugPanelOpen = !debugPanelOpen },
+            expandAbove = true,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = ThumbGap, bottom = ThumbGap),
+        ) {
+            Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text(
+                "stack ${formatPageStack(pageHistory, page)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFF52656D),
+            )
         }
 
         if (pageTrayOpen) {

@@ -249,6 +249,7 @@ data class FlightPlanRouteSegment(
     val id: String,
     val from: LatLonPoint,
     val to: LatLonPoint,
+    val path: List<LatLonPoint>,
     val distanceNm: Double,
     val courseDeg: Double,
     val status: RouteSegmentStatus,
@@ -258,6 +259,7 @@ data class GuidanceLegGeometry(
     val legId: String,
     val from: LatLonPoint,
     val to: LatLonPoint,
+    val path: List<LatLonPoint>,
 )
 
 enum class SequencingMode {

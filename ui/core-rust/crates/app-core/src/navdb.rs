@@ -2100,13 +2100,16 @@ fn valid_lat_lon(lat: f64, lon: f64) -> bool {
 }
 
 fn bearing_true_deg(start_lat: f64, start_lon: f64, end_lat: f64, end_lon: f64) -> f64 {
-    let start_lat_rad = start_lat.to_radians();
-    let end_lat_rad = end_lat.to_radians();
-    let delta_lon_rad = (end_lon - start_lon).to_radians();
-    let y = delta_lon_rad.sin() * end_lat_rad.cos();
-    let x = start_lat_rad.cos() * end_lat_rad.sin()
-        - start_lat_rad.sin() * end_lat_rad.cos() * delta_lon_rad.cos();
-    normalize_heading(y.atan2(x).to_degrees())
+    normalize_heading(crate::initial_course_deg(
+        LatLon {
+            lat: start_lat,
+            lon: start_lon,
+        },
+        LatLon {
+            lat: end_lat,
+            lon: end_lon,
+        },
+    ))
 }
 
 fn normalize_heading(heading: f64) -> f64 {
@@ -2352,13 +2355,7 @@ fn split_airway_branches(points: Vec<AirwayFixPoint>) -> Vec<AirwayBranch> {
 }
 
 fn distance_nm(a: LatLon, b: LatLon) -> f64 {
-    let earth_radius_nm = 3440.065_f64;
-    let dlat = (b.lat - a.lat).to_radians();
-    let dlon = (b.lon - a.lon).to_radians();
-    let lat1 = a.lat.to_radians();
-    let lat2 = b.lat.to_radians();
-    let h = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
-    2.0 * earth_radius_nm * h.sqrt().asin()
+    crate::great_circle_distance_nm(a, b)
 }
 
 fn branch_suffix(index: usize) -> char {

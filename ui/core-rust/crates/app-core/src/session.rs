@@ -75,6 +75,8 @@ pub struct GuidanceLegGeometry {
     pub leg_id: String,
     pub from: LatLon,
     pub to: LatLon,
+    #[serde(default)]
+    pub path: Vec<LatLon>,
 }
 
 static NEXT_HANDLE: AtomicU32 = AtomicU32::new(1);
@@ -910,16 +912,10 @@ fn active_leg_geometry(
 }
 
 fn cdi_dots_for_leg(from: LatLon, to: LatLon, position: LatLon) -> f32 {
-    let (leg_east, leg_north) = local_delta_nm(from, to);
-    let leg_length = (leg_east.powi(2) + leg_north.powi(2)).sqrt();
-    if leg_length <= f64::EPSILON {
+    if crate::great_circle_distance_nm(from, to) <= f64::EPSILON {
         return 0.0;
     }
-    let unit_east = leg_east / leg_length;
-    let unit_north = leg_north / leg_length;
-    let (pos_east, pos_north) = local_delta_nm(from, position);
-    let signed_cross_track_nm = unit_east * pos_north - unit_north * pos_east;
-    (signed_cross_track_nm / CDI_NM_PER_DOT) as f32
+    (crate::cross_track_left_nm(from, to, position) / CDI_NM_PER_DOT) as f32
 }
 
 fn cdi_offscale_readout(cdi_indicator_dots: f32) -> Option<String> {
@@ -940,22 +936,8 @@ fn cdi_offscale_readout(cdi_indicator_dots: f32) -> Option<String> {
     }
 }
 
-fn local_delta_nm(origin: LatLon, point: LatLon) -> (f64, f64) {
-    let north_nm = (point.lat - origin.lat) * 60.0;
-    let east_nm =
-        (point.lon - origin.lon) * 60.0 * ((origin.lat + point.lat).to_radians() / 2.0).cos();
-    (east_nm, north_nm)
-}
-
 fn bearing_degrees(from: LatLon, to: LatLon) -> f64 {
-    let from_lat = from.lat.to_radians();
-    let from_lon = from.lon.to_radians();
-    let to_lat = to.lat.to_radians();
-    let to_lon = to.lon.to_radians();
-    let delta_lon = to_lon - from_lon;
-    let y = delta_lon.sin() * to_lat.cos();
-    let x = from_lat.cos() * to_lat.sin() - from_lat.sin() * to_lat.cos() * delta_lon.cos();
-    y.atan2(x).to_degrees().rem_euclid(360.0)
+    crate::initial_course_deg(from, to)
 }
 
 fn nav_ref_label(nav_ref: &NavRef) -> String {

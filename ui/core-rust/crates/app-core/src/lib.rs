@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod chart_page;
 pub mod content;
 pub mod errors;
+pub mod geodesy;
 pub mod geometry;
 pub mod had_ops;
 pub mod ids;
@@ -38,6 +39,9 @@ pub use content::{
     ContentPolicy, ContentReport, ContentReportItem, ContentRequirement, InstalledPackage,
 };
 pub use errors::{AppError, AppErrorKind, AppResult};
+pub use geodesy::{
+    cross_track_left_nm, great_circle_display_path, great_circle_distance_nm, initial_course_deg,
+};
 pub use geometry::{GeoBounds, GeometryBundle, LatLon, MapViewport, PolygonRecord};
 pub use had_ops::{run_had_operation, HadOperation, HadOperationOutcome};
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
@@ -211,6 +215,7 @@ pub struct FlightPlanRouteSegment {
     pub id: String,
     pub from: LatLon,
     pub to: LatLon,
+    pub path: Vec<LatLon>,
     pub distance_nm: f64,
     pub course_deg: f64,
     pub status: FlightPlanRouteSegmentStatus,
@@ -1623,21 +1628,11 @@ pub fn move_flight_plan_waypoint(
 }
 
 pub fn flight_leg_distance_nm(first: LatLon, second: LatLon) -> f64 {
-    let lat_nm = (second.lat - first.lat) * 60.0;
-    let lon_nm =
-        (second.lon - first.lon) * 60.0 * ((first.lat + second.lat).to_radians() / 2.0).cos();
-    (lat_nm.powi(2) + lon_nm.powi(2)).sqrt()
+    great_circle_distance_nm(first, second)
 }
 
 pub fn flight_leg_course_deg(from: LatLon, to: LatLon) -> f64 {
-    let from_lat = from.lat.to_radians();
-    let from_lon = from.lon.to_radians();
-    let to_lat = to.lat.to_radians();
-    let to_lon = to.lon.to_radians();
-    let delta_lon = to_lon - from_lon;
-    let y = delta_lon.sin() * to_lat.cos();
-    let x = from_lat.cos() * to_lat.sin() - from_lat.sin() * to_lat.cos() * delta_lon.cos();
-    normalize_bearing_degrees(y.atan2(x).to_degrees())
+    initial_course_deg(from, to)
 }
 
 fn distance_nm(first: LatLon, second: LatLon) -> f64 {
@@ -1750,6 +1745,7 @@ pub fn project_flight_plan_route(
                 id: leg.id.clone(),
                 from,
                 to,
+                path: great_circle_display_path(from, to),
                 distance_nm: flight_leg_distance_nm(from, to),
                 course_deg: flight_leg_course_deg(from, to),
                 status: route_status_for_leg(&ui_state, leg_index),

@@ -1943,8 +1943,8 @@ function MapPage(props: {
     }
     return flightPlanRoute.map((segment) => ({
       ...segment,
-      from: worldToScreen(viewport, latLonToWorld(segment.from.lat, segment.from.lon), surfaceSize.width, surfaceSize.height),
-      to: worldToScreen(viewport, latLonToWorld(segment.to.lat, segment.to.lon), surfaceSize.width, surfaceSize.height),
+      path: (segment.path.length > 0 ? segment.path : [segment.from, segment.to])
+        .map((point) => worldToScreen(viewport, latLonToWorld(point.lat, point.lon), surfaceSize.width, surfaceSize.height)),
     }));
   }, [flightPlanRoute, surfaceSize.height, surfaceSize.width, viewport]);
 
@@ -2162,7 +2162,7 @@ function MapPage(props: {
 
     function guidanceGeometryKey(segments: FlightPlanRouteSegment[]) {
       return segments
-        .map((segment) => `${segment.id}:${segment.from.lat.toFixed(7)},${segment.from.lon.toFixed(7)}>${segment.to.lat.toFixed(7)},${segment.to.lon.toFixed(7)}`)
+        .map((segment) => `${segment.id}:${segment.from.lat.toFixed(7)},${segment.from.lon.toFixed(7)}>${segment.to.lat.toFixed(7)},${segment.to.lon.toFixed(7)}:${segment.path.length}`)
         .join("|");
     }
 
@@ -2203,6 +2203,7 @@ function MapPage(props: {
           leg_id: segment.id,
           from: segment.from,
           to: segment.to,
+          path: segment.path,
         })),
       );
       const elapsedMs = Math.round(performance.now() - startedAt);
@@ -2895,23 +2896,21 @@ function MapPage(props: {
           <svg className="vectorOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
             {routeScreenSegments.map((segment) => (
               <Fragment key={segment.id}>
-                <line
-                  x1={segment.from.x}
-                  y1={segment.from.y}
-                  x2={segment.to.x}
-                  y2={segment.to.y}
+                <polyline
+                  points={segment.path.map((point) => `${point.x},${point.y}`).join(" ")}
+                  fill="none"
                   stroke="rgba(0, 0, 0, 0.55)"
                   strokeWidth="7"
                   strokeLinecap="round"
+                  strokeLinejoin="round"
                 />
-                <line
-                  x1={segment.from.x}
-                  y1={segment.from.y}
-                  x2={segment.to.x}
-                  y2={segment.to.y}
+                <polyline
+                  points={segment.path.map((point) => `${point.x},${point.y}`).join(" ")}
+                  fill="none"
                   stroke={routeSegmentColor(segment.status)}
                   strokeWidth="3.5"
                   strokeLinecap="round"
+                  strokeLinejoin="round"
                 />
               </Fragment>
             ))}

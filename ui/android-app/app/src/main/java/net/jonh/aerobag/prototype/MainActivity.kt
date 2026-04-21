@@ -1475,9 +1475,10 @@ private fun MapExplorerPage(
             emptyList()
         } else {
             flightPlanRoute.map { segment ->
-                Triple(
-                    latLonToScreenPoint(viewport, segment.from, surfaceWidthUnits, surfaceHeightUnits),
-                    latLonToScreenPoint(viewport, segment.to, surfaceWidthUnits, surfaceHeightUnits),
+                Pair(
+                    (segment.path.ifEmpty { listOf(segment.from, segment.to) }).map { point ->
+                        latLonToScreenPoint(viewport, point, surfaceWidthUnits, surfaceHeightUnits)
+                    },
                     segment,
                 )
             }
@@ -1671,7 +1672,7 @@ private fun MapExplorerPage(
             flightPlanRoute = it
             val nextKey =
                 it.joinToString("|") { segment ->
-                    "${segment.id}:${segment.from.lat},${segment.from.lon}:${segment.to.lat},${segment.to.lon}"
+                    "${segment.id}:${segment.from.lat},${segment.from.lon}:${segment.to.lat},${segment.to.lon}:${segment.path.size}"
                 }
             if (nextKey != guidanceGeometryKey) {
                 guidanceGeometryKey = nextKey
@@ -1682,6 +1683,7 @@ private fun MapExplorerPage(
                                 legId = segment.id,
                                 from = segment.from,
                                 to = segment.to,
+                                path = segment.path,
                             )
                         },
                     )
@@ -1993,21 +1995,23 @@ private fun MapExplorerPage(
         if (routeScreenSegments.isNotEmpty()) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val densityScale = density.density
-                routeScreenSegments.forEach { (from, to, segment) ->
-                    drawLine(
-                        color = Color(0x8C000000),
-                        start = Offset(from.x * densityScale, from.y * densityScale),
-                        end = Offset(to.x * densityScale, to.y * densityScale),
-                        strokeWidth = 7f * densityScale,
-                        cap = StrokeCap.Round,
-                    )
-                    drawLine(
-                        color = routeSegmentColor(segment.status),
-                        start = Offset(from.x * densityScale, from.y * densityScale),
-                        end = Offset(to.x * densityScale, to.y * densityScale),
-                        strokeWidth = 3.5f * densityScale,
-                        cap = StrokeCap.Round,
-                    )
+                routeScreenSegments.forEach { (path, segment) ->
+                    path.zipWithNext().forEach { (from, to) ->
+                        drawLine(
+                            color = Color(0x8C000000),
+                            start = Offset(from.x * densityScale, from.y * densityScale),
+                            end = Offset(to.x * densityScale, to.y * densityScale),
+                            strokeWidth = 7f * densityScale,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = routeSegmentColor(segment.status),
+                            start = Offset(from.x * densityScale, from.y * densityScale),
+                            end = Offset(to.x * densityScale, to.y * densityScale),
+                            strokeWidth = 3.5f * densityScale,
+                            cap = StrokeCap.Round,
+                        )
+                    }
                 }
             }
         }

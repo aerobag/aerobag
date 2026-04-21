@@ -7,6 +7,7 @@ use crate::planning::FlightPlanRowActionId;
 use crate::{
     describe_plate_procedure_load_options, describe_procedure_options_from_rows,
     describe_show_plate_for_procedure, flight_leg_course_deg, flight_leg_distance_nm,
+    great_circle_display_path,
     materialize_procedure_from_records, prepare_airway_presentation, AirwayAutoSelection,
     AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate, AirwayPresentationPlan, AirwaySegment,
     AirwaySpatialPoint, AirwaySuggestion, AppError, AppErrorKind, AppResult, CifpTppMatchRow,
@@ -413,6 +414,7 @@ fn project_flight_plan_route(
                 id: leg.id.clone(),
                 from,
                 to,
+                path: great_circle_display_path(from, to),
                 distance_nm: flight_leg_distance_nm(from, to),
                 course_deg: flight_leg_course_deg(from, to),
                 status: route_status_for_leg(&ui_state, leg_index),

@@ -1508,6 +1508,7 @@ private fun GuidanceLegGeometry.toWire() = WireGuidanceLegGeometry(
     legId = legId,
     from = from.toWire(),
     to = to.toWire(),
+    path = path.map { it.toWire() },
 )
 
 private fun ProcedureKind.toWire() = when (this) {
@@ -1763,6 +1764,7 @@ private fun WireFlightPlanRouteSegment.toUi() = FlightPlanRouteSegment(
     id = id,
     from = from.toUi(),
     to = to.toUi(),
+    path = path.map { it.toUi() },
     distanceNm = distance_nm,
     courseDeg = course_deg,
     status = status.toUi(),

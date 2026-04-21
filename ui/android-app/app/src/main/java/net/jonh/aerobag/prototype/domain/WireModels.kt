@@ -794,6 +794,7 @@ data class WireFlightPlanRouteSegment(
     val id: String,
     val from: WireLatLon,
     val to: WireLatLon,
+    val path: List<WireLatLon> = emptyList(),
     val distance_nm: Double,
     val course_deg: Double,
     val status: WireRouteSegmentStatus,
@@ -805,6 +806,7 @@ data class WireGuidanceLegGeometry(
     val legId: String,
     val from: WireLatLon,
     val to: WireLatLon,
+    val path: List<WireLatLon> = emptyList(),
 )
 
 @Serializable

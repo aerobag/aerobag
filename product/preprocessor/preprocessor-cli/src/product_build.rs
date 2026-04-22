@@ -644,6 +644,7 @@ const WATER_MASK_NHD_LAYERS: &[(u32, &str, &str)] = &[
 const TERRAIN_MIN_ZOOM: u32 = 0;
 const TERRAIN_ZOOM: u32 = 10;
 const TERRAIN_TILE_SIZE: u32 = 512;
+const RASTER_BASEMAP_MAX_DISPLAY_ZOOM: f64 = 12.5;
 
 pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<String> {
     let mut lines = Vec::new();
@@ -4199,7 +4200,7 @@ fn build_nav_kv_shaded_relief_catalog_entries(
                     "tile_path_template": "{z}/{x}/{y}.webp",
                     "tile_size": TERRAIN_TILE_SIZE,
                     "min_zoom": TERRAIN_MIN_ZOOM,
-                    "max_zoom": f64::from(TERRAIN_ZOOM) + 0.8,
+                    "max_zoom": RASTER_BASEMAP_MAX_DISPLAY_ZOOM,
                     "storage_kind": "static_product",
                     "package_name": product_id,
                     "initial_viewport": {
@@ -5834,14 +5835,8 @@ fn min_zoom_for_levels(collection: &preprocessor_resource_index::ChartCollection
     (min_level as f64 - 2.8).max(1.5)
 }
 
-fn max_zoom_for_levels(collection: &preprocessor_resource_index::ChartCollectionRecord) -> f64 {
-    collection
-        .levels
-        .iter()
-        .map(|level| level.zoom)
-        .max()
-        .unwrap_or(0) as f64
-        + 0.8
+fn max_zoom_for_levels(_collection: &preprocessor_resource_index::ChartCollectionRecord) -> f64 {
+    RASTER_BASEMAP_MAX_DISPLAY_ZOOM
 }
 
 fn resolve_bundle_package_source_path(
@@ -12277,6 +12272,7 @@ mod tests {
         );
         assert_eq!(shaded["map_view"]["tile_path_template"], "{z}/{x}/{y}.webp");
         assert_eq!(shaded["map_view"]["storage_kind"], "static_product");
+        assert_eq!(shaded["map_view"]["max_zoom"], RASTER_BASEMAP_MAX_DISPLAY_ZOOM);
         assert_eq!(shaded["map_view"]["initial_viewport"]["lat"], 45.0);
         let levels = shaded["map_view"]["levels"]
             .as_array()

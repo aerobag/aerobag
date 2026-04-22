@@ -993,8 +993,16 @@ struct SaaParseState {
     lower_unit: Option<String>,
     lower_ref: Option<String>,
     saa_type: Option<String>,
-    points: Vec<[f64; 2]>,
     paths: Vec<Vec<[f64; 2]>>,
+    current_ring_points: Option<Vec<[f64; 2]>>,
+    in_line_string_segment: bool,
+    current_line_points: Vec<[f64; 2]>,
+    in_arc_by_center_point: bool,
+    arc_center: Option<[f64; 2]>,
+    arc_radius_unit: Option<String>,
+    arc_radius_value: Option<String>,
+    arc_start_angle: Option<f64>,
+    arc_end_angle: Option<f64>,
     circle_center: Option<[f64; 2]>,
     circle_radius_unit: Option<String>,
 }
@@ -1023,6 +1031,21 @@ fn parse_saa_xml(
                         state.circle_center = None;
                         state.circle_radius_unit = None;
                     }
+                    if name == "Ring" {
+                        state.current_ring_points = Some(Vec::new());
+                    }
+                    if name == "LineStringSegment" {
+                        state.in_line_string_segment = true;
+                        state.current_line_points.clear();
+                    }
+                    if name == "ArcByCenterPoint" {
+                        state.in_arc_by_center_point = true;
+                        state.arc_center = None;
+                        state.arc_radius_unit = None;
+                        state.arc_radius_value = None;
+                        state.arc_start_angle = None;
+                        state.arc_end_angle = None;
+                    }
                     state.current_tag = Some(name.clone());
                     if name == "upperLimit" {
                         state.upper_unit = event
@@ -1037,11 +1060,17 @@ fn parse_saa_xml(
                             .find(|attr| attr.key.as_ref() == b"uom")
                             .map(|attr| String::from_utf8_lossy(&attr.value).into_owned());
                     } else if name == "radius" {
-                        state.circle_radius_unit = event
+                        let unit = event
                             .attributes()
                             .flatten()
                             .find(|attr| attr.key.as_ref() == b"uom")
                             .map(|attr| String::from_utf8_lossy(&attr.value).into_owned());
+                        if state.in_circle_by_center_point {
+                            state.circle_radius_unit = unit.clone();
+                        }
+                        if state.in_arc_by_center_point {
+                            state.arc_radius_unit = unit;
+                        }
                     }
                 }
             }
@@ -1061,8 +1090,13 @@ fn parse_saa_xml(
                                 if let Some(point) = parse_aixm_pos(&text) {
                                     if state.in_circle_by_center_point {
                                         state.circle_center = Some(point);
+                                    } else if state.in_arc_by_center_point {
+                                        state.arc_center = Some(point);
+                                    } else if state.in_line_string_segment {
+                                        state.current_line_points.push(point);
                                     } else {
-                                        state.points.push(point);
+                                        // AIXM positions appear in several semantic contexts. Only
+                                        // explicit boundary segments should become drawable vertices.
                                     }
                                 }
                             }
@@ -1077,6 +1111,18 @@ fn parse_saa_xml(
                                             state.paths.push(path);
                                         }
                                     }
+                                } else if state.in_arc_by_center_point {
+                                    state.arc_radius_value = Some(text);
+                                }
+                            }
+                            Some("startAngle") => {
+                                if state.in_arc_by_center_point {
+                                    state.arc_start_angle = text.parse::<f64>().ok();
+                                }
+                            }
+                            Some("endAngle") => {
+                                if state.in_arc_by_center_point {
+                                    state.arc_end_angle = text.parse::<f64>().ok();
                                 }
                             }
                             _ => {}
@@ -1097,6 +1143,55 @@ fn parse_saa_xml(
                     state.circle_center = None;
                     state.circle_radius_unit = None;
                 }
+                if name == "LineStringSegment" {
+                    state.in_line_string_segment = false;
+                    if let Some(ring) = state.current_ring_points.as_mut() {
+                        append_path_points(ring, &state.current_line_points);
+                    } else if state.current_line_points.len() >= 2 {
+                        state.paths.push(state.current_line_points.clone());
+                    }
+                    state.current_line_points.clear();
+                }
+                if name == "ArcByCenterPoint" {
+                    state.in_arc_by_center_point = false;
+                    if let (Some(center), Some(radius), Some(start_angle), Some(end_angle)) = (
+                        state.arc_center,
+                        state.arc_radius_value.as_deref(),
+                        state.arc_start_angle,
+                        state.arc_end_angle,
+                    ) {
+                        if let Some(points) = approximate_aixm_arc(
+                            center,
+                            radius,
+                            state.arc_radius_unit.as_deref(),
+                            start_angle,
+                            end_angle,
+                        ) {
+                            if let Some(ring) = state.current_ring_points.as_mut() {
+                                append_path_points(ring, &points);
+                            } else {
+                                state.paths.push(points);
+                            }
+                        }
+                    }
+                    state.arc_center = None;
+                    state.arc_radius_unit = None;
+                    state.arc_radius_value = None;
+                    state.arc_start_angle = None;
+                    state.arc_end_angle = None;
+                }
+                if name == "Ring" {
+                    if let Some(mut points) = state.current_ring_points.take() {
+                        if points.len() >= 2 {
+                            if points.first() != points.last() {
+                                if let Some(first) = points.first().copied() {
+                                    points.push(first);
+                                }
+                            }
+                            state.paths.push(points);
+                        }
+                    }
+                }
                 if state.current_tag.as_deref() == Some(name.as_str()) {
                     state.current_tag = None;
                 }
@@ -1107,9 +1202,6 @@ fn parse_saa_xml(
             }
             _ => {}
         }
-    }
-    if !state.points.is_empty() {
-        state.paths.push(state.points);
     }
     let all_points = state.paths.iter().flatten().copied().collect::<Vec<_>>();
     if all_points.len() < 2 {
@@ -2048,6 +2140,50 @@ fn approximate_aixm_circle(
     radius_value: &str,
     radius_unit: Option<&str>,
 ) -> Option<Vec<[f64; 2]>> {
+    let (lon_radius_degrees, lat_radius_degrees) =
+        aixm_radius_degrees(center, radius_value, radius_unit)?;
+    let sample_count = 96;
+    let mut points = Vec::with_capacity(sample_count + 1);
+    for index in 0..=sample_count {
+        let angle = std::f64::consts::TAU * (index as f64) / (sample_count as f64);
+        let lon = round_coord(center[0] + lon_radius_degrees * angle.cos());
+        let lat = round_coord(center[1] + lat_radius_degrees * angle.sin());
+        if valid_lat_lon(lat, lon) {
+            points.push([lon, lat]);
+        }
+    }
+    (points.len() > 3).then_some(points)
+}
+
+fn approximate_aixm_arc(
+    center: [f64; 2],
+    radius_value: &str,
+    radius_unit: Option<&str>,
+    start_angle_deg: f64,
+    end_angle_deg: f64,
+) -> Option<Vec<[f64; 2]>> {
+    let (lon_radius_degrees, lat_radius_degrees) =
+        aixm_radius_degrees(center, radius_value, radius_unit)?;
+    let sweep_deg = shortest_angle_delta_degrees(start_angle_deg, end_angle_deg);
+    let sample_count = ((sweep_deg.abs() / 5.0).ceil() as usize).clamp(4, 96);
+    let mut points = Vec::with_capacity(sample_count + 1);
+    for index in 0..=sample_count {
+        let fraction = index as f64 / sample_count as f64;
+        let angle = (start_angle_deg + sweep_deg * fraction).to_radians();
+        let lon = round_coord(center[0] + lon_radius_degrees * angle.cos());
+        let lat = round_coord(center[1] + lat_radius_degrees * angle.sin());
+        if valid_lat_lon(lat, lon) {
+            points.push([lon, lat]);
+        }
+    }
+    (points.len() > 1).then_some(points)
+}
+
+fn aixm_radius_degrees(
+    center: [f64; 2],
+    radius_value: &str,
+    radius_unit: Option<&str>,
+) -> Option<(f64, f64)> {
     let radius = radius_value.trim().parse::<f64>().ok()?;
     if radius <= 0.0 {
         return None;
@@ -2067,17 +2203,27 @@ fn approximate_aixm_circle(
     let lat_radius_degrees = radius_nm / 60.0;
     let cos_lat = center[1].to_radians().cos().abs().max(0.000_001);
     let lon_radius_degrees = lat_radius_degrees / cos_lat;
-    let sample_count = 96;
-    let mut points = Vec::with_capacity(sample_count + 1);
-    for index in 0..=sample_count {
-        let angle = std::f64::consts::TAU * (index as f64) / (sample_count as f64);
-        let lon = round_coord(center[0] + lon_radius_degrees * angle.cos());
-        let lat = round_coord(center[1] + lat_radius_degrees * angle.sin());
-        if valid_lat_lon(lat, lon) {
-            points.push([lon, lat]);
-        }
+    Some((lon_radius_degrees, lat_radius_degrees))
+}
+
+fn shortest_angle_delta_degrees(start_angle: f64, end_angle: f64) -> f64 {
+    let mut delta = (end_angle - start_angle) % 360.0;
+    if delta > 180.0 {
+        delta -= 360.0;
     }
-    (points.len() > 3).then_some(points)
+    if delta < -180.0 {
+        delta += 360.0;
+    }
+    delta
+}
+
+fn append_path_points(target: &mut Vec<[f64; 2]>, points: &[[f64; 2]]) {
+    for point in points {
+        if target.last() == Some(point) {
+            continue;
+        }
+        target.push(*point);
+    }
 }
 
 fn airspace_path_from_points(points: &[[f64; 2]], role: &str) -> Option<AirspacePath> {
@@ -2249,4 +2395,86 @@ fn write_zip(path: &Path, members: &[(String, PathBuf)]) -> anyhow::Result<()> {
     }
     zip.finish()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saa_aixm_parser_does_not_turn_arc_centers_into_boundary_vertices() {
+        let xml = r#"
+            <SaaMessage>
+              <hasMember>
+                <Airspace>
+                  <timeSlice>
+                    <AirspaceTimeSlice>
+                      <designator>A381</designator>
+                      <name>A-381 TEST</name>
+                      <suaType>AA</suaType>
+                      <geometryComponent>
+                        <AirspaceGeometryComponent>
+                          <theAirspaceVolume>
+                            <AirspaceVolume>
+                              <upperLimit uom="FT">4000</upperLimit>
+                              <upperLimitReference>MSL</upperLimitReference>
+                              <lowerLimit uom="FT">0</lowerLimit>
+                              <lowerLimitReference>SFC</lowerLimitReference>
+                              <horizontalProjection>
+                                <Surface>
+                                  <patches>
+                                    <PolygonPatch>
+                                      <exterior>
+                                        <Ring>
+                                          <curveMember>
+                                            <Curve>
+                                              <segments>
+                                                <LineStringSegment>
+                                                  <pos>-90.803056 29.621667</pos>
+                                                  <pos>-90.773889 29.660833</pos>
+                                                </LineStringSegment>
+                                                <ArcByCenterPoint>
+                                                  <pointProperty>
+                                                    <Point>
+                                                      <pos>-90.660556 29.567778</pos>
+                                                    </Point>
+                                                  </pointProperty>
+                                                  <radius uom="NM">4.0</radius>
+                                                  <startAngle uom="deg">125.9</startAngle>
+                                                  <endAngle uom="deg">166.7228172</endAngle>
+                                                </ArcByCenterPoint>
+                                                <LineStringSegment>
+                                                  <pos>-90.735 29.583056</pos>
+                                                  <pos>-90.803056 29.621667</pos>
+                                                </LineStringSegment>
+                                              </segments>
+                                            </Curve>
+                                          </curveMember>
+                                        </Ring>
+                                      </exterior>
+                                    </PolygonPatch>
+                                  </patches>
+                                </Surface>
+                              </horizontalProjection>
+                            </AirspaceVolume>
+                          </theAirspaceVolume>
+                        </AirspaceGeometryComponent>
+                      </geometryComponent>
+                    </AirspaceTimeSlice>
+                  </timeSlice>
+                </Airspace>
+              </hasMember>
+            </SaaMessage>
+        "#;
+        let mut seen = BTreeSet::new();
+        let feature = parse_saa_xml(xml, "A-381 TEST.xml", "data_2604", &mut seen)
+            .expect("parse should succeed")
+            .expect("feature should be emitted");
+
+        assert_eq!(feature.paths.len(), 1);
+        let points = &feature.paths[0].points;
+        assert!(!points.contains(&[-90.660556, 29.567778]));
+        assert!(points.len() > 4, "arc should be approximated into boundary points");
+        assert_eq!(points.first(), points.last());
+    }
 }

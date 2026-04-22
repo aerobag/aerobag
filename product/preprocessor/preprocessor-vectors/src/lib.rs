@@ -36,6 +36,7 @@ pub struct BuildVectorsRequest {
 pub struct BuildVectorsResult {
     pub manifest_path: PathBuf,
     pub stats_path: PathBuf,
+    pub errors_path: PathBuf,
     pub zip_path: PathBuf,
 }
 
@@ -70,7 +71,26 @@ struct VectorStats {
     points: PointStats,
     #[serde(skip_serializing_if = "Option::is_none")]
     airspace: Option<AirspaceStats>,
+    diagnostic_error_count: usize,
     warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BuildDiagnostics {
+    schema_version: u32,
+    product: String,
+    version_label: String,
+    error_count: usize,
+    errors: Vec<BuildDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BuildDiagnostic {
+    severity: String,
+    code: String,
+    message: String,
+    expected: usize,
+    actual: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -112,6 +132,10 @@ struct AirspaceStats {
     source_found: bool,
     feature_count: usize,
     class_counts: BTreeMap<String, usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    saa_source_xml_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    saa_emitted_feature_count: Option<usize>,
     reference_tile_count: usize,
     label_tile_count: usize,
     max_refs_in_tile: usize,
@@ -294,6 +318,9 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
         .as_ref()
         .map(|dir| dir.join("SAA-AIXM_5_Schema/SaaSubscriberFile.zip"));
     let mut airspace_label_diagnostics = AirspaceLabelDiagnostics::default();
+    let mut diagnostic_errors = Vec::new();
+    let mut saa_source_xml_count = None;
+    let mut saa_emitted_feature_count = None;
     let mut airspace_features = match airspace_source.as_deref() {
         Some(path) if path.exists() => {
             let (features, diagnostics) = load_class_airspace_features(
@@ -309,12 +336,27 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
         _ => Vec::new(),
     };
     if let Some(path) = saa_source.as_ref().filter(|path| path.exists()) {
-        airspace_features.extend(
-            load_saa_airspace_features(path, &request.version_label)
-                .with_context(|| format!("failed to load SAA AIXM {}", path.display()))?,
-        );
+        let saa = load_saa_airspace_features(path, &request.version_label)
+            .with_context(|| format!("failed to load SAA AIXM {}", path.display()))?;
+        if saa.source_xml_count != saa.features.len() {
+            diagnostic_errors.push(BuildDiagnostic {
+                severity: "ERROR".to_string(),
+                code: "saa_feature_count_mismatch".to_string(),
+                message: format!(
+                    "SAA AIXM source XML count ({}) does not match emitted feature count ({})",
+                    saa.source_xml_count,
+                    saa.features.len()
+                ),
+                expected: saa.source_xml_count,
+                actual: saa.features.len(),
+            });
+        }
+        saa_source_xml_count = Some(saa.source_xml_count);
+        saa_emitted_feature_count = Some(saa.features.len());
+        airspace_features.extend(saa.features);
     }
     let stats_path = request.output_dir.join("stats.json");
+    let errors_path = request.output_dir.join("errors.json");
     let manifest_path = request
         .output_dir
         .join(format!("vectors_{}.manifest", request.version_label));
@@ -420,9 +462,7 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                     }
                     let (label_x, label_y) = slippy_tile(candidate.lat, candidate.lon, zoom);
                     insert_airspace_tile_label(
-                        label_tiles
-                            .entry((zoom, label_x, label_y))
-                            .or_default(),
+                        label_tiles.entry((zoom, label_x, label_y)).or_default(),
                         AirspaceTileLabel {
                             feature_id: feature.id.clone(),
                             text: feature.label.text.clone(),
@@ -510,6 +550,8 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             source_found: true,
             feature_count: airspace_features.len(),
             class_counts,
+            saa_source_xml_count,
+            saa_emitted_feature_count,
             reference_tile_count: files
                 .get("airspace_reference_tiles")
                 .map(|_| {
@@ -540,9 +582,20 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             layers: layer_stats,
         },
         airspace: airspace_stats,
+        diagnostic_error_count: diagnostic_errors.len(),
         warnings: Vec::new(),
     };
     write_json_pretty(&stats_path, &stats)?;
+    write_json_pretty(
+        &errors_path,
+        &BuildDiagnostics {
+            schema_version: 1,
+            product: "vectors".to_string(),
+            version_label: request.version_label.clone(),
+            error_count: diagnostic_errors.len(),
+            errors: diagnostic_errors,
+        },
+    )?;
 
     files.insert("stats".to_string(), "stats.json".to_string());
     write_json_pretty(
@@ -561,6 +614,7 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
     Ok(BuildVectorsResult {
         manifest_path,
         stats_path,
+        errors_path,
         zip_path,
     })
 }
@@ -646,6 +700,7 @@ pub fn build_obstacle_dataset(
                 )]),
             },
             airspace: None,
+            diagnostic_error_count: 0,
             warnings: vec![
                 "obstacle dataset is published separately from the cycle bundle".to_string(),
             ],
@@ -950,7 +1005,7 @@ fn load_class_airspace_features(
 fn load_saa_airspace_features(
     path: &Path,
     version_label: &str,
-) -> anyhow::Result<Vec<AirspaceFeature>> {
+) -> anyhow::Result<SaaAirspaceLoadResult> {
     let outer_file =
         fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut outer = ZipArchive::new(outer_file)
@@ -963,19 +1018,29 @@ fn load_saa_airspace_features(
     let mut inner =
         ZipArchive::new(Cursor::new(nested_bytes)).context("failed to read nested SAA zip")?;
     let mut features = Vec::new();
+    let mut source_xml_count = 0usize;
     let mut seen = BTreeSet::new();
     for index in 0..inner.len() {
         let mut file = inner.by_index(index)?;
         if !file.name().to_ascii_lowercase().ends_with(".xml") {
             continue;
         }
+        source_xml_count += 1;
         let mut xml = String::new();
         file.read_to_string(&mut xml)?;
         if let Some(feature) = parse_saa_xml(&xml, file.name(), version_label, &mut seen)? {
             features.push(feature);
         }
     }
-    Ok(features)
+    Ok(SaaAirspaceLoadResult {
+        source_xml_count,
+        features,
+    })
+}
+
+struct SaaAirspaceLoadResult {
+    source_xml_count: usize,
+    features: Vec<AirspaceFeature>,
 }
 
 #[derive(Default)]
@@ -1031,7 +1096,7 @@ fn parse_saa_xml(
                         state.circle_center = None;
                         state.circle_radius_unit = None;
                     }
-                    if name == "Ring" {
+                    if name == "Ring" || name == "LinearRing" {
                         state.current_ring_points = Some(Vec::new());
                     }
                     if name == "LineStringSegment" {
@@ -1094,6 +1159,13 @@ fn parse_saa_xml(
                                         state.arc_center = Some(point);
                                     } else if state.in_line_string_segment {
                                         state.current_line_points.push(point);
+                                    } else if let Some(ring) = state.current_ring_points.as_mut() {
+                                        // Some SAA AIXM polygons use GML LinearRing with direct
+                                        // pos children instead of LineStringSegment/ArcByCenterPoint.
+                                        // Only accept bare positions while a boundary ring is open;
+                                        // AIXM positions outside that context can be semantic refs
+                                        // such as arc centers, navaids, or communications metadata.
+                                        append_path_points(ring, &[point]);
                                     } else {
                                         // AIXM positions appear in several semantic contexts. Only
                                         // explicit boundary segments should become drawable vertices.
@@ -1180,7 +1252,7 @@ fn parse_saa_xml(
                     state.arc_start_angle = None;
                     state.arc_end_angle = None;
                 }
-                if name == "Ring" {
+                if name == "Ring" || name == "LinearRing" {
                     if let Some(mut points) = state.current_ring_points.take() {
                         if points.len() >= 2 {
                             if points.first() != points.last() {
@@ -1770,7 +1842,8 @@ fn assign_class_airspace_label_candidates(
                 })
                 .collect::<Vec<_>>();
             let nearby_airports = nearby_airport_points(&current_parts, airport_points);
-            let candidates = ranked_label_candidates(&current_parts, &inner_parts, &nearby_airports);
+            let candidates =
+                ranked_label_candidates(&current_parts, &inner_parts, &nearby_airports);
             if candidates.is_empty() {
                 diagnostics.class_label_anchor_outside_polygon_count += 1;
                 continue;
@@ -1804,7 +1877,10 @@ fn airspace_sibling_groups(features: &[AirspaceFeature]) -> Vec<Vec<usize>> {
         groups
             .entry((
                 feature.airspace_class.to_ascii_uppercase(),
-                feature.ident.as_ref().map(|value| value.to_ascii_uppercase()),
+                feature
+                    .ident
+                    .as_ref()
+                    .map(|value| value.to_ascii_uppercase()),
                 feature.local_type.to_ascii_uppercase(),
             ))
             .or_default()
@@ -2164,7 +2240,7 @@ fn approximate_aixm_arc(
 ) -> Option<Vec<[f64; 2]>> {
     let (lon_radius_degrees, lat_radius_degrees) =
         aixm_radius_degrees(center, radius_value, radius_unit)?;
-    let sweep_deg = shortest_angle_delta_degrees(start_angle_deg, end_angle_deg);
+    let sweep_deg = directed_aixm_arc_sweep_degrees(start_angle_deg, end_angle_deg);
     let sample_count = ((sweep_deg.abs() / 5.0).ceil() as usize).clamp(4, 96);
     let mut points = Vec::with_capacity(sample_count + 1);
     for index in 0..=sample_count {
@@ -2195,6 +2271,7 @@ fn aixm_radius_degrees(
         .as_str()
     {
         "NM" => radius,
+        "MI" => radius * 5280.0 / 6076.11549,
         "M" => radius / 1852.0,
         "KM" => radius / 1.852,
         "FT" => radius / 6076.11549,
@@ -2206,15 +2283,18 @@ fn aixm_radius_degrees(
     Some((lon_radius_degrees, lat_radius_degrees))
 }
 
-fn shortest_angle_delta_degrees(start_angle: f64, end_angle: f64) -> f64 {
-    let mut delta = (end_angle - start_angle) % 360.0;
-    if delta > 180.0 {
-        delta -= 360.0;
-    }
-    if delta < -180.0 {
-        delta += 360.0;
-    }
-    delta
+fn directed_aixm_arc_sweep_degrees(start_angle: f64, end_angle: f64) -> f64 {
+    // GML ArcByCenterPoint arcs are directed from startAngle to endAngle; they
+    // are not implicitly normalized to the shortest arc. AIXM applies the same
+    // convention, with CRS84 angle values increasing counter-clockwise.
+    //
+    // References:
+    // - GML 3.2.1 ArcByCenterPoint: center, radius, start bearing, end bearing.
+    //   https://repository.data2type.de/GML/v_3.2.1/html/el.ArcByCenterPoint.html
+    // - AIXM coding guidance: arc direction follows increasing values when
+    //   start < end and decreasing values when start > end.
+    //   https://swim-eurocontrol.atlassian.net/wiki/spaces/ACG/pages/212239935/ArcByCenterPoint+Interpretation+Summary
+    end_angle - start_angle
 }
 
 fn append_path_points(target: &mut Vec<[f64; 2]>, points: &[[f64; 2]]) {
@@ -2474,7 +2554,234 @@ mod tests {
         assert_eq!(feature.paths.len(), 1);
         let points = &feature.paths[0].points;
         assert!(!points.contains(&[-90.660556, 29.567778]));
-        assert!(points.len() > 4, "arc should be approximated into boundary points");
+        assert!(
+            points.len() > 4,
+            "arc should be approximated into boundary points"
+        );
         assert_eq!(points.first(), points.last());
+    }
+
+    #[test]
+    fn saa_aixm_parser_preserves_directed_arc_sweeps() {
+        let xml = r#"
+            <SaaMessage>
+              <hasMember>
+                <Airspace>
+                  <timeSlice>
+                    <AirspaceTimeSlice>
+                      <designator>R6612</designator>
+                      <name>R-6612 DAHLGREN COMPLEX, VA</name>
+                      <suaType>RA</suaType>
+                      <geometryComponent>
+                        <AirspaceGeometryComponent>
+                          <theAirspaceVolume>
+                            <AirspaceVolume>
+                              <upperLimit uom="FT">07000</upperLimit>
+                              <upperLimitReference>MSL</upperLimitReference>
+                              <lowerLimit uom="FT">GND</lowerLimit>
+                              <lowerLimitReference>SFC</lowerLimitReference>
+                              <horizontalProjection>
+                                <Surface srsName="URN:OGC:DEF:CRS:OGC:1.3:CRS84">
+                                  <patches>
+                                    <PolygonPatch>
+                                      <exterior>
+                                        <Ring>
+                                          <curveMember>
+                                            <Curve>
+                                              <segments>
+                                                <ArcByCenterPoint>
+                                                  <pointProperty>
+                                                    <Point>
+                                                      <pos>-77.036944 38.299722</pos>
+                                                    </Point>
+                                                  </pointProperty>
+                                                  <radius uom="FT">7000.0</radius>
+                                                  <startAngle uom="deg">71.2</startAngle>
+                                                  <endAngle uom="deg">-142.9943029</endAngle>
+                                                </ArcByCenterPoint>
+                                              </segments>
+                                            </Curve>
+                                          </curveMember>
+                                          <curveMember>
+                                            <Curve>
+                                              <segments>
+                                                <ArcByCenterPoint>
+                                                  <pointProperty>
+                                                    <Point>
+                                                      <pos>-77.048611 38.306389</pos>
+                                                    </Point>
+                                                  </pointProperty>
+                                                  <radius uom="FT">7000.0</radius>
+                                                  <startAngle uom="deg">251.2</startAngle>
+                                                  <endAngle uom="deg">36.7403182</endAngle>
+                                                </ArcByCenterPoint>
+                                              </segments>
+                                            </Curve>
+                                          </curveMember>
+                                        </Ring>
+                                      </exterior>
+                                    </PolygonPatch>
+                                  </patches>
+                                </Surface>
+                              </horizontalProjection>
+                            </AirspaceVolume>
+                          </theAirspaceVolume>
+                        </AirspaceGeometryComponent>
+                      </geometryComponent>
+                    </AirspaceTimeSlice>
+                  </timeSlice>
+                </Airspace>
+              </hasMember>
+            </SaaMessage>
+        "#;
+        let mut seen = BTreeSet::new();
+        let feature = parse_saa_xml(xml, "R-6612 TEST.xml", "data_2604", &mut seen)
+            .expect("parse should succeed")
+            .expect("feature should be emitted");
+
+        assert_eq!(feature.paths.len(), 1);
+        assert!(
+            feature.bbox[0] < -77.07,
+            "west edge should include the outer circle"
+        );
+        assert!(
+            feature.bbox[1] < 38.281,
+            "south edge should include the outer circle"
+        );
+        assert!(
+            feature.bbox[2] > -77.013,
+            "east edge should include the outer circle"
+        );
+        assert!(
+            feature.bbox[3] > 38.325,
+            "north edge should include the outer circle"
+        );
+    }
+
+    #[test]
+    fn saa_aixm_parser_accepts_linear_ring_positions() {
+        let xml = r#"
+            <SaaMessage>
+              <hasMember>
+                <Airspace>
+                  <timeSlice>
+                    <AirspaceTimeSlice>
+                      <designator>R6608A</designator>
+                      <name>R-6608A QUANTICO, VA</name>
+                      <suaType>RA</suaType>
+                      <geometryComponent>
+                        <AirspaceGeometryComponent>
+                          <theAirspaceVolume>
+                            <AirspaceVolume>
+                              <upperLimit uom="FT">10000</upperLimit>
+                              <upperLimitReference>MSL</upperLimitReference>
+                              <lowerLimit uom="FT">GND</lowerLimit>
+                              <lowerLimitReference>SFC</lowerLimitReference>
+                              <horizontalProjection>
+                                <Surface srsName="URN:OGC:DEF:CRS:OGC:1.3:CRS84">
+                                  <patches>
+                                    <PolygonPatch>
+                                      <exterior>
+                                        <LinearRing>
+                                          <pos>-77.568333 38.586111</pos>
+                                          <pos>-77.568333 38.616667</pos>
+                                          <pos>-77.538611 38.630556</pos>
+                                          <pos>-77.462222 38.621389</pos>
+                                          <pos>-77.462222 38.593056</pos>
+                                          <pos>-77.568333 38.586111</pos>
+                                        </LinearRing>
+                                      </exterior>
+                                    </PolygonPatch>
+                                  </patches>
+                                </Surface>
+                              </horizontalProjection>
+                            </AirspaceVolume>
+                          </theAirspaceVolume>
+                        </AirspaceGeometryComponent>
+                      </geometryComponent>
+                    </AirspaceTimeSlice>
+                  </timeSlice>
+                </Airspace>
+              </hasMember>
+            </SaaMessage>
+        "#;
+        let mut seen = BTreeSet::new();
+        let feature = parse_saa_xml(xml, "R-6608A TEST.xml", "data_2604", &mut seen)
+            .expect("parse should succeed")
+            .expect("feature should be emitted");
+
+        assert_eq!(feature.name, "R-6608A QUANTICO, VA");
+        assert_eq!(feature.ident.as_deref(), Some("R6608A"));
+        assert_eq!(feature.airspace_class, "RA");
+        assert_eq!(feature.paths.len(), 1);
+        assert_eq!(feature.paths[0].points.len(), 6);
+        assert_eq!(feature.paths[0].points.first(), feature.paths[0].points.last());
+    }
+
+    #[test]
+    fn saa_aixm_parser_accepts_statute_mile_circle_radius() {
+        let xml = r#"
+            <SaaMessage>
+              <hasMember>
+                <Airspace>
+                  <timeSlice>
+                    <AirspaceTimeSlice>
+                      <designator>R6317</designator>
+                      <name>R-6317 EL SAUZ, TX</name>
+                      <suaType>RA</suaType>
+                      <geometryComponent>
+                        <AirspaceGeometryComponent>
+                          <theAirspaceVolume>
+                            <AirspaceVolume>
+                              <upperLimit uom="FT">15000</upperLimit>
+                              <upperLimitReference>MSL</upperLimitReference>
+                              <lowerLimit uom="FT">GND</lowerLimit>
+                              <lowerLimitReference>SFC</lowerLimitReference>
+                              <horizontalProjection>
+                                <Surface srsName="URN:OGC:DEF:CRS:OGC:1.3:CRS84">
+                                  <patches>
+                                    <PolygonPatch>
+                                      <exterior>
+                                        <Ring>
+                                          <curveMember>
+                                            <Curve>
+                                              <segments>
+                                                <CircleByCenterPoint>
+                                                  <pointProperty>
+                                                    <Point>
+                                                      <pos>-98.816667 26.572222</pos>
+                                                    </Point>
+                                                  </pointProperty>
+                                                  <radius uom="MI">3.0</radius>
+                                                </CircleByCenterPoint>
+                                              </segments>
+                                            </Curve>
+                                          </curveMember>
+                                        </Ring>
+                                      </exterior>
+                                    </PolygonPatch>
+                                  </patches>
+                                </Surface>
+                              </horizontalProjection>
+                            </AirspaceVolume>
+                          </theAirspaceVolume>
+                        </AirspaceGeometryComponent>
+                      </geometryComponent>
+                    </AirspaceTimeSlice>
+                  </timeSlice>
+                </Airspace>
+              </hasMember>
+            </SaaMessage>
+        "#;
+        let mut seen = BTreeSet::new();
+        let feature = parse_saa_xml(xml, "R-6317 TEST.xml", "data_2604", &mut seen)
+            .expect("parse should succeed")
+            .expect("feature should be emitted");
+
+        assert_eq!(feature.name, "R-6317 EL SAUZ, TX");
+        assert_eq!(feature.airspace_class, "RA");
+        assert_eq!(feature.paths.len(), 1);
+        assert!(feature.paths[0].points.len() > 90);
+        assert_eq!(feature.paths[0].points.first(), feature.paths[0].points.last());
     }
 }

@@ -3,6 +3,7 @@
 import argparse
 import curses
 from datetime import datetime, timezone
+import json
 import os
 import re
 import time
@@ -52,6 +53,13 @@ class TaskState:
     completed_wall: str | None = None
 
 
+@dataclass
+class DiagnosticsState:
+    status: str
+    text: str
+    color: str
+
+
 class BuildState:
     def __init__(self) -> None:
         self.total_tasks = 0
@@ -63,6 +71,8 @@ class BuildState:
         self.cycle_summary = ""
         self.bundle_cycle = "?"
         self.pid: int | None = None
+        self.build_root: Path | None = None
+        self.diagnostic_error_count: int | None = None
         self.final_result: str | None = None
         self.final_details = ""
         self.final_at: str | None = None
@@ -79,6 +89,7 @@ class BuildState:
             self._reset_for_new_run()
             self.header = f"{match.group('ts')} {match.group('rest')}"
             self.pid = parse_pid(match.group("rest"))
+            self.build_root = parse_build_root(match.group("rest"))
             self.last_timestamp = match.group("ts")
             return
 
@@ -135,6 +146,10 @@ class BuildState:
             task_state.completed_at = match.group("ts")
             task_state.completed_wall = match.group("wall")
             task_state.details = match.group("rest").strip()
+            if task == "current-artifacts":
+                self.diagnostic_error_count = parse_diagnostic_error_count(
+                    task_state.details
+                )
             if task not in self.completion_order:
                 self.completion_order.append(task)
             return
@@ -157,6 +172,8 @@ class BuildState:
         self.cycle_summary = ""
         self.bundle_cycle = "?"
         self.pid = None
+        self.build_root = None
+        self.diagnostic_error_count = None
         self.final_result = None
         self.final_details = ""
         self.final_at = None
@@ -198,6 +215,32 @@ def parse_pid(header_rest: str) -> int | None:
     return None
 
 
+def parse_build_root(header_rest: str) -> Path | None:
+    for token in header_rest.split():
+        if token.startswith("build_root="):
+            value = token.split("=", 1)[1]
+            return Path(value) if value else None
+    return None
+
+
+def parse_diagnostic_error_count(details: str) -> int | None:
+    for token in details.split():
+        if token.startswith("diagnostic_errors="):
+            try:
+                return int(token.split("=", 1)[1])
+            except ValueError:
+                return None
+    return None
+
+
+def parse_current_artifacts_path(final_details: str) -> Path | None:
+    for token in final_details.split():
+        if token.startswith("current_artifacts="):
+            value = token.split("=", 1)[1]
+            return Path(value) if value else None
+    return None
+
+
 def pid_is_alive(pid: int | None) -> bool | None:
     if pid is None:
         return None
@@ -218,6 +261,109 @@ def format_runtime(now_wall: datetime, launched_wall: str) -> str:
     if hours:
         return f"{hours}:{minutes:02d}:{seconds:02d}"
     return f"{minutes}:{seconds:02d}"
+
+
+def read_diagnostics_state(state: BuildState) -> DiagnosticsState:
+    current_artifacts_path = parse_current_artifacts_path(state.final_details)
+    if (
+        current_artifacts_path is None
+        and state.diagnostic_error_count is not None
+        and state.build_root is not None
+    ):
+        current_artifacts_path = latest_current_artifacts_path(state.build_root)
+    if current_artifacts_path is None:
+        if state.diagnostic_error_count is not None:
+            return diagnostics_from_count(state.diagnostic_error_count, "from log")
+        return DiagnosticsState(
+            status="pending",
+            text="diagnostics: waiting for current_artifacts",
+            color="yellow",
+        )
+
+    try:
+        current = json.loads(current_artifacts_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        if state.diagnostic_error_count is not None:
+            return diagnostics_from_count(
+                state.diagnostic_error_count,
+                f"from log; current_artifacts unreadable: {exc}",
+            )
+        return DiagnosticsState(
+            status="unreadable",
+            text=f"diagnostics: unable to read {current_artifacts_path}: {exc}",
+            color="yellow",
+        )
+    except json.JSONDecodeError as exc:
+        return DiagnosticsState(
+            status="unreadable",
+            text=f"diagnostics: invalid JSON in {current_artifacts_path}: {exc}",
+            color="yellow",
+        )
+
+    diagnostics = current.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        if state.diagnostic_error_count is not None:
+            return diagnostics_from_count(state.diagnostic_error_count, "from log")
+        return DiagnosticsState(
+            status="missing",
+            text=f"diagnostics: no diagnostics entry in {current_artifacts_path.name}",
+            color="yellow",
+        )
+
+    filename = diagnostics.get("filename")
+    manifest_count = diagnostics.get("error_count")
+    if not isinstance(filename, str) or not filename:
+        return DiagnosticsState(
+            status="invalid",
+            text=f"diagnostics: invalid diagnostics filename in {current_artifacts_path.name}",
+            color="yellow",
+        )
+
+    diagnostics_path = current_artifacts_path.parent / filename
+    try:
+        payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        count = manifest_count if isinstance(manifest_count, int) else None
+        if count is not None:
+            return diagnostics_from_count(count, f"{filename}; unreadable: {exc}")
+        return DiagnosticsState(
+            status="unreadable",
+            text=f"diagnostics: unable to read {filename}: {exc}",
+            color="yellow",
+        )
+    except json.JSONDecodeError as exc:
+        return DiagnosticsState(
+            status="unreadable",
+            text=f"diagnostics: invalid JSON in {filename}: {exc}",
+            color="yellow",
+        )
+
+    count = payload.get("error_count")
+    if not isinstance(count, int):
+        count = manifest_count if isinstance(manifest_count, int) else 0
+    return diagnostics_from_count(count, filename)
+
+
+def latest_current_artifacts_path(build_root: Path) -> Path | None:
+    try:
+        candidates = sorted(build_root.glob("current_artifacts_*.json"))
+    except OSError:
+        return None
+    return candidates[-1] if candidates else None
+
+
+def diagnostics_from_count(error_count: int, source: str) -> DiagnosticsState:
+    if error_count > 0:
+        return DiagnosticsState(
+            status="errors",
+            text=f"diagnostics: ERROR count={error_count} source={source}",
+            color="yellow",
+        )
+    return DiagnosticsState(
+        status="ok",
+        text=f"diagnostics: OK count=0 source={source}",
+        color="green",
+    )
 
 
 def draw_line(stdscr, row: int, col: int, text: str, attr: int, max_x: int) -> None:
@@ -270,12 +416,14 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
         if state.cycle_summary:
             draw_line(stdscr, 4, 0, state.cycle_summary, curses.A_DIM, max_x)
             status_row = 5
-            liveness_row = 6
-            row = 8
+            diagnostics_row = 6
+            liveness_row = 7
+            row = 9
         else:
             status_row = 4
-            liveness_row = 5
-            row = 7
+            diagnostics_row = 5
+            liveness_row = 6
+            row = 8
         if state.final_result == "PASS":
             status_text = f"result=PASS {state.final_at or ''} {state.final_details}".strip()
             status_attr = curses.color_pair(1) | curses.A_BOLD
@@ -286,6 +434,16 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
             status_text = "result=in_progress"
             status_attr = curses.color_pair(4) | curses.A_BOLD
         draw_line(stdscr, status_row, 0, status_text, status_attr, max_x)
+        diagnostics = read_diagnostics_state(state)
+        diagnostics_attr = curses.color_pair(1 if diagnostics.color == "green" else 4)
+        draw_line(
+            stdscr,
+            diagnostics_row,
+            0,
+            diagnostics.text,
+            diagnostics_attr | curses.A_BOLD,
+            max_x,
+        )
         pid_alive = pid_is_alive(state.pid)
         if pid_alive is None:
             liveness = "pid=unknown"

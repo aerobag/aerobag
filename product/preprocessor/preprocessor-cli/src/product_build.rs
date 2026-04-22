@@ -220,10 +220,39 @@ struct CurrentArtifactsManifest {
     as_of_date: String,
     bundles: Vec<CurrentBundleEntry>,
     obstacles: CurrentObstacleEntry,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostics: Option<CurrentDiagnosticsEntry>,
     #[serde(default)]
     static_products: Vec<CurrentStaticProductEntry>,
     #[serde(default)]
     fast_products: Vec<CurrentFastProductEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CurrentDiagnosticsEntry {
+    filename: String,
+    error_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BuildDiagnosticsManifest {
+    schema_version: u32,
+    generated_at_utc: String,
+    error_count: usize,
+    errors: Vec<BuildDiagnosticEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BuildDiagnosticEntry {
+    product: String,
+    cycle: Option<String>,
+    severity: String,
+    code: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expected: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actual: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -445,6 +474,7 @@ enum ProductTaskValue {
     },
     FingerprintedZip {
         zip: PathBuf,
+        errors: Option<PathBuf>,
     },
     FingerprintedTppSource {
         source: AssetSource,
@@ -1658,9 +1688,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             let record = build_vectors_node(&cycle_config, &data, &source_input_dir, &data_fingerprint, &data_version)?;
                             let cache_hit = record.cache_hit;
                             let zip = resolve_artifact_path(&cycle_config, output_path(&record, "zip")?);
+                            let errors = Some(resolve_artifact_path(&cycle_config, output_path(&record, "errors")?));
                             Ok(ProductTaskCompletion {
                                 node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
-                                value: ProductTaskValue::FingerprintedZip { zip },
+                                value: ProductTaskValue::FingerprintedZip {
+                                    zip,
+                                    errors,
+                                },
                                 completion_detail: format!("cache_hit={}", cache_hit),
                             })
                         }
@@ -2488,21 +2522,36 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     _ => bail!("missing published static product output for {}", task_id),
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
+                            let diagnostics = write_product_build_diagnostics(
+                                &config.build_root,
+                                Utc::now().date_naive(),
+                                &task_values_snapshot,
+                            )?;
                             let current_artifacts_path = write_current_artifacts_manifest(
                                 &config.build_root,
                                 Utc::now().date_naive(),
                                 &published_obstacle.0,
                                 &published_obstacle.1,
                                 published_obstacle.2,
+                                diagnostics.clone(),
                                 static_products,
                                 fast_products,
                             )?;
+                            let diagnostic_error_count =
+                                diagnostics.as_ref().map(|value| value.error_count).unwrap_or(0);
+                            let completion_detail = if diagnostic_error_count > 0 {
+                                format!(
+                                    "published ERROR diagnostic_errors={diagnostic_error_count}"
+                                )
+                            } else {
+                                "published diagnostic_errors=0".to_string()
+                            };
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
                                 value: ProductTaskValue::CurrentArtifacts {
                                     path: current_artifacts_path,
                                 },
-                                completion_detail: "published".to_string(),
+                                completion_detail,
                             })
                         }
                         ProductScheduledTaskKind::ProductUnpack => {
@@ -2882,6 +2931,14 @@ fn sync_fast_subset_unpacked(
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
     sync_unpacked_file(current_artifacts_path, &unpacked_root)?;
+    let current: CurrentArtifactsManifest = serde_json::from_slice(
+        &fs::read(current_artifacts_path)
+            .with_context(|| format!("failed to read {}", current_artifacts_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", current_artifacts_path.display()))?;
+    if let Some(diagnostics) = &current.diagnostics {
+        sync_unpacked_file(&build_root.join(&diagnostics.filename), &unpacked_root)?;
+    }
     remove_stale_fast_unpacked_dirs(&unpacked_root, previous_fast_products, fast_products)?;
     for product in fast_products {
         let published_filename = product
@@ -6098,6 +6155,14 @@ fn sync_product_level_unpacked(
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
     sync_unpacked_file(current_artifacts_path, &unpacked_root)?;
+    let current: CurrentArtifactsManifest = serde_json::from_slice(
+        &fs::read(current_artifacts_path)
+            .with_context(|| format!("failed to read {}", current_artifacts_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", current_artifacts_path.display()))?;
+    if let Some(diagnostics) = &current.diagnostics {
+        sync_unpacked_file(&build_root.join(&diagnostics.filename), &unpacked_root)?;
+    }
     for artifact in zip_artifacts {
         let published_filename = artifact
             .published_zip_path
@@ -8906,6 +8971,7 @@ fn write_current_artifacts_manifest(
     published_obstacle_zip: &Path,
     obstacle_sha256: &str,
     obstacle_size_bytes: u64,
+    diagnostics: Option<CurrentDiagnosticsEntry>,
     static_products: Vec<CurrentStaticProductEntry>,
     fast_products: Vec<CurrentFastProductEntry>,
 ) -> anyhow::Result<PathBuf> {
@@ -8925,6 +8991,7 @@ fn write_current_artifacts_manifest(
             checksum_sha256: obstacle_sha256.to_string(),
             size_bytes: obstacle_size_bytes,
         },
+        diagnostics,
         static_products,
         fast_products,
     };
@@ -8939,6 +9006,92 @@ fn write_current_artifacts_manifest(
     )
     .with_context(|| format!("failed to write {}", manifest_path.display()))?;
     Ok(manifest_path)
+}
+
+fn write_product_build_diagnostics(
+    build_root: &Path,
+    as_of_date: NaiveDate,
+    task_values: &BTreeMap<String, ProductTaskValue>,
+) -> anyhow::Result<Option<CurrentDiagnosticsEntry>> {
+    let mut errors = Vec::new();
+    for (task_id, task_value) in task_values {
+        if !task_id.ends_with(":vectors") {
+            continue;
+        }
+        let cycle = task_id.trim_end_matches(":vectors").to_string();
+        let ProductTaskValue::FingerprintedZip {
+            errors: Some(errors_path),
+            ..
+        } = task_value
+        else {
+            continue;
+        };
+        let payload: serde_json::Value = serde_json::from_slice(
+            &fs::read(errors_path)
+                .with_context(|| format!("failed to read {}", errors_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", errors_path.display()))?;
+        let product = payload
+            .get("product")
+            .and_then(|value| value.as_str())
+            .unwrap_or("vectors")
+            .to_string();
+        for error in payload
+            .get("errors")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+        {
+            errors.push(BuildDiagnosticEntry {
+                product: product.clone(),
+                cycle: Some(cycle.clone()),
+                severity: error
+                    .get("severity")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("ERROR")
+                    .to_string(),
+                code: error
+                    .get("code")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                message: error
+                    .get("message")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unspecified build diagnostic")
+                    .to_string(),
+                expected: error
+                    .get("expected")
+                    .and_then(|value| value.as_u64())
+                    .map(|value| value as usize),
+                actual: error
+                    .get("actual")
+                    .and_then(|value| value.as_u64())
+                    .map(|value| value as usize),
+            });
+        }
+    }
+    let error_count = errors
+        .iter()
+        .filter(|error| error.severity == "ERROR")
+        .count();
+    let filename = format!("build_errors_{}.json", as_of_date.format("%Y%m%d"));
+    let path = build_root.join(&filename);
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&BuildDiagnosticsManifest {
+            schema_version: 1,
+            generated_at_utc: utc_now_string(),
+            error_count,
+            errors,
+        })
+        .context("failed to encode build diagnostics manifest")?,
+    )
+    .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(Some(CurrentDiagnosticsEntry {
+        filename,
+        error_count,
+    }))
 }
 
 fn validate_packaged_contract(
@@ -8957,6 +9110,15 @@ fn validate_packaged_contract(
         let bundle_path = packaged_root.join(&bundle.filename);
         ensure_public_file_exists(&bundle_path)?;
         validate_bundle_manifest(packaged_root, &bundle_path)?;
+    }
+    if let Some(diagnostics) = &current.diagnostics {
+        validate_public_filename(
+            &diagnostics.filename,
+            "current_artifacts.diagnostics.filename",
+        )?;
+        let diagnostics_path = packaged_root.join(&diagnostics.filename);
+        ensure_public_file_exists(&diagnostics_path)?;
+        validate_no_internal_paths_in_json(&diagnostics_path)?;
     }
 
     validate_public_filename(
@@ -11017,8 +11179,12 @@ fn build_vectors_node(
     };
     let zip_path = output_dir.join(format!("vectors_{version_label}.zip"));
     let stats_path = output_dir.join("stats.json");
+    let errors_path = output_dir.join("errors.json");
     let _build_lock =
-        match claim_or_wait_for_node(&prepared, &[zip_path.clone(), stats_path.clone()])? {
+        match claim_or_wait_for_node(
+            &prepared,
+            &[zip_path.clone(), stats_path.clone(), errors_path.clone()],
+        )? {
             NodeCacheState::CacheHit(record) => return Ok(record),
             NodeCacheState::Build(lock) => lock,
         };
@@ -11033,6 +11199,10 @@ fn build_vectors_node(
         (
             "stats".to_string(),
             relative_artifact_path(&result.stats_path, &config.build_root),
+        ),
+        (
+            "errors".to_string(),
+            relative_artifact_path(&result.errors_path, &config.build_root),
         ),
         (
             "zip".to_string(),

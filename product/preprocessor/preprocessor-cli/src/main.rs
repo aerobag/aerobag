@@ -2708,6 +2708,7 @@ fn main() -> anyhow::Result<()> {
             let result = build_vectors_dataset(&request)?;
             println!("manifest {}", result.manifest_path.display());
             println!("stats {}", result.stats_path.display());
+            println!("errors {}", result.errors_path.display());
             println!("zip {}", result.zip_path.display());
         }
         Some("build-obstacles") => {

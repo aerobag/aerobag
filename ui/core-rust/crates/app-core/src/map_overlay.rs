@@ -801,7 +801,9 @@ fn parse_airspace_interior_side(
 fn airspace_feather_style(style_key: &str) -> Option<(String, f64)> {
     match style_key {
         "moa" | "alert" => Some(("class_c_magenta".to_string(), 1.4)),
-        "restricted" | "prohibited" => Some(("class_b_d_blue".to_string(), 1.4)),
+        "restricted" | "prohibited" | "warning" => {
+            Some(("class_b_d_blue".to_string(), 1.4))
+        }
         _ => None,
     }
 }
@@ -1006,11 +1008,11 @@ fn airspace_display_style(style_key: &str) -> AirspaceDisplayStyle {
         },
         "warning" => AirspaceDisplayStyle {
             fill_color_key: "class_b_d_blue".to_string(),
-            fill_opacity: 0.018,
+            fill_opacity: 0.025,
             strokes: vec![AirspaceDisplayStroke {
                 color_key: "class_b_d_blue".to_string(),
-                width_px: 3.6,
-                dash_px: vec![6.0, 4.0],
+                width_px: 1.4,
+                dash_px: Vec::new(),
                 line_cap: "butt".to_string(),
             }],
         },
@@ -1581,6 +1583,22 @@ mod tests {
         assert_eq!(style.strokes[0].dash_px, vec![6.0, 4.0]);
         assert_eq!(style.strokes[0].line_cap, "butt");
         assert!(airspace_feather_style("national_security").is_none());
+    }
+
+    #[test]
+    fn warning_areas_use_blue_feathered_sua_style() {
+        let style = airspace_display_style("warning");
+
+        assert_eq!(style.fill_color_key, "class_b_d_blue");
+        assert_eq!(style.strokes.len(), 1);
+        assert_eq!(style.strokes[0].color_key, "class_b_d_blue");
+        assert_eq!(style.strokes[0].width_px, 1.4);
+        assert!(style.strokes[0].dash_px.is_empty());
+        assert_eq!(style.strokes[0].line_cap, "butt");
+        assert_eq!(
+            airspace_feather_style("warning"),
+            Some(("class_b_d_blue".to_string(), 1.4))
+        );
     }
 
     #[test]

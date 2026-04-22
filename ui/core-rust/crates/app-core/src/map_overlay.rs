@@ -677,11 +677,12 @@ fn airspace_decorations(
         return Vec::new();
     };
     let mut feather_paths = Vec::new();
-    for path in paths {
+    let hole_flags = airspace_closed_path_hole_flags(paths);
+    for (path, is_hole) in paths.iter().zip(hole_flags.iter().copied()) {
         if !path.closed || path.points.len() < 3 {
             continue;
         }
-        feather_paths.extend(airspace_feathers_for_path(path, budget));
+        feather_paths.extend(airspace_feathers_for_path(path, is_hole, budget));
         if budget.limit_hit {
             break;
         }
@@ -707,6 +708,7 @@ fn airspace_feather_style(style_key: &str) -> Option<(String, f64)> {
 
 fn airspace_feathers_for_path(
     path: &AirspaceDisplaySubpath,
+    is_hole: bool,
     budget: &mut AirspaceDecorationBudget,
 ) -> Vec<AirspaceDisplaySubpath> {
     const FEATHER_SPACING_PX: f64 = 8.0;
@@ -715,26 +717,31 @@ fn airspace_feathers_for_path(
     if signed_area.abs() < 1.0 {
         return Vec::new();
     }
-    let inward_sign = if signed_area > 0.0 { 1.0 } else { -1.0 };
+    let mut inward_sign = if signed_area > 0.0 { 1.0 } else { -1.0 };
+    if is_hole {
+        inward_sign = -inward_sign;
+    }
     let mut feathers = Vec::new();
+    let mut path_distance = 0.0;
+    let mut next_feather_distance = FEATHER_SPACING_PX * 0.5;
     for index in 0..path.points.len() {
         let start = &path.points[index];
         let end = &path.points[(index + 1) % path.points.len()];
         let dx = end.x - start.x;
         let dy = end.y - start.y;
         let length = (dx * dx + dy * dy).sqrt();
-        if length < FEATHER_SPACING_PX {
+        if length <= 0.0 {
             continue;
         }
         let nx = -dy / length * inward_sign;
         let ny = dx / length * inward_sign;
-        let mut distance = FEATHER_SPACING_PX * 0.5;
-        while distance < length {
+        let segment_end_distance = path_distance + length;
+        while next_feather_distance < segment_end_distance {
             if budget.used >= AIRSPACE_FEATHER_LIMIT {
                 budget.limit_hit = true;
                 return feathers;
             }
-            let t = distance / length;
+            let t = (next_feather_distance - path_distance) / length;
             let base_x = start.x + dx * t;
             let base_y = start.y + dy * t;
             feathers.push(AirspaceDisplaySubpath {
@@ -751,8 +758,9 @@ fn airspace_feathers_for_path(
                 ],
             });
             budget.used += 1;
-            distance += FEATHER_SPACING_PX;
+            next_feather_distance += FEATHER_SPACING_PX;
         }
+        path_distance = segment_end_distance;
     }
     feathers
 }
@@ -765,6 +773,73 @@ fn polygon_signed_area(points: &[AirspaceScreenPoint]) -> f64 {
         area += start.x * end.y - end.x * start.y;
     }
     area / 2.0
+}
+
+fn airspace_closed_path_hole_flags(paths: &[AirspaceDisplaySubpath]) -> Vec<bool> {
+    paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            if !path.closed || path.points.len() < 3 {
+                return false;
+            }
+            let Some(point) = path_interior_probe_point(path) else {
+                return false;
+            };
+            let containing_rings = paths
+                .iter()
+                .enumerate()
+                .filter(|(other_index, other)| {
+                    *other_index != index
+                        && other.closed
+                        && other.points.len() >= 3
+                        && point_in_polygon(&other.points, &point)
+                })
+                .count();
+            containing_rings % 2 == 1
+        })
+        .collect()
+}
+
+fn path_interior_probe_point(path: &AirspaceDisplaySubpath) -> Option<AirspaceScreenPoint> {
+    let signed_area = polygon_signed_area(&path.points);
+    if signed_area.abs() < 1e-6 {
+        return None;
+    }
+    let inward_sign = if signed_area > 0.0 { 1.0 } else { -1.0 };
+    for index in 0..path.points.len() {
+        let start = &path.points[index];
+        let end = &path.points[(index + 1) % path.points.len()];
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+        let length = (dx * dx + dy * dy).sqrt();
+        if length <= 0.0 {
+            continue;
+        }
+        let nx = -dy / length * inward_sign;
+        let ny = dx / length * inward_sign;
+        return Some(AirspaceScreenPoint {
+            x: (start.x + end.x) * 0.5 + nx * 0.001,
+            y: (start.y + end.y) * 0.5 + ny * 0.001,
+        });
+    }
+    None
+}
+
+fn point_in_polygon(points: &[AirspaceScreenPoint], point: &AirspaceScreenPoint) -> bool {
+    let mut inside = false;
+    for index in 0..points.len() {
+        let start = &points[index];
+        let end = &points[(index + 1) % points.len()];
+        if (start.y > point.y) != (end.y > point.y) {
+            let intersection_x =
+                (end.x - start.x) * (point.y - start.y) / (end.y - start.y) + start.x;
+            if point.x < intersection_x {
+                inside = !inside;
+            }
+        }
+    }
+    inside
 }
 
 fn airspace_bbox_may_intersect_screen(
@@ -1273,6 +1348,69 @@ mod tests {
         assert_eq!(
             result.airspace_paths[0].decorations[0].color_key,
             "class_c_magenta"
+        );
+    }
+
+    #[test]
+    fn feathers_accumulate_distance_across_short_segments() {
+        let mut points = Vec::new();
+        let radius = 40.0;
+        for index in 0..64 {
+            let angle = (index as f64 / 64.0) * std::f64::consts::TAU;
+            points.push(AirspaceScreenPoint {
+                x: 100.0 + radius * angle.cos(),
+                y: 100.0 + radius * angle.sin(),
+            });
+        }
+        let path = AirspaceDisplaySubpath {
+            closed: true,
+            points,
+        };
+        let mut budget = AirspaceDecorationBudget::default();
+        let feathers = airspace_feathers_for_path(&path, false, &mut budget);
+
+        assert!(
+            feathers.len() > 20,
+            "short segment arcs should still receive regularly-spaced feathers"
+        );
+    }
+
+    #[test]
+    fn contained_rings_are_treated_as_holes_for_feathers() {
+        let outer = AirspaceDisplaySubpath {
+            closed: true,
+            points: vec![
+                AirspaceScreenPoint { x: 0.0, y: 0.0 },
+                AirspaceScreenPoint { x: 100.0, y: 0.0 },
+                AirspaceScreenPoint { x: 100.0, y: 100.0 },
+                AirspaceScreenPoint { x: 0.0, y: 100.0 },
+            ],
+        };
+        let inner = AirspaceDisplaySubpath {
+            closed: true,
+            points: vec![
+                AirspaceScreenPoint { x: 40.0, y: 40.0 },
+                AirspaceScreenPoint { x: 60.0, y: 40.0 },
+                AirspaceScreenPoint { x: 60.0, y: 60.0 },
+                AirspaceScreenPoint { x: 40.0, y: 60.0 },
+            ],
+        };
+        let paths = vec![outer, inner.clone()];
+        assert_eq!(airspace_closed_path_hole_flags(&paths), vec![false, true]);
+
+        let mut normal_budget = AirspaceDecorationBudget::default();
+        let normal = airspace_feathers_for_path(&inner, false, &mut normal_budget);
+        let mut hole_budget = AirspaceDecorationBudget::default();
+        let hole = airspace_feathers_for_path(&inner, true, &mut hole_budget);
+
+        assert!(!normal.is_empty());
+        assert_eq!(normal.len(), hole.len());
+        assert_eq!(normal[0].points[0], hole[0].points[0]);
+        assert!(
+            (normal[0].points[1].y - normal[0].points[0].y)
+                * (hole[0].points[1].y - hole[0].points[0].y)
+                < 0.0,
+            "hole feathers should point opposite the ring's interior normal"
         );
     }
 

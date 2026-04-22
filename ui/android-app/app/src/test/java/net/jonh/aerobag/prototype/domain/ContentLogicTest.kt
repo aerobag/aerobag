@@ -36,6 +36,7 @@ class ContentLogicTest {
     fun nativeAdapterMatchesMockContractForRemoteOnlyStreaming() {
         val nativeAdapter = NativeAppCoreAdapter(
             catalogJson = SampleDataFixture.catalogJson,
+            vectorManifestJson = SampleDataFixture.vectorManifestJson,
             chartCatalogJson = """{"airports":[]}""",
             bridge = FakeNativeBridge(json),
             json = json,
@@ -56,6 +57,7 @@ class ContentLogicTest {
     fun nativeAdapterMatchesMockContractForInstalledOffline() {
         val nativeAdapter = NativeAppCoreAdapter(
             catalogJson = SampleDataFixture.catalogJson,
+            vectorManifestJson = SampleDataFixture.vectorManifestJson,
             chartCatalogJson = """{"airports":[]}""",
             bridge = FakeNativeBridge(json),
             json = json,
@@ -174,6 +176,7 @@ private object SampleDataFixture {
     )
 
     val catalogJson = json.encodeToString(catalog.toWireForTesting())
+    val vectorManifestJson = """{"airspace":{"reference_tile_min_zoom":0,"reference_tile_max_zoom":12,"label_tile_min_zoom":0,"label_tile_max_zoom":12}}"""
 
     val samplePlan = FlightPlan(
         id = "plan-1",
@@ -403,6 +406,7 @@ private class FakeNativeBridge(
 
     override fun createUiSessionJson(
         catalogJson: String,
+        vectorManifestJson: String,
         chartCatalogJson: String,
         planJson: String,
         recentAirportIdsJson: String,

@@ -48,12 +48,13 @@ pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use map_follow::MapFollowUiState;
 pub use map_overlay::{
     airspace_feature_path, airspace_label_tile_key, airspace_ref_tile_key,
+    map_overlay_config_from_vector_manifest_json,
     point_vector_record_to_symbol_feature, query_map_overlay, tile_key, visible_point_tile_window,
     AirspaceDisplayLabel, AirspaceDisplayPath, AirspaceDisplayStroke, AirspaceDisplayStyle,
     AirspaceDisplaySubpath, AirspaceFeaturePath, AirspaceFeaturePayload, AirspaceFeatureRequest,
     AirspaceLabelRecord, AirspaceLabelTilePayload, AirspaceReferenceTilePayload,
-    AirspaceScreenPoint, MapOverlayQueryResult, MapOverlayWarning, NavSymbolFeature,
-    PointTilePayload, PointVectorRecord, VectorTileRequest, VisibleMapFeature,
+    AirspaceScreenPoint, MapOverlayConfig, MapOverlayQueryResult, MapOverlayWarning,
+    NavSymbolFeature, PointTilePayload, PointVectorRecord, VectorTileRequest, VisibleMapFeature,
     AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 #[cfg(not(target_arch = "wasm32"))]

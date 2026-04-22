@@ -362,10 +362,18 @@ export type LoadedAdapter = {
   detail: string;
 };
 
+async function fetchVectorManifestJson(): Promise<string> {
+  const response = await fetch("/vectors/vectors", { cache: "no-cache" });
+  if (!response.ok) {
+    throw new Error(`failed to load vector manifest: ${response.status}`);
+  }
+  return response.text();
+}
+
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
-  create_ui_session(catalogJson: string, chartCatalogJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
-  create_ui_session_profiled?: (catalogJson: string, chartCatalogJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
+  create_ui_session(catalogJson: string, vectorManifestJson: string, chartCatalogJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
+  create_ui_session_profiled?: (catalogJson: string, vectorManifestJson: string, chartCatalogJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
   remove_leg_in_session(handle: number, index: number): Promise<string> | string;
   move_waypoint_in_session(handle: number, waypointIndex: number, delta: number): Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
@@ -439,7 +447,14 @@ type WasmModule = {
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
+  private vectorManifestJsonPromise: Promise<string> | null = null;
+
   constructor(private readonly module: WasmModule) {}
+
+  private async vectorManifestJson(): Promise<string> {
+    this.vectorManifestJsonPromise ??= fetchVectorManifestJson();
+    return this.vectorManifestJsonPromise;
+  }
 
   async prewarm(): Promise<void> {}
 
@@ -472,6 +487,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     selectedChartId?: string,
   ): Promise<UiSession> {
     const catalogJson = "{}";
+    const vectorManifestJson = await debugTiming("startup.vector_manifest.fetch", () => this.vectorManifestJson());
     const chartCatalogJson = JSON.stringify(chartCatalog);
     const module = this.module;
     const createSession = async (
@@ -487,6 +503,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       const createUiSession = module.create_ui_session_profiled ?? module.create_ui_session;
       const createdJson = await debugTiming("startup.session.wasm_call", () => createUiSession(
         catalogJson,
+        vectorManifestJson,
         chartCatalogJson,
         planJson,
         recentAirportIdsJson,

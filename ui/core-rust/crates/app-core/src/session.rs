@@ -11,14 +11,16 @@ use serde::{Deserialize, Serialize};
 use crate::{
     derive_chart_page_state_from_catalog,
     map_follow::{MapFollowSessionState, MapFollowUiState},
+    map_overlay_config_from_vector_manifest_json,
     move_flight_plan_waypoint,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
     query_map_overlay, remove_flight_plan_leg, state, AirspaceFeaturePayload,
     AirspaceLabelTilePayload, AirspaceReferenceTilePayload, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, DerivedChartCatalog, DerivedChartPageState, FlightPlan,
-    LatLon, MapOverlayQueryResult, MapViewport, NavRef, PlanLeg, PlaybackUiState, PointTilePayload,
-    SequencingMode, TerrainOverlayQueryResult, UiSnapshotAppState,
+    LatLon, MapOverlayConfig, MapOverlayQueryResult, MapViewport, NavRef, PlanLeg,
+    PlaybackUiState, PointTilePayload, SequencingMode, TerrainOverlayQueryResult,
+    UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -58,6 +60,7 @@ struct UiSession {
     playback: PlaybackSessionState,
     map_follow: MapFollowSessionState,
     guidance_leg_geometry: HashMap<String, GuidanceLegGeometry>,
+    map_overlay_config: MapOverlayConfig,
     chart_page_state: DerivedChartPageState,
     point_tile_cache: HashMap<String, PointTilePayload>,
     airspace_ref_tile_cache: HashMap<String, AirspaceReferenceTilePayload>,
@@ -88,6 +91,7 @@ fn sessions() -> &'static Mutex<HashMap<u32, UiSession>> {
 
 pub fn create_ui_session(
     catalog_json: &str,
+    vector_manifest_json: &str,
     chart_catalog_json: &str,
     plan: FlightPlan,
     recent_airport_ids: &[String],
@@ -96,6 +100,7 @@ pub fn create_ui_session(
 ) -> AppResult<UiSessionInitResult> {
     create_ui_session_inner(
         catalog_json,
+        vector_manifest_json,
         chart_catalog_json,
         plan,
         recent_airport_ids,
@@ -107,6 +112,7 @@ pub fn create_ui_session(
 
 pub fn create_ui_session_profiled(
     catalog_json: &str,
+    vector_manifest_json: &str,
     chart_catalog_json: &str,
     plan: FlightPlan,
     recent_airport_ids: &[String],
@@ -116,6 +122,7 @@ pub fn create_ui_session_profiled(
 ) -> AppResult<UiSessionInitResult> {
     create_ui_session_inner(
         catalog_json,
+        vector_manifest_json,
         chart_catalog_json,
         plan,
         recent_airport_ids,
@@ -127,6 +134,7 @@ pub fn create_ui_session_profiled(
 
 fn create_ui_session_inner(
     _catalog_json: &str,
+    vector_manifest_json: &str,
     chart_catalog_json: &str,
     plan: FlightPlan,
     recent_airport_ids: &[String],
@@ -136,6 +144,10 @@ fn create_ui_session_inner(
 ) -> AppResult<UiSessionInitResult> {
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_skip_catalog_load");
+    }
+    let map_overlay_config = map_overlay_config_from_vector_manifest_json(vector_manifest_json)?;
+    if let Some(mark) = mark.as_deref_mut() {
+        mark("core_parse_vector_manifest");
     }
     let chart_catalog: DerivedChartCatalog =
         serde_json::from_str(chart_catalog_json).map_err(|err| AppError {
@@ -200,6 +212,7 @@ fn create_ui_session_inner(
             playback,
             map_follow,
             guidance_leg_geometry: HashMap::new(),
+            map_overlay_config,
             chart_page_state,
             point_tile_cache: HashMap::new(),
             airspace_ref_tile_cache: HashMap::new(),
@@ -659,6 +672,7 @@ pub fn get_map_overlay_in_session(
         &viewport,
         width_px,
         height_px,
+        &session.map_overlay_config,
         &session.point_tile_cache,
         &session.airspace_ref_tile_cache,
         &session.airspace_feature_cache,

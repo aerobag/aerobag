@@ -1059,8 +1059,13 @@ private fun AerobagApp() {
     val context = LocalContext.current
     val fixture = remember(context) { SampleData.load(context.applicationContext) }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
-    val appCore = remember(fixture.catalogJson, fixture.chartCatalogJson, fixture.navKvStore) {
-        NativeAppCoreAdapter(fixture.catalogJson, fixture.chartCatalogJson, navKvStore = fixture.navKvStore)
+    val appCore = remember(fixture.catalogJson, fixture.vectorManifestJson, fixture.chartCatalogJson, fixture.navKvStore) {
+        NativeAppCoreAdapter(
+            fixture.catalogJson,
+            fixture.vectorManifestJson,
+            fixture.chartCatalogJson,
+            navKvStore = fixture.navKvStore,
+        )
     }
     val initialPlanMutation = remember(appCore, fixture.samplePlan) {
         buildSeededDevPlan(appCore, fixture.samplePlan)

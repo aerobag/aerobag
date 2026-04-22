@@ -92,6 +92,7 @@ data class MapOverlayQueryResult(
 
 class NativeAppCoreAdapter(
     private val catalogJson: String,
+    private val vectorManifestJson: String,
     private val chartCatalogJson: String,
     private val navKvStore: NavKvStore? = null,
     private val bridge: NativeBridge = NativeBindings,
@@ -108,6 +109,7 @@ class NativeAppCoreAdapter(
     ): NativeUiSession {
         val resultJson = bridge.createUiSessionJson(
             catalogJson,
+            vectorManifestJson,
             chartCatalogJson,
             json.encodeToString(plan.toWire()),
             json.encodeToString(recentAirportIds),

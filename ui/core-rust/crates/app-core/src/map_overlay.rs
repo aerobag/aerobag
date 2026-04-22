@@ -2,17 +2,13 @@ use std::collections::{BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{geometry::LatLon, MapViewport};
+use crate::{geometry::LatLon, AppError, AppErrorKind, AppResult, MapViewport};
 
 pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 300;
 pub const AIRSPACE_DISPLAY_FEATURE_LIMIT: usize = 700;
 pub const AIRSPACE_FEATHER_LIMIT: usize = 5_000;
 const POINT_TILE_ZOOM: u32 = 9;
 const AIRSPACE_MIN_DISPLAY_ZOOM: f64 = 6.0;
-const AIRSPACE_REF_MIN_ZOOM: u32 = 0;
-const AIRSPACE_REF_MAX_ZOOM: u32 = 8;
-const AIRSPACE_LABEL_MIN_ZOOM: u32 = 0;
-const AIRSPACE_LABEL_MAX_ZOOM: u32 = 12;
 const AIRPORT_MIN_DISPLAY_ZOOM: f64 = 8.0;
 const FIX_MIN_DISPLAY_ZOOM: f64 = 9.0;
 const NAV_MIN_DISPLAY_ZOOM: f64 = 7.0;
@@ -236,6 +232,57 @@ pub struct MapOverlayQueryResult {
     pub warnings: Vec<MapOverlayWarning>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapOverlayConfig {
+    pub airspace_reference_tile_min_zoom: u32,
+    pub airspace_reference_tile_max_zoom: u32,
+    pub airspace_label_tile_min_zoom: u32,
+    pub airspace_label_tile_max_zoom: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct VectorOverlayManifest {
+    airspace: VectorAirspaceManifest,
+}
+
+#[derive(Debug, Deserialize)]
+struct VectorAirspaceManifest {
+    reference_tile_min_zoom: u32,
+    reference_tile_max_zoom: u32,
+    label_tile_min_zoom: u32,
+    label_tile_max_zoom: u32,
+}
+
+pub fn map_overlay_config_from_vector_manifest_json(
+    vector_manifest_json: &str,
+) -> AppResult<MapOverlayConfig> {
+    let manifest: VectorOverlayManifest =
+        serde_json::from_str(vector_manifest_json).map_err(|err| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("failed to parse vector overlay manifest: {err}"),
+        })?;
+    if manifest.airspace.reference_tile_min_zoom > manifest.airspace.reference_tile_max_zoom {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: "vector overlay manifest has inverted airspace reference tile zoom range"
+                .to_string(),
+        });
+    }
+    if manifest.airspace.label_tile_min_zoom > manifest.airspace.label_tile_max_zoom {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: "vector overlay manifest has inverted airspace label tile zoom range"
+                .to_string(),
+        });
+    }
+    Ok(MapOverlayConfig {
+        airspace_reference_tile_min_zoom: manifest.airspace.reference_tile_min_zoom,
+        airspace_reference_tile_max_zoom: manifest.airspace.reference_tile_max_zoom,
+        airspace_label_tile_min_zoom: manifest.airspace.label_tile_min_zoom,
+        airspace_label_tile_max_zoom: manifest.airspace.label_tile_max_zoom,
+    })
+}
+
 pub fn visible_point_tile_window(
     viewport: &MapViewport,
     width_px: f64,
@@ -314,6 +361,7 @@ pub fn query_map_overlay(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
+    config: &MapOverlayConfig,
     point_tile_cache: &HashMap<String, PointTilePayload>,
     airspace_ref_tile_cache: &HashMap<String, AirspaceReferenceTilePayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
@@ -390,6 +438,7 @@ pub fn query_map_overlay(
         viewport,
         width_px,
         height_px,
+        config,
         center_world,
         scale,
         airspace_ref_tile_cache,
@@ -457,6 +506,7 @@ fn query_airspace_overlay(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
+    config: &MapOverlayConfig,
     center_world: WorldPoint,
     scale: f64,
     ref_tile_cache: &HashMap<String, AirspaceReferenceTilePayload>,
@@ -474,7 +524,7 @@ fn query_airspace_overlay(
         };
     }
 
-    let ref_zoom = airspace_reference_zoom(viewport.zoom);
+    let ref_zoom = airspace_reference_zoom(viewport.zoom, config);
     let ref_tiles = visible_layer_tile_window("airspace", ref_zoom, viewport, width_px, height_px);
     let mut needed_ref_tiles = Vec::new();
     let mut feature_ids = BTreeSet::new();
@@ -525,7 +575,7 @@ fn query_airspace_overlay(
         }
     }
 
-    let label_zoom = airspace_label_zoom(viewport.zoom);
+    let label_zoom = airspace_label_zoom(viewport.zoom, config);
     let label_tiles =
         visible_layer_tile_window("airspace-labels", label_zoom, viewport, width_px, height_px);
     let mut needed_label_tiles = Vec::new();
@@ -617,16 +667,17 @@ fn query_airspace_overlay(
     }
 }
 
-fn airspace_reference_zoom(display_zoom: f64) -> u32 {
-    display_zoom
-        .floor()
-        .clamp(AIRSPACE_REF_MIN_ZOOM as f64, AIRSPACE_REF_MAX_ZOOM as f64) as u32
+fn airspace_reference_zoom(display_zoom: f64, config: &MapOverlayConfig) -> u32 {
+    display_zoom.floor().clamp(
+        config.airspace_reference_tile_min_zoom as f64,
+        config.airspace_reference_tile_max_zoom as f64,
+    ) as u32
 }
 
-fn airspace_label_zoom(display_zoom: f64) -> u32 {
+fn airspace_label_zoom(display_zoom: f64, config: &MapOverlayConfig) -> u32 {
     display_zoom.floor().clamp(
-        AIRSPACE_LABEL_MIN_ZOOM as f64,
-        AIRSPACE_LABEL_MAX_ZOOM as f64,
+        config.airspace_label_tile_min_zoom as f64,
+        config.airspace_label_tile_max_zoom as f64,
     ) as u32
 }
 
@@ -1107,6 +1158,36 @@ mod tests {
     use std::sync::OnceLock;
     use std::{fs, path::PathBuf};
 
+    fn test_map_overlay_config() -> MapOverlayConfig {
+        MapOverlayConfig {
+            airspace_reference_tile_min_zoom: 0,
+            airspace_reference_tile_max_zoom: 12,
+            airspace_label_tile_min_zoom: 0,
+            airspace_label_tile_max_zoom: 12,
+        }
+    }
+
+    fn query_map_overlay(
+        viewport: &MapViewport,
+        width_px: f64,
+        height_px: f64,
+        point_tile_cache: &HashMap<String, PointTilePayload>,
+        airspace_ref_tile_cache: &HashMap<String, AirspaceReferenceTilePayload>,
+        airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
+        airspace_label_tile_cache: &HashMap<String, AirspaceLabelTilePayload>,
+    ) -> MapOverlayQueryResult {
+        super::query_map_overlay(
+            viewport,
+            width_px,
+            height_px,
+            &test_map_overlay_config(),
+            point_tile_cache,
+            airspace_ref_tile_cache,
+            airspace_feature_cache,
+            airspace_label_tile_cache,
+        )
+    }
+
     #[test]
     fn suppresses_fix_tiles_below_threshold_zoom_but_keeps_airports_and_nav() {
         let viewport = MapViewport {
@@ -1165,7 +1246,47 @@ mod tests {
         assert!(result
             .needed_airspace_label_tiles
             .iter()
-            .all(|tile| tile.z == AIRSPACE_LABEL_MAX_ZOOM));
+            .all(|tile| tile.z == test_map_overlay_config().airspace_label_tile_max_zoom));
+    }
+
+    #[test]
+    fn airspace_ref_tiles_follow_display_zoom_to_detailed_shelves() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 33.6367,
+                lon: -84.4281,
+            },
+            zoom: 9.82,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let result = query_map_overlay(
+            &viewport,
+            1200.0,
+            900.0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        assert!(result
+            .needed_airspace_ref_tiles
+            .iter()
+            .all(|tile| tile.z == 9));
+    }
+
+    #[test]
+    fn vector_manifest_config_controls_airspace_tile_zoom_ranges() {
+        let config = map_overlay_config_from_vector_manifest_json(
+            r#"{"airspace":{"reference_tile_min_zoom":3,"reference_tile_max_zoom":11,"label_tile_min_zoom":2,"label_tile_max_zoom":10}}"#,
+        )
+        .expect("manifest should parse");
+
+        assert_eq!(config.airspace_reference_tile_min_zoom, 3);
+        assert_eq!(config.airspace_reference_tile_max_zoom, 11);
+        assert_eq!(config.airspace_label_tile_min_zoom, 2);
+        assert_eq!(config.airspace_label_tile_max_zoom, 10);
     }
 
     #[test]

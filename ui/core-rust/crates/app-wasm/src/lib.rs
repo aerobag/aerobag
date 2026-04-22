@@ -363,6 +363,7 @@ pub fn replace_procedure_materialized_ui(
 #[wasm_bindgen]
 pub fn create_ui_session(
     catalog_json: &str,
+    vector_manifest_json: &str,
     chart_catalog_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
@@ -371,6 +372,7 @@ pub fn create_ui_session(
 ) -> Result<String, JsValue> {
     create_ui_session_json(
         catalog_json,
+        vector_manifest_json,
         chart_catalog_json,
         plan_json,
         recent_airport_ids_json,
@@ -383,6 +385,7 @@ pub fn create_ui_session(
 #[wasm_bindgen]
 pub fn create_ui_session_profiled(
     catalog_json: &str,
+    vector_manifest_json: &str,
     chart_catalog_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
@@ -391,6 +394,7 @@ pub fn create_ui_session_profiled(
 ) -> Result<String, JsValue> {
     create_ui_session_profiled_json(
         catalog_json,
+        vector_manifest_json,
         chart_catalog_json,
         plan_json,
         recent_airport_ids_json,
@@ -1044,6 +1048,7 @@ fn classify_procedure_identifier_json(
 
 fn create_ui_session_json(
     catalog_json: &str,
+    vector_manifest_json: &str,
     chart_catalog_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
@@ -1060,6 +1065,7 @@ fn create_ui_session_json(
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
     let result = app_core::create_ui_session(
         catalog_json,
+        vector_manifest_json,
         chart_catalog_json,
         plan,
         &recent_airport_ids,
@@ -1072,6 +1078,7 @@ fn create_ui_session_json(
 
 fn create_ui_session_profiled_json(
     catalog_json: &str,
+    vector_manifest_json: &str,
     chart_catalog_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
@@ -1092,6 +1099,7 @@ fn create_ui_session_profiled_json(
     profiler.mark("parse_selected_ids_json");
     let result = app_core::create_ui_session_profiled(
         catalog_json,
+        vector_manifest_json,
         chart_catalog_json,
         plan,
         &recent_airport_ids,

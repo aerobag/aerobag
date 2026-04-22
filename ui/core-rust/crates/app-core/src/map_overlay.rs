@@ -91,6 +91,10 @@ pub struct AirspaceLabelRecord {
     pub text: String,
     pub lon: f64,
     pub lat: f64,
+    #[serde(default)]
+    pub rank: u32,
+    #[serde(default)]
+    pub score: Option<f64>,
     pub style_hint: String,
 }
 
@@ -412,6 +416,19 @@ struct AirspaceOverlayProjection {
     warnings: Vec<MapOverlayWarning>,
 }
 
+#[derive(Debug, Clone)]
+struct AirspaceLabelCandidate {
+    rank: u32,
+    label: AirspaceDisplayLabel,
+}
+
+fn airspace_label_candidate_is_better(
+    candidate: &AirspaceLabelCandidate,
+    current: &AirspaceLabelCandidate,
+) -> bool {
+    candidate.rank < current.rank
+}
+
 #[derive(Debug, Default)]
 struct AirspaceDecorationBudget {
     used: usize,
@@ -494,7 +511,7 @@ fn query_airspace_overlay(
     let label_tiles =
         visible_layer_tile_window("airspace-labels", label_zoom, viewport, width_px, height_px);
     let mut needed_label_tiles = Vec::new();
-    let mut labels = Vec::new();
+    let mut label_by_feature = HashMap::<String, AirspaceLabelCandidate>::new();
     for tile in label_tiles {
         let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
         let Some(payload) = label_tile_cache.get(&key) else {
@@ -512,22 +529,36 @@ fn query_airspace_overlay(
                     lon: label.lon,
                 },
             );
-            if point.x < -80.0
-                || point.x > width_px + 80.0
-                || point.y < -40.0
-                || point.y > height_px + 40.0
-            {
+            if point.x < 0.0 || point.x > width_px || point.y < 0.0 || point.y > height_px {
                 continue;
             }
-            labels.push(AirspaceDisplayLabel {
-                feature_id: label.feature_id.clone(),
-                text: label.text.trim().to_string(),
-                style_key: airspace_style_key(&label.style_hint),
-                screen_x: point.x,
-                screen_y: point.y,
-            });
+            let candidate = AirspaceLabelCandidate {
+                rank: label.rank,
+                label: AirspaceDisplayLabel {
+                    feature_id: label.feature_id.clone(),
+                    text: label.text.trim().to_string(),
+                    style_key: airspace_style_key(&label.style_hint),
+                    screen_x: point.x,
+                    screen_y: point.y,
+                },
+            };
+            let entry = label_by_feature
+                .entry(candidate.label.feature_id.clone())
+                .or_insert_with(|| candidate.clone());
+            if airspace_label_candidate_is_better(&candidate, entry) {
+                *entry = candidate;
+            }
         }
     }
+    let mut labels = label_by_feature
+        .into_values()
+        .map(|candidate| candidate.label)
+        .collect::<Vec<_>>();
+    labels.sort_by(|left, right| {
+        left.feature_id
+            .cmp(&right.feature_id)
+            .then_with(|| left.text.cmp(&right.text))
+    });
 
     let mut warnings = Vec::new();
     if limit_hit {
@@ -1077,6 +1108,104 @@ mod tests {
             .needed_airspace_label_tiles
             .iter()
             .all(|tile| tile.z == AIRSPACE_LABEL_MAX_ZOOM));
+    }
+
+    #[test]
+    fn airspace_label_candidates_are_filtered_and_deduped_by_rank() {
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 6.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let empty = query_map_overlay(
+            &viewport,
+            100.0,
+            100.0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let tile = empty
+            .needed_airspace_label_tiles
+            .first()
+            .expect("expected a visible airspace label tile");
+
+        let mut label_cache = HashMap::new();
+        label_cache.insert(
+            airspace_label_tile_key(tile.z, tile.x, tile.y),
+            AirspaceLabelTilePayload {
+                schema_version: 1,
+                layer: "airspace-labels".to_string(),
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+                labels: vec![
+                    AirspaceLabelRecord {
+                        feature_id: "feature-a".to_string(),
+                        text: "A-OFFSCREEN".to_string(),
+                        lon: 10.0,
+                        lat: 0.0,
+                        rank: 0,
+                        score: Some(1.0),
+                        style_hint: "class_b".to_string(),
+                    },
+                    AirspaceLabelRecord {
+                        feature_id: "feature-a".to_string(),
+                        text: "A-RANK-2".to_string(),
+                        lon: 0.0,
+                        lat: 0.0,
+                        rank: 2,
+                        score: Some(0.2),
+                        style_hint: "class_b".to_string(),
+                    },
+                    AirspaceLabelRecord {
+                        feature_id: "feature-a".to_string(),
+                        text: "A-RANK-1".to_string(),
+                        lon: 0.1,
+                        lat: 0.0,
+                        rank: 1,
+                        score: Some(0.1),
+                        style_hint: "class_b".to_string(),
+                    },
+                    AirspaceLabelRecord {
+                        feature_id: "feature-b".to_string(),
+                        text: "B-RANK-1".to_string(),
+                        lon: 0.0,
+                        lat: 0.1,
+                        rank: 1,
+                        score: Some(0.9),
+                        style_hint: "class_c".to_string(),
+                    },
+                    AirspaceLabelRecord {
+                        feature_id: "feature-b".to_string(),
+                        text: "B-RANK-0".to_string(),
+                        lon: 0.1,
+                        lat: 0.1,
+                        rank: 0,
+                        score: Some(0.1),
+                        style_hint: "class_c".to_string(),
+                    },
+                ],
+            },
+        );
+
+        let result = query_map_overlay(
+            &viewport,
+            100.0,
+            100.0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &label_cache,
+        );
+
+        assert_eq!(result.airspace_labels.len(), 2);
+        assert_eq!(result.airspace_labels[0].feature_id, "feature-a");
+        assert_eq!(result.airspace_labels[1].feature_id, "feature-b");
+        assert_eq!(result.airspace_labels[0].text, "A-RANK-1");
+        assert_eq!(result.airspace_labels[1].text, "B-RANK-0");
     }
 
     #[test]

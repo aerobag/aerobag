@@ -501,6 +501,7 @@ const loadedUiTheme = uiTheme as UiThemeJson;
 const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
 const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
+const KMSY_POSITION = { lat: 29.993389, lon: -90.258028 };
 const defaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json";
 const startupHighLatencyWarningGraceMs = 10_000;
 const rasterTileDebugTargets = [
@@ -972,7 +973,7 @@ export default function App() {
     [selectedMapId],
   );
   const [mapViewport, setMapViewport] = useState<MapViewportState>(() => {
-    const center = latLonToWorld(VAMPS_POSITION.lat, VAMPS_POSITION.lon);
+    const center = latLonToWorld(KMSY_POSITION.lat, KMSY_POSITION.lon);
     return {
       centerWorldX: center.x,
       centerWorldY: center.y,

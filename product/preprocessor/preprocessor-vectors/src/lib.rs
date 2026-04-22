@@ -15,7 +15,9 @@ const POINT_LAYER_ZOOM_POLICY: &[(&str, u8)] =
 const OBSTACLE_LAYER_ZOOM: u8 = 12;
 const AIRSPACE_REF_MIN_ZOOM: u8 = 0;
 const AIRSPACE_REF_MAX_ZOOM: u8 = 8;
-const AIRSPACE_REF_MIN_PIXEL_SPAN: f64 = 3.0;
+const AIRSPACE_REF_MIN_PIXEL_SPAN: f64 = 15.0;
+const CONTROLLED_AIRSPACE_OUTLINE_MAX_ZOOM: u8 = 6;
+const CONTROLLED_AIRSPACE_OUTLINE_SIMPLIFY_TOLERANCE_DEGREES: f64 = 0.005;
 const AIRSPACE_LABEL_MIN_ZOOM: u8 = 0;
 const AIRSPACE_LABEL_MAX_ZOOM: u8 = 12;
 const AIRSPACE_LABEL_MIN_PIXEL_SPAN: f64 = 50.0;
@@ -422,6 +424,8 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
     let mut airspace_manifest = None;
     let mut airspace_stats = None;
     if !airspace_features.is_empty() {
+        let controlled_outline_features =
+            build_controlled_airspace_outline_features(&airspace_features, &request.version_label);
         let feature_path_template = "had/{id}.json".to_string();
         let reference_tile_path_template = "airspace/refs/{z}/{x}/{y}.json".to_string();
         let label_tile_path_template = "airspace/labels/{z}/{x}/{y}.json".to_string();
@@ -433,13 +437,12 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             *class_counts
                 .entry(feature.airspace_class.clone())
                 .or_insert(0) += 1;
-            let feature_path = request
-                .output_dir
-                .join(airspace_feature_relative_path(&feature.id));
-            write_json_compact(&feature_path, feature)?;
-            zip_members.push((airspace_feature_relative_path(&feature.id), feature_path));
+            write_airspace_feature(&request.output_dir, feature, &mut zip_members)?;
 
             for zoom in AIRSPACE_REF_MIN_ZOOM..=AIRSPACE_REF_MAX_ZOOM {
+                if controlled_airspace_uses_outline_at_zoom(feature, zoom) {
+                    continue;
+                }
                 if !bbox_is_visible_at_zoom(feature.bbox, zoom, AIRSPACE_REF_MIN_PIXEL_SPAN) {
                     continue;
                 }
@@ -479,6 +482,21 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             }
         }
 
+        for feature in &controlled_outline_features {
+            write_airspace_feature(&request.output_dir, feature, &mut zip_members)?;
+
+            for zoom in AIRSPACE_REF_MIN_ZOOM..=CONTROLLED_AIRSPACE_OUTLINE_MAX_ZOOM {
+                if !bbox_is_visible_at_zoom(feature.bbox, zoom, AIRSPACE_REF_MIN_PIXEL_SPAN) {
+                    continue;
+                }
+                for tile in tiles_for_bbox(feature.bbox, zoom) {
+                    reference_tiles
+                        .entry(tile)
+                        .or_default()
+                        .push(feature.id.clone());
+                }
+            }
+        }
         let mut max_refs_in_tile = 0usize;
         for ((z, x, y), mut refs) in reference_tiles {
             refs.sort();
@@ -1002,6 +1020,173 @@ fn load_class_airspace_features(
     assign_class_airspace_label_candidates(&mut features, airport_points, &mut diagnostics);
 
     Ok((features, diagnostics))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ControlledAirspaceOutlineKey {
+    class: String,
+    ident: String,
+    local_type: String,
+}
+
+fn build_controlled_airspace_outline_features(
+    features: &[AirspaceFeature],
+    version_label: &str,
+) -> Vec<AirspaceFeature> {
+    let mut groups = BTreeMap::<ControlledAirspaceOutlineKey, Vec<&AirspaceFeature>>::new();
+    for feature in features {
+        if !is_controlled_airspace_detail(feature) {
+            continue;
+        }
+        groups
+            .entry(ControlledAirspaceOutlineKey {
+                class: feature.airspace_class.to_ascii_lowercase(),
+                ident: feature.ident.clone().unwrap_or_else(|| "anon".to_string()),
+                local_type: feature.local_type.to_ascii_lowercase(),
+            })
+            .or_default()
+            .push(feature);
+    }
+
+    let mut seen = BTreeSet::new();
+    groups
+        .into_iter()
+        .filter_map(|(key, group)| {
+            controlled_airspace_outline_feature(key, group, version_label, &mut seen)
+        })
+        .collect()
+}
+
+fn controlled_airspace_outline_feature(
+    key: ControlledAirspaceOutlineKey,
+    group: Vec<&AirspaceFeature>,
+    version_label: &str,
+    seen: &mut BTreeSet<String>,
+) -> Option<AirspaceFeature> {
+    let rings = outline_rings_for_features(&group);
+    if rings.is_empty() {
+        return None;
+    }
+    let bbox = parts_bbox(&rings)?;
+    let representative = group.first()?;
+    let anchor = polygon_label_anchor(&rings);
+    let id = dedup_airspace_id(
+        seen,
+        &format!(
+            "airspace:{}:outline:{}:{}:{}",
+            version_label, key.class, key.ident, key.local_type
+        ),
+    );
+    let paths = rings
+        .iter()
+        .filter_map(|part| airspace_path_from_points(part, "boundary"))
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        return None;
+    }
+    let mut source_properties = BTreeMap::new();
+    source_properties.insert(
+        "DERIVED_FROM".to_string(),
+        "controlled_airspace_shelves".to_string(),
+    );
+    source_properties.insert(
+        "OUTLINE_COMPONENT_COUNT".to_string(),
+        group.len().to_string(),
+    );
+    Some(AirspaceFeature {
+        schema_version: 1,
+        id,
+        kind: "airspace".to_string(),
+        source: "derived_controlled_airspace_outline".to_string(),
+        cycle: version_label.trim_start_matches("data_").to_string(),
+        name: format!("{} OUTLINE", representative.name),
+        ident: representative.ident.clone(),
+        airspace_class: representative.airspace_class.clone(),
+        local_type: format!("{}_OUTLINE", representative.local_type),
+        style_hint: representative.style_hint.clone(),
+        vertical_label: String::new(),
+        vertical: AirspaceVertical {
+            lower: AirspaceLimit {
+                display: String::new(),
+                feet: None,
+                unit: None,
+                reference: None,
+                description: None,
+            },
+            upper: AirspaceLimit {
+                display: String::new(),
+                feet: None,
+                unit: None,
+                reference: None,
+                description: None,
+            },
+        },
+        bbox,
+        label: AirspaceLabel {
+            text: String::new(),
+            lon: anchor[0],
+            lat: anchor[1],
+        },
+        label_candidates: Vec::new(),
+        paths,
+        source_properties,
+    })
+}
+
+fn is_controlled_airspace_detail(feature: &AirspaceFeature) -> bool {
+    feature.source == "faa_nasr_class_airspace_shapefile"
+        && matches!(
+            feature.airspace_class.to_ascii_uppercase().as_str(),
+            "B" | "C" | "D"
+        )
+}
+
+fn controlled_airspace_uses_outline_at_zoom(feature: &AirspaceFeature, zoom: u8) -> bool {
+    is_controlled_airspace_detail(feature) && zoom <= CONTROLLED_AIRSPACE_OUTLINE_MAX_ZOOM
+}
+
+fn outline_rings_for_features(features: &[&AirspaceFeature]) -> Vec<Vec<[f64; 2]>> {
+    // Low zoom does not need shelf-level B/C/D geometry. Keep only rings that
+    // are not contained inside another shelf from the same airport/class group,
+    // then simplify them. This gives the UI a cheap "outer airspace is here"
+    // boundary for z0..z6; full shelves start materializing at z7.
+    //
+    // Do not try to build this by exact shared-edge cancellation: FAA shelf
+    // boundaries often share arcs with different vertex splits, so exact segment
+    // matching leaves most internal edges in place and explodes low-zoom payloads.
+    let mut rings = Vec::new();
+    for feature in features {
+        for path in &feature.paths {
+            if !path.closed {
+                continue;
+            }
+            if signed_ring_area(&path.points).is_some() {
+                rings.push(path.points.clone());
+            }
+        }
+    }
+    let mut outlines = Vec::new();
+    for (index, ring) in rings.iter().enumerate() {
+        let contained_by_larger = rings.iter().enumerate().any(|(other_index, other)| {
+            if index == other_index {
+                return false;
+            }
+            let Some(ring_area) = signed_ring_area(ring).map(f64::abs) else {
+                return false;
+            };
+            let Some(other_area) = signed_ring_area(other).map(f64::abs) else {
+                return false;
+            };
+            other_area >= ring_area && polygon_contains_ring_by_sampling(other, ring)
+        });
+        if !contained_by_larger {
+            outlines.push(simplify_closed_ring(
+                ring,
+                CONTROLLED_AIRSPACE_OUTLINE_SIMPLIFY_TOLERANCE_DEGREES,
+            ));
+        }
+    }
+    outlines
 }
 
 fn load_saa_airspace_features(
@@ -2051,6 +2236,96 @@ fn polygon_contains_polygon_by_sampling(
     (inside_count as f64 / samples.len() as f64) >= AIRSPACE_LABEL_CONTAINMENT_RATIO
 }
 
+fn polygon_contains_ring_by_sampling(outer: &[[f64; 2]], inner: &[[f64; 2]]) -> bool {
+    let samples = sampled_ring_points(inner);
+    if samples.is_empty() {
+        return false;
+    }
+    let inside_count = samples
+        .iter()
+        .filter(|sample| point_in_ring(**sample, outer))
+        .count();
+    (inside_count as f64 / samples.len() as f64) >= AIRSPACE_LABEL_CONTAINMENT_RATIO
+}
+
+fn sampled_ring_points(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let mut samples = Vec::new();
+    let len = points
+        .len()
+        .saturating_sub(usize::from(points.first() == points.last()));
+    if len == 0 {
+        return samples;
+    }
+    for index in 0..len {
+        if index == 0 || index == len / 2 || index + 1 == len || index % 16 == 0 {
+            samples.push(points[index]);
+        }
+    }
+    samples
+}
+
+fn simplify_closed_ring(points: &[[f64; 2]], tolerance: f64) -> Vec<[f64; 2]> {
+    if points.len() <= 4 {
+        return points.to_vec();
+    }
+    let mut open = points.to_vec();
+    if open.first() == open.last() {
+        open.pop();
+    }
+    if open.len() <= 3 {
+        return points.to_vec();
+    }
+    let mut keep = vec![false; open.len()];
+    keep[0] = true;
+    keep[open.len() - 1] = true;
+    rdp_mark_keep(&open, 0, open.len() - 1, tolerance, &mut keep);
+    let mut simplified = open
+        .iter()
+        .zip(keep.iter())
+        .filter_map(|(point, keep)| keep.then_some(*point))
+        .collect::<Vec<_>>();
+    if simplified.len() < 3 {
+        return points.to_vec();
+    }
+    if let Some(first) = simplified.first().copied() {
+        simplified.push(first);
+    }
+    simplified
+}
+
+fn rdp_mark_keep(points: &[[f64; 2]], start: usize, end: usize, tolerance: f64, keep: &mut [bool]) {
+    if end <= start + 1 {
+        return;
+    }
+    let mut max_distance = 0.0;
+    let mut max_index = start;
+    for index in start + 1..end {
+        let distance = point_segment_distance(points[index], points[start], points[end]);
+        if distance > max_distance {
+            max_distance = distance;
+            max_index = index;
+        }
+    }
+    if max_distance > tolerance {
+        keep[max_index] = true;
+        rdp_mark_keep(points, start, max_index, tolerance, keep);
+        rdp_mark_keep(points, max_index, end, tolerance, keep);
+    }
+}
+
+fn point_segment_distance(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+    let dx = end[0] - start[0];
+    let dy = end[1] - start[1];
+    let length_squared = dx * dx + dy * dy;
+    if length_squared <= f64::EPSILON {
+        return squared_distance(point, start).sqrt();
+    }
+    let t = (((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / length_squared)
+        .clamp(0.0, 1.0);
+    let projected = [start[0] + t * dx, start[1] + t * dy];
+    squared_distance(point, projected).sqrt()
+}
+
 fn label_candidate_has_airspace_edge_clearance(
     score_degrees: f64,
     latitude: f64,
@@ -2560,6 +2835,18 @@ fn write_json_compact<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()
     .with_context(|| format!("failed to write {}", path.display()))
 }
 
+fn write_airspace_feature(
+    output_dir: &Path,
+    feature: &AirspaceFeature,
+    zip_members: &mut Vec<(String, PathBuf)>,
+) -> anyhow::Result<()> {
+    let relative_path = airspace_feature_relative_path(&feature.id);
+    let feature_path = output_dir.join(&relative_path);
+    write_json_compact(&feature_path, feature)?;
+    zip_members.push((relative_path, feature_path));
+    Ok(())
+}
+
 fn write_zip(path: &Path, members: &[(String, PathBuf)]) -> anyhow::Result<()> {
     if path.exists() {
         fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))?;
@@ -2818,7 +3105,10 @@ mod tests {
         assert_eq!(feature.airspace_class, "RA");
         assert_eq!(feature.paths.len(), 1);
         assert_eq!(feature.paths[0].points.len(), 6);
-        assert_eq!(feature.paths[0].points.first(), feature.paths[0].points.last());
+        assert_eq!(
+            feature.paths[0].points.first(),
+            feature.paths[0].points.last()
+        );
     }
 
     #[test]
@@ -2885,7 +3175,10 @@ mod tests {
         assert_eq!(feature.airspace_class, "RA");
         assert_eq!(feature.paths.len(), 1);
         assert!(feature.paths[0].points.len() > 90);
-        assert_eq!(feature.paths[0].points.first(), feature.paths[0].points.last());
+        assert_eq!(
+            feature.paths[0].points.first(),
+            feature.paths[0].points.last()
+        );
     }
 
     #[test]

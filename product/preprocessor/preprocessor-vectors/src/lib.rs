@@ -259,6 +259,8 @@ struct AirspaceLabelCandidate {
 struct AirspacePath {
     role: String,
     closed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interior_side: Option<String>,
     points: Vec<[f64; 2]>,
 }
 
@@ -1058,7 +1060,8 @@ struct SaaParseState {
     lower_unit: Option<String>,
     lower_ref: Option<String>,
     saa_type: Option<String>,
-    paths: Vec<Vec<[f64; 2]>>,
+    paths: Vec<SaaPath>,
+    current_component_operation: Option<String>,
     current_ring_points: Option<Vec<[f64; 2]>>,
     in_line_string_segment: bool,
     current_line_points: Vec<[f64; 2]>,
@@ -1070,6 +1073,20 @@ struct SaaParseState {
     arc_end_angle: Option<f64>,
     circle_center: Option<[f64; 2]>,
     circle_radius_unit: Option<String>,
+}
+
+struct SaaPath {
+    points: Vec<[f64; 2]>,
+    operation: Option<String>,
+}
+
+impl SaaParseState {
+    fn push_path(&mut self, points: Vec<[f64; 2]>) {
+        self.paths.push(SaaPath {
+            points,
+            operation: self.current_component_operation.clone(),
+        });
+    }
 }
 
 fn parse_saa_xml(
@@ -1090,6 +1107,9 @@ fn parse_saa_xml(
                 } else if state.in_airspace {
                     if name == "AirspaceExtension" {
                         state.in_extension = true;
+                    }
+                    if name == "AirspaceGeometryComponent" {
+                        state.current_component_operation = None;
                     }
                     if name == "CircleByCenterPoint" {
                         state.in_circle_by_center_point = true;
@@ -1151,6 +1171,9 @@ fn parse_saa_xml(
                             Some("lowerLimit") => state.lower_value = Some(text),
                             Some("lowerLimitReference") => state.lower_ref = Some(text),
                             Some("suaType") => state.saa_type = Some(text),
+                            Some("operation") => {
+                                state.current_component_operation = Some(text);
+                            }
                             Some("pos") => {
                                 if let Some(point) = parse_aixm_pos(&text) {
                                     if state.in_circle_by_center_point {
@@ -1180,7 +1203,7 @@ fn parse_saa_xml(
                                             &text,
                                             state.circle_radius_unit.as_deref(),
                                         ) {
-                                            state.paths.push(path);
+                                            state.push_path(path);
                                         }
                                     }
                                 } else if state.in_arc_by_center_point {
@@ -1220,7 +1243,7 @@ fn parse_saa_xml(
                     if let Some(ring) = state.current_ring_points.as_mut() {
                         append_path_points(ring, &state.current_line_points);
                     } else if state.current_line_points.len() >= 2 {
-                        state.paths.push(state.current_line_points.clone());
+                        state.push_path(state.current_line_points.clone());
                     }
                     state.current_line_points.clear();
                 }
@@ -1242,7 +1265,7 @@ fn parse_saa_xml(
                             if let Some(ring) = state.current_ring_points.as_mut() {
                                 append_path_points(ring, &points);
                             } else {
-                                state.paths.push(points);
+                                state.push_path(points);
                             }
                         }
                     }
@@ -1260,9 +1283,12 @@ fn parse_saa_xml(
                                     points.push(first);
                                 }
                             }
-                            state.paths.push(points);
+                            state.push_path(points);
                         }
                     }
+                }
+                if name == "AirspaceGeometryComponent" {
+                    state.current_component_operation = None;
                 }
                 if state.current_tag.as_deref() == Some(name.as_str()) {
                     state.current_tag = None;
@@ -1275,7 +1301,12 @@ fn parse_saa_xml(
             _ => {}
         }
     }
-    let all_points = state.paths.iter().flatten().copied().collect::<Vec<_>>();
+    let all_points = state
+        .paths
+        .iter()
+        .flat_map(|path| path.points.iter())
+        .copied()
+        .collect::<Vec<_>>();
     if all_points.len() < 2 {
         return Ok(None);
     }
@@ -1313,12 +1344,17 @@ fn parse_saa_xml(
     let paths = state
         .paths
         .iter()
-        .filter_map(|points| airspace_path_from_points(points, "boundary"))
+        .filter_map(|path| saa_airspace_path(path, "boundary"))
         .collect::<Vec<_>>();
     if paths.is_empty() {
         return Ok(None);
     }
-    let anchor = polygon_label_anchor(&state.paths);
+    let raw_paths = state
+        .paths
+        .iter()
+        .map(|path| path.points.clone())
+        .collect::<Vec<_>>();
+    let anchor = polygon_label_anchor(&raw_paths);
     Ok(Some(AirspaceFeature {
         schema_version: 1,
         id,
@@ -2311,8 +2347,75 @@ fn airspace_path_from_points(points: &[[f64; 2]], role: &str) -> Option<Airspace
     Some(AirspacePath {
         role: role.to_string(),
         closed: points.first() == points.last(),
+        interior_side: None,
         points: points.to_vec(),
     })
+}
+
+fn saa_airspace_path(path: &SaaPath, role: &str) -> Option<AirspacePath> {
+    let _ = path.points.first()?;
+    Some(AirspacePath {
+        role: role.to_string(),
+        closed: path.points.first() == path.points.last(),
+        interior_side: saa_path_interior_side(path),
+        points: path.points.clone(),
+    })
+}
+
+fn saa_path_interior_side(path: &SaaPath) -> Option<String> {
+    let mut side = path_winding_interior_side(&path.points)?;
+    if path
+        .operation
+        .as_deref()
+        .is_some_and(|operation| operation.eq_ignore_ascii_case("SUBTR"))
+    {
+        side = opposite_side(side);
+    }
+    Some(side.to_string())
+}
+
+fn path_winding_interior_side(points: &[[f64; 2]]) -> Option<&'static str> {
+    let signed_area = signed_ring_area(points)?;
+    // Do not infer SAA holes from ring containment. FAA SAA AIXM uses
+    // AirspaceGeometryComponent.operation (BASE/UNION/SUBTR) to define
+    // aggregation; nested components may be subtractions or independent
+    // contributors. OGC 12-028r1 "Use of Geography Markup Language (GML) for
+    // Aviation Data", sections 8.2.6 and 9, says AIXM v5 airspace holes are
+    // encoded as AirspaceVolume subtractions, and section 9 specifically calls
+    // out operation/operationSequence as required for correctly representing
+    // aggregation. The FAA-bundled AIXM_Features.xsd says operation indicates
+    // whether a component participates by addition/subtraction/intersection.
+    //
+    // Once operation is known, winding still tells us the component polygon's
+    // local interior side: in x=longitude, y=latitude coordinates, a
+    // counter-clockwise ring has interior on the left while traversing the
+    // path, and a clockwise ring has interior on the right. SUBTR components
+    // flip that side because the represented airspace is outside the component.
+    Some(if signed_area > 0.0 { "left" } else { "right" })
+}
+
+fn opposite_side(side: &str) -> &'static str {
+    match side {
+        "left" => "right",
+        "right" => "left",
+        _ => "left",
+    }
+}
+
+fn signed_ring_area(points: &[[f64; 2]]) -> Option<f64> {
+    if points.len() < 3 {
+        return None;
+    }
+    let mut twice_area = 0.0;
+    for index in 0..points.len() {
+        let current = points[index];
+        let next = points[(index + 1) % points.len()];
+        twice_area += current[0] * next[1] - next[0] * current[1];
+    }
+    if twice_area.abs() < 1.0e-12 {
+        return None;
+    }
+    Some(twice_area / 2.0)
 }
 
 fn points_bbox(points: &[[f64; 2]]) -> [f64; 4] {
@@ -2783,5 +2886,98 @@ mod tests {
         assert_eq!(feature.paths.len(), 1);
         assert!(feature.paths[0].points.len() > 90);
         assert_eq!(feature.paths[0].points.first(), feature.paths[0].points.last());
+    }
+
+    #[test]
+    fn saa_aixm_parser_sets_interior_side_from_operation_and_winding() {
+        let xml = r#"
+            <SaaMessage>
+              <hasMember>
+                <Airspace>
+                  <timeSlice>
+                    <AirspaceTimeSlice>
+                      <designator>TST1</designator>
+                      <name>TEST SAA</name>
+                      <suaType>MOA</suaType>
+                      <geometryComponent>
+                        <AirspaceGeometryComponent>
+                          <operation>BASE</operation>
+                          <operationSequence>0</operationSequence>
+                          <theAirspaceVolume>
+                            <AirspaceVolume>
+                              <upperLimit uom="FT">10000</upperLimit>
+                              <upperLimitReference>MSL</upperLimitReference>
+                              <lowerLimit uom="FT">GND</lowerLimit>
+                              <lowerLimitReference>SFC</lowerLimitReference>
+                              <horizontalProjection>
+                                <Surface>
+                                  <patches>
+                                    <PolygonPatch>
+                                      <exterior>
+                                        <LinearRing>
+                                          <pos>-100.0 40.0</pos>
+                                          <pos>-100.0 41.0</pos>
+                                          <pos>-99.0 41.0</pos>
+                                          <pos>-99.0 40.0</pos>
+                                          <pos>-100.0 40.0</pos>
+                                        </LinearRing>
+                                      </exterior>
+                                    </PolygonPatch>
+                                  </patches>
+                                </Surface>
+                              </horizontalProjection>
+                            </AirspaceVolume>
+                          </theAirspaceVolume>
+                        </AirspaceGeometryComponent>
+                      </geometryComponent>
+                      <geometryComponent>
+                        <AirspaceGeometryComponent>
+                          <operation>SUBTR</operation>
+                          <operationSequence>1</operationSequence>
+                          <theAirspaceVolume>
+                            <AirspaceVolume>
+                              <upperLimit uom="FT">10000</upperLimit>
+                              <upperLimitReference>MSL</upperLimitReference>
+                              <lowerLimit uom="FT">GND</lowerLimit>
+                              <lowerLimitReference>SFC</lowerLimitReference>
+                              <horizontalProjection>
+                                <Surface>
+                                  <patches>
+                                    <PolygonPatch>
+                                      <exterior>
+                                        <LinearRing>
+                                          <pos>-99.8 40.2</pos>
+                                          <pos>-99.8 40.4</pos>
+                                          <pos>-99.6 40.4</pos>
+                                          <pos>-99.6 40.2</pos>
+                                          <pos>-99.8 40.2</pos>
+                                        </LinearRing>
+                                      </exterior>
+                                    </PolygonPatch>
+                                  </patches>
+                                </Surface>
+                              </horizontalProjection>
+                            </AirspaceVolume>
+                          </theAirspaceVolume>
+                        </AirspaceGeometryComponent>
+                      </geometryComponent>
+                    </AirspaceTimeSlice>
+                  </timeSlice>
+                </Airspace>
+              </hasMember>
+            </SaaMessage>
+        "#;
+        let mut seen = BTreeSet::new();
+        let feature = parse_saa_xml(xml, "TEST SAA.xml", "data_2604", &mut seen)
+            .expect("parse should succeed")
+            .expect("feature should be emitted");
+
+        assert_eq!(feature.paths.len(), 2);
+        assert_eq!(feature.paths[0].interior_side.as_deref(), Some("right"));
+        assert_eq!(
+            feature.paths[1].interior_side.as_deref(),
+            Some("left"),
+            "SUBTR components invert the path winding interior"
+        );
     }
 }

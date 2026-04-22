@@ -18,8 +18,8 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -61,8 +61,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -2245,26 +2245,18 @@ private fun MapExplorerPage(
                 .align(Alignment.BottomEnd)
                 .padding(end = ThumbSize + (ThumbGap * 2f)),
         ) {
-            Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("stack ${formatPageStack(pageHistory, page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("family ${selectedLauncher.launcherLabel}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("up: $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text("${String.format("%.3f", center.first)}/${String.format("%.3f", center.second)} z${String.format("%.2f", viewport.zoom)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("tiles ${tiles.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("vec pts=${committedMapOverlay.visibleFeatures.size} need=${committedMapOverlay.neededPointTiles.size} warn=${committedMapOverlay.warnings.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            if (mapOverlayError != null) {
-                Text("fatal $mapOverlayError", style = MaterialTheme.typography.labelSmall, color = Color(0xFFB85C00))
-            }
-            Text("src z ${if (sourceZooms.isNotEmpty()) sourceZooms.joinToString(", ") else "(none)"}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("pkg ${if (renderedPackages.isNotEmpty()) renderedPackages.joinToString(", ") else "(none)"}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("maps ${selectedFamilyMapViews.joinToString(", ") { it.id }}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text(familyStatus, style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text(if (debugTileLabels) "debugTiles=on" else "debugTiles=off", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            OutlinedButton(
-                onClick = { debugTileLabels = !debugTileLabels },
-                modifier = Modifier.fillMaxWidth().height(ThumbSize * 0.7f),
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Text(if (debugTileLabels) "DBG TILES ON" else "DBG TILES", style = MaterialTheme.typography.labelSmall)
+                Checkbox(
+                    checked = debugTileLabels,
+                    onCheckedChange = { debugTileLabels = it },
+                    modifier = Modifier.size(ThumbSize * 0.36f),
+                )
+                Text("tile labels", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             }
         }
     }
@@ -2877,11 +2869,7 @@ private fun FlightPlanPage(
             onToggle = { debugPanelOpen = !debugPanelOpen },
             modifier = Modifier.align(Alignment.BottomStart),
         ) {
-            Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("stack ${formatPageStack(pageHistory, page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("components ${componentViews.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("rows ${rows.size}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("up: $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
         }
 
         if (pageTrayOpen) {
@@ -3678,15 +3666,7 @@ private fun ChartsPage(
             onToggle = { debugPanelOpen = !debugPanelOpen },
             modifier = Modifier.align(Alignment.BottomStart),
         ) {
-            Text("page ${pageLabel(page)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text(
-                "stack ${formatPageStack(pageHistory, page, "", selectedAirport?.id ?: "", selectedChart?.id ?: "", selectedChart?.label ?: "", folderOpen, chartLabelsById)}",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFF52656D),
-            )
-            Text("apt ${selectedAirport?.label ?: "---"}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-            Text("chart ${selectedChart?.label ?: "---"}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            Text("up: $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             Text(viewport?.let { "z${String.format("%.2f", it.zoom)}" } ?: "viewport (none)", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
         }
 
@@ -5109,11 +5089,10 @@ private fun DebugDock(
             modifier = Modifier
                 .align(if (expandAbove) Alignment.BottomEnd else Alignment.BottomStart)
                 .padding(
-                    start = if (expandAbove) 0.dp else ThumbSize + ThumbGap,
-                    bottom = if (expandAbove) ThumbSize + ThumbGap else 0.dp,
+                    bottom = ThumbSize + ThumbGap,
                 ),
-            enter = slideInHorizontally(initialOffsetX = { -it / 3 }) + fadeIn(),
-            exit = slideOutHorizontally(targetOffsetX = { -it / 3 }) + fadeOut(),
+            enter = slideInVertically(initialOffsetY = { it / 3 }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it / 3 }) + fadeOut(),
         ) {
             Card(modifier = Modifier.width(ThumbSize * 4f)) {
                 Column(

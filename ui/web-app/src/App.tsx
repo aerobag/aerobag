@@ -796,8 +796,9 @@ function initialMapId(mapViews: MapViewOptionJson[]) {
 export default function App() {
   const [sessionStartMs] = useState(() => Date.now());
   const uptimeLabel = useSessionUptimeLabel(sessionStartMs);
-  const locationSearch = typeof window !== "undefined" ? window.location.search : "";
-  const debugTileLabels = new URLSearchParams(locationSearch).has("debugTiles");
+  const [debugTileLabels, setDebugTileLabels] = useState(
+    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugTiles"),
+  );
   const persistedUiState = useMemo(readPersistedWebUiState, []);
   const [page, setPage] = useState<AppPage>(persistedUiState.page ?? "map");
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
@@ -1332,6 +1333,7 @@ export default function App() {
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
           debugTileLabels={debugTileLabels}
+          onDebugTileLabelsChange={setDebugTileLabels}
           selectedMapId={selectedMapId}
           mapViews={mapViews}
           selectedMap={selectedMap}
@@ -1349,7 +1351,6 @@ export default function App() {
           onSelectPage={navigateToPage}
           onOpenPlan={() => navigateToPage("plan")}
           legSummary={legSummary}
-          locationSearch={locationSearch}
           ownship={appUiState.ownship.render}
           plan={currentPlan}
           planUiState={planUiState}
@@ -1360,8 +1361,6 @@ export default function App() {
           onPlaybackSourcePathChange={setPlaybackSourcePath}
           onPlaybackSnapshotChange={setSessionSnapshot}
           uiSession={uiSession}
-          adapterBackend={adapterBackend}
-          adapterDetail={adapterDetail}
           debugWarningActive={debugWarningActive}
           onDebugWarning={logDebugWarning}
           onHighLatencyWarning={logHighLatencyWarning}
@@ -1617,6 +1616,7 @@ function MapPage(props: {
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
   debugTileLabels: boolean;
+  onDebugTileLabelsChange: (enabled: boolean) => void;
   selectedMapId: string;
   mapViews: MapViewOptionJson[];
   selectedMap: MapViewOptionJson;
@@ -1629,7 +1629,6 @@ function MapPage(props: {
   onSelectPage: (page: AppPage) => void;
   onOpenPlan: () => void;
   legSummary: string;
-  locationSearch: string;
   ownship: OwnshipRenderState;
   plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
@@ -1640,8 +1639,6 @@ function MapPage(props: {
   onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
   uiSession: UiSession | null;
-  adapterBackend: AdapterBackendKind;
-  adapterDetail: string;
   debugWarningActive: boolean;
   onDebugWarning: (tag: string, data?: unknown) => void;
   onHighLatencyWarning: (tag: string, data?: unknown) => void;
@@ -1650,6 +1647,7 @@ function MapPage(props: {
   const {
     appCoreAdapter,
     debugTileLabels,
+    onDebugTileLabelsChange,
     page,
     pageHistory,
     uptimeLabel,
@@ -1663,7 +1661,6 @@ function MapPage(props: {
     onSelectPage,
     onOpenPlan,
     legSummary,
-    locationSearch,
     ownship,
     plan,
     planUiState,
@@ -1671,8 +1668,6 @@ function MapPage(props: {
     onPlaybackSnapshotChange,
     mapFollowUiState,
     mapFollowTargetViewport,
-    adapterBackend,
-    adapterDetail,
     debugWarningActive,
     onDebugWarning,
     onHighLatencyWarning,
@@ -1885,17 +1880,6 @@ function MapPage(props: {
     }
     return renderTiles(selectedFamilyMapViews.map((view) => ({ ...view.map_view, id: view.id })), viewport, surfaceSize.width, surfaceSize.height);
   }, [selectedFamilyMapViews, surfaceSize, viewport]);
-  const debugSummary = useMemo(() => {
-    const tileZooms = [...new Set(tiles.map((tile) => tile.zoom))].sort((a, b) => a - b);
-    const packages = [...new Set(tiles.map((tile) => tile.packageName).filter((value): value is string => Boolean(value)))].sort();
-    const mapIds = selectedFamilyMapViews.map((view) => view.id);
-    return {
-      tileZooms,
-      packages,
-      mapIds,
-      tileCount: tiles.length,
-    };
-  }, [selectedFamilyMapViews, tiles]);
   const mapIsVisible = page === "map";
   useEffect(() => {
     const matchingTiles = tiles
@@ -3135,33 +3119,22 @@ function MapPage(props: {
           CTR
         </button>
 
-        <div className="debugDock" style={{ left: "auto", right: "calc(var(--thumb) + (var(--thumb-gap) * 2))" }}>
+        <div className="debugDock isRightAligned" style={{ left: "auto", right: "calc(var(--thumb) + (var(--thumb-gap) * 2))" }}>
           <DebugDock
             open={debugOpen}
             warn={debugWarningActive || mapOverlay.warnings.length > 0}
             onToggle={() => setDebugOpen((open) => !open)}
           >
-            <div className="debugLine">page {pageLabel(page)}</div>
-            <div className="debugLine">core {adapterBackend}</div>
-            <div className="debugLine">{adapterDetail}</div>
-            <div className="debugLine">session {uiSession ? "ready" : "null"} surf {Math.round(surfaceSize.width)}x{Math.round(surfaceSize.height)}</div>
-            <div className="debugLine">up {uptimeLabel}</div>
-            <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: selectedMap.id, selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
-            <div className="debugLine">family {selectedFamily.launcherLabel}</div>
+            <div className="debugLine">up: {uptimeLabel}</div>
             <div className="debugLine">{center.lat.toFixed(3)}/{center.lon.toFixed(3)} z{viewport.zoom.toFixed(2)}</div>
-            <div className="debugLine">nexrad {nexradStatus.state === "available" ? `${nexradFrameIndex + 1}/${nexradFrames.length}` : nexradStatus.state}</div>
-            {nexradStatus.state === "unavailable" ? <div className="debugLine">nexrad reason {nexradStatus.reason}</div> : null}
-            <div className="debugLine">terrain {terrainOverlay.query ? terrainOverlay.query.status.state : "idle"} img={terrainOverlay.images.length}</div>
-            <div className="debugLine">vec pts={mapOverlay.visible_features.length} need={mapOverlay.needed_point_tiles.length} warn={mapOverlay.warnings.length}</div>
-            <div className="debugLine">airspace paths={mapOverlay.airspace_paths.length} labels={mapOverlay.airspace_labels.length} need={mapOverlay.needed_airspace_ref_tiles.length + mapOverlay.needed_airspace_features.length + mapOverlay.needed_airspace_label_tiles.length}</div>
-            {mapOverlay.warnings.map((warning) => (
-              <div key={warning.code} className="debugLine">warn {warning.code}</div>
-            ))}
-            <div className="debugLine">src z {debugSummary.tileZooms.length > 0 ? debugSummary.tileZooms.join(", ") : "(none)"}</div>
-            <div className="debugLine">pkg {debugSummary.packages.length > 0 ? debugSummary.packages.join(", ") : "(none)"}</div>
-            <div className="debugLine">maps {debugSummary.mapIds.join(", ")}</div>
-            <div className="debugLine">search {locationSearch || "(empty)"}</div>
-            <div className="debugLine">{debugTileLabels ? "debugTiles=on" : "debugTiles=off"}</div>
+            <label className="debugToggle">
+              <input
+                type="checkbox"
+                checked={debugTileLabels}
+                onChange={(event) => onDebugTileLabelsChange(event.currentTarget.checked)}
+              />
+              tile labels
+            </label>
           </DebugDock>
         </div>
       </div>
@@ -4315,12 +4288,8 @@ function FlightPlanPage(props: {
 
       <div className="debugDock">
         <DebugDock open={debugOpen} warn={props.debugWarningActive} onToggle={() => setDebugOpen((open) => !open)}>
-          <div className="debugLine">page {pageLabel(props.page)}</div>
-          <div className="debugLine">up {props.uptimeLabel}</div>
-	          <div className="debugLine">stack {formatPageStack(props.pageHistory, { page: props.page, selectedMapId: "", selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
-	          <div className="debugLine">components {componentViews.length}</div>
-	          <div className="debugLine">rows {displayRows.length}</div>
-	        </DebugDock>
+          <div className="debugLine">up: {props.uptimeLabel}</div>
+        </DebugDock>
       </div>
 
       {selectedWaypointIndex !== null ? (
@@ -5446,11 +5415,7 @@ function ChartsPage(props: {
 
         <div className="debugDock">
           <DebugDock open={debugOpen} warn={props.debugWarningActive} onToggle={() => setDebugOpen((open) => !open)}>
-            <div className="debugLine">page {pageLabel(page)}</div>
-            <div className="debugLine">up {uptimeLabel}</div>
-            <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: "", selectedChartId: selectedChart?.id ?? "", selectedChartLabel: selectedChart?.label ?? "", chartFolderOpen: folderOpen })}</div>
-            <div className="debugLine">apt {selectedAirport?.label ?? "---"}</div>
-            <div className="debugLine">chart {selectedChart?.label ?? "---"}</div>
+            <div className="debugLine">up: {uptimeLabel}</div>
             <div className="debugLine">{viewport ? `z${viewport.zoom.toFixed(2)}` : "viewport (none)"}</div>
           </DebugDock>
         </div>
@@ -5513,9 +5478,7 @@ function SettingsPage(props: {
 
       <div className="debugDock">
         <DebugDock open={debugOpen} warn={debugWarningActive} onToggle={() => setDebugOpen((open) => !open)}>
-          <div className="debugLine">page {pageLabel(page)}</div>
-          <div className="debugLine">up {uptimeLabel}</div>
-          <div className="debugLine">stack {formatPageStack(pageHistory, { page, selectedMapId: "", selectedChartId: "", selectedChartLabel: "", chartFolderOpen: false })}</div>
+          <div className="debugLine">up: {uptimeLabel}</div>
         </DebugDock>
       </div>
     </section>

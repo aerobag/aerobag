@@ -639,13 +639,15 @@ button {
   left: var(--thumb-gap);
   bottom: var(--thumb-gap);
   z-index: 4;
-  display: flex;
-  align-items: flex-end;
-  gap: var(--thumb-gap);
+  width: var(--thumb);
+  height: var(--thumb);
   pointer-events: none;
 }
 
 .debugLauncher {
+  position: absolute;
+  left: 0;
+  bottom: 0;
   width: var(--thumb);
   height: var(--thumb);
   padding: 0;
@@ -667,7 +669,10 @@ button {
 }
 
 .debugPanel {
-  width: 0;
+  position: absolute;
+  left: 0;
+  bottom: calc(var(--thumb) + var(--thumb-gap));
+  width: calc(var(--thumb) * 4);
   min-height: var(--thumb);
   overflow: hidden;
   opacity: 0;
@@ -677,16 +682,22 @@ button {
   background: rgba(252, 248, 241, 0.95);
   box-shadow: var(--shadow);
   backdrop-filter: blur(10px);
-  transition: width 160ms ease, opacity 160ms ease, padding 160ms ease;
+  transform: translateY(calc(var(--thumb-gap) * 0.75));
+  transition: opacity 160ms ease, padding 160ms ease, transform 160ms ease;
   user-select: text;
   cursor: text;
 }
 
+.debugDock.isRightAligned .debugPanel {
+  left: auto;
+  right: 0;
+}
+
 .debugPanel.isOpen {
-  width: calc(var(--thumb) * 4);
   opacity: 1;
   pointer-events: auto;
   padding: calc(var(--thumb) * 0.12) calc(var(--thumb) * 0.16);
+  transform: translateY(0);
 }
 
 .debugLine {
@@ -696,6 +707,26 @@ button {
   letter-spacing: 0.02em;
   white-space: nowrap;
   user-select: text;
+}
+
+.debugToggle {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--thumb) * 0.08);
+  font-size: calc(var(--thumb) * 0.16);
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: #52656d;
+  user-select: none;
+  cursor: pointer;
+}
+
+.debugToggle input {
+  width: calc(var(--thumb) * 0.2);
+  height: calc(var(--thumb) * 0.2);
+  margin: 0;
 }
 
 .navElement {

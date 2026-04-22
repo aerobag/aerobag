@@ -4,6 +4,7 @@ use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use rusqlite::Connection;
@@ -14,10 +15,14 @@ const POINT_LAYER_ZOOM_POLICY: &[(&str, u8)] =
     &[("airport", 9), ("fix", 9), ("nav", 9), ("awos", 9)];
 const OBSTACLE_LAYER_ZOOM: u8 = 12;
 const AIRSPACE_REF_MIN_ZOOM: u8 = 0;
-const AIRSPACE_REF_MAX_ZOOM: u8 = 8;
-const AIRSPACE_REF_MIN_PIXEL_SPAN: f64 = 15.0;
-const CONTROLLED_AIRSPACE_OUTLINE_MAX_ZOOM: u8 = 6;
+const AIRSPACE_REF_MAX_ZOOM: u8 = 12;
+const AIRSPACE_REF_MIN_PIXEL_SPAN: f64 = 30.0;
+const MOA_REF_MIN_ZOOM: u8 = 8;
+const CONTROLLED_AIRSPACE_DETAIL_MIN_PIXEL_SPAN: f64 = 20.0;
+const CONTROLLED_AIRSPACE_OUTLINE_MAX_ZOOM: u8 = 8;
 const CONTROLLED_AIRSPACE_OUTLINE_SIMPLIFY_TOLERANCE_DEGREES: f64 = 0.005;
+const CONTROLLED_AIRSPACE_OUTLINE_UNION_SNAP_GRID_DEGREES: f64 = 0.0001;
+const CONTROLLED_AIRSPACE_OUTLINE_UNION_EXPAND_DEGREES: f64 = 0.001;
 const AIRSPACE_LABEL_MIN_ZOOM: u8 = 0;
 const AIRSPACE_LABEL_MAX_ZOOM: u8 = 12;
 const AIRSPACE_LABEL_MIN_PIXEL_SPAN: f64 = 50.0;
@@ -40,6 +45,21 @@ pub struct BuildVectorsResult {
     pub stats_path: PathBuf,
     pub errors_path: PathBuf,
     pub zip_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildBravoUnionSvgRequest {
+    pub class_airspace_shp: PathBuf,
+    pub output_svg: PathBuf,
+    pub version_label: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildBravoUnionSvgResult {
+    pub output_svg: PathBuf,
+    pub bravo_count: usize,
+    pub source_shelf_count: usize,
+    pub union_polygon_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -297,6 +317,371 @@ struct AirspaceTileLabel {
     style_hint: String,
 }
 
+pub fn build_bravo_union_svg(
+    request: &BuildBravoUnionSvgRequest,
+) -> anyhow::Result<BuildBravoUnionSvgResult> {
+    let (features, _) = load_class_airspace_features(
+        &request.class_airspace_shp,
+        &request.version_label,
+        false,
+        &[],
+    )
+    .with_context(|| {
+        format!(
+            "failed to load class airspace shapefile {}",
+            request.class_airspace_shp.display()
+        )
+    })?;
+    let mut groups = BTreeMap::<String, Vec<AirspaceFeature>>::new();
+    for feature in features {
+        if feature.airspace_class.eq_ignore_ascii_case("B") {
+            let key = feature
+                .ident
+                .clone()
+                .filter(|ident| !ident.is_empty())
+                .unwrap_or_else(|| feature.name.clone());
+            groups.entry(key).or_default().push(feature);
+        }
+    }
+
+    let mut rendered = Vec::new();
+    let mut union_polygon_count = 0usize;
+    let mut source_shelf_count = 0usize;
+    for (ident, group) in groups {
+        source_shelf_count += group.len();
+        let union = geo_union_for_airspace_group(&group)
+            .with_context(|| format!("failed to union Class B airspace group {ident}"))?;
+        union_polygon_count += union.0.len();
+        if !union.0.is_empty() {
+            rendered.push(BravoUnionSvgCell {
+                ident,
+                bbox: bbox_for_airspace_group(&group).unwrap_or([-180.0, -90.0, 180.0, 90.0]),
+                source_features: group,
+                union_rings: exterior_rings_from_geo_union(&union),
+            });
+        }
+    }
+
+    rendered.sort_by(|left, right| left.ident.cmp(&right.ident));
+    write_bravo_union_svg(&request.output_svg, &rendered)?;
+
+    Ok(BuildBravoUnionSvgResult {
+        output_svg: request.output_svg.clone(),
+        bravo_count: rendered.len(),
+        source_shelf_count,
+        union_polygon_count,
+    })
+}
+
+struct BravoUnionSvgCell {
+    ident: String,
+    bbox: [f64; 4],
+    source_features: Vec<AirspaceFeature>,
+    union_rings: Vec<Vec<[f64; 2]>>,
+}
+
+fn geo_union_for_airspace_group(features: &[AirspaceFeature]) -> anyhow::Result<MultiPolygon<f64>> {
+    let mut union = MultiPolygon::<f64>(Vec::new());
+    for feature in features {
+        for path in &feature.paths {
+            let Some(polygon) = controlled_airspace_outline_polygon_from_path(path) else {
+                continue;
+            };
+            union = if union.0.is_empty() {
+                MultiPolygon(vec![polygon])
+            } else {
+                union.union(&polygon)
+            };
+        }
+    }
+    Ok(union)
+}
+
+fn exterior_rings_from_geo_union(union: &MultiPolygon<f64>) -> Vec<Vec<[f64; 2]>> {
+    union
+        .0
+        .iter()
+        .map(|polygon| {
+            polygon
+                .exterior()
+                .points()
+                .map(|point| [point.x(), point.y()])
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn geo_union_for_airspace_refs(features: &[&AirspaceFeature]) -> MultiPolygon<f64> {
+    let mut union = MultiPolygon::<f64>(Vec::new());
+    for feature in features {
+        for path in &feature.paths {
+            let Some(polygon) = controlled_airspace_outline_polygon_from_path(path) else {
+                continue;
+            };
+            union = if union.0.is_empty() {
+                MultiPolygon(vec![polygon])
+            } else {
+                union.union(&polygon)
+            };
+        }
+    }
+    union
+}
+
+fn controlled_airspace_outline_polygon_from_path(path: &AirspacePath) -> Option<Polygon<f64>> {
+    if !path.closed || path.points.len() < 4 {
+        return None;
+    }
+    let snapped = path
+        .points
+        .iter()
+        .map(|point| {
+            [
+                snap_coord(
+                    point[0],
+                    CONTROLLED_AIRSPACE_OUTLINE_UNION_SNAP_GRID_DEGREES,
+                ),
+                snap_coord(
+                    point[1],
+                    CONTROLLED_AIRSPACE_OUTLINE_UNION_SNAP_GRID_DEGREES,
+                ),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let expanded = expand_ring_outward_by_vertex_bisectors(
+        &snapped,
+        CONTROLLED_AIRSPACE_OUTLINE_UNION_EXPAND_DEGREES,
+    );
+    let mut coords = expanded
+        .iter()
+        .map(|point| Coord {
+            x: point[0],
+            y: point[1],
+        })
+        .collect::<Vec<_>>();
+    let first = *coords.first()?;
+    if coords.last().copied() != Some(first) {
+        coords.push(first);
+    }
+    if coords.len() < 4 {
+        return None;
+    }
+    Some(Polygon::new(LineString::new(coords), Vec::new()))
+}
+
+fn snap_coord(value: f64, grid: f64) -> f64 {
+    if grid <= 0.0 {
+        value
+    } else {
+        (value / grid).round() * grid
+    }
+}
+
+fn expand_ring_outward_by_vertex_bisectors(points: &[[f64; 2]], epsilon: f64) -> Vec<[f64; 2]> {
+    // This is not a general GIS buffer. It is a low-zoom-only nudge that makes
+    // neighboring FAA shelf polygons overlap before boolean union, without
+    // publishing the expanded geometry. Moving each vertex along the local
+    // outward angle bisector avoids the concave-polygon spikes we saw when
+    // expanding vertices away from the polygon centroid.
+    if epsilon <= 0.0 || points.len() < 4 {
+        return points.to_vec();
+    }
+    let clockwise = signed_ring_area(points).is_some_and(|area| area < 0.0);
+    let mut open = points.to_vec();
+    let was_closed = open.first() == open.last();
+    if was_closed {
+        open.pop();
+    }
+    if open.len() < 3 {
+        return points.to_vec();
+    }
+
+    let mut expanded = open
+        .iter()
+        .enumerate()
+        .map(|(index, point)| {
+            let previous = open[(index + open.len() - 1) % open.len()];
+            let next = open[(index + 1) % open.len()];
+            let incoming = outward_unit_normal(previous, *point, clockwise);
+            let outgoing = outward_unit_normal(*point, next, clockwise);
+            let direction =
+                normalize_vector([incoming[0] + outgoing[0], incoming[1] + outgoing[1]])
+                    .or_else(|| normalize_vector([point[0] - previous[0], point[1] - previous[1]]))
+                    .unwrap_or([0.0, 0.0]);
+            [
+                point[0] + epsilon * direction[0],
+                point[1] + epsilon * direction[1],
+            ]
+        })
+        .collect::<Vec<_>>();
+    if was_closed {
+        if let Some(first) = expanded.first().copied() {
+            expanded.push(first);
+        }
+    }
+    expanded
+}
+
+fn outward_unit_normal(start: [f64; 2], end: [f64; 2], clockwise: bool) -> [f64; 2] {
+    let dx = end[0] - start[0];
+    let dy = end[1] - start[1];
+    let normal = if clockwise { [-dy, dx] } else { [dy, -dx] };
+    normalize_vector(normal).unwrap_or([0.0, 0.0])
+}
+
+fn normalize_vector(vector: [f64; 2]) -> Option<[f64; 2]> {
+    let length = (vector[0] * vector[0] + vector[1] * vector[1]).sqrt();
+    if length <= f64::EPSILON {
+        None
+    } else {
+        Some([vector[0] / length, vector[1] / length])
+    }
+}
+
+fn bbox_for_airspace_group(features: &[AirspaceFeature]) -> Option<[f64; 4]> {
+    let mut bbox: Option<[f64; 4]> = None;
+    for feature in features {
+        bbox = Some(match bbox {
+            Some(existing) => [
+                existing[0].min(feature.bbox[0]),
+                existing[1].min(feature.bbox[1]),
+                existing[2].max(feature.bbox[2]),
+                existing[3].max(feature.bbox[3]),
+            ],
+            None => feature.bbox,
+        });
+    }
+    bbox
+}
+
+fn write_bravo_union_svg(path: &Path, cells: &[BravoUnionSvgCell]) -> anyhow::Result<()> {
+    let columns = 5usize;
+    let cell_width = 360.0;
+    let cell_height = 300.0;
+    let title_height = 24.0;
+    let padding = 18.0;
+    let rows = cells.len().div_ceil(columns);
+    let width = (columns as f64 * cell_width) as usize;
+    let height = (rows as f64 * cell_height) as usize;
+    let mut svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<style>
+  text {{ font-family: ui-sans-serif, sans-serif; font-size: 13px; fill: #0f172a; }}
+  .cell {{ fill: #ffffff; stroke: #cbd5e1; stroke-width: 1; }}
+  .source {{ fill: #2563eb; fill-opacity: 0.12; stroke: #2563eb; stroke-opacity: 0.50; stroke-width: 1; }}
+  .union {{ fill: none; stroke: #dc2626; stroke-width: 2.25; stroke-linejoin: round; stroke-linecap: round; }}
+</style>
+"##
+    );
+    for (index, cell) in cells.iter().enumerate() {
+        let column = index % columns;
+        let row = index / columns;
+        let x0 = column as f64 * cell_width;
+        let y0 = row as f64 * cell_height;
+        svg.push_str(&format!(
+            r##"<g transform="translate({x0:.1},{y0:.1})">
+<rect class="cell" x="4" y="4" width="{:.1}" height="{:.1}" rx="8"/>
+<text x="14" y="20">{} - {} shelves, {} union polys</text>
+"##,
+            cell_width - 8.0,
+            cell_height - 8.0,
+            svg_escape(&cell.ident),
+            cell.source_features.len(),
+            cell.union_rings.len()
+        ));
+        let projector =
+            SvgCellProjector::new(cell.bbox, cell_width, cell_height, title_height, padding);
+        for feature in &cell.source_features {
+            for path in &feature.paths {
+                if path.closed {
+                    svg.push_str(&format!(
+                        r##"<path class="source" d="{}"/>
+"##,
+                        svg_path_for_points(&path.points, true, &projector)
+                    ));
+                }
+            }
+        }
+        for exterior in &cell.union_rings {
+            let simplified = simplify_closed_ring(
+                exterior,
+                CONTROLLED_AIRSPACE_OUTLINE_SIMPLIFY_TOLERANCE_DEGREES,
+            );
+            svg.push_str(&format!(
+                r##"<path class="union" d="{}"/>
+"##,
+                svg_path_for_points(&simplified, true, &projector)
+            ));
+        }
+        svg.push_str("</g>\n");
+    }
+    svg.push_str("</svg>\n");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(path, svg).with_context(|| format!("failed to write {}", path.display()))
+}
+
+struct SvgCellProjector {
+    west: f64,
+    north: f64,
+    scale: f64,
+    x_offset: f64,
+    y_offset: f64,
+}
+
+impl SvgCellProjector {
+    fn new(bbox: [f64; 4], cell_width: f64, cell_height: f64, title_height: f64, pad: f64) -> Self {
+        let lon_span = (bbox[2] - bbox[0]).max(0.000001);
+        let lat_span = (bbox[3] - bbox[1]).max(0.000001);
+        let plot_width = cell_width - 2.0 * pad;
+        let plot_height = cell_height - title_height - 2.0 * pad;
+        let scale = (plot_width / lon_span).min(plot_height / lat_span);
+        let drawn_width = lon_span * scale;
+        let drawn_height = lat_span * scale;
+        Self {
+            west: bbox[0],
+            north: bbox[3],
+            scale,
+            x_offset: pad + (plot_width - drawn_width) / 2.0,
+            y_offset: title_height + pad + (plot_height - drawn_height) / 2.0,
+        }
+    }
+
+    fn point(&self, point: [f64; 2]) -> (f64, f64) {
+        (
+            self.x_offset + (point[0] - self.west) * self.scale,
+            self.y_offset + (self.north - point[1]) * self.scale,
+        )
+    }
+}
+
+fn svg_path_for_points(points: &[[f64; 2]], closed: bool, projector: &SvgCellProjector) -> String {
+    let mut out = String::new();
+    for (index, point) in points.iter().enumerate() {
+        let (x, y) = projector.point(*point);
+        if index == 0 {
+            out.push_str(&format!("M{x:.2},{y:.2}"));
+        } else {
+            out.push_str(&format!("L{x:.2},{y:.2}"));
+        }
+    }
+    if closed {
+        out.push('Z');
+    }
+    out
+}
+
+fn svg_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<BuildVectorsResult> {
     if request.output_dir.exists() {
         fs::remove_dir_all(&request.output_dir)
@@ -443,7 +828,14 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                 if controlled_airspace_uses_outline_at_zoom(feature, zoom) {
                     continue;
                 }
-                if !bbox_is_visible_at_zoom(feature.bbox, zoom, AIRSPACE_REF_MIN_PIXEL_SPAN) {
+                if !airspace_ref_is_available_at_zoom(feature, zoom) {
+                    continue;
+                }
+                if !bbox_is_visible_at_zoom(
+                    feature.bbox,
+                    zoom,
+                    airspace_ref_min_pixel_span(feature),
+                ) {
                     continue;
                 }
                 for tile in tiles_for_bbox(feature.bbox, zoom) {
@@ -1145,48 +1537,38 @@ fn controlled_airspace_uses_outline_at_zoom(feature: &AirspaceFeature, zoom: u8)
     is_controlled_airspace_detail(feature) && zoom <= CONTROLLED_AIRSPACE_OUTLINE_MAX_ZOOM
 }
 
+fn airspace_ref_min_pixel_span(feature: &AirspaceFeature) -> f64 {
+    if is_controlled_airspace_detail(feature) {
+        CONTROLLED_AIRSPACE_DETAIL_MIN_PIXEL_SPAN
+    } else {
+        AIRSPACE_REF_MIN_PIXEL_SPAN
+    }
+}
+
+fn airspace_ref_is_available_at_zoom(feature: &AirspaceFeature, zoom: u8) -> bool {
+    !feature.airspace_class.eq_ignore_ascii_case("MOA") || zoom >= MOA_REF_MIN_ZOOM
+}
+
 fn outline_rings_for_features(features: &[&AirspaceFeature]) -> Vec<Vec<[f64; 2]>> {
-    // Low zoom does not need shelf-level B/C/D geometry. Keep only rings that
-    // are not contained inside another shelf from the same airport/class group,
-    // then simplify them. This gives the UI a cheap "outer airspace is here"
-    // boundary for z0..z6; full shelves start materializing at z7.
+    // Low zoom does not need shelf-level B/C/D geometry. Build a dissolved
+    // outline from all shelves in the same airport/class group, then simplify
+    // it. This gives the UI a cheap "outer airspace is here" boundary for
+    // z0..z8; full shelves start materializing at z9.
     //
-    // Do not try to build this by exact shared-edge cancellation: FAA shelf
-    // boundaries often share arcs with different vertex splits, so exact segment
-    // matching leaves most internal edges in place and explodes low-zoom payloads.
-    let mut rings = Vec::new();
-    for feature in features {
-        for path in &feature.paths {
-            if !path.closed {
-                continue;
-            }
-            if signed_ring_area(&path.points).is_some() {
-                rings.push(path.points.clone());
-            }
-        }
-    }
-    let mut outlines = Vec::new();
-    for (index, ring) in rings.iter().enumerate() {
-        let contained_by_larger = rings.iter().enumerate().any(|(other_index, other)| {
-            if index == other_index {
-                return false;
-            }
-            let Some(ring_area) = signed_ring_area(ring).map(f64::abs) else {
-                return false;
-            };
-            let Some(other_area) = signed_ring_area(other).map(f64::abs) else {
-                return false;
-            };
-            other_area >= ring_area && polygon_contains_ring_by_sampling(other, ring)
-        });
-        if !contained_by_larger {
-            outlines.push(simplify_closed_ring(
-                ring,
+    // FAA shelf boundaries often share arcs with different vertex splits. Before
+    // unioning, we snap to a tiny grid and expand each shelf by a low-zoom-only
+    // epsilon so adjacent shelves definitely overlap. The expansion is at most
+    // about 0.06 NM and is applied only to this derived overview outline, never
+    // to the published shelf-level geometry.
+    exterior_rings_from_geo_union(&geo_union_for_airspace_refs(features))
+        .into_iter()
+        .map(|ring| {
+            simplify_closed_ring(
+                &ring,
                 CONTROLLED_AIRSPACE_OUTLINE_SIMPLIFY_TOLERANCE_DEGREES,
-            ));
-        }
-    }
-    outlines
+            )
+        })
+        .collect()
 }
 
 fn load_saa_airspace_features(
@@ -2234,34 +2616,6 @@ fn polygon_contains_polygon_by_sampling(
         .filter(|sample| point_in_polygon_parts(**sample, outer_parts))
         .count();
     (inside_count as f64 / samples.len() as f64) >= AIRSPACE_LABEL_CONTAINMENT_RATIO
-}
-
-fn polygon_contains_ring_by_sampling(outer: &[[f64; 2]], inner: &[[f64; 2]]) -> bool {
-    let samples = sampled_ring_points(inner);
-    if samples.is_empty() {
-        return false;
-    }
-    let inside_count = samples
-        .iter()
-        .filter(|sample| point_in_ring(**sample, outer))
-        .count();
-    (inside_count as f64 / samples.len() as f64) >= AIRSPACE_LABEL_CONTAINMENT_RATIO
-}
-
-fn sampled_ring_points(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
-    let mut samples = Vec::new();
-    let len = points
-        .len()
-        .saturating_sub(usize::from(points.first() == points.last()));
-    if len == 0 {
-        return samples;
-    }
-    for index in 0..len {
-        if index == 0 || index == len / 2 || index + 1 == len || index % 16 == 0 {
-            samples.push(points[index]);
-        }
-    }
-    samples
 }
 
 fn simplify_closed_ring(points: &[[f64; 2]], tolerance: f64) -> Vec<[f64; 2]> {

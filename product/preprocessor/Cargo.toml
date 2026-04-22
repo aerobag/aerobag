@@ -22,6 +22,7 @@ version = "0.1.0"
 anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 crossbeam-channel = "0.5"
+geo = "0.29"
 image = { version = "0.25", default-features = false, features = ["png"] }
 quick-xml = "0.38"
 rayon = "1.10"

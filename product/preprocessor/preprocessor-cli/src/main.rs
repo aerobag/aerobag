@@ -35,7 +35,8 @@ use preprocessor_resource_index::{
 use preprocessor_tools::{comparison_targets, ToolInvocation};
 use preprocessor_tpp::{run_native_tpp, NativeTppRunRequest};
 use preprocessor_vectors::{
-    build_obstacle_dataset, build_vectors_dataset, BuildObstacleDatasetRequest, BuildVectorsRequest,
+    build_bravo_union_svg, build_obstacle_dataset, build_vectors_dataset,
+    BuildBravoUnionSvgRequest, BuildObstacleDatasetRequest, BuildVectorsRequest,
 };
 use product_build::{
     build_cycle, build_fast_subset, build_product, default_artifact_write_path,
@@ -97,6 +98,7 @@ fn long_usage() -> &'static str {
   preprocessor-cli run-native-tpp --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli build-data --input-dir <path> --output-dir <path> --manifest-version <cycle> [--resource-index-output <path>] [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>]...
   preprocessor-cli build-vectors --main-db <path> --output-dir <path> --version-label <label> [--data-input-dir <path>] [--include-class-e-airspace]
+  preprocessor-cli audit-bravo-unions --class-airspace-shp <path> --output-svg <path> [--version-label <label>]
   preprocessor-cli build-obstacles [--build-root <path>] [--fetch-jobs <count>] [--snapshot-date <YYYY-MM-DD>]
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>]...
   preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
@@ -1827,6 +1829,7 @@ fn main() -> anyhow::Result<()> {
                 | "build-resource-index"
                 | "build-data"
                 | "build-vectors"
+                | "audit-bravo-unions"
                 | "build-obstacles"
                 | "build-cycle"
                 | "build-fast-subset"
@@ -2710,6 +2713,51 @@ fn main() -> anyhow::Result<()> {
             println!("stats {}", result.stats_path.display());
             println!("errors {}", result.errors_path.display());
             println!("zip {}", result.zip_path.display());
+        }
+        Some("audit-bravo-unions") => {
+            let mut class_airspace_shp = None;
+            let mut output_svg = None;
+            let mut version_label = "debug".to_string();
+            let mut index = 2;
+            while index < args.len() {
+                match args.get(index).map(String::as_str) {
+                    Some("--class-airspace-shp") => {
+                        class_airspace_shp = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--output-svg") => {
+                        output_svg = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--version-label") => {
+                        version_label = args
+                            .get(index + 1)
+                            .cloned()
+                            .ok_or_else(|| anyhow::anyhow!("{}", usage()))?;
+                        index += 2;
+                    }
+                    _ => anyhow::bail!("{}", usage()),
+                }
+            }
+            let request = BuildBravoUnionSvgRequest {
+                class_airspace_shp: class_airspace_shp
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                output_svg: output_svg.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                version_label,
+            };
+            let result = build_bravo_union_svg(&request)?;
+            println!("svg {}", result.output_svg.display());
+            println!("bravos {}", result.bravo_count);
+            println!("source_shelves {}", result.source_shelf_count);
+            println!("union_polygons {}", result.union_polygon_count);
         }
         Some("build-obstacles") => {
             let (manifest_path, stats_path, zip_path) = run_build_obstacles_command(&args[2..])?;

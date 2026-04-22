@@ -8,6 +8,7 @@ type ChartAsset = ChartPage["airports"][number]["charts"][number];
 type FolderCategory = ChartAsset["folder_category"];
 
 const supportedChartFamilies = new Set<SupportedChartFamily>(["sec", "tac", "enr-l", "enr-h"]);
+const RASTER_BASEMAP_MAX_DISPLAY_ZOOM = 12.5;
 
 function isSupportedChartFamily(familyId: ChartFamilyId): familyId is SupportedChartFamily {
   return supportedChartFamilies.has(familyId as SupportedChartFamily);
@@ -51,9 +52,8 @@ function minZoomForLevels(levels: MapView["levels"]): number {
   return Math.max(1.5, minLevel - 2.8);
 }
 
-function maxZoomForLevels(levels: MapView["levels"]): number {
-  const maxLevel = Math.max(...levels.map((level) => level.zoom));
-  return maxLevel + 0.8;
+function maxZoomForLevels(_levels: MapView["levels"]): number {
+  return RASTER_BASEMAP_MAX_DISPLAY_ZOOM;
 }
 
 function familyDisplayName(resourceIndex: ResourceIndexJson, familyId: SupportedChartFamily): string {

@@ -112,6 +112,8 @@ describe("resourceIndexAdapters", () => {
     expect(mapViews[0].map_view.tile_path_template).toBe("0/{z}/{x}/{y}.webp");
     expect(mapViews[0].map_view.tile_size).toBe(512);
     expect(mapViews[1].map_view.tile_size).toBe(512);
+    expect(mapViews[0].map_view.max_zoom).toBe(12.5);
+    expect(mapViews[1].map_view.max_zoom).toBe(12.5);
   });
 
   it("derives chart page assets from plates and csups", () => {

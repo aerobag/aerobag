@@ -147,11 +147,13 @@ private fun regionDisplayName(regions: List<WireCatalogRegion>, regionId: WireRe
 private fun familyDisplayName(families: List<WireResourceFamily>, familyId: String): String =
     families.firstOrNull { it.id == familyId }?.display_name ?: familyId
 
+private const val RASTER_BASEMAP_MAX_DISPLAY_ZOOM = 12.5
+
 private fun minZoomForLevels(levels: List<TileLevelAvailability>): Double =
     (levels.minOfOrNull { it.zoom } ?: 4) - 2.8
 
-private fun maxZoomForLevels(levels: List<TileLevelAvailability>): Double =
-    (levels.maxOfOrNull { it.zoom } ?: 10) + 0.8
+private fun maxZoomForLevels(@Suppress("UNUSED_PARAMETER") levels: List<TileLevelAvailability>): Double =
+    RASTER_BASEMAP_MAX_DISPLAY_ZOOM
 
 private fun tileSizeForFamily(): Int = 512
 

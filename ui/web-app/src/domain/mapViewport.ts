@@ -60,7 +60,7 @@ export function preserveViewportForMap(
 }
 
 export function clampZoom(zoom: number, mapView: MapView): number {
-  return Math.min(mapView.max_zoom + 1, Math.max(mapView.min_zoom, zoom));
+  return Math.min(mapView.max_zoom, Math.max(mapView.min_zoom, zoom));
 }
 
 export function latLonToWorld(lat: number, lon: number): { x: number; y: number } {

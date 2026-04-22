@@ -64,7 +64,7 @@ describe("mapViewport", () => {
       chart_family: "sec" as const,
       package_name: "NW_SEC",
       min_zoom: 4.2,
-      max_zoom: 10.8,
+      max_zoom: 12.5,
       initial_viewport: { lat: 44.7, lon: -113.9, zoom: 8 },
       levels: [{ zoom: 10, x_min: 156, x_max: 219, y_tms_min: 636, y_tms_max: 672 }],
     };
@@ -74,7 +74,7 @@ describe("mapViewport", () => {
       chart_family: "sec" as const,
       package_name: "SW_SEC",
       min_zoom: 4.2,
-      max_zoom: 10.8,
+      max_zoom: 12.5,
       initial_viewport: { lat: 32.4, lon: -113.9, zoom: 8 },
       levels: [{ zoom: 10, x_min: 156, x_max: 219, y_tms_min: 582, y_tms_max: 636 }],
     };
@@ -101,7 +101,7 @@ describe("mapViewport", () => {
       storage_kind: "static_product" as const,
       package_name: "shaded-relief-nw",
       min_zoom: 0,
-      max_zoom: 10.8,
+      max_zoom: 12.5,
       initial_viewport: { lat: 45, lon: -122, zoom: 8 },
       levels: [{ zoom: 8, x_min: 40, x_max: 42, y_tms_min: 160, y_tms_max: 168 }],
     };
@@ -124,7 +124,7 @@ describe("mapViewport", () => {
       storage_kind: "static_product" as const,
       package_name: "shaded-relief-nw",
       min_zoom: 0,
-      max_zoom: 10.8,
+      max_zoom: 12.5,
       initial_viewport: { lat: 45, lon: -122, zoom: 7.58 },
       levels: [
         { zoom: 0, x_min: 0, x_max: 0, y_tms_min: 0, y_tms_max: 0 },
@@ -182,5 +182,18 @@ describe("mapViewport", () => {
     expect(preserved.centerWorldX).toBeCloseTo(moved.centerWorldX, 8);
     expect(preserved.centerWorldY).toBeCloseTo(moved.centerWorldY, 8);
     expect(preserved.zoom).toBeCloseTo(moved.zoom, 8);
+  });
+
+  it("clamps zoom to the published display max exactly", () => {
+    const capped = zoomAroundPoint(
+      createInitialViewport(mapView),
+      { ...mapView, max_zoom: 12.5 },
+      { x: 500, y: 400 },
+      1200,
+      900,
+      13.2,
+    );
+
+    expect(capped.zoom).toBe(12.5);
   });
 });

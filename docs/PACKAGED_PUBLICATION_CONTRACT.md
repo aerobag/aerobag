@@ -37,8 +37,6 @@ Per-cycle manifests:
 
 Per-cycle metadata:
 
-- `catalog_YYCC.json`
-
 Per-cycle data packages:
 
 - `data_YYCC_VV_<sha256>.zip`
@@ -95,7 +93,6 @@ current_artifacts_YYYYMMDD.json
     └── obstacles_<sha256>.zip
 
 bundle_cycle_YYCC_VV_<sha256>.json
-├── catalog_YYCC.json
 ├── data_YYCC_VV_<sha256>.zip
 └── packages[]
     ├── sec_*.zip
@@ -139,7 +136,6 @@ Examples of top-level unpacked files that remain files:
 
 - `current_artifacts_YYYYMMDD.json`
 - `bundle_cycle_YYCC_VV_<sha256>.json`
-- `catalog_YYCC.json`
 
 The unpacked contract allows a consumer to browse the exact published content shape
 without re-extracting zip files locally.
@@ -152,7 +148,6 @@ Published manifests must reference sibling filenames only.
 Good:
 
 - `bundle_cycle_2604_01_<sha256>.json`
-- `catalog_2604.json`
 - `data_2604_01_<sha256>.zip`
 - `tpp_ne_2604_01_<sha256>.zip`
 
@@ -198,11 +193,6 @@ It answers:
 - which nav_db package belongs to this cycle
 - which regional chart/CSUP/TPP packages belong to this cycle
 - which ancillary debug/transitional artifacts belong to this cycle
-
-
-### `catalog_YYCC.json`
-
-Per-cycle leaf metadata artifact for catalog-style browsing.
 
 
 ### `nav_db_YYCC_VV_<sha256>.zip`

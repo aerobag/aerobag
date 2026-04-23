@@ -4024,8 +4024,6 @@ fn build_bundle_manifest(
         config,
         output_path(resource_index_record, "resource_index")?,
     );
-    let catalog_path =
-        resolve_artifact_path(config, output_path(resource_index_record, "catalog")?);
     let data_zip_path = resolve_artifact_path(config, output_path(data_record, "zip")?);
     let vectors_zip_path = resolve_artifact_path(config, output_path(vectors_record, "zip")?);
     let index: ResourceIndex = serde_json::from_slice(
@@ -4117,10 +4115,8 @@ fn build_bundle_manifest(
     )?;
     package_artifacts.push(nav_db_artifacts.package.clone());
 
-    let catalog_artifact =
-        publish_bundle_artifact(config, &catalog_path, &format!("catalog_{cycle}.json"))?;
     let data_artifact = publish_bundle_artifact(config, &data_zip_path, &data_filename)?;
-    let ancillary = vec![catalog_artifact, data_artifact];
+    let ancillary = vec![data_artifact];
 
     Ok(BundleManifest {
         schema_version: 2,
@@ -9831,20 +9827,6 @@ fn validate_bundle_contract_split(bundle: &BundleManifest, bundle_path: &Path) -
         );
     }
 
-    let ancillary_filenames = bundle
-        .ancillary
-        .iter()
-        .map(|artifact| artifact.filename.as_str())
-        .collect::<BTreeSet<_>>();
-    for required in [format!("catalog_{}.json", bundle.cycle)] {
-        if !ancillary_filenames.contains(required.as_str()) {
-            bail!(
-                "bundle {} missing ancillary artifact {}",
-                bundle_path.display(),
-                required
-            );
-        }
-    }
     if !bundle
         .ancillary
         .iter()
@@ -9881,6 +9863,16 @@ fn validate_bundle_contract_split(bundle: &BundleManifest, bundle_path: &Path) -
                 forbidden
             );
         }
+    }
+    if bundle
+        .ancillary
+        .iter()
+        .any(|artifact| artifact.filename.starts_with("catalog_"))
+    {
+        bail!(
+            "bundle {} still publishes catalog in ancillary[]",
+            bundle_path.display()
+        );
     }
     if bundle
         .ancillary

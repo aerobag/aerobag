@@ -2553,6 +2553,10 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 static_products,
                                 fast_products,
                             )?;
+                            cleanup_published_packaged_root(
+                                &config.build_root,
+                                &current_artifacts_path,
+                            )?;
                             let diagnostic_error_count =
                                 diagnostics.as_ref().map(|value| value.error_count).unwrap_or(0);
                             let completion_detail = if diagnostic_error_count > 0 {
@@ -2863,6 +2867,7 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
             .context("failed to encode current artifacts manifest")?,
     )
     .with_context(|| format!("failed to write {}", output_path.display()))?;
+    cleanup_published_packaged_root(&config.build_root, &output_path)?;
 
     sync_fast_subset_unpacked(
         &config.build_root,
@@ -2973,6 +2978,7 @@ fn sync_fast_subset_unpacked(
             Some(&product.checksum_sha256),
         )?;
     }
+    cleanup_published_unpacked_root(&unpacked_root, current_artifacts_path)?;
     Ok(())
 }
 
@@ -6517,6 +6523,7 @@ fn sync_product_level_unpacked(
             Some(&artifact.checksum_sha256),
         )?;
     }
+    cleanup_published_unpacked_root(&unpacked_root, current_artifacts_path)?;
     Ok(())
 }
 
@@ -9505,16 +9512,139 @@ fn write_product_build_diagnostics(
     }))
 }
 
+fn cleanup_published_packaged_root(
+    packaged_root: &Path,
+    current_artifacts_path: &Path,
+) -> anyhow::Result<()> {
+    let keep = collect_reachable_packaged_entries(packaged_root, current_artifacts_path)?;
+    prune_root_to_keep_set(packaged_root, &keep)
+}
+
+fn cleanup_published_unpacked_root(
+    unpacked_root: &Path,
+    current_artifacts_path: &Path,
+) -> anyhow::Result<()> {
+    let keep = collect_reachable_unpacked_entries(current_artifacts_path)?;
+    prune_root_to_keep_set(unpacked_root, &keep)
+}
+
+fn collect_reachable_packaged_entries(
+    packaged_root: &Path,
+    current_artifacts_path: &Path,
+) -> anyhow::Result<BTreeSet<String>> {
+    let current = load_current_artifacts_manifest(current_artifacts_path)?;
+    let mut keep = BTreeSet::new();
+    keep.insert(filename_string(current_artifacts_path)?);
+    if let Some(diagnostics) = &current.diagnostics {
+        keep.insert(diagnostics.filename.clone());
+    }
+    keep.insert(current.obstacles.filename.clone());
+    for product in &current.static_products {
+        keep.insert(product.filename.clone());
+    }
+    for product in &current.fast_products {
+        keep.insert(product.filename.clone());
+    }
+    for bundle_ref in &current.bundles {
+        keep.insert(bundle_ref.filename.clone());
+        let bundle = load_bundle_manifest(&packaged_root.join(&bundle_ref.filename))?;
+        for artifact in &bundle.ancillary {
+            keep.insert(artifact.filename.clone());
+        }
+        for package in &bundle.packages {
+            keep.insert(package.filename.clone());
+        }
+    }
+    Ok(keep)
+}
+
+fn collect_reachable_unpacked_entries(
+    current_artifacts_path: &Path,
+) -> anyhow::Result<BTreeSet<String>> {
+    let current = load_current_artifacts_manifest(current_artifacts_path)?;
+    let mut keep = BTreeSet::new();
+    keep.insert(filename_string(current_artifacts_path)?);
+    if let Some(diagnostics) = &current.diagnostics {
+        keep.insert(diagnostics.filename.clone());
+    }
+    keep.insert(zip_stem(&current.obstacles.filename)?);
+    for product in &current.static_products {
+        keep.insert(zip_stem(&product.filename)?);
+    }
+    for product in &current.fast_products {
+        keep.insert(zip_stem(&product.filename)?);
+    }
+    for bundle_ref in &current.bundles {
+        keep.insert(bundle_ref.filename.clone());
+        let bundle_path = current_artifacts_path
+            .parent()
+            .context("current artifacts path missing parent")?
+            .join(&bundle_ref.filename);
+        let bundle = load_bundle_manifest(&bundle_path)?;
+        for artifact in &bundle.ancillary {
+            if artifact.filename.ends_with(".zip") {
+                keep.insert(zip_stem(&artifact.filename)?);
+            } else {
+                keep.insert(artifact.filename.clone());
+            }
+        }
+        for package in &bundle.packages {
+            keep.insert(zip_stem(&package.filename)?);
+        }
+    }
+    Ok(keep)
+}
+
+fn prune_root_to_keep_set(root: &Path, keep: &BTreeSet<String>) -> anyhow::Result<()> {
+    if !root.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy().to_string();
+        if keep.contains(&name) {
+            continue;
+        }
+        if path.is_dir() {
+            fs::remove_dir_all(&path)
+                .with_context(|| format!("failed to remove stale directory {}", path.display()))?;
+        } else {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove stale file {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn load_current_artifacts_manifest(path: &Path) -> anyhow::Result<CurrentArtifactsManifest> {
+    serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))
+}
+
+fn load_bundle_manifest(path: &Path) -> anyhow::Result<BundleManifest> {
+    serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))
+}
+
+fn filename_string(path: &Path) -> anyhow::Result<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned)
+        .context("path has no filename")
+}
+
 fn validate_packaged_contract(
     packaged_root: &Path,
     current_artifacts_path: &Path,
 ) -> anyhow::Result<()> {
     validate_no_internal_paths_in_json(current_artifacts_path)?;
-    let current: CurrentArtifactsManifest = serde_json::from_slice(
-        &fs::read(current_artifacts_path)
-            .with_context(|| format!("failed to read {}", current_artifacts_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", current_artifacts_path.display()))?;
+    let current = load_current_artifacts_manifest(current_artifacts_path)?;
 
     for bundle in &current.bundles {
         validate_public_filename(&bundle.filename, "current_artifacts.bundles[].filename")?;
@@ -9630,11 +9760,7 @@ fn validate_unpacked_contract(
     ensure_public_file_exists(&unpacked_current_path)?;
     validate_no_internal_paths_in_json(&unpacked_current_path)?;
 
-    let current: CurrentArtifactsManifest = serde_json::from_slice(
-        &fs::read(current_artifacts_path)
-            .with_context(|| format!("failed to read {}", current_artifacts_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", current_artifacts_path.display()))?;
+    let current = load_current_artifacts_manifest(current_artifacts_path)?;
 
     for bundle in &current.bundles {
         let unpacked_bundle_path = unpacked_root.join(&bundle.filename);

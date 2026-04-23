@@ -799,6 +799,8 @@ export default function App() {
   const [debugTileLabels, setDebugTileLabels] = useState(
     () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugTiles"),
   );
+  const [debugShowVectorLayer, setDebugShowVectorLayer] = useState(true);
+  const [debugShowNexradLayer, setDebugShowNexradLayer] = useState(false);
   const persistedUiState = useMemo(readPersistedWebUiState, []);
   const [page, setPage] = useState<AppPage>(persistedUiState.page ?? "map");
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
@@ -1334,6 +1336,10 @@ export default function App() {
           uptimeLabel={uptimeLabel}
           debugTileLabels={debugTileLabels}
           onDebugTileLabelsChange={setDebugTileLabels}
+          debugShowVectorLayer={debugShowVectorLayer}
+          onDebugShowVectorLayerChange={setDebugShowVectorLayer}
+          debugShowNexradLayer={debugShowNexradLayer}
+          onDebugShowNexradLayerChange={setDebugShowNexradLayer}
           selectedMapId={selectedMapId}
           mapViews={mapViews}
           selectedMap={selectedMap}
@@ -1617,6 +1623,10 @@ function MapPage(props: {
   uptimeLabel: string;
   debugTileLabels: boolean;
   onDebugTileLabelsChange: (enabled: boolean) => void;
+  debugShowVectorLayer: boolean;
+  onDebugShowVectorLayerChange: (enabled: boolean) => void;
+  debugShowNexradLayer: boolean;
+  onDebugShowNexradLayerChange: (enabled: boolean) => void;
   selectedMapId: string;
   mapViews: MapViewOptionJson[];
   selectedMap: MapViewOptionJson;
@@ -1648,6 +1658,10 @@ function MapPage(props: {
     appCoreAdapter,
     debugTileLabels,
     onDebugTileLabelsChange,
+    debugShowVectorLayer,
+    onDebugShowVectorLayerChange,
+    debugShowNexradLayer,
+    onDebugShowNexradLayerChange,
     page,
     pageHistory,
     uptimeLabel,
@@ -1935,6 +1949,12 @@ function MapPage(props: {
   }, [flightPlanRoute, surfaceSize.height, surfaceSize.width, viewport]);
 
   useEffect(() => {
+    if (!debugShowNexradLayer) {
+      setNexradStatus({ state: "unavailable", reason: "hidden" });
+      setNexradFrames([]);
+      setNexradFrameIndex(0);
+      return;
+    }
     const controller = new AbortController();
     let cancelled = false;
     setNexradStatus({ state: "loading" });
@@ -1997,7 +2017,7 @@ function MapPage(props: {
       cancelled = true;
       controller.abort();
     };
-  }, []);
+  }, [debugShowNexradLayer]);
 
   useEffect(() => {
     if (nexradFrames.length <= 1) {
@@ -2255,6 +2275,20 @@ function MapPage(props: {
 
   useEffect(() => {
     if (!mapIsVisible) {
+      return;
+    }
+    if (!debugShowVectorLayer) {
+      setMapOverlay({
+        needed_point_tiles: [],
+        needed_airspace_ref_tiles: [],
+        needed_airspace_features: [],
+        needed_airspace_label_tiles: [],
+        visible_features: [],
+        airspace_paths: [],
+        airspace_labels: [],
+        warnings: [],
+      });
+      setMapOverlayViewport(null);
       return;
     }
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -2535,7 +2569,7 @@ function MapPage(props: {
       cancelled = true;
       controller.abort();
     };
-  }, [mapIsVisible, onDebugWarning, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+  }, [debugShowVectorLayer, mapIsVisible, onDebugWarning, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
 
   const overlayTransform = useMemo(() => {
     if (!mapOverlayViewport) {
@@ -3166,6 +3200,22 @@ function MapPage(props: {
                 onChange={(event) => onDebugTileLabelsChange(event.currentTarget.checked)}
               />
               tile labels
+            </label>
+            <label className="debugToggle">
+              <input
+                type="checkbox"
+                checked={debugShowVectorLayer}
+                onChange={(event) => onDebugShowVectorLayerChange(event.currentTarget.checked)}
+              />
+              vector layer
+            </label>
+            <label className="debugToggle">
+              <input
+                type="checkbox"
+                checked={debugShowNexradLayer}
+                onChange={(event) => onDebugShowNexradLayerChange(event.currentTarget.checked)}
+              />
+              nexrad
             </label>
           </DebugDock>
         </div>

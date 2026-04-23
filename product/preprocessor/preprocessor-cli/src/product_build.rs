@@ -53,6 +53,8 @@ use zip::{
 
 use crate::emit_source_urls::{cycle_effective_date, discover_published_cycles, emit_source_urls};
 
+const PACKAGE_CYCLE_VERSION: &str = "01";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProductBuildProfile {
     Validation,
@@ -201,8 +203,18 @@ pub struct BuildCacheGcBucket {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BundleManifest {
     schema_version: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    bundle_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    bundle_type: String,
     cycle: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    cycle_version: String,
     generated_at_utc: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    effective_date: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    expiration_date: String,
     start_valid: String,
     end_valid: String,
     catalog: BundleArtifact,
@@ -212,6 +224,8 @@ struct BundleManifest {
     data: BundleArtifact,
     vectors: BundleArtifact,
     packages: Vec<BundlePackageArtifact>,
+    #[serde(default)]
+    ancillary: Vec<BundleArtifact>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,7 +272,15 @@ struct BuildDiagnosticEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CurrentBundleEntry {
     filename: String,
+    #[serde(default)]
+    relative_path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    bundle_type: String,
     cycle: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    cycle_version: String,
     start_valid: String,
     end_valid: String,
     checksum_sha256: String,
@@ -318,6 +340,10 @@ struct BundlePackageArtifact {
     region_id: String,
     filename: String,
     relative_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cycle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cycle_version: Option<String>,
     checksum_sha256: String,
     size_bytes: u64,
     effective_date: Option<String>,
@@ -390,6 +416,12 @@ fn node_output_file_detail(record: &NodeRecord, key: &str) -> (Option<String>, O
         .get(key)
         .map(|detail| (detail.sha256.clone(), detail.size_bytes))
         .unwrap_or((None, None))
+}
+
+fn output_sha_or_hash(record: &NodeRecord, key: &str, path: &Path) -> anyhow::Result<String> {
+    Ok(node_output_file_detail(record, key)
+        .0
+        .unwrap_or(hash_file(path)?))
 }
 
 enum NodeCacheState {
@@ -1963,15 +1995,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 &shaded_relief_tile_levels,
                             )?;
                             let bundle_manifest_path =
-                                cycle_config.build_root.join(format!("bundle_{source_urls}.json"));
-                            fs::write(
-                                &bundle_manifest_path,
-                                serde_json::to_vec_pretty(&bundle_manifest)
-                                    .context("failed to encode bundle manifest")?,
-                            )
-                            .with_context(|| {
-                                format!("failed to write {}", bundle_manifest_path.display())
-                            })?;
+                                write_hashed_bundle_manifest(&cycle_config.build_root, &bundle_manifest)?;
                             validate_bundle_manifest(&cycle_config.build_root, &bundle_manifest_path)?;
                             sync_unpacked_metadata(
                                 &cycle_config,
@@ -3928,15 +3952,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         let shaded_relief_tile_levels = Vec::new();
         let bundle_manifest =
             build_bundle_manifest(config, &build_manifest, &shaded_relief_tile_levels)?;
-        let bundle_manifest_path = config
-            .build_root
-            .join(format!("bundle_{bundle_cycle}.json"));
-        fs::write(
-            &bundle_manifest_path,
-            serde_json::to_vec_pretty(&bundle_manifest)
-                .context("failed to encode bundle manifest")?,
-        )
-        .with_context(|| format!("failed to write {}", bundle_manifest_path.display()))?;
+        let bundle_manifest_path =
+            write_hashed_bundle_manifest(&config.build_root, &bundle_manifest)?;
         validate_bundle_manifest(&config.build_root, &bundle_manifest_path)?;
         sync_unpacked_metadata(
             config,
@@ -4031,21 +4048,25 @@ fn build_bundle_manifest(
         .or_else(|| index.temporal_summary.expiration_dates.first().cloned())
         .context("resource-index missing end-valid date")?;
     let cycle = build_manifest.cycle.clone();
-    let data_filename = format!("data_{cycle}.zip");
-    let vectors_filename = format!("vectors_data_{cycle}.zip");
+    let data_sha256 = output_sha_or_hash(data_record, "zip", &data_zip_path)?;
+    let vectors_sha256 = output_sha_or_hash(vectors_record, "zip", &vectors_zip_path)?;
+    let data_filename = format!("data_{cycle}_{PACKAGE_CYCLE_VERSION}_{data_sha256}.zip");
+    let vectors_filename =
+        format!("vectors_data_{cycle}_{PACKAGE_CYCLE_VERSION}_{vectors_sha256}.zip");
 
     let package_artifacts = index
         .packages
         .iter()
         .map(|package| {
             let package_path = resolve_bundle_package_source_path(config, build_manifest, package)?;
-            let filename = canonical_package_filename(
+            let filename = canonical_package_filename_hashed(
                 &package.family_id,
                 &package.region_id,
                 Path::new(&package_path)
                     .file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or_default(),
+                &package.checksum_sha256,
             )?;
             publish_flat_artifact(&package_path, &config.build_root.join(&filename))?;
             Ok(BundlePackageArtifact {
@@ -4054,6 +4075,14 @@ fn build_bundle_manifest(
                 region_id: package.region_id.clone(),
                 filename: filename.clone(),
                 relative_path: filename,
+                cycle: package_version_from_filename(
+                    Path::new(&package_path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default(),
+                )
+                .ok(),
+                cycle_version: Some(PACKAGE_CYCLE_VERSION.to_string()),
                 checksum_sha256: package.checksum_sha256.clone(),
                 size_bytes: fs::metadata(&package_path)
                     .with_context(|| format!("failed to stat {}", package_path.display()))?
@@ -4082,11 +4111,16 @@ fn build_bundle_manifest(
     )?;
 
     Ok(BundleManifest {
-        schema_version: 1,
+        schema_version: 2,
+        bundle_id: format!("cycle_{cycle}_{PACKAGE_CYCLE_VERSION}"),
+        bundle_type: "cycle".to_string(),
         cycle: cycle.clone(),
+        cycle_version: PACKAGE_CYCLE_VERSION.to_string(),
         generated_at_utc: build_manifest.generated_at_utc.clone(),
-        start_valid,
-        end_valid,
+        effective_date: start_valid.clone(),
+        expiration_date: end_valid.clone(),
+        start_valid: start_valid.clone(),
+        end_valid: end_valid.clone(),
         catalog: publish_bundle_artifact(config, &catalog_path, &format!("catalog_{cycle}.json"))?,
         resource_index: bundle_artifact(
             &published_resource_index_path,
@@ -4096,6 +4130,14 @@ fn build_bundle_manifest(
         data: publish_bundle_artifact(config, &data_zip_path, &data_filename)?,
         vectors: publish_bundle_artifact(config, &vectors_zip_path, &vectors_filename)?,
         packages: package_artifacts,
+        ancillary: vec![
+            bundle_artifact(
+                &published_resource_index_path,
+                &format!("resource_index_{cycle}.json"),
+            )?,
+            publish_bundle_artifact(config, &catalog_path, &format!("catalog_{cycle}.json"))?,
+            publish_bundle_artifact(config, &data_zip_path, &data_filename)?,
+        ],
     })
 }
 
@@ -4525,9 +4567,7 @@ fn build_nav_kv_airport_navref_pairs(
             "navref airport position",
         )?);
         let info = runway_info.get(&id.trim().to_ascii_uppercase());
-        let has_water_runway = info
-            .map(|info| info.has_water_runway)
-            .unwrap_or(false)
+        let has_water_runway = info.map(|info| info.has_water_runway).unwrap_or(false)
             || kind.trim().eq_ignore_ascii_case("SEAPLANE BAS");
         pairs.push(json_pair(
             format!("navref/symbol/airport/{key_id}"),
@@ -6024,6 +6064,67 @@ fn sync_unpacked_zip_from_source(
     Ok((false, unpack_dir))
 }
 
+fn sync_unpacked_dir_from_existing(
+    source_dir: &Path,
+    unpacked_root: &Path,
+    published_filename: &str,
+    known_sha256: &str,
+) -> anyhow::Result<(bool, PathBuf)> {
+    let unpack_dir = unpacked_target_dir(unpacked_root, published_filename)?;
+    let marker_path = unpacked_marker_path(unpacked_root, published_filename)?;
+    if unpack_dir.is_dir()
+        && fs::read_to_string(&marker_path)
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            == Some(known_sha256)
+    {
+        return Ok((true, unpack_dir));
+    }
+    if unpack_dir.exists() {
+        fs::remove_dir_all(&unpack_dir)
+            .with_context(|| format!("failed to remove {}", unpack_dir.display()))?;
+    }
+    hardlink_dir_recursive(source_dir, &unpack_dir)?;
+    fs::write(&marker_path, format!("{known_sha256}\n"))
+        .with_context(|| format!("failed to write {}", marker_path.display()))?;
+    Ok((false, unpack_dir))
+}
+
+fn hardlink_dir_recursive(source_dir: &Path, output_dir: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    let mut entries = fs::read_dir(source_dir)
+        .with_context(|| format!("failed to read {}", source_dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to iterate {}", source_dir.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let source = entry.path();
+        let output = output_dir.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", source.display()))?;
+        if file_type.is_dir() {
+            hardlink_dir_recursive(&source, &output)?;
+        } else if file_type.is_file() {
+            match fs::hard_link(&source, &output) {
+                Ok(()) => {}
+                Err(_) => {
+                    fs::copy(&source, &output).with_context(|| {
+                        format!(
+                            "failed to copy {} to {}",
+                            source.display(),
+                            output.display()
+                        )
+                    })?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn hardlink_zip_members_from_source_root(
     zip_path: &Path,
     source_root: &Path,
@@ -6104,7 +6205,7 @@ fn resolve_source_member_path(source_root: &Path, member: &str) -> anyhow::Resul
 fn sync_unpacked_metadata(
     config: &ProductBuildConfig,
     bundle_manifest: &BundleManifest,
-    _build_manifest: &BuildManifest,
+    build_manifest: &BuildManifest,
     bundle_manifest_path: &Path,
 ) -> anyhow::Result<()> {
     let unpacked_root = published_unpacked_root(config)?;
@@ -6131,7 +6232,125 @@ fn sync_unpacked_metadata(
             sync_unpacked_file(&config.build_root.join(&page.filename), &unpacked_root)?;
         }
     }
+    sync_cycle_bundle_unpacked_zips(config, bundle_manifest, build_manifest, &unpacked_root)?;
     Ok(())
+}
+
+fn sync_cycle_bundle_unpacked_zips(
+    config: &ProductBuildConfig,
+    bundle_manifest: &BundleManifest,
+    build_manifest: &BuildManifest,
+    unpacked_root: &Path,
+) -> anyhow::Result<()> {
+    let data_record = build_manifest
+        .nodes
+        .iter()
+        .find(|node| node.name == "data")
+        .context("build manifest missing data node")?;
+    let data_zip_path = resolve_artifact_path(config, output_path(data_record, "zip")?);
+    let data_db_path = resolve_artifact_path(config, output_path(data_record, "main_db")?);
+    sync_unpacked_zip_from_source(
+        &config.build_root.join(&bundle_manifest.data.filename),
+        data_db_path.parent().unwrap_or_else(|| Path::new("/")),
+        unpacked_root,
+        &bundle_manifest.data.filename,
+        Some(&bundle_manifest.data.checksum_sha256),
+    )
+    .with_context(|| format!("failed to unpack {}", data_zip_path.display()))?;
+
+    let vectors_record = build_manifest
+        .nodes
+        .iter()
+        .find(|node| node.name == "vectors")
+        .context("build manifest missing vectors node")?;
+    let vectors_zip_path = resolve_artifact_path(config, output_path(vectors_record, "zip")?);
+    sync_unpacked_zip_from_source(
+        &config.build_root.join(&bundle_manifest.vectors.filename),
+        vectors_zip_path.parent().unwrap_or_else(|| Path::new("/")),
+        unpacked_root,
+        &bundle_manifest.vectors.filename,
+        Some(&bundle_manifest.vectors.checksum_sha256),
+    )
+    .with_context(|| format!("failed to unpack {}", vectors_zip_path.display()))?;
+
+    for package in &bundle_manifest.packages {
+        if let Some(cycle) = &package.cycle {
+            let legacy_filename = format!(
+                "{}_{}_{}.zip",
+                package.family_id.replace('-', "_"),
+                package.region_id.to_ascii_lowercase(),
+                cycle
+            );
+            let legacy_dir = unpacked_target_dir(unpacked_root, &legacy_filename)?;
+            let legacy_marker_path = unpacked_marker_path(unpacked_root, &legacy_filename)?;
+            if legacy_dir.is_dir()
+                && fs::read_to_string(&legacy_marker_path)
+                    .ok()
+                    .as_deref()
+                    .map(str::trim)
+                    == Some(package.checksum_sha256.as_str())
+            {
+                sync_unpacked_dir_from_existing(
+                    &legacy_dir,
+                    unpacked_root,
+                    &package.filename,
+                    &package.checksum_sha256,
+                )
+                .with_context(|| {
+                    format!(
+                        "failed to sync hashed unpacked package {} from existing {}",
+                        package.id,
+                        legacy_dir.display()
+                    )
+                })?;
+                continue;
+            }
+        }
+        let Some(package_record) =
+            find_package_node_by_checksum(build_manifest, config, &package.checksum_sha256)?
+        else {
+            continue;
+        };
+        let package_root = match package_record.outputs.get("package_root") {
+            Some(package_root) => resolve_artifact_path(config, package_root),
+            None => {
+                let zip_path = resolve_artifact_path(config, output_path(package_record, "zip")?);
+                zip_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("/"))
+                    .to_path_buf()
+            }
+        };
+        sync_unpacked_zip_from_source(
+            &config.build_root.join(&package.filename),
+            &package_root,
+            unpacked_root,
+            &package.filename,
+            Some(&package.checksum_sha256),
+        )
+        .with_context(|| format!("failed to unpack package {}", package.id))?;
+    }
+    Ok(())
+}
+
+fn find_package_node_by_checksum<'a>(
+    build_manifest: &'a BuildManifest,
+    config: &ProductBuildConfig,
+    checksum_sha256: &str,
+) -> anyhow::Result<Option<&'a NodeRecord>> {
+    for node in &build_manifest.nodes {
+        if !node.outputs.contains_key("zip") {
+            continue;
+        }
+        let zip_path = resolve_artifact_path(config, output_path(node, "zip")?);
+        let node_sha256 = node_output_file_detail(node, "zip")
+            .0
+            .unwrap_or(hash_file(&zip_path)?);
+        if node_sha256 == checksum_sha256 {
+            return Ok(Some(node));
+        }
+    }
+    Ok(None)
 }
 
 fn sync_unpacked_file(source_path: &Path, unpacked_root: &Path) -> anyhow::Result<()> {
@@ -8904,7 +9123,7 @@ fn build_current_bundle_entries(
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("bundle_") && name.ends_with(".json"))
+                .map(|name| name.starts_with("bundle_cycle_") && name.ends_with(".json"))
                 .unwrap_or(false)
         })
         .collect::<Vec<_>>();
@@ -8921,17 +9140,29 @@ fn build_current_bundle_entries(
             .get("cycle")
             .and_then(|value| value.as_str())
             .ok_or_else(|| anyhow::anyhow!("bundle manifest missing top-level cycle"))?;
-        let file_cycle = bundle_path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .and_then(|stem| stem.strip_prefix("bundle_"))
-            .unwrap_or("unknown");
-        if bundle_cycle != file_cycle {
+        let bundle_cycle_version = bundle_manifest
+            .get("cycle_version")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let (file_cycle, file_cycle_version, file_hash) =
+            parse_cycle_bundle_filename(&bundle_path)?;
+        if bundle_cycle != file_cycle || bundle_cycle_version != file_cycle_version {
             anyhow::bail!(
-                "bundle cycle mismatch for {}: payload cycle {} != filename cycle {}",
+                "bundle cycle mismatch for {}: payload cycle {}_{} != filename cycle {}_{}",
                 bundle_path.display(),
                 bundle_cycle,
-                file_cycle
+                bundle_cycle_version,
+                file_cycle,
+                file_cycle_version
+            );
+        }
+        let bundle_sha256 = hash_file(&bundle_path)?;
+        if bundle_sha256 != file_hash {
+            anyhow::bail!(
+                "bundle hash mismatch for {}: filename hash {} != content hash {}",
+                bundle_path.display(),
+                file_hash,
+                bundle_sha256
             );
         }
         let start_valid = bundle_manifest
@@ -8953,16 +9184,48 @@ fn build_current_bundle_entries(
                 .and_then(|name| name.to_str())
                 .unwrap_or_default()
                 .to_string(),
+            relative_path: bundle_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            id: format!("cycle_{bundle_cycle}_{bundle_cycle_version}"),
+            bundle_type: "cycle".to_string(),
             cycle: bundle_cycle.to_string(),
+            cycle_version: bundle_cycle_version.to_string(),
             start_valid: start_valid.to_string(),
             end_valid: end_valid.to_string(),
-            checksum_sha256: hash_file(&bundle_path)?,
+            checksum_sha256: bundle_sha256,
             size_bytes: fs::metadata(&bundle_path)
                 .with_context(|| format!("failed to stat {}", bundle_path.display()))?
                 .len(),
         });
     }
     Ok(bundles)
+}
+
+fn parse_cycle_bundle_filename(path: &Path) -> anyhow::Result<(String, String, String)> {
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("bundle path has no filename: {}", path.display()))?;
+    let stem = filename
+        .strip_suffix(".json")
+        .ok_or_else(|| anyhow::anyhow!("bundle filename does not end in .json: {filename}"))?;
+    let rest = stem.strip_prefix("bundle_cycle_").ok_or_else(|| {
+        anyhow::anyhow!("bundle filename must start with bundle_cycle_: {filename}")
+    })?;
+    let mut parts = rest.rsplitn(3, '_').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        anyhow::bail!("bundle filename must be bundle_cycle_YYCC_VV_<sha256>.json: {filename}");
+    }
+    let hash = parts.remove(0).to_string();
+    let version = parts.remove(0).to_string();
+    let cycle = parts.remove(0).to_string();
+    if hash.len() != 64 || !hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        anyhow::bail!("bundle filename has invalid sha256 suffix: {filename}");
+    }
+    Ok((cycle, version, hash))
 }
 
 fn write_current_artifacts_manifest(
@@ -9107,8 +9370,22 @@ fn validate_packaged_contract(
 
     for bundle in &current.bundles {
         validate_public_filename(&bundle.filename, "current_artifacts.bundles[].filename")?;
+        if !bundle.relative_path.is_empty() {
+            validate_public_filename(
+                &bundle.relative_path,
+                "current_artifacts.bundles[].relative_path",
+            )?;
+            if bundle.filename != bundle.relative_path {
+                bail!(
+                    "bundle filename/relative_path mismatch in current_artifacts: {} != {}",
+                    bundle.filename,
+                    bundle.relative_path
+                );
+            }
+        }
         let bundle_path = packaged_root.join(&bundle.filename);
         ensure_public_file_exists(&bundle_path)?;
+        validate_embedded_sha256_filename(&bundle.filename, &bundle.checksum_sha256)?;
         validate_bundle_manifest(packaged_root, &bundle_path)?;
     }
     if let Some(diagnostics) = &current.diagnostics {
@@ -9145,6 +9422,16 @@ fn validate_packaged_contract(
 
 fn validate_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow::Result<()> {
     validate_no_internal_paths_in_json(bundle_path)?;
+    let (_, _, filename_hash) = parse_cycle_bundle_filename(bundle_path)?;
+    let bundle_hash = hash_file(bundle_path)?;
+    if bundle_hash != filename_hash {
+        bail!(
+            "bundle filename hash mismatch for {}: filename {} != content {}",
+            bundle_path.display(),
+            filename_hash,
+            bundle_hash
+        );
+    }
     let bundle: BundleManifest = serde_json::from_slice(
         &fs::read(bundle_path)
             .with_context(|| format!("failed to read {}", bundle_path.display()))?,
@@ -9168,6 +9455,16 @@ fn validate_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow:
     for package in &bundle.packages {
         validate_public_filename(&package.filename, "bundle.packages[].filename")?;
         validate_public_filename(&package.relative_path, "bundle.packages[].relative_path")?;
+        validate_embedded_sha256_filename(&package.filename, &package.checksum_sha256)?;
+        if package.cycle.is_some()
+            && package.cycle_version.as_deref() != Some(PACKAGE_CYCLE_VERSION)
+        {
+            bail!(
+                "package {} has unexpected cycle_version {:?}",
+                package.id,
+                package.cycle_version
+            );
+        }
         if package.filename != package.relative_path {
             bail!(
                 "package filename/relative_path mismatch in {}: {} != {}",
@@ -9177,6 +9474,9 @@ fn validate_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow:
             );
         }
         ensure_public_file_exists(&packaged_root.join(&package.filename))?;
+    }
+    for artifact in &bundle.ancillary {
+        validate_bundle_artifact_ref(packaged_root, artifact)?;
     }
     Ok(())
 }
@@ -9244,6 +9544,7 @@ fn validate_bundle_artifact_ref(
 ) -> anyhow::Result<()> {
     validate_public_filename(&artifact.filename, "bundle artifact filename")?;
     validate_public_filename(&artifact.relative_path, "bundle artifact relative_path")?;
+    validate_embedded_sha256_filename(&artifact.filename, &artifact.checksum_sha256)?;
     if artifact.filename != artifact.relative_path {
         bail!(
             "bundle artifact filename/relative_path mismatch: {} != {}",
@@ -9252,6 +9553,23 @@ fn validate_bundle_artifact_ref(
         );
     }
     ensure_public_file_exists(&packaged_root.join(&artifact.filename))
+}
+
+fn validate_embedded_sha256_filename(filename: &str, checksum_sha256: &str) -> anyhow::Result<()> {
+    let stem = Path::new(filename)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| anyhow::anyhow!("filename has no stem: {filename}"))?;
+    if let Some(suffix) = stem.rsplit('_').next() {
+        if suffix.len() == 64 && suffix.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            if suffix != checksum_sha256 {
+                bail!(
+                    "embedded sha256 mismatch for {filename}: filename {suffix} != checksum {checksum_sha256}"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_public_filename(value: &str, field: &str) -> anyhow::Result<()> {
@@ -9812,6 +10130,25 @@ fn write_published_json<T: Serialize>(published_path: &Path, value: &T) -> anyho
     Ok(published_path.to_path_buf())
 }
 
+fn write_hashed_bundle_manifest(
+    build_root: &Path,
+    bundle_manifest: &BundleManifest,
+) -> anyhow::Result<PathBuf> {
+    let bytes =
+        serde_json::to_vec_pretty(bundle_manifest).context("failed to encode bundle manifest")?;
+    let sha256 = Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let bundle_manifest_path = build_root.join(format!(
+        "bundle_cycle_{}_{}_{sha256}.json",
+        bundle_manifest.cycle, bundle_manifest.cycle_version
+    ));
+    fs::write(&bundle_manifest_path, bytes)
+        .with_context(|| format!("failed to write {}", bundle_manifest_path.display()))?;
+    Ok(bundle_manifest_path)
+}
+
 fn rewrite_public_resource_index(
     index: &ResourceIndex,
     data_filename: &str,
@@ -9862,20 +10199,42 @@ fn canonical_package_filename(
     region_id: &str,
     original_filename: &str,
 ) -> anyhow::Result<String> {
-    let cycle = Path::new(original_filename)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .and_then(|stem| stem.rsplit('_').next())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!("failed to derive cycle from package filename {original_filename}")
-        })?;
+    let cycle = package_version_from_filename(original_filename)?;
     Ok(format!(
         "{}_{}_{}.zip",
         family_id.replace('-', "_"),
         region_id.to_ascii_lowercase(),
         cycle
     ))
+}
+
+fn canonical_package_filename_hashed(
+    family_id: &str,
+    region_id: &str,
+    original_filename: &str,
+    checksum_sha256: &str,
+) -> anyhow::Result<String> {
+    let cycle = package_version_from_filename(original_filename)?;
+    Ok(format!(
+        "{}_{}_{}_{}_{}.zip",
+        family_id.replace('-', "_"),
+        region_id.to_ascii_lowercase(),
+        cycle,
+        PACKAGE_CYCLE_VERSION,
+        checksum_sha256
+    ))
+}
+
+fn package_version_from_filename(original_filename: &str) -> anyhow::Result<String> {
+    Path::new(original_filename)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.rsplit('_').next())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            anyhow::anyhow!("failed to derive cycle from package filename {original_filename}")
+        })
 }
 
 impl ProductBuildConfig {
@@ -11180,14 +11539,13 @@ fn build_vectors_node(
     let zip_path = output_dir.join(format!("vectors_{version_label}.zip"));
     let stats_path = output_dir.join("stats.json");
     let errors_path = output_dir.join("errors.json");
-    let _build_lock =
-        match claim_or_wait_for_node(
-            &prepared,
-            &[zip_path.clone(), stats_path.clone(), errors_path.clone()],
-        )? {
-            NodeCacheState::CacheHit(record) => return Ok(record),
-            NodeCacheState::Build(lock) => lock,
-        };
+    let _build_lock = match claim_or_wait_for_node(
+        &prepared,
+        &[zip_path.clone(), stats_path.clone(), errors_path.clone()],
+    )? {
+        NodeCacheState::CacheHit(record) => return Ok(record),
+        NodeCacheState::Build(lock) => lock,
+    };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     let result = build_vectors_dataset(&request)?;
@@ -12442,7 +12800,10 @@ mod tests {
         );
         assert_eq!(shaded["map_view"]["tile_path_template"], "{z}/{x}/{y}.webp");
         assert_eq!(shaded["map_view"]["storage_kind"], "static_product");
-        assert_eq!(shaded["map_view"]["max_zoom"], RASTER_BASEMAP_MAX_DISPLAY_ZOOM);
+        assert_eq!(
+            shaded["map_view"]["max_zoom"],
+            RASTER_BASEMAP_MAX_DISPLAY_ZOOM
+        );
         assert_eq!(shaded["map_view"]["initial_viewport"]["lat"], 45.0);
         let levels = shaded["map_view"]["levels"]
             .as_array()

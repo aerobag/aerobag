@@ -69,8 +69,8 @@ metadata:
 
 ## Publication
 
-`current_artifacts_YYYYMMDD.json` carries one `static_products[]` entry per
-published terrain region. The product ids are shaped as:
+The current cycle bundle carries one stable package row per published terrain
+region. The product ids are shaped as:
 
 ```text
 terrain-ak
@@ -112,11 +112,10 @@ tiles generated down to z0 for scalable zoomed-out rendering. Tiles are WebP
 RGBA because this is a visual background product and should use the same compact
 image format as the existing chart tile tree.
 
-Terrain refresh state lives in `current_artifacts`, not inside the terrain ZIP.
+Terrain refresh state lives in the cycle bundle package row, not inside the terrain ZIP.
 That keeps product identity stable: if a later poll checks TNMAccess/DEM inputs
 and the content is unchanged, the terrain ZIP filename can remain identical
-while `current_artifacts.static_products[]` records a fresh
-`source_fetched_at_utc`.
+while the cycle bundle package row records a fresh `source_fetched_at_utc`.
 
 Refresh cadence is producer policy, not artifact metadata. A scheduler can
 compare `source_fetched_at_utc` with its configured refresh interval, then run a

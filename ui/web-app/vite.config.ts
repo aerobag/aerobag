@@ -50,15 +50,19 @@ function latestCurrentArtifacts(root: string): string | null {
 const artifactReadRoot = configuredArtifactPath;
 const currentArtifactsPath = latestCurrentArtifacts(artifactReadRoot) ?? path.join(artifactReadRoot, packagedDir, "current_artifacts_missing.json");
 const currentArtifacts = JSON.parse(fs.readFileSync(currentArtifactsPath, "utf8")) as {
-  bundles?: Array<{ filename?: string }>;
-  static_products?: Array<{ id?: string; filename?: string }>;
+  bundles?: Array<{ filename?: string; bundle_type?: string }>;
 };
-const activeBundleFilename = currentArtifacts.bundles?.[currentArtifacts.bundles.length - 1]?.filename ?? "bundle_missing.json";
+const activeCycleBundleFilename = currentArtifacts.bundles?.find((bundle) => bundle.bundle_type === "cycle")?.filename
+  ?? currentArtifacts.bundles?.[0]?.filename
+  ?? "bundle_missing.json";
 const productBuildPath = path.join(
   artifactReadRoot,
   packagedDir,
-  activeBundleFilename,
+  activeCycleBundleFilename,
 );
+const activeCycleBundle = JSON.parse(fs.readFileSync(productBuildPath, "utf8")) as {
+  packages?: Array<{ id?: string; family_id?: string; filename?: string }>;
+};
 function resolvePublishedFilename(rawPath: string): string {
   if (path.isAbsolute(rawPath)) {
     throw new Error(`expected published filename, got absolute path ${rawPath}`);
@@ -180,7 +184,7 @@ function unpackedDirFromRelativeZip(filename: string): string {
 }
 
 function resolveCurrentStaticProductRoot(productId: string): string | null {
-  const product = currentArtifacts.static_products?.find((candidate) => candidate.id === productId);
+  const product = activeCycleBundle.packages?.find((candidate) => candidate.id === productId);
   if (!product?.filename) {
     return null;
   }
@@ -211,7 +215,7 @@ function resolveCurrentFastProductRoot(productId: string): string | null {
 }
 
 function currentStaticProductIdsWithPrefix(prefix: string): string[] {
-  return (currentArtifacts.static_products ?? []).flatMap((product) =>
+  return (activeCycleBundle.packages ?? []).flatMap((product) =>
     product.id?.startsWith(prefix) ? [product.id] : [],
   );
 }

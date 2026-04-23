@@ -88,8 +88,6 @@ current_artifacts_YYYYMMDD.json
 │   ├── tfrs_<sha256>.zip
 │   ├── metars_<sha256>.zip
 │   └── nexrad_<sha256>.zip
-├── static_products[]
-│   └── geo_<sha256>.zip
 └── obstacles
     └── obstacles_<sha256>.zip
 
@@ -247,17 +245,13 @@ It contains Avare-compatible `geo.csv` with one-degree grid rows:
 
 It is listed in the current cycle bundle `packages[]`.
 
-It also remains duplicated in `current_artifacts_YYYYMMDD.json` under `static_products[]`
-as a transitional compatibility surface.
-
 ### `terrain-<region>_<sha256>.zip`
 
 Standalone content-addressed terrain artifact.
 
 It is listed in the current cycle bundle `packages[]`.
 
-It also remains duplicated in `current_artifacts_YYYYMMDD.json` under `static_products[]`
-as a transitional compatibility surface. Consumers fetch it only if they explicitly need terrain.
+Consumers fetch it only if they explicitly need terrain.
 
 The package contains `manifest.json` plus `tiles/<z>/<x>/<y>.terrain` members.
 The source/max zoom is z10, and parent tiles are generated down to z0. Parent
@@ -283,8 +277,6 @@ Standalone content-addressed shaded-relief raster artifact.
 
 It is listed in the current cycle bundle `packages[]`.
 
-It also remains duplicated in `current_artifacts_YYYYMMDD.json` under `static_products[]`
-as a transitional compatibility surface.
 Consumers fetch it only if they explicitly need a terrain-background visual
 layer.
 

@@ -188,7 +188,7 @@ Android can decide, or let the user decide, whether a newer stable product is wo
 
 This avoids implying that every cycle update strongly recommends redownloading huge stable products for marginal benefit.
 
-During the transition, `current_artifacts.static_products[]` may still duplicate these rows for compatibility, but the cycle bundle is the package-planning authority.
+The cycle bundle is the package-planning authority for stable products.
 
 ## Fast Products
 

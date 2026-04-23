@@ -267,8 +267,6 @@ struct CurrentArtifactsManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     diagnostics: Option<CurrentDiagnosticsEntry>,
     #[serde(default)]
-    static_products: Vec<CurrentStaticProductEntry>,
-    #[serde(default)]
     fast_products: Vec<CurrentFastProductEntry>,
 }
 
@@ -326,18 +324,6 @@ struct CurrentObstacleEntry {
     published_date: String,
     checksum_sha256: String,
     size_bytes: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CurrentStaticProductEntry {
-    id: String,
-    filename: String,
-    published_at_utc: String,
-    source_version: String,
-    checksum_sha256: String,
-    size_bytes: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_fetched_at_utc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2731,33 +2717,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 &config,
                                 &fast_bundle_manifest_path,
                             )?;
-                            let static_products = static_product_task_ids(&config)
-                                .iter()
-                                .map(|task_id| match task_values_snapshot.get(task_id) {
-                                    Some(ProductTaskValue::PublishedStandaloneProduct {
-                                        id,
-                                        published_zip,
-                                        sha256,
-                                        size_bytes,
-                                        source_version,
-                                        source_fetched_at_utc,
-                                        ..
-                                    }) => Ok(CurrentStaticProductEntry {
-                                        id: id.clone(),
-                                        filename: published_zip
-                                            .file_name()
-                                            .and_then(|name| name.to_str())
-                                            .unwrap_or_default()
-                                            .to_string(),
-                                        published_at_utc: utc_now_string(),
-                                        source_version: source_version.clone(),
-                                        checksum_sha256: sha256.clone(),
-                                        size_bytes: *size_bytes,
-                                        source_fetched_at_utc: source_fetched_at_utc.clone(),
-                                    }),
-                                    _ => bail!("missing published static product output for {}", task_id),
-                                })
-                                .collect::<anyhow::Result<Vec<_>>>()?;
                             let diagnostics = write_product_build_diagnostics(
                                 &config.build_root,
                                 Utc::now().date_naive(),
@@ -2770,7 +2729,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 &published_obstacle.1,
                                 published_obstacle.2,
                                 diagnostics.clone(),
-                                static_products,
                                 fast_products,
                             )?;
                             cleanup_published_packaged_root(
@@ -9241,7 +9199,7 @@ def main():
         'worker_count': workers,
         'refresh_policy': {
             'identity': 'published filename is content-addressed by ZIP bytes',
-            'source_fetched_at_utc': 'reported in current_artifacts.static_products[]',
+            'source_fetched_at_utc': 'reported in the cycle bundle package row',
             'refresh_interval': 'producer policy; not embedded in artifact metadata'
         },
         'source_dem_count': args.source_count,
@@ -9659,7 +9617,6 @@ fn write_current_artifacts_manifest(
     obstacle_sha256: &str,
     obstacle_size_bytes: u64,
     diagnostics: Option<CurrentDiagnosticsEntry>,
-    static_products: Vec<CurrentStaticProductEntry>,
     fast_products: Vec<CurrentFastProductEntry>,
 ) -> anyhow::Result<PathBuf> {
     let bundles = build_current_bundle_entries(build_root, as_of_date)?;
@@ -9679,7 +9636,6 @@ fn write_current_artifacts_manifest(
             size_bytes: obstacle_size_bytes,
         },
         diagnostics,
-        static_products,
         fast_products,
     };
     let manifest_path = build_root.join(format!(
@@ -9808,9 +9764,6 @@ fn collect_reachable_packaged_entries(
         keep.insert(diagnostics.filename.clone());
     }
     keep.insert(current.obstacles.filename.clone());
-    for product in &current.static_products {
-        keep.insert(product.filename.clone());
-    }
     for product in &current.fast_products {
         keep.insert(product.filename.clone());
     }
@@ -9838,9 +9791,6 @@ fn collect_reachable_unpacked_entries(
         keep.insert(diagnostics.filename.clone());
     }
     keep.insert(zip_stem(&current.obstacles.filename)?);
-    for product in &current.static_products {
-        keep.insert(zip_stem(&product.filename)?);
-    }
     for product in &current.fast_products {
         keep.insert(zip_stem(&product.filename)?);
     }
@@ -9964,13 +9914,6 @@ fn validate_packaged_contract(
         "current_artifacts.obstacles.filename",
     )?;
     ensure_public_file_exists(&packaged_root.join(&current.obstacles.filename))?;
-    for product in &current.static_products {
-        validate_public_filename(
-            &product.filename,
-            "current_artifacts.static_products[].filename",
-        )?;
-        ensure_public_file_exists(&packaged_root.join(&product.filename))?;
-    }
     for product in &current.fast_products {
         validate_public_filename(
             &product.filename,
@@ -10128,9 +10071,6 @@ fn validate_unpacked_contract(
     }
 
     ensure_public_dir_exists(&unpacked_root.join(zip_stem(&current.obstacles.filename)?))?;
-    for product in &current.static_products {
-        ensure_public_dir_exists(&unpacked_root.join(zip_stem(&product.filename)?))?;
-    }
     for product in &current.fast_products {
         ensure_public_dir_exists(&unpacked_root.join(zip_stem(&product.filename)?))?;
     }

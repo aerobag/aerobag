@@ -4085,22 +4085,6 @@ fn build_bundle_manifest(
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    let public_resource_index =
-        rewrite_public_resource_index(&index, &data_filename, &package_artifacts);
-    let published_resource_index_path = write_published_json(
-        &config
-            .build_root
-            .join(format!("resource_index_{cycle}.json")),
-        &public_resource_index,
-    )?;
-    let data_db_path = resolve_artifact_path(config, output_path(data_record, "main_db")?);
-    let nav_db_artifacts = write_nav_kv_artifact(
-        config,
-        &public_resource_index,
-        &cycle,
-        &data_db_path,
-        shaded_relief_tile_levels,
-    )?;
     package_artifacts.push(BundlePackageArtifact {
         id: format!("VECTORS_DATA_{cycle}_{PACKAGE_CYCLE_VERSION}"),
         family_id: "vectors".to_string(),
@@ -4116,6 +4100,23 @@ fn build_bundle_manifest(
         effective_date: Some(start_valid.clone()),
         expiration_date: Some(end_valid.clone()),
     });
+    let public_resource_index =
+        rewrite_public_resource_index(&index, &data_filename, &package_artifacts);
+    let published_resource_index_path = write_published_json(
+        &config
+            .build_root
+            .join(format!("resource_index_{cycle}.json")),
+        &public_resource_index,
+    )?;
+    let data_db_path = resolve_artifact_path(config, output_path(data_record, "main_db")?);
+    let nav_db_artifacts = write_nav_kv_artifact(
+        config,
+        &public_resource_index,
+        &package_artifacts,
+        &cycle,
+        &data_db_path,
+        shaded_relief_tile_levels,
+    )?;
     package_artifacts.push(nav_db_artifacts.package.clone());
 
     let resource_index_artifact = bundle_artifact(
@@ -4150,6 +4151,7 @@ fn build_bundle_manifest(
 fn write_nav_kv_artifact(
     config: &ProductBuildConfig,
     resource_index: &ResourceIndex,
+    package_artifacts: &[BundlePackageArtifact],
     cycle: &str,
     main_db_path: &Path,
     shaded_relief_tile_levels: &[(Region, Vec<TileLevelRecord>)],
@@ -4162,6 +4164,7 @@ fn write_nav_kv_artifact(
         value: chart_catalog_bytes,
     }];
     pairs.extend(build_nav_kv_plate_pairs(resource_index)?);
+    pairs.extend(build_nav_kv_package_pairs(package_artifacts)?);
     pairs.extend(build_nav_kv_navref_pairs(main_db_path)?);
     let built = build_nav_kv_sorted(pairs, 64 * 1024)
         .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
@@ -4410,6 +4413,43 @@ fn build_nav_kv_plate_pairs(resource_index: &ResourceIndex) -> anyhow::Result<Ve
             }
         }
     }
+    Ok(pairs)
+}
+
+fn build_nav_kv_package_pairs(
+    package_artifacts: &[BundlePackageArtifact],
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let mut package_index = Vec::with_capacity(package_artifacts.len());
+    let mut pairs = Vec::with_capacity(package_artifacts.len());
+    for package in package_artifacts {
+        let value = serde_json::json!({
+            "id": package.id,
+            "family_id": package.family_id,
+            "region_id": package.region_id,
+            "relative_path": package.relative_path,
+            "size_bytes": package.size_bytes,
+            "checksum_sha256": package.checksum_sha256,
+            "cycle": package.cycle,
+            "cycle_version": package.cycle_version,
+            "effective_date": package.effective_date,
+            "expiration_date": package.expiration_date,
+        });
+        package_index.push(serde_json::json!({
+            "id": package.id,
+            "family_id": package.family_id,
+            "region_id": package.region_id,
+        }));
+        pairs.push(json_pair(
+            format!("package/by-id/{}", had_key_component(&package.id)),
+            &value,
+            &format!("package/by-id/{}", package.id),
+        )?);
+    }
+    pairs.push(json_pair(
+        "package/index".to_string(),
+        &serde_json::Value::Array(package_index),
+        "package/index",
+    )?);
     Ok(pairs)
 }
 
@@ -12962,6 +13002,64 @@ mod tests {
             sectional["map_view"]["tile_path_template"],
             "0/{z}/{x}/{y}.webp"
         );
+    }
+
+    #[test]
+    fn nav_kv_package_pairs_publish_bundle_package_rows() {
+        let pairs = build_nav_kv_package_pairs(&[
+            BundlePackageArtifact {
+                id: "NW_SEC_2604_01".to_string(),
+                family_id: "sec".to_string(),
+                region_id: Some("nw".to_string()),
+                filename: "sec_nw_2604_01_deadbeef.zip".to_string(),
+                relative_path: "sec_nw_2604_01_deadbeef.zip".to_string(),
+                cycle: Some("2604".to_string()),
+                cycle_version: Some("01".to_string()),
+                checksum_sha256: "deadbeef".to_string(),
+                size_bytes: 123,
+                effective_date: Some("2026-04-16".to_string()),
+                expiration_date: Some("2026-05-14".to_string()),
+            },
+            BundlePackageArtifact {
+                id: "VECTORS_DATA_2604_01".to_string(),
+                family_id: "vectors".to_string(),
+                region_id: None,
+                filename: "vectors_data_2604_01_cafebabe.zip".to_string(),
+                relative_path: "vectors_data_2604_01_cafebabe.zip".to_string(),
+                cycle: Some("2604".to_string()),
+                cycle_version: Some("01".to_string()),
+                checksum_sha256: "cafebabe".to_string(),
+                size_bytes: 456,
+                effective_date: Some("2026-04-16".to_string()),
+                expiration_date: Some("2026-05-14".to_string()),
+            },
+        ])
+        .unwrap();
+
+        let pair_value = |key: &str| -> serde_json::Value {
+            let pair = pairs
+                .iter()
+                .find(|pair| pair.key == key)
+                .unwrap_or_else(|| panic!("missing nav_kv pair {key}"));
+            serde_json::from_slice(&pair.value).unwrap()
+        };
+
+        let index = pair_value("package/index");
+        assert_eq!(index.as_array().unwrap().len(), 2);
+        assert_eq!(index[0]["id"], "NW_SEC_2604_01");
+        assert_eq!(index[1]["id"], "VECTORS_DATA_2604_01");
+
+        let vectors = pair_value("package/by-id/VECTORS_DATA_2604_01");
+        assert_eq!(vectors["family_id"], "vectors");
+        assert_eq!(vectors["region_id"], serde_json::Value::Null);
+        assert_eq!(
+            vectors["relative_path"],
+            "vectors_data_2604_01_cafebabe.zip"
+        );
+        assert_eq!(vectors["size_bytes"], 456);
+        assert_eq!(vectors["checksum_sha256"], "cafebabe");
+        assert_eq!(vectors["cycle"], "2604");
+        assert_eq!(vectors["cycle_version"], "01");
     }
 
     #[test]

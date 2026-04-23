@@ -320,14 +320,6 @@ struct BundleArtifact {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct BundleNavKvArtifact {
-    root: BundleArtifact,
-    value_pages: Vec<BundleArtifact>,
-    page_size: u32,
-    value_bytes_len: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct BundlePackageArtifact {
     id: String,
     family_id: String,
@@ -347,7 +339,6 @@ struct BundlePackageArtifact {
 
 #[derive(Debug, Clone)]
 struct BuiltNavDbArtifacts {
-    nav_kv: BundleNavKvArtifact,
     package: BundlePackageArtifact,
 }
 
@@ -4134,13 +4125,11 @@ fn build_bundle_manifest(
     let catalog_artifact =
         publish_bundle_artifact(config, &catalog_path, &format!("catalog_{cycle}.json"))?;
     let data_artifact = publish_bundle_artifact(config, &data_zip_path, &data_filename)?;
-    let mut ancillary = vec![
+    let ancillary = vec![
         resource_index_artifact,
         catalog_artifact,
         data_artifact,
-        nav_db_artifacts.nav_kv.root.clone(),
     ];
-    ancillary.extend(nav_db_artifacts.nav_kv.value_pages.iter().cloned());
 
     Ok(BundleManifest {
         schema_version: 2,
@@ -4189,27 +4178,19 @@ fn write_nav_kv_artifact(
     let root_source_path = source_dir.join(&root_filename);
     fs::write(&root_source_path, &built.root_bytes)
         .with_context(|| format!("failed to write {}", root_source_path.display()))?;
-    let root = publish_bundle_artifact(config, &root_source_path, &root_filename)?;
 
-    let mut value_pages = Vec::new();
+    let mut page_filenames = Vec::new();
     for (index, page) in built.value_pages.iter().enumerate() {
         let page_filename = format!("nav_kv_{cycle}.values_{index:04}");
         let page_source_path = source_dir.join(&page_filename);
         fs::write(&page_source_path, page)
             .with_context(|| format!("failed to write {}", page_source_path.display()))?;
-        value_pages.push(publish_bundle_artifact(
-            config,
-            &page_source_path,
-            &page_filename,
-        )?);
+        page_filenames.push(page_filename);
     }
 
     let nav_db_zip_source_path = source_dir.join(format!("nav_db_{cycle}.zip"));
     let mut zip_entries = vec![root_filename.as_str()];
-    let page_entry_names = value_pages
-        .iter()
-        .map(|page| page.filename.as_str())
-        .collect::<Vec<_>>();
+    let page_entry_names = page_filenames.iter().map(String::as_str).collect::<Vec<_>>();
     zip_entries.extend(page_entry_names.iter().copied());
     zip_directory_deterministic(&nav_db_zip_source_path, &source_dir, &zip_entries)?;
     let nav_db_sha256 = hash_file(&nav_db_zip_source_path)?;
@@ -4219,12 +4200,6 @@ fn write_nav_kv_artifact(
         publish_bundle_artifact(config, &nav_db_zip_source_path, &nav_db_published_filename)?;
 
     Ok(BuiltNavDbArtifacts {
-        nav_kv: BundleNavKvArtifact {
-            root,
-            value_pages,
-            page_size: built.page_size,
-            value_bytes_len: built.value_bytes_len,
-        },
         package: BundlePackageArtifact {
             id: format!("NAV_DB_{cycle}_{PACKAGE_CYCLE_VERSION}"),
             family_id: "nav-db".to_string(),
@@ -9180,8 +9155,12 @@ fn build_current_bundle_entries(
         .collect::<Vec<_>>();
     bundle_paths.sort();
 
-    let mut bundles_by_cycle = BTreeMap::<String, (u32, String, CurrentBundleEntry)>::new();
+    let mut bundles_by_cycle =
+        BTreeMap::<String, (u32, String, SystemTime, CurrentBundleEntry)>::new();
     for bundle_path in bundle_paths {
+        let metadata = fs::metadata(&bundle_path)
+            .with_context(|| format!("failed to stat {}", bundle_path.display()))?;
+        let modified_at = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         let bundle_manifest: serde_json::Value = serde_json::from_slice(
             &fs::read(&bundle_path)
                 .with_context(|| format!("failed to read {}", bundle_path.display()))?,
@@ -9253,28 +9232,29 @@ fn build_current_bundle_entries(
             start_valid: start_valid.to_string(),
             end_valid: end_valid.to_string(),
             checksum_sha256: bundle_sha256,
-            size_bytes: fs::metadata(&bundle_path)
-                .with_context(|| format!("failed to stat {}", bundle_path.display()))?
-                .len(),
+            size_bytes: metadata.len(),
         };
         let should_replace = match bundles_by_cycle.get(bundle_cycle) {
-            Some((existing_version_rank, existing_generated_at_utc, _)) => {
+            Some((existing_version_rank, existing_generated_at_utc, existing_modified_at, _)) => {
                 cycle_version_rank > *existing_version_rank
                     || (cycle_version_rank == *existing_version_rank
                         && generated_at_utc > *existing_generated_at_utc)
+                    || (cycle_version_rank == *existing_version_rank
+                        && generated_at_utc == *existing_generated_at_utc
+                        && modified_at > *existing_modified_at)
             }
             None => true,
         };
         if should_replace {
             bundles_by_cycle.insert(
                 bundle_cycle.to_string(),
-                (cycle_version_rank, generated_at_utc, entry),
+                (cycle_version_rank, generated_at_utc, modified_at, entry),
             );
         }
     }
     let mut bundles = bundles_by_cycle
         .into_values()
-        .map(|(_, _, entry)| entry)
+        .map(|(_, _, _, entry)| entry)
         .collect::<Vec<_>>();
     bundles.sort_by(|left, right| left.cycle.cmp(&right.cycle));
     Ok(bundles)
@@ -9682,6 +9662,19 @@ fn validate_bundle_contract_split(bundle: &BundleManifest, bundle_path: &Path) -
         {
             bail!(
                 "bundle {} contains transitional artifact prefix {} in packages[]",
+                bundle_path.display(),
+                forbidden
+            );
+        }
+    }
+    for forbidden in ["nav_kv_"] {
+        if bundle
+            .ancillary
+            .iter()
+            .any(|artifact| artifact.filename.starts_with(forbidden))
+        {
+            bail!(
+                "bundle {} contains unpacked-only artifact prefix {} in ancillary[]",
                 bundle_path.display(),
                 forbidden
             );

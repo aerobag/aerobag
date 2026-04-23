@@ -84,8 +84,6 @@ current_artifacts_YYYYMMDD.json
 │   ├── bundle_cycle_2603_01_<sha256>.json
 │   ├── bundle_cycle_2604_01_<sha256>.json
 │   └── bundle_fast_<sha256>.json
-└── obstacles
-    └── obstacles_<sha256>.zip
 
 bundle_cycle_YYCC_VV_<sha256>.json
 └── packages[]
@@ -103,6 +101,7 @@ bundle_cycle_YYCC_VV_<sha256>.json
 
 bundle_fast_<sha256>.json
 └── packages[]
+    ├── obstacles_*.zip
     ├── tfrs_*.zip
     ├── metars_*.zip
     └── nexrad_*.zip
@@ -235,7 +234,8 @@ Per-cycle vector-data package.
 
 Standalone content-addressed obstacle artifact.
 
-It is not owned by one cycle in the same way as chart/data/TPP packages.
+It is published as a package row in `bundle_fast_<sha256>.json`, not in any cycle
+bundle.
 
 
 ### `geo_<sha256>.zip`

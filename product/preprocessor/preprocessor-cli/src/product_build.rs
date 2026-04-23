@@ -4100,18 +4100,10 @@ fn build_bundle_manifest(
         effective_date: Some(start_valid.clone()),
         expiration_date: Some(end_valid.clone()),
     });
-    let public_resource_index =
-        rewrite_public_resource_index(&index, &data_filename, &package_artifacts);
-    let published_resource_index_path = write_published_json(
-        &config
-            .build_root
-            .join(format!("resource_index_{cycle}.json")),
-        &public_resource_index,
-    )?;
     let data_db_path = resolve_artifact_path(config, output_path(data_record, "main_db")?);
     let nav_db_artifacts = write_nav_kv_artifact(
         config,
-        &public_resource_index,
+        &index,
         &package_artifacts,
         &cycle,
         &data_db_path,
@@ -4119,18 +4111,10 @@ fn build_bundle_manifest(
     )?;
     package_artifacts.push(nav_db_artifacts.package.clone());
 
-    let resource_index_artifact = bundle_artifact(
-        &published_resource_index_path,
-        &format!("resource_index_{cycle}.json"),
-    )?;
     let catalog_artifact =
         publish_bundle_artifact(config, &catalog_path, &format!("catalog_{cycle}.json"))?;
     let data_artifact = publish_bundle_artifact(config, &data_zip_path, &data_filename)?;
-    let ancillary = vec![
-        resource_index_artifact,
-        catalog_artifact,
-        data_artifact,
-    ];
+    let ancillary = vec![catalog_artifact, data_artifact];
 
     Ok(BundleManifest {
         schema_version: 2,
@@ -4163,6 +4147,7 @@ fn write_nav_kv_artifact(
         key: "chart/catalog".to_string(),
         value: chart_catalog_bytes,
     }];
+    pairs.extend(build_nav_kv_resource_summary_pairs(resource_index)?);
     pairs.extend(build_nav_kv_plate_pairs(resource_index)?);
     pairs.extend(build_nav_kv_package_pairs(package_artifacts)?);
     pairs.extend(build_nav_kv_navref_pairs(main_db_path)?);
@@ -4416,6 +4401,59 @@ fn build_nav_kv_plate_pairs(resource_index: &ResourceIndex) -> anyhow::Result<Ve
     Ok(pairs)
 }
 
+fn build_nav_kv_resource_summary_pairs(
+    resource_index: &ResourceIndex,
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let families = resource_index
+        .families
+        .iter()
+        .map(|family| {
+            serde_json::json!({
+                "id": family.id,
+                "display_name": family.display_name,
+                "kind": family.kind,
+            })
+        })
+        .collect::<Vec<_>>();
+    let regions = resource_index
+        .regions
+        .iter()
+        .map(|region| {
+            serde_json::json!({
+                "id": region.id,
+                "display_name": region.display_name,
+                "sort_order": region.sort_order,
+            })
+        })
+        .collect::<Vec<_>>();
+    let temporal_summary = serde_json::json!({
+        "cycle_codes": resource_index.temporal_summary.cycle_codes,
+        "effective_dates": resource_index.temporal_summary.effective_dates,
+        "expiration_dates": resource_index.temporal_summary.expiration_dates,
+        "uniform_cycle_code": resource_index.temporal_summary.uniform_cycle_code,
+        "uniform_effective_date": resource_index.temporal_summary.uniform_effective_date,
+        "uniform_expiration_date": resource_index.temporal_summary.uniform_expiration_date,
+        "uniform_good_beyond_date": resource_index.temporal_summary.uniform_good_beyond_date,
+    });
+    Ok(vec![
+        json_pair(
+            "resource/families".to_string(),
+            &serde_json::Value::Array(families),
+            "resource/families",
+        )?,
+        json_pair(
+            "resource/regions".to_string(),
+            &serde_json::Value::Array(regions),
+            "resource/regions",
+        )?,
+        json_pair(
+            "resource/temporal-summary".to_string(),
+            &temporal_summary,
+            "resource/temporal-summary",
+        )?,
+    ])
+}
+
 fn build_nav_kv_package_pairs(
     package_artifacts: &[BundlePackageArtifact],
 ) -> anyhow::Result<Vec<NavKvPair>> {
@@ -4454,6 +4492,11 @@ fn build_nav_kv_package_pairs(
 }
 
 fn build_nav_kv_plate_airports(resource_index: &ResourceIndex) -> Vec<serde_json::Value> {
+    let airport_by_id = resource_index
+        .airports
+        .iter()
+        .map(|airport| (airport.id.as_str(), airport))
+        .collect::<BTreeMap<_, _>>();
     let plate_by_id = resource_index
         .plates
         .iter()
@@ -4504,9 +4547,18 @@ fn build_nav_kv_plate_airports(resource_index: &ResourceIndex) -> Vec<serde_json
             if charts.is_empty() {
                 return None;
             }
+            let airport = airport_by_id.get(airport_id.as_str());
             Some(serde_json::json!({
                 "id": airport_id,
-                "label": airport_id,
+                "label": airport
+                    .map(|airport| airport.facility_name.as_str())
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or(airport_id),
+                "facility_name": airport.map(|airport| airport.facility_name.as_str()),
+                "lat": airport.map(|airport| airport.lat),
+                "lon": airport.map(|airport| airport.lon),
+                "airport_type": airport.map(|airport| airport.airport_type.as_str()),
+                "package_ids": airport_resources.package_ids.clone(),
                 "charts": charts,
             }))
         })
@@ -9658,10 +9710,7 @@ fn validate_bundle_contract_split(bundle: &BundleManifest, bundle_path: &Path) -
         .iter()
         .map(|artifact| artifact.filename.as_str())
         .collect::<BTreeSet<_>>();
-    for required in [
-        format!("resource_index_{}.json", bundle.cycle),
-        format!("catalog_{}.json", bundle.cycle),
-    ] {
+    for required in [format!("catalog_{}.json", bundle.cycle)] {
         if !ancillary_filenames.contains(required.as_str()) {
             bail!(
                 "bundle {} missing ancillary artifact {}",
@@ -9706,6 +9755,16 @@ fn validate_bundle_contract_split(bundle: &BundleManifest, bundle_path: &Path) -
                 forbidden
             );
         }
+    }
+    if bundle
+        .ancillary
+        .iter()
+        .any(|artifact| artifact.filename.starts_with("resource_index_"))
+    {
+        bail!(
+            "bundle {} still publishes resource_index in ancillary[]",
+            bundle_path.display()
+        );
     }
     for forbidden in ["nav_kv_"] {
         if bundle
@@ -10289,15 +10348,6 @@ fn bundle_artifact(
     })
 }
 
-fn write_published_json<T: Serialize>(published_path: &Path, value: &T) -> anyhow::Result<PathBuf> {
-    fs::write(
-        published_path,
-        serde_json::to_vec_pretty(value).context("failed to encode published json")?,
-    )
-    .with_context(|| format!("failed to write {}", published_path.display()))?;
-    Ok(published_path.to_path_buf())
-}
-
 fn write_hashed_bundle_manifest(
     build_root: &Path,
     bundle_manifest: &BundleManifest,
@@ -10315,21 +10365,6 @@ fn write_hashed_bundle_manifest(
     fs::write(&bundle_manifest_path, bytes)
         .with_context(|| format!("failed to write {}", bundle_manifest_path.display()))?;
     Ok(bundle_manifest_path)
-}
-
-fn rewrite_public_resource_index(
-    index: &ResourceIndex,
-    data_filename: &str,
-    package_artifacts: &[BundlePackageArtifact],
-) -> ResourceIndex {
-    let mut public_index = index.clone();
-    let _ = data_filename;
-    let _ = package_artifacts;
-    public_index.nav_db.artifact_path = None;
-    for package in &mut public_index.packages {
-        package.artifact_path = None;
-    }
-    public_index
 }
 
 fn publish_bundle_artifact(
@@ -13060,6 +13095,34 @@ mod tests {
         assert_eq!(vectors["checksum_sha256"], "cafebabe");
         assert_eq!(vectors["cycle"], "2604");
         assert_eq!(vectors["cycle_version"], "01");
+    }
+
+    #[test]
+    fn nav_kv_resource_summary_pairs_publish_family_region_and_temporal_tables() {
+        let pairs = build_nav_kv_resource_summary_pairs(&minimal_resource_index()).unwrap();
+
+        let pair_value = |key: &str| -> serde_json::Value {
+            let pair = pairs
+                .iter()
+                .find(|pair| pair.key == key)
+                .unwrap_or_else(|| panic!("missing nav_kv pair {key}"));
+            serde_json::from_slice(&pair.value).unwrap()
+        };
+
+        let families = pair_value("resource/families");
+        assert!(
+            families
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value["id"] == "sec")
+        );
+
+        let regions = pair_value("resource/regions");
+        assert_eq!(regions.as_array().unwrap()[0]["id"], "nw");
+
+        let temporal = pair_value("resource/temporal-summary");
+        assert_eq!(temporal["uniform_cycle_code"], serde_json::Value::Null);
     }
 
     #[test]

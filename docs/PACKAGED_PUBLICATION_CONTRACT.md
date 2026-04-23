@@ -33,17 +33,16 @@ Top-level discovery:
 
 Per-cycle manifests:
 
-- `bundle_YYCC.json`
+- `bundle_cycle_YYCC_VV_<sha256>.json`
 
 Per-cycle metadata:
 
 - `catalog_YYCC.json`
-- `resource_index_YYCC.json`
 
 Per-cycle data packages:
 
-- `data_YYCC.zip`
-- `vectors_data_YYCC.zip`
+- `data_YYCC_VV_<sha256>.zip`
+- `vectors_data_YYCC_VV_<sha256>.zip`
 
 Per-cycle regional packages:
 
@@ -84,8 +83,8 @@ Region codes stay lowercase:
 ```text
 current_artifacts_YYYYMMDD.json
 ├── bundles[]
-│   ├── bundle_2603.json
-│   └── bundle_2604.json
+│   ├── bundle_cycle_2603_01_<sha256>.json
+│   └── bundle_cycle_2604_01_<sha256>.json
 ├── fast_products[]
 │   ├── tfrs_<sha256>.zip
 │   ├── metars_<sha256>.zip
@@ -95,26 +94,24 @@ current_artifacts_YYYYMMDD.json
 └── obstacles
     └── obstacles_<sha256>.zip
 
-bundle_YYCC.json
+bundle_cycle_YYCC_VV_<sha256>.json
 ├── catalog_YYCC.json
-├── resource_index_YYCC.json
-├── nav_kv_YYCC.root
-├── nav_kv_YYCC.values_NNNN
-├── data_YYCC.zip
-├── vectors_data_YYCC.zip
+├── data_YYCC_VV_<sha256>.zip
 └── packages[]
     ├── sec_*.zip
     ├── tac_*.zip
     ├── enr_l_*.zip
     ├── enr_h_*.zip
     ├── csup_*.zip
-    └── tpp_*.zip
+    ├── tpp_*.zip
+    ├── vectors_data_*.zip
+    └── nav_db_*.zip
 ```
 
 Consumer rule:
 
 1. discover from `current_artifacts_YYYYMMDD.json`
-2. choose a cycle via `bundle_YYCC.json`
+2. choose a cycle via `bundle_cycle_YYCC_VV_<sha256>.json`
 3. fetch leaf artifacts named by that bundle
 
 
@@ -128,12 +125,12 @@ Consumer rule:
 
 Examples:
 
-- `published-packaged/data_2604.zip`
+- `published-packaged/data_2604_01_<sha256>.zip`
   becomes
-  `published-unpacked/data_2604/`
-- `published-packaged/tpp_ne_2604.zip`
+  `published-unpacked/data_2604_01_<sha256>/`
+- `published-packaged/tpp_ne_2604_01_<sha256>.zip`
   becomes
-  `published-unpacked/tpp_ne_2604/`
+  `published-unpacked/tpp_ne_2604_01_<sha256>/`
 - `published-packaged/obstacles_<sha256>.zip`
   becomes
   `published-unpacked/obstacles_<sha256>/`
@@ -141,9 +138,8 @@ Examples:
 Examples of top-level unpacked files that remain files:
 
 - `current_artifacts_YYYYMMDD.json`
-- `bundle_YYCC.json`
+- `bundle_cycle_YYCC_VV_<sha256>.json`
 - `catalog_YYCC.json`
-- `resource_index_YYCC.json`
 
 The unpacked contract allows a consumer to browse the exact published content shape
 without re-extracting zip files locally.
@@ -155,11 +151,10 @@ Published manifests must reference sibling filenames only.
 
 Good:
 
-- `bundle_2604.json`
+- `bundle_cycle_2604_01_<sha256>.json`
 - `catalog_2604.json`
-- `resource_index_2604.json`
-- `data_2604.zip`
-- `tpp_ne_2604.zip`
+- `data_2604_01_<sha256>.zip`
+- `tpp_ne_2604_01_<sha256>.zip`
 
 Bad:
 
@@ -169,7 +164,7 @@ Bad:
 
 If a manifest keeps a path field, it must still be flat:
 
-- `relative_path = "resource_index_2604.json"`
+- `relative_path = "nav_db_2604_01_<sha256>.zip"`
 
 not:
 
@@ -190,18 +185,19 @@ It answers:
 - which optional standalone static products are current
 - which standalone fast products are current
 
-It does not replace `bundle_YYCC.json`.
+It does not replace `bundle_cycle_YYCC_VV_<sha256>.json`.
 
 
-### `bundle_YYCC.json`
+### `bundle_cycle_YYCC_VV_<sha256>.json`
 
 Per-cycle package manifest.
 
 It answers:
 
-- which metadata files belong to this cycle
 - which data/vector packages belong to this cycle
+- which nav_db package belongs to this cycle
 - which regional chart/CSUP/TPP packages belong to this cycle
+- which ancillary debug/transitional artifacts belong to this cycle
 
 
 ### `catalog_YYCC.json`
@@ -209,29 +205,27 @@ It answers:
 Per-cycle leaf metadata artifact for catalog-style browsing.
 
 
-### `resource_index_YYCC.json`
+### `nav_db_YYCC_VV_<sha256>.zip`
 
-Per-cycle leaf metadata artifact for runtime lookup and asset indexing.
+Per-cycle app-native key/value runtime index package.
 
-
-### `nav_kv_YYCC.root` and `nav_kv_YYCC.values_NNNN`
-
-Per-cycle app-native key/value runtime index.
-
-The root file contains the fixed-width lookup table and key bytes. Value files
-contain fixed-size pages of the logical value byte stream. The bundle manifest's
-`nav_kv` entry lists the root file, all value pages in page-index order, the page
-size, and the logical value byte length.
+The zip contains `nav_kv_YYCC.root` plus `nav_kv_YYCC.values_NNNN` page files.
+Android installs the zip atomically. Web may read the unpacked mirror.
 
 The initial required keys are:
 
 ```text
 chart/catalog
+resource/families
+resource/regions
+resource/temporal-summary
+package/index
+package/by-id/{package_id}
 ```
 
 `chart/catalog` is JSON for the app-ready raster chart catalog. Consumers
-should use this instead of parsing `resource_index_YYCC.json` or
-`current_artifacts_YYYYMMDD.json` to discover selectable raster chart layers.
+should use this instead of parsing per-cycle publication metadata to discover
+selectable raster chart layers.
 The catalog includes tiled chart packages and app-visible static visual raster
 products, such as shaded relief.
 
@@ -243,12 +237,12 @@ are published under consumer-shaped HAD keyspaces such as
 keyspace inventory lives in `docs/HAD_QUERY_KEYSPACES.md`.
 
 
-### `data_YYCC.zip`
+### `data_YYCC_VV_<sha256>.zip`
 
 Per-cycle nav-data package.
 
 
-### `vectors_data_YYCC.zip`
+### `vectors_data_YYCC_VV_<sha256>.zip`
 
 Per-cycle vector-data package.
 

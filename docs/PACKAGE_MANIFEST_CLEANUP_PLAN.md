@@ -262,14 +262,13 @@ Initial entries:
 ```text
 data_2604_01_<sha256>.zip
 catalog_2604.json
-resource_index_2604.json
 ```
 
 `data_2604_01_<sha256>.zip` contains the old SQLite `main.db`. The app no longer uses it directly; it is subsumed by HAD/nav DB. Keep it ancillary until debug/audit flows no longer need it.
 
 `catalog_2604.json` is the old app catalog. The app-ready raster chart catalog now exists in HAD/nav DB as `chart/catalog`. Keep it ancillary until UI/core only consume HAD/nav DB.
 
-`resource_index_2604.json` is semantic lookup metadata in the wrong publication layer. Move its contents into HAD/nav DB, then delete the standalone artifact.
+`resource_index_2604.json` was semantic lookup metadata in the wrong publication layer. Its contents have been moved into HAD/nav DB and the standalone public artifact has been removed from the live bundle contract.
 
 Ancillary rows should still have:
 
@@ -291,7 +290,7 @@ Android package management should ignore `ancillary[]`.
 
 ## Resource Index Migration
 
-Eliminate `resource_index_2604.json` as a standalone public artifact by moving its semantic tables into HAD/nav DB.
+`resource_index_2604.json` was eliminated as a standalone public artifact. Its semantic tables now belong in HAD/nav DB.
 
 Examples of semantic lookup questions that belong in HAD/nav DB:
 
@@ -344,7 +343,7 @@ Fast checks should run every build:
 - Bundle filenames agree with their own `checksum_sha256` entries in `current_artifacts`.
 - Cycle package filenames and IDs include the cycle correction version (`YYCC_VV`) for cycle-scoped packages.
 - Every app-intended installable appears in `packages[]`.
-- Transitional artifacts such as `data_*.zip`, `catalog_*.json`, and `resource_index_*.json` appear only in `ancillary[]`.
+- Transitional artifacts such as `data_*.zip` and `catalog_*.json` appear only in `ancillary[]`.
 
 Avoid rehashing huge files on every incremental build. Full SHA checks should run only when:
 
@@ -403,5 +402,5 @@ Android should:
 Android should not:
 
 - Infer filenames.
-- Consult `resource_index_YYCC.json` for download paths.
+- Consult HAD/nav DB or the bundle manifest for package resolution, depending on whether the question is semantic lookup or package download planning.
 - Ask a dynamic dev server to map package IDs to files.

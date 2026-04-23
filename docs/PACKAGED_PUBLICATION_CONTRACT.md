@@ -93,7 +93,6 @@ current_artifacts_YYYYMMDD.json
     └── obstacles_<sha256>.zip
 
 bundle_cycle_YYCC_VV_<sha256>.json
-├── data_YYCC_VV_<sha256>.zip
 └── packages[]
     ├── sec_*.zip
     ├── tac_*.zip
@@ -122,9 +121,6 @@ Consumer rule:
 
 Examples:
 
-- `published-packaged/data_2604_01_<sha256>.zip`
-  becomes
-  `published-unpacked/data_2604_01_<sha256>/`
 - `published-packaged/tpp_ne_2604_01_<sha256>.zip`
   becomes
   `published-unpacked/tpp_ne_2604_01_<sha256>/`
@@ -148,7 +144,6 @@ Published manifests must reference sibling filenames only.
 Good:
 
 - `bundle_cycle_2604_01_<sha256>.json`
-- `data_2604_01_<sha256>.zip`
 - `tpp_ne_2604_01_<sha256>.zip`
 
 Bad:
@@ -225,11 +220,6 @@ are published under consumer-shaped HAD keyspaces such as
 `plate/cifp/{airport_id}/{cifp_id}`, and
 `procedure/materialization-rows/{airport_id}/{procedure_id}`. The current
 keyspace inventory lives in `docs/HAD_QUERY_KEYSPACES.md`.
-
-
-### `data_YYCC_VV_<sha256>.zip`
-
-Per-cycle nav-data package.
 
 
 ### `vectors_data_YYCC_VV_<sha256>.zip`

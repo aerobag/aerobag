@@ -2490,15 +2490,6 @@ mod tests {
                         return path;
                     }
                 }
-                for candidate in [
-                    "/root/aerobag-three/ui-target-flightplan/android/assets/nav-db/main.db",
-                    "/root/aerobag-three/ui-target/android/assets/nav-db/main.db",
-                ] {
-                    let path = PathBuf::from(candidate);
-                    if path.is_file() {
-                        return path;
-                    }
-                }
                 for root in [
                     "/root/aerobag-artifacts/published-unpacked",
                     "/root/aerobag-artifacts/cache/nodes",
@@ -3371,7 +3362,7 @@ mod tests {
                 && path
                     .parent()
                     .and_then(|parent| parent.file_name())
-                    .is_some_and(|name| name == "output" || name == "data_2604")
+                    .is_some_and(|name| name == "output")
             {
                 return Some(path);
             }

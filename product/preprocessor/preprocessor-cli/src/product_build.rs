@@ -4024,7 +4024,6 @@ fn build_bundle_manifest(
         config,
         output_path(resource_index_record, "resource_index")?,
     );
-    let data_zip_path = resolve_artifact_path(config, output_path(data_record, "zip")?);
     let vectors_zip_path = resolve_artifact_path(config, output_path(vectors_record, "zip")?);
     let index: ResourceIndex = serde_json::from_slice(
         &fs::read(&resource_index_path)
@@ -4044,9 +4043,7 @@ fn build_bundle_manifest(
         .or_else(|| index.temporal_summary.expiration_dates.first().cloned())
         .context("resource-index missing end-valid date")?;
     let cycle = build_manifest.cycle.clone();
-    let data_sha256 = output_sha_or_hash(data_record, "zip", &data_zip_path)?;
     let vectors_sha256 = output_sha_or_hash(vectors_record, "zip", &vectors_zip_path)?;
-    let data_filename = format!("data_{cycle}_{PACKAGE_CYCLE_VERSION}_{data_sha256}.zip");
     let vectors_filename =
         format!("vectors_data_{cycle}_{PACKAGE_CYCLE_VERSION}_{vectors_sha256}.zip");
 
@@ -4115,8 +4112,7 @@ fn build_bundle_manifest(
     )?;
     package_artifacts.push(nav_db_artifacts.package.clone());
 
-    let data_artifact = publish_bundle_artifact(config, &data_zip_path, &data_filename)?;
-    let ancillary = vec![data_artifact];
+    let ancillary = vec![];
 
     Ok(BundleManifest {
         schema_version: 2,
@@ -6352,27 +6348,6 @@ fn sync_cycle_bundle_unpacked_zips(
     build_manifest: &BuildManifest,
     unpacked_root: &Path,
 ) -> anyhow::Result<()> {
-    let data_record = build_manifest
-        .nodes
-        .iter()
-        .find(|node| node.name == "data")
-        .context("build manifest missing data node")?;
-    let data_zip_path = resolve_artifact_path(config, output_path(data_record, "zip")?);
-    let data_db_path = resolve_artifact_path(config, output_path(data_record, "main_db")?);
-    let data_artifact = bundle_manifest
-        .ancillary
-        .iter()
-        .find(|artifact| artifact.filename.starts_with("data_") && artifact.filename.ends_with(".zip"))
-        .context("bundle manifest missing ancillary data zip")?;
-    sync_unpacked_zip_from_source(
-        &config.build_root.join(&data_artifact.filename),
-        data_db_path.parent().unwrap_or_else(|| Path::new("/")),
-        unpacked_root,
-        &data_artifact.filename,
-        Some(&data_artifact.checksum_sha256),
-    )
-    .with_context(|| format!("failed to unpack {}", data_zip_path.display()))?;
-
     for package in &bundle_manifest.packages {
         if package.family_id == "nav-db" {
             let cycle = package
@@ -9827,17 +9802,6 @@ fn validate_bundle_contract_split(bundle: &BundleManifest, bundle_path: &Path) -
         );
     }
 
-    if !bundle
-        .ancillary
-        .iter()
-        .any(|artifact| artifact.filename.starts_with("data_") && artifact.filename.ends_with(".zip"))
-    {
-        bail!(
-            "bundle {} missing ancillary data zip",
-            bundle_path.display()
-        );
-    }
-
     for package in &bundle.packages {
         if bundle
             .ancillary
@@ -9863,6 +9827,16 @@ fn validate_bundle_contract_split(bundle: &BundleManifest, bundle_path: &Path) -
                 forbidden
             );
         }
+    }
+    if bundle
+        .ancillary
+        .iter()
+        .any(|artifact| artifact.filename.starts_with("data_"))
+    {
+        bail!(
+            "bundle {} still publishes data zip in ancillary[]",
+            bundle_path.display()
+        );
     }
     if bundle
         .ancillary

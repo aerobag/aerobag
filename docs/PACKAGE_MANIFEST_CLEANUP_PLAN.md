@@ -260,10 +260,7 @@ Move transitional/debug artifacts into `ancillary[]`.
 Initial entries:
 
 ```text
-data_2604_01_<sha256>.zip
 ```
-
-`data_2604_01_<sha256>.zip` contains the old SQLite `main.db`. The app no longer uses it directly; it is subsumed by HAD/nav DB. Keep it ancillary until debug/audit flows no longer need it.
 
 `catalog_2604.json` was the old app catalog. The app-ready raster chart catalog now lives in HAD/nav DB as `chart/catalog`, so the standalone public artifact has been removed from the live contract.
 
@@ -342,7 +339,7 @@ Fast checks should run every build:
 - Bundle filenames agree with their own `checksum_sha256` entries in `current_artifacts`.
 - Cycle package filenames and IDs include the cycle correction version (`YYCC_VV`) for cycle-scoped packages.
 - Every app-intended installable appears in `packages[]`.
-- Transitional artifacts such as `data_*.zip` appear only in `ancillary[]`.
+- Transitional artifacts have been removed from the live cycle bundle contract.
 
 Avoid rehashing huge files on every incremental build. Full SHA checks should run only when:
 

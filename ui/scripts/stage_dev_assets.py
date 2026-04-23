@@ -140,7 +140,6 @@ def resolve_product_build_relative_path(node_name: str, output_name: str) -> str
 
 RESOURCE_INDEX_PATH = resolve_product_build_output("resource_index", "resource_index")
 VECTOR_ZIP_RELATIVE_PATH = resolve_product_build_relative_path("vectors", "zip")
-DATA_ZIP_RELATIVE_PATH = resolve_product_build_relative_path("data", "zip")
 NAV_KV = PRODUCT_BUILD.get("nav_kv") if isinstance(PRODUCT_BUILD.get("nav_kv"), dict) else None
 
 
@@ -208,9 +207,6 @@ def unpacked_dir_from_relative_zip(relative_zip_path: str) -> Path:
     if len(relative.parts) != 1:
         raise RuntimeError(f"expected flat published zip filename, got {relative_zip_path}")
     return UNPACKED_ROOT / relative.with_suffix("")
-
-
-NAV_DB_PATH = unpacked_dir_from_relative_zip(DATA_ZIP_RELATIVE_PATH) / "main.db"
 
 
 def family_tiles_roots() -> dict[str, Path]:
@@ -295,12 +291,6 @@ def stage_vectors() -> None:
     ensure_hard_link(manifest, target / "vectors")
 
 
-def stage_nav_db() -> None:
-    nav_root = WEB_STATIC_ROOT / "nav-db"
-    reset_dir(nav_root)
-    ensure_hard_link(NAV_DB_PATH, nav_root / "main.db")
-
-
 def stage_fast_products() -> None:
     target = WEB_STATIC_ROOT / "fast-products"
     reset_dir(target)
@@ -354,7 +344,6 @@ def current_stage_stamp() -> dict:
     return {
         "resource_index": file_stamp(RESOURCE_INDEX_PATH),
         "vectors_root": file_stamp(unpacked_dir_from_relative_zip(VECTOR_ZIP_RELATIVE_PATH)),
-        "nav_db": file_stamp(NAV_DB_PATH),
         "current_artifacts": file_stamp(CURRENT_ARTIFACTS_FILE),
         "bundle_manifest": file_stamp(PRODUCT_BUILD_FILE),
         "fast_products": [
@@ -367,7 +356,7 @@ def current_stage_stamp() -> dict:
             if isinstance(product, dict)
         ],
         "nav_kv": NAV_KV,
-        "version": 5,
+        "version": 6,
     }
 
 
@@ -392,7 +381,6 @@ def main() -> None:
     stage_sectional_packages()
     stage_chart_assets()
     stage_vectors()
-    stage_nav_db()
     stage_fast_products()
     stage_nav_kv()
     write_stage_stamp()

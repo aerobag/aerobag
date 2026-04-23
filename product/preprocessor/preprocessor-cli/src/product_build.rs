@@ -996,11 +996,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             cycle: String,
             family: ChartFamily,
         },
-        ChartUnpack {
-            cycle: String,
-            family: ChartFamily,
-            region: Region,
-        },
         CsupStage {
             cycle: String,
         },
@@ -1011,19 +1006,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         CsupPackage {
             cycle: String,
         },
-        CsupUnpack {
-            cycle: String,
-            region: Region,
-        },
         TppRender {
             cycle: String,
             region: Region,
         },
         TppPackage {
-            cycle: String,
-            region: Region,
-        },
-        TppUnpack {
             cycle: String,
             region: Region,
         },
@@ -1034,12 +1021,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             cycle: String,
         },
         Vectors {
-            cycle: String,
-        },
-        DataUnpack {
-            cycle: String,
-        },
-        VectorsUnpack {
             cycle: String,
         },
         ResourceIndex {
@@ -1137,25 +1118,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         family,
                     },
                 });
-                for region in Region::ALL {
-                    pending_tasks.push(ProductScheduledTask {
-                        id: cycle_task_id(
-                            cycle,
-                            &format!(
-                                "charts-{}-unpack-{}",
-                                family_id,
-                                region.code().to_ascii_lowercase()
-                            ),
-                        ),
-                        deps: vec![package_id.clone()],
-                        weight: 1,
-                        kind: ProductScheduledTaskKind::ChartUnpack {
-                            cycle: cycle.clone(),
-                            family,
-                            region,
-                        },
-                    });
-                }
             }
 
             pending_tasks.push(ProductScheduledTask {
@@ -1191,20 +1153,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     cycle: cycle.clone(),
                 },
             });
-            for region in Region::ALL {
-                pending_tasks.push(ProductScheduledTask {
-                    id: cycle_task_id(
-                        cycle,
-                        &format!("csup-unpack-{}", region.code().to_ascii_lowercase()),
-                    ),
-                    deps: vec![cycle_task_id(cycle, "csup-package")],
-                    weight: 1,
-                    kind: ProductScheduledTaskKind::CsupUnpack {
-                        cycle: cycle.clone(),
-                        region,
-                    },
-                });
-            }
 
             let mut tpp_package_ids = Vec::new();
             for region in config.profile.tpp_regions() {
@@ -1225,15 +1173,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     deps: vec![render_id],
                     weight: 1,
                     kind: ProductScheduledTaskKind::TppPackage {
-                        cycle: cycle.clone(),
-                        region: *region,
-                    },
-                });
-                pending_tasks.push(ProductScheduledTask {
-                    id: cycle_task_id(cycle, &format!("tpp-{region_id}-unpack")),
-                    deps: vec![package_id.clone()],
-                    weight: 1,
-                    kind: ProductScheduledTaskKind::TppUnpack {
                         cycle: cycle.clone(),
                         region: *region,
                     },
@@ -1266,22 +1205,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 deps: vec![cycle_task_id(cycle, "data")],
                 weight: 1,
                 kind: ProductScheduledTaskKind::Vectors {
-                    cycle: cycle.clone(),
-                },
-            });
-            pending_tasks.push(ProductScheduledTask {
-                id: cycle_task_id(cycle, "data-unpack"),
-                deps: vec![cycle_task_id(cycle, "data")],
-                weight: 1,
-                kind: ProductScheduledTaskKind::DataUnpack {
-                    cycle: cycle.clone(),
-                },
-            });
-            pending_tasks.push(ProductScheduledTask {
-                id: cycle_task_id(cycle, "vectors-unpack"),
-                deps: vec![cycle_task_id(cycle, "vectors")],
-                weight: 1,
-                kind: ProductScheduledTaskKind::VectorsUnpack {
                     cycle: cycle.clone(),
                 },
             });
@@ -2154,172 +2077,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     package: built.package,
                                 },
                                 completion_detail: "cache_or_rebuild".to_string(),
-                            })
-                        }
-                        ProductScheduledTaskKind::ChartUnpack {
-                            cycle,
-                            family,
-                            region,
-                        } => {
-                            let key = cycle_task_id(&cycle, &format!("charts-{}-package", family_slug(family)));
-                            let source = match task_values_snapshot.get(&key) {
-                                Some(ProductTaskValue::ChartSource(source)) => source.clone(),
-                                _ => bail!("missing chart source for cycle {cycle}"),
-                            };
-                            let package = package_record_for_region(&source.package_outputs_path, region)?;
-                            let zip_path = source.package_root.join(&package.zip);
-                            let mut cycle_config = config.clone();
-                            cycle_config.target_cycle = Some(cycle);
-                            let unpacked_root = published_unpacked_root(&cycle_config)?;
-                            let published_filename = canonical_package_filename(
-                                family_slug(family),
-                                &region.code().to_ascii_lowercase(),
-                                &package.zip,
-                            )?;
-                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
-                                &zip_path,
-                                &source.package_root,
-                                &unpacked_root,
-                                &published_filename,
-                                Some(&package.zip_sha256),
-                            )?;
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![],
-                                value: ProductTaskValue::None,
-                                completion_detail: format!(
-                                    "cache_hit={} unpack_dir={}",
-                                    cache_hit,
-                                    unpack_dir.display()
-                                ),
-                            })
-                        }
-                        ProductScheduledTaskKind::CsupUnpack { cycle, region } => {
-                            let source = match task_values_snapshot.get(&cycle_task_id(&cycle, "csup-package")) {
-                                Some(ProductTaskValue::CsupSource(source)) => source.clone(),
-                                _ => bail!("missing csup source for cycle {cycle}"),
-                            };
-                            let package = package_record_for_region(&source.package_outputs_path, region)?;
-                            let zip_path = source.package_root.join(&package.zip);
-                            let mut cycle_config = config.clone();
-                            cycle_config.target_cycle = Some(cycle);
-                            let unpacked_root = published_unpacked_root(&cycle_config)?;
-                            let published_filename = canonical_package_filename(
-                                "csup",
-                                &region.code().to_ascii_lowercase(),
-                                &package.zip,
-                            )?;
-                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
-                                &zip_path,
-                                &source.package_root,
-                                &unpacked_root,
-                                &published_filename,
-                                Some(&package.zip_sha256),
-                            )?;
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![],
-                                value: ProductTaskValue::None,
-                                completion_detail: format!(
-                                    "cache_hit={} unpack_dir={}",
-                                    cache_hit,
-                                    unpack_dir.display()
-                                ),
-                            })
-                        }
-                        ProductScheduledTaskKind::TppUnpack { cycle, region } => {
-                            let region_id = region.code().to_ascii_lowercase();
-                            let source = match task_values_snapshot
-                                .get(&cycle_task_id(&cycle, &format!("tpp-{region_id}-package")))
-                            {
-                                Some(ProductTaskValue::FingerprintedTppSource { source, .. }) => source.clone(),
-                                _ => bail!("missing tpp source for cycle {cycle}"),
-                            };
-                            let package = package_record_for_region(&source.package_outputs_path, region)?;
-                            let zip_path = source.package_root.join(&package.zip);
-                            let mut cycle_config = config.clone();
-                            cycle_config.target_cycle = Some(cycle);
-                            let unpacked_root = published_unpacked_root(&cycle_config)?;
-                            let published_filename = canonical_package_filename(
-                                "tpp",
-                                &region.code().to_ascii_lowercase(),
-                                &package.zip,
-                            )?;
-                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
-                                &zip_path,
-                                &source.package_root,
-                                &unpacked_root,
-                                &published_filename,
-                                Some(&package.zip_sha256),
-                            )?;
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![],
-                                value: ProductTaskValue::None,
-                                completion_detail: format!(
-                                    "cache_hit={} unpack_dir={}",
-                                    cache_hit,
-                                    unpack_dir.display()
-                                ),
-                            })
-                        }
-                        ProductScheduledTaskKind::DataUnpack { cycle } => {
-                            let zip = match task_values_snapshot.get(&cycle_task_id(&cycle, "data")) {
-                                Some(ProductTaskValue::FingerprintedData { zip, .. }) => zip.clone(),
-                                _ => bail!("missing data zip for cycle {cycle}"),
-                            };
-                            let bundle_cycle = match task_values_snapshot
-                                .get(&cycle_task_id(&cycle, "source-urls"))
-                            {
-                                Some(ProductTaskValue::SourceUrls { bundle_cycle, .. }) => bundle_cycle.clone(),
-                                _ => bail!("missing source urls for cycle {cycle}"),
-                            };
-                            let mut cycle_config = config.clone();
-                            cycle_config.target_cycle = Some(cycle);
-                            let unpacked_root = published_unpacked_root(&cycle_config)?;
-                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
-                                &zip,
-                                zip.parent().unwrap_or_else(|| Path::new("/")),
-                                &unpacked_root,
-                                &format!("data_{bundle_cycle}.zip"),
-                                None,
-                            )?;
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![],
-                                value: ProductTaskValue::None,
-                                completion_detail: format!(
-                                    "cache_hit={} unpack_dir={}",
-                                    cache_hit,
-                                    unpack_dir.display()
-                                ),
-                            })
-                        }
-                        ProductScheduledTaskKind::VectorsUnpack { cycle } => {
-                            let zip = match task_values_snapshot.get(&cycle_task_id(&cycle, "vectors")) {
-                                Some(ProductTaskValue::FingerprintedZip { zip, .. }) => zip.clone(),
-                                _ => bail!("missing vectors zip for cycle {cycle}"),
-                            };
-                            let bundle_cycle = match task_values_snapshot
-                                .get(&cycle_task_id(&cycle, "source-urls"))
-                            {
-                                Some(ProductTaskValue::SourceUrls { bundle_cycle, .. }) => bundle_cycle.clone(),
-                                _ => bail!("missing source urls for cycle {cycle}"),
-                            };
-                            let mut cycle_config = config.clone();
-                            cycle_config.target_cycle = Some(cycle);
-                            let unpacked_root = published_unpacked_root(&cycle_config)?;
-                            let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
-                                &zip,
-                                zip.parent().unwrap_or_else(|| Path::new("/")),
-                                &unpacked_root,
-                                &format!("vectors_data_{bundle_cycle}.zip"),
-                                None,
-                            )?;
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![],
-                                value: ProductTaskValue::None,
-                                completion_detail: format!(
-                                    "cache_hit={} unpack_dir={}",
-                                    cache_hit,
-                                    unpack_dir.display()
-                                ),
                             })
                         }
                         ProductScheduledTaskKind::BundleManifest { cycle } => {
@@ -6935,7 +6692,11 @@ fn sync_cycle_bundle_unpacked_zips(
         }
         let task_values =
             task_values.context("missing task values snapshot for cycle bundle unpack sync")?;
-        let package_root = resolve_cycle_bundle_package_root(task_values, package)?
+        let package_root = resolve_cycle_bundle_package_root(
+            task_values,
+            &bundle_manifest.cycle,
+            package,
+        )?
             .with_context(|| format!("failed to resolve source root for package {}", package.id))?;
         sync_unpacked_zip_from_source(
             &config.build_root.join(&package.filename),
@@ -6951,27 +6712,28 @@ fn sync_cycle_bundle_unpacked_zips(
 
 fn resolve_cycle_bundle_package_root(
     task_values: &BTreeMap<String, ProductTaskValue>,
+    bundle_cycle: &str,
     package: &BundlePackageArtifact,
 ) -> anyhow::Result<Option<PathBuf>> {
     fn task_id(cycle: &str, name: &str) -> String {
         format!("{cycle}:{name}")
     }
 
-    let Some(cycle) = &package.cycle else {
+    if package.cycle.is_none() {
         return Ok(None);
-    };
+    }
     let region_id = package
         .region_id
         .as_deref()
         .unwrap_or_default()
         .to_ascii_lowercase();
     let task_id = match package.family_id.as_str() {
-        "csup" => task_id(cycle, "csup-package"),
-        "tpp" => task_id(cycle, &format!("tpp-{region_id}-package")),
+        "csup" => task_id(bundle_cycle, "csup-package"),
+        "tpp" => task_id(bundle_cycle, &format!("tpp-{region_id}-package")),
         "sec" | "tac" | "enr-l" | "enr-h" => {
-            task_id(cycle, &format!("charts-{}-package", package.family_id))
+            task_id(bundle_cycle, &format!("charts-{}-package", package.family_id))
         }
-        "vectors" => task_id(cycle, "vectors"),
+        "vectors" => task_id(bundle_cycle, "vectors"),
         _ => return Ok(None),
     };
 

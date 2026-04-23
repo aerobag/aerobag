@@ -32,6 +32,9 @@ pub fn display_path_for_procedure_leg(
     if leg_end.path_termination.trim() == "RF" {
         return radius_to_fix_display_path(leg_start, leg_end);
     }
+    if leg_end.path_termination.trim() == "FC" {
+        return course_from_fix_display_path(leg_end);
+    }
     if terminal_record.sequence > leg_start.sequence {
         if let Some(path) = sequenced_leg_display_path(segment_records, leg_start, terminal_record)
         {
@@ -243,6 +246,24 @@ fn radius_to_fix_display_path(
     })
 }
 
+fn course_from_fix_display_path(leg: &ProcedureLegMaterializationRecord) -> Option<LegDisplayPath> {
+    let (element, ..) = course_from_fix_segment(leg)?;
+    Some(LegDisplayPath {
+        style: LegDisplayPathStyle::Solid,
+        elements: vec![element],
+    })
+}
+
+fn course_from_fix_segment(
+    leg: &ProcedureLegMaterializationRecord,
+) -> Option<(LegDisplayElement, LatLon, f64)> {
+    let start = leg.nav_position?;
+    let course_deg = leg.magnetic_course_deg? + course_reference_variation_deg(leg);
+    let distance_nm = parse_distance_tenths_nm(leg.route_distance_or_time.as_deref())?;
+    let end = destination_point(start, course_deg, distance_nm);
+    Some((LegDisplayElement::Segment { start, end }, end, course_deg))
+}
+
 fn nominal_procedure_turn_barb_distance_nm() -> f64 {
     distance_nm_for_minutes_at_speed_kt(
         NOMINAL_PROCEDURE_TURN_GROUND_SPEED_KT,
@@ -266,6 +287,13 @@ fn sequenced_leg_display_path(
         .map(|course| course + course_reference_variation_deg(leg_start));
     let mut current_altitude_ft = leg_start.altitude_1_ft;
     let mut elements = Vec::new();
+
+    if leg_start.path_termination.trim() == "FC" {
+        let (element, end, course_deg) = course_from_fix_segment(leg_start)?;
+        elements.push(element);
+        current_position = end;
+        current_course_deg = Some(course_deg);
+    }
 
     let mut steps = segment_records
         .iter()
@@ -1133,6 +1161,14 @@ fn nominal_hold_leg_length_nm(distance_or_time: Option<&str>) -> Option<f64> {
             NOMINAL_HOLD_GROUND_SPEED_KT,
             minutes,
         ));
+    }
+    parse_distance_tenths_nm(Some(value))
+}
+
+fn parse_distance_tenths_nm(distance_or_time: Option<&str>) -> Option<f64> {
+    let value = distance_or_time?.trim();
+    if value.is_empty() || value.starts_with('T') {
+        return None;
     }
     let tenths_nm = value.parse::<f64>().ok()?;
     Some(tenths_nm / 10.0)

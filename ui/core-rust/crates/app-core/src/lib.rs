@@ -1333,6 +1333,9 @@ fn resolve_procedure_materialization_legs_with_provenance(
             if from == to && matches!(pair[1].path_termination.trim(), "HF" | "HM") {
                 continue;
             }
+            if from == to && pair[1].path_termination.trim() == "FC" {
+                continue;
+            }
             let duplicate_of_previous = resolved
                 .last()
                 .is_some_and(|previous| previous.from == from && previous.to == to);
@@ -4778,6 +4781,94 @@ mod tests {
     }
 
     #[test]
+    fn materializes_kawo_l34_pae_with_fc_stub() {
+        let rows = load_browser_style_procedure_distinct_rows(fixture_db_path(), "KAWO", "L34");
+        let records = load_browser_style_procedure_materialization_records(
+            fixture_db_path(),
+            "KAWO",
+            "L34",
+        );
+        let materialized = materialize_procedure_from_records(
+            "KAWO",
+            "L34",
+            ProcedureKind::Approach,
+            None,
+            Some("PAE".to_string()),
+            0,
+            rows,
+            records,
+        )
+        .expect("materialize KAWO L34 PAE");
+
+        let first_leg = materialized
+            .resolved_legs
+            .iter()
+            .find(|leg| {
+                leg.from == NavRef::Navaid("PAE".to_string())
+                    && leg.to == NavRef::Fix("SAVOY".to_string())
+            })
+            .expect("expected PAE -> SAVOY leg");
+        let path = first_leg
+            .procedure_provenance
+            .as_ref()
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .expect("expected display path for PAE -> SAVOY");
+        assert!(
+            matches!(path.elements.as_slice(), [LegDisplayElement::Segment { .. }, LegDisplayElement::Segment { .. }]),
+            "expected FC + CF segments, got {:?}",
+            path.elements
+        );
+    }
+
+    #[test]
+    fn materializes_kcrq_i24_ocn_without_zero_length_fc_leg() {
+        let rows = load_browser_style_procedure_distinct_rows(fixture_db_path(), "KCRQ", "I24");
+        let records = load_browser_style_procedure_materialization_records(
+            fixture_db_path(),
+            "KCRQ",
+            "I24",
+        );
+        let materialized = materialize_procedure_from_records(
+            "KCRQ",
+            "I24",
+            ProcedureKind::Approach,
+            None,
+            Some("OCN".to_string()),
+            0,
+            rows,
+            records,
+        )
+        .expect("materialize KCRQ I24 OCN");
+
+        assert!(
+            !materialized.resolved_legs.iter().any(|leg| {
+                leg.from == NavRef::Fix("HOMLY".to_string())
+                    && leg.to == NavRef::Fix("HOMLY".to_string())
+            }),
+            "expected duplicate HOMLY FC placeholder leg to be removed"
+        );
+
+        let outbound_leg = materialized
+            .resolved_legs
+            .iter()
+            .find(|leg| {
+                leg.from == NavRef::Fix("HOMLY".to_string())
+                    && leg.to == NavRef::Fix("ESCON".to_string())
+            })
+            .expect("expected HOMLY -> ESCON leg");
+        let path = outbound_leg
+            .procedure_provenance
+            .as_ref()
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .expect("expected display path for HOMLY -> ESCON");
+        assert!(
+            matches!(path.elements.first(), Some(LegDisplayElement::Segment { .. })),
+            "expected FC path to start with a segment, got {:?}",
+            path.elements
+        );
+    }
+
+    #[test]
     fn browser_style_i34_materialization_matches_native_core_and_stays_local() {
         let base_plan = FlightPlan {
             id: "krnt-v23-kuao-krdd".to_string(),
@@ -5134,6 +5225,24 @@ mod tests {
     #[ignore = "manual visual inspection overlay for KRFD L07"]
     fn writes_krfd_l07_overlay_png() {
         render_procedure_overlay_to_paths("KRFD", "L07", "HENOR", "KRFD_L07_HENOR", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KAWO L34"]
+    fn writes_kawo_l34_pae_overlay_png() {
+        render_procedure_overlay_to_paths("KAWO", "L34", "PAE", "KAWO_L34_PAE", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KCLM I09"]
+    fn writes_kclm_i09_tou_overlay_png() {
+        render_procedure_overlay_to_paths("KCLM", "I09", "TOU", "KCLM_I09_TOU", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KCRQ I24"]
+    fn writes_kcrq_i24_ocn_overlay_png() {
+        render_procedure_overlay_to_paths("KCRQ", "I24", "OCN", "KCRQ_I24_OCN", false);
     }
 
     #[test]

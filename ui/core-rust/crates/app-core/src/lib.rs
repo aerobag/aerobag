@@ -96,6 +96,7 @@ pub use planning::{
     replace_airway_component, replace_procedure_component, sequence_active_leg, suspend_sequencing,
     unsuspend_sequencing, AirwaySegment, ConcretizedNavItem, DirectToState, DirectToUiView,
     FlightPlan, FlightPlanUiState, GuidanceState, GuidanceUiView, LegDisplayElement,
+    LegDisplayPathStyle,
     LegDisplayPath, NavRef, PathTermination, PlanLeg, ProcedureDiscontinuity, ProcedureKind,
     ProcedureLegProvenance, ProcedureSegment, ProcedureSegmentRole, ResolvedLeg, ResolvedLegSource,
     ResolvedLegUiView, RouteComponent, RouteComponentUiView, RouteComponentViewKind,
@@ -215,12 +216,281 @@ pub enum FlightPlanRouteSegmentStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlanRouteSegment {
     pub id: String,
+    pub leg_id: String,
     pub from: LatLon,
     pub to: LatLon,
     pub path: Vec<LatLon>,
+    #[serde(default)]
+    pub style: LegDisplayPathStyle,
+    pub geometry: GuidanceRouteGeometry,
     pub distance_nm: f64,
     pub course_deg: f64,
     pub status: FlightPlanRouteSegmentStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GuidanceRouteGeometry {
+    Segment {
+        start: LatLon,
+        end: LatLon,
+    },
+    Arc {
+        center: LatLon,
+        radius_nm: f64,
+        start: LatLon,
+        end: LatLon,
+        clockwise: bool,
+        sweep_degrees: f64,
+    },
+}
+
+pub(crate) fn guidance_detail_count_for_leg(leg: &ResolvedLeg) -> usize {
+    leg.procedure_provenance
+        .as_ref()
+        .and_then(|provenance| provenance.display_path.as_ref())
+        .map(|path| path.elements.len().max(1))
+        .unwrap_or(1)
+}
+
+pub(crate) fn guidance_detail_id_for_leg_element(leg: &ResolvedLeg, element_index: usize) -> String {
+    format!("{}#{element_index}", leg.id)
+}
+
+fn guidance_detail_index_for_leg_element(
+    plan: &FlightPlan,
+    leg_index: usize,
+    element_index: usize,
+) -> Option<usize> {
+    let leg = plan.resolved_legs.get(leg_index)?;
+    if element_index >= guidance_detail_count_for_leg(leg) {
+        return None;
+    }
+    Some(
+        plan.resolved_legs[..leg_index]
+            .iter()
+            .map(guidance_detail_count_for_leg)
+            .sum::<usize>()
+            + element_index,
+    )
+}
+
+pub(crate) fn guidance_detail_id_for_index(plan: &FlightPlan, detail_index: usize) -> Option<String> {
+    let mut current_index = 0usize;
+    for leg in &plan.resolved_legs {
+        let detail_count = guidance_detail_count_for_leg(leg);
+        if detail_index < current_index + detail_count {
+            return Some(guidance_detail_id_for_leg_element(
+                leg,
+                detail_index - current_index,
+            ));
+        }
+        current_index += detail_count;
+    }
+    None
+}
+
+fn route_status_for_detail(
+    plan: &FlightPlan,
+    leg_index: usize,
+    element_index: usize,
+) -> FlightPlanRouteSegmentStatus {
+    let Some(guidance) = plan.guidance.as_ref() else {
+        return FlightPlanRouteSegmentStatus::Remaining;
+    };
+    let Some(detail_index) = guidance_detail_index_for_leg_element(plan, leg_index, element_index)
+    else {
+        return FlightPlanRouteSegmentStatus::Remaining;
+    };
+    let active_detail_index = guidance.active_detail_index.or_else(|| {
+        guidance_detail_index_for_leg_element(plan, guidance.active_leg_index, 0)
+    });
+    let Some(active_detail_index) = active_detail_index else {
+        return FlightPlanRouteSegmentStatus::Remaining;
+    };
+    if detail_index < active_detail_index {
+        FlightPlanRouteSegmentStatus::Completed
+    } else if detail_index == active_detail_index {
+        FlightPlanRouteSegmentStatus::Active
+    } else {
+        FlightPlanRouteSegmentStatus::Remaining
+    }
+}
+
+fn guidance_route_geometry_from_display_element(element: &LegDisplayElement) -> GuidanceRouteGeometry {
+    match element {
+        LegDisplayElement::Segment { start, end } => GuidanceRouteGeometry::Segment {
+            start: *start,
+            end: *end,
+        },
+        LegDisplayElement::Arc {
+            center,
+            radius_nm,
+            start,
+            end,
+            clockwise,
+            sweep_degrees,
+        } => GuidanceRouteGeometry::Arc {
+            center: *center,
+            radius_nm: *radius_nm,
+            start: *start,
+            end: *end,
+            clockwise: *clockwise,
+            sweep_degrees: *sweep_degrees,
+        },
+    }
+}
+
+fn guidance_route_path_from_geometry(geometry: &GuidanceRouteGeometry) -> Vec<LatLon> {
+    match geometry {
+        GuidanceRouteGeometry::Segment { start, end } => great_circle_display_path(*start, *end),
+        GuidanceRouteGeometry::Arc {
+            center,
+            radius_nm,
+            start,
+            clockwise,
+            sweep_degrees,
+            ..
+        } => {
+            let start_bearing = route_bearing_from(*center, *start);
+            let sweep = if *clockwise {
+                sweep_degrees.abs()
+            } else {
+                -sweep_degrees.abs()
+            };
+            let steps = usize::max(8, (sweep.abs() / 15.0).ceil() as usize);
+            let mut path = Vec::with_capacity(steps + 1);
+            for index in 0..=steps {
+                let fraction = index as f64 / steps as f64;
+                let bearing = start_bearing + sweep * fraction;
+                let point = route_destination_point(*center, bearing, *radius_nm);
+                if path.last().copied() != Some(point) {
+                    path.push(point);
+                }
+            }
+            path
+        }
+    }
+}
+
+fn guidance_route_distance_nm(geometry: &GuidanceRouteGeometry) -> f64 {
+    match geometry {
+        GuidanceRouteGeometry::Segment { start, end } => flight_leg_distance_nm(*start, *end),
+        GuidanceRouteGeometry::Arc {
+            radius_nm,
+            sweep_degrees,
+            ..
+        } => radius_nm * sweep_degrees.to_radians().abs(),
+    }
+}
+
+fn guidance_route_course_deg(geometry: &GuidanceRouteGeometry) -> f64 {
+    match geometry {
+        GuidanceRouteGeometry::Segment { start, end } => flight_leg_course_deg(*start, *end),
+        GuidanceRouteGeometry::Arc {
+            center,
+            start,
+            clockwise,
+            ..
+        } => {
+            let radial_deg = bearing_degrees(*center, *start);
+            normalize_bearing_degrees(if *clockwise {
+                radial_deg + 90.0
+            } else {
+                radial_deg - 90.0
+            })
+        }
+    }
+}
+
+fn guidance_route_endpoints(geometry: &GuidanceRouteGeometry) -> (LatLon, LatLon) {
+    match geometry {
+        GuidanceRouteGeometry::Segment { start, end } => (*start, *end),
+        GuidanceRouteGeometry::Arc { start, end, .. } => (*start, *end),
+    }
+}
+
+fn route_bearing_from(from: LatLon, to: LatLon) -> f64 {
+    let from_lat = from.lat.to_radians();
+    let to_lat = to.lat.to_radians();
+    let delta_lon = (to.lon - from.lon).to_radians();
+    let y = delta_lon.sin() * to_lat.cos();
+    let x = from_lat.cos() * to_lat.sin() - from_lat.sin() * to_lat.cos() * delta_lon.cos();
+    normalize_bearing_degrees(y.atan2(x).to_degrees())
+}
+
+fn route_destination_point(origin: LatLon, bearing_deg: f64, distance_nm: f64) -> LatLon {
+    let angular_distance = distance_nm / 3440.065;
+    let bearing_rad = bearing_deg.to_radians();
+    let lat1 = origin.lat.to_radians();
+    let lon1 = origin.lon.to_radians();
+    let lat2 = (lat1.sin() * angular_distance.cos()
+        + lat1.cos() * angular_distance.sin() * bearing_rad.cos())
+    .asin();
+    let lon2 = lon1
+        + (bearing_rad.sin() * angular_distance.sin() * lat1.cos())
+            .atan2(angular_distance.cos() - lat1.sin() * lat2.sin());
+    LatLon {
+        lat: lat2.to_degrees(),
+        lon: lon2.to_degrees(),
+    }
+}
+
+pub(crate) fn project_flight_plan_route_with_resolver<E, F>(
+    plan: &FlightPlan,
+    mut resolve_position: F,
+) -> Result<Vec<FlightPlanRouteSegment>, E>
+where
+    F: FnMut(&NavRef, Option<&str>) -> Result<LatLon, E>,
+{
+    let mut route = Vec::new();
+    for (leg_index, leg) in plan.resolved_legs.iter().enumerate() {
+        let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
+            (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str())
+        });
+        let fallback_from = resolve_position(&leg.from, procedure_airport_id)?;
+        let fallback_to = resolve_position(&leg.to, procedure_airport_id)?;
+        if let Some(display_path) = leg
+            .procedure_provenance
+            .as_ref()
+            .and_then(|provenance| provenance.display_path.as_ref())
+        {
+            for (element_index, element) in display_path.elements.iter().enumerate() {
+                let geometry = guidance_route_geometry_from_display_element(element);
+                let (from, to) = guidance_route_endpoints(&geometry);
+                route.push(FlightPlanRouteSegment {
+                    id: guidance_detail_id_for_leg_element(leg, element_index),
+                    leg_id: leg.id.clone(),
+                    from,
+                    to,
+                    path: guidance_route_path_from_geometry(&geometry),
+                    style: display_path.style.clone(),
+                    geometry: geometry.clone(),
+                    distance_nm: guidance_route_distance_nm(&geometry),
+                    course_deg: guidance_route_course_deg(&geometry),
+                    status: route_status_for_detail(&plan, leg_index, element_index),
+                });
+            }
+        } else {
+            let geometry = GuidanceRouteGeometry::Segment {
+                start: fallback_from,
+                end: fallback_to,
+            };
+            route.push(FlightPlanRouteSegment {
+                id: guidance_detail_id_for_leg_element(leg, 0),
+                leg_id: leg.id.clone(),
+                from: fallback_from,
+                to: fallback_to,
+                path: guidance_route_path_from_geometry(&geometry),
+                style: LegDisplayPathStyle::Solid,
+                geometry: geometry.clone(),
+                distance_nm: guidance_route_distance_nm(&geometry),
+                course_deg: guidance_route_course_deg(&geometry),
+                status: route_status_for_detail(&plan, leg_index, 0),
+            });
+        }
+    }
+    Ok(route)
 }
 
 use std::{
@@ -1178,6 +1448,7 @@ struct DisplayElementHeadingSignature {
     step_index: usize,
     airport_id: String,
     procedure_id: String,
+    path_termination: String,
     start_position: LatLon,
     start_course_deg: f64,
     start_label: String,
@@ -1218,6 +1489,7 @@ fn heading_signatures_for_leg(
                     step_index: starting_step_index + index,
                     airport_id: from_record.key.airport_id.trim().to_string(),
                     procedure_id: from_record.key.procedure_id.trim().to_string(),
+                    path_termination: path_termination.to_string(),
                     start_position,
                     start_course_deg,
                     start_label: if index == 0 {
@@ -1262,6 +1534,7 @@ fn heading_signatures_for_leg(
         step_index: starting_step_index,
         airport_id: from_record.key.airport_id.trim().to_string(),
         procedure_id: from_record.key.procedure_id.trim().to_string(),
+        path_termination: path_termination.to_string(),
         start_position: start,
         start_course_deg: course,
         start_label: describe_record_anchor(from_record),
@@ -1366,6 +1639,9 @@ fn continuity_heading_tolerance_deg(
     }
     if current.starts_procedure_turn {
         return 160.0;
+    }
+    if previous.path_termination == "AF" || current.path_termination == "AF" {
+        return 120.0;
     }
     if previous.element_kind == DisplayElementKind::Segment
         && current.element_kind == DisplayElementKind::Segment
@@ -1710,72 +1986,15 @@ pub fn build_flight_plan_ui(plan: FlightPlan) -> AppResult<FlightPlanUiState> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn route_status_for_leg(
-    ui_state: &FlightPlanUiState,
-    leg_index: usize,
-) -> FlightPlanRouteSegmentStatus {
-    let guidance = match ui_state.guidance.as_ref() {
-        Some(guidance) => guidance,
-        None => return FlightPlanRouteSegmentStatus::Remaining,
-    };
-    let active_leg_index = if guidance.active_leg.is_some() {
-        guidance.active_leg_index
-    } else {
-        None
-    };
-    if let Some(active_leg_index) = active_leg_index {
-        return if leg_index < active_leg_index {
-            FlightPlanRouteSegmentStatus::Completed
-        } else if leg_index == active_leg_index {
-            FlightPlanRouteSegmentStatus::Active
-        } else {
-            FlightPlanRouteSegmentStatus::Remaining
-        };
-    }
-    let split_index = guidance.display_split_leg_index.unwrap_or(0);
-    if leg_index < split_index {
-        FlightPlanRouteSegmentStatus::Completed
-    } else {
-        FlightPlanRouteSegmentStatus::Remaining
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 pub fn project_flight_plan_route(
     db_path: &str,
     plan: &FlightPlan,
 ) -> AppResult<Vec<FlightPlanRouteSegment>> {
     let plan = build_flight_plan(plan.clone())?;
-    let ui_state = project_ui_state(&plan);
     let db_path = Path::new(db_path);
-    plan.resolved_legs
-        .iter()
-        .enumerate()
-        .map(|(leg_index, leg)| {
-            let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
-                (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str())
-            });
-            let from = resolve_nav_ref_position_with_procedure_airport(
-                db_path,
-                &leg.from,
-                procedure_airport_id,
-            )?;
-            let to = resolve_nav_ref_position_with_procedure_airport(
-                db_path,
-                &leg.to,
-                procedure_airport_id,
-            )?;
-            Ok(FlightPlanRouteSegment {
-                id: leg.id.clone(),
-                from,
-                to,
-                path: great_circle_display_path(from, to),
-                distance_nm: flight_leg_distance_nm(from, to),
-                course_deg: flight_leg_course_deg(from, to),
-                status: route_status_for_leg(&ui_state, leg_index),
-            })
-        })
-        .collect()
+    project_flight_plan_route_with_resolver(&plan, |nav_ref, procedure_airport_id| {
+        resolve_nav_ref_position_with_procedure_airport(db_path, nav_ref, procedure_airport_id)
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -3903,6 +4122,7 @@ mod tests {
             resolved_legs: Vec::new(),
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                active_detail_index: Some(0),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
@@ -3970,6 +4190,7 @@ mod tests {
             resolved_legs: Vec::new(),
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                active_detail_index: Some(0),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
@@ -4024,6 +4245,7 @@ mod tests {
             resolved_legs: Vec::new(),
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                active_detail_index: Some(0),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
@@ -4256,6 +4478,7 @@ mod tests {
             resolved_legs: Vec::new(),
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                active_detail_index: Some(0),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
@@ -4295,6 +4518,105 @@ mod tests {
     }
 
     #[test]
+    fn inserts_kpae_vor_a_from_ecepo_between_sea_and_pae() {
+        let plan = FlightPlan {
+            id: "krnt-sea-pae".to_string(),
+            name: "KRNT SEA PAE".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Navaid("SEA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+            ],
+            resolved_legs: Vec::new(),
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(0),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KPAE".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let built = materialize_procedure_selection(
+            fixture_db_path(),
+            "KPAE",
+            "VOR-A",
+            ProcedureKind::Approach,
+            None,
+            Some("ECEPO"),
+            2,
+        )
+        .unwrap();
+
+        let mutation = insert_procedure_materialized_ui(&plan, 1, 2, built).unwrap();
+
+        assert!(matches!(
+            mutation.mutation.plan.route_components[2],
+            RouteComponent::Procedure { .. }
+        ));
+        let procedure = match &mutation.mutation.plan.route_components[2] {
+            RouteComponent::Procedure { procedure } => procedure,
+            _ => unreachable!(),
+        };
+        assert_eq!(procedure.airport_id.0, "KPAE");
+        assert_eq!(procedure.procedure_id, "VOR-A");
+        assert_eq!(procedure.enroute_transition.as_deref(), Some("ECEPO"));
+    }
+
+    #[test]
+    fn materializes_kpae_vor_a_from_ecepo_with_arc_to_yavur() {
+        let rows =
+            load_browser_style_procedure_distinct_rows(fixture_db_path(), "KPAE", "VOR-A");
+        let records =
+            load_browser_style_procedure_materialization_records(fixture_db_path(), "KPAE", "VOR-A");
+        let materialized = materialize_procedure_from_records(
+            "KPAE",
+            "VOR-A",
+            ProcedureKind::Approach,
+            None,
+            Some("ECEPO".to_string()),
+            0,
+            rows,
+            records,
+        )
+        .expect("materialize KPAE VOR-A ECEPO");
+
+        let first_leg = materialized
+            .resolved_legs
+            .iter()
+            .find(|leg| {
+                leg.from == NavRef::Fix("ECEPO".to_string())
+                    && leg.to == NavRef::Fix("YAVUR".to_string())
+            })
+            .expect("expected ECEPO -> YAVUR leg");
+        let display_path = first_leg
+            .procedure_provenance
+            .as_ref()
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .expect("expected display path for ECEPO -> YAVUR");
+        assert!(
+            matches!(display_path.elements.as_slice(), [LegDisplayElement::Arc { .. }]),
+            "expected AF leg to be rendered as a single arc, got {:?}",
+            display_path.elements
+        );
+    }
+
+    #[test]
     fn browser_style_i34_materialization_matches_native_core_and_stays_local() {
         let base_plan = FlightPlan {
             id: "krnt-v23-kuao-krdd".to_string(),
@@ -4314,6 +4636,7 @@ mod tests {
             resolved_legs: Vec::new(),
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                active_detail_index: Some(0),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
@@ -4602,6 +4925,12 @@ mod tests {
     #[ignore = "manual visual inspection overlay for KNVD VOR-A ROFBE"]
     fn writes_knvd_vora_rofbe_overlay_png() {
         render_procedure_overlay_to_paths("KNVD", "VOR-A", "ROFBE", "KNVD_VOR-A_ROFBE", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KPAE VOR-A ECEPO"]
+    fn writes_kpae_vora_ecepo_overlay_png() {
+        render_procedure_overlay_to_paths("KPAE", "VOR-A", "ECEPO", "KPAE_VOR-A_ECEPO", true);
     }
 
     #[test]

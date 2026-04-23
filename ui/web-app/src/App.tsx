@@ -24,6 +24,7 @@ import type {
   ProcedureOptions,
   ProcedureLoadOption,
   ProcedureSummary,
+  SituationRingCandidate,
   WaypointIdentifierSuggestion,
 } from "./domain/types";
 import { runCoreHadOperation } from "./domain/navKv";
@@ -508,7 +509,6 @@ const rasterTileDebugTargets = [
   { zoom: 8, x: 42, yTms: 166 },
   { zoom: 8, x: 41, yTms: 166 },
 ] as const;
-const situationRingSizesNm = [0.25, 0.5, 0.8, 1, 1.5, 2, 3, 5, 8, 10, 15, 20, 30, 50, 100, 150, 200] as const;
 const vorOuterHexPoints = [
   { x: -8, y: 0 },
   { x: -4, y: -7 },
@@ -1899,9 +1899,10 @@ function MapPage(props: {
       matching_tiles: matchingTiles,
     });
   }, [selectedFamily.id, selectedMap.id, tiles]);
+  const situationRingCandidates = useMemo(() => appCoreAdapter.situationRingCandidates(), [appCoreAdapter]);
   const situationOverlay = useMemo(
-    () => resolveSituationOverlay(ownship, viewport, surfaceSize.width, surfaceSize.height),
-    [ownship, viewport, surfaceSize.height, surfaceSize.width],
+    () => resolveSituationOverlay(ownship, viewport, surfaceSize.width, surfaceSize.height, situationRingCandidates),
+    [ownship, viewport, surfaceSize.height, surfaceSize.width, situationRingCandidates],
   );
   const nexradOverlay = useMemo(() => {
     const frame = nexradFrames[nexradFrameIndex];
@@ -5708,13 +5709,14 @@ function resolveSituationOverlay(
   viewport: MapViewportState,
   width: number,
   height: number,
+  ringCandidates: SituationRingCandidate[],
 ) {
   if (width <= 0 || height <= 0 || !ownship.draw_aircraft || !ownship.position) {
     return null;
   }
   const point = latLonToScreen(ownship.position.lat, ownship.position.lon, viewport, width, height);
   const headingDeg = ownship.orientation_deg ?? 0;
-  const ring = selectSituationRing(ownship.position.lat, ownship.position.lon, viewport, width, height);
+  const ring = selectSituationRing(ownship.position.lat, ownship.position.lon, viewport, width, height, ringCandidates);
   const ahead =
     ownship.draw_predictor && ownship.speed_kt !== null
       ? projectAhead(ownship.position.lat, ownship.position.lon, headingDeg, ownship.speed_kt / 60)
@@ -5851,33 +5853,33 @@ function selectSituationRing(
   viewport: MapViewportState,
   width: number,
   height: number,
+  ringCandidates: SituationRingCandidate[],
 ) {
   const center = latLonToScreen(lat, lon, viewport, width, height);
   const smaller = Math.min(width, height);
   const minDiameter = smaller * 0.5;
   const maxDiameter = smaller * 0.8;
   const targetDiameter = smaller * 0.65;
-  const candidates = situationRingSizesNm.map((radiusNm) => {
-    const edge = projectAhead(lat, lon, 90, radiusNm);
+  const candidates = ringCandidates.map((candidate) => {
+    const edge = projectAhead(lat, lon, 90, candidate.radius_nm);
     const edgePoint = latLonToScreen(edge.lat, edge.lon, viewport, width, height);
     const radiusPx = Math.hypot(edgePoint.x - center.x, edgePoint.y - center.y);
     const diameterPx = radiusPx * 2;
     const outOfBounds =
       diameterPx < minDiameter ? minDiameter - diameterPx : diameterPx > maxDiameter ? diameterPx - maxDiameter : 0;
     const score = outOfBounds > 0 ? 10000 + outOfBounds : Math.abs(diameterPx - targetDiameter);
-    return { radiusNm, radiusPx, score };
+    return { ...candidate, radiusPx, score };
   });
   const best = candidates.reduce((currentBest, candidate) => (candidate.score < currentBest.score ? candidate : currentBest));
   const labelAngle = -45;
   const labelPoint = pointOnCircle(center, best.radiusPx + 16, labelAngle);
   return {
-    radiusNm: best.radiusNm,
     radiusPx: best.radiusPx,
     tickMarks: buildRingTickMarks(center, best.radiusPx),
     label: {
       point: labelPoint,
       rotationDeg: 45,
-      text: formatRingDistance(best.radiusNm),
+      text: best.label,
     },
   };
 }
@@ -5898,10 +5900,6 @@ function pointOnCircle(center: { x: number; y: number }, radiusPx: number, angle
     x: center.x + radiusPx * Math.cos(radians),
     y: center.y + radiusPx * Math.sin(radians),
   };
-}
-
-function formatRingDistance(radiusNm: number) {
-  return `${Number.isInteger(radiusNm) ? radiusNm.toFixed(0) : radiusNm.toString()}nm`;
 }
 
 function formatPlanDistance(distanceNm: number | null) {

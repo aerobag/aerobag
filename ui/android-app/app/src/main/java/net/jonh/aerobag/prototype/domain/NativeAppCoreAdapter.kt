@@ -101,6 +101,10 @@ class NativeAppCoreAdapter(
         ignoreUnknownKeys = true
     },
 ) : AppCoreAdapter {
+    fun situationRingCandidates(): List<SituationRingCandidate> =
+        json.decodeFromString<List<WireSituationRingCandidate>>(bridge.situationRingCandidatesJson())
+            .map { it.toUi() }
+
     fun createUiSession(
         plan: FlightPlan,
         recentAirportIds: List<String>,
@@ -932,6 +936,11 @@ private fun WireOwnshipControlModel.toUi() = OwnshipControlModel(
 private fun WireOwnshipUiState.toUi() = OwnshipUiState(
     render = render.toUi(),
     controls = controls.toUi(),
+)
+
+private fun WireSituationRingCandidate.toUi() = SituationRingCandidate(
+    radiusNm = radius_nm,
+    label = label,
 )
 
 private fun WireMapFollowUiState.toUi() = MapFollowUiState(

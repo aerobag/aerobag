@@ -35,6 +35,7 @@ import type {
   RouteComponentUiView,
   SequencingMode,
   Situation,
+  SituationRingCandidate,
   SituationSample,
   WaypointIdentifierSuggestion,
 } from "./types";
@@ -279,6 +280,7 @@ export interface UiSession {
 
 export interface AppCoreAdapter {
   prewarm(): Promise<void>;
+  situationRingCandidates(): SituationRingCandidate[];
   createUiSession(
     chartCatalog: ChartPageData,
     plan: FlightPlan,
@@ -372,6 +374,7 @@ async function fetchVectorManifestJson(): Promise<string> {
 
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
+  situation_ring_candidates_json(): Promise<string> | string;
   create_ui_session(catalogJson: string, vectorManifestJson: string, chartCatalogJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   create_ui_session_profiled?: (catalogJson: string, vectorManifestJson: string, chartCatalogJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
   remove_leg_in_session(handle: number, index: number): Promise<string> | string;
@@ -457,6 +460,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async prewarm(): Promise<void> {}
+
+  situationRingCandidates(): SituationRingCandidate[] {
+    const candidatesJson = this.module.situation_ring_candidates_json();
+    if (typeof candidatesJson !== "string") {
+      throw new Error("situation_ring_candidates_json must be synchronous");
+    }
+    return JSON.parse(candidatesJson) as SituationRingCandidate[];
+  }
 
   private async enrichFlightPlanUiState(plan: FlightPlan, _uiState: FlightPlanUiState): Promise<FlightPlanUiState> {
     return runCoreHadOperation<FlightPlanUiState>({ kind: "flight_plan_ui_state", plan });
@@ -1045,6 +1056,7 @@ export async function loadBestAvailableAdapter(
   }
   debugLog("wasm.exports.check.start");
   if (
+    typeof mod.situation_ring_candidates_json !== "function" ||
     typeof mod.create_ui_session !== "function" ||
     typeof mod.remove_leg_in_session !== "function" ||
     typeof mod.move_waypoint_in_session !== "function" ||

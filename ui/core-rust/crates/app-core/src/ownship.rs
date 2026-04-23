@@ -3,6 +3,41 @@ use serde::{Deserialize, Serialize};
 use crate::geometry::LatLon;
 
 const DEFAULT_STALE_AFTER_MS: i64 = 5_000;
+const FEET_PER_NAUTICAL_MILE: f64 = 6076.12;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SituationRingCandidate {
+    pub radius_nm: f64,
+    pub label: String,
+}
+
+pub fn situation_ring_candidates() -> Vec<SituationRingCandidate> {
+    const FEET_CANDIDATES: [u32; 7] = [500, 800, 1_000, 1_500, 2_000, 3_000, 5_000];
+    const NM_CANDIDATES: [f64; 18] = [
+        1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 10.0, 15.0, 20.0, 30.0, 50.0, 80.0, 100.0, 150.0, 200.0,
+        300.0, 500.0, 800.0,
+    ];
+
+    FEET_CANDIDATES
+        .into_iter()
+        .map(|feet| SituationRingCandidate {
+            radius_nm: f64::from(feet) / FEET_PER_NAUTICAL_MILE,
+            label: format!("{feet}ft"),
+        })
+        .chain(NM_CANDIDATES.into_iter().map(|nm| SituationRingCandidate {
+            radius_nm: nm,
+            label: format_nm_label(nm),
+        }))
+        .collect()
+}
+
+fn format_nm_label(nm: f64) -> String {
+    if nm.fract() == 0.0 {
+        format!("{}nm", nm as u32)
+    } else {
+        format!("{nm}nm")
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OwnshipSourceId(pub String);
@@ -686,5 +721,19 @@ mod tests {
         );
 
         assert_eq!(state.resolved.mode, OwnshipMode::None);
+    }
+
+    #[test]
+    fn situation_ring_candidates_are_core_owned() {
+        let candidates = situation_ring_candidates();
+
+        assert_eq!(candidates.first().unwrap().label, "500ft");
+        assert_eq!(candidates.last().unwrap().label, "800nm");
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.label == "1.5nm"));
+        assert!(candidates
+            .windows(2)
+            .all(|pair| pair[0].radius_nm < pair[1].radius_nm));
     }
 }

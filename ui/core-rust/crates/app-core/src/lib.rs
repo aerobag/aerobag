@@ -78,12 +78,12 @@ pub use navdb_types::{
 };
 pub use navkv::{nav_kv_key_for_query, NavKvLookup, NavKvQuery, NavKvRoot, NavKvStore};
 pub use ownship::{
-    push_sample, register_source, set_policy, update_source_status, OwnshipBannerSeverity,
-    OwnshipControlModel, OwnshipMode, OwnshipPolicy, OwnshipRenderState, OwnshipSelectionCommand,
-    OwnshipSelectionPolicy, OwnshipSourceId, OwnshipSourceKind, OwnshipSourceMenuItem,
-    OwnshipSourceRegistration, OwnshipSourceStatus, OwnshipSourceStatusUpdate, OwnshipState,
-    OwnshipUiState, ResolvedOwnshipState, SituationKinematics, SituationSample,
-    SourceConnectionState,
+    push_sample, register_source, set_policy, situation_ring_candidates, update_source_status,
+    OwnshipBannerSeverity, OwnshipControlModel, OwnshipMode, OwnshipPolicy, OwnshipRenderState,
+    OwnshipSelectionCommand, OwnshipSelectionPolicy, OwnshipSourceId, OwnshipSourceKind,
+    OwnshipSourceMenuItem, OwnshipSourceRegistration, OwnshipSourceStatus,
+    OwnshipSourceStatusUpdate, OwnshipState, OwnshipUiState, ResolvedOwnshipState,
+    SituationKinematics, SituationRingCandidate, SituationSample, SourceConnectionState,
 };
 pub use planning::{
     activate_direct_to, activate_direct_to_leg, activate_leg, activate_next_leg,

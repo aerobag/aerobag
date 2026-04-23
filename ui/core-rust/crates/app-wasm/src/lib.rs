@@ -116,6 +116,12 @@ pub fn core_had_operation(nav_kv_handle: u32, operation_json: &str) -> Result<St
 }
 
 #[wasm_bindgen]
+pub fn situation_ring_candidates_json() -> Result<String, JsValue> {
+    serde_json::to_string(&app_core::situation_ring_candidates())
+        .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn load_catalog(catalog_json: &str) -> Result<String, JsValue> {
     load_catalog_json(catalog_json).map_err(|err| JsValue::from_str(&err))
 }

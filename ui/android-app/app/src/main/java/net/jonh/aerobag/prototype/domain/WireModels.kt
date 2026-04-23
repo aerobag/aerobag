@@ -101,6 +101,12 @@ data class WireOwnshipUiState(
 )
 
 @Serializable
+data class WireSituationRingCandidate(
+    val radius_nm: Double,
+    val label: String,
+)
+
+@Serializable
 data class WireMapFollowUiState(
     val can_center_here: Boolean = false,
     val following: Boolean = false,

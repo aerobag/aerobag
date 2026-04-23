@@ -1166,6 +1166,18 @@ fn return_string(env: &mut JNIEnv, value: Result<String, String>) -> jstring {
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_situationRingCandidatesJson(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    return_string(
+        &mut env,
+        serde_json::to_string(&app_core::situation_ring_candidates())
+            .map_err(|err| err.to_string()),
+    )
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_replaceFlightPlanStateJson(
     mut env: JNIEnv,
     _class: JClass,

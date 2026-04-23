@@ -646,6 +646,11 @@ data class OwnshipUiState(
     val controls: OwnshipControlModel = OwnshipControlModel(),
 )
 
+data class SituationRingCandidate(
+    val radiusNm: Double,
+    val label: String,
+)
+
 data class OwnshipSourceMenuItem(
     val sourceId: String,
     val label: String,

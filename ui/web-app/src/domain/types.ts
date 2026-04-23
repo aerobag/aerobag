@@ -741,6 +741,11 @@ export type MapViewOptionJson = {
   map_view: MapViewJson;
 };
 
+export type SituationRingCandidate = {
+  radius_nm: number;
+  label: string;
+};
+
 export type MapTileViewJson = {
   chart_family: ChartFamilyId;
   chart_name: string;

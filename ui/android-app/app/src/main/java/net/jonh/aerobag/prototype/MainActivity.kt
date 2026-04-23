@@ -185,6 +185,7 @@ import net.jonh.aerobag.prototype.domain.ScreenPoint
 import net.jonh.aerobag.prototype.domain.SectionalPackages
 import net.jonh.aerobag.prototype.domain.SampleData
 import net.jonh.aerobag.prototype.domain.SequencingMode
+import net.jonh.aerobag.prototype.domain.SituationRingCandidate
 import net.jonh.aerobag.prototype.domain.SituationSample
 import net.jonh.aerobag.prototype.domain.SourceConnectionState
 import net.jonh.aerobag.prototype.domain.TileStorageKind
@@ -229,7 +230,6 @@ private val PlanGridGap = 2.dp
 private const val DefaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json"
 private const val DefaultAndroidDevServerBaseUrl = "http://10.0.2.2:8080"
 private val VampsPosition = LatLon(47.3648944444444, -121.980275)
-private val SituationRingSizesNm = listOf(0.25, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 150.0, 200.0)
 
 private data class LatLon(val lat: Double, val lon: Double)
 
@@ -732,6 +732,7 @@ private fun resolveSituationOverlay(
     viewport: MapViewportState,
     widthUnits: Float,
     heightUnits: Float,
+    ringCandidates: List<SituationRingCandidate>,
 ): SituationOverlay? {
     if (widthUnits <= 0f || heightUnits <= 0f) return null
     if (!ownship.drawAircraft) return null
@@ -747,7 +748,7 @@ private fun resolveSituationOverlay(
         pointUnits = point,
         headingDeg = heading,
         predictorUnits = predictor,
-        ring = selectSituationRing(position, viewport, widthUnits, heightUnits),
+        ring = selectSituationRing(position, viewport, widthUnits, heightUnits, ringCandidates),
     )
 }
 
@@ -787,15 +788,16 @@ private fun selectSituationRing(
     viewport: MapViewportState,
     widthUnits: Float,
     heightUnits: Float,
+    ringCandidates: List<SituationRingCandidate>,
 ): SituationRing {
     val center = latLonToScreen(position.lat, position.lon, viewport, widthUnits, heightUnits)
     val smaller = minOf(widthUnits, heightUnits)
     val minDiameter = smaller * 0.5f
     val maxDiameter = smaller * 0.8f
     val targetDiameter = smaller * 0.65f
-    val best = SituationRingSizesNm
-        .map { radiusNm ->
-            val edge = projectAhead(position.lat, position.lon, 90.0, radiusNm)
+    val best = ringCandidates
+        .map { candidate ->
+            val edge = projectAhead(position.lat, position.lon, 90.0, candidate.radiusNm)
             val edgePoint = latLonToScreen(edge.lat, edge.lon, viewport, widthUnits, heightUnits)
             val radiusUnits = hypot(edgePoint.x - center.x, edgePoint.y - center.y)
             val diameterUnits = radiusUnits * 2f
@@ -805,7 +807,7 @@ private fun selectSituationRing(
                 else -> 0f
             }
             val score = if (outOfBounds > 0f) 10000f + outOfBounds else kotlin.math.abs(diameterUnits - targetDiameter)
-            Triple(radiusNm, radiusUnits, score)
+            Triple(candidate, radiusUnits, score)
         }
         .minBy { it.third }
     val labelPoint = pointOnCircle(center, best.second + 16f, -45f)
@@ -814,7 +816,7 @@ private fun selectSituationRing(
         tickMarks = buildSituationTickMarks(center, best.second),
         labelPointUnits = labelPoint,
         labelRotationDeg = 45f,
-        labelText = formatRingDistance(best.first),
+        labelText = best.first.label,
     )
 }
 
@@ -977,9 +979,6 @@ private fun transformVisibleFeature(
     )
 }
 
-private fun formatRingDistance(radiusNm: Double): String =
-    if (radiusNm % 1.0 == 0.0) "${radiusNm.toInt()}nm" else "${radiusNm}nm"
-
 private fun formatPlanDistance(distanceNm: Double?): String =
     when {
         distanceNm == null -> "—"
@@ -1067,6 +1066,7 @@ private fun AerobagApp() {
             navKvStore = fixture.navKvStore,
         )
     }
+    val situationRingCandidates = remember(appCore) { appCore.situationRingCandidates() }
     val initialPlanMutation = remember(appCore, fixture.samplePlan) {
         buildSeededDevPlan(appCore, fixture.samplePlan)
     }
@@ -1231,6 +1231,7 @@ private fun AerobagApp() {
                     playbackSourcePath = playbackSourcePath,
                     mapFollowUiState = sessionSnapshot.mapFollowUiState,
                     mapFollowTargetViewport = sessionSnapshot.mapFollowTargetViewport,
+                    situationRingCandidates = situationRingCandidates,
                     selectedMapId = selectedMapId,
                     viewport = mapViewport,
                     onViewportChange = { mapViewport = it },
@@ -1351,6 +1352,7 @@ private fun MapExplorerPage(
     playbackSourcePath: String,
     mapFollowUiState: MapFollowUiState,
     mapFollowTargetViewport: CoreMapViewport?,
+    situationRingCandidates: List<SituationRingCandidate>,
     selectedMapId: String,
     viewport: MapViewportState,
     onViewportChange: (MapViewportState) -> Unit,
@@ -1473,6 +1475,7 @@ private fun MapExplorerPage(
             viewport = viewport,
             widthUnits = surfaceWidthUnits,
             heightUnits = surfaceHeightUnits,
+            ringCandidates = situationRingCandidates,
         )
     }
     val routeScreenSegments = remember(flightPlanRoute, viewport, surfaceWidthUnits, surfaceHeightUnits) {
@@ -1499,6 +1502,7 @@ private fun MapExplorerPage(
             viewport = nextViewport,
             widthUnits = surfaceWidthUnits,
             heightUnits = surfaceHeightUnits,
+            ringCandidates = situationRingCandidates,
         )
         if (overlay == null) {
             runCatching { uiSession.disengageMapFollow(nextViewport) }.onSuccess(onSessionSnapshotChange)

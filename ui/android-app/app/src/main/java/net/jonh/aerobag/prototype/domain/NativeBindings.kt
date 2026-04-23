@@ -9,6 +9,8 @@ interface NativeBridge {
 
     fun coreHadOperation(handle: Long, operationJson: String): String
 
+    fun situationRingCandidatesJson(): String
+
     fun suggestAirwaysNearJson(
         dbPath: String,
         anchorJson: String,
@@ -345,6 +347,8 @@ object NativeBindings : NativeBridge {
     external override fun navKvDestroy(handle: Long)
 
     external override fun coreHadOperation(handle: Long, operationJson: String): String
+
+    external override fun situationRingCandidatesJson(): String
 
     external override fun suggestAirwaysNearJson(
         dbPath: String,

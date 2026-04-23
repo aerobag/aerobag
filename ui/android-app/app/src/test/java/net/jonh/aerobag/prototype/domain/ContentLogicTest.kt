@@ -290,6 +290,7 @@ private class FakeNativeBridge(
     override fun navKvInsertPage(handle: Long, pageIndex: Int, pageBytes: ByteArray) = Unit
     override fun navKvDestroy(handle: Long) = Unit
     override fun coreHadOperation(handle: Long, operationJson: String): String = """{"state":"complete","result":null}"""
+    override fun situationRingCandidatesJson(): String = "[]"
 
     override fun suggestAirwaysNearJson(dbPath: String, anchorJson: String, limit: Int): String = "[]"
 

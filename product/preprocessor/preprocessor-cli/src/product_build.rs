@@ -351,6 +351,7 @@ struct BundlePackageArtifact {
 
 #[derive(Debug, Clone)]
 struct BuiltNavDbArtifacts {
+    node_record: NodeRecord,
     package: BundlePackageArtifact,
 }
 
@@ -628,6 +629,15 @@ fn output_sha_or_hash(record: &NodeRecord, key: &str, path: &Path) -> anyhow::Re
         .unwrap_or(hash_file(path)?))
 }
 
+fn sqlite_output_path(record: &NodeRecord) -> anyhow::Result<&str> {
+    record
+        .outputs
+        .get("intermediate_sqlite_db")
+        .or_else(|| record.outputs.get("main_db"))
+        .map(String::as_str)
+        .with_context(|| format!("node {} missing sqlite output", record.name))
+}
+
 enum NodeCacheState {
     CacheHit(NodeRecord),
     Build(BuildLockGuard),
@@ -671,7 +681,7 @@ enum TaskValue {
     ChartSource(ChartSource),
     CsupSource(AssetSource),
     FingerprintedData {
-        main_db: PathBuf,
+        intermediate_sqlite_db: PathBuf,
         source_input_dir: PathBuf,
         zip: PathBuf,
         fingerprint: String,
@@ -703,7 +713,7 @@ enum ProductTaskValue {
     ChartSource(ChartSource),
     CsupSource(AssetSource),
     FingerprintedData {
-        main_db: PathBuf,
+        intermediate_sqlite_db: PathBuf,
         source_input_dir: PathBuf,
         zip: PathBuf,
         fingerprint: String,
@@ -718,6 +728,9 @@ enum ProductTaskValue {
     },
     CycleManifest {
         path: PathBuf,
+    },
+    PublishedNavDb {
+        package: BundlePackageArtifact,
     },
     ObstaclesBuilt {
         manifest_path: PathBuf,
@@ -940,6 +953,8 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
     lines.push("  data".to_string());
     lines.push("  vectors".to_string());
     lines.push("  resource-index".to_string());
+    lines.push("  nav-db".to_string());
+    lines.push("  bundle-manifest".to_string());
     Ok(lines.join("\n") + "\n")
 }
 
@@ -1028,6 +1043,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             cycle: String,
         },
         ResourceIndex {
+            cycle: String,
+        },
+        NavDb {
             cycle: String,
         },
         BundleManifest {
@@ -1284,19 +1302,28 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     cycle: cycle.clone(),
                 },
             });
-            let mut bundle_manifest_deps = vec![
+            let mut nav_db_deps = vec![
+                cycle_task_id(cycle, "data"),
                 cycle_task_id(cycle, "resource-index"),
                 cycle_task_id(cycle, "vectors"),
             ];
-            bundle_manifest_deps.extend(static_product_task_ids(config));
+            nav_db_deps.extend(static_product_task_ids(config));
             if include_static_terrain_products() {
-                bundle_manifest_deps.extend(config.profile.terrain_regions().iter().map(
+                nav_db_deps.extend(config.profile.terrain_regions().iter().map(
                     |region| format!("build-shaded-relief-{}", region.code().to_ascii_lowercase()),
                 ));
             }
             pending_tasks.push(ProductScheduledTask {
+                id: cycle_task_id(cycle, "nav-db"),
+                deps: nav_db_deps,
+                weight: 1,
+                kind: ProductScheduledTaskKind::NavDb {
+                    cycle: cycle.clone(),
+                },
+            });
+            pending_tasks.push(ProductScheduledTask {
                 id: cycle_task_id(cycle, "bundle-manifest"),
-                deps: bundle_manifest_deps,
+                deps: vec![cycle_task_id(cycle, "nav-db")],
                 weight: 1,
                 kind: ProductScheduledTaskKind::BundleManifest {
                     cycle: cycle.clone(),
@@ -1718,7 +1745,10 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 .cloned()
                                 .context("data-base task missing data input staging node record")?;
                             let zip = resolve_artifact_path(&cycle_config, output_path(&data_record, "zip")?);
-                            let main_db = resolve_artifact_path(&cycle_config, output_path(&data_record, "main_db")?);
+                            let intermediate_sqlite_db = resolve_artifact_path(
+                                &cycle_config,
+                                sqlite_output_path(&data_record)?,
+                            );
                             let source_input_dir = resolve_artifact_path(&cycle_config, output_path(&staging_record, "staged_input_dir")?);
                             Ok(ProductTaskCompletion {
                                 node_records: records
@@ -1726,7 +1756,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     .map(|record| normalize_node_record_paths(record, &cycle_config.build_root))
                                     .collect(),
                                 value: ProductTaskValue::FingerprintedData {
-                                    main_db,
+                                    intermediate_sqlite_db,
                                     source_input_dir,
                                     zip,
                                     fingerprint: data_record.fingerprint,
@@ -1858,8 +1888,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 _ => bail!("missing source urls for cycle {cycle}"),
                             };
                             let raw_data = match task_values_snapshot.get(&cycle_task_id(&cycle, "data-base")) {
-                                Some(ProductTaskValue::FingerprintedData { main_db, source_input_dir, zip, fingerprint }) => {
-                                    (main_db.clone(), source_input_dir.clone(), zip.clone(), fingerprint.clone())
+                                Some(ProductTaskValue::FingerprintedData { intermediate_sqlite_db, source_input_dir, zip, fingerprint }) => {
+                                    (intermediate_sqlite_db.clone(), source_input_dir.clone(), zip.clone(), fingerprint.clone())
                                 }
                                 _ => bail!("missing data-base output for cycle {cycle}"),
                             };
@@ -1892,12 +1922,15 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             )?;
                             let cache_hit = record.cache_hit;
                             let zip = resolve_artifact_path(&cycle_config, output_path(&record, "zip")?);
-                            let main_db = resolve_artifact_path(&cycle_config, output_path(&record, "main_db")?);
+                            let intermediate_sqlite_db = resolve_artifact_path(
+                                &cycle_config,
+                                sqlite_output_path(&record)?,
+                            );
                             let fingerprint = record.fingerprint.clone();
                             Ok(ProductTaskCompletion {
                                 node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
                                 value: ProductTaskValue::FingerprintedData {
-                                    main_db,
+                                    intermediate_sqlite_db,
                                     source_input_dir: raw_data.1,
                                     zip,
                                     fingerprint,
@@ -1907,8 +1940,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         }
                         ProductScheduledTaskKind::Vectors { cycle } => {
                             let (data, source_input_dir, data_fingerprint) = match task_values_snapshot.get(&cycle_task_id(&cycle, "data")) {
-                                Some(ProductTaskValue::FingerprintedData { main_db, source_input_dir, fingerprint, .. }) => {
-                                    (main_db.clone(), source_input_dir.clone(), fingerprint.clone())
+                                Some(ProductTaskValue::FingerprintedData { intermediate_sqlite_db, source_input_dir, fingerprint, .. }) => {
+                                    (intermediate_sqlite_db.clone(), source_input_dir.clone(), fingerprint.clone())
                                 }
                                 _ => bail!("missing data output for cycle {cycle}"),
                             };
@@ -1983,6 +2016,144 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 node_records: vec![normalize_node_record_paths(record, &cycle_config.build_root)],
                                 value: ProductTaskValue::None,
                                 completion_detail: format!("cache_hit={}", cache_hit),
+                            })
+                        }
+                        ProductScheduledTaskKind::NavDb { cycle } => {
+                            let resource_index_path = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "resource-index"))
+                            {
+                                Some(ProductTaskValue::None) => {
+                                    let resource_index_record = task_node_records_snapshot
+                                        .get(&cycle_task_id(&cycle, "resource-index"))
+                                        .and_then(|records| records.iter().find(|record| record.name == "resource-index"))
+                                        .cloned()
+                                        .context("missing resource-index node record")?;
+                                    resolve_artifact_path(
+                                        &config,
+                                        output_path(&resource_index_record, "resource_index")?,
+                                    )
+                                }
+                                _ => bail!("missing resource-index output for cycle {cycle}"),
+                            };
+                            let intermediate_sqlite_db = match task_values_snapshot.get(&cycle_task_id(&cycle, "data")) {
+                                Some(ProductTaskValue::FingerprintedData { intermediate_sqlite_db, .. }) => intermediate_sqlite_db.clone(),
+                                _ => bail!("missing data output for cycle {cycle}"),
+                            };
+                            let mut cycle_config = config.clone();
+                            cycle_config.target_cycle = Some(cycle.clone());
+                            let shaded_relief_tile_levels = if include_static_terrain_products() {
+                                collect_shaded_relief_tile_levels(&task_values_snapshot, &cycle_config)?
+                            } else {
+                                Vec::new()
+                            };
+                            let stable_packages = static_product_task_ids(&cycle_config)
+                                .iter()
+                                .map(|task_id| match task_values_snapshot.get(task_id) {
+                                    Some(ProductTaskValue::PublishedStandaloneProduct {
+                                        id,
+                                        published_zip,
+                                        sha256,
+                                        size_bytes,
+                                        source_version,
+                                        source_fetched_at_utc,
+                                        ..
+                                    }) => build_stable_bundle_package_artifact(
+                                        id,
+                                        published_zip,
+                                        sha256,
+                                        *size_bytes,
+                                        source_version,
+                                        source_fetched_at_utc.clone(),
+                                    ),
+                                    _ => bail!(
+                                        "missing published stable product output for {}",
+                                        task_id
+                                    ),
+                                })
+                                .collect::<anyhow::Result<Vec<_>>>()?;
+                            let vectors_record = task_node_records_snapshot
+                                .get(&cycle_task_id(&cycle, "vectors"))
+                                .and_then(|records| records.iter().find(|record| record.name == "vectors"))
+                                .cloned()
+                                .context("missing vectors node record")?;
+                            let vectors_zip_path =
+                                resolve_artifact_path(&cycle_config, output_path(&vectors_record, "zip")?);
+                            let vectors_sha256 =
+                                output_sha_or_hash(&vectors_record, "zip", &vectors_zip_path)?;
+                            let vectors_filename = format!(
+                                "vectors_data_{cycle}_{PACKAGE_CYCLE_VERSION}_{vectors_sha256}.zip"
+                            );
+                            publish_flat_artifact(
+                                &vectors_zip_path,
+                                &cycle_config.build_root.join(&vectors_filename),
+                            )?;
+                            let resource_index: ResourceIndex = serde_json::from_slice(
+                                &fs::read(&resource_index_path).with_context(|| {
+                                    format!("failed to read {}", resource_index_path.display())
+                                })?,
+                            )
+                            .with_context(|| {
+                                format!("failed to parse {}", resource_index_path.display())
+                            })?;
+                            let start_valid = resource_index
+                                .temporal_summary
+                                .uniform_good_beyond_date
+                                .clone()
+                                .or_else(|| {
+                                    resource_index.temporal_summary.uniform_effective_date.clone()
+                                })
+                                .context("resource-index missing start-valid date")?;
+                            let end_valid = resource_index
+                                .temporal_summary
+                                .uniform_expiration_date
+                                .clone()
+                                .or_else(|| {
+                                    resource_index
+                                        .temporal_summary
+                                        .expiration_dates
+                                        .first()
+                                        .cloned()
+                                })
+                                .context("resource-index missing end-valid date")?;
+                            let vectors_package = BundlePackageArtifact {
+                                id: format!("VECTORS_DATA_{cycle}_{PACKAGE_CYCLE_VERSION}"),
+                                family_id: "vectors".to_string(),
+                                region_id: None,
+                                filename: vectors_filename.clone(),
+                                relative_path: vectors_filename,
+                                cycle: Some(cycle.clone()),
+                                cycle_version: Some(PACKAGE_CYCLE_VERSION.to_string()),
+                                checksum_sha256: vectors_sha256,
+                                size_bytes: fs::metadata(&vectors_zip_path)
+                                    .with_context(|| {
+                                        format!("failed to stat {}", vectors_zip_path.display())
+                                    })?
+                                    .len(),
+                                published_at_utc: None,
+                                source_generated_at_utc: None,
+                                source_version: None,
+                                source_fetched_at_utc: None,
+                                effective_date: Some(start_valid),
+                                expiration_date: Some(end_valid),
+                            };
+                            let built = build_nav_kv_artifact(
+                                &cycle_config,
+                                &resource_index_path,
+                                &intermediate_sqlite_db,
+                                &cycle,
+                                &vectors_package,
+                                &stable_packages,
+                                &shaded_relief_tile_levels,
+                            )?;
+                            Ok(ProductTaskCompletion {
+                                node_records: vec![normalize_node_record_paths(
+                                    built.node_record,
+                                    &cycle_config.build_root,
+                                )],
+                                value: ProductTaskValue::PublishedNavDb {
+                                    package: built.package,
+                                },
+                                completion_detail: "cache_or_rebuild".to_string(),
                             })
                         }
                         ProductScheduledTaskKind::ChartUnpack {
@@ -2189,11 +2360,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             .with_context(|| {
                                 format!("failed to write {}", build_manifest_path.display())
                             })?;
-                            let shaded_relief_tile_levels = if include_static_terrain_products() {
-                                collect_shaded_relief_tile_levels(&task_values_snapshot, &cycle_config)?
-                            } else {
-                                Vec::new()
-                            };
                             let stable_packages = static_product_task_ids(&cycle_config)
                                 .iter()
                                 .map(|task_id| match task_values_snapshot.get(task_id) {
@@ -2219,21 +2385,21 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     ),
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
+                            let nav_db_package = match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "nav-db"))
+                            {
+                                Some(ProductTaskValue::PublishedNavDb { package }) => package.clone(),
+                                _ => bail!("missing nav-db output for cycle {cycle}"),
+                            };
                             let bundle_manifest = build_bundle_manifest(
                                 &cycle_config,
                                 &build_manifest,
-                                &shaded_relief_tile_levels,
                                 &stable_packages,
+                                &nav_db_package,
                             )?;
                             let bundle_manifest_path =
                                 write_hashed_bundle_manifest(&cycle_config.build_root, &bundle_manifest)?;
                             validate_bundle_manifest(&cycle_config.build_root, &bundle_manifest_path)?;
-                            sync_unpacked_metadata(
-                                &cycle_config,
-                                &bundle_manifest,
-                                &build_manifest,
-                                &bundle_manifest_path,
-                            )?;
                             Ok(ProductTaskCompletion {
                                 node_records: vec![],
                                 value: ProductTaskValue::CycleManifest {
@@ -2783,6 +2949,42 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 Some(ProductTaskValue::CurrentArtifacts { path }) => path.clone(),
                                 _ => bail!("missing current artifacts output"),
                             };
+                            let current_artifacts = load_current_artifacts_manifest(&current_artifacts_path)?;
+                            for bundle_ref in current_artifacts
+                                .bundles
+                                .iter()
+                                .filter(|bundle| bundle.bundle_type == "cycle")
+                            {
+                                let bundle_manifest_path = config.build_root.join(&bundle_ref.filename);
+                                let bundle_manifest = match load_bundle_manifest_like(&bundle_manifest_path)? {
+                                    BundleManifestLike::Cycle(bundle) => bundle,
+                                    BundleManifestLike::Fast(_) => {
+                                        bail!(
+                                            "expected cycle bundle in current_artifacts, found fast bundle {}",
+                                            bundle_ref.filename
+                                        )
+                                    }
+                                };
+                                let cycle = bundle_manifest.cycle.clone();
+                                let mut cycle_config = config.clone();
+                                cycle_config.target_cycle = Some(cycle.clone());
+                                let build_manifest_path =
+                                    internal_build_manifest_path(&cycle_config, &cycle)?;
+                                let _: BuildManifest = serde_json::from_slice(
+                                    &fs::read(&build_manifest_path).with_context(|| {
+                                        format!("failed to read {}", build_manifest_path.display())
+                                    })?,
+                                )
+                                .with_context(|| {
+                                    format!("failed to parse {}", build_manifest_path.display())
+                                })?;
+                                sync_unpacked_metadata(
+                                    &cycle_config,
+                                    &bundle_manifest,
+                                    &bundle_manifest_path,
+                                    Some(&task_values_snapshot),
+                                )?;
+                            }
                             let obstacle = match task_values_snapshot.get("publish-obstacles") {
                                 Some(ProductTaskValue::PublishedObstacle {
                                     source_zip_path,
@@ -3589,9 +3791,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 .context("data-base task missing data input staging node record")?;
                             let zip =
                                 resolve_artifact_path(&config, output_path(&data_record, "zip")?);
-                            let main_db = resolve_artifact_path(
+                            let intermediate_sqlite_db = resolve_artifact_path(
                                 &config,
-                                output_path(&data_record, "main_db")?,
+                                sqlite_output_path(&data_record)?,
                             );
                             let source_input_dir = resolve_artifact_path(
                                 &config,
@@ -3600,7 +3802,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             Ok(TaskCompletion {
                                 node_records: records,
                                 value: TaskValue::FingerprintedData {
-                                    main_db,
+                                    intermediate_sqlite_db,
                                     source_input_dir,
                                     zip,
                                     fingerprint: data_record.fingerprint,
@@ -3611,12 +3813,12 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         ScheduledTaskKind::DataMatch => {
                             let raw_data = match task_values_snapshot.get("data-base") {
                                 Some(TaskValue::FingerprintedData {
-                                    main_db,
+                                    intermediate_sqlite_db,
                                     source_input_dir,
                                     zip,
                                     fingerprint,
                                 }) => (
-                                    main_db.clone(),
+                                    intermediate_sqlite_db.clone(),
                                     source_input_dir.clone(),
                                     zip.clone(),
                                     fingerprint.clone(),
@@ -3649,13 +3851,15 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             )?;
                             let cache_hit = record.cache_hit;
                             let zip = resolve_artifact_path(&config, output_path(&record, "zip")?);
-                            let main_db =
-                                resolve_artifact_path(&config, output_path(&record, "main_db")?);
+                            let intermediate_sqlite_db = resolve_artifact_path(
+                                &config,
+                                sqlite_output_path(&record)?,
+                            );
                             let fingerprint = record.fingerprint.clone();
                             Ok(TaskCompletion {
                                 node_records: vec![record],
                                 value: TaskValue::FingerprintedData {
-                                    main_db,
+                                    intermediate_sqlite_db,
                                     source_input_dir: raw_data.1,
                                     zip,
                                     fingerprint,
@@ -3734,11 +3938,15 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             let (data, source_input_dir, data_fingerprint) =
                                 match task_values_snapshot.get("data") {
                                     Some(TaskValue::FingerprintedData {
-                                        main_db,
+                                        intermediate_sqlite_db,
                                         source_input_dir,
                                         fingerprint,
                                         ..
-                                    }) => (main_db, source_input_dir, fingerprint),
+                                    }) => (
+                                        intermediate_sqlite_db,
+                                        source_input_dir,
+                                        fingerprint,
+                                    ),
                                     _ => unreachable!("data dependency should have completed"),
                                 };
                             let record = build_vectors_node(
@@ -3759,7 +3967,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         ScheduledTaskKind::ResourceIndex => {
                             let data_zip = match task_values_snapshot.get("data") {
                                 Some(TaskValue::FingerprintedData {
-                                    main_db: _, zip, ..
+                                    intermediate_sqlite_db: _, zip, ..
                                 }) => zip.clone(),
                                 _ => unreachable!("data dependency should have completed"),
                             };
@@ -3909,7 +4117,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         ScheduledTaskKind::DataUnpack => {
                             let zip = match task_values_snapshot.get("data") {
                                 Some(TaskValue::FingerprintedData {
-                                    main_db: _, zip, ..
+                                    intermediate_sqlite_db: _, zip, ..
                                 }) => zip.clone(),
                                 _ => bail!("missing data zip"),
                             };
@@ -4137,18 +4345,85 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         )
         .with_context(|| format!("failed to write {}", build_manifest_path.display()))?;
 
-        let shaded_relief_tile_levels = Vec::new();
-        let stable_packages = Vec::new();
+        let resource_index_record = build_manifest
+            .nodes
+            .iter()
+            .find(|node| node.name == "resource-index")
+            .context("build manifest missing resource-index node")?;
+        let data_record = build_manifest
+            .nodes
+            .iter()
+            .find(|node| node.name == "data")
+            .context("build manifest missing data node")?;
+        let vectors_record = build_manifest
+            .nodes
+            .iter()
+            .find(|node| node.name == "vectors")
+            .context("build manifest missing vectors node")?;
+        let resource_index_path =
+            resolve_artifact_path(config, output_path(resource_index_record, "resource_index")?);
+        let intermediate_sqlite_db =
+            resolve_artifact_path(config, sqlite_output_path(data_record)?);
+        let vectors_zip_path = resolve_artifact_path(config, output_path(vectors_record, "zip")?);
+        let vectors_sha256 = output_sha_or_hash(vectors_record, "zip", &vectors_zip_path)?;
+        let vectors_filename =
+            format!("vectors_data_{bundle_cycle}_{PACKAGE_CYCLE_VERSION}_{vectors_sha256}.zip");
+        publish_flat_artifact(&vectors_zip_path, &config.build_root.join(&vectors_filename))?;
+        let resource_index: ResourceIndex = serde_json::from_slice(
+            &fs::read(&resource_index_path)
+                .with_context(|| format!("failed to read {}", resource_index_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", resource_index_path.display()))?;
+        let start_valid = resource_index
+            .temporal_summary
+            .uniform_good_beyond_date
+            .clone()
+            .or_else(|| resource_index.temporal_summary.uniform_effective_date.clone())
+            .context("resource-index missing start-valid date")?;
+        let end_valid = resource_index
+            .temporal_summary
+            .uniform_expiration_date
+            .clone()
+            .or_else(|| resource_index.temporal_summary.expiration_dates.first().cloned())
+            .context("resource-index missing end-valid date")?;
+        let vectors_package = BundlePackageArtifact {
+            id: format!("VECTORS_DATA_{bundle_cycle}_{PACKAGE_CYCLE_VERSION}"),
+            family_id: "vectors".to_string(),
+            region_id: None,
+            filename: vectors_filename.clone(),
+            relative_path: vectors_filename,
+            cycle: Some(bundle_cycle.clone()),
+            cycle_version: Some(PACKAGE_CYCLE_VERSION.to_string()),
+            checksum_sha256: vectors_sha256,
+            size_bytes: fs::metadata(&vectors_zip_path)
+                .with_context(|| format!("failed to stat {}", vectors_zip_path.display()))?
+                .len(),
+            published_at_utc: None,
+            source_generated_at_utc: None,
+            source_version: None,
+            source_fetched_at_utc: None,
+            effective_date: Some(start_valid),
+            expiration_date: Some(end_valid),
+        };
+        let nav_db = build_nav_kv_artifact(
+            config,
+            &resource_index_path,
+            &intermediate_sqlite_db,
+            &bundle_cycle,
+            &vectors_package,
+            &[],
+            &[],
+        )?;
         let bundle_manifest =
-            build_bundle_manifest(config, &build_manifest, &shaded_relief_tile_levels, &stable_packages)?;
+            build_bundle_manifest(config, &build_manifest, &[], &nav_db.package)?;
         let bundle_manifest_path =
             write_hashed_bundle_manifest(&config.build_root, &bundle_manifest)?;
         validate_bundle_manifest(&config.build_root, &bundle_manifest_path)?;
         sync_unpacked_metadata(
             config,
             &bundle_manifest,
-            &build_manifest,
             &bundle_manifest_path,
+            None,
         )?;
         Ok(bundle_manifest_path)
     })();
@@ -4193,19 +4468,14 @@ fn collect_shaded_relief_tile_levels(
 fn build_bundle_manifest(
     config: &ProductBuildConfig,
     build_manifest: &BuildManifest,
-    shaded_relief_tile_levels: &[(Region, Vec<TileLevelRecord>)],
     stable_packages: &[BundlePackageArtifact],
+    nav_db_package: &BundlePackageArtifact,
 ) -> anyhow::Result<BundleManifest> {
     let resource_index_record = build_manifest
         .nodes
         .iter()
         .find(|node| node.name == "resource-index")
         .context("build manifest missing resource-index node")?;
-    let data_record = build_manifest
-        .nodes
-        .iter()
-        .find(|node| node.name == "data")
-        .context("build manifest missing data node")?;
     let vectors_record = build_manifest
         .nodes
         .iter()
@@ -4303,16 +4573,7 @@ fn build_bundle_manifest(
         expiration_date: Some(end_valid.clone()),
     });
     package_artifacts.extend(stable_packages.iter().cloned());
-    let data_db_path = resolve_artifact_path(config, output_path(data_record, "main_db")?);
-    let nav_db_artifacts = write_nav_kv_artifact(
-        config,
-        &index,
-        &package_artifacts,
-        &cycle,
-        &data_db_path,
-        shaded_relief_tile_levels,
-    )?;
-    package_artifacts.push(nav_db_artifacts.package.clone());
+    package_artifacts.push(nav_db_package.clone());
 
     let ancillary = vec![];
 
@@ -4332,62 +4593,129 @@ fn build_bundle_manifest(
     })
 }
 
-fn write_nav_kv_artifact(
+fn build_nav_kv_artifact(
     config: &ProductBuildConfig,
-    resource_index: &ResourceIndex,
-    package_artifacts: &[BundlePackageArtifact],
+    resource_index_path: &Path,
+    intermediate_sqlite_db_path: &Path,
     cycle: &str,
-    main_db_path: &Path,
+    vectors_package: &BundlePackageArtifact,
+    stable_packages: &[BundlePackageArtifact],
     shaded_relief_tile_levels: &[(Region, Vec<TileLevelRecord>)],
 ) -> anyhow::Result<BuiltNavDbArtifacts> {
-    let chart_catalog = build_nav_kv_chart_catalog(resource_index, shaded_relief_tile_levels);
-    let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
-        .context("failed to encode nav_kv chart/catalog value")?;
-    let mut pairs = vec![NavKvPair {
-        key: "chart/catalog".to_string(),
-        value: chart_catalog_bytes,
-    }];
-    pairs.extend(build_nav_kv_resource_summary_pairs(resource_index)?);
-    pairs.extend(build_nav_kv_plate_pairs(resource_index)?);
-    pairs.extend(build_nav_kv_package_pairs(package_artifacts)?);
-    pairs.extend(build_nav_kv_navref_pairs(main_db_path)?);
-    let built = build_nav_kv_sorted(pairs, 64 * 1024)
-        .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
-
-    let source_dir = artifact_root_from_build_root(&config.build_root)
-        .join("private-work")
-        .join("nav-kv")
-        .join(config.profile.as_str())
-        .join(cycle);
-    fs::create_dir_all(&source_dir)
-        .with_context(|| format!("failed to create {}", source_dir.display()))?;
-
+    let resource_index: ResourceIndex = serde_json::from_slice(
+        &fs::read(resource_index_path)
+            .with_context(|| format!("failed to read {}", resource_index_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", resource_index_path.display()))?;
+    let mut package_artifacts = vec![vectors_package.clone()];
+    package_artifacts.extend(stable_packages.iter().cloned());
+    let package_index_json = serde_json::to_string(&package_artifacts)
+        .context("failed to encode nav-db package inputs")?;
+    let shaded_relief_json = shaded_relief_tile_levels
+        .iter()
+        .map(|(region, levels)| {
+            format!(
+                "{}:{}",
+                region.code().to_ascii_lowercase(),
+                serde_json::to_string(levels).unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let inputs = BTreeMap::from([
+        (
+            "resource_index".to_string(),
+            hash_file(resource_index_path)?,
+        ),
+        (
+            "intermediate_sqlite_db".to_string(),
+            hash_file(intermediate_sqlite_db_path)?,
+        ),
+        ("cycle".to_string(), cycle.to_string()),
+        ("package_artifacts".to_string(), hash_text(&package_index_json)),
+        (
+            "shaded_relief_tile_levels".to_string(),
+            hash_text(&shaded_relief_json),
+        ),
+        ("nav_kv_page_bytes".to_string(), (64 * 1024).to_string()),
+        (
+            "nav_kv_builder".to_string(),
+            hash_file(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/product_build.rs"))?,
+        ),
+    ]);
+    let prepared = prepare_node_at(&build_shared_node_dir(config, "nav-db")?, "nav-db", &inputs)?;
+    let output_dir = prepared.dir.join("output");
+    let source_dir = output_dir.join("nav_db");
     let root_filename = format!("nav_kv_{cycle}.root");
-    let root_source_path = source_dir.join(&root_filename);
-    fs::write(&root_source_path, &built.root_bytes)
-        .with_context(|| format!("failed to write {}", root_source_path.display()))?;
+    let nav_db_zip_source_path = output_dir.join(format!("nav_db_{cycle}.zip"));
+    let record = match claim_or_wait_for_node(
+        &prepared,
+        std::slice::from_ref(&nav_db_zip_source_path),
+    )? {
+        NodeCacheState::CacheHit(record) => record,
+        NodeCacheState::Build(_lock) => {
+            if output_dir.exists() {
+                fs::remove_dir_all(&output_dir)
+                    .with_context(|| format!("failed to remove {}", output_dir.display()))?;
+            }
+            fs::create_dir_all(&source_dir)
+                .with_context(|| format!("failed to create {}", source_dir.display()))?;
+            let started_at_utc = utc_now_string();
+            let started = Instant::now();
+            let chart_catalog =
+                build_nav_kv_chart_catalog(&resource_index, shaded_relief_tile_levels);
+            let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
+                .context("failed to encode nav_kv chart/catalog value")?;
+            let mut pairs = vec![NavKvPair {
+                key: "chart/catalog".to_string(),
+                value: chart_catalog_bytes,
+            }];
+            pairs.extend(build_nav_kv_resource_summary_pairs(&resource_index)?);
+            pairs.extend(build_nav_kv_plate_pairs(&resource_index)?);
+            pairs.extend(build_nav_kv_package_pairs(&package_artifacts)?);
+            pairs.extend(build_nav_kv_navref_pairs(intermediate_sqlite_db_path)?);
+            let built = build_nav_kv_sorted(pairs, 64 * 1024)
+                .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
+            let root_source_path = source_dir.join(&root_filename);
+            fs::write(&root_source_path, &built.root_bytes)
+                .with_context(|| format!("failed to write {}", root_source_path.display()))?;
 
-    let mut page_filenames = Vec::new();
-    for (index, page) in built.value_pages.iter().enumerate() {
-        let page_filename = format!("nav_kv_{cycle}.values_{index:04}");
-        let page_source_path = source_dir.join(&page_filename);
-        fs::write(&page_source_path, page)
-            .with_context(|| format!("failed to write {}", page_source_path.display()))?;
-        page_filenames.push(page_filename);
-    }
-
-    let nav_db_zip_source_path = source_dir.join(format!("nav_db_{cycle}.zip"));
-    let mut zip_entries = vec![root_filename.as_str()];
-    let page_entry_names = page_filenames.iter().map(String::as_str).collect::<Vec<_>>();
-    zip_entries.extend(page_entry_names.iter().copied());
-    zip_directory_deterministic(&nav_db_zip_source_path, &source_dir, &zip_entries)?;
-    let nav_db_sha256 = hash_file(&nav_db_zip_source_path)?;
+            let mut page_filenames = Vec::new();
+            for (index, page) in built.value_pages.iter().enumerate() {
+                let page_filename = format!("nav_kv_{cycle}.values_{index:04}");
+                let page_source_path = source_dir.join(&page_filename);
+                fs::write(&page_source_path, page)
+                    .with_context(|| format!("failed to write {}", page_source_path.display()))?;
+                page_filenames.push(page_filename);
+            }
+            let mut zip_entries = vec![root_filename.as_str()];
+            let page_entry_names = page_filenames.iter().map(String::as_str).collect::<Vec<_>>();
+            zip_entries.extend(page_entry_names.iter().copied());
+            zip_directory_deterministic(&nav_db_zip_source_path, &source_dir, &zip_entries)?;
+            let outputs = BTreeMap::from([
+                (
+                    "nav_db_zip".to_string(),
+                    relative_artifact_path(&nav_db_zip_source_path, &config.build_root),
+                ),
+            ]);
+            write_node_record(
+                prepared,
+                inputs,
+                outputs,
+                false,
+                started_at_utc,
+                utc_now_string(),
+                started.elapsed().as_millis() as u64,
+            )?
+        }
+    };
+    let nav_db_sha256 = output_sha_or_hash(&record, "nav_db_zip", &nav_db_zip_source_path)?;
     let nav_db_published_filename =
         format!("nav_db_{cycle}_{PACKAGE_CYCLE_VERSION}_{nav_db_sha256}.zip");
     let nav_db_package_artifact =
         publish_bundle_artifact(config, &nav_db_zip_source_path, &nav_db_published_filename)?;
-
     Ok(BuiltNavDbArtifacts {
+        node_record: record,
         package: BundlePackageArtifact {
             id: format!("NAV_DB_{cycle}_{PACKAGE_CYCLE_VERSION}"),
             family_id: "nav-db".to_string(),
@@ -6433,18 +6761,13 @@ fn hardlink_dir_recursive(source_dir: &Path, output_dir: &Path) -> anyhow::Resul
         if file_type.is_dir() {
             hardlink_dir_recursive(&source, &output)?;
         } else if file_type.is_file() {
-            match fs::hard_link(&source, &output) {
-                Ok(()) => {}
-                Err(_) => {
-                    fs::copy(&source, &output).with_context(|| {
-                        format!(
-                            "failed to copy {} to {}",
-                            source.display(),
-                            output.display()
-                        )
-                    })?;
-                }
-            }
+            fs::hard_link(&source, &output).with_context(|| {
+                format!(
+                    "failed to hardlink {} to {}",
+                    source.display(),
+                    output.display()
+                )
+            })?;
         }
     }
     Ok(())
@@ -6486,18 +6809,13 @@ fn hardlink_zip_members_from_source_root(
                 source_root.display()
             );
         }
-        match fs::hard_link(&source, &outpath) {
-            Ok(()) => {}
-            Err(_) => {
-                fs::copy(&source, &outpath).with_context(|| {
-                    format!(
-                        "failed to copy {} to {}",
-                        source.display(),
-                        outpath.display()
-                    )
-                })?;
-            }
-        }
+        fs::hard_link(&source, &outpath).with_context(|| {
+            format!(
+                "failed to hardlink {} to {}",
+                source.display(),
+                outpath.display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -6530,8 +6848,8 @@ fn resolve_source_member_path(source_root: &Path, member: &str) -> anyhow::Resul
 fn sync_unpacked_metadata(
     config: &ProductBuildConfig,
     bundle_manifest: &BundleManifest,
-    build_manifest: &BuildManifest,
     bundle_manifest_path: &Path,
+    task_values: Option<&BTreeMap<String, ProductTaskValue>>,
 ) -> anyhow::Result<()> {
     let unpacked_root = published_unpacked_root(config)?;
     remove_legacy_unpacked_subtree(&unpacked_root)?;
@@ -6544,15 +6862,20 @@ fn sync_unpacked_metadata(
         }
         sync_unpacked_file(&config.build_root.join(&artifact.filename), &unpacked_root)?;
     }
-    sync_cycle_bundle_unpacked_zips(config, bundle_manifest, build_manifest, &unpacked_root)?;
+    sync_cycle_bundle_unpacked_zips(
+        config,
+        bundle_manifest,
+        &unpacked_root,
+        task_values,
+    )?;
     Ok(())
 }
 
 fn sync_cycle_bundle_unpacked_zips(
     config: &ProductBuildConfig,
     bundle_manifest: &BundleManifest,
-    build_manifest: &BuildManifest,
     unpacked_root: &Path,
+    task_values: Option<&BTreeMap<String, ProductTaskValue>>,
 ) -> anyhow::Result<()> {
     for package in &bundle_manifest.packages {
         if package.family_id == "nav-db" {
@@ -6573,6 +6896,9 @@ fn sync_cycle_bundle_unpacked_zips(
                 Some(&package.checksum_sha256),
             )
             .with_context(|| format!("failed to unpack package {}", package.id))?;
+            continue;
+        }
+        if package.cycle.is_none() {
             continue;
         }
         if let Some(cycle) = &package.cycle {
@@ -6607,21 +6933,10 @@ fn sync_cycle_bundle_unpacked_zips(
                 continue;
             }
         }
-        let Some(package_record) =
-            find_package_node_by_checksum(build_manifest, config, &package.checksum_sha256)?
-        else {
-            continue;
-        };
-        let package_root = match package_record.outputs.get("package_root") {
-            Some(package_root) => resolve_artifact_path(config, package_root),
-            None => {
-                let zip_path = resolve_artifact_path(config, output_path(package_record, "zip")?);
-                zip_path
-                    .parent()
-                    .unwrap_or_else(|| Path::new("/"))
-                    .to_path_buf()
-            }
-        };
+        let task_values =
+            task_values.context("missing task values snapshot for cycle bundle unpack sync")?;
+        let package_root = resolve_cycle_bundle_package_root(task_values, package)?
+            .with_context(|| format!("failed to resolve source root for package {}", package.id))?;
         sync_unpacked_zip_from_source(
             &config.build_root.join(&package.filename),
             &package_root,
@@ -6634,24 +6949,43 @@ fn sync_cycle_bundle_unpacked_zips(
     Ok(())
 }
 
-fn find_package_node_by_checksum<'a>(
-    build_manifest: &'a BuildManifest,
-    config: &ProductBuildConfig,
-    checksum_sha256: &str,
-) -> anyhow::Result<Option<&'a NodeRecord>> {
-    for node in &build_manifest.nodes {
-        if !node.outputs.contains_key("zip") {
-            continue;
-        }
-        let zip_path = resolve_artifact_path(config, output_path(node, "zip")?);
-        let node_sha256 = node_output_file_detail(node, "zip")
-            .0
-            .unwrap_or(hash_file(&zip_path)?);
-        if node_sha256 == checksum_sha256 {
-            return Ok(Some(node));
-        }
+fn resolve_cycle_bundle_package_root(
+    task_values: &BTreeMap<String, ProductTaskValue>,
+    package: &BundlePackageArtifact,
+) -> anyhow::Result<Option<PathBuf>> {
+    fn task_id(cycle: &str, name: &str) -> String {
+        format!("{cycle}:{name}")
     }
-    Ok(None)
+
+    let Some(cycle) = &package.cycle else {
+        return Ok(None);
+    };
+    let region_id = package
+        .region_id
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let task_id = match package.family_id.as_str() {
+        "csup" => task_id(cycle, "csup-package"),
+        "tpp" => task_id(cycle, &format!("tpp-{region_id}-package")),
+        "sec" | "tac" | "enr-l" | "enr-h" => {
+            task_id(cycle, &format!("charts-{}-package", package.family_id))
+        }
+        "vectors" => task_id(cycle, "vectors"),
+        _ => return Ok(None),
+    };
+
+    let root = match task_values.get(&task_id) {
+        Some(ProductTaskValue::ChartSource(source)) => source.package_root.clone(),
+        Some(ProductTaskValue::CsupSource(source)) => source.package_root.clone(),
+        Some(ProductTaskValue::FingerprintedTppSource { source, .. }) => source.package_root.clone(),
+        Some(ProductTaskValue::FingerprintedZip { zip, .. }) => zip
+            .parent()
+            .unwrap_or_else(|| Path::new("/"))
+            .to_path_buf(),
+        _ => return Ok(None),
+    };
+    Ok(Some(root))
 }
 
 fn sync_unpacked_file(source_path: &Path, unpacked_root: &Path) -> anyhow::Result<()> {
@@ -9367,18 +9701,13 @@ fn publish_content_addressed_zip(
     };
     let published_path = build_root.join(format!("{file_prefix}_{sha256}.zip"));
     if !published_path.is_file() {
-        match fs::hard_link(zip_path, &published_path) {
-            Ok(()) => {}
-            Err(_) => {
-                fs::copy(zip_path, &published_path).with_context(|| {
-                    format!(
-                        "failed to copy {} to {}",
-                        zip_path.display(),
-                        published_path.display()
-                    )
-                })?;
-            }
-        }
+        fs::hard_link(zip_path, &published_path).with_context(|| {
+            format!(
+                "failed to hardlink {} to {}",
+                zip_path.display(),
+                published_path.display()
+            )
+        })?;
     }
     Ok((published_path, sha256, size_bytes))
 }
@@ -10787,19 +11116,14 @@ fn publish_flat_artifact(source_path: &Path, published_path: &Path) -> anyhow::R
         fs::remove_file(published_path)
             .with_context(|| format!("failed to remove {}", published_path.display()))?;
     }
-    match fs::hard_link(source_path, published_path) {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            fs::copy(source_path, published_path).with_context(|| {
-                format!(
-                    "failed to copy {} to {}",
-                    source_path.display(),
-                    published_path.display()
-                )
-            })?;
-            Ok(())
-        }
-    }
+    fs::hard_link(source_path, published_path).with_context(|| {
+        format!(
+            "failed to hardlink {} to {}",
+            source_path.display(),
+            published_path.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn canonical_package_filename(
@@ -11980,7 +12304,7 @@ fn build_data_nodes(
     let result = build_data_package(&request)?;
     let outputs = BTreeMap::from([
         (
-            "main_db".to_string(),
+            "intermediate_sqlite_db".to_string(),
             relative_artifact_path(&result.main_db, &config.build_root),
         ),
         (
@@ -12006,7 +12330,7 @@ fn build_data_nodes(
 
 fn build_data_match_node(
     config: &ProductBuildConfig,
-    raw_main_db: &Path,
+    raw_intermediate_sqlite_db: &Path,
     raw_zip: &Path,
     artifact_stem: &str,
     raw_data_fingerprint: &str,
@@ -12060,11 +12384,11 @@ fn build_data_match_node(
     let output_dir = prepared.dir.join("output");
     let manifest_path = output_dir.join(format!("{artifact_stem}.manifest"));
     let zip_path = output_dir.join(format!("{artifact_stem}.zip"));
-    let main_db_path = output_dir.join("main.db");
+    let intermediate_sqlite_db_path = output_dir.join("intermediate-sqlite.db");
     let _build_lock = match claim_or_wait_for_node(
         &prepared,
         &[
-            main_db_path.clone(),
+            intermediate_sqlite_db_path.clone(),
             manifest_path.clone(),
             zip_path.clone(),
         ],
@@ -12075,7 +12399,7 @@ fn build_data_match_node(
     let started_at_utc = utc_now_string();
     let started = Instant::now();
     let result = build_data_package_with_tpp_matches(&DataTppMatchRequest {
-        input_main_db: raw_main_db.to_path_buf(),
+        input_main_db: raw_intermediate_sqlite_db.to_path_buf(),
         input_zip: raw_zip.to_path_buf(),
         output_dir: output_dir.clone(),
         artifact_stem: artifact_stem.to_string(),
@@ -12083,7 +12407,7 @@ fn build_data_match_node(
     })?;
     let outputs = BTreeMap::from([
         (
-            "main_db".to_string(),
+            "intermediate_sqlite_db".to_string(),
             relative_artifact_path(&result.main_db, &config.build_root),
         ),
         (
@@ -12108,7 +12432,7 @@ fn build_data_match_node(
 
 fn build_vectors_node(
     config: &ProductBuildConfig,
-    main_db: &Path,
+    intermediate_sqlite_db: &Path,
     source_input_dir: &Path,
     data_fingerprint: &str,
     version_label: &str,
@@ -12138,7 +12462,7 @@ fn build_vectors_node(
     )?;
     let output_dir = prepared.dir.join("output");
     let request = BuildVectorsRequest {
-        main_db: main_db.to_path_buf(),
+        main_db: intermediate_sqlite_db.to_path_buf(),
         data_input_dir: Some(source_input_dir.to_path_buf()),
         output_dir: output_dir.clone(),
         version_label: version_label.to_string(),

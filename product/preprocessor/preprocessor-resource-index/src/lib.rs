@@ -1,5 +1,6 @@
 use anyhow::{bail, Context};
 use chrono::{Datelike, Duration, NaiveDate, Utc};
+use preprocessor_data::INTERMEDIATE_SQLITE_BASENAME;
 use preprocessor_core::{
     PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region, PACKAGE_ASSET_MANIFEST_NAME,
 };
@@ -330,10 +331,11 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     let temporal_summary = build_temporal_summary(&packages, &nav_temporal);
     let chart_collections = collect_chart_collections(&request.chart_sources)?;
     log_progress(request, "collected chart collections")?;
-    let sqlite_path = extract_sqlite_entry(&request.nav_db_zip, "main.db")?;
+    let sqlite_path =
+        extract_sqlite_entry(&request.nav_db_zip, INTERMEDIATE_SQLITE_BASENAME)?;
     log_progress(request, "extracted nav sqlite")?;
     let connection =
-        Connection::open(sqlite_path.path()).context("failed to open extracted main.db")?;
+        Connection::open(sqlite_path.path()).context("failed to open extracted intermediate sqlite")?;
     log_progress(request, "opened nav sqlite")?;
     let airports = load_airports_from_nav_db(&connection)?;
     log_progress(request, "loaded airports")?;
@@ -370,7 +372,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         temporal_summary,
         nav_db: NavDbRef {
             artifact_path: Some(relativize_to_artifact_root(&request.nav_db_zip, &artifact_root)),
-            sqlite_entry: "main.db".to_string(),
+            sqlite_entry: INTERMEDIATE_SQLITE_BASENAME.to_string(),
             cycle_code: nav_cycle_code,
             version_label: nav_db_version_label(&request.nav_db_zip, &nav_temporal),
             effective_date: nav_temporal.effective_date,
@@ -1378,7 +1380,7 @@ fn read_nav_cycle_code(nav_db_zip: &Path) -> anyhow::Result<Option<String>> {
     Ok(text
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty() && *line != "main.db")
+        .find(|line| !line.is_empty() && *line != INTERMEDIATE_SQLITE_BASENAME)
         .map(ToOwned::to_owned))
 }
 
@@ -1884,7 +1886,7 @@ mod tests {
     #[test]
     fn builds_index_from_realistic_inputs() {
         let temp = tempdir().expect("temp dir");
-        let db_path = temp.path().join("main.db");
+        let db_path = temp.path().join(INTERMEDIATE_SQLITE_BASENAME);
         let conn = Connection::open(&db_path).expect("open sqlite");
         conn.execute_batch(
             "create table airports (
@@ -1913,9 +1915,9 @@ mod tests {
             let mut zip = ZipWriter::new(file);
             zip.start_file("databases", SimpleFileOptions::default())
                 .expect("start databases entry");
-            zip.write_all(b"2604\nmain.db\n")
+            zip.write_all(format!("2604\n{}\n", INTERMEDIATE_SQLITE_BASENAME).as_bytes())
                 .expect("write databases entry");
-            zip.start_file("main.db", SimpleFileOptions::default())
+            zip.start_file(INTERMEDIATE_SQLITE_BASENAME, SimpleFileOptions::default())
                 .expect("start sqlite entry");
             zip.write_all(&fs::read(&db_path).expect("read db"))
                 .expect("write sqlite bytes");
@@ -2120,7 +2122,7 @@ mod tests {
             index.temporal_summary.uniform_good_beyond_date.as_deref(),
             Some("2026-04-16")
         );
-        assert_eq!(index.nav_db.sqlite_entry, "main.db");
+        assert_eq!(index.nav_db.sqlite_entry, INTERMEDIATE_SQLITE_BASENAME);
         assert_eq!(index.nav_db.cycle_code.as_deref(), Some("2604"));
         assert_eq!(index.nav_db.version_label.as_deref(), Some("2026.05.14"));
         assert_eq!(index.nav_db.effective_date.as_deref(), Some("2026-04-16"));

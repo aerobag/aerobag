@@ -13,6 +13,8 @@ use rusqlite::Connection;
 use serde::Serialize;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
+use crate::INTERMEDIATE_SQLITE_BASENAME;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlateRecord {
     pub plate_id: String,
@@ -662,12 +664,20 @@ pub fn resolve_db_path(artifact_root: &Path, bundle: &serde_json::Value) -> Resu
         .join("production")
         .join(cycle)
         .join(relative_zip.with_extension(""));
-    for candidate in [unpacked_dir.join("main.db"), unpacked_dir.parent().unwrap_or(&unpacked_dir).join("main.db")] {
+    for candidate in [
+        unpacked_dir.join(INTERMEDIATE_SQLITE_BASENAME),
+        unpacked_dir
+            .parent()
+            .unwrap_or(&unpacked_dir)
+            .join(INTERMEDIATE_SQLITE_BASENAME),
+        unpacked_dir.join("main.db"),
+        unpacked_dir.parent().unwrap_or(&unpacked_dir).join("main.db"),
+    ] {
         if candidate.is_file() {
             return Ok(candidate);
         }
     }
-    anyhow::bail!("could not locate main.db for bundle {cycle}");
+    anyhow::bail!("could not locate intermediate sqlite for bundle {cycle}");
 }
 
 pub fn tpp_zip_paths_from_bundle(
@@ -1154,7 +1164,7 @@ pub fn build_data_package_with_tpp_matches(
 ) -> Result<DataTppMatchResult> {
     fs::create_dir_all(&request.output_dir)
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
-    let main_db = request.output_dir.join("main.db");
+    let main_db = request.output_dir.join(INTERMEDIATE_SQLITE_BASENAME);
     if main_db.exists() {
         fs::remove_file(&main_db)
             .with_context(|| format!("failed to remove {}", main_db.display()))?;
@@ -1176,7 +1186,7 @@ pub fn build_data_package_with_tpp_matches(
         ZipArchive::new(zip_file).with_context(|| format!("failed to read {}", request.input_zip.display()))?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        if entry.name() == "main.db" {
+        if entry.name() == INTERMEDIATE_SQLITE_BASENAME || entry.name() == "main.db" {
             continue;
         }
         let mut bytes = Vec::new();
@@ -1205,7 +1215,7 @@ pub fn build_data_package_with_tpp_matches(
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     zip.start_file("databases", options)?;
     zip.write_all(&manifest_bytes)?;
-    zip.start_file("main.db", options)?;
+    zip.start_file(INTERMEDIATE_SQLITE_BASENAME, options)?;
     let mut db_file =
         fs::File::open(&main_db).with_context(|| format!("failed to open {}", main_db.display()))?;
     let mut db_bytes = Vec::new();

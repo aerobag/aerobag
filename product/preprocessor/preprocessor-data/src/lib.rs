@@ -20,6 +20,8 @@ pub use tpp_cifp_matching::{
     PublishedMatchSummary, TppCifpAuditReport,
 };
 
+pub const INTERMEDIATE_SQLITE_BASENAME: &str = "intermediate-sqlite.db";
+
 const TABLES: &[&str] = &[
     "airports",
     "airportfreq",
@@ -1135,7 +1137,7 @@ fn insert_cifp_with_ids(
 pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuildResult> {
     fs::create_dir_all(&request.output_dir)
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
-    let main_db = request.output_dir.join("main.db");
+    let main_db = request.output_dir.join(INTERMEDIATE_SQLITE_BASENAME);
     if main_db.exists() {
         fs::remove_file(&main_db)
             .with_context(|| format!("failed to remove {}", main_db.display()))?;
@@ -1199,7 +1201,7 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
     let manifest_path = request.output_dir.join(format!("{artifact_stem}.manifest"));
     fs::write(
         &manifest_path,
-        format!("{}\nmain.db\n", request.manifest_version),
+        format!("{}\n{}\n", request.manifest_version, INTERMEDIATE_SQLITE_BASENAME),
     )
     .with_context(|| format!("failed to write {}", manifest_path.display()))?;
     let zip_path = request.output_dir.join(format!("{artifact_stem}.zip"));
@@ -1211,7 +1213,8 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
         .with_context(|| format!("failed to create {}", zip_path.display()))?;
     let mut zip = ZipWriter::new(zip_file);
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    for (name, path) in [("databases", &manifest_path), ("main.db", &main_db)] {
+    for (name, path) in [("databases", &manifest_path), (INTERMEDIATE_SQLITE_BASENAME, &main_db)]
+    {
         zip.start_file(name, options)?;
         let mut file =
             fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;

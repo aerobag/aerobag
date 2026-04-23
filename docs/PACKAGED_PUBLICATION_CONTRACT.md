@@ -84,10 +84,6 @@ current_artifacts_YYYYMMDD.json
 │   ├── bundle_cycle_2603_01_<sha256>.json
 │   ├── bundle_cycle_2604_01_<sha256>.json
 │   └── bundle_fast_<sha256>.json
-├── fast_products[]
-│   ├── tfrs_<sha256>.zip
-│   ├── metars_<sha256>.zip
-│   └── nexrad_<sha256>.zip
 └── obstacles
     └── obstacles_<sha256>.zip
 
@@ -104,6 +100,12 @@ bundle_cycle_YYCC_VV_<sha256>.json
     ├── geo_*.zip
     ├── terrain-*.zip
     └── shaded-relief-*.zip
+
+bundle_fast_<sha256>.json
+└── packages[]
+    ├── tfrs_*.zip
+    ├── metars_*.zip
+    └── nexrad_*.zip
 ```
 
 Consumer rule:

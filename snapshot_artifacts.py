@@ -49,23 +49,12 @@ def collect_packed_artifacts(source_root: pathlib.Path) -> set[pathlib.Path]:
         files_to_copy.add(bundle_path)
 
         bundle = json.loads(bundle_path.read_text())
-        add_required_bundle_artifact(bundle["catalog"], "catalog artifact")
-        add_required_bundle_artifact(bundle["resource_index"], "resource index artifact")
-        nav_kv = bundle.get("nav_kv")
-        if nav_kv is not None:
-            add_required_bundle_artifact(nav_kv["root"], "nav_kv root artifact")
-            for index, value_page in enumerate(nav_kv["value_pages"]):
-                add_required_bundle_artifact(value_page, f"nav_kv value page {index}")
-        add_required_bundle_artifact(bundle["data"], "data artifact")
-        add_required_bundle_artifact(bundle["vectors"], "vectors artifact")
-        for package in bundle["packages"]:
+        for artifact in bundle.get("ancillary", []):
+            add_required_bundle_artifact(artifact, f"ancillary artifact {artifact.get('filename', '(unknown)')}")
+        for package in bundle.get("packages", []):
             add_required_bundle_artifact(package, f"package {package.get('id', '(unknown)')}")
 
     add_required_packed(current["obstacles"]["filename"], "obstacles artifact")
-    for product in current.get("static_products", []):
-        add_required_packed(product["filename"], f"static product {product.get('id', '(unknown)')}")
-    for product in current.get("fast_products", []):
-        add_required_packed(product["filename"], f"fast product {product.get('id', '(unknown)')}")
 
     return files_to_copy
 

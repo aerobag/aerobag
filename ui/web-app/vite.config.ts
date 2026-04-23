@@ -55,14 +55,26 @@ const currentArtifacts = JSON.parse(fs.readFileSync(currentArtifactsPath, "utf8"
 const activeCycleBundleFilename = currentArtifacts.bundles?.find((bundle) => bundle.bundle_type === "cycle")?.filename
   ?? currentArtifacts.bundles?.[0]?.filename
   ?? "bundle_missing.json";
+const activeFastBundleFilename = currentArtifacts.bundles?.find((bundle) => bundle.bundle_type === "fast")?.filename
+  ?? "bundle_fast_missing.json";
 const productBuildPath = path.join(
   artifactReadRoot,
   packagedDir,
   activeCycleBundleFilename,
 );
+const fastBundlePath = path.join(
+  artifactReadRoot,
+  packagedDir,
+  activeFastBundleFilename,
+);
 const activeCycleBundle = JSON.parse(fs.readFileSync(productBuildPath, "utf8")) as {
   packages?: Array<{ id?: string; family_id?: string; filename?: string }>;
 };
+const activeFastBundle = fs.existsSync(fastBundlePath)
+  ? JSON.parse(fs.readFileSync(fastBundlePath, "utf8")) as {
+      packages?: Array<{ id?: string; filename?: string }>;
+    }
+  : { packages: [] };
 function resolvePublishedFilename(rawPath: string): string {
   if (path.isAbsolute(rawPath)) {
     throw new Error(`expected published filename, got absolute path ${rawPath}`);
@@ -196,14 +208,7 @@ function resolveCurrentStaticProductRoot(productId: string): string | null {
 }
 
 function resolveCurrentFastProductRoot(productId: string): string | null {
-  const manifestPath = latestCurrentArtifacts(artifactReadRoot);
-  if (!manifestPath) {
-    return null;
-  }
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
-    fast_products?: Array<{ id?: string; filename?: string }>;
-  };
-  const product = manifest.fast_products?.find((candidate) => candidate.id === productId);
+  const product = activeFastBundle.packages?.find((candidate) => candidate.id === productId);
   if (!product?.filename) {
     return null;
   }

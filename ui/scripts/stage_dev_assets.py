@@ -58,8 +58,16 @@ def latest_current_artifacts(root: Path) -> Path:
 
 CURRENT_ARTIFACTS_FILE = latest_current_artifacts(ARTIFACT_ROOT)
 CURRENT_ARTIFACTS = json.loads(CURRENT_ARTIFACTS_FILE.read_text())
-bundle_filename = CURRENT_ARTIFACTS["bundles"][-1]["filename"]
-PRODUCT_BUILD_FILE = ARTIFACT_ROOT / PACKAGED_DIR / bundle_filename
+bundle_entries = CURRENT_ARTIFACTS.get("bundles", [])
+cycle_bundle_filename = next(
+    (
+        bundle["filename"]
+        for bundle in bundle_entries
+        if isinstance(bundle, dict) and bundle.get("bundle_type") == "cycle"
+    ),
+    bundle_entries[0]["filename"],
+)
+PRODUCT_BUILD_FILE = ARTIFACT_ROOT / PACKAGED_DIR / cycle_bundle_filename
 PACKAGED_ROOT = ARTIFACT_ROOT / PACKAGED_DIR
 UNPACKED_ROOT = ARTIFACT_ROOT / UNPACKED_DIR
 
@@ -68,6 +76,20 @@ def load_product_build() -> dict:
     return json.loads(PRODUCT_BUILD_FILE.read_text())
 
 PRODUCT_BUILD = load_product_build()
+
+
+def load_fast_bundle() -> dict:
+    for bundle in CURRENT_ARTIFACTS.get("bundles", []):
+        if not isinstance(bundle, dict) or bundle.get("bundle_type") != "fast":
+            continue
+        filename = bundle.get("filename")
+        if not isinstance(filename, str) or not filename:
+            continue
+        return json.loads((PACKAGED_ROOT / filename).read_text())
+    return {}
+
+
+FAST_BUNDLE = load_fast_bundle()
 
 
 def bundle_package_filenames_by_id() -> dict[str, str]:
@@ -294,7 +316,7 @@ def stage_vectors() -> None:
 def stage_fast_products() -> None:
     target = WEB_STATIC_ROOT / "fast-products"
     reset_dir(target)
-    for product in CURRENT_ARTIFACTS.get("fast_products", []):
+    for product in FAST_BUNDLE.get("packages", []):
         if not isinstance(product, dict):
             continue
         product_id = product.get("id")
@@ -352,11 +374,11 @@ def current_stage_stamp() -> dict:
                 "filename": product.get("filename"),
                 "checksum_sha256": product.get("checksum_sha256"),
             }
-            for product in CURRENT_ARTIFACTS.get("fast_products", [])
+            for product in FAST_BUNDLE.get("packages", [])
             if isinstance(product, dict)
         ],
         "nav_kv": NAV_KV,
-        "version": 6,
+        "version": 7,
     }
 
 

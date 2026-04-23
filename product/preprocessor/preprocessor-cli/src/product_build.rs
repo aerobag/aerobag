@@ -266,8 +266,6 @@ struct CurrentArtifactsManifest {
     obstacles: CurrentObstacleEntry,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     diagnostics: Option<CurrentDiagnosticsEntry>,
-    #[serde(default)]
-    fast_products: Vec<CurrentFastProductEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -322,16 +320,6 @@ struct CurrentBundleEntry {
 struct CurrentObstacleEntry {
     filename: String,
     published_date: String,
-    checksum_sha256: String,
-    size_bytes: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CurrentFastProductEntry {
-    id: String,
-    filename: String,
-    published_at_utc: String,
-    source_generated_at_utc: String,
     checksum_sha256: String,
     size_bytes: u64,
 }
@@ -541,6 +529,48 @@ fn sync_unpacked_fast_bundle_manifest(
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
     sync_unpacked_file(bundle_manifest_path, &unpacked_root)
+}
+
+fn current_bundle_path(
+    current: &CurrentArtifactsManifest,
+    build_root: &Path,
+    bundle_type: &str,
+) -> Option<PathBuf> {
+    current
+        .bundles
+        .iter()
+        .find(|bundle| bundle.bundle_type == bundle_type)
+        .map(|bundle| build_root.join(&bundle.filename))
+}
+
+fn load_fast_bundle_products(bundle_path: &Path) -> anyhow::Result<Vec<PublishedFastProductResult>> {
+    let bundle: FastBundleManifest = serde_json::from_slice(
+        &fs::read(bundle_path).with_context(|| format!("failed to read {}", bundle_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+    bundle
+        .packages
+        .into_iter()
+        .map(|package| {
+            Ok(PublishedFastProductResult {
+                id: package.id,
+                source_zip_path: bundle_path
+                    .parent()
+                    .context("fast bundle path missing parent")?
+                    .join(&package.filename),
+                published_zip: bundle_path
+                    .parent()
+                    .context("fast bundle path missing parent")?
+                    .join(&package.filename),
+                checksum_sha256: package.checksum_sha256,
+                size_bytes: package.size_bytes,
+                source_generated_at_utc: package
+                    .source_generated_at_utc
+                    .or(package.effective_date)
+                    .unwrap_or_default(),
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -2682,17 +2712,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                         size_bytes,
                                         source_version,
                                         ..
-                                    }) => Ok(CurrentFastProductEntry {
+                                    }) => Ok(PublishedFastProductResult {
                                         id: id.clone(),
-                                        filename: published_zip
-                                            .file_name()
-                                            .and_then(|name| name.to_str())
-                                            .unwrap_or_default()
-                                            .to_string(),
-                                        published_at_utc: utc_now_string(),
-                                        source_generated_at_utc: source_version.clone(),
+                                        source_zip_path: published_zip.clone(),
+                                        published_zip: published_zip.clone(),
                                         checksum_sha256: sha256.clone(),
                                         size_bytes: *size_bytes,
+                                        source_generated_at_utc: source_version.clone(),
                                     }),
                                     _ => bail!("missing published fast product output for {}", task_id),
                                 })
@@ -2700,17 +2726,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             let fast_bundle_published_at_utc = utc_now_string();
                             let fast_bundle_manifest_path = publish_fast_bundle_manifest(
                                 &config.build_root,
-                                &fast_products
-                                    .iter()
-                                    .map(|product| PublishedFastProductResult {
-                                        id: product.id.clone(),
-                                        source_zip_path: config.build_root.join(&product.filename),
-                                        published_zip: config.build_root.join(&product.filename),
-                                        checksum_sha256: product.checksum_sha256.clone(),
-                                        size_bytes: product.size_bytes,
-                                        source_generated_at_utc: product.source_generated_at_utc.clone(),
-                                    })
-                                    .collect::<Vec<_>>(),
+                                &fast_products,
                                 &fast_bundle_published_at_utc,
                             )?;
                             sync_unpacked_fast_bundle_manifest(
@@ -2729,7 +2745,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 &published_obstacle.1,
                                 published_obstacle.2,
                                 diagnostics.clone(),
-                                fast_products,
                             )?;
                             cleanup_published_packaged_root(
                                 &config.build_root,
@@ -2987,7 +3002,10 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
             .with_context(|| format!("failed to read {}", current_artifacts_path.display()))?,
     )
     .with_context(|| format!("failed to parse {}", current_artifacts_path.display()))?;
-    let previous_fast_products = current.fast_products.clone();
+    let previous_fast_products = match current_bundle_path(&current, &config.build_root, "fast") {
+        Some(path) => load_fast_bundle_products(&path)?,
+        None => Vec::new(),
+    };
 
     let built_tfrs = build_tfrs_product(config)?;
     let built_metars = build_metars_product(config)?;
@@ -3004,22 +3022,6 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
     let fast_bundle_manifest_path =
         publish_fast_bundle_manifest(&config.build_root, &fast_products, &published_at_utc)?;
     sync_unpacked_fast_bundle_manifest(config, &fast_bundle_manifest_path)?;
-    current.fast_products = fast_products
-        .iter()
-        .map(|product| CurrentFastProductEntry {
-            id: product.id.clone(),
-            filename: product
-                .published_zip
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_string(),
-            published_at_utc: published_at_utc.clone(),
-            source_generated_at_utc: product.source_generated_at_utc.clone(),
-            checksum_sha256: product.checksum_sha256.clone(),
-            size_bytes: product.size_bytes,
-        })
-        .collect();
     current.as_of_date = Utc::now().date_naive().format("%Y-%m-%d").to_string();
     current.bundles = build_current_bundle_entries(&config.build_root, Utc::now().date_naive())?;
 
@@ -3111,7 +3113,7 @@ fn current_artifacts_path_for_fast_subset(config: &ProductBuildConfig) -> anyhow
 fn sync_fast_subset_unpacked(
     build_root: &Path,
     current_artifacts_path: &Path,
-    previous_fast_products: &[CurrentFastProductEntry],
+    previous_fast_products: &[PublishedFastProductResult],
     fast_products: &[PublishedFastProductResult],
 ) -> anyhow::Result<()> {
     let unpacked_root = published_unpacked_root_from_build_root(build_root)?;
@@ -3150,7 +3152,7 @@ fn sync_fast_subset_unpacked(
 
 fn remove_stale_fast_unpacked_dirs(
     unpacked_root: &Path,
-    previous_fast_products: &[CurrentFastProductEntry],
+    previous_fast_products: &[PublishedFastProductResult],
     fast_products: &[PublishedFastProductResult],
 ) -> anyhow::Result<()> {
     let current_dirs = fast_products
@@ -3165,7 +3167,12 @@ fn remove_stale_fast_unpacked_dirs(
         })
         .collect::<anyhow::Result<std::collections::BTreeSet<_>>>()?;
     for product in previous_fast_products {
-        let previous_dir = zip_stem(&product.filename)?;
+        let filename = product
+            .published_zip
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("failed to determine previous fast filename"))?;
+        let previous_dir = zip_stem(filename)?;
         if current_dirs.contains(&previous_dir) {
             continue;
         }
@@ -9617,7 +9624,6 @@ fn write_current_artifacts_manifest(
     obstacle_sha256: &str,
     obstacle_size_bytes: u64,
     diagnostics: Option<CurrentDiagnosticsEntry>,
-    fast_products: Vec<CurrentFastProductEntry>,
 ) -> anyhow::Result<PathBuf> {
     let bundles = build_current_bundle_entries(build_root, as_of_date)?;
     let published_date = as_of_date.format("%Y-%m-%d").to_string();
@@ -9636,7 +9642,6 @@ fn write_current_artifacts_manifest(
             size_bytes: obstacle_size_bytes,
         },
         diagnostics,
-        fast_products,
     };
     let manifest_path = build_root.join(format!(
         "current_artifacts_{}.json",
@@ -9764,9 +9769,6 @@ fn collect_reachable_packaged_entries(
         keep.insert(diagnostics.filename.clone());
     }
     keep.insert(current.obstacles.filename.clone());
-    for product in &current.fast_products {
-        keep.insert(product.filename.clone());
-    }
     for bundle_ref in &current.bundles {
         keep.insert(bundle_ref.filename.clone());
         let bundle = load_bundle_manifest_like(&packaged_root.join(&bundle_ref.filename))?;
@@ -9791,9 +9793,6 @@ fn collect_reachable_unpacked_entries(
         keep.insert(diagnostics.filename.clone());
     }
     keep.insert(zip_stem(&current.obstacles.filename)?);
-    for product in &current.fast_products {
-        keep.insert(zip_stem(&product.filename)?);
-    }
     for bundle_ref in &current.bundles {
         keep.insert(bundle_ref.filename.clone());
         let bundle_path = current_artifacts_path
@@ -9914,13 +9913,6 @@ fn validate_packaged_contract(
         "current_artifacts.obstacles.filename",
     )?;
     ensure_public_file_exists(&packaged_root.join(&current.obstacles.filename))?;
-    for product in &current.fast_products {
-        validate_public_filename(
-            &product.filename,
-            "current_artifacts.fast_products[].filename",
-        )?;
-        ensure_public_file_exists(&packaged_root.join(&product.filename))?;
-    }
     Ok(())
 }
 
@@ -10071,9 +10063,6 @@ fn validate_unpacked_contract(
     }
 
     ensure_public_dir_exists(&unpacked_root.join(zip_stem(&current.obstacles.filename)?))?;
-    for product in &current.fast_products {
-        ensure_public_dir_exists(&unpacked_root.join(zip_stem(&product.filename)?))?;
-    }
     Ok(())
 }
 

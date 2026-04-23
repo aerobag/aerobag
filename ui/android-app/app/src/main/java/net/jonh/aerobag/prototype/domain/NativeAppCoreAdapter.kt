@@ -93,7 +93,6 @@ data class MapOverlayQueryResult(
 class NativeAppCoreAdapter(
     private val catalogJson: String,
     private val vectorManifestJson: String,
-    private val chartCatalogJson: String,
     private val navKvStore: NavKvStore? = null,
     private val bridge: NativeBridge = NativeBindings,
     private val json: Json = Json {
@@ -114,7 +113,6 @@ class NativeAppCoreAdapter(
         val resultJson = bridge.createUiSessionJson(
             catalogJson,
             vectorManifestJson,
-            chartCatalogJson,
             json.encodeToString(plan.toWire()),
             json.encodeToString(recentAirportIds),
             json.encodeToString(selectedAirportId),
@@ -126,27 +124,26 @@ class NativeAppCoreAdapter(
             bridge = bridge,
             json = json,
             navKvStore = navKvStore,
-            chartCatalog = result.chart_catalog.toUi(),
             initialSnapshot = enrichUiSessionSnapshot(result.snapshot.toUi()),
         )
     }
 
     fun deriveChartPageState(
-        resourceIndexJson: String,
         plan: FlightPlan,
         recentAirportIds: List<String>,
         selectedAirportId: String?,
         selectedChartId: String?,
     ): DerivedChartPageState {
-        val planJson = json.encodeToString(plan.toWire())
-        val nextJson = bridge.deriveChartPageStateJson(
-            resourceIndexJson,
-            planJson,
-            json.encodeToString(recentAirportIds),
-            json.encodeToString(selectedAirportId),
-            json.encodeToString(selectedChartId),
+        val result = runHadOperationElement(
+            buildJsonObject {
+                put("kind", "chart_page_state")
+                put("plan", json.encodeToJsonElement(plan.toWire()))
+                put("recent_airport_ids", json.encodeToJsonElement(recentAirportIds))
+                put("selected_airport_id", json.encodeToJsonElement(selectedAirportId))
+                put("selected_chart_id", json.encodeToJsonElement(selectedChartId))
+            },
         )
-        return json.decodeFromString<WireDerivedChartPageState>(nextJson).toUi()
+        return json.decodeFromJsonElement<WireDerivedChartPageState>(result).toUi()
     }
 
     fun deriveChartPage(resourceIndexJson: String, plan: FlightPlan): ChartPageFixture {
@@ -546,7 +543,6 @@ class NativeUiSession internal constructor(
     private val bridge: NativeBridge,
     private val json: Json,
     private val navKvStore: NavKvStore?,
-    val chartCatalog: ChartPageFixture,
     initialSnapshot: UiSessionSnapshot,
 ) {
     var snapshot: UiSessionSnapshot = initialSnapshot
@@ -1151,7 +1147,6 @@ private data class WireUiSessionSnapshot(
 @kotlinx.serialization.Serializable
 private data class WireUiSessionInitResult(
     val handle: Long,
-    val chart_catalog: WireDerivedChartPage,
     val snapshot: WireUiSessionSnapshot,
 )
 

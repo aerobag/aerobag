@@ -370,7 +370,6 @@ pub fn replace_procedure_materialized_ui(
 pub fn create_ui_session(
     catalog_json: &str,
     vector_manifest_json: &str,
-    chart_catalog_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
@@ -379,7 +378,6 @@ pub fn create_ui_session(
     create_ui_session_json(
         catalog_json,
         vector_manifest_json,
-        chart_catalog_json,
         plan_json,
         recent_airport_ids_json,
         selected_airport_id_json,
@@ -392,7 +390,6 @@ pub fn create_ui_session(
 pub fn create_ui_session_profiled(
     catalog_json: &str,
     vector_manifest_json: &str,
-    chart_catalog_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
@@ -401,7 +398,6 @@ pub fn create_ui_session_profiled(
     create_ui_session_profiled_json(
         catalog_json,
         vector_manifest_json,
-        chart_catalog_json,
         plan_json,
         recent_airport_ids_json,
         selected_airport_id_json,
@@ -1055,7 +1051,6 @@ fn classify_procedure_identifier_json(
 fn create_ui_session_json(
     catalog_json: &str,
     vector_manifest_json: &str,
-    chart_catalog_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
@@ -1072,7 +1067,6 @@ fn create_ui_session_json(
     let result = app_core::create_ui_session(
         catalog_json,
         vector_manifest_json,
-        chart_catalog_json,
         plan,
         &recent_airport_ids,
         selected_airport_id.as_deref(),
@@ -1085,7 +1079,6 @@ fn create_ui_session_json(
 fn create_ui_session_profiled_json(
     catalog_json: &str,
     vector_manifest_json: &str,
-    chart_catalog_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
@@ -1106,7 +1099,6 @@ fn create_ui_session_profiled_json(
     let result = app_core::create_ui_session_profiled(
         catalog_json,
         vector_manifest_json,
-        chart_catalog_json,
         plan,
         &recent_airport_ids,
         selected_airport_id.as_deref(),

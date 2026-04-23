@@ -243,7 +243,6 @@ export type TerrainOverlayQueryResult = {
 };
 
 export interface UiSession {
-  chartCatalog: ChartPageData;
   snapshot(): Promise<UiSessionSnapshot>;
   replaceFlightPlan(plan: FlightPlan): Promise<UiSessionSnapshot>;
   removeLeg(index: number): Promise<UiSessionSnapshot>;
@@ -282,12 +281,17 @@ export interface AppCoreAdapter {
   prewarm(): Promise<void>;
   situationRingCandidates(): SituationRingCandidate[];
   createUiSession(
-    chartCatalog: ChartPageData,
     plan: FlightPlan,
     recentAirportIds: string[],
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<UiSession>;
+  deriveChartPageState(
+    plan: FlightPlan,
+    recentAirportIds: string[],
+    selectedAirportId?: string,
+    selectedChartId?: string,
+  ): Promise<DerivedChartPageState>;
   projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]>;
   activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation>;
   activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
@@ -375,8 +379,8 @@ async function fetchVectorManifestJson(): Promise<string> {
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
   situation_ring_candidates_json(): Promise<string> | string;
-  create_ui_session(catalogJson: string, vectorManifestJson: string, chartCatalogJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
-  create_ui_session_profiled?: (catalogJson: string, vectorManifestJson: string, chartCatalogJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
+  create_ui_session(catalogJson: string, vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
+  create_ui_session_profiled?: (catalogJson: string, vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
   remove_leg_in_session(handle: number, index: number): Promise<string> | string;
   move_waypoint_in_session(handle: number, waypointIndex: number, delta: number): Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
@@ -491,7 +495,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async createUiSession(
-    chartCatalog: ChartPageData,
     plan: FlightPlan,
     recentAirportIds: string[],
     selectedAirportId?: string,
@@ -499,7 +502,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   ): Promise<UiSession> {
     const catalogJson = "{}";
     const vectorManifestJson = await debugTiming("startup.vector_manifest.fetch", () => this.vectorManifestJson());
-    const chartCatalogJson = JSON.stringify(chartCatalog);
     const module = this.module;
     const createSession = async (
       nextPlan: FlightPlan,
@@ -515,13 +517,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       const createdJson = await debugTiming("startup.session.wasm_call", () => createUiSession(
         catalogJson,
         vectorManifestJson,
-        chartCatalogJson,
         planJson,
         recentAirportIdsJson,
         selectedAirportIdJson,
         selectedChartIdJson,
       ), { profiled: Boolean(module.create_ui_session_profiled) });
-      const createdEnvelope = debugTiming("startup.session.parse_result", () => JSON.parse(createdJson)) as { result?: { handle: number; chart_catalog: ChartPageData; snapshot: UiSessionSnapshot }; timings?: Array<{ label: string; elapsed_ms: number }>; handle: number; chart_catalog: ChartPageData; snapshot: UiSessionSnapshot };
+      const createdEnvelope = debugTiming("startup.session.parse_result", () => JSON.parse(createdJson)) as { result?: { handle: number; snapshot: UiSessionSnapshot }; timings?: Array<{ label: string; elapsed_ms: number }>; handle: number; snapshot: UiSessionSnapshot };
       if (createdEnvelope.timings) {
         debugLog("startup.session.core_profile", { timings: createdEnvelope.timings });
       }
@@ -564,7 +565,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       }
     };
     return {
-      chartCatalog: init.chart_catalog,
       snapshot: async () => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.get_session_snapshot(handle)),
@@ -788,6 +788,21 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         this.module.destroy_session(handle);
       },
     };
+  }
+
+  async deriveChartPageState(
+    plan: FlightPlan,
+    recentAirportIds: string[],
+    selectedAirportId?: string,
+    selectedChartId?: string,
+  ): Promise<DerivedChartPageState> {
+    return runCoreHadOperation<DerivedChartPageState>({
+      kind: "chart_page_state",
+      plan,
+      recent_airport_ids: recentAirportIds,
+      selected_airport_id: selectedAirportId ?? null,
+      selected_chart_id: selectedChartId ?? null,
+    });
   }
 
   async projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]> {

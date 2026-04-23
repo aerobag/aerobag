@@ -13,7 +13,6 @@ import java.util.zip.ZipInputStream
 data class ContentFixture(
     val catalogJson: String,
     val vectorManifestJson: String,
-    val chartCatalogJson: String,
     val resourceIndexJson: String,
     val mapView: MapView,
     val mapViews: List<MapViewOption>,
@@ -68,7 +67,7 @@ object SampleData {
             samplePlan.departure?.let(::add)
             samplePlan.destination?.let(::add)
         }
-        val chartCatalog = WireDerivedChartPage(
+        val chartPage = WireDerivedChartPage(
             airports = airportIds.mapNotNull { airportId ->
                 json.decodeFromJsonElement<WireDerivedChartAirport?>(
                     navKvStore.runCoreOperationElement(
@@ -80,12 +79,10 @@ object SampleData {
                 )
             },
         ).toUi()
-        val chartPage = chartCatalog
         val defaultLevel = mapView.levels.maxBy { it.zoom }
         return ContentFixture(
             catalogJson = catalogJson,
             vectorManifestJson = vectorManifestJson,
-            chartCatalogJson = json.encodeToString(chartCatalog.toWire()),
             resourceIndexJson = resourceIndexPayload,
             mapView = mapView,
             mapViews = mapViews,

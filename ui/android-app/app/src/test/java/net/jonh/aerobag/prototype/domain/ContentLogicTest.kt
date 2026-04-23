@@ -37,7 +37,6 @@ class ContentLogicTest {
         val nativeAdapter = NativeAppCoreAdapter(
             catalogJson = SampleDataFixture.catalogJson,
             vectorManifestJson = SampleDataFixture.vectorManifestJson,
-            chartCatalogJson = """{"airports":[]}""",
             bridge = FakeNativeBridge(json),
             json = json,
         )
@@ -58,7 +57,6 @@ class ContentLogicTest {
         val nativeAdapter = NativeAppCoreAdapter(
             catalogJson = SampleDataFixture.catalogJson,
             vectorManifestJson = SampleDataFixture.vectorManifestJson,
-            chartCatalogJson = """{"airports":[]}""",
             bridge = FakeNativeBridge(json),
             json = json,
         )
@@ -408,13 +406,12 @@ private class FakeNativeBridge(
     override fun createUiSessionJson(
         catalogJson: String,
         vectorManifestJson: String,
-        chartCatalogJson: String,
         planJson: String,
         recentAirportIdsJson: String,
         selectedAirportIdJson: String,
         selectedChartIdJson: String,
     ): String {
-        return """{"handle":1,"chart_catalog":{"airports":[]},"snapshot":{"app_state":{"active_plan":null,"content_policy":"PreferLocal","last_content_report":null},"chart_page_state":{"ordered_airport_ids":[],"recent_airport_ids":[],"selected_airport_id":"","selected_chart_id":""}}}"""
+        return """{"handle":1,"snapshot":{"app_state":{"active_plan":null,"content_policy":"PreferLocal","last_content_report":null},"chart_page_state":{"ordered_airport_ids":[],"recent_airport_ids":[],"selected_airport_id":"","selected_chart_id":""}}}"""
     }
 
     override fun removeLegInSessionJson(handle: Long, index: Int): String = getSessionSnapshotJson(handle)

@@ -30,7 +30,8 @@ pub use catalog::{
 };
 pub use chart_page::{
     build_chart_catalog, derive_chart_page, derive_chart_page_from_catalog,
-    derive_chart_page_state, derive_chart_page_state_from_catalog, DerivedChartAirport,
+    derive_chart_page_state, derive_chart_page_state_from_airports,
+    derive_chart_page_state_from_catalog, airport_ids_from_plan, DerivedChartAirport,
     DerivedChartAsset, DerivedChartCatalog, DerivedChartPage, DerivedChartPageState,
     ResourceAirportResources, ResourceCsup, ResourceIndexChartPageInput, ResourcePlate,
 };

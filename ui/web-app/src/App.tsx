@@ -813,8 +813,6 @@ export default function App() {
   const highLatencyWarningTimerRef = useRef<number | null>(null);
   const [mapViews, setMapViews] = useState<MapViewOptionJson[]>([]);
   const [mapViewsLoadError, setMapViewsLoadError] = useState<string | null>(null);
-  const [chartPageCatalog, setChartPageCatalog] = useState<ChartPageData | null>(null);
-  const [chartPageCatalogLoadError, setChartPageCatalogLoadError] = useState<string | null>(null);
   const [selectedMapId, setSelectedMapId] = useState<string>("");
   const initialRecentAirportIds = useMemo(
     () => mergeRecentAirportIds(emptyChartPage.airports, persistedUiState.recentAirportIds ?? []),
@@ -877,6 +875,8 @@ export default function App() {
   });
   const [playbackSourcePath, setPlaybackSourcePath] = useState(defaultPlaybackTracePath);
   const [debugWarningActive, setDebugWarningActive] = useState(false);
+  const [derivedChartPageState, setDerivedChartPageState] = useState<DerivedChartPageState>(initialChartPageState);
+  const [chartPageStateLoadError, setChartPageStateLoadError] = useState<string | null>(null);
   const logDebugWarning = useCallback((tag: string, data?: unknown) => {
     debugLog(tag, data);
     debugLog("debug.warn.latched", { tag, data });
@@ -907,18 +907,9 @@ export default function App() {
   const appUiState = sessionSnapshot.app_ui_state;
   const playbackUiState = sessionSnapshot.playback_ui_state;
   const mapFollowUiState = sessionSnapshot.map_follow_ui_state;
-  const chartCatalog: ChartPageData = uiSession?.chartCatalog ?? chartPageCatalog ?? emptyChartPage;
-  const chartAirportById = useMemo(
-    () => new Map(chartCatalog.airports.map((airport) => [airport.id, airport])),
-    [chartCatalog],
-  );
   const chartPageData: ChartPageData = useMemo(
-    () => ({
-      airports: sessionSnapshot.chart_page_state.ordered_airport_ids
-        .map((airportId) => chartAirportById.get(airportId))
-        .filter((airport): airport is ChartPageData["airports"][number] => airport != null),
-    }),
-    [chartAirportById, sessionSnapshot.chart_page_state.ordered_airport_ids],
+    () => ({ airports: derivedChartPageState.airports }),
+    [derivedChartPageState.airports],
   );
 
   useEffect(() => {
@@ -967,9 +958,9 @@ export default function App() {
   }, [playbackUiState.status, uiSession]);
   const currentPlan = appState.active_plan;
   const planUiState = appUiState.active_plan;
-  const recentAirportIds = sessionSnapshot.chart_page_state.recent_airport_ids;
-  const selectedAirportId = sessionSnapshot.chart_page_state.selected_airport_id;
-  const selectedChartId = sessionSnapshot.chart_page_state.selected_chart_id;
+  const recentAirportIds = derivedChartPageState.recent_airport_ids;
+  const selectedAirportId = derivedChartPageState.selected_airport_id;
+  const selectedChartId = derivedChartPageState.selected_chart_id;
 
   const selectedMap = useMemo(
     () => mapViews.find((view) => view.id === selectedMapId) ?? mapViews[0] ?? null,
@@ -1051,12 +1042,11 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     let nextSession: UiSession | null = null;
-    if (!appCoreAdapter || !chartPageCatalog) {
+    if (!appCoreAdapter) {
       return;
     }
     debugTiming("startup.session.create", () => buildSeededDevPlan().then(async (initialPlan) => {
       const created = await debugTiming("startup.session.create.core", () => appCoreAdapter.createUiSession(
-        chartPageCatalog,
         initialPlan.plan,
         initialRecentAirportIds,
         initialChartPageState.selected_airport_id,
@@ -1079,7 +1069,7 @@ export default function App() {
       cancelled = true;
       void nextSession?.destroy();
     };
-  }, [adapterBackend, appCoreAdapter, chartPageCatalog, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialRecentAirportIds]);
+  }, [adapterBackend, appCoreAdapter, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialRecentAirportIds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1108,43 +1098,38 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    debugTiming("startup.chart_page_catalog.load", () => buildSeededDevPlan().then(async ({ plan }) => {
-      const airportIds = airportIdsNeededForInitialChartPage(
-        plan,
-        initialRecentAirportIds,
-        persistedUiState.selectedAirportId,
-      );
-      if (persistedUiState.selectedChartId) {
-        const selectedChart = await runCoreHadOperation<ChartPageData["airports"][number]["charts"][number] | null>({
-          kind: "plate_by_id",
-          plate_id: persistedUiState.selectedChartId,
-        });
-        if (selectedChart?.airport_id) {
-          airportIds.add(selectedChart.airport_id);
-        }
-      }
-      debugLog("startup.chart_page_catalog.airports", { count: airportIds.size, airport_ids: [...airportIds] });
-      const airports = (await Promise.all([...airportIds].map((airportId) => debugTiming(
-        "startup.chart_page_catalog.airport.load",
-        () => runCoreHadOperation<ChartPageData["airports"][number] | null>({ kind: "plate_airport", airport_id: airportId }),
-        { airport_id: airportId },
-      ))))
-        .filter((airport): airport is ChartPageData["airports"][number] => airport !== null);
-      return { airports };
-    })).then((loaded) => {
+    if (!appCoreAdapter || !currentPlan) {
+      return;
+    }
+    debugTiming(
+      "charts.page_state.load",
+      () => appCoreAdapter.deriveChartPageState(
+        currentPlan,
+        sessionSnapshot.chart_page_state.recent_airport_ids,
+        sessionSnapshot.chart_page_state.selected_airport_id || undefined,
+        sessionSnapshot.chart_page_state.selected_chart_id || undefined,
+      ),
+    ).then((state) => {
       if (cancelled) {
         return;
       }
-      setChartPageCatalog(loaded);
+      setDerivedChartPageState(state);
+      setChartPageStateLoadError(null);
     }).catch((error) => {
       if (!cancelled) {
-        setChartPageCatalogLoadError(`failed to load chart page catalog: ${errorMessage(error)}`);
+        setChartPageStateLoadError(`failed to derive chart page state: ${errorMessage(error)}`);
       }
     });
     return () => {
       cancelled = true;
     };
-  }, [initialRecentAirportIds, persistedUiState.selectedAirportId, persistedUiState.selectedChartId]);
+  }, [
+    appCoreAdapter,
+    currentPlan,
+    sessionSnapshot.chart_page_state.recent_airport_ids,
+    sessionSnapshot.chart_page_state.selected_airport_id,
+    sessionSnapshot.chart_page_state.selected_chart_id,
+  ]);
 
   useEffect(() => {
     if (!selectedMap) {
@@ -1303,20 +1288,20 @@ export default function App() {
     const shouldHideStartupShell =
       sessionInitError !== null ||
       mapViewsLoadError !== null ||
-      chartPageCatalogLoadError !== null ||
+      chartPageStateLoadError !== null ||
       (appReady &&
         currentPlan !== null &&
         planUiState !== null);
     if (shouldHideStartupShell) {
       window.__aerobag_hide_startup_shell?.();
     }
-  }, [appReady, chartPageCatalogLoadError, currentPlan, mapViewsLoadError, planUiState, sessionInitError]);
+  }, [appReady, chartPageStateLoadError, currentPlan, mapViewsLoadError, planUiState, sessionInitError]);
 
-  if (sessionInitError || mapViewsLoadError || chartPageCatalogLoadError) {
+  if (sessionInitError || mapViewsLoadError || chartPageStateLoadError) {
     return (
       <main className="appFrame">
         <section className="appPage planPage">
-          <div className="planGuidanceSummary">{sessionInitError ?? mapViewsLoadError ?? chartPageCatalogLoadError}</div>
+          <div className="planGuidanceSummary">{sessionInitError ?? mapViewsLoadError ?? chartPageStateLoadError}</div>
         </section>
       </main>
     );
@@ -6057,48 +6042,6 @@ async function buildSeededDevPlan(): Promise<{ plan: FlightPlan }> {
   return {
     plan,
   };
-}
-
-function airportIdsNeededForInitialChartPage(
-  plan: FlightPlan,
-  recentAirportIds: string[],
-  selectedAirportId: string | null | undefined,
-) {
-  const airportIds = new Set<string>();
-  const add = (airportId: string | null | undefined) => {
-    const normalized = airportId?.trim().toUpperCase();
-    if (normalized) {
-      airportIds.add(normalized);
-    }
-  };
-  add(plan.departure);
-  add(plan.destination);
-  add(plan.alternate);
-  for (const component of plan.route_components) {
-    switch (component.kind) {
-      case "waypoint":
-        if ("Airport" in component.waypoint) {
-          add(component.waypoint.Airport);
-        }
-        break;
-      case "airway":
-        if ("Airport" in component.airway.entry) {
-          add(component.airway.entry.Airport);
-        }
-        if ("Airport" in component.airway.exit) {
-          add(component.airway.exit.Airport);
-        }
-        break;
-      case "procedure":
-        add(component.procedure.airport_id);
-        break;
-    }
-  }
-  for (const airportId of recentAirportIds) {
-    add(airportId);
-  }
-  add(selectedAirportId);
-  return airportIds;
 }
 
 function concretizedNavItemLabel(item: FlightPlanUiState["components"][number]["items"][number]) {

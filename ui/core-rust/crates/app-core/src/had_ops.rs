@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use crate::planning::FlightPlanRowActionId;
 use crate::{
+    chart_page::{airport_ids_from_plan, derive_chart_page_state_from_airports},
     describe_plate_procedure_load_options, describe_procedure_options_from_rows,
     describe_show_plate_for_procedure, flight_leg_course_deg, flight_leg_distance_nm,
     great_circle_display_path,
@@ -30,6 +31,12 @@ pub enum HadOperationOutcome {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HadOperation {
     ChartCatalog,
+    ChartPageState {
+        plan: FlightPlan,
+        recent_airport_ids: Vec<String>,
+        selected_airport_id: Option<String>,
+        selected_chart_id: Option<String>,
+    },
     PlateAirport {
         airport_id: String,
     },
@@ -143,6 +150,18 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
         HadOperation::ChartCatalog => {
             serde_json::to_value(read_optional::<Value>(store, NavKvQuery::ChartCatalog)?)?
         }
+        HadOperation::ChartPageState {
+            plan,
+            recent_airport_ids,
+            selected_airport_id,
+            selected_chart_id,
+        } => serde_json::to_value(chart_page_state(
+            store,
+            &plan,
+            &recent_airport_ids,
+            selected_airport_id.as_deref(),
+            selected_chart_id.as_deref(),
+        )?)?,
         HadOperation::PlateAirport { airport_id } => serde_json::to_value(read_optional::<Value>(
             store,
             NavKvQuery::PlateAirport { airport_id },
@@ -393,6 +412,38 @@ fn flight_plan_ui_state(
         }
     }
     Ok(ui_state)
+}
+
+fn chart_page_state(
+    store: &NavKvStore,
+    plan: &FlightPlan,
+    stored_recent_airport_ids: &[String],
+    candidate_airport_id: Option<&str>,
+    candidate_chart_id: Option<&str>,
+) -> Result<crate::DerivedChartPageState, HadReadError> {
+    let mut airports = Vec::new();
+    for airport_id in airport_ids_from_plan(plan) {
+        if airports
+            .iter()
+            .any(|airport: &crate::DerivedChartAirport| airport.id == airport_id)
+        {
+            continue;
+        }
+        if let Some(airport) = read_optional(
+            store,
+            NavKvQuery::PlateAirport {
+                airport_id: airport_id.clone(),
+            },
+        )? {
+            airports.push(airport);
+        }
+    }
+    Ok(derive_chart_page_state_from_airports(
+        airports,
+        stored_recent_airport_ids,
+        candidate_airport_id,
+        candidate_chart_id,
+    ))
 }
 
 fn project_flight_plan_route(

@@ -145,6 +145,7 @@ import net.jonh.aerobag.prototype.domain.AirwaySuggestion
 import net.jonh.aerobag.prototype.domain.WaypointIdentifierSuggestion
 import net.jonh.aerobag.prototype.domain.ConcretizedNavItem
 import net.jonh.aerobag.prototype.domain.CoreMapViewport
+import net.jonh.aerobag.prototype.domain.DerivedChartPageState
 import net.jonh.aerobag.prototype.domain.FlightPlanUiMutation
 import net.jonh.aerobag.prototype.domain.FlightPlanDisplayRowKind
 import net.jonh.aerobag.prototype.domain.FlightPlanDisplayRowUiView
@@ -1082,11 +1083,10 @@ private fun AerobagApp() {
     val context = LocalContext.current
     val fixture = remember(context) { SampleData.load(context.applicationContext) }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
-    val appCore = remember(fixture.catalogJson, fixture.vectorManifestJson, fixture.chartCatalogJson, fixture.navKvStore) {
+    val appCore = remember(fixture.catalogJson, fixture.vectorManifestJson, fixture.navKvStore) {
         NativeAppCoreAdapter(
             fixture.catalogJson,
             fixture.vectorManifestJson,
-            fixture.chartCatalogJson,
             navKvStore = fixture.navKvStore,
         )
     }
@@ -1123,8 +1123,16 @@ private fun AerobagApp() {
     val appState = sessionSnapshot.appState
     val appUiState = sessionSnapshot.appUiState
     val currentPlan = appState.activePlan ?: initialPlanMutation.plan
-    val chartCatalog = uiSession.chartCatalog
-    val derivedChartPageState = sessionSnapshot.chartPageState
+    var derivedChartPageState by remember(uiSession) {
+        mutableStateOf(
+            DerivedChartPageState(
+                airports = emptyList<ChartAirport>(),
+                recentAirportIds = sessionSnapshot.chartPageState.recentAirportIds,
+                selectedAirportId = sessionSnapshot.chartPageState.selectedAirportId,
+                selectedChartId = sessionSnapshot.chartPageState.selectedChartId,
+            ),
+        )
+    }
     val selectedMap = remember(selectedMapId, fixture.mapViews) {
         fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
     }
@@ -1133,10 +1141,8 @@ private fun AerobagApp() {
     var chartFolderOpen by remember { mutableStateOf(false) }
     var playbackSourcePath by remember { mutableStateOf(DefaultPlaybackTracePath) }
     val planListState = rememberLazyListState()
-    val chartAirportById = remember(chartCatalog.airports) { chartCatalog.airports.associateBy { it.id } }
-    val orderedChartAirports = remember(chartCatalog.airports, derivedChartPageState.orderedAirportIds) {
-        derivedChartPageState.orderedAirportIds.mapNotNull { chartAirportById[it] }
-    }
+    val chartAirportById = remember(derivedChartPageState.airports) { derivedChartPageState.airports.associateBy { it.id } }
+    val orderedChartAirports = remember(derivedChartPageState.airports) { derivedChartPageState.airports }
     val recentAirportIds = derivedChartPageState.recentAirportIds
     val selectedAirportId = derivedChartPageState.selectedAirportId
     val selectedChartId = derivedChartPageState.selectedChartId
@@ -1149,6 +1155,21 @@ private fun AerobagApp() {
 
     LaunchedEffect(page, selectedAirportId, selectedChartId, recentAirportIds) {
         writeUiPrefs(context.applicationContext, page, selectedAirportId, selectedChartId, recentAirportIds)
+    }
+    LaunchedEffect(
+        appCore,
+        currentPlan,
+        sessionSnapshot.chartPageState.recentAirportIds,
+        sessionSnapshot.chartPageState.selectedAirportId,
+        sessionSnapshot.chartPageState.selectedChartId,
+    ) {
+        derivedChartPageState =
+            appCore.deriveChartPageState(
+                currentPlan,
+                sessionSnapshot.chartPageState.recentAirportIds,
+                sessionSnapshot.chartPageState.selectedAirportId.ifBlank { null },
+                sessionSnapshot.chartPageState.selectedChartId.ifBlank { null },
+            )
     }
     LaunchedEffect(uiSession) {
         uiSession.registerOwnshipSource(demoOwnshipSourceRegistration())

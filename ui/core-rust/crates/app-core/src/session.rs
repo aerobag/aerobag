@@ -9,7 +9,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    derive_chart_page_state_from_catalog,
+    chart_page::airport_ids_from_plan,
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay_config_from_vector_manifest_json,
     move_flight_plan_waypoint,
@@ -17,7 +17,7 @@ use crate::{
     playback::PlaybackSessionState,
     query_map_overlay, remove_flight_plan_leg, state, AirspaceFeaturePayload,
     AirspaceLabelTilePayload, AirspaceReferenceTilePayload, AppError, AppErrorKind, AppEvent,
-    AppResult, AppState, AppUiState, DerivedChartCatalog, DerivedChartPageState, FlightPlan,
+    AppResult, AppState, AppUiState, FlightPlan,
     LatLon, MapOverlayConfig, MapOverlayQueryResult, MapViewport, NavRef, PlanLeg,
     PlaybackUiState, PointTilePayload, SequencingMode, TerrainOverlayQueryResult,
     UiSnapshotAppState,
@@ -44,7 +44,6 @@ pub struct UiSessionSnapshot {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionInitResult {
     pub handle: u32,
-    pub chart_catalog: DerivedChartCatalog,
     pub snapshot: UiSessionSnapshot,
 }
 
@@ -55,13 +54,12 @@ pub struct UiSessionCreateTiming {
 }
 
 struct UiSession {
-    chart_catalog: DerivedChartCatalog,
     app_state: AppState,
     playback: PlaybackSessionState,
     map_follow: MapFollowSessionState,
     guidance_leg_geometry: HashMap<String, GuidanceLegGeometry>,
     map_overlay_config: MapOverlayConfig,
-    chart_page_state: DerivedChartPageState,
+    chart_page_state: UiChartPageState,
     point_tile_cache: HashMap<String, PointTilePayload>,
     airspace_ref_tile_cache: HashMap<String, AirspaceReferenceTilePayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
@@ -92,7 +90,6 @@ fn sessions() -> &'static Mutex<HashMap<u32, UiSession>> {
 pub fn create_ui_session(
     catalog_json: &str,
     vector_manifest_json: &str,
-    chart_catalog_json: &str,
     plan: FlightPlan,
     recent_airport_ids: &[String],
     selected_airport_id: Option<&str>,
@@ -101,7 +98,6 @@ pub fn create_ui_session(
     create_ui_session_inner(
         catalog_json,
         vector_manifest_json,
-        chart_catalog_json,
         plan,
         recent_airport_ids,
         selected_airport_id,
@@ -113,7 +109,6 @@ pub fn create_ui_session(
 pub fn create_ui_session_profiled(
     catalog_json: &str,
     vector_manifest_json: &str,
-    chart_catalog_json: &str,
     plan: FlightPlan,
     recent_airport_ids: &[String],
     selected_airport_id: Option<&str>,
@@ -123,7 +118,6 @@ pub fn create_ui_session_profiled(
     create_ui_session_inner(
         catalog_json,
         vector_manifest_json,
-        chart_catalog_json,
         plan,
         recent_airport_ids,
         selected_airport_id,
@@ -135,7 +129,6 @@ pub fn create_ui_session_profiled(
 fn create_ui_session_inner(
     _catalog_json: &str,
     vector_manifest_json: &str,
-    chart_catalog_json: &str,
     plan: FlightPlan,
     recent_airport_ids: &[String],
     selected_airport_id: Option<&str>,
@@ -149,14 +142,6 @@ fn create_ui_session_inner(
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_parse_vector_manifest");
     }
-    let chart_catalog: DerivedChartCatalog =
-        serde_json::from_str(chart_catalog_json).map_err(|err| AppError {
-            kind: AppErrorKind::InvalidCatalog,
-            message: format!("failed to parse chart catalog json: {err}"),
-        })?;
-    if let Some(mark) = mark.as_deref_mut() {
-        mark("core_parse_chart_catalog");
-    }
     let app_state = state::reduce(
         &AppState::default(),
         AppEvent::ReplaceFlightPlan(plan.clone()),
@@ -164,8 +149,7 @@ fn create_ui_session_inner(
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_reduce_replace_flight_plan");
     }
-    let chart_page_state = derive_chart_page_state_from_catalog(
-        &chart_catalog,
+    let chart_page_state = derive_compact_chart_page_state(
         &plan,
         recent_airport_ids,
         selected_airport_id,
@@ -190,7 +174,6 @@ fn create_ui_session_inner(
     let playback_ui_state = playback.ui_state();
     let map_follow_ui_state = map_follow.ui_state(&app_state.ownship.render);
     let map_follow_target_viewport = map_follow.target_viewport(&app_state.ownship.render);
-    let compact_chart_page_state = compact_chart_page_state(&chart_page_state);
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_project_other_ui_state");
     }
@@ -200,14 +183,12 @@ fn create_ui_session_inner(
         playback_ui_state,
         map_follow_ui_state,
         map_follow_target_viewport,
-        chart_page_state: compact_chart_page_state,
+        chart_page_state: chart_page_state.clone(),
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
-    let result_chart_catalog = chart_catalog.clone();
     sessions().lock().expect("session store poisoned").insert(
         handle,
         UiSession {
-            chart_catalog: chart_catalog.clone(),
             app_state,
             playback,
             map_follow,
@@ -225,7 +206,6 @@ fn create_ui_session_inner(
     }
     Ok(UiSessionInitResult {
         handle,
-        chart_catalog: result_chart_catalog,
         snapshot,
     })
 }
@@ -240,8 +220,7 @@ pub fn remove_leg_in_session(handle: u32, index: usize) -> AppResult<UiSessionSn
         AppEvent::ReplaceFlightPlan(next_plan.clone()),
     )?;
     session.guidance_leg_geometry.clear();
-    session.chart_page_state = derive_chart_page_state_from_catalog(
-        &session.chart_catalog,
+    session.chart_page_state = derive_compact_chart_page_state(
         &next_plan,
         &session.chart_page_state.recent_airport_ids,
         Some(&session.chart_page_state.selected_airport_id),
@@ -264,8 +243,7 @@ pub fn move_waypoint_in_session(
         AppEvent::ReplaceFlightPlan(next_plan.clone()),
     )?;
     session.guidance_leg_geometry.clear();
-    session.chart_page_state = derive_chart_page_state_from_catalog(
-        &session.chart_catalog,
+    session.chart_page_state = derive_compact_chart_page_state(
         &next_plan,
         &session.chart_page_state.recent_airport_ids,
         Some(&session.chart_page_state.selected_airport_id),
@@ -300,8 +278,7 @@ pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<UiS
             .filter(|id| id.as_str() != airport_id)
             .cloned(),
     );
-    session.chart_page_state = derive_chart_page_state_from_catalog(
-        &session.chart_catalog,
+    session.chart_page_state = derive_compact_chart_page_state(
         &plan,
         &recent_airport_ids,
         Some(airport_id),
@@ -314,8 +291,7 @@ pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<UiSessi
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
-    session.chart_page_state = derive_chart_page_state_from_catalog(
-        &session.chart_catalog,
+    session.chart_page_state = derive_compact_chart_page_state(
         &plan,
         &session.chart_page_state.recent_airport_ids,
         Some(&session.chart_page_state.selected_airport_id),
@@ -518,8 +494,7 @@ pub fn replace_flight_plan_in_session(
         AppEvent::ReplaceFlightPlan(plan.clone()),
     )?;
     session.guidance_leg_geometry.clear();
-    session.chart_page_state = derive_chart_page_state_from_catalog(
-        &session.chart_catalog,
+    session.chart_page_state = derive_compact_chart_page_state(
         &plan,
         &session.chart_page_state.recent_airport_ids,
         Some(&session.chart_page_state.selected_airport_id),
@@ -588,8 +563,7 @@ pub fn restore_chart_page_state_in_session(
     let mut sessions = sessions().lock().expect("session store poisoned");
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
-    session.chart_page_state = derive_chart_page_state_from_catalog(
-        &session.chart_catalog,
+    session.chart_page_state = derive_compact_chart_page_state(
         &plan,
         recent_airport_ids,
         selected_airport_id,
@@ -838,7 +812,7 @@ fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
         map_follow_target_viewport: session
             .map_follow
             .target_viewport(&session.app_state.ownship.render),
-        chart_page_state: compact_chart_page_state(&session.chart_page_state),
+        chart_page_state: session.chart_page_state.clone(),
     }
 }
 
@@ -1009,16 +983,42 @@ fn apply_situation_to_ownship(
     Ok(())
 }
 
-fn compact_chart_page_state(state: &DerivedChartPageState) -> UiChartPageState {
+fn derive_compact_chart_page_state(
+    plan: &FlightPlan,
+    stored_recent_airport_ids: &[String],
+    candidate_airport_id: Option<&str>,
+    candidate_chart_id: Option<&str>,
+) -> UiChartPageState {
+    let mut ordered_airport_ids = Vec::new();
+    for airport_id in airport_ids_from_plan(plan) {
+        if !ordered_airport_ids.iter().any(|existing| existing == &airport_id) {
+            ordered_airport_ids.push(airport_id);
+        }
+    }
+    let mut recent_airport_ids = Vec::new();
+    for airport_id in stored_recent_airport_ids {
+        if ordered_airport_ids.iter().any(|existing| existing == airport_id)
+            && !recent_airport_ids.iter().any(|existing| existing == airport_id)
+        {
+            recent_airport_ids.push(airport_id.clone());
+        }
+    }
+    for airport_id in &ordered_airport_ids {
+        if !recent_airport_ids.iter().any(|existing| existing == airport_id) {
+            recent_airport_ids.push(airport_id.clone());
+        }
+    }
+    let selected_airport_id = candidate_airport_id
+        .filter(|airport_id| ordered_airport_ids.iter().any(|existing| existing == *airport_id))
+        .map(str::to_string)
+        .or_else(|| recent_airport_ids.first().cloned())
+        .or_else(|| ordered_airport_ids.first().cloned())
+        .unwrap_or_default();
     UiChartPageState {
-        ordered_airport_ids: state
-            .airports
-            .iter()
-            .map(|airport| airport.id.clone())
-            .collect(),
-        recent_airport_ids: state.recent_airport_ids.clone(),
-        selected_airport_id: state.selected_airport_id.clone(),
-        selected_chart_id: state.selected_chart_id.clone(),
+        ordered_airport_ids,
+        recent_airport_ids,
+        selected_airport_id,
+        selected_chart_id: candidate_chart_id.unwrap_or_default().to_string(),
     }
 }
 

@@ -201,20 +201,32 @@ pub fn derive_chart_page_state_from_catalog(
     candidate_chart_id: Option<&str>,
 ) -> DerivedChartPageState {
     let page = derive_chart_page_from_catalog(catalog, plan);
-    let recent_airport_ids = merge_recent_airport_ids(&page.airports, stored_recent_airport_ids);
-    let selected_airport_id =
-        resolve_airport_id(&page.airports, candidate_airport_id, &recent_airport_ids);
-    let selected_chart_id =
-        resolve_chart_id(&page.airports, &selected_airport_id, candidate_chart_id);
+    derive_chart_page_state_from_airports(
+        page.airports,
+        stored_recent_airport_ids,
+        candidate_airport_id,
+        candidate_chart_id,
+    )
+}
+
+pub fn derive_chart_page_state_from_airports(
+    airports: Vec<DerivedChartAirport>,
+    stored_recent_airport_ids: &[String],
+    candidate_airport_id: Option<&str>,
+    candidate_chart_id: Option<&str>,
+) -> DerivedChartPageState {
+    let recent_airport_ids = merge_recent_airport_ids(&airports, stored_recent_airport_ids);
+    let selected_airport_id = resolve_airport_id(&airports, candidate_airport_id, &recent_airport_ids);
+    let selected_chart_id = resolve_chart_id(&airports, &selected_airport_id, candidate_chart_id);
     DerivedChartPageState {
-        airports: page.airports,
+        airports,
         recent_airport_ids,
         selected_airport_id,
         selected_chart_id,
     }
 }
 
-fn airport_ids_from_plan(plan: &FlightPlan) -> Vec<String> {
+pub fn airport_ids_from_plan(plan: &FlightPlan) -> Vec<String> {
     let mut airport_ids = Vec::new();
     if let Some(departure) = &plan.departure {
         airport_ids.push(departure.0.clone());

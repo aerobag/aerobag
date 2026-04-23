@@ -775,7 +775,6 @@ pub fn describe_load_procedure_from_plate_json(
 pub fn create_ui_session_json(
     catalog_json: &str,
     vector_manifest_json: &str,
-    resource_index_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
@@ -792,7 +791,6 @@ pub fn create_ui_session_json(
     let result = app_core::create_ui_session(
         catalog_json,
         vector_manifest_json,
-        resource_index_json,
         plan,
         &recent_airport_ids,
         selected_airport_id.as_deref(),
@@ -1953,7 +1951,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_cre
     _class: JClass,
     catalog_json: JString,
     vector_manifest_json: JString,
-    resource_index_json: JString,
     plan_json: JString,
     recent_airport_ids_json: JString,
     selected_airport_id_json: JString,
@@ -1962,7 +1959,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_cre
     let result = (|| {
         let catalog = get_java_string(&mut env, catalog_json)?;
         let vector_manifest = get_java_string(&mut env, vector_manifest_json)?;
-        let resource_index = get_java_string(&mut env, resource_index_json)?;
         let plan = get_java_string(&mut env, plan_json)?;
         let recent_airport_ids = get_java_string(&mut env, recent_airport_ids_json)?;
         let selected_airport_id = get_java_string(&mut env, selected_airport_id_json)?;
@@ -1970,7 +1966,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_cre
         create_ui_session_json(
             &catalog,
             &vector_manifest,
-            &resource_index,
             &plan,
             &recent_airport_ids,
             &selected_airport_id,

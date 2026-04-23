@@ -48,7 +48,7 @@ describe("loadBestAvailableAdapter", () => {
   it("uses the wasm adapter when the generated module exports the expected API", async () => {
     const loaded = await loadBestAvailableAdapter(async () => ({
       situation_ring_candidates_json: () => "[]",
-      create_ui_session: async () => JSON.stringify({ handle: 1, chart_catalog: { airports: [] }, snapshot: JSON.parse(snapshotJson) }),
+      create_ui_session: async () => JSON.stringify({ handle: 1, snapshot: JSON.parse(snapshotJson) }),
       remove_leg_in_session: async () => snapshotJson,
       move_waypoint_in_session: async () => snapshotJson,
       set_situation_in_session: async () => snapshotJson,

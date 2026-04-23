@@ -12,7 +12,7 @@ use std::{
 };
 
 use anyhow::{bail, Context};
-use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, SecondsFormat, Timelike, Utc};
 use crossbeam_channel::{self, RecvTimeoutError};
 use preprocessor_charts::{
     build_family_tiles, build_family_vrts, package_family_region_versioned, stage_work_dir,
@@ -454,6 +454,82 @@ fn build_fast_bundle_manifest(
                 expiration_date: None,
             })
             .collect(),
+    })
+}
+
+fn static_product_task_ids(config: &ProductBuildConfig) -> Vec<String> {
+    let mut task_ids = vec!["publish-geo".to_string()];
+    if include_static_terrain_products() {
+        task_ids.extend(
+            config
+                .profile
+                .terrain_regions()
+                .iter()
+                .map(|region| format!("publish-terrain-{}", region.code().to_ascii_lowercase())),
+        );
+        task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
+            format!(
+                "publish-shaded-relief-{}",
+                region.code().to_ascii_lowercase()
+            )
+        }));
+    }
+    task_ids
+}
+
+fn stable_product_family_region(id: &str) -> anyhow::Result<(String, Option<String>)> {
+    if id == "geo" {
+        return Ok(("geo".to_string(), None));
+    }
+    if let Some(region_id) = id.strip_prefix("terrain-") {
+        return Ok(("terrain".to_string(), Some(region_id.to_string())));
+    }
+    if let Some(region_id) = id.strip_prefix("shaded-relief-") {
+        return Ok(("shaded-relief".to_string(), Some(region_id.to_string())));
+    }
+    bail!("unrecognized stable product id: {id}")
+}
+
+fn stable_effective_date_from_published_file(path: &Path) -> anyhow::Result<(String, String)> {
+    let modified = fs::metadata(path)
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .modified()
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let published_at: DateTime<Utc> = modified.into();
+    Ok((
+        published_at.format("%Y-%m-%d").to_string(),
+        published_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+    ))
+}
+
+fn build_stable_bundle_package_artifact(
+    id: &str,
+    published_zip: &Path,
+    sha256: &str,
+    size_bytes: u64,
+    source_version: &str,
+    source_fetched_at_utc: Option<String>,
+) -> anyhow::Result<BundlePackageArtifact> {
+    let (family_id, region_id) = stable_product_family_region(id)?;
+    let filename = filename_string(published_zip)?;
+    let (effective_date, published_at_utc) =
+        stable_effective_date_from_published_file(published_zip)?;
+    Ok(BundlePackageArtifact {
+        id: id.to_string(),
+        family_id,
+        region_id,
+        filename: filename.clone(),
+        relative_path: filename,
+        cycle: None,
+        cycle_version: None,
+        checksum_sha256: sha256.to_string(),
+        size_bytes,
+        published_at_utc: Some(published_at_utc),
+        source_generated_at_utc: None,
+        source_version: Some(source_version.to_string()),
+        source_fetched_at_utc,
+        effective_date: Some(effective_date),
+        expiration_date: None,
     })
 }
 
@@ -1189,6 +1265,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 cycle_task_id(cycle, "resource-index"),
                 cycle_task_id(cycle, "vectors"),
             ];
+            bundle_manifest_deps.extend(static_product_task_ids(config));
             if include_static_terrain_products() {
                 bundle_manifest_deps.extend(config.profile.terrain_regions().iter().map(
                     |region| format!("build-shaded-relief-{}", region.code().to_ascii_lowercase()),
@@ -2094,10 +2171,36 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             } else {
                                 Vec::new()
                             };
+                            let stable_packages = static_product_task_ids(&cycle_config)
+                                .iter()
+                                .map(|task_id| match task_values_snapshot.get(task_id) {
+                                    Some(ProductTaskValue::PublishedStandaloneProduct {
+                                        id,
+                                        published_zip,
+                                        sha256,
+                                        size_bytes,
+                                        source_version,
+                                        source_fetched_at_utc,
+                                        ..
+                                    }) => build_stable_bundle_package_artifact(
+                                        id,
+                                        published_zip,
+                                        sha256,
+                                        *size_bytes,
+                                        source_version,
+                                        source_fetched_at_utc.clone(),
+                                    ),
+                                    _ => bail!(
+                                        "missing published stable product output for {}",
+                                        task_id
+                                    ),
+                                })
+                                .collect::<anyhow::Result<Vec<_>>>()?;
                             let bundle_manifest = build_bundle_manifest(
                                 &cycle_config,
                                 &build_manifest,
                                 &shaded_relief_tile_levels,
+                                &stable_packages,
                             )?;
                             let bundle_manifest_path =
                                 write_hashed_bundle_manifest(&cycle_config.build_root, &bundle_manifest)?;
@@ -2628,23 +2731,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 &config,
                                 &fast_bundle_manifest_path,
                             )?;
-                            let mut static_product_task_ids =
-                                vec!["publish-geo".to_string()];
-                            if include_static_terrain_products() {
-                                static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
-                                    format!(
-                                        "publish-terrain-{}",
-                                        region.code().to_ascii_lowercase()
-                                    )
-                                }));
-                                static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
-                                    format!(
-                                        "publish-shaded-relief-{}",
-                                        region.code().to_ascii_lowercase()
-                                    )
-                                }));
-                            }
-                            let static_products = static_product_task_ids
+                            let static_products = static_product_task_ids(&config)
                                 .iter()
                                 .map(|task_id| match task_values_snapshot.get(task_id) {
                                     Some(ProductTaskValue::PublishedStandaloneProduct {
@@ -2741,23 +2828,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     _ => bail!("missing published fast product output for {}", task_id),
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
-                            let mut static_product_task_ids =
-                                vec!["publish-geo".to_string()];
-                            if include_static_terrain_products() {
-                                static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
-                                    format!(
-                                        "publish-terrain-{}",
-                                        region.code().to_ascii_lowercase()
-                                    )
-                                }));
-                                static_product_task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
-                                    format!(
-                                        "publish-shaded-relief-{}",
-                                        region.code().to_ascii_lowercase()
-                                    )
-                                }));
-                            }
-                            let static_products = static_product_task_ids
+                            let static_products = static_product_task_ids(&config)
                                 .iter()
                                 .map(|task_id| match task_values_snapshot.get(task_id) {
                                     Some(ProductTaskValue::PublishedStandaloneProduct {
@@ -4085,8 +4156,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         .with_context(|| format!("failed to write {}", build_manifest_path.display()))?;
 
         let shaded_relief_tile_levels = Vec::new();
+        let stable_packages = Vec::new();
         let bundle_manifest =
-            build_bundle_manifest(config, &build_manifest, &shaded_relief_tile_levels)?;
+            build_bundle_manifest(config, &build_manifest, &shaded_relief_tile_levels, &stable_packages)?;
         let bundle_manifest_path =
             write_hashed_bundle_manifest(&config.build_root, &bundle_manifest)?;
         validate_bundle_manifest(&config.build_root, &bundle_manifest_path)?;
@@ -4140,6 +4212,7 @@ fn build_bundle_manifest(
     config: &ProductBuildConfig,
     build_manifest: &BuildManifest,
     shaded_relief_tile_levels: &[(Region, Vec<TileLevelRecord>)],
+    stable_packages: &[BundlePackageArtifact],
 ) -> anyhow::Result<BundleManifest> {
     let resource_index_record = build_manifest
         .nodes
@@ -4246,6 +4319,7 @@ fn build_bundle_manifest(
         effective_date: Some(start_valid.clone()),
         expiration_date: Some(end_valid.clone()),
     });
+    package_artifacts.extend(stable_packages.iter().cloned());
     let data_db_path = resolve_artifact_path(config, output_path(data_record, "main_db")?);
     let nav_db_artifacts = write_nav_kv_artifact(
         config,
@@ -9949,6 +10023,25 @@ fn validate_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow:
                 package.filename,
                 package.relative_path
             );
+        }
+        if package.cycle.is_none() {
+            if package.cycle_version.is_some() {
+                bail!(
+                    "stable package {} unexpectedly carries cycle_version {:?}",
+                    package.id,
+                    package.cycle_version
+                );
+            }
+            if package.effective_date.is_none() {
+                bail!("stable package {} is missing effective_date", package.id);
+            }
+            if package.expiration_date.is_some() {
+                bail!(
+                    "stable package {} unexpectedly carries expiration_date {:?}",
+                    package.id,
+                    package.expiration_date
+                );
+            }
         }
         ensure_public_file_exists(&packaged_root.join(&package.filename))?;
     }

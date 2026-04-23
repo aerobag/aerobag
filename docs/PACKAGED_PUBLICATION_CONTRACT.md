@@ -102,7 +102,10 @@ bundle_cycle_YYCC_VV_<sha256>.json
     ├── csup_*.zip
     ├── tpp_*.zip
     ├── vectors_data_*.zip
-    └── nav_db_*.zip
+    ├── nav_db_*.zip
+    ├── geo_*.zip
+    ├── terrain-*.zip
+    └── shaded-relief-*.zip
 ```
 
 Consumer rule:
@@ -242,16 +245,19 @@ Optional standalone static geo grid artifact.
 It contains Avare-compatible `geo.csv` with one-degree grid rows:
 `Latitude,Longitude,geoid_height,magnetic_declination`.
 
-It is referenced from `current_artifacts_YYYYMMDD.json` under `static_products[]`,
-and, by policy, should also be listed from the current cycle bundle when cycle-bundle
-stable package wiring lands.
+It is listed in the current cycle bundle `packages[]`.
+
+It also remains duplicated in `current_artifacts_YYYYMMDD.json` under `static_products[]`
+as a transitional compatibility surface.
 
 ### `terrain-<region>_<sha256>.zip`
 
 Standalone content-addressed terrain artifact.
 
-It is referenced from `current_artifacts_YYYYMMDD.json` under `static_products[]`.
-Consumers fetch it only if they explicitly need terrain.
+It is listed in the current cycle bundle `packages[]`.
+
+It also remains duplicated in `current_artifacts_YYYYMMDD.json` under `static_products[]`
+as a transitional compatibility surface. Consumers fetch it only if they explicitly need terrain.
 
 The package contains `manifest.json` plus `tiles/<z>/<x>/<y>.terrain` members.
 The source/max zoom is z10, and parent tiles are generated down to z0. Parent
@@ -275,7 +281,10 @@ gzip-decode the member payload after reading the zip entry.
 
 Standalone content-addressed shaded-relief raster artifact.
 
-It is referenced from `current_artifacts_YYYYMMDD.json` under `static_products[]`.
+It is listed in the current cycle bundle `packages[]`.
+
+It also remains duplicated in `current_artifacts_YYYYMMDD.json` under `static_products[]`
+as a transitional compatibility surface.
 Consumers fetch it only if they explicitly need a terrain-background visual
 layer.
 

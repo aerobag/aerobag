@@ -156,7 +156,7 @@ The hash is of the exact published file bytes. For zip files, deterministic zip 
 
 Do not create a separate stable bundle yet.
 
-Stable products are durable packages that may be useful across many FAA cycles, but the current cycle bundle may still list the stable packages available to the app.
+Stable products are durable packages that may be useful across many FAA cycles, and the current cycle bundle should list the stable packages available to the app.
 
 Examples:
 
@@ -187,6 +187,8 @@ Example:
 Android can decide, or let the user decide, whether a newer stable product is worth downloading when a later `effective_date` becomes available. The older package remains valid.
 
 This avoids implying that every cycle update strongly recommends redownloading huge stable products for marginal benefit.
+
+During the transition, `current_artifacts.static_products[]` may still duplicate these rows for compatibility, but the cycle bundle is the package-planning authority.
 
 ## Fast Products
 

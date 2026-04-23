@@ -217,12 +217,6 @@ struct BundleManifest {
     expiration_date: String,
     start_valid: String,
     end_valid: String,
-    catalog: BundleArtifact,
-    resource_index: BundleArtifact,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    nav_kv: Option<BundleNavKvArtifact>,
-    data: BundleArtifact,
-    vectors: BundleArtifact,
     packages: Vec<BundlePackageArtifact>,
     #[serde(default)]
     ancillary: Vec<BundleArtifact>,
@@ -337,7 +331,8 @@ struct BundleNavKvArtifact {
 struct BundlePackageArtifact {
     id: String,
     family_id: String,
-    region_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    region_id: Option<String>,
     filename: String,
     relative_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -348,6 +343,12 @@ struct BundlePackageArtifact {
     size_bytes: u64,
     effective_date: Option<String>,
     expiration_date: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BuiltNavDbArtifacts {
+    nav_kv: BundleNavKvArtifact,
+    package: BundlePackageArtifact,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4054,7 +4055,7 @@ fn build_bundle_manifest(
     let vectors_filename =
         format!("vectors_data_{cycle}_{PACKAGE_CYCLE_VERSION}_{vectors_sha256}.zip");
 
-    let package_artifacts = index
+    let mut package_artifacts = index
         .packages
         .iter()
         .map(|package| {
@@ -4072,7 +4073,7 @@ fn build_bundle_manifest(
             Ok(BundlePackageArtifact {
                 id: package.id.clone(),
                 family_id: package.family_id.clone(),
-                region_id: package.region_id.clone(),
+                region_id: Some(package.region_id.clone()),
                 filename: filename.clone(),
                 relative_path: filename,
                 cycle: package_version_from_filename(
@@ -4102,13 +4103,44 @@ fn build_bundle_manifest(
         &public_resource_index,
     )?;
     let data_db_path = resolve_artifact_path(config, output_path(data_record, "main_db")?);
-    let nav_kv = write_nav_kv_artifact(
+    let nav_db_artifacts = write_nav_kv_artifact(
         config,
         &public_resource_index,
         &cycle,
         &data_db_path,
         shaded_relief_tile_levels,
     )?;
+    package_artifacts.push(BundlePackageArtifact {
+        id: format!("VECTORS_DATA_{cycle}_{PACKAGE_CYCLE_VERSION}"),
+        family_id: "vectors".to_string(),
+        region_id: None,
+        filename: vectors_filename.clone(),
+        relative_path: vectors_filename.clone(),
+        cycle: Some(cycle.clone()),
+        cycle_version: Some(PACKAGE_CYCLE_VERSION.to_string()),
+        checksum_sha256: vectors_sha256.clone(),
+        size_bytes: fs::metadata(&vectors_zip_path)
+            .with_context(|| format!("failed to stat {}", vectors_zip_path.display()))?
+            .len(),
+        effective_date: Some(start_valid.clone()),
+        expiration_date: Some(end_valid.clone()),
+    });
+    package_artifacts.push(nav_db_artifacts.package.clone());
+
+    let resource_index_artifact = bundle_artifact(
+        &published_resource_index_path,
+        &format!("resource_index_{cycle}.json"),
+    )?;
+    let catalog_artifact =
+        publish_bundle_artifact(config, &catalog_path, &format!("catalog_{cycle}.json"))?;
+    let data_artifact = publish_bundle_artifact(config, &data_zip_path, &data_filename)?;
+    let mut ancillary = vec![
+        resource_index_artifact,
+        catalog_artifact,
+        data_artifact,
+        nav_db_artifacts.nav_kv.root.clone(),
+    ];
+    ancillary.extend(nav_db_artifacts.nav_kv.value_pages.iter().cloned());
 
     Ok(BundleManifest {
         schema_version: 2,
@@ -4121,23 +4153,8 @@ fn build_bundle_manifest(
         expiration_date: end_valid.clone(),
         start_valid: start_valid.clone(),
         end_valid: end_valid.clone(),
-        catalog: publish_bundle_artifact(config, &catalog_path, &format!("catalog_{cycle}.json"))?,
-        resource_index: bundle_artifact(
-            &published_resource_index_path,
-            &format!("resource_index_{cycle}.json"),
-        )?,
-        nav_kv: Some(nav_kv),
-        data: publish_bundle_artifact(config, &data_zip_path, &data_filename)?,
-        vectors: publish_bundle_artifact(config, &vectors_zip_path, &vectors_filename)?,
         packages: package_artifacts,
-        ancillary: vec![
-            bundle_artifact(
-                &published_resource_index_path,
-                &format!("resource_index_{cycle}.json"),
-            )?,
-            publish_bundle_artifact(config, &catalog_path, &format!("catalog_{cycle}.json"))?,
-            publish_bundle_artifact(config, &data_zip_path, &data_filename)?,
-        ],
+        ancillary,
     })
 }
 
@@ -4147,7 +4164,7 @@ fn write_nav_kv_artifact(
     cycle: &str,
     main_db_path: &Path,
     shaded_relief_tile_levels: &[(Region, Vec<TileLevelRecord>)],
-) -> anyhow::Result<BundleNavKvArtifact> {
+) -> anyhow::Result<BuiltNavDbArtifacts> {
     let chart_catalog = build_nav_kv_chart_catalog(resource_index, shaded_relief_tile_levels);
     let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
         .context("failed to encode nav_kv chart/catalog value")?;
@@ -4187,11 +4204,48 @@ fn write_nav_kv_artifact(
         )?);
     }
 
-    Ok(BundleNavKvArtifact {
-        root,
-        value_pages,
-        page_size: built.page_size,
-        value_bytes_len: built.value_bytes_len,
+    let nav_db_zip_source_path = source_dir.join(format!("nav_db_{cycle}.zip"));
+    let mut zip_entries = vec![root_filename.as_str()];
+    let page_entry_names = value_pages
+        .iter()
+        .map(|page| page.filename.as_str())
+        .collect::<Vec<_>>();
+    zip_entries.extend(page_entry_names.iter().copied());
+    zip_directory_deterministic(&nav_db_zip_source_path, &source_dir, &zip_entries)?;
+    let nav_db_sha256 = hash_file(&nav_db_zip_source_path)?;
+    let nav_db_published_filename =
+        format!("nav_db_{cycle}_{PACKAGE_CYCLE_VERSION}_{nav_db_sha256}.zip");
+    let nav_db_package_artifact =
+        publish_bundle_artifact(config, &nav_db_zip_source_path, &nav_db_published_filename)?;
+
+    Ok(BuiltNavDbArtifacts {
+        nav_kv: BundleNavKvArtifact {
+            root,
+            value_pages,
+            page_size: built.page_size,
+            value_bytes_len: built.value_bytes_len,
+        },
+        package: BundlePackageArtifact {
+            id: format!("NAV_DB_{cycle}_{PACKAGE_CYCLE_VERSION}"),
+            family_id: "nav-db".to_string(),
+            region_id: None,
+            filename: nav_db_package_artifact.filename.clone(),
+            relative_path: nav_db_package_artifact.relative_path.clone(),
+            cycle: Some(cycle.to_string()),
+            cycle_version: Some(PACKAGE_CYCLE_VERSION.to_string()),
+            checksum_sha256: nav_db_package_artifact.checksum_sha256.clone(),
+            size_bytes: nav_db_package_artifact.size_bytes,
+            effective_date: resource_index
+                .temporal_summary
+                .uniform_good_beyond_date
+                .clone()
+                .or_else(|| resource_index.temporal_summary.uniform_effective_date.clone()),
+            expiration_date: resource_index
+                .temporal_summary
+                .uniform_expiration_date
+                .clone()
+                .or_else(|| resource_index.temporal_summary.expiration_dates.first().cloned()),
+        },
     })
 }
 
@@ -6213,24 +6267,11 @@ fn sync_unpacked_metadata(
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
     sync_unpacked_file(bundle_manifest_path, &unpacked_root)?;
-    sync_unpacked_file(
-        &config.build_root.join(&bundle_manifest.catalog.filename),
-        &unpacked_root,
-    )?;
-    sync_unpacked_file(
-        &config
-            .build_root
-            .join(&bundle_manifest.resource_index.filename),
-        &unpacked_root,
-    )?;
-    if let Some(nav_kv) = &bundle_manifest.nav_kv {
-        sync_unpacked_file(
-            &config.build_root.join(&nav_kv.root.filename),
-            &unpacked_root,
-        )?;
-        for page in &nav_kv.value_pages {
-            sync_unpacked_file(&config.build_root.join(&page.filename), &unpacked_root)?;
+    for artifact in &bundle_manifest.ancillary {
+        if artifact.filename.ends_with(".zip") {
+            continue;
         }
+        sync_unpacked_file(&config.build_root.join(&artifact.filename), &unpacked_root)?;
     }
     sync_cycle_bundle_unpacked_zips(config, bundle_manifest, build_manifest, &unpacked_root)?;
     Ok(())
@@ -6249,36 +6290,46 @@ fn sync_cycle_bundle_unpacked_zips(
         .context("build manifest missing data node")?;
     let data_zip_path = resolve_artifact_path(config, output_path(data_record, "zip")?);
     let data_db_path = resolve_artifact_path(config, output_path(data_record, "main_db")?);
+    let data_artifact = bundle_manifest
+        .ancillary
+        .iter()
+        .find(|artifact| artifact.filename.starts_with("data_") && artifact.filename.ends_with(".zip"))
+        .context("bundle manifest missing ancillary data zip")?;
     sync_unpacked_zip_from_source(
-        &config.build_root.join(&bundle_manifest.data.filename),
+        &config.build_root.join(&data_artifact.filename),
         data_db_path.parent().unwrap_or_else(|| Path::new("/")),
         unpacked_root,
-        &bundle_manifest.data.filename,
-        Some(&bundle_manifest.data.checksum_sha256),
+        &data_artifact.filename,
+        Some(&data_artifact.checksum_sha256),
     )
     .with_context(|| format!("failed to unpack {}", data_zip_path.display()))?;
 
-    let vectors_record = build_manifest
-        .nodes
-        .iter()
-        .find(|node| node.name == "vectors")
-        .context("build manifest missing vectors node")?;
-    let vectors_zip_path = resolve_artifact_path(config, output_path(vectors_record, "zip")?);
-    sync_unpacked_zip_from_source(
-        &config.build_root.join(&bundle_manifest.vectors.filename),
-        vectors_zip_path.parent().unwrap_or_else(|| Path::new("/")),
-        unpacked_root,
-        &bundle_manifest.vectors.filename,
-        Some(&bundle_manifest.vectors.checksum_sha256),
-    )
-    .with_context(|| format!("failed to unpack {}", vectors_zip_path.display()))?;
-
     for package in &bundle_manifest.packages {
+        if package.family_id == "nav-db" {
+            let cycle = package
+                .cycle
+                .as_deref()
+                .context("nav-db package missing cycle")?;
+            let source_dir = artifact_root_from_build_root(&config.build_root)
+                .join("private-work")
+                .join("nav-kv")
+                .join(config.profile.as_str())
+                .join(cycle);
+            sync_unpacked_zip_from_source(
+                &config.build_root.join(&package.filename),
+                &source_dir,
+                unpacked_root,
+                &package.filename,
+                Some(&package.checksum_sha256),
+            )
+            .with_context(|| format!("failed to unpack package {}", package.id))?;
+            continue;
+        }
         if let Some(cycle) = &package.cycle {
             let legacy_filename = format!(
                 "{}_{}_{}.zip",
                 package.family_id.replace('-', "_"),
-                package.region_id.to_ascii_lowercase(),
+                package.region_id.as_deref().unwrap_or_default().to_ascii_lowercase(),
                 cycle
             );
             let legacy_dir = unpacked_target_dir(unpacked_root, &legacy_filename)?;
@@ -9129,7 +9180,7 @@ fn build_current_bundle_entries(
         .collect::<Vec<_>>();
     bundle_paths.sort();
 
-    let mut bundles = Vec::new();
+    let mut bundles_by_cycle = BTreeMap::<String, (u32, String, CurrentBundleEntry)>::new();
     for bundle_path in bundle_paths {
         let bundle_manifest: serde_json::Value = serde_json::from_slice(
             &fs::read(&bundle_path)
@@ -9178,7 +9229,13 @@ fn build_current_bundle_entries(
         if end_valid_date < as_of_date {
             continue;
         }
-        bundles.push(CurrentBundleEntry {
+        let generated_at_utc = bundle_manifest
+            .get("generated_at_utc")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let cycle_version_rank = bundle_cycle_version.parse::<u32>().unwrap_or(0);
+        let entry = CurrentBundleEntry {
             filename: bundle_path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -9199,8 +9256,27 @@ fn build_current_bundle_entries(
             size_bytes: fs::metadata(&bundle_path)
                 .with_context(|| format!("failed to stat {}", bundle_path.display()))?
                 .len(),
-        });
+        };
+        let should_replace = match bundles_by_cycle.get(bundle_cycle) {
+            Some((existing_version_rank, existing_generated_at_utc, _)) => {
+                cycle_version_rank > *existing_version_rank
+                    || (cycle_version_rank == *existing_version_rank
+                        && generated_at_utc > *existing_generated_at_utc)
+            }
+            None => true,
+        };
+        if should_replace {
+            bundles_by_cycle.insert(
+                bundle_cycle.to_string(),
+                (cycle_version_rank, generated_at_utc, entry),
+            );
+        }
     }
+    let mut bundles = bundles_by_cycle
+        .into_values()
+        .map(|(_, _, entry)| entry)
+        .collect::<Vec<_>>();
+    bundles.sort_by(|left, right| left.cycle.cmp(&right.cycle));
     Ok(bundles)
 }
 
@@ -9438,20 +9514,6 @@ fn validate_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow:
     )
     .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
 
-    for artifact in [
-        &bundle.catalog,
-        &bundle.resource_index,
-        &bundle.data,
-        &bundle.vectors,
-    ] {
-        validate_bundle_artifact_ref(packaged_root, artifact)?;
-    }
-    if let Some(nav_kv) = &bundle.nav_kv {
-        validate_bundle_artifact_ref(packaged_root, &nav_kv.root)?;
-        for page in &nav_kv.value_pages {
-            validate_bundle_artifact_ref(packaged_root, page)?;
-        }
-    }
     for package in &bundle.packages {
         validate_public_filename(&package.filename, "bundle.packages[].filename")?;
         validate_public_filename(&package.relative_path, "bundle.packages[].relative_path")?;
@@ -9478,6 +9540,7 @@ fn validate_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow:
     for artifact in &bundle.ancillary {
         validate_bundle_artifact_ref(packaged_root, artifact)?;
     }
+    validate_bundle_contract_split(&bundle, bundle_path)?;
     Ok(())
 }
 
@@ -9511,17 +9574,12 @@ fn validate_unpacked_contract(
         )
         .with_context(|| format!("failed to parse {}", unpacked_bundle_path.display()))?;
 
-        for artifact in [&bundle.catalog, &bundle.resource_index] {
-            ensure_public_file_exists(&unpacked_root.join(&artifact.filename))?;
-        }
-        if let Some(nav_kv) = &bundle.nav_kv {
-            ensure_public_file_exists(&unpacked_root.join(&nav_kv.root.filename))?;
-            for page in &nav_kv.value_pages {
-                ensure_public_file_exists(&unpacked_root.join(&page.filename))?;
+        for artifact in &bundle.ancillary {
+            if artifact.filename.ends_with(".zip") {
+                ensure_public_dir_exists(&unpacked_root.join(zip_stem(&artifact.filename)?))?;
+            } else {
+                ensure_public_file_exists(&unpacked_root.join(&artifact.filename))?;
             }
-        }
-        for artifact in [&bundle.data, &bundle.vectors] {
-            ensure_public_dir_exists(&unpacked_root.join(zip_stem(&artifact.filename)?))?;
         }
         for package in &bundle.packages {
             ensure_public_dir_exists(&unpacked_root.join(zip_stem(&package.filename)?))?;
@@ -9553,6 +9611,83 @@ fn validate_bundle_artifact_ref(
         );
     }
     ensure_public_file_exists(&packaged_root.join(&artifact.filename))
+}
+
+fn validate_bundle_contract_split(bundle: &BundleManifest, bundle_path: &Path) -> anyhow::Result<()> {
+    let has_vectors_package = bundle.packages.iter().any(|package| {
+        package.family_id == "vectors" && package.region_id.is_none()
+    });
+    if !has_vectors_package {
+        bail!(
+            "bundle {} missing vectors package row in packages[]",
+            bundle_path.display()
+        );
+    }
+    let has_nav_db_package = bundle.packages.iter().any(|package| {
+        package.family_id == "nav-db" && package.region_id.is_none()
+    });
+    if !has_nav_db_package {
+        bail!(
+            "bundle {} missing nav-db package row in packages[]",
+            bundle_path.display()
+        );
+    }
+
+    let ancillary_filenames = bundle
+        .ancillary
+        .iter()
+        .map(|artifact| artifact.filename.as_str())
+        .collect::<BTreeSet<_>>();
+    for required in [
+        format!("resource_index_{}.json", bundle.cycle),
+        format!("catalog_{}.json", bundle.cycle),
+    ] {
+        if !ancillary_filenames.contains(required.as_str()) {
+            bail!(
+                "bundle {} missing ancillary artifact {}",
+                bundle_path.display(),
+                required
+            );
+        }
+    }
+    if !bundle
+        .ancillary
+        .iter()
+        .any(|artifact| artifact.filename.starts_with("data_") && artifact.filename.ends_with(".zip"))
+    {
+        bail!(
+            "bundle {} missing ancillary data zip",
+            bundle_path.display()
+        );
+    }
+
+    for package in &bundle.packages {
+        if bundle
+            .ancillary
+            .iter()
+            .any(|artifact| artifact.filename == package.filename)
+        {
+            bail!(
+                "bundle {} lists {} in both packages[] and ancillary[]",
+                bundle_path.display(),
+                package.filename
+            );
+        }
+    }
+    for forbidden in ["resource_index_", "catalog_", "data_"] {
+        if bundle
+            .packages
+            .iter()
+            .any(|package| package.filename.starts_with(forbidden))
+        {
+            bail!(
+                "bundle {} contains transitional artifact prefix {} in packages[]",
+                bundle_path.display(),
+                forbidden
+            );
+        }
+    }
+    Ok(())
 }
 
 fn validate_embedded_sha256_filename(filename: &str, checksum_sha256: &str) -> anyhow::Result<()> {

@@ -1390,6 +1390,55 @@ fn resolve_procedure_materialization_legs_with_provenance(
             previous_leg_to = Some(to);
         }
 
+        if let Some(last_fix) = fix_records.last().copied() {
+            if let Some(trailing_record) = leg_records
+                .iter()
+                .filter(|record| record.sequence > last_fix.sequence)
+                .max_by_key(|record| record.sequence)
+            {
+                let nav_ref = last_fix
+                    .nav_ref
+                    .clone()
+                    .expect("filtered non-waypoint trailing procedure leg");
+                let display_path =
+                    display_path_for_procedure_leg(leg_records, last_fix, last_fix, None);
+                if display_path.is_some() {
+                    let signatures = heading_signatures_for_leg(
+                        next_heading_step_index,
+                        display_path.as_ref(),
+                        last_fix,
+                        last_fix,
+                        trailing_record.path_termination.trim(),
+                        trailing_record.nav_position,
+                    );
+                    next_heading_step_index += signatures.len();
+                    heading_checks.extend(signatures);
+                    resolved.push(ResolvedLeg {
+                        id: format!(
+                            "procedure-{}-{}-{}",
+                            procedure_id.trim(),
+                            trailing_record.key.route_type.trim(),
+                            trailing_record.sequence
+                        ),
+                        from: nav_ref.clone(),
+                        to: nav_ref.clone(),
+                        source: ResolvedLegSource::RouteComponent { component_index },
+                        procedure_provenance: Some(ProcedureLegProvenance {
+                            airport_id: airport_id.trim().to_string(),
+                            procedure_id: procedure_id.trim().to_string(),
+                            kind: kind.clone(),
+                            role: role.clone(),
+                            path_termination: trailing_record.path_termination_kind.clone(),
+                            leg_sequence: trailing_record.sequence,
+                            display_path: display_path.clone(),
+                        }),
+                    });
+                    previous_display_path = display_path;
+                    previous_leg_to = Some(nav_ref);
+                }
+            }
+        }
+
         if fix_records.len() == 1 {
             let standalone = fix_records[0];
             if standalone.path_termination.trim() == "PI" {
@@ -3129,6 +3178,8 @@ mod tests {
         output_stem: &str,
         emit_steps: bool,
     ) {
+        let selected_enroute_transition = (!enroute_transition.trim().is_empty())
+            .then(|| enroute_transition.trim().to_string());
         let output_dir = std::env::var("AEROBAG_PROCEDURE_PLOT_DIR")
             .unwrap_or_else(|_| "/tmp/procedure-plots".to_string());
         fs::create_dir_all(&output_dir).expect("create procedure plot output dir");
@@ -3157,7 +3208,7 @@ mod tests {
                 procedure_id,
                 ProcedureKind::Approach,
                 None,
-                Some(enroute_transition.to_string()),
+                selected_enroute_transition.clone(),
                 0,
                 rows.clone(),
                 records.clone(),
@@ -3176,7 +3227,7 @@ mod tests {
             .map_err(|error| error.to_string())?;
             let requested = ProcedureSpecChoice {
                 runway_transition: None,
-                enroute_transition: Some(enroute_transition.to_string()),
+                enroute_transition: selected_enroute_transition.clone(),
             };
             if !options
                 .valid_choices
@@ -3194,21 +3245,23 @@ mod tests {
                 Vec<ConcretizedNavItem>,
                 bool,
             )>::new();
-            let transition_legs = filter_procedure_records(
-                &records,
-                airport_id,
-                procedure_id,
-                "A",
-                enroute_transition,
-            );
-            let transition_items =
-                concretize_procedure_materialization_legs(&transition_legs, false);
-            segments.push((
-                MaterializedSegmentRole::EnrouteTransition,
-                transition_legs,
-                transition_items,
-                false,
-            ));
+            if let Some(transition) = selected_enroute_transition.as_deref() {
+                let transition_legs = filter_procedure_records(
+                    &records,
+                    airport_id,
+                    procedure_id,
+                    "A",
+                    transition,
+                );
+                let transition_items =
+                    concretize_procedure_materialization_legs(&transition_legs, false);
+                segments.push((
+                    MaterializedSegmentRole::EnrouteTransition,
+                    transition_legs,
+                    transition_items,
+                    false,
+                ));
+            }
             if let Some(common_route_type) = approach_common_route_type(&rows) {
                 let common_legs = filter_procedure_records(
                     &records,
@@ -3252,7 +3305,7 @@ mod tests {
                     procedure_id: procedure_id.trim().to_string(),
                     kind: ProcedureKind::Approach,
                     runway_transition: None,
-                    enroute_transition: Some(enroute_transition.to_string()),
+                    enroute_transition: selected_enroute_transition.clone(),
                     terminal_discontinuity,
                 },
                 concretized_items,
@@ -3345,7 +3398,8 @@ mod tests {
         fs::write(
             &note_path,
             format!(
-                "airport={airport_id}\nprocedure={procedure_id}\nenroute_transition={enroute_transition}\nplate={}\n\n{}\n",
+                "airport={airport_id}\nprocedure={procedure_id}\nenroute_transition={}\nplate={}\n\n{}\n",
+                selected_enroute_transition.as_deref().unwrap_or(""),
                 plate.path.display(),
                 path_dump_lines.join("\n")
             ),
@@ -5056,6 +5110,30 @@ mod tests {
     #[ignore = "manual visual inspection overlay for KRNO L17RZ HOBOA"]
     fn writes_krno_l17rz_hoboa_overlay_png() {
         render_procedure_overlay_to_paths("KRNO", "L17RZ", "HOBOA", "KRNO_L17RZ_HOBOA", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KDRT VOR-A"]
+    fn writes_kdrt_vora_overlay_png() {
+        render_procedure_overlay_to_paths("KDRT", "VOR-A", "DLF", "KDRT_VOR-A_DLF", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KSEA I16L"]
+    fn writes_ksea_i16l_overlay_png() {
+        render_procedure_overlay_to_paths("KSEA", "I16L", "PAE", "KSEA_I16L_PAE", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KRFD I07"]
+    fn writes_krfd_i07_overlay_png() {
+        render_procedure_overlay_to_paths("KRFD", "I07", "HENOR", "KRFD_I07_HENOR", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KRFD L07"]
+    fn writes_krfd_l07_overlay_png() {
+        render_procedure_overlay_to_paths("KRFD", "L07", "HENOR", "KRFD_L07_HENOR", false);
     }
 
     #[test]

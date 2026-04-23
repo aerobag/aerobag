@@ -141,7 +141,7 @@ Bundle examples:
 
 ```text
 bundle_cycle_2604_01_<sha256>.json
-bundle_fast_YYYYMMDDTHHMMZ_<sha256>.json
+bundle_fast_<sha256>.json
 ```
 
 `current_artifacts_YYYYMMDD.json` should keep a stable discovery name. It points at hashed bundle filenames and records their `checksum_sha256` values.
@@ -192,10 +192,10 @@ This avoids implying that every cycle update strongly recommends redownloading h
 
 Fast products should not live in the cycle bundle because they roll every few minutes.
 
-Introduce a separate timestamped, content-hash-named fast bundle later:
+Use a separate content-addressed fast bundle:
 
 ```text
-bundle_fast_YYYYMMDDTHHMMZ_<sha256>.json
+bundle_fast_<sha256>.json
 ```
 
 Examples:
@@ -321,7 +321,7 @@ Example:
     {
       "id": "fast_current",
       "bundle_type": "fast",
-      "relative_path": "bundle_fast_YYYYMMDDTHHMMZ_<sha256>.json",
+      "relative_path": "bundle_fast_<sha256>.json",
       "checksum_sha256": "...",
       "size_bytes": 123
     }
@@ -361,7 +361,7 @@ Required fast assertions:
 - `current_artifacts_YYYYMMDD.json` exists and is the only stable discovery entry point clients need.
 - Every bundle referenced by `current_artifacts` exists.
 - Cycle bundle filenames match `bundle_cycle_YYCC_VV_<sha256>.json`.
-- Fast bundle filenames, once implemented, match `bundle_fast_YYYYMMDDTHHMMZ_<sha256>.json`.
+- Fast bundle filenames match `bundle_fast_<sha256>.json`.
 - Every app-installable package is listed in `packages[]`.
 - No app-installable package appears only as a top-level convenience field.
 - Transitional artifacts appear only in `ancillary[]`.

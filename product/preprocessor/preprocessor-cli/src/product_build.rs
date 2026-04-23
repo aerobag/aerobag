@@ -223,6 +223,42 @@ struct BundleManifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct FastBundleManifest {
+    schema_version: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    bundle_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    bundle_type: String,
+    published_at_utc: String,
+    packages: Vec<BundlePackageArtifact>,
+}
+
+struct PublishedBundleRefs<'a> {
+    packages: &'a [BundlePackageArtifact],
+    ancillary: &'a [BundleArtifact],
+}
+
+enum BundleManifestLike {
+    Cycle(BundleManifest),
+    Fast(FastBundleManifest),
+}
+
+impl BundleManifestLike {
+    fn bundle_refs(&self) -> PublishedBundleRefs<'_> {
+        match self {
+            BundleManifestLike::Cycle(bundle) => PublishedBundleRefs {
+                packages: &bundle.packages,
+                ancillary: &bundle.ancillary,
+            },
+            BundleManifestLike::Fast(bundle) => PublishedBundleRefs {
+                packages: &bundle.packages,
+                ancillary: &[],
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CurrentArtifactsManifest {
     schema_version: u32,
     as_of_date: String,
@@ -272,10 +308,13 @@ struct CurrentBundleEntry {
     id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     bundle_type: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     cycle: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     cycle_version: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     start_valid: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     end_valid: String,
     checksum_sha256: String,
     size_bytes: u64,
@@ -333,6 +372,14 @@ struct BundlePackageArtifact {
     cycle_version: Option<String>,
     checksum_sha256: String,
     size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    published_at_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_generated_at_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_fetched_at_utc: Option<String>,
     effective_date: Option<String>,
     expiration_date: Option<String>,
 }
@@ -366,6 +413,72 @@ pub struct PublishedFastProductResult {
     pub checksum_sha256: String,
     pub size_bytes: u64,
     pub source_generated_at_utc: String,
+}
+
+fn build_fast_bundle_manifest(
+    fast_products: &[PublishedFastProductResult],
+    published_at_utc: &str,
+) -> BundleManifestLike {
+    BundleManifestLike::Fast(FastBundleManifest {
+        schema_version: 1,
+        bundle_id: "fast_current".to_string(),
+        bundle_type: "fast".to_string(),
+        published_at_utc: published_at_utc.to_string(),
+        packages: fast_products
+            .iter()
+            .map(|product| BundlePackageArtifact {
+                id: product.id.clone(),
+                family_id: product.id.clone(),
+                region_id: None,
+                filename: product
+                    .published_zip
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                relative_path: product
+                    .published_zip
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                cycle: None,
+                cycle_version: None,
+                checksum_sha256: product.checksum_sha256.clone(),
+                size_bytes: product.size_bytes,
+                published_at_utc: Some(published_at_utc.to_string()),
+                source_generated_at_utc: Some(product.source_generated_at_utc.clone()),
+                source_version: None,
+                source_fetched_at_utc: None,
+                effective_date: Some(product.source_generated_at_utc.clone()),
+                expiration_date: None,
+            })
+            .collect(),
+    })
+}
+
+fn publish_fast_bundle_manifest(
+    build_root: &Path,
+    fast_products: &[PublishedFastProductResult],
+    published_at_utc: &str,
+) -> anyhow::Result<PathBuf> {
+    let bundle_manifest = match build_fast_bundle_manifest(fast_products, published_at_utc) {
+        BundleManifestLike::Fast(bundle) => bundle,
+        BundleManifestLike::Cycle(_) => unreachable!("fast bundle builder returned cycle bundle"),
+    };
+    let bundle_manifest_path = write_hashed_fast_bundle_manifest(build_root, &bundle_manifest)?;
+    validate_fast_bundle_manifest(build_root, &bundle_manifest_path)?;
+    Ok(bundle_manifest_path)
+}
+
+fn sync_unpacked_fast_bundle_manifest(
+    config: &ProductBuildConfig,
+    bundle_manifest_path: &Path,
+) -> anyhow::Result<()> {
+    let unpacked_root = published_unpacked_root(config)?;
+    fs::create_dir_all(&unpacked_root)
+        .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
+    sync_unpacked_file(bundle_manifest_path, &unpacked_root)
 }
 
 #[derive(Debug)]
@@ -2495,6 +2608,26 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     _ => bail!("missing published fast product output for {}", task_id),
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
+                            let fast_bundle_published_at_utc = utc_now_string();
+                            let fast_bundle_manifest_path = publish_fast_bundle_manifest(
+                                &config.build_root,
+                                &fast_products
+                                    .iter()
+                                    .map(|product| PublishedFastProductResult {
+                                        id: product.id.clone(),
+                                        source_zip_path: config.build_root.join(&product.filename),
+                                        published_zip: config.build_root.join(&product.filename),
+                                        checksum_sha256: product.checksum_sha256.clone(),
+                                        size_bytes: product.size_bytes,
+                                        source_generated_at_utc: product.source_generated_at_utc.clone(),
+                                    })
+                                    .collect::<Vec<_>>(),
+                                &fast_bundle_published_at_utc,
+                            )?;
+                            sync_unpacked_fast_bundle_manifest(
+                                &config,
+                                &fast_bundle_manifest_path,
+                            )?;
                             let mut static_product_task_ids =
                                 vec!["publish-geo".to_string()];
                             if include_static_terrain_products() {
@@ -2839,6 +2972,9 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
     let nexrad = publish_built_fast_product(config, "nexrad", built_nexrad)?;
     let fast_products = vec![tfrs, metars, nexrad];
     let published_at_utc = utc_now_string();
+    let fast_bundle_manifest_path =
+        publish_fast_bundle_manifest(&config.build_root, &fast_products, &published_at_utc)?;
+    sync_unpacked_fast_bundle_manifest(config, &fast_bundle_manifest_path)?;
     current.fast_products = fast_products
         .iter()
         .map(|product| CurrentFastProductEntry {
@@ -2856,6 +2992,7 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
         })
         .collect();
     current.as_of_date = Utc::now().date_naive().format("%Y-%m-%d").to_string();
+    current.bundles = build_current_bundle_entries(&config.build_root, Utc::now().date_naive())?;
 
     let output_path = config.build_root.join(format!(
         "current_artifacts_{}.json",
@@ -4080,6 +4217,10 @@ fn build_bundle_manifest(
                 size_bytes: fs::metadata(&package_path)
                     .with_context(|| format!("failed to stat {}", package_path.display()))?
                     .len(),
+                published_at_utc: None,
+                source_generated_at_utc: None,
+                source_version: None,
+                source_fetched_at_utc: None,
                 effective_date: package.effective_date.clone(),
                 expiration_date: package.expiration_date.clone(),
             })
@@ -4098,6 +4239,10 @@ fn build_bundle_manifest(
         size_bytes: fs::metadata(&vectors_zip_path)
             .with_context(|| format!("failed to stat {}", vectors_zip_path.display()))?
             .len(),
+        published_at_utc: None,
+        source_generated_at_utc: None,
+        source_version: None,
+        source_fetched_at_utc: None,
         effective_date: Some(start_valid.clone()),
         expiration_date: Some(end_valid.clone()),
     });
@@ -4196,6 +4341,10 @@ fn write_nav_kv_artifact(
             cycle_version: Some(PACKAGE_CYCLE_VERSION.to_string()),
             checksum_sha256: nav_db_package_artifact.checksum_sha256.clone(),
             size_bytes: nav_db_package_artifact.size_bytes,
+            published_at_utc: None,
+            source_generated_at_utc: None,
+            source_version: None,
+            source_fetched_at_utc: None,
             effective_date: resource_index
                 .temporal_summary
                 .uniform_good_beyond_date
@@ -9219,114 +9368,172 @@ fn build_current_bundle_entries(
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("bundle_cycle_") && name.ends_with(".json"))
+                .map(|name| {
+                    (name.starts_with("bundle_cycle_") || name.starts_with("bundle_fast_"))
+                        && name.ends_with(".json")
+                })
                 .unwrap_or(false)
         })
         .collect::<Vec<_>>();
     bundle_paths.sort();
 
-    let mut bundles_by_cycle =
+    let mut cycle_bundles_by_cycle =
         BTreeMap::<String, (u32, String, SystemTime, CurrentBundleEntry)>::new();
+    let mut latest_fast_bundle: Option<(String, SystemTime, CurrentBundleEntry)> = None;
     for bundle_path in bundle_paths {
         let metadata = fs::metadata(&bundle_path)
             .with_context(|| format!("failed to stat {}", bundle_path.display()))?;
         let modified_at = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let bundle_manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(&bundle_path)
-                .with_context(|| format!("failed to read {}", bundle_path.display()))?,
-        )
-        .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
-        let bundle_cycle = bundle_manifest
-            .get("cycle")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing top-level cycle"))?;
-        let bundle_cycle_version = bundle_manifest
-            .get("cycle_version")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        let (file_cycle, file_cycle_version, file_hash) =
-            parse_cycle_bundle_filename(&bundle_path)?;
-        if bundle_cycle != file_cycle || bundle_cycle_version != file_cycle_version {
-            anyhow::bail!(
-                "bundle cycle mismatch for {}: payload cycle {}_{} != filename cycle {}_{}",
-                bundle_path.display(),
-                bundle_cycle,
-                bundle_cycle_version,
-                file_cycle,
-                file_cycle_version
-            );
-        }
-        let bundle_sha256 = hash_file(&bundle_path)?;
-        if bundle_sha256 != file_hash {
-            anyhow::bail!(
-                "bundle hash mismatch for {}: filename hash {} != content hash {}",
-                bundle_path.display(),
-                file_hash,
-                bundle_sha256
-            );
-        }
-        let start_valid = bundle_manifest
-            .get("start_valid")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing start_valid"))?;
-        let end_valid = bundle_manifest
-            .get("end_valid")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing end_valid"))?;
-        let end_valid_date = NaiveDate::parse_from_str(end_valid, "%Y-%m-%d")
-            .with_context(|| format!("failed to parse bundle end_valid {end_valid}"))?;
-        if end_valid_date < as_of_date {
+        let filename = filename_string(&bundle_path)?;
+        if filename.starts_with("bundle_cycle_") {
+            let bundle_manifest: serde_json::Value = serde_json::from_slice(
+                &fs::read(&bundle_path)
+                    .with_context(|| format!("failed to read {}", bundle_path.display()))?,
+            )
+            .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+            let bundle_cycle = bundle_manifest
+                .get("cycle")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| anyhow::anyhow!("bundle manifest missing top-level cycle"))?;
+            let bundle_cycle_version = bundle_manifest
+                .get("cycle_version")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let (file_cycle, file_cycle_version, file_hash) =
+                parse_cycle_bundle_filename(&bundle_path)?;
+            if bundle_cycle != file_cycle || bundle_cycle_version != file_cycle_version {
+                anyhow::bail!(
+                    "bundle cycle mismatch for {}: payload cycle {}_{} != filename cycle {}_{}",
+                    bundle_path.display(),
+                    bundle_cycle,
+                    bundle_cycle_version,
+                    file_cycle,
+                    file_cycle_version
+                );
+            }
+            let bundle_sha256 = hash_file(&bundle_path)?;
+            if bundle_sha256 != file_hash {
+                anyhow::bail!(
+                    "bundle hash mismatch for {}: filename hash {} != content hash {}",
+                    bundle_path.display(),
+                    file_hash,
+                    bundle_sha256
+                );
+            }
+            let start_valid = bundle_manifest
+                .get("start_valid")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| anyhow::anyhow!("bundle manifest missing start_valid"))?;
+            let end_valid = bundle_manifest
+                .get("end_valid")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| anyhow::anyhow!("bundle manifest missing end_valid"))?;
+            let end_valid_date = NaiveDate::parse_from_str(end_valid, "%Y-%m-%d")
+                .with_context(|| format!("failed to parse bundle end_valid {end_valid}"))?;
+            if end_valid_date < as_of_date {
+                continue;
+            }
+            let generated_at_utc = bundle_manifest
+                .get("generated_at_utc")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let cycle_version_rank = bundle_cycle_version.parse::<u32>().unwrap_or(0);
+            let entry = CurrentBundleEntry {
+                filename: filename.clone(),
+                relative_path: filename,
+                id: format!("cycle_{bundle_cycle}_{bundle_cycle_version}"),
+                bundle_type: "cycle".to_string(),
+                cycle: bundle_cycle.to_string(),
+                cycle_version: bundle_cycle_version.to_string(),
+                start_valid: start_valid.to_string(),
+                end_valid: end_valid.to_string(),
+                checksum_sha256: bundle_sha256,
+                size_bytes: metadata.len(),
+            };
+            let should_replace = match cycle_bundles_by_cycle.get(bundle_cycle) {
+                Some((
+                    existing_version_rank,
+                    existing_generated_at_utc,
+                    existing_modified_at,
+                    _,
+                )) => {
+                    cycle_version_rank > *existing_version_rank
+                        || (cycle_version_rank == *existing_version_rank
+                            && generated_at_utc > *existing_generated_at_utc)
+                        || (cycle_version_rank == *existing_version_rank
+                            && generated_at_utc == *existing_generated_at_utc
+                            && modified_at > *existing_modified_at)
+                }
+                None => true,
+            };
+            if should_replace {
+                cycle_bundles_by_cycle.insert(
+                    bundle_cycle.to_string(),
+                    (cycle_version_rank, generated_at_utc, modified_at, entry),
+                );
+            }
             continue;
         }
-        let generated_at_utc = bundle_manifest
-            .get("generated_at_utc")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let cycle_version_rank = bundle_cycle_version.parse::<u32>().unwrap_or(0);
-        let entry = CurrentBundleEntry {
-            filename: bundle_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_string(),
-            relative_path: bundle_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_string(),
-            id: format!("cycle_{bundle_cycle}_{bundle_cycle_version}"),
-            bundle_type: "cycle".to_string(),
-            cycle: bundle_cycle.to_string(),
-            cycle_version: bundle_cycle_version.to_string(),
-            start_valid: start_valid.to_string(),
-            end_valid: end_valid.to_string(),
-            checksum_sha256: bundle_sha256,
-            size_bytes: metadata.len(),
-        };
-        let should_replace = match bundles_by_cycle.get(bundle_cycle) {
-            Some((existing_version_rank, existing_generated_at_utc, existing_modified_at, _)) => {
-                cycle_version_rank > *existing_version_rank
-                    || (cycle_version_rank == *existing_version_rank
-                        && generated_at_utc > *existing_generated_at_utc)
-                    || (cycle_version_rank == *existing_version_rank
-                        && generated_at_utc == *existing_generated_at_utc
-                        && modified_at > *existing_modified_at)
+        if filename.starts_with("bundle_fast_") {
+            let bundle_manifest: FastBundleManifest = serde_json::from_slice(
+                &fs::read(&bundle_path)
+                    .with_context(|| format!("failed to read {}", bundle_path.display()))?,
+            )
+            .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+            let file_hash = parse_fast_bundle_filename(&bundle_path)?;
+            let bundle_sha256 = hash_file(&bundle_path)?;
+            if bundle_sha256 != file_hash {
+                anyhow::bail!(
+                    "fast bundle hash mismatch for {}: filename hash {} != content hash {}",
+                    bundle_path.display(),
+                    file_hash,
+                    bundle_sha256
+                );
             }
-            None => true,
-        };
-        if should_replace {
-            bundles_by_cycle.insert(
-                bundle_cycle.to_string(),
-                (cycle_version_rank, generated_at_utc, modified_at, entry),
-            );
+            let published_at_utc = bundle_manifest.published_at_utc.clone();
+            let entry = CurrentBundleEntry {
+                filename: filename.clone(),
+                relative_path: filename,
+                id: bundle_manifest.bundle_id.clone(),
+                bundle_type: "fast".to_string(),
+                cycle: String::new(),
+                cycle_version: String::new(),
+                start_valid: String::new(),
+                end_valid: String::new(),
+                checksum_sha256: bundle_sha256,
+                size_bytes: metadata.len(),
+            };
+            let should_replace = match &latest_fast_bundle {
+                Some((existing_published_at_utc, existing_modified_at, _)) => {
+                    published_at_utc > *existing_published_at_utc
+                        || (published_at_utc == *existing_published_at_utc
+                            && modified_at > *existing_modified_at)
+                }
+                None => true,
+            };
+            if should_replace {
+                latest_fast_bundle = Some((published_at_utc, modified_at, entry));
+            }
+            continue;
         }
     }
-    let mut bundles = bundles_by_cycle
+    let mut bundles = cycle_bundles_by_cycle
         .into_values()
         .map(|(_, _, _, entry)| entry)
         .collect::<Vec<_>>();
-    bundles.sort_by(|left, right| left.cycle.cmp(&right.cycle));
+    if let Some((_, _, entry)) = latest_fast_bundle {
+        bundles.push(entry);
+    }
+    bundles.sort_by(|left, right| {
+        let left_key = (left.bundle_type != "cycle", left.cycle.as_str(), left.id.as_str());
+        let right_key = (
+            right.bundle_type != "cycle",
+            right.cycle.as_str(),
+            right.id.as_str(),
+        );
+        left_key.cmp(&right_key)
+    });
     Ok(bundles)
 }
 
@@ -9352,6 +9559,23 @@ fn parse_cycle_bundle_filename(path: &Path) -> anyhow::Result<(String, String, S
         anyhow::bail!("bundle filename has invalid sha256 suffix: {filename}");
     }
     Ok((cycle, version, hash))
+}
+
+fn parse_fast_bundle_filename(path: &Path) -> anyhow::Result<String> {
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("bundle path has no filename: {}", path.display()))?;
+    let stem = filename
+        .strip_suffix(".json")
+        .ok_or_else(|| anyhow::anyhow!("bundle filename does not end in .json: {filename}"))?;
+    let hash = stem.strip_prefix("bundle_fast_").ok_or_else(|| {
+        anyhow::anyhow!("bundle filename must start with bundle_fast_: {filename}")
+    })?;
+    if hash.len() != 64 || !hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        anyhow::bail!("bundle filename has invalid sha256 suffix: {filename}");
+    }
+    Ok(hash.to_string())
 }
 
 fn write_current_artifacts_manifest(
@@ -9518,11 +9742,12 @@ fn collect_reachable_packaged_entries(
     }
     for bundle_ref in &current.bundles {
         keep.insert(bundle_ref.filename.clone());
-        let bundle = load_bundle_manifest(&packaged_root.join(&bundle_ref.filename))?;
-        for artifact in &bundle.ancillary {
+        let bundle = load_bundle_manifest_like(&packaged_root.join(&bundle_ref.filename))?;
+        let bundle_refs = bundle.bundle_refs();
+        for artifact in bundle_refs.ancillary {
             keep.insert(artifact.filename.clone());
         }
-        for package in &bundle.packages {
+        for package in bundle_refs.packages {
             keep.insert(package.filename.clone());
         }
     }
@@ -9551,15 +9776,16 @@ fn collect_reachable_unpacked_entries(
             .parent()
             .context("current artifacts path missing parent")?
             .join(&bundle_ref.filename);
-        let bundle = load_bundle_manifest(&bundle_path)?;
-        for artifact in &bundle.ancillary {
+        let bundle = load_bundle_manifest_like(&bundle_path)?;
+        let bundle_refs = bundle.bundle_refs();
+        for artifact in bundle_refs.ancillary {
             if artifact.filename.ends_with(".zip") {
                 keep.insert(zip_stem(&artifact.filename)?);
             } else {
                 keep.insert(artifact.filename.clone());
             }
         }
-        for package in &bundle.packages {
+        for package in bundle_refs.packages {
             keep.insert(zip_stem(&package.filename)?);
         }
     }
@@ -9596,11 +9822,23 @@ fn load_current_artifacts_manifest(path: &Path) -> anyhow::Result<CurrentArtifac
     .with_context(|| format!("failed to parse {}", path.display()))
 }
 
-fn load_bundle_manifest(path: &Path) -> anyhow::Result<BundleManifest> {
-    serde_json::from_slice(
-        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", path.display()))
+fn load_bundle_manifest_like(path: &Path) -> anyhow::Result<BundleManifestLike> {
+    let filename = filename_string(path)?;
+    if filename.starts_with("bundle_cycle_") {
+        let bundle: BundleManifest = serde_json::from_slice(
+            &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+        return Ok(BundleManifestLike::Cycle(bundle));
+    }
+    if filename.starts_with("bundle_fast_") {
+        let bundle: FastBundleManifest = serde_json::from_slice(
+            &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+        return Ok(BundleManifestLike::Fast(bundle));
+    }
+    bail!("unrecognized bundle filename: {filename}")
 }
 
 fn filename_string(path: &Path) -> anyhow::Result<String> {
@@ -9670,6 +9908,10 @@ fn validate_packaged_contract(
 }
 
 fn validate_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow::Result<()> {
+    let filename = filename_string(bundle_path)?;
+    if filename.starts_with("bundle_fast_") {
+        return validate_fast_bundle_manifest(packaged_root, bundle_path);
+    }
     validate_no_internal_paths_in_json(bundle_path)?;
     let (_, _, filename_hash) = parse_cycle_bundle_filename(bundle_path)?;
     let bundle_hash = hash_file(bundle_path)?;
@@ -9717,6 +9959,47 @@ fn validate_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow:
     Ok(())
 }
 
+fn validate_fast_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> anyhow::Result<()> {
+    validate_no_internal_paths_in_json(bundle_path)?;
+    let filename_hash = parse_fast_bundle_filename(bundle_path)?;
+    let bundle_hash = hash_file(bundle_path)?;
+    if bundle_hash != filename_hash {
+        bail!(
+            "fast bundle filename hash mismatch for {}: filename {} != content {}",
+            bundle_path.display(),
+            filename_hash,
+            bundle_hash
+        );
+    }
+    let bundle: FastBundleManifest = serde_json::from_slice(
+        &fs::read(bundle_path)
+            .with_context(|| format!("failed to read {}", bundle_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+    if bundle.bundle_type != "fast" {
+        bail!(
+            "fast bundle {} has unexpected bundle_type {}",
+            bundle_path.display(),
+            bundle.bundle_type
+        );
+    }
+    for package in &bundle.packages {
+        validate_public_filename(&package.filename, "fast_bundle.packages[].filename")?;
+        validate_public_filename(&package.relative_path, "fast_bundle.packages[].relative_path")?;
+        validate_embedded_sha256_filename(&package.filename, &package.checksum_sha256)?;
+        if package.filename != package.relative_path {
+            bail!(
+                "fast bundle filename/relative_path mismatch in {}: {} != {}",
+                bundle_path.display(),
+                package.filename,
+                package.relative_path
+            );
+        }
+        ensure_public_file_exists(&packaged_root.join(&package.filename))?;
+    }
+    Ok(())
+}
+
 fn validate_unpacked_contract(
     packaged_root: &Path,
     unpacked_root: &Path,
@@ -9737,20 +10020,16 @@ fn validate_unpacked_contract(
         let unpacked_bundle_path = unpacked_root.join(&bundle.filename);
         ensure_public_file_exists(&unpacked_bundle_path)?;
         validate_no_internal_paths_in_json(&unpacked_bundle_path)?;
-        let bundle: BundleManifest = serde_json::from_slice(
-            &fs::read(&unpacked_bundle_path)
-                .with_context(|| format!("failed to read {}", unpacked_bundle_path.display()))?,
-        )
-        .with_context(|| format!("failed to parse {}", unpacked_bundle_path.display()))?;
-
-        for artifact in &bundle.ancillary {
+        let bundle = load_bundle_manifest_like(&unpacked_bundle_path)?;
+        let bundle_refs = bundle.bundle_refs();
+        for artifact in bundle_refs.ancillary {
             if artifact.filename.ends_with(".zip") {
                 ensure_public_dir_exists(&unpacked_root.join(zip_stem(&artifact.filename)?))?;
             } else {
                 ensure_public_file_exists(&unpacked_root.join(&artifact.filename))?;
             }
         }
-        for package in &bundle.packages {
+        for package in bundle_refs.packages {
             ensure_public_dir_exists(&unpacked_root.join(zip_stem(&package.filename)?))?;
         }
     }
@@ -10454,6 +10733,22 @@ fn write_hashed_bundle_manifest(
         "bundle_cycle_{}_{}_{sha256}.json",
         bundle_manifest.cycle, bundle_manifest.cycle_version
     ));
+    fs::write(&bundle_manifest_path, bytes)
+        .with_context(|| format!("failed to write {}", bundle_manifest_path.display()))?;
+    Ok(bundle_manifest_path)
+}
+
+fn write_hashed_fast_bundle_manifest(
+    build_root: &Path,
+    bundle_manifest: &FastBundleManifest,
+) -> anyhow::Result<PathBuf> {
+    let bytes =
+        serde_json::to_vec_pretty(bundle_manifest).context("failed to encode fast bundle manifest")?;
+    let sha256 = Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let bundle_manifest_path = build_root.join(format!("bundle_fast_{sha256}.json"));
     fs::write(&bundle_manifest_path, bytes)
         .with_context(|| format!("failed to write {}", bundle_manifest_path.display()))?;
     Ok(bundle_manifest_path)
@@ -13144,6 +13439,10 @@ mod tests {
                 cycle_version: Some("01".to_string()),
                 checksum_sha256: "deadbeef".to_string(),
                 size_bytes: 123,
+                published_at_utc: None,
+                source_generated_at_utc: None,
+                source_version: None,
+                source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
             },
@@ -13157,6 +13456,10 @@ mod tests {
                 cycle_version: Some("01".to_string()),
                 checksum_sha256: "cafebabe".to_string(),
                 size_bytes: 456,
+                published_at_utc: None,
+                source_generated_at_utc: None,
+                source_version: None,
+                source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
             },

@@ -82,7 +82,8 @@ Region codes stay lowercase:
 current_artifacts_YYYYMMDD.json
 ├── bundles[]
 │   ├── bundle_cycle_2603_01_<sha256>.json
-│   └── bundle_cycle_2604_01_<sha256>.json
+│   ├── bundle_cycle_2604_01_<sha256>.json
+│   └── bundle_fast_<sha256>.json
 ├── fast_products[]
 │   ├── tfrs_<sha256>.zip
 │   ├── metars_<sha256>.zip
@@ -242,7 +243,8 @@ It contains Avare-compatible `geo.csv` with one-degree grid rows:
 `Latitude,Longitude,geoid_height,magnetic_declination`.
 
 It is referenced from `current_artifacts_YYYYMMDD.json` under `static_products[]`,
-not from any per-cycle bundle, so consumers fetch it only if they explicitly need it.
+and, by policy, should also be listed from the current cycle bundle when cycle-bundle
+stable package wiring lands.
 
 ### `terrain-<region>_<sha256>.zip`
 

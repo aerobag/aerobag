@@ -247,9 +247,11 @@ enum class RouteSegmentStatus {
 
 data class FlightPlanRouteSegment(
     val id: String,
+    val legId: String,
     val from: LatLonPoint,
     val to: LatLonPoint,
     val path: List<LatLonPoint>,
+    val style: String,
     val distanceNm: Double,
     val courseDeg: Double,
     val status: RouteSegmentStatus,
@@ -284,6 +286,7 @@ data class DirectToState(
 
 data class GuidanceState(
     val activeLegIndex: Int,
+    val activeDetailIndex: Int? = null,
     val displaySplitLegId: String? = null,
     val sequencingMode: SequencingMode,
     val directTo: DirectToState?,

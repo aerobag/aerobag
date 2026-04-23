@@ -3268,4 +3268,21 @@ mod tests {
                 && leg.to == NavRef::Fix("LASSN".to_string())
         }));
     }
+
+    #[test]
+    fn materializes_kpae_vor_a_from_ecepo() {
+        let built = materialize_procedure_selection(
+            fixture_db_path(),
+            "KPAE",
+            "VOR-A",
+            ProcedureKind::Approach,
+            None,
+            Some("ECEPO"),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(built.procedure.enroute_transition.as_deref(), Some("ECEPO"));
+        assert!(!built.resolved_legs.is_empty());
+    }
 }

@@ -251,6 +251,8 @@ pub enum LegDisplayElement {
 pub struct GuidanceState {
     pub active_leg_index: usize,
     #[serde(default)]
+    pub active_detail_index: Option<usize>,
+    #[serde(default)]
     pub display_split_leg_id: Option<String>,
     pub sequencing_mode: SequencingMode,
     pub direct_to: Option<DirectToState>,
@@ -496,6 +498,8 @@ pub fn activate_direct_to(
     Ok(FlightPlan {
         guidance: Some(GuidanceState {
             active_leg_index,
+            active_detail_index: target_leg_index
+                .and_then(|index| first_guidance_detail_index_for_leg(&plan, index)),
             display_split_leg_id: target_leg_index
                 .and_then(|index| plan.resolved_legs.get(index))
                 .map(|leg| leg.id.clone()),
@@ -532,6 +536,7 @@ pub fn activate_direct_to_leg(
     Ok(FlightPlan {
         guidance: Some(GuidanceState {
             active_leg_index: target_leg_index,
+            active_detail_index: first_guidance_detail_index_for_leg(&plan, target_leg_index),
             display_split_leg_id: Some(target_leg.id.clone()),
             sequencing_mode: SequencingMode::DirectTo,
             direct_to: Some(DirectToState {
@@ -558,6 +563,7 @@ pub fn activate_leg(plan: &FlightPlan, leg_index: usize) -> AppResult<FlightPlan
     Ok(FlightPlan {
         guidance: Some(GuidanceState {
             active_leg_index: leg_index,
+            active_detail_index: first_guidance_detail_index_for_leg(&plan, leg_index),
             display_split_leg_id: plan.resolved_legs.get(leg_index).map(|leg| leg.id.clone()),
             sequencing_mode: SequencingMode::FollowPlan,
             direct_to: None,
@@ -585,6 +591,7 @@ pub fn activate_next_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
     Ok(FlightPlan {
         guidance: Some(GuidanceState {
             active_leg_index: next_leg_index,
+            active_detail_index: first_guidance_detail_index_for_leg(&plan, next_leg_index),
             display_split_leg_id: plan
                 .resolved_legs
                 .get(next_leg_index)
@@ -607,6 +614,7 @@ pub fn suspend_sequencing(plan: &FlightPlan) -> AppResult<FlightPlan> {
     Ok(FlightPlan {
         guidance: Some(GuidanceState {
             active_leg_index: guidance.active_leg_index,
+            active_detail_index: guidance.active_detail_index,
             display_split_leg_id: guidance.display_split_leg_id.clone(),
             sequencing_mode: SequencingMode::Suspended,
             direct_to: None,
@@ -637,6 +645,7 @@ pub fn unsuspend_sequencing(plan: &FlightPlan) -> AppResult<FlightPlan> {
     Ok(FlightPlan {
         guidance: Some(GuidanceState {
             active_leg_index: guidance.active_leg_index,
+            active_detail_index: guidance.active_detail_index,
             display_split_leg_id: guidance.display_split_leg_id.clone(),
             sequencing_mode: SequencingMode::FollowPlan,
             direct_to: None,
@@ -667,6 +676,7 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
             {
                 Some(resume_leg_index) => GuidanceState {
                     active_leg_index: resume_leg_index,
+                    active_detail_index: first_guidance_detail_index_for_leg(&plan, resume_leg_index),
                     display_split_leg_id: plan
                         .resolved_legs
                         .get(resume_leg_index)
@@ -683,6 +693,12 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                             leg_index_by_id(&plan.resolved_legs, target_leg_id)
                         })
                         .unwrap_or(guidance.active_leg_index),
+                    active_detail_index: direct_to
+                        .target_leg_id
+                        .as_deref()
+                        .and_then(|target_leg_id| leg_index_by_id(&plan.resolved_legs, target_leg_id))
+                        .and_then(|index| first_guidance_detail_index_for_leg(&plan, index))
+                        .or(guidance.active_detail_index),
                     display_split_leg_id: direct_to
                         .target_leg_id
                         .clone()
@@ -701,28 +717,59 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                 });
             }
 
-            if should_suspend_after_active_leg(&plan, guidance.active_leg_index) {
+            let active_detail_index = guidance
+                .active_detail_index
+                .or_else(|| first_guidance_detail_index_for_leg(&plan, guidance.active_leg_index))
+                .unwrap_or(0);
+            let active_detail = guidance_detail_ref_by_index(&plan, active_detail_index).ok_or_else(|| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!("guidance detail index out of bounds: {active_detail_index}"),
+            })?;
+            if let Some(next_detail) = guidance_detail_ref_by_index(&plan, active_detail_index + 1) {
+                if next_detail.leg_index == active_detail.leg_index {
+                    GuidanceState {
+                        active_leg_index: guidance.active_leg_index,
+                        active_detail_index: Some(next_detail.detail_index),
+                        display_split_leg_id: guidance.display_split_leg_id.clone(),
+                        sequencing_mode: SequencingMode::FollowPlan,
+                        direct_to: None,
+                        suspend_reason: None,
+                    }
+                } else if should_suspend_after_active_leg(&plan, guidance.active_leg_index) {
+                    GuidanceState {
+                        active_leg_index: guidance.active_leg_index,
+                        active_detail_index: Some(active_detail.detail_index),
+                        display_split_leg_id: guidance.display_split_leg_id.clone(),
+                        sequencing_mode: SequencingMode::Suspended,
+                        direct_to: None,
+                        suspend_reason: Some(SuspendReason::Boundary),
+                    }
+                } else {
+                    GuidanceState {
+                        active_leg_index: next_detail.leg_index,
+                        active_detail_index: Some(next_detail.detail_index),
+                        display_split_leg_id: plan
+                            .resolved_legs
+                            .get(next_detail.leg_index)
+                            .map(|leg| leg.id.clone()),
+                        sequencing_mode: SequencingMode::FollowPlan,
+                        direct_to: None,
+                        suspend_reason: None,
+                    }
+                }
+            } else if should_suspend_after_active_leg(&plan, guidance.active_leg_index) {
                 GuidanceState {
                     active_leg_index: guidance.active_leg_index,
+                    active_detail_index: Some(active_detail.detail_index),
                     display_split_leg_id: guidance.display_split_leg_id.clone(),
                     sequencing_mode: SequencingMode::Suspended,
                     direct_to: None,
                     suspend_reason: Some(SuspendReason::Boundary),
                 }
-            } else if guidance.active_leg_index + 1 < plan.resolved_legs.len() {
-                GuidanceState {
-                    active_leg_index: guidance.active_leg_index + 1,
-                    display_split_leg_id: plan
-                        .resolved_legs
-                        .get(guidance.active_leg_index + 1)
-                        .map(|leg| leg.id.clone()),
-                    sequencing_mode: SequencingMode::FollowPlan,
-                    direct_to: None,
-                    suspend_reason: None,
-                }
             } else {
                 GuidanceState {
                     active_leg_index: guidance.active_leg_index,
+                    active_detail_index: Some(active_detail.detail_index),
                     display_split_leg_id: guidance.display_split_leg_id.clone(),
                     sequencing_mode: SequencingMode::Suspended,
                     direct_to: None,
@@ -940,6 +987,53 @@ fn project_nav_element_ui(plan: &FlightPlan) -> NavElementUiView {
         cdi_indicator_dots: None,
         cdi_offscale_readout: None,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuidanceDetailRef {
+    pub detail_index: usize,
+    pub leg_index: usize,
+    pub leg_id: String,
+    pub element_index: usize,
+}
+
+pub fn guidance_detail_refs(plan: &FlightPlan) -> Vec<GuidanceDetailRef> {
+    let mut details = Vec::new();
+    let mut detail_index = 0usize;
+    for (leg_index, leg) in plan.resolved_legs.iter().enumerate() {
+        let element_count = leg
+            .procedure_provenance
+            .as_ref()
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .map(|path| usize::max(path.elements.len(), 1))
+            .unwrap_or(1);
+        for element_index in 0..element_count {
+            details.push(GuidanceDetailRef {
+                detail_index,
+                leg_index,
+                leg_id: leg.id.clone(),
+                element_index,
+            });
+            detail_index += 1;
+        }
+    }
+    details
+}
+
+pub fn first_guidance_detail_index_for_leg(plan: &FlightPlan, leg_index: usize) -> Option<usize> {
+    guidance_detail_refs(plan)
+        .into_iter()
+        .find(|detail| detail.leg_index == leg_index)
+        .map(|detail| detail.detail_index)
+}
+
+pub fn guidance_detail_ref_by_index(
+    plan: &FlightPlan,
+    detail_index: usize,
+) -> Option<GuidanceDetailRef> {
+    guidance_detail_refs(plan)
+        .into_iter()
+        .find(|detail| detail.detail_index == detail_index)
 }
 
 fn project_display_rows(
@@ -2450,6 +2544,30 @@ fn revalidate_guidance_after_plan_edit(
         guidance.active_leg_index = resolved_legs.len().saturating_sub(1);
     }
 
+    let mut current_detail_index = 0usize;
+    let mut first_detail_for_active_leg = None;
+    let mut active_detail_still_valid = false;
+    for (leg_index, leg) in resolved_legs.iter().enumerate() {
+        let detail_count = leg
+            .procedure_provenance
+            .as_ref()
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .map(|path| path.elements.len().max(1))
+            .unwrap_or(1);
+        if leg_index == guidance.active_leg_index {
+            first_detail_for_active_leg = Some(current_detail_index);
+            if let Some(active_detail_index) = guidance.active_detail_index {
+                active_detail_still_valid =
+                    active_detail_index >= current_detail_index
+                        && active_detail_index < current_detail_index + detail_count;
+            }
+        }
+        current_detail_index += detail_count;
+    }
+    if !active_detail_still_valid {
+        guidance.active_detail_index = first_detail_for_active_leg;
+    }
+
     if guidance
         .display_split_leg_id
         .as_deref()
@@ -2776,6 +2894,7 @@ mod tests {
             ],
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                active_detail_index: Some(0),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
@@ -2845,6 +2964,7 @@ mod tests {
             ],
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                active_detail_index: Some(0),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
@@ -3806,6 +3926,7 @@ mod tests {
         let plan = FlightPlan {
             guidance: Some(GuidanceState {
                 active_leg_index: 3,
+                active_detail_index: Some(3),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
@@ -3870,6 +3991,7 @@ mod tests {
             ],
             guidance: Some(GuidanceState {
                 active_leg_index: 1,
+                active_detail_index: Some(1),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
@@ -3938,6 +4060,7 @@ mod tests {
         let suspended = FlightPlan {
             guidance: Some(GuidanceState {
                 active_leg_index: 3,
+                active_detail_index: Some(3),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::Suspended,
                 direct_to: None,
@@ -3966,6 +4089,7 @@ mod tests {
         let suspended = FlightPlan {
             guidance: Some(GuidanceState {
                 active_leg_index: 3,
+                active_detail_index: Some(3),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::Suspended,
                 direct_to: None,
@@ -3992,6 +4116,7 @@ mod tests {
         let plan = FlightPlan {
             guidance: Some(GuidanceState {
                 active_leg_index: 2,
+                active_detail_index: Some(2),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
@@ -4602,6 +4727,7 @@ mod tests {
         let guided = FlightPlan {
             guidance: Some(GuidanceState {
                 active_leg_index: 2,
+                active_detail_index: Some(2),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
@@ -4633,6 +4759,7 @@ mod tests {
         let guided = FlightPlan {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
+                active_detail_index: Some(0),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,

@@ -1610,6 +1610,7 @@ private fun WireRouteComponent.toUi(): RouteComponent = when (this) {
 
 private fun GuidanceState.toWire() = WireGuidanceState(
     active_leg_index = activeLegIndex,
+    active_detail_index = activeDetailIndex,
     display_split_leg_id = displaySplitLegId,
     sequencing_mode = sequencingMode.toWire(),
     direct_to = directTo?.toWire(),
@@ -1618,6 +1619,7 @@ private fun GuidanceState.toWire() = WireGuidanceState(
 
 private fun WireGuidanceState.toUi() = GuidanceState(
     activeLegIndex = active_leg_index,
+    activeDetailIndex = active_detail_index,
     displaySplitLegId = display_split_leg_id,
     sequencingMode = sequencing_mode.toUi(),
     directTo = direct_to?.toUi(),
@@ -1768,9 +1770,11 @@ private fun SuspendReason.toWire() = when (this) {
 
 private fun WireFlightPlanRouteSegment.toUi() = FlightPlanRouteSegment(
     id = id,
+    legId = legId,
     from = from.toUi(),
     to = to.toUi(),
     path = path.map { it.toUi() },
+    style = style,
     distanceNm = distance_nm,
     courseDeg = course_deg,
     status = status.toUi(),

@@ -252,9 +252,11 @@ export type ResolvedLeg =
 
 export type FlightPlanRouteSegment = {
   id: string;
+  leg_id: string;
   from: LatLon;
   to: LatLon;
   path: LatLon[];
+  style: "solid" | "dashed";
   distance_nm: number;
   course_deg: number;
   status: "completed" | "active" | "remaining";
@@ -278,6 +280,7 @@ export type DirectToState = {
 
 export type GuidanceState = {
   active_leg_index: number;
+  active_detail_index?: number | null;
   sequencing_mode: SequencingMode;
   direct_to: DirectToState | null;
 };

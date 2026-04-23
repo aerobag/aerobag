@@ -21,6 +21,24 @@ pub fn parse_cifp_tenths_value(raw: &str) -> Option<f64> {
     Some(parsed / 10.0)
 }
 
+pub fn parse_cifp_hundredths_value(raw: &str) -> Option<f64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = trimmed.parse::<f64>().ok()?;
+    Some(parsed / 100.0)
+}
+
+pub fn parse_cifp_thousandths_value(raw: &str) -> Option<f64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = trimmed.parse::<f64>().ok()?;
+    Some(parsed / 1000.0)
+}
+
 pub fn parse_cifp_altitude_ft(raw: &str) -> Option<f64> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {

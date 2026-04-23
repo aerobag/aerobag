@@ -73,6 +73,12 @@ fn nav_kv_stores() -> &'static Mutex<HashMap<u32, app_core::NavKvStore>> {
     NAV_KV_STORES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(start)]
+pub fn install_panic_hook() {
+    console_error_panic_hook::set_once();
+}
+
 #[wasm_bindgen]
 pub fn nav_kv_open(root_bytes: &[u8]) -> Result<u32, JsValue> {
     let root = app_core::NavKvRoot::parse(root_bytes).map_err(|err| JsValue::from_str(&err))?;

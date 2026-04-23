@@ -80,7 +80,7 @@ import type {
   TerrainOverlayTileRequest,
 } from "./domain/appCoreAdapter";
 import { airwayEntryCandidateFromPresentation, airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
-import { debugLog, debugTiming } from "./domain/debugLog";
+import { debugLog, debugTiming, installGlobalErrorLogging } from "./domain/debugLog";
 import { TerrainRenderWorkerClient } from "./domain/terrainRenderWorkerClient";
 
 type SurfaceSize = {
@@ -955,6 +955,15 @@ export default function App() {
     () => selectedAirport?.charts.find((chart) => chart.id === selectedChartId) ?? selectedAirport?.charts[0] ?? null,
     [selectedAirport, selectedChartId],
   );
+
+  useEffect(() => {
+    debugLog("charts.selection.render", {
+      selected_airport_id: selectedAirportId,
+      selected_chart_id: selectedChartId,
+      selected_chart_label: selectedChart?.label ?? null,
+      selected_chart_asset_path: selectedChart?.asset_path ?? null,
+    });
+  }, [selectedAirportId, selectedChartId, selectedChart?.label, selectedChart?.asset_path]);
   const legSummary = useMemo(() => {
     const firstLeg = currentPlan?.legs[0];
     if (!firstLeg) {
@@ -987,6 +996,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    installGlobalErrorLogging();
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     void appCoreAdapter?.prewarm().catch((error) => {
       if (!cancelled) {
@@ -1007,9 +1020,9 @@ export default function App() {
     debugTiming("startup.session.create", () => buildSeededDevPlan().then(async (initialPlan) => {
       const created = await debugTiming("startup.session.create.core", () => appCoreAdapter.createUiSession(
         initialPlan.plan,
-        initialRecentAirportIds,
-        initialChartPageState.selected_airport_id,
-        initialChartPageState.selected_chart_id,
+        initialPlan.recentAirportIds ?? initialRecentAirportIds,
+        initialPlan.selectedAirportId ?? initialChartPageState.selected_airport_id,
+        initialPlan.selectedChartId ?? initialChartPageState.selected_chart_id,
       ));
       const createdSnapshot = await debugTiming("startup.session.snapshot", () => created.snapshot());
       debugLog("session.create.snapshot", {
@@ -1517,8 +1530,19 @@ export default function App() {
           }}
           onSelectChart={(chartId) => {
             const nextChart = selectedAirport?.charts.find((chart) => chart.id === chartId);
+            debugLog("charts.select.request", {
+              requested_airport_id: selectedAirport?.id ?? null,
+              requested_chart_id: chartId,
+              requested_chart_label: nextChart?.label ?? null,
+              requested_chart_asset_path: nextChart?.asset_path ?? null,
+            });
             if (uiSession) {
               void uiSession.selectChart(chartId).then((nextSnapshot) => {
+                debugLog("charts.select.snapshot", {
+                  requested_chart_id: chartId,
+                  selected_airport_id: nextSnapshot.chart_page_state.selected_airport_id,
+                  selected_chart_id: nextSnapshot.chart_page_state.selected_chart_id,
+                });
                 setSessionSnapshot(nextSnapshot);
               }).catch(() => {});
             }
@@ -2124,6 +2148,7 @@ function MapPage(props: {
         plan.version,
         guidance?.sequencing_mode ?? "none",
         guidance?.active_leg_index ?? "none",
+        guidance?.active_detail_index ?? "none",
         guidance?.direct_to?.target_leg_id ?? "none",
         guidance?.direct_to?.resume_leg_id ?? "none",
         (plan.resolved_legs ?? []).map((leg) => leg.id).join(","),
@@ -5963,12 +5988,16 @@ async function applyFlightPlanMutation(
   setSessionSnapshot(nextSnapshot);
 }
 
-async function buildSeededDevPlan(): Promise<{ plan: FlightPlan }> {
+async function buildSeededDevPlan(): Promise<{
+  plan: FlightPlan;
+  selectedAirportId?: string;
+  selectedChartId?: string;
+  recentAirportIds?: string[];
+}> {
   const waypoints: Array<{ Airport: string } | { Navaid: string } | { Fix: string }> = [
-    { Airport: "KPAO" },
-    { Fix: "VPDUB" },
-    { Airport: "KVCB" },
-    { Airport: "KWLW" },
+    { Airport: "KRNT" },
+    { Navaid: "SEA" },
+    { Airport: "KPAE" },
   ];
   const routeComponents = waypoints.map((waypoint) => ({ kind: "waypoint" as const, waypoint }));
   const resolvedLegs = waypoints.slice(0, -1).map((from, index) => ({
@@ -5979,19 +6008,21 @@ async function buildSeededDevPlan(): Promise<{ plan: FlightPlan }> {
   }));
   const plan = {
     ...samplePlan,
-    id: "dev-kpao-vpdub-kvcb-kwlw",
-    name: "KPAO VPDUB KVCB KWLW",
+    id: "dev-krnt-sea-kpae",
+    name: "KRNT SEA KPAE",
     legs: resolvedLegs.map((leg) => ({ from: leg.from, to: leg.to, airway: null })),
     route_components: routeComponents,
     resolved_legs: resolvedLegs,
-    guidance: { active_leg_index: 0, sequencing_mode: "follow_plan" as const, direct_to: null },
-    departure: "KPAO",
-    destination: "KWLW",
+    guidance: { active_leg_index: 0, active_detail_index: 0, sequencing_mode: "follow_plan" as const, direct_to: null },
+    departure: "KRNT",
+    destination: "KPAE",
     updated_at_epoch_ms: Date.now(),
     version: samplePlan.version + 1,
   };
   return {
     plan,
+    selectedAirportId: "KPAE",
+    recentAirportIds: ["KPAE", "KRNT"],
   };
 }
 

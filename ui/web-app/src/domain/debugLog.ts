@@ -1,4 +1,5 @@
 let seq = 0;
+let globalErrorLoggingInstalled = false;
 
 type DebugLogRecord = {
   seq: number;
@@ -52,6 +53,29 @@ export function debugLog(tag: string, data?: unknown) {
   scheduleFlush();
 }
 
+export function installGlobalErrorLogging() {
+  if (typeof window === "undefined" || globalErrorLoggingInstalled) {
+    return;
+  }
+  globalErrorLoggingInstalled = true;
+
+  window.addEventListener("error", (event) => {
+    debugLog("window.error", {
+      message: event.message,
+      filename: event.filename,
+      lineno: event.lineno,
+      colno: event.colno,
+      error: serializeUnknown(event.error),
+    });
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    debugLog("window.unhandledrejection", {
+      reason: serializeUnknown(event.reason),
+    });
+  });
+}
+
 export function debugTiming<T>(
   tag: string,
   work: () => T,
@@ -90,4 +114,20 @@ function objectData(data: unknown): Record<string, unknown> {
 
 function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
   return value !== null && typeof value === "object" && "then" in value && typeof value.then === "function";
+}
+
+function serializeUnknown(value: unknown): unknown {
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: value.message,
+      stack: value.stack,
+      cause: serializeUnknown(value.cause),
+    };
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, serializeUnknown(entry)]);
+    return Object.fromEntries(entries);
+  }
+  return value;
 }

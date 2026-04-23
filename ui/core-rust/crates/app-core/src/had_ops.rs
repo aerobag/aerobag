@@ -7,13 +7,11 @@ use crate::planning::FlightPlanRowActionId;
 use crate::{
     chart_page::{airport_ids_from_plan, derive_chart_page_state_from_airports},
     describe_plate_procedure_load_options, describe_procedure_options_from_rows,
-    describe_show_plate_for_procedure, flight_leg_course_deg, flight_leg_distance_nm,
-    great_circle_display_path,
-    materialize_procedure_from_records, prepare_airway_presentation, AirwayAutoSelection,
+    describe_show_plate_for_procedure, flight_leg_distance_nm,
+    materialize_procedure_from_records, prepare_airway_presentation, project_flight_plan_route_with_resolver, AirwayAutoSelection,
     AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate, AirwayPresentationPlan, AirwaySegment,
     AirwaySpatialPoint, AirwaySuggestion, AppError, AppErrorKind, AppResult, CifpTppMatchRow,
-    FlightPlan, FlightPlanRouteSegment, FlightPlanRouteSegmentStatus, FlightPlanUiMutation,
-    FlightPlanUiState, LatLon, MaterializedProcedure, NavKvLookup, NavKvQuery, NavKvStore, NavRef,
+    FlightPlan, FlightPlanRouteSegment, FlightPlanUiMutation, FlightPlanUiState, LatLon, MaterializedProcedure, NavKvLookup, NavKvQuery, NavKvStore, NavRef,
     NavSymbolFeature, PlateProcedureLoadCandidateInput, ProcedureDistinctRow, ProcedureKind,
     ProcedureLegMaterializationRecord, ProcedureLoadOption, ProcedureOptions, ProcedureSummary,
     ResolvedLeg, ResolvedLegSource, RouteComponent, WaypointIdentifierRecord,
@@ -446,9 +444,15 @@ fn flight_plan_ui_state(
             None => None,
         };
         if let Some(leg_index) = row.leg_index {
-            if let Some(segment) = route.get(leg_index) {
-                row.distance_nm = Some(segment.distance_nm);
-                row.course_deg = Some(segment.course_deg);
+            if let Some(leg) = plan.resolved_legs.get(leg_index) {
+                let mut matching_segments = route.iter().filter(|segment| segment.leg_id == leg.id);
+                if let Some(first_segment) = matching_segments.next() {
+                    row.distance_nm = Some(
+                        first_segment.distance_nm
+                            + matching_segments.map(|segment| segment.distance_nm).sum::<f64>(),
+                    );
+                    row.course_deg = Some(first_segment.course_deg);
+                }
             }
         }
         if row
@@ -609,46 +613,9 @@ fn project_flight_plan_route(
     plan: &FlightPlan,
 ) -> Result<Vec<FlightPlanRouteSegment>, HadReadError> {
     let plan = crate::build_flight_plan(plan.clone())?;
-    let ui_state = crate::project_ui_state(&plan);
-    plan.resolved_legs
-        .iter()
-        .enumerate()
-        .map(|(leg_index, leg)| {
-            let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
-                (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str())
-            });
-            let from = nav_ref_position(store, &leg.from, procedure_airport_id)?;
-            let to = nav_ref_position(store, &leg.to, procedure_airport_id)?;
-            Ok(FlightPlanRouteSegment {
-                id: leg.id.clone(),
-                from,
-                to,
-                path: great_circle_display_path(from, to),
-                distance_nm: flight_leg_distance_nm(from, to),
-                course_deg: flight_leg_course_deg(from, to),
-                status: route_status_for_leg(&ui_state, leg_index),
-            })
-        })
-        .collect()
-}
-
-fn route_status_for_leg(
-    ui_state: &FlightPlanUiState,
-    leg_index: usize,
-) -> FlightPlanRouteSegmentStatus {
-    let Some(guidance) = ui_state.guidance.as_ref() else {
-        return FlightPlanRouteSegmentStatus::Remaining;
-    };
-    if let Some(active_leg_index) = guidance.active_leg_index {
-        return if leg_index < active_leg_index {
-            FlightPlanRouteSegmentStatus::Completed
-        } else if leg_index == active_leg_index {
-            FlightPlanRouteSegmentStatus::Active
-        } else {
-            FlightPlanRouteSegmentStatus::Remaining
-        };
-    }
-    FlightPlanRouteSegmentStatus::Remaining
+    project_flight_plan_route_with_resolver(&plan, |nav_ref, procedure_airport_id| {
+        nav_ref_position(store, nav_ref, procedure_airport_id)
+    })
 }
 
 fn component_insert_anchor(
@@ -1198,7 +1165,8 @@ impl From<serde_json::Error> for HadReadError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NavKvRoot;
+    use crate::{AirportId, NavKvRoot, ProcedureKind, SequencingMode};
+    use std::{fs, path::{Path, PathBuf}};
 
     #[test]
     fn operation_reports_page_faults_instead_of_exposing_query_keys() {
@@ -1274,5 +1242,242 @@ mod tests {
 
     fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn generated_nav_kv_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../../ui-target/web/generated-static/nav-kv")
+    }
+
+    fn fixture_db_path() -> PathBuf {
+        for candidate in [
+            "/root/aerobag-four/ui-target/android/assets/nav-db/main.db",
+            "/root/aerobag-three/ui-target/android/assets/nav-db/main.db",
+        ] {
+            let path = PathBuf::from(candidate);
+            if path.is_file() {
+                return path;
+            }
+        }
+        for root in [
+            "/root/aerobag-artifacts/published-unpacked",
+            "/root/aerobag-artifacts/cache/nodes",
+            "/root/aerobag-artifacts/private-work",
+        ] {
+            if let Some(path) = find_fixture_nav_db(Path::new(root)) {
+                return path;
+            }
+        }
+        panic!("unable to locate nav database fixture");
+    }
+
+    fn find_fixture_nav_db(root: &Path) -> Option<PathBuf> {
+        let entries = fs::read_dir(root).ok()?;
+        for entry in entries {
+            let path = entry.ok()?.path();
+            if path.is_dir() {
+                if let Some(found) = find_fixture_nav_db(&path) {
+                    return Some(found);
+                }
+            } else if path.file_name().and_then(|name| name.to_str()) == Some("main.db") {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    fn load_generated_nav_kv_store() -> NavKvStore {
+        let nav_kv_dir = generated_nav_kv_dir();
+        let root_bytes = fs::read(nav_kv_dir.join("root")).expect("read generated nav_kv root");
+        let root = NavKvRoot::parse(&root_bytes).expect("parse generated nav_kv root");
+        let page_count =
+            ((root.value_bytes_len() + root.page_size() - 1) / root.page_size()) as usize;
+        let mut store = NavKvStore::new(root);
+        for page_index in 0..page_count {
+            let page_path = nav_kv_dir
+                .join("values")
+                .join(format!("{page_index:04}"));
+            let page_bytes = fs::read(&page_path)
+                .unwrap_or_else(|err| panic!("read nav_kv page {}: {err}", page_path.display()));
+            store.insert_page(page_index as u32, page_bytes);
+        }
+        store
+    }
+
+    #[test]
+    fn generated_nav_kv_projects_kpae_vor_a_inserted_plan_ui_state() {
+        let store = load_generated_nav_kv_store();
+        let plan = FlightPlan {
+            id: "krnt-sea-pae".to_string(),
+            name: "KRNT SEA PAE".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Navaid("SEA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+            ],
+            resolved_legs: Vec::new(),
+            guidance: Some(crate::GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(0),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KPAE".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let built = crate::materialize_procedure_selection(
+            fixture_db_path().as_path(),
+            "KPAE",
+            "VOR-A",
+            ProcedureKind::Approach,
+            None,
+            Some("ECEPO"),
+            2,
+        )
+        .expect("materialize KPAE VOR-A ECEPO");
+        let mutation = crate::insert_procedure_materialized_ui(&plan, 1, 2, built)
+            .expect("insert KPAE VOR-A ECEPO");
+
+        let outcome = run_had_operation(
+            &store,
+            HadOperation::FlightPlanUiState {
+                plan: mutation.mutation.plan.clone(),
+            },
+        )
+        .expect("project flight plan ui state");
+
+        match outcome {
+            HadOperationOutcome::Complete { result } => {
+                let ui_state: FlightPlanUiState =
+                    serde_json::from_value(result).expect("decode ui state");
+                assert!(
+                    ui_state
+                        .components
+                        .iter()
+                        .any(|component| component.procedure_id.as_deref() == Some("VOR-A")),
+                    "expected inserted procedure component in ui state"
+                );
+            }
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete outcome, got missing pages: {pages:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn generated_nav_kv_session_select_chart_keeps_kpae_vor_a() {
+        let store = load_generated_nav_kv_store();
+        let kpae = match run_had_operation(
+            &store,
+            HadOperation::PlateAirport {
+                airport_id: "KPAE".to_string(),
+            },
+        )
+        .expect("load generated KPAE plate airport")
+        {
+            HadOperationOutcome::Complete { result } => {
+                serde_json::from_value::<crate::DerivedChartAirport>(result)
+                    .expect("decode generated KPAE plate airport")
+            }
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete KPAE plate airport, got missing pages: {pages:?}");
+            }
+        };
+        let vor_a = kpae
+            .charts
+            .iter()
+            .find(|chart| chart.label == "VOR-A")
+            .unwrap_or_else(|| panic!("expected KPAE VOR-A chart in generated catalog: {:?}", kpae.charts))
+            .clone();
+        assert!(
+            vor_a.asset_path.to_uppercase().contains("VOR-A"),
+            "expected VOR-A asset path, got {:?}",
+            vor_a
+        );
+        let chart_catalog = crate::DerivedChartCatalog {
+            airports: vec![kpae],
+        };
+        let plan = FlightPlan {
+            id: "krnt-sea-pae".to_string(),
+            name: "KRNT SEA KPAE".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Navaid("SEA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+            ],
+            resolved_legs: Vec::new(),
+            guidance: Some(crate::GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(0),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KPAE".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let init = crate::create_ui_session(
+            "{}",
+            r#"{"airspace":{"reference_tile_min_zoom":0,"reference_tile_max_zoom":12,"label_tile_min_zoom":0,"label_tile_max_zoom":12}}"#,
+            &serde_json::to_string(&chart_catalog).expect("encode chart catalog"),
+            plan,
+            &["KPAE".to_string()],
+            Some("KPAE"),
+            None,
+        )
+        .expect("create ui session");
+
+        let snapshot = crate::select_chart_in_session(init.handle, &vor_a.id)
+            .expect("select KPAE VOR-A chart in session");
+
+        assert_eq!(snapshot.chart_page_state.selected_airport_id, "KPAE");
+        assert_eq!(snapshot.chart_page_state.selected_chart_id, vor_a.id);
+    }
+
+    #[test]
+    #[should_panic(expected = "procedure heading continuity violated for VOR-A")]
+    fn generated_nav_kv_materialize_procedure_kpae_vor_a_from_ecepo_panics() {
+        let store = load_generated_nav_kv_store();
+
+        let _ = run_had_operation(
+            &store,
+            HadOperation::MaterializeProcedure {
+                airport_id: "KPAE".to_string(),
+                procedure_id: "VOR-A".to_string(),
+                procedure_kind: ProcedureKind::Approach,
+                runway_transition: None,
+                enroute_transition: Some("ECEPO".to_string()),
+                component_index: 2,
+            },
+        )
+        .expect("materialize KPAE VOR-A ECEPO through generated nav_kv");
     }
 }

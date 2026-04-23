@@ -106,7 +106,8 @@ pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use procedure_geometry::display_path_for_procedure_leg;
 pub use procedure_legs::{
     interpret_path_termination, leading_procedure_discontinuity, parse_airport_magnetic_variation,
-    parse_cifp_altitude_ft, parse_cifp_tenths_value, terminal_procedure_discontinuity,
+    parse_cifp_altitude_ft, parse_cifp_tenths_value, parse_cifp_thousandths_value,
+    terminal_procedure_discontinuity,
 };
 pub use session::{
     create_ui_session, create_ui_session_profiled, destroy_session,
@@ -1559,6 +1560,8 @@ fn validate_heading_continuity_checks(
     if !validate_heading_continuity {
         return Ok(());
     }
+    let mut worst_gap: Option<(f64, &DisplayElementHeadingSignature, &DisplayElementHeadingSignature)> =
+        None;
     let mut worst_violation: Option<(
         f64,
         f64,
@@ -1569,6 +1572,13 @@ fn validate_heading_continuity_checks(
         let previous = &window[0];
         let current = &window[1];
         if !positions_nearly_equal(previous.end_position, current.start_position) {
+            let gap_nm = great_circle_distance_nm(previous.end_position, current.start_position);
+            if worst_gap
+                .as_ref()
+                .is_none_or(|(worst_gap_nm, ..)| gap_nm > *worst_gap_nm)
+            {
+                worst_gap = Some((gap_nm, previous, current));
+            }
             continue;
         }
         let allowed_delta_deg = continuity_heading_tolerance_deg(previous, current);
@@ -1580,6 +1590,25 @@ fn validate_heading_continuity_checks(
         {
             worst_violation = Some((delta, allowed_delta_deg, previous, current));
         }
+    }
+    if let Some((gap_nm, previous, current)) = worst_gap {
+        let fix_description = if previous.end_label == current.start_label {
+            previous.end_label.clone()
+        } else {
+            format!("{} -> {}", previous.end_label, current.start_label)
+        };
+        panic!(
+            "procedure path continuity violated for {}: gap_nm={:.2} between steps={:02}->{:02} at {} end=({:.6},{:.6}) start=({:.6},{:.6})",
+            procedure_id.trim(),
+            gap_nm,
+            previous.step_index,
+            current.step_index,
+            fix_description,
+            previous.end_position.lat,
+            previous.end_position.lon,
+            current.start_position.lat,
+            current.start_position.lon,
+        );
     }
     if let Some((delta, allowed_delta_deg, previous, current)) = worst_violation {
         let fix_description = if previous.end_label == current.start_label {
@@ -3100,6 +3129,9 @@ mod tests {
         output_stem: &str,
         emit_steps: bool,
     ) {
+        let output_dir = std::env::var("AEROBAG_PROCEDURE_PLOT_DIR")
+            .unwrap_or_else(|_| "/tmp/procedure-plots".to_string());
+        fs::create_dir_all(&output_dir).expect("create procedure plot output dir");
         let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
         let unpacked_root = latest_snapshot_unpacked_root();
         let georef_plates = collect_georeferenced_plates_from_packages(&unpacked_root);
@@ -3307,9 +3339,9 @@ mod tests {
             }
         }
 
-        let output_path = format!("/tmp/procedure-plots/{output_stem}.png");
+        let output_path = format!("{output_dir}/{output_stem}.png");
         canvas.save(&output_path).expect("write overlay png");
-        let note_path = format!("/tmp/procedure-plots/{output_stem}.txt");
+        let note_path = format!("{output_dir}/{output_stem}.txt");
         fs::write(
             &note_path,
             format!(
@@ -3326,10 +3358,9 @@ mod tests {
                     draw_polyline(&mut frame, prior_points, Rgba([0, 0, 0, 140]), 4);
                     draw_polyline(&mut frame, prior_points, *prior_stroke, 2);
                 }
-                let frame_path = format!("/tmp/procedure-plots/{output_stem}-step-{index:02}.png");
+                let frame_path = format!("{output_dir}/{output_stem}-step-{index:02}.png");
                 frame.save(&frame_path).expect("write overlay frame png");
-                let frame_note_path =
-                    format!("/tmp/procedure-plots/{output_stem}-step-{index:02}.txt");
+                let frame_note_path = format!("{output_dir}/{output_stem}-step-{index:02}.txt");
                 fs::write(&frame_note_path, label).expect("write overlay frame note");
             }
         }
@@ -3767,17 +3798,27 @@ mod tests {
 
     fn approach_plate_patterns(procedure_id: &str) -> Vec<String> {
         let proc = procedure_id.trim();
-        if let Some(runway) = proc.strip_prefix('I') {
+        if let Some((runway, suffix)) = parse_runway_procedure_suffix(proc, 'I') {
             if !runway.is_empty() {
-                return vec![
-                    format!("ILS OR LOC RWY {}", runway),
-                    format!("ILS RWY {}", runway),
-                ];
+                let mut patterns = Vec::new();
+                if let Some(suffix) = suffix {
+                    patterns.push(format!("ILS {suffix} OR LOC {suffix} RWY {runway}"));
+                    patterns.push(format!("ILS {suffix} RWY {runway}"));
+                    patterns.push(format!("LOC {suffix} RWY {runway}"));
+                }
+                patterns.push(format!("ILS OR LOC RWY {}", runway));
+                patterns.push(format!("ILS RWY {}", runway));
+                return patterns;
             }
         }
-        if let Some(runway) = proc.strip_prefix('L') {
+        if let Some((runway, suffix)) = parse_runway_procedure_suffix(proc, 'L') {
             if !runway.is_empty() {
-                return vec![format!("LOC RWY {}", runway)];
+                let mut patterns = Vec::new();
+                if let Some(suffix) = suffix {
+                    patterns.push(format!("LOC {suffix} RWY {runway}"));
+                }
+                patterns.push(format!("LOC RWY {}", runway));
+                return patterns;
             }
         }
         if let Some(runway) = proc.strip_prefix('R') {
@@ -3793,6 +3834,26 @@ mod tests {
             return vec![proc.to_string()];
         }
         Vec::new()
+    }
+
+    fn parse_runway_procedure_suffix(procedure_id: &str, prefix: char) -> Option<(String, Option<char>)> {
+        let remainder = procedure_id.strip_prefix(prefix)?;
+        if remainder.is_empty() {
+            return None;
+        }
+        let trimmed = remainder.trim();
+        let normalized = trimmed.replace('-', "");
+        if normalized.is_empty() {
+            return None;
+        }
+        let mut chars = normalized.chars();
+        let suffix = chars.next_back().filter(|ch| matches!(ch, 'X' | 'Y' | 'Z'));
+        let runway = if suffix.is_some() {
+            normalized[..normalized.len() - 1].to_string()
+        } else {
+            normalized
+        };
+        Some((runway, suffix))
     }
 
     fn build_plate_index(plate_paths: &[PathBuf]) -> HashMap<String, Vec<PathBuf>> {
@@ -3935,6 +3996,8 @@ mod tests {
                   CAST(sequence_number AS INTEGER) AS sequence,
                   trim(fix_identifier) AS fix_identifier,
                   trim(recommended_navaid) AS recommended_navaid,
+                  trim(center_fix_or_taa_procedure_turn_indicator) AS arc_center_fix,
+                  trim(arc_radius) AS arc_radius,
                   trim((SELECT Variation FROM nav WHERE trim(LocationID) = trim(fix_identifier) LIMIT 1)) AS nav_magnetic_variation,
                   trim((SELECT Variation FROM nav WHERE trim(LocationID) = trim(recommended_navaid) LIMIT 1)) AS defining_nav_magnetic_variation,
                   trim((SELECT MagneticVariation FROM airports WHERE trim(LocationID) = trim(airport_identifier) LIMIT 1)) AS airport_magnetic_variation,
@@ -3961,24 +4024,32 @@ mod tests {
                 let sequence = row.get::<_, i32>(4)?;
                 let fix_identifier = row.get::<_, String>(5)?;
                 let recommended_navaid = row.get::<_, String>(6)?;
-                let nav_magnetic_variation = row.get::<_, Option<String>>(7)?;
-                let defining_nav_magnetic_variation = row.get::<_, Option<String>>(8)?;
-                let airport_magnetic_variation = row.get::<_, String>(9)?;
-                let altitude_1 = row.get::<_, String>(10)?;
-                let altitude_2 = row.get::<_, String>(11)?;
-                let path_termination = row.get::<_, String>(12)?;
-                let turn_direction = row.get::<_, String>(13)?;
-                let magnetic_course = row.get::<_, String>(14)?;
-                let route_distance_or_time = row.get::<_, String>(15)?;
+                let arc_center_fix = row.get::<_, String>(7)?;
+                let arc_radius = row.get::<_, String>(8)?;
+                let nav_magnetic_variation = row.get::<_, Option<String>>(9)?;
+                let defining_nav_magnetic_variation = row.get::<_, Option<String>>(10)?;
+                let airport_magnetic_variation = row.get::<_, String>(11)?;
+                let altitude_1 = row.get::<_, String>(12)?;
+                let altitude_2 = row.get::<_, String>(13)?;
+                let path_termination = row.get::<_, String>(14)?;
+                let turn_direction = row.get::<_, String>(15)?;
+                let magnetic_course = row.get::<_, String>(16)?;
+                let route_distance_or_time = row.get::<_, String>(17)?;
                 let nav_ref = browser_style_nav_ref_for_identifier(&connection, &fix_identifier);
                 let defining_nav_ref =
                     browser_style_nav_ref_for_identifier(&connection, &recommended_navaid);
+                let arc_center_fix_ref =
+                    browser_style_nav_ref_for_identifier(&connection, &arc_center_fix);
                 let nav_position = nav_ref.as_ref().and_then(|nav_ref| {
                     browser_style_nav_position_for_ref(&connection, airport_id.as_str(), nav_ref)
                 });
                 let defining_nav_position = defining_nav_ref.as_ref().and_then(|nav_ref| {
                     browser_style_nav_position_for_ref(&connection, airport_id.as_str(), nav_ref)
                 });
+                let arc_center_fix_position =
+                    arc_center_fix_ref.as_ref().and_then(|nav_ref| {
+                        browser_style_nav_position_for_ref(&connection, airport_id.as_str(), nav_ref)
+                    });
                 Ok(ProcedureLegMaterializationRecord {
                     key: ProcedureVariantKey {
                         airport_id,
@@ -3997,6 +4068,9 @@ mod tests {
                     defining_nav_magnetic_variation_deg: defining_nav_magnetic_variation
                         .as_deref()
                         .and_then(|value| value.trim().parse::<f64>().ok()),
+                    arc_center_fix_ref,
+                    arc_center_fix_position,
+                    arc_radius_nm: parse_cifp_thousandths_value(&arc_radius),
                     airport_magnetic_variation_deg: parse_airport_magnetic_variation(
                         &airport_magnetic_variation,
                     ),
@@ -4617,6 +4691,39 @@ mod tests {
     }
 
     #[test]
+    fn materializes_krno_i17rz_hoboa_with_rf_arc() {
+        let rows =
+            load_browser_style_procedure_distinct_rows(fixture_db_path(), "KRNO", "I17RZ");
+        let records =
+            load_browser_style_procedure_materialization_records(fixture_db_path(), "KRNO", "I17RZ");
+        let materialized = materialize_procedure_from_records(
+            "KRNO",
+            "I17RZ",
+            ProcedureKind::Approach,
+            None,
+            Some("HOBOA".to_string()),
+            0,
+            rows,
+            records,
+        )
+        .expect("materialize KRNO I17RZ HOBOA");
+
+        assert!(
+            materialized.resolved_legs.iter().any(|leg| {
+                leg.procedure_provenance
+                    .as_ref()
+                    .and_then(|provenance| provenance.display_path.as_ref())
+                    .is_some_and(|path| {
+                        path.elements
+                            .iter()
+                            .any(|element| matches!(element, LegDisplayElement::Arc { .. }))
+                    })
+            }),
+            "expected at least one RF arc in KRNO I17RZ HOBOA"
+        );
+    }
+
+    #[test]
     fn browser_style_i34_materialization_matches_native_core_and_stays_local() {
         let base_plan = FlightPlan {
             id: "krnt-v23-kuao-krdd".to_string(),
@@ -4931,6 +5038,24 @@ mod tests {
     #[ignore = "manual visual inspection overlay for KPAE VOR-A ECEPO"]
     fn writes_kpae_vora_ecepo_overlay_png() {
         render_procedure_overlay_to_paths("KPAE", "VOR-A", "ECEPO", "KPAE_VOR-A_ECEPO", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KRNO I17RZ HOBOA"]
+    fn writes_krno_i17rz_hoboa_overlay_png() {
+        render_procedure_overlay_to_paths("KRNO", "I17RZ", "HOBOA", "KRNO_I17RZ_HOBOA", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KRNO I17RZ KLOCK"]
+    fn writes_krno_i17rz_klock_overlay_png() {
+        render_procedure_overlay_to_paths("KRNO", "I17RZ", "KLOCK", "KRNO_I17RZ_KLOCK", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KRNO L17RZ HOBOA"]
+    fn writes_krno_l17rz_hoboa_overlay_png() {
+        render_procedure_overlay_to_paths("KRNO", "L17RZ", "HOBOA", "KRNO_L17RZ_HOBOA", false);
     }
 
     #[test]

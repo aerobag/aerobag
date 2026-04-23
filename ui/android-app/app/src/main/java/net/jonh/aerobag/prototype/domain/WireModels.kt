@@ -798,9 +798,12 @@ enum class WireRouteSegmentStatus {
 @Serializable
 data class WireFlightPlanRouteSegment(
     val id: String,
+    @SerialName("leg_id")
+    val legId: String,
     val from: WireLatLon,
     val to: WireLatLon,
     val path: List<WireLatLon> = emptyList(),
+    val style: String = "solid",
     val distance_nm: Double,
     val course_deg: Double,
     val status: WireRouteSegmentStatus,
@@ -838,6 +841,7 @@ data class WireDirectToState(
 @Serializable
 data class WireGuidanceState(
     val active_leg_index: Int,
+    val active_detail_index: Int? = null,
     val display_split_leg_id: String? = null,
     val sequencing_mode: WireSequencingMode,
     val direct_to: WireDirectToState? = null,

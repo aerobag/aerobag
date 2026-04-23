@@ -20,7 +20,7 @@ use crate::{
     AppResult, AppState, AppUiState, FlightPlan,
     LatLon, MapOverlayConfig, MapOverlayQueryResult, MapViewport, NavRef, PlanLeg,
     PlaybackUiState, PointTilePayload, SequencingMode, TerrainOverlayQueryResult,
-    UiSnapshotAppState,
+    UiSnapshotAppState, guidance_detail_id_for_index,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -833,7 +833,7 @@ fn project_active_leg_nav_element(session: &UiSession) -> NavElementUiView {
     let Some(active_leg) = crate::active_guidance_leg(plan) else {
         return NavElementUiView::default();
     };
-    let Some((from, to)) = active_leg_geometry(plan, &active_leg, &session.guidance_leg_geometry)
+    let Some(geometry) = active_leg_geometry(plan, &active_leg, &session.guidance_leg_geometry)
     else {
         return NavElementUiView {
             active_leg_summary: format!(
@@ -845,13 +845,19 @@ fn project_active_leg_nav_element(session: &UiSession) -> NavElementUiView {
             cdi_offscale_readout: None,
         };
     };
-    let course_deg = bearing_degrees(from, to);
+    let course_deg = session
+        .app_state
+        .ownship
+        .render
+        .position
+        .and_then(|position| active_course_deg(&geometry, position))
+        .unwrap_or_else(|| bearing_degrees(geometry.from, geometry.to));
     let cdi_indicator_dots = session
         .app_state
         .ownship
         .render
         .position
-        .map(|position| cdi_dots_for_leg(from, to, position));
+        .map(|position| cdi_dots_for_guidance_geometry(&geometry, position));
     let cdi_offscale_readout = cdi_indicator_dots.and_then(cdi_offscale_readout);
 
     NavElementUiView {
@@ -870,9 +876,14 @@ fn active_leg_geometry(
     plan: &FlightPlan,
     active_leg: &PlanLeg,
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
-) -> Option<(LatLon, LatLon)> {
+) -> Option<GuidanceLegGeometry> {
     if let (NavRef::LatLon(from), NavRef::LatLon(to)) = (&active_leg.from, &active_leg.to) {
-        return Some((*from, *to));
+        return Some(GuidanceLegGeometry {
+            leg_id: "__latlon_leg__".to_string(),
+            from: *from,
+            to: *to,
+            path: vec![*from, *to],
+        });
     }
     let guidance = plan.guidance.as_ref()?;
     if guidance.sequencing_mode == SequencingMode::DirectTo {
@@ -880,7 +891,9 @@ fn active_leg_geometry(
             .direct_to
             .as_ref()
             .and_then(|direct_to| direct_to.target_leg_id.as_ref())
-            .and_then(|leg_id| geometry_by_leg_id.get(leg_id))
+            .and_then(|_| guidance.active_detail_index)
+            .and_then(|detail_index| guidance_detail_id_for_index(plan, detail_index))
+            .and_then(|detail_id| geometry_by_leg_id.get(&detail_id))
             .map(|geometry| {
                 let from = match &active_leg.from {
                     NavRef::LatLon(position) => *position,
@@ -890,13 +903,23 @@ fn active_leg_geometry(
                     NavRef::LatLon(position) => *position,
                     _ => geometry.to,
                 };
-                (from, to)
+                GuidanceLegGeometry {
+                    leg_id: geometry.leg_id.clone(),
+                    from,
+                    to,
+                    path: if geometry.path.is_empty() {
+                        vec![from, to]
+                    } else {
+                        geometry.path.clone()
+                    },
+                }
             });
     }
-    plan.resolved_legs
-        .get(guidance.active_leg_index)
-        .and_then(|leg| geometry_by_leg_id.get(&leg.id))
-        .map(|geometry| (geometry.from, geometry.to))
+    guidance
+        .active_detail_index
+        .and_then(|detail_index| guidance_detail_id_for_index(plan, detail_index))
+        .and_then(|detail_id| geometry_by_leg_id.get(&detail_id))
+        .cloned()
 }
 
 fn cdi_dots_for_leg(from: LatLon, to: LatLon, position: LatLon) -> f32 {
@@ -904,6 +927,65 @@ fn cdi_dots_for_leg(from: LatLon, to: LatLon, position: LatLon) -> f32 {
         return 0.0;
     }
     (crate::cross_track_left_nm(from, to, position) / CDI_NM_PER_DOT) as f32
+}
+
+fn cdi_dots_for_guidance_geometry(geometry: &GuidanceLegGeometry, position: LatLon) -> f32 {
+    let (from, to) = nearest_guidance_segment(geometry, position)
+        .unwrap_or((geometry.from, geometry.to));
+    cdi_dots_for_leg(from, to, position)
+}
+
+fn active_course_deg(geometry: &GuidanceLegGeometry, position: LatLon) -> Option<f64> {
+    nearest_guidance_segment(geometry, position).map(|(from, to)| bearing_degrees(from, to))
+}
+
+fn nearest_guidance_segment(
+    geometry: &GuidanceLegGeometry,
+    position: LatLon,
+) -> Option<(LatLon, LatLon)> {
+    let points = if geometry.path.len() >= 2 {
+        geometry.path.clone()
+    } else {
+        vec![geometry.from, geometry.to]
+    };
+    let mut best: Option<(f64, LatLon, LatLon)> = None;
+    for segment in points.windows(2) {
+        let from = segment[0];
+        let to = segment[1];
+        if crate::great_circle_distance_nm(from, to) <= f64::EPSILON {
+            continue;
+        }
+        let distance_sq = distance_sq_to_segment_nm(from, to, position);
+        if best
+            .as_ref()
+            .map(|(best_distance_sq, _, _)| distance_sq < *best_distance_sq)
+            .unwrap_or(true)
+        {
+            best = Some((distance_sq, from, to));
+        }
+    }
+    best.map(|(_, from, to)| (from, to))
+}
+
+fn distance_sq_to_segment_nm(from: LatLon, to: LatLon, position: LatLon) -> f64 {
+    let (from_x, from_y) = local_offset_nm(position, from);
+    let (to_x, to_y) = local_offset_nm(position, to);
+    let delta_x = to_x - from_x;
+    let delta_y = to_y - from_y;
+    let segment_length_sq = delta_x * delta_x + delta_y * delta_y;
+    if segment_length_sq <= f64::EPSILON {
+        return from_x * from_x + from_y * from_y;
+    }
+    let projection = (-(from_x * delta_x + from_y * delta_y) / segment_length_sq).clamp(0.0, 1.0);
+    let nearest_x = from_x + projection * delta_x;
+    let nearest_y = from_y + projection * delta_y;
+    nearest_x * nearest_x + nearest_y * nearest_y
+}
+
+fn local_offset_nm(origin: LatLon, point: LatLon) -> (f64, f64) {
+    let lat_nm = (point.lat - origin.lat) * 60.0;
+    let lon_nm = (point.lon - origin.lon) * 60.0 * origin.lat.to_radians().cos();
+    (lon_nm, lat_nm)
 }
 
 fn cdi_offscale_readout(cdi_indicator_dots: f32) -> Option<String> {

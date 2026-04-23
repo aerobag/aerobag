@@ -19,6 +19,9 @@ pub fn display_path_for_procedure_leg(
     if leg_end.path_termination.trim() == "AF" {
         return arc_to_fix_display_path(leg_start, leg_end);
     }
+    if leg_end.path_termination.trim() == "RF" {
+        return radius_to_fix_display_path(leg_start, leg_end);
+    }
     let arrival_course_deg = procedure_arrival_course_deg(leg_start, leg_end);
     if let Some(hold) = hold_record {
         if let Some(path) = missed_approach_display_path(segment_records, leg_start, leg_end, hold)
@@ -161,6 +164,50 @@ fn arc_to_fix_display_path(
         return None;
     }
     let radius_nm = (start_radius_nm + end_radius_nm) / 2.0;
+    let start_on_arc = destination_point(center, bearing_from(center, start), radius_nm);
+    let end_on_arc = destination_point(center, bearing_from(center, end), radius_nm);
+    let sweep_degrees = heading_sweep_degrees(
+        bearing_from(center, start_on_arc),
+        bearing_from(center, end_on_arc),
+        clockwise,
+    );
+    if sweep_degrees <= 0.5 {
+        return None;
+    }
+    Some(LegDisplayPath {
+        style: LegDisplayPathStyle::Solid,
+        elements: vec![LegDisplayElement::Arc {
+            center,
+            radius_nm,
+            start: start_on_arc,
+            end: end_on_arc,
+            clockwise,
+            sweep_degrees,
+        }],
+    })
+}
+
+fn radius_to_fix_display_path(
+    leg_start: &ProcedureLegMaterializationRecord,
+    leg_end: &ProcedureLegMaterializationRecord,
+) -> Option<LegDisplayPath> {
+    let start = leg_start.nav_position?;
+    let end = leg_end.nav_position?;
+    let center = leg_end.arc_center_fix_position?;
+    let clockwise = match leg_end.turn_direction.as_deref().unwrap_or("").trim() {
+        "L" => false,
+        "R" => true,
+        _ => return None,
+    };
+    let start_radius_nm = distance_between_points_nm(center, start);
+    let end_radius_nm = distance_between_points_nm(center, end);
+    if start_radius_nm <= 0.05 || end_radius_nm <= 0.05 {
+        return None;
+    }
+    let radius_nm = leg_end
+        .arc_radius_nm
+        .filter(|radius| *radius > 0.05)
+        .unwrap_or((start_radius_nm + end_radius_nm) / 2.0);
     let start_on_arc = destination_point(center, bearing_from(center, start), radius_nm);
     let end_on_arc = destination_point(center, bearing_from(center, end), radius_nm);
     let sweep_degrees = heading_sweep_degrees(

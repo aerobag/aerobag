@@ -160,6 +160,9 @@ pub struct ProcedureLegMaterializationRecord {
     pub defining_nav_ref: Option<NavRef>,
     pub defining_nav_position: Option<LatLon>,
     pub defining_nav_magnetic_variation_deg: Option<f64>,
+    pub arc_center_fix_ref: Option<NavRef>,
+    pub arc_center_fix_position: Option<LatLon>,
+    pub arc_radius_nm: Option<f64>,
     pub airport_magnetic_variation_deg: Option<f64>,
     pub altitude_1_ft: Option<f64>,
     pub altitude_2_ft: Option<f64>,
@@ -185,6 +188,12 @@ struct ProcedureLegMaterializationRecordSerde {
     defining_nav_position: Option<LatLon>,
     #[serde(default)]
     defining_nav_magnetic_variation_deg: Option<f64>,
+    #[serde(default)]
+    arc_center_fix_ref: Option<NavRef>,
+    #[serde(default)]
+    arc_center_fix_position: Option<LatLon>,
+    #[serde(default)]
+    arc_radius_nm: Option<f64>,
     #[serde(default)]
     airport_magnetic_variation_deg: Option<f64>,
     #[serde(default)]
@@ -216,6 +225,9 @@ impl Serialize for ProcedureLegMaterializationRecord {
             defining_nav_ref: self.defining_nav_ref.clone(),
             defining_nav_position: self.defining_nav_position,
             defining_nav_magnetic_variation_deg: self.defining_nav_magnetic_variation_deg,
+            arc_center_fix_ref: self.arc_center_fix_ref.clone(),
+            arc_center_fix_position: self.arc_center_fix_position,
+            arc_radius_nm: self.arc_radius_nm,
             airport_magnetic_variation_deg: self.airport_magnetic_variation_deg,
             altitude_1_ft: self.altitude_1_ft,
             altitude_2_ft: self.altitude_2_ft,
@@ -244,6 +256,9 @@ impl<'de> Deserialize<'de> for ProcedureLegMaterializationRecord {
             defining_nav_ref: raw.defining_nav_ref,
             defining_nav_position: raw.defining_nav_position,
             defining_nav_magnetic_variation_deg: raw.defining_nav_magnetic_variation_deg,
+            arc_center_fix_ref: raw.arc_center_fix_ref,
+            arc_center_fix_position: raw.arc_center_fix_position,
+            arc_radius_nm: raw.arc_radius_nm,
             airport_magnetic_variation_deg: raw.airport_magnetic_variation_deg,
             altitude_1_ft: raw.altitude_1_ft,
             altitude_2_ft: raw.altitude_2_ft,

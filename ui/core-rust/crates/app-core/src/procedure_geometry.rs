@@ -14,6 +14,16 @@ pub fn display_path_for_procedure_leg(
     leg_end: &ProcedureLegMaterializationRecord,
     hold_record: Option<&ProcedureLegMaterializationRecord>,
 ) -> Option<LegDisplayPath> {
+    if leg_end.path_termination.trim() == "FM" {
+        panic!(
+            "FM procedure legs are not implemented: {} {} {} {} seq {}",
+            leg_end.key.airport_id.trim(),
+            leg_end.key.procedure_id.trim(),
+            leg_end.key.route_type.trim(),
+            leg_end.key.transition_id.trim(),
+            leg_end.sequence
+        );
+    }
     let terminal_record = if leg_start.sequence == leg_end.sequence {
         segment_records
             .iter()
@@ -305,6 +315,16 @@ fn sequenced_leg_display_path(
 
     for (index, step) in steps.iter().enumerate() {
         match step.path_termination.trim() {
+            "FM" => {
+                panic!(
+                    "FM procedure legs are not implemented: {} {} {} {} seq {}",
+                    step.key.airport_id.trim(),
+                    step.key.procedure_id.trim(),
+                    step.key.route_type.trim(),
+                    step.key.transition_id.trim(),
+                    step.sequence
+                );
+            }
             "CA" => {
                 let course_deg = current_or_step_course_deg(step, current_course_deg)?;
                 current_position = extend_climb_segment(

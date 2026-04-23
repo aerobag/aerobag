@@ -1491,9 +1491,91 @@ fn resolve_procedure_materialization_legs_with_provenance(
         }
     }
 
+    validate_no_zero_length_legs(&resolved, procedure_id);
     validate_heading_continuity_checks(&heading_checks, validate_heading_continuity, procedure_id)?;
 
     Ok(resolved)
+}
+
+fn validate_no_zero_length_legs(resolved: &[ResolvedLeg], procedure_id: &str) {
+    for leg in resolved {
+        let path = leg
+            .procedure_provenance
+            .as_ref()
+            .and_then(|provenance| provenance.display_path.as_ref());
+
+        if leg.from == leg.to && path.is_none() {
+            panic!(
+                "procedure zero-length leg without display path for {}: {} -> {}",
+                procedure_id.trim(),
+                describe_nav_ref(&leg.from),
+                describe_nav_ref(&leg.to),
+            );
+        }
+
+        let Some(path) = path else {
+            continue;
+        };
+
+        let mut has_nonzero_geometry = false;
+        for (index, element) in path.elements.iter().enumerate() {
+            match element {
+                LegDisplayElement::Segment { start, end } => {
+                    if positions_nearly_equal(*start, *end) {
+                        panic!(
+                            "procedure zero-length segment for {} leg={} element#{} at ({:.6},{:.6})",
+                            procedure_id.trim(),
+                            leg.id,
+                            index,
+                            start.lat,
+                            start.lon,
+                        );
+                    }
+                    has_nonzero_geometry = true;
+                }
+                LegDisplayElement::Arc {
+                    center,
+                    radius_nm,
+                    start,
+                    end,
+                    sweep_degrees,
+                    ..
+                } => {
+                    if *radius_nm <= 0.05 || sweep_degrees.abs() <= 0.5 {
+                        panic!(
+                            "procedure degenerate arc for {} leg={} element#{} center=({:.6},{:.6}) radius_nm={:.2} sweep_deg={:.2}",
+                            procedure_id.trim(),
+                            leg.id,
+                            index,
+                            center.lat,
+                            center.lon,
+                            radius_nm,
+                            sweep_degrees,
+                        );
+                    }
+                    if positions_nearly_equal(*start, *end) {
+                        panic!(
+                            "procedure zero-length arc endpoints for {} leg={} element#{} at ({:.6},{:.6})",
+                            procedure_id.trim(),
+                            leg.id,
+                            index,
+                            start.lat,
+                            start.lon,
+                        );
+                    }
+                    has_nonzero_geometry = true;
+                }
+            }
+        }
+
+        if leg.from == leg.to && !has_nonzero_geometry {
+            panic!(
+                "procedure zero-length self leg without geometry for {}: {}",
+                procedure_id.trim(),
+                leg.id,
+            );
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -3765,6 +3847,7 @@ mod tests {
     ) -> HashMap<PathBuf, PlateGeoRef> {
         let mut manifest_paths = Vec::new();
         collect_package_asset_manifests(unpacked_root, &mut manifest_paths);
+        manifest_paths.sort();
         let mut out = HashMap::new();
         for manifest_path in manifest_paths {
             let Ok(contents) = fs::read_to_string(&manifest_path) else {
@@ -3928,7 +4011,32 @@ mod tests {
                 .or_default()
                 .push(plate_path.clone());
         }
+        for plate_paths in index.values_mut() {
+            plate_paths.sort();
+        }
         index
+    }
+
+    fn plate_cycle_sort_key(path: &Path) -> u32 {
+        path.components()
+            .filter_map(|component| component.as_os_str().to_str())
+            .filter_map(|component| {
+                let digits = component
+                    .chars()
+                    .rev()
+                    .take_while(|ch| ch.is_ascii_digit())
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+                if digits.len() == 4 {
+                    digits.parse::<u32>().ok()
+                } else {
+                    None
+                }
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     fn find_matching_plate_path(
@@ -3944,7 +4052,7 @@ mod tests {
         plate_index
             .get(&airport_key)?
             .iter()
-            .find(|plate_path| {
+            .filter(|plate_path| {
                 if plate_path
                     .components()
                     .any(|component| component.as_os_str() == "thumbnails")
@@ -3956,6 +4064,11 @@ mod tests {
                     .and_then(|name| name.to_str())
                     .unwrap_or("");
                 patterns.iter().any(|pattern| name.contains(pattern))
+            })
+            .max_by(|left, right| {
+                plate_cycle_sort_key(left)
+                    .cmp(&plate_cycle_sort_key(right))
+                    .then_with(|| right.cmp(left))
             })
             .cloned()
     }
@@ -4865,6 +4978,21 @@ mod tests {
             matches!(path.elements.first(), Some(LegDisplayElement::Segment { .. })),
             "expected FC path to start with a segment, got {:?}",
             path.elements
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "procedure zero-length leg without display path")]
+    fn rejects_zero_length_self_leg_without_geometry() {
+        validate_no_zero_length_legs(
+            &[ResolvedLeg {
+                id: "bad-self-leg".to_string(),
+                from: NavRef::Fix("HOMLY".to_string()),
+                to: NavRef::Fix("HOMLY".to_string()),
+                source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                procedure_provenance: None,
+            }],
+            "TEST-PROC",
         );
     }
 

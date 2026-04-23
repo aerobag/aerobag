@@ -2960,6 +2960,37 @@ function MapPage(props: {
                   />
                 </Fragment>
               ))}
+              {situationOverlay.ring.cardinalLabels.map((label) => (
+                <Fragment key={label.text}>
+                  <text
+                    x={label.point.x}
+                    y={label.point.y}
+                    fill="none"
+                    stroke="rgba(0, 0, 0, 0.4)"
+                    strokeWidth="5"
+                    strokeLinejoin="round"
+                    fontSize="16"
+                    fontWeight="700"
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    transform={`rotate(${label.rotationDeg} ${label.point.x} ${label.point.y})`}
+                  >
+                    {label.text}
+                  </text>
+                  <text
+                    x={label.point.x}
+                    y={label.point.y}
+                    fill="#ffffff"
+                    fontSize="16"
+                    fontWeight="700"
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    transform={`rotate(${label.rotationDeg} ${label.point.x} ${label.point.y})`}
+                  >
+                    {label.text}
+                  </text>
+                </Fragment>
+              ))}
               <circle
                 cx={situationOverlay.point.x}
                 cy={situationOverlay.point.y}
@@ -5876,12 +5907,26 @@ function selectSituationRing(
   return {
     radiusPx: best.radiusPx,
     tickMarks: buildRingTickMarks(center, best.radiusPx),
+    cardinalLabels: buildRingCardinalLabels(center, best.radiusPx),
     label: {
       point: labelPoint,
       rotationDeg: 45,
       text: best.label,
     },
   };
+}
+
+function buildRingCardinalLabels(center: { x: number; y: number }, radiusPx: number) {
+  const labelRadius = Math.max(0, radiusPx - 30);
+  return [
+    { text: "N", angleDeg: -90, rotationDeg: 0 },
+    { text: "E", angleDeg: 0, rotationDeg: 90 },
+    { text: "S", angleDeg: 90, rotationDeg: 0 },
+    { text: "W", angleDeg: 180, rotationDeg: -90 },
+  ].map((label) => ({
+    ...label,
+    point: pointOnCircle(center, labelRadius, label.angleDeg),
+  }));
 }
 
 function buildRingTickMarks(center: { x: number; y: number }, radiusPx: number) {

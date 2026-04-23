@@ -243,6 +243,7 @@ private data class SituationOverlay(
 private data class SituationRing(
     val radiusUnits: Float,
     val tickMarks: List<SituationTickMark>,
+    val cardinalLabels: List<SituationCardinalLabel>,
     val labelPointUnits: Offset,
     val labelRotationDeg: Float,
     val labelText: String,
@@ -251,6 +252,12 @@ private data class SituationRing(
 private data class SituationTickMark(
     val innerUnits: Offset,
     val outerUnits: Offset,
+)
+
+private data class SituationCardinalLabel(
+    val text: String,
+    val pointUnits: Offset,
+    val rotationDeg: Float,
 )
 
 private object VectorTileAssets {
@@ -814,6 +821,7 @@ private fun selectSituationRing(
     return SituationRing(
         radiusUnits = best.second,
         tickMarks = buildSituationTickMarks(center, best.second),
+        cardinalLabels = buildSituationCardinalLabels(center, best.second),
         labelPointUnits = labelPoint,
         labelRotationDeg = 45f,
         labelText = best.first.label,
@@ -828,6 +836,22 @@ private fun buildSituationTickMarks(center: Offset, radiusUnits: Float): List<Si
             outerUnits = pointOnCircle(center, radiusUnits, angle),
         )
     }
+
+private fun buildSituationCardinalLabels(center: Offset, radiusUnits: Float): List<SituationCardinalLabel> {
+    val labelRadius = maxOf(0f, radiusUnits - 30f)
+    return listOf(
+        Triple("N", -90f, 0f),
+        Triple("E", 0f, 90f),
+        Triple("S", 90f, 0f),
+        Triple("W", 180f, -90f),
+    ).map { (text, angleDeg, rotationDeg) ->
+        SituationCardinalLabel(
+            text = text,
+            pointUnits = pointOnCircle(center, labelRadius, angleDeg),
+            rotationDeg = rotationDeg,
+        )
+    }
+}
 
 private fun pointOnCircle(center: Offset, radiusUnits: Float, angleDeg: Float): Offset {
     val radians = Math.toRadians(angleDeg.toDouble())
@@ -2124,6 +2148,18 @@ private fun MapExplorerPage(
                     val outer = Offset(tick.outerUnits.x * densityScale, tick.outerUnits.y * densityScale)
                     drawLine(Color(0x66000000), inner, outer, strokeWidth = 8f)
                     drawLine(Color.White, inner, outer, strokeWidth = 6f)
+                }
+                drawContext.canvas.nativeCanvas.apply {
+                    labelStrokePaint.textSize = 16f * densityScale
+                    labelFillPaint.textSize = 16f * densityScale
+                    situationOverlay.ring.cardinalLabels.forEach { label ->
+                        val point = Offset(label.pointUnits.x * densityScale, label.pointUnits.y * densityScale)
+                        save()
+                        rotate(label.rotationDeg, point.x, point.y)
+                        drawText(label.text, point.x, point.y + labelFillPaint.textSize * 0.33f, labelStrokePaint)
+                        drawText(label.text, point.x, point.y + labelFillPaint.textSize * 0.33f, labelFillPaint)
+                        restore()
+                    }
                 }
                 drawCircle(
                     color = Color.White,

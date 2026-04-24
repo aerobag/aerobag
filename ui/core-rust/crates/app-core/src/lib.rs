@@ -4613,6 +4613,126 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual audit for CD approach examples"]
+    fn audit_cd_approach_examples() {
+        let unpacked_root = latest_snapshot_unpacked_root();
+        let georef_plates = collect_georeferenced_plates_from_packages(&unpacked_root);
+        let plate_paths = georef_plates.keys().cloned().collect::<Vec<_>>();
+        let plate_index = build_plate_index(&plate_paths);
+        let store = load_snapshot_nav_kv_store();
+        let mut matches = Vec::<String>::new();
+
+        let mut airport_keys = plate_index.keys().cloned().collect::<Vec<_>>();
+        airport_keys.sort();
+        for airport_key in airport_keys {
+            for airport_id in candidate_airport_ids_for_plate_key(&airport_key) {
+                let Some(procedures) = read_optional_from_store::<Vec<ProcedureSummary>>(
+                    &store,
+                    crate::NavKvQuery::ProcedureList {
+                        airport_id: airport_id.clone(),
+                        procedure_kind: ProcedureKind::Approach,
+                    },
+                ) else {
+                    continue;
+                };
+                for procedure in procedures {
+                    if find_matching_plate_path(&plate_index, &airport_id, &procedure.procedure_id)
+                        .is_none()
+                    {
+                        continue;
+                    }
+                    let Some(rows) = read_optional_from_store::<Vec<ProcedureDistinctRow>>(
+                        &store,
+                        crate::NavKvQuery::ProcedureDistinctRows {
+                            airport_id: airport_id.clone(),
+                            procedure_id: procedure.procedure_id.clone(),
+                        },
+                    ) else {
+                        continue;
+                    };
+                    let Some(records) =
+                        read_optional_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+                            &store,
+                            crate::NavKvQuery::ProcedureMaterializationRows {
+                                airport_id: airport_id.clone(),
+                                procedure_id: procedure.procedure_id.clone(),
+                            },
+                        )
+                    else {
+                        continue;
+                    };
+                    if !records
+                        .iter()
+                        .any(|record| record.path_termination.trim() == "CD")
+                    {
+                        continue;
+                    }
+                    let Ok(options) = describe_procedure_options_from_rows(
+                        &airport_id,
+                        &procedure.procedure_id,
+                        ProcedureKind::Approach,
+                        rows,
+                    ) else {
+                        continue;
+                    };
+                    for choice in options.valid_choices {
+                        matches.push(format!(
+                            "{} {} runway={:?} enroute={:?}",
+                            airport_id,
+                            procedure.procedure_id,
+                            choice.runway_transition,
+                            choice.enroute_transition
+                        ));
+                    }
+                }
+            }
+        }
+        matches.sort();
+        for line in &matches {
+            eprintln!("{line}");
+        }
+        assert!(!matches.is_empty(), "expected at least one CD approach example");
+    }
+
+    #[test]
+    #[ignore = "manual audit for selected CD records"]
+    fn audit_selected_cd_records() {
+        let store = load_snapshot_nav_kv_store();
+        for (airport_id, procedure_id) in [("KBFI", "I14R"), ("KBFI", "I32L"), ("KVNY", "I16RZ")]
+        {
+            let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+                &store,
+                crate::NavKvQuery::ProcedureMaterializationRows {
+                    airport_id: airport_id.to_string(),
+                    procedure_id: procedure_id.to_string(),
+                },
+                "procedure materialization rows",
+            );
+            eprintln!("=== {airport_id} {procedure_id} ===");
+            for record in records
+                .iter()
+                .filter(|record| matches!(record.key.route_type.as_str(), "A" | "I" | "L"))
+            {
+                eprintln!(
+                    "rt={} tr={} seq={} pt={} turn={:?} nav={:?} def_nav={:?} theta={:?} course={:?} dist={:?} alt1={:?} alt2={:?}",
+                    record.key.route_type,
+                    record.key.transition_id,
+                    record.sequence,
+                    record.path_termination,
+                    record.turn_direction,
+                    record.nav_ref,
+                    record.defining_nav_ref,
+                    record.theta_deg,
+                    record.magnetic_course_deg,
+                    record.route_distance_or_time,
+                    record.altitude_1_ft,
+                    record.altitude_2_ft,
+                );
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "manual visual inspection overlay for KVLD L36 GEF"]
     fn writes_kvld_l36_gef_overlay_png() {
         render_procedure_overlay_to_paths("KVLD", "L36", "GEF", "KVLD_L36_GEF", true);
@@ -4670,6 +4790,33 @@ mod tests {
     #[ignore = "manual visual inspection overlay for KPBF I18 PBF"]
     fn writes_kpbf_i18_pbf_overlay_png() {
         render_procedure_overlay_to_paths("KPBF", "I18", "PBF", "KPBF_I18_PBF", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KBFI I14R SEA"]
+    fn writes_kbfi_i14r_sea_overlay_png() {
+        render_procedure_overlay_to_paths("KBFI", "I14R", "SEA", "KBFI_I14R_SEA", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KBFI I32L"]
+    fn writes_kbfi_i32l_overlay_png() {
+        render_procedure_overlay_to_paths("KBFI", "I32L", "", "KBFI_I32L", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KVNY I16RZ FIM"]
+    fn writes_kvny_i16rz_fim_overlay_png() {
+        render_procedure_overlay_to_paths("KVNY", "I16RZ", "FIM", "KVNY_I16RZ_FIM", false);
+    }
+
+    #[test]
+    fn rejects_kbfi_i14r_sea_hairpin() {
+        let store = load_snapshot_nav_kv_store();
+        let err = materialize_snapshot_procedure(&store, "KBFI", "I14R", Some("SEA".to_string()))
+            .expect_err("expected KBFI I14R SEA to fail heading continuity validation");
+        assert!(err.message.contains("procedure heading continuity violated for I14R"));
+        assert!(err.message.contains("ISOGE"));
     }
 
     #[test]

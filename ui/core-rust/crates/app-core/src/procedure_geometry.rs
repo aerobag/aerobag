@@ -358,6 +358,7 @@ const MAX_EXTRA_STRAIGHT_BEFORE_VI_TURN_NM: f64 = 2.0;
 enum TrackTermination {
     ToFix(LatLon),
     ToAltitude(Option<f64>),
+    ToDme { center: LatLon, radius_nm: f64 },
 }
 
 fn sequenced_leg_display_path(
@@ -427,8 +428,22 @@ fn sequenced_leg_display_path(
                 current_position = new_position;
                 current_course_deg = Some(course_deg);
             }
+            "CD" => {
+                let center = step.defining_nav_position?;
+                let radius_nm = parse_distance_tenths_nm(step.route_distance_or_time.as_deref())?;
+                let (new_position, course_deg) = append_track_capture_and_termination(
+                    &mut elements,
+                    current_position,
+                    current_course_deg,
+                    &mut current_altitude_ft,
+                    step,
+                    TrackTermination::ToDme { center, radius_nm },
+                )?;
+                current_position = new_position;
+                current_course_deg = Some(course_deg);
+            }
             "VA" | "VI" | "VM" => {
-                current_position = heading_leg_display_path(
+                let new_position = heading_leg_display_path(
                     &mut elements,
                     step,
                     current_position,
@@ -436,6 +451,7 @@ fn sequenced_leg_display_path(
                     &mut current_altitude_ft,
                     steps.get(index + 1).copied(),
                 )?;
+                current_position = new_position;
                 current_course_deg =
                     Some(step.magnetic_course_deg? + course_reference_variation_deg(step));
             }
@@ -639,8 +655,22 @@ fn append_track_capture_and_termination(
     let course_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
     let course_anchor = step.defining_nav_position.or(step.nav_position)?;
     let track_limit = track_limit_position(&termination);
+    let on_track_tolerance_nm = match termination {
+        TrackTermination::ToDme { .. } => 0.5,
+        _ => 0.05,
+    };
     let track_start = if let Some(current_heading_deg) = current_course_deg {
-        if current_position_is_on_track(current_position, course_anchor, course_deg)
+        if matches!(termination, TrackTermination::ToDme { .. })
+            && angular_difference_degrees(current_heading_deg, course_deg) <= 20.0
+        {
+            current_position
+        } else
+        if current_position_is_on_track(
+            current_position,
+            course_anchor,
+            course_deg,
+            on_track_tolerance_nm,
+        )
             && angular_difference_degrees(current_heading_deg, course_deg) <= 5.0
         {
             current_position
@@ -729,6 +759,17 @@ fn append_track_capture_and_termination(
                 fix
             }
             TrackTermination::ToAltitude(_) => return None,
+            TrackTermination::ToDme { center, radius_nm } => {
+                let end =
+                    forward_heading_circle_intersection(current_position, course_deg, center, radius_nm)?;
+                if distance_between_points_nm(current_position, end) > 0.05 {
+                    elements.push(LegDisplayElement::Segment {
+                        start: current_position,
+                        end,
+                    });
+                }
+                end
+            }
         }
     };
 
@@ -749,6 +790,16 @@ fn append_track_capture_and_termination(
             current_altitude_ft,
             target_altitude_ft,
         ),
+        TrackTermination::ToDme { center, radius_nm } => {
+            let end = forward_heading_circle_intersection(track_start, course_deg, center, radius_nm)?;
+            if distance_between_points_nm(track_start, end) > 0.05 {
+                elements.push(LegDisplayElement::Segment {
+                    start: track_start,
+                    end,
+                });
+            }
+            end
+        }
     };
     Some((final_position, course_deg))
 }
@@ -807,6 +858,7 @@ fn track_limit_position(termination: &TrackTermination) -> Option<LatLon> {
     match termination {
         TrackTermination::ToFix(fix) => Some(*fix),
         TrackTermination::ToAltitude(_) => None,
+        TrackTermination::ToDme { .. } => None,
     }
 }
 
@@ -1534,11 +1586,16 @@ fn track_intercept_is_reasonable(
     intercept_projection <= fix_projection + 0.05
 }
 
-fn current_position_is_on_track(current_position: LatLon, course_anchor: LatLon, course_deg: f64) -> bool {
+fn current_position_is_on_track(
+    current_position: LatLon,
+    course_anchor: LatLon,
+    course_deg: f64,
+    tolerance_nm: f64,
+) -> bool {
     let offset = to_local_en(course_anchor, current_position);
     let course_unit = bearing_unit_vector(course_deg);
     let cross_track_nm = offset.0 * (-course_unit.1) + offset.1 * course_unit.0;
-    cross_track_nm.abs() <= 0.05
+    cross_track_nm.abs() <= tolerance_nm
 }
 
 fn intersect_lines(

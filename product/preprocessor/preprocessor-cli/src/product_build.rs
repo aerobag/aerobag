@@ -218,7 +218,7 @@ struct BundleManifest {
     start_valid: String,
     end_valid: String,
     packages: Vec<BundlePackageArtifact>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     ancillary: Vec<BundleArtifact>,
 }
 

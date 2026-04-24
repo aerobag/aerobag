@@ -713,64 +713,28 @@ fn best_nominal_intercept_track_join(
             continue;
         }
         for extra_straight_nm in (0..=8).map(|index| index as f64 * 0.25) {
-            let turn_start = if extra_straight_nm <= 0.0 {
-                current_position
-            } else {
-                destination_point(current_position, current_heading_deg, extra_straight_nm)
-            };
-            let turn_center = turn_center_for_heading_change(
-                turn_start,
-                current_heading_deg,
-                turn_clockwise,
-                turn_radius_nm,
-            );
-            let turn_end = point_on_turn_center(
-                turn_center,
-                intercept_heading_deg,
-                turn_clockwise,
-                turn_radius_nm,
-            );
-            let Some(intercept) = true_intersect_heading_with_course(
-                turn_end,
-                intercept_heading_deg,
-                course_anchor,
-                course_deg,
-            ) else {
-                continue;
-            };
-            if !track_intercept_is_reasonable(intercept, course_anchor, course_deg, track_limit) {
-                continue;
-            }
             if extra_straight_nm > MAX_EXTRA_STRAIGHT_BEFORE_VI_TURN_NM {
                 continue;
             }
-            let mut elements = Vec::new();
-            if distance_between_points_nm(current_position, turn_start) > 0.05 {
-                elements.push(LegDisplayElement::Segment {
-                    start: current_position,
-                    end: turn_start,
-                });
-            }
-            elements.push(LegDisplayElement::Arc {
-                center: turn_center,
-                radius_nm: turn_radius_nm,
-                start: turn_start,
-                end: turn_end,
-                clockwise: turn_clockwise,
-                sweep_degrees: sweep,
-            });
-            if distance_between_points_nm(turn_end, intercept) > 0.05 {
-                elements.push(LegDisplayElement::Segment {
-                    start: turn_end,
-                    end: intercept,
-                });
-            }
+            let Some(candidate) = build_track_join_candidate(
+                current_position,
+                current_heading_deg,
+                turn_clockwise,
+                intercept_heading_deg,
+                extra_straight_nm,
+                course_anchor,
+                course_deg,
+                track_limit,
+                turn_radius_nm,
+            ) else {
+                continue;
+            };
             let score = sweep + (extra_straight_nm * 5.0);
             if best
                 .as_ref()
                 .is_none_or(|(best_score, _, _)| score < *best_score)
             {
-                best = Some((score, elements, intercept));
+                best = Some((score, candidate.elements, candidate.intercept));
             }
             break;
         }
@@ -1294,58 +1258,28 @@ fn best_near_reciprocal_track_join(
             continue;
         }
         for extra_straight_nm in (0..=20).map(|index| index as f64 * 0.25) {
-            let turn_start = if extra_straight_nm <= 0.0 {
-                current_position
-            } else {
-                destination_point(current_position, current_heading_deg, extra_straight_nm)
-            };
-            let turn_center = turn_center_for_heading_change(
-                turn_start,
+            let Some(candidate) = build_track_join_candidate(
+                current_position,
                 current_heading_deg,
                 turn_clockwise,
-                turn_radius_nm,
-            );
-            let turn_end = point_on_turn_center(
-                turn_center,
                 intercept_heading_deg,
-                turn_clockwise,
-                turn_radius_nm,
-            );
-            let intercept = true_intersect_heading_with_course(
-                turn_end,
-                intercept_heading_deg,
+                extra_straight_nm,
                 course_anchor,
                 course_deg,
-            )?;
-            if !track_intercept_is_reasonable(intercept, course_anchor, course_deg, track_limit) {
+                track_limit,
+                turn_radius_nm,
+            ) else {
                 continue;
-            }
-            let mut elements = Vec::new();
-            if distance_between_points_nm(current_position, turn_start) > 0.05 {
-                elements.push(LegDisplayElement::Segment {
-                    start: current_position,
-                    end: turn_start,
-                });
-            }
-            elements.push(LegDisplayElement::Arc {
-                center: turn_center,
-                radius_nm: turn_radius_nm,
-                start: turn_start,
-                end: turn_end,
-                clockwise: turn_clockwise,
-                sweep_degrees: sweep,
-            });
-            if distance_between_points_nm(turn_end, intercept) > 0.05 {
-                elements.push(LegDisplayElement::Segment {
-                    start: turn_end,
-                    end: intercept,
-                });
-            }
+            };
             let on_course_distance_nm = track_limit
-                .map(|limit| distance_between_points_nm(intercept, limit))
+                .map(|limit| distance_between_points_nm(candidate.intercept, limit))
                 .unwrap_or(0.0);
-            let final_segment_heading_deg = if distance_between_points_nm(turn_end, intercept) > 0.05 {
-                bearing_from(turn_end, intercept)
+            let final_segment_heading_deg = if distance_between_points_nm(
+                candidate.turn_end,
+                candidate.intercept,
+            ) > 0.05
+            {
+                bearing_from(candidate.turn_end, candidate.intercept)
             } else {
                 intercept_heading_deg
             };
@@ -1361,12 +1295,87 @@ fn best_near_reciprocal_track_join(
                 .as_ref()
                 .is_none_or(|(best_score, _, _)| score < *best_score)
             {
-                best = Some((score, elements, intercept));
+                best = Some((score, candidate.elements, candidate.intercept));
             }
             break;
         }
     }
     best.map(|(_, elements, intercept)| (elements, intercept))
+}
+
+struct TrackJoinCandidate {
+    elements: Vec<LegDisplayElement>,
+    turn_end: LatLon,
+    intercept: LatLon,
+}
+
+fn build_track_join_candidate(
+    current_position: LatLon,
+    current_heading_deg: f64,
+    turn_clockwise: bool,
+    intercept_heading_deg: f64,
+    extra_straight_nm: f64,
+    course_anchor: LatLon,
+    course_deg: f64,
+    track_limit: Option<LatLon>,
+    turn_radius_nm: f64,
+) -> Option<TrackJoinCandidate> {
+    let turn_start = if extra_straight_nm <= 0.0 {
+        current_position
+    } else {
+        destination_point(current_position, current_heading_deg, extra_straight_nm)
+    };
+    let turn_center = turn_center_for_heading_change(
+        turn_start,
+        current_heading_deg,
+        turn_clockwise,
+        turn_radius_nm,
+    );
+    let turn_end = point_on_turn_center(
+        turn_center,
+        intercept_heading_deg,
+        turn_clockwise,
+        turn_radius_nm,
+    );
+    let intercept = true_intersect_heading_with_course(
+        turn_end,
+        intercept_heading_deg,
+        course_anchor,
+        course_deg,
+    )?;
+    if !track_intercept_is_reasonable(intercept, course_anchor, course_deg, track_limit) {
+        return None;
+    }
+    let mut elements = Vec::new();
+    if distance_between_points_nm(current_position, turn_start) > 0.05 {
+        elements.push(LegDisplayElement::Segment {
+            start: current_position,
+            end: turn_start,
+        });
+    }
+    elements.push(LegDisplayElement::Arc {
+        center: turn_center,
+        radius_nm: turn_radius_nm,
+        start: turn_start,
+        end: turn_end,
+        clockwise: turn_clockwise,
+        sweep_degrees: heading_sweep_degrees(
+            current_heading_deg,
+            intercept_heading_deg,
+            turn_clockwise,
+        ),
+    });
+    if distance_between_points_nm(turn_end, intercept) > 0.05 {
+        elements.push(LegDisplayElement::Segment {
+            start: turn_end,
+            end: intercept,
+        });
+    }
+    Some(TrackJoinCandidate {
+        elements,
+        turn_end,
+        intercept,
+    })
 }
 
 fn track_intercept_is_reasonable(

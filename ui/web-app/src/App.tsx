@@ -482,9 +482,9 @@ function TerrainOverlayCanvasTile({ tile }: { tile: TerrainOverlayImage }) {
 }
 
 const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string; iconSrc?: string }> = [
-  { id: "map", label: "CHART", launcherLabel: "CHT", iconSrc: PAGE_CHART_ICON_SRC },
-  { id: "charts", label: "PLATE", launcherLabel: "PLT", iconSrc: "/icons/icons/page-plate-icon.png?v=20260424b" },
-  { id: "plan", label: "PLAN", launcherLabel: "PLN", iconSrc: PAGE_PLAN_ICON_SRC },
+  { id: "map", label: "CHART", launcherLabel: "CHART", iconSrc: PAGE_CHART_ICON_SRC },
+  { id: "charts", label: "PLATE", launcherLabel: "PLATE", iconSrc: "/icons/icons/page-plate-icon.png?v=20260424b" },
+  { id: "plan", label: "PLAN", launcherLabel: "PLAN", iconSrc: PAGE_PLAN_ICON_SRC },
   { id: "settings", label: "SETTINGS", launcherLabel: "STGS" },
 ];
 
@@ -3272,6 +3272,7 @@ function MapPage(props: {
             options={familyOptions.map((family) => ({
               id: family.id,
               label: family.label,
+              iconSrc: chartFamilyIconSrc(family.id),
               active: family.active,
               disabled: !family.enabled || !family.next_map_id,
               onSelect: () => {

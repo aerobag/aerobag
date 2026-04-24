@@ -4619,6 +4619,7 @@ mod tests {
                 step_index: 0,
                 airport_id: "KPAE".to_string(),
                 procedure_id: "VOR-A".to_string(),
+                path_termination: "CF".to_string(),
                 start_position: LatLon {
                     lat: 47.0,
                     lon: -122.0,
@@ -4641,6 +4642,7 @@ mod tests {
                 step_index: 1,
                 airport_id: "KPAE".to_string(),
                 procedure_id: "VOR-A".to_string(),
+                path_termination: "CF".to_string(),
                 start_position: LatLon {
                     lat: 47.1,
                     lon: -122.1,

@@ -42,7 +42,9 @@ use preprocessor_resource_index::{
     TileLevelRecord,
 };
 use preprocessor_tpp::{package_native_tpp_versioned, render_native_tpp, NativeTppRunRequest};
-use preprocessor_vectors::{build_vectors_dataset, BuildVectorsRequest};
+use preprocessor_vectors::{
+    build_obstacle_dataset, build_vectors_dataset, BuildObstacleDatasetRequest, BuildVectorsRequest,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::{
@@ -547,9 +549,12 @@ fn current_bundle_path(
         .map(|bundle| build_root.join(&bundle.filename))
 }
 
-fn load_fast_bundle_products(bundle_path: &Path) -> anyhow::Result<Vec<PublishedFastProductResult>> {
+fn load_fast_bundle_products(
+    bundle_path: &Path,
+) -> anyhow::Result<Vec<PublishedFastProductResult>> {
     let bundle: FastBundleManifest = serde_json::from_slice(
-        &fs::read(bundle_path).with_context(|| format!("failed to read {}", bundle_path.display()))?,
+        &fs::read(bundle_path)
+            .with_context(|| format!("failed to read {}", bundle_path.display()))?,
     )
     .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
     bundle
@@ -970,71 +975,28 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
 
     #[derive(Debug, Clone)]
     enum ProductScheduledTaskKind {
-        SourceUrls {
-            cycle: String,
-        },
-        ChartRender {
-            cycle: String,
-            family: ChartFamily,
-        },
-        ChartPackage {
-            cycle: String,
-            family: ChartFamily,
-        },
-        CsupStage {
-            cycle: String,
-        },
-        CsupRender {
-            cycle: String,
-            region: Region,
-        },
-        CsupPackage {
-            cycle: String,
-        },
-        TppRender {
-            cycle: String,
-            region: Region,
-        },
-        TppPackage {
-            cycle: String,
-            region: Region,
-        },
-        DataBase {
-            cycle: String,
-        },
-        DataMatch {
-            cycle: String,
-        },
-        Vectors {
-            cycle: String,
-        },
-        ResourceIndex {
-            cycle: String,
-        },
-        NavDb {
-            cycle: String,
-        },
-        BundleManifest {
-            cycle: String,
-        },
+        SourceUrls { cycle: String },
+        ChartRender { cycle: String, family: ChartFamily },
+        ChartPackage { cycle: String, family: ChartFamily },
+        CsupStage { cycle: String },
+        CsupRender { cycle: String, region: Region },
+        CsupPackage { cycle: String },
+        TppRender { cycle: String, region: Region },
+        TppPackage { cycle: String, region: Region },
+        DataBase { cycle: String },
+        DataMatch { cycle: String },
+        Vectors { cycle: String },
+        ResourceIndex { cycle: String },
+        NavDb { cycle: String },
+        BundleManifest { cycle: String },
         GeoBuild,
         GeoPublish,
         TerrainDiscovery,
-        TerrainBuild {
-            region: Region,
-        },
-        TerrainPublish {
-            region: Region,
-        },
-        WaterMaskBuild {
-            region: Region,
-        },
-        ShadedReliefBuild {
-            region: Region,
-        },
-        ShadedReliefPublish {
-            region: Region,
-        },
+        TerrainBuild { region: Region },
+        TerrainPublish { region: Region },
+        WaterMaskBuild { region: Region },
+        ShadedReliefBuild { region: Region },
+        ShadedReliefPublish { region: Region },
         CurrentArtifacts,
         ProductUnpack,
         ValidatePackagedContract,
@@ -1209,9 +1171,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             ];
             nav_db_deps.extend(static_product_task_ids(config));
             if include_static_terrain_products() {
-                nav_db_deps.extend(config.profile.terrain_regions().iter().map(
-                    |region| format!("build-shaded-relief-{}", region.code().to_ascii_lowercase()),
-                ));
+                nav_db_deps.extend(config.profile.terrain_regions().iter().map(|region| {
+                    format!("build-shaded-relief-{}", region.code().to_ascii_lowercase())
+                }));
             }
             pending_tasks.push(ProductScheduledTask {
                 id: cycle_task_id(cycle, "nav-db"),
@@ -1311,10 +1273,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             weight: 1,
             kind: ProductScheduledTaskKind::CurrentArtifacts,
         });
-        let mut product_unpack_deps = vec![
-            "current-artifacts".to_string(),
-            "publish-geo".to_string(),
-        ];
+        let mut product_unpack_deps =
+            vec!["current-artifacts".to_string(), "publish-geo".to_string()];
         if include_static_terrain_products() {
             product_unpack_deps.extend(
                 config.profile.terrain_regions().iter().map(|region| {
@@ -2614,23 +2574,24 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
         None => Vec::new(),
     };
 
+    let built_obstacles = build_obstacles_product(config)?;
     let built_tfrs = build_tfrs_product(config)?;
     let built_metars = build_metars_product(config)?;
     let built_nexrad = build_nexrad_product(config)?;
     let mut gc_records = BTreeMap::new();
+    gc_records.insert(
+        "fast:obstacles".to_string(),
+        vec![built_obstacles.2.clone()],
+    );
     gc_records.insert("fast:tfrs".to_string(), vec![built_tfrs.2.clone()]);
     gc_records.insert("fast:metars".to_string(), vec![built_metars.2.clone()]);
     gc_records.insert("fast:nexrad".to_string(), vec![built_nexrad.2.clone()]);
+    let obstacles = publish_built_fast_product(config, "obstacles", built_obstacles)?;
     let tfrs = publish_built_fast_product(config, "tfrs", built_tfrs)?;
     let metars = publish_built_fast_product(config, "metars", built_metars)?;
     let nexrad = publish_built_fast_product(config, "nexrad", built_nexrad)?;
-    let fast_products = vec![tfrs, metars, nexrad];
-    let mut fast_bundle_products = previous_fast_products
-        .iter()
-        .filter(|product| product.id == "obstacles")
-        .cloned()
-        .collect::<Vec<_>>();
-    fast_bundle_products.extend(fast_products.iter().cloned());
+    let fast_products = vec![obstacles, tfrs, metars, nexrad];
+    let fast_bundle_products = fast_products.clone();
     let published_at_utc = utc_now_string();
     let fast_bundle_manifest_path =
         publish_fast_bundle_manifest(&config.build_root, &fast_bundle_products, &published_at_utc)?;
@@ -2665,6 +2626,108 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
         current_artifacts_path: output_path,
         fast_products,
     })
+}
+
+fn obstacle_snapshot_label(value: &str) -> anyhow::Result<String> {
+    let date = NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .with_context(|| format!("failed to parse obstacle snapshot date {value}"))?;
+    Ok(date.format("%Y.%m.%d").to_string())
+}
+
+fn build_obstacles_product(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<(PathBuf, String, NodeRecord)> {
+    let snapshot_date = Utc::now().date_naive();
+    let snapshot_label = obstacle_snapshot_label(&snapshot_date.format("%Y-%m-%d").to_string())?;
+    let source_generated_at_utc = format!("{}T00:00:00Z", snapshot_date.format("%Y-%m-%d"));
+    let logical_url = format!(
+        "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_{snapshot_label}.zip"
+    );
+    let inputs = BTreeMap::from([("source_url".to_string(), logical_url.clone())]);
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, "fast-obstacles")?,
+        "fast-obstacles",
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let manifest_path = output_dir.join(format!("obstacles_{snapshot_label}.manifest"));
+    let stats_path = output_dir.join("stats.json");
+    let zip_path = output_dir.join(format!("obstacles_{snapshot_label}.zip"));
+    let _build_lock = match claim_or_wait_for_node(
+        &prepared,
+        &[manifest_path.clone(), stats_path.clone(), zip_path.clone()],
+    )? {
+        NodeCacheState::CacheHit(record) => return Ok((zip_path, source_generated_at_utc, record)),
+        NodeCacheState::Build(lock) => lock,
+    };
+
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    let work_dir = prepared.dir.join("work");
+    let input_dir = work_dir.join("input");
+    let provenance_dir = prepared
+        .dir
+        .join("meta")
+        .join("provenance")
+        .join("obstacles");
+    fs::create_dir_all(&input_dir)
+        .with_context(|| format!("failed to create {}", input_dir.display()))?;
+    fs::create_dir_all(&provenance_dir)
+        .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
+    fs::write(
+        provenance_dir.join("source_urls.jsonl"),
+        format!(
+            "{{\"event\":\"source_url\",\"label\":\"obstacles\",\"url\":\"{}\"}}\n",
+            logical_url
+        ),
+    )
+    .with_context(|| {
+        format!(
+            "failed to write {}",
+            provenance_dir.join("source_urls.jsonl").display()
+        )
+    })?;
+    let fetch_cache = FetchCacheConfig {
+        root: config.fetch_cache_root.clone(),
+        mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
+    };
+    prefetch_archives_with_provenance(
+        std::slice::from_ref(&logical_url),
+        &input_dir,
+        config.fetch_jobs,
+        Some(&fetch_cache),
+        &provenance_dir,
+        "obstacles",
+    )?;
+    let result = build_obstacle_dataset(&BuildObstacleDatasetRequest {
+        input_dir,
+        output_dir,
+        version_label: snapshot_label,
+    })?;
+    let outputs = BTreeMap::from([
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&result.manifest_path, &config.build_root),
+        ),
+        (
+            "stats".to_string(),
+            relative_artifact_path(&result.stats_path, &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&result.zip_path, &config.build_root),
+        ),
+    ]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((result.zip_path, source_generated_at_utc, record))
 }
 
 fn publish_built_fast_product(
@@ -3185,10 +3248,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 .context("data-base task missing data input staging node record")?;
                             let zip =
                                 resolve_artifact_path(&config, output_path(&data_record, "zip")?);
-                            let intermediate_sqlite_db = resolve_artifact_path(
-                                &config,
-                                sqlite_output_path(&data_record)?,
-                            );
+                            let intermediate_sqlite_db =
+                                resolve_artifact_path(&config, sqlite_output_path(&data_record)?);
                             let source_input_dir = resolve_artifact_path(
                                 &config,
                                 output_path(&staging_record, "staged_input_dir")?,
@@ -3245,10 +3306,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             )?;
                             let cache_hit = record.cache_hit;
                             let zip = resolve_artifact_path(&config, output_path(&record, "zip")?);
-                            let intermediate_sqlite_db = resolve_artifact_path(
-                                &config,
-                                sqlite_output_path(&record)?,
-                            );
+                            let intermediate_sqlite_db =
+                                resolve_artifact_path(&config, sqlite_output_path(&record)?);
                             let fingerprint = record.fingerprint.clone();
                             Ok(TaskCompletion {
                                 node_records: vec![record],
@@ -3336,11 +3395,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                         source_input_dir,
                                         fingerprint,
                                         ..
-                                    }) => (
-                                        intermediate_sqlite_db,
-                                        source_input_dir,
-                                        fingerprint,
-                                    ),
+                                    }) => (intermediate_sqlite_db, source_input_dir, fingerprint),
                                     _ => unreachable!("data dependency should have completed"),
                                 };
                             let record = build_vectors_node(
@@ -3361,7 +3416,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         ScheduledTaskKind::ResourceIndex => {
                             let data_zip = match task_values_snapshot.get("data") {
                                 Some(TaskValue::FingerprintedData {
-                                    intermediate_sqlite_db: _, zip, ..
+                                    intermediate_sqlite_db: _,
+                                    zip,
+                                    ..
                                 }) => zip.clone(),
                                 _ => unreachable!("data dependency should have completed"),
                             };
@@ -3511,7 +3568,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         ScheduledTaskKind::DataUnpack => {
                             let zip = match task_values_snapshot.get("data") {
                                 Some(TaskValue::FingerprintedData {
-                                    intermediate_sqlite_db: _, zip, ..
+                                    intermediate_sqlite_db: _,
+                                    zip,
+                                    ..
                                 }) => zip.clone(),
                                 _ => bail!("missing data zip"),
                             };
@@ -3754,15 +3813,20 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             .iter()
             .find(|node| node.name == "vectors")
             .context("build manifest missing vectors node")?;
-        let resource_index_path =
-            resolve_artifact_path(config, output_path(resource_index_record, "resource_index")?);
+        let resource_index_path = resolve_artifact_path(
+            config,
+            output_path(resource_index_record, "resource_index")?,
+        );
         let intermediate_sqlite_db =
             resolve_artifact_path(config, sqlite_output_path(data_record)?);
         let vectors_zip_path = resolve_artifact_path(config, output_path(vectors_record, "zip")?);
         let vectors_sha256 = output_sha_or_hash(vectors_record, "zip", &vectors_zip_path)?;
         let vectors_filename =
             format!("vectors_data_{bundle_cycle}_{PACKAGE_CYCLE_VERSION}_{vectors_sha256}.zip");
-        publish_flat_artifact(&vectors_zip_path, &config.build_root.join(&vectors_filename))?;
+        publish_flat_artifact(
+            &vectors_zip_path,
+            &config.build_root.join(&vectors_filename),
+        )?;
         let resource_index: ResourceIndex = serde_json::from_slice(
             &fs::read(&resource_index_path)
                 .with_context(|| format!("failed to read {}", resource_index_path.display()))?,
@@ -3772,13 +3836,24 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             .temporal_summary
             .uniform_good_beyond_date
             .clone()
-            .or_else(|| resource_index.temporal_summary.uniform_effective_date.clone())
+            .or_else(|| {
+                resource_index
+                    .temporal_summary
+                    .uniform_effective_date
+                    .clone()
+            })
             .context("resource-index missing start-valid date")?;
         let end_valid = resource_index
             .temporal_summary
             .uniform_expiration_date
             .clone()
-            .or_else(|| resource_index.temporal_summary.expiration_dates.first().cloned())
+            .or_else(|| {
+                resource_index
+                    .temporal_summary
+                    .expiration_dates
+                    .first()
+                    .cloned()
+            })
             .context("resource-index missing end-valid date")?;
         let vectors_package = BundlePackageArtifact {
             id: format!("VECTORS_DATA_{bundle_cycle}_{PACKAGE_CYCLE_VERSION}"),
@@ -3808,17 +3883,11 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             &[],
             &[],
         )?;
-        let bundle_manifest =
-            build_bundle_manifest(config, &build_manifest, &[], &nav_db.package)?;
+        let bundle_manifest = build_bundle_manifest(config, &build_manifest, &[], &nav_db.package)?;
         let bundle_manifest_path =
             write_hashed_bundle_manifest(&config.build_root, &bundle_manifest)?;
         validate_bundle_manifest(&config.build_root, &bundle_manifest_path)?;
-        sync_unpacked_metadata(
-            config,
-            &bundle_manifest,
-            &bundle_manifest_path,
-            None,
-        )?;
+        sync_unpacked_metadata(config, &bundle_manifest, &bundle_manifest_path, None)?;
         Ok(bundle_manifest_path)
     })();
 
@@ -3902,7 +3971,10 @@ fn build_bundle_manifest(
     let vectors_sha256 = output_sha_or_hash(vectors_record, "zip", &vectors_zip_path)?;
     let vectors_filename =
         format!("vectors_data_{cycle}_{PACKAGE_CYCLE_VERSION}_{vectors_sha256}.zip");
-    publish_flat_artifact(&vectors_zip_path, &config.build_root.join(&vectors_filename))?;
+    publish_flat_artifact(
+        &vectors_zip_path,
+        &config.build_root.join(&vectors_filename),
+    )?;
 
     let mut package_artifacts = index
         .packages
@@ -4026,7 +4098,10 @@ fn build_nav_kv_artifact(
             hash_file(intermediate_sqlite_db_path)?,
         ),
         ("cycle".to_string(), cycle.to_string()),
-        ("package_artifacts".to_string(), hash_text(&package_index_json)),
+        (
+            "package_artifacts".to_string(),
+            hash_text(&package_index_json),
+        ),
         (
             "shaded_relief_tile_levels".to_string(),
             hash_text(&shaded_relief_json),
@@ -4042,86 +4117,86 @@ fn build_nav_kv_artifact(
     let source_dir = output_dir.join("nav_db");
     let root_filename = format!("nav_kv_{cycle}.root");
     let nav_db_zip_source_path = output_dir.join(format!("nav_db_{cycle}.zip"));
-    let record = match claim_or_wait_for_node(
-        &prepared,
-        std::slice::from_ref(&nav_db_zip_source_path),
-    )? {
-        NodeCacheState::CacheHit(record) => record,
-        NodeCacheState::Build(_lock) => {
-            if output_dir.exists() {
-                fs::remove_dir_all(&output_dir)
-                    .with_context(|| format!("failed to remove {}", output_dir.display()))?;
-            }
-            fs::create_dir_all(&source_dir)
-                .with_context(|| format!("failed to create {}", source_dir.display()))?;
-            let started_at_utc = utc_now_string();
-            let started = Instant::now();
-            let chart_coverage_polygon_sets =
-                build_chart_coverage_polygon_sets(&config.chart_cutline_root, &resource_index)?;
-            let chart_catalog = build_nav_kv_chart_catalog(
-                &resource_index,
-                shaded_relief_tile_levels,
-                &chart_coverage_polygon_sets,
-            );
-            let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
-                .context("failed to encode nav_kv chart/catalog value")?;
-            let mut pairs = vec![NavKvPair {
-                key: "chart/catalog".to_string(),
-                value: chart_catalog_bytes,
-            }];
-            pairs.extend(build_nav_kv_chart_coverage_pairs(
-                &chart_coverage_polygon_sets,
-            )?);
-            pairs.extend(build_nav_kv_resource_summary_pairs(&resource_index)?);
-            pairs.extend(build_nav_kv_plate_pairs(&resource_index)?);
-            pairs.extend(build_nav_kv_package_pairs(&package_artifacts)?);
-            pairs.extend(build_nav_kv_navref_pairs(intermediate_sqlite_db_path)?);
-            let built = build_nav_kv_sorted(pairs, 64 * 1024)
-                .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
-            let root_source_path = source_dir.join(&root_filename);
-            fs::write(&root_source_path, &built.root_bytes)
-                .with_context(|| format!("failed to write {}", root_source_path.display()))?;
+    let record =
+        match claim_or_wait_for_node(&prepared, std::slice::from_ref(&nav_db_zip_source_path))? {
+            NodeCacheState::CacheHit(record) => record,
+            NodeCacheState::Build(_lock) => {
+                if output_dir.exists() {
+                    fs::remove_dir_all(&output_dir)
+                        .with_context(|| format!("failed to remove {}", output_dir.display()))?;
+                }
+                fs::create_dir_all(&source_dir)
+                    .with_context(|| format!("failed to create {}", source_dir.display()))?;
+                let started_at_utc = utc_now_string();
+                let started = Instant::now();
+                let chart_coverage_polygon_sets =
+                    build_chart_coverage_polygon_sets(&config.chart_cutline_root, &resource_index)?;
+                let chart_catalog = build_nav_kv_chart_catalog(
+                    &resource_index,
+                    shaded_relief_tile_levels,
+                    &chart_coverage_polygon_sets,
+                );
+                let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
+                    .context("failed to encode nav_kv chart/catalog value")?;
+                let mut pairs = vec![NavKvPair {
+                    key: "chart/catalog".to_string(),
+                    value: chart_catalog_bytes,
+                }];
+                pairs.extend(build_nav_kv_chart_coverage_pairs(
+                    &chart_coverage_polygon_sets,
+                )?);
+                pairs.extend(build_nav_kv_resource_summary_pairs(&resource_index)?);
+                pairs.extend(build_nav_kv_plate_pairs(&resource_index)?);
+                pairs.extend(build_nav_kv_package_pairs(&package_artifacts)?);
+                pairs.extend(build_nav_kv_navref_pairs(intermediate_sqlite_db_path)?);
+                let built = build_nav_kv_sorted(pairs, 64 * 1024)
+                    .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
+                let root_source_path = source_dir.join(&root_filename);
+                fs::write(&root_source_path, &built.root_bytes)
+                    .with_context(|| format!("failed to write {}", root_source_path.display()))?;
 
-            let mut page_filenames = Vec::new();
-            for (index, page) in built.value_pages.iter().enumerate() {
-                let page_filename = format!("nav_kv_{cycle}.values_{index:04}");
-                let page_source_path = source_dir.join(&page_filename);
-                fs::write(&page_source_path, page)
-                    .with_context(|| format!("failed to write {}", page_source_path.display()))?;
-                page_filenames.push(page_filename);
-            }
-            let published_source_dir = artifact_root_from_build_root(&config.build_root)
-                .join("private-work")
-                .join("nav-kv")
-                .join(config.profile.as_str())
-                .join(cycle);
-            if published_source_dir.exists() {
-                fs::remove_dir_all(&published_source_dir).with_context(|| {
-                    format!("failed to remove {}", published_source_dir.display())
-                })?;
-            }
-            hardlink_dir_recursive(&source_dir, &published_source_dir)?;
-            let mut zip_entries = vec![root_filename.as_str()];
-            let page_entry_names = page_filenames.iter().map(String::as_str).collect::<Vec<_>>();
-            zip_entries.extend(page_entry_names.iter().copied());
-            zip_directory_deterministic(&nav_db_zip_source_path, &source_dir, &zip_entries)?;
-            let outputs = BTreeMap::from([
-                (
+                let mut page_filenames = Vec::new();
+                for (index, page) in built.value_pages.iter().enumerate() {
+                    let page_filename = format!("nav_kv_{cycle}.values_{index:04}");
+                    let page_source_path = source_dir.join(&page_filename);
+                    fs::write(&page_source_path, page).with_context(|| {
+                        format!("failed to write {}", page_source_path.display())
+                    })?;
+                    page_filenames.push(page_filename);
+                }
+                let published_source_dir = artifact_root_from_build_root(&config.build_root)
+                    .join("private-work")
+                    .join("nav-kv")
+                    .join(config.profile.as_str())
+                    .join(cycle);
+                if published_source_dir.exists() {
+                    fs::remove_dir_all(&published_source_dir).with_context(|| {
+                        format!("failed to remove {}", published_source_dir.display())
+                    })?;
+                }
+                hardlink_dir_recursive(&source_dir, &published_source_dir)?;
+                let mut zip_entries = vec![root_filename.as_str()];
+                let page_entry_names = page_filenames
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                zip_entries.extend(page_entry_names.iter().copied());
+                zip_directory_deterministic(&nav_db_zip_source_path, &source_dir, &zip_entries)?;
+                let outputs = BTreeMap::from([(
                     "nav_db_zip".to_string(),
                     relative_artifact_path(&nav_db_zip_source_path, &config.build_root),
-                ),
-            ]);
-            write_node_record(
-                prepared,
-                inputs,
-                outputs,
-                false,
-                started_at_utc,
-                utc_now_string(),
-                started.elapsed().as_millis() as u64,
-            )?
-        }
-    };
+                )]);
+                write_node_record(
+                    prepared,
+                    inputs,
+                    outputs,
+                    false,
+                    started_at_utc,
+                    utc_now_string(),
+                    started.elapsed().as_millis() as u64,
+                )?
+            }
+        };
     let nav_db_sha256 = output_sha_or_hash(&record, "nav_db_zip", &nav_db_zip_source_path)?;
     let nav_db_published_filename =
         format!("nav_db_{cycle}_{PACKAGE_CYCLE_VERSION}_{nav_db_sha256}.zip");
@@ -4147,12 +4222,23 @@ fn build_nav_kv_artifact(
                 .temporal_summary
                 .uniform_good_beyond_date
                 .clone()
-                .or_else(|| resource_index.temporal_summary.uniform_effective_date.clone()),
+                .or_else(|| {
+                    resource_index
+                        .temporal_summary
+                        .uniform_effective_date
+                        .clone()
+                }),
             expiration_date: resource_index
                 .temporal_summary
                 .uniform_expiration_date
                 .clone()
-                .or_else(|| resource_index.temporal_summary.expiration_dates.first().cloned()),
+                .or_else(|| {
+                    resource_index
+                        .temporal_summary
+                        .expiration_dates
+                        .first()
+                        .cloned()
+                }),
         },
     })
 }
@@ -4391,7 +4477,10 @@ fn read_chart_cutline_polygons_from_file(
             .cloned()
             .unwrap_or_default(),
         Some("Feature") => vec![value],
-        Some(other) => bail!("unsupported geojson root type {other} in {}", path.display()),
+        Some(other) => bail!(
+            "unsupported geojson root type {other} in {}",
+            path.display()
+        ),
         None => bail!("geojson root missing type in {}", path.display()),
     };
 
@@ -4412,7 +4501,10 @@ fn read_chart_cutline_polygons_from_file(
                         .context("polygon missing coordinates")?,
                 )?,
             }),
-            other => bail!("unsupported cutline geometry type {other} in {}", path.display()),
+            other => bail!(
+                "unsupported cutline geometry type {other} in {}",
+                path.display()
+            ),
         }
     }
     Ok(polygons)
@@ -4454,8 +4546,7 @@ fn web_mercator_to_lon_lat(x: f64, y: f64) -> [f64; 2] {
     let lon = (x / origin_shift) * 180.0;
     let lat = (y / origin_shift) * 180.0;
     let lat = 180.0 / std::f64::consts::PI
-        * (2.0 * ((lat * std::f64::consts::PI / 180.0).exp()).atan()
-            - std::f64::consts::PI / 2.0);
+        * (2.0 * ((lat * std::f64::consts::PI / 180.0).exp()).atan() - std::f64::consts::PI / 2.0);
     [lon, lat]
 }
 
@@ -4469,9 +4560,7 @@ fn collections_for_cutline_polygon<'a>(
     let overlapping = collections
         .iter()
         .copied()
-        .filter(|collection| {
-            overlap_area(&polygon_bounds, &collection.coverage_bounds) > 0.0
-        })
+        .filter(|collection| overlap_area(&polygon_bounds, &collection.coverage_bounds) > 0.0)
         .collect::<Vec<_>>();
     if !overlapping.is_empty() {
         return overlapping;
@@ -6520,12 +6609,7 @@ fn sync_unpacked_metadata(
         }
         sync_unpacked_file(&config.build_root.join(&artifact.filename), &unpacked_root)?;
     }
-    sync_cycle_bundle_unpacked_zips(
-        config,
-        bundle_manifest,
-        &unpacked_root,
-        task_values,
-    )?;
+    sync_cycle_bundle_unpacked_zips(config, bundle_manifest, &unpacked_root, task_values)?;
     Ok(())
 }
 
@@ -6574,7 +6658,11 @@ fn sync_cycle_bundle_unpacked_zips(
             let legacy_filename = format!(
                 "{}_{}_{}.zip",
                 package.family_id.replace('-', "_"),
-                package.region_id.as_deref().unwrap_or_default().to_ascii_lowercase(),
+                package
+                    .region_id
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase(),
                 cycle
             );
             let legacy_dir = unpacked_target_dir(unpacked_root, &legacy_filename)?;
@@ -6604,12 +6692,11 @@ fn sync_cycle_bundle_unpacked_zips(
         }
         let task_values =
             task_values.context("missing task values snapshot for cycle bundle unpack sync")?;
-        let package_root = resolve_cycle_bundle_package_root(
-            task_values,
-            &bundle_manifest.cycle,
-            package,
-        )?
-            .with_context(|| format!("failed to resolve source root for package {}", package.id))?;
+        let package_root =
+            resolve_cycle_bundle_package_root(task_values, &bundle_manifest.cycle, package)?
+                .with_context(|| {
+                    format!("failed to resolve source root for package {}", package.id)
+                })?;
         sync_unpacked_zip_from_source(
             &config.build_root.join(&package.filename),
             &package_root,
@@ -6642,9 +6729,10 @@ fn resolve_cycle_bundle_package_root(
     let task_id = match package.family_id.as_str() {
         "csup" => task_id(bundle_cycle, "csup-package"),
         "tpp" => task_id(bundle_cycle, &format!("tpp-{region_id}-package")),
-        "sec" | "tac" | "enr-l" | "enr-h" => {
-            task_id(bundle_cycle, &format!("charts-{}-package", package.family_id))
-        }
+        "sec" | "tac" | "enr-l" | "enr-h" => task_id(
+            bundle_cycle,
+            &format!("charts-{}-package", package.family_id),
+        ),
         "vectors" => task_id(bundle_cycle, "vectors"),
         _ => return Ok(None),
     };
@@ -6652,11 +6740,12 @@ fn resolve_cycle_bundle_package_root(
     let root = match task_values.get(&task_id) {
         Some(ProductTaskValue::ChartSource(source)) => source.package_root.clone(),
         Some(ProductTaskValue::CsupSource(source)) => source.package_root.clone(),
-        Some(ProductTaskValue::FingerprintedTppSource { source, .. }) => source.package_root.clone(),
-        Some(ProductTaskValue::FingerprintedZip { zip, .. }) => zip
-            .parent()
-            .unwrap_or_else(|| Path::new("/"))
-            .to_path_buf(),
+        Some(ProductTaskValue::FingerprintedTppSource { source, .. }) => {
+            source.package_root.clone()
+        }
+        Some(ProductTaskValue::FingerprintedZip { zip, .. }) => {
+            zip.parent().unwrap_or_else(|| Path::new("/")).to_path_buf()
+        }
         _ => return Ok(None),
     };
     Ok(Some(root))
@@ -6679,6 +6768,7 @@ fn sync_product_level_unpacked(
     zip_artifacts: &[PublishedZipArtifact],
 ) -> anyhow::Result<()> {
     let unpacked_root = published_unpacked_root_from_build_root(build_root)?;
+    let packaged_root = build_root.join("published-packaged");
     remove_legacy_unpacked_subtree(&unpacked_root)?;
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
@@ -6697,12 +6787,29 @@ fn sync_product_level_unpacked(
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| anyhow::anyhow!("failed to determine published filename"))?;
+        let source_root = artifact
+            .source_zip_path
+            .parent()
+            .unwrap_or_else(|| Path::new("/"));
+        if source_root == packaged_root {
+            let unpack_dir = unpacked_target_dir(&unpacked_root, published_filename)?;
+            let marker_path = unpacked_marker_path(&unpacked_root, published_filename)?;
+            let marker_matches = fs::read_to_string(&marker_path)
+                .ok()
+                .as_deref()
+                .map(str::trim)
+                == Some(artifact.checksum_sha256.as_str());
+            if unpack_dir.is_dir() && marker_matches {
+                continue;
+            }
+            bail!(
+                "missing unpacked source tree for preserved published package {}",
+                artifact.published_zip_path.display()
+            );
+        }
         sync_unpacked_zip_from_source(
             &artifact.published_zip_path,
-            artifact
-                .source_zip_path
-                .parent()
-                .unwrap_or_else(|| Path::new("/")),
+            source_root,
             &unpacked_root,
             published_filename,
             Some(&artifact.checksum_sha256),
@@ -9511,7 +9618,11 @@ fn build_current_bundle_entries(
         bundles.push(entry);
     }
     bundles.sort_by(|left, right| {
-        let left_key = (left.bundle_type != "cycle", left.cycle.as_str(), left.id.as_str());
+        let left_key = (
+            left.bundle_type != "cycle",
+            left.cycle.as_str(),
+            left.id.as_str(),
+        );
         let right_key = (
             right.bundle_type != "cycle",
             right.cycle.as_str(),
@@ -9938,7 +10049,10 @@ fn validate_fast_bundle_manifest(packaged_root: &Path, bundle_path: &Path) -> an
     }
     for package in &bundle.packages {
         validate_public_filename(&package.filename, "fast_bundle.packages[].filename")?;
-        validate_public_filename(&package.relative_path, "fast_bundle.packages[].relative_path")?;
+        validate_public_filename(
+            &package.relative_path,
+            "fast_bundle.packages[].relative_path",
+        )?;
         validate_embedded_sha256_filename(&package.filename, &package.checksum_sha256)?;
         if package.filename != package.relative_path {
             bail!(
@@ -10007,19 +10121,24 @@ fn validate_bundle_artifact_ref(
     ensure_public_file_exists(&packaged_root.join(&artifact.filename))
 }
 
-fn validate_bundle_contract_split(bundle: &BundleManifest, bundle_path: &Path) -> anyhow::Result<()> {
-    let has_vectors_package = bundle.packages.iter().any(|package| {
-        package.family_id == "vectors" && package.region_id.is_none()
-    });
+fn validate_bundle_contract_split(
+    bundle: &BundleManifest,
+    bundle_path: &Path,
+) -> anyhow::Result<()> {
+    let has_vectors_package = bundle
+        .packages
+        .iter()
+        .any(|package| package.family_id == "vectors" && package.region_id.is_none());
     if !has_vectors_package {
         bail!(
             "bundle {} missing vectors package row in packages[]",
             bundle_path.display()
         );
     }
-    let has_nav_db_package = bundle.packages.iter().any(|package| {
-        package.family_id == "nav-db" && package.region_id.is_none()
-    });
+    let has_nav_db_package = bundle
+        .packages
+        .iter()
+        .any(|package| package.family_id == "nav-db" && package.region_id.is_none());
     if !has_nav_db_package {
         bail!(
             "bundle {} missing nav-db package row in packages[]",
@@ -10688,8 +10807,8 @@ fn write_hashed_fast_bundle_manifest(
     build_root: &Path,
     bundle_manifest: &FastBundleManifest,
 ) -> anyhow::Result<PathBuf> {
-    let bytes =
-        serde_json::to_vec_pretty(bundle_manifest).context("failed to encode fast bundle manifest")?;
+    let bytes = serde_json::to_vec_pretty(bundle_manifest)
+        .context("failed to encode fast bundle manifest")?;
     let sha256 = Sha256::digest(&bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -13410,8 +13529,7 @@ mod tests {
         let polygon_sets =
             build_chart_coverage_polygon_sets(cutline_root.path(), &minimal_resource_index())
                 .expect("polygon sets");
-        let catalog =
-            build_nav_kv_chart_catalog(&minimal_resource_index(), &[], &polygon_sets);
+        let catalog = build_nav_kv_chart_catalog(&minimal_resource_index(), &[], &polygon_sets);
         let entries = catalog
             .as_array()
             .expect("chart catalog should be an array");
@@ -13522,13 +13640,11 @@ mod tests {
         };
 
         let families = pair_value("resource/families");
-        assert!(
-            families
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value["id"] == "sec")
-        );
+        assert!(families
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value["id"] == "sec"));
 
         let regions = pair_value("resource/regions");
         assert_eq!(regions.as_array().unwrap()[0]["id"], "nw");

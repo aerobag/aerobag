@@ -125,6 +125,9 @@ struct PointStats {
 #[derive(Debug, Clone, Serialize)]
 struct PointLayerManifest {
     zoom: u8,
+    min_zoom: u8,
+    max_zoom: u8,
+    available_zooms: Vec<u8>,
     tile_path_template: String,
 }
 
@@ -789,6 +792,9 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
             layer_name.clone(),
             PointLayerManifest {
                 zoom,
+                min_zoom: zoom,
+                max_zoom: zoom,
+                available_zooms: vec![zoom],
                 tile_path_template,
             },
         );
@@ -1086,6 +1092,9 @@ pub fn build_obstacle_dataset(
         "obstacle".to_string(),
         PointLayerManifest {
             zoom: OBSTACLE_LAYER_ZOOM,
+            min_zoom: OBSTACLE_LAYER_ZOOM,
+            max_zoom: OBSTACLE_LAYER_ZOOM,
+            available_zooms: vec![OBSTACLE_LAYER_ZOOM],
             tile_path_template,
         },
     );

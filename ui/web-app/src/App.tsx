@@ -37,6 +37,9 @@ import {
   type AppCoreAdapter,
   type DerivedChartPageState,
   type DerivedMapSelectorState,
+  type MapLayerId,
+  type UiMapLayerState,
+  type UiMapLayerToggleState,
   type UiSession,
   type UiSessionSnapshot,
 } from "./domain/appCoreAdapter";
@@ -157,6 +160,7 @@ type TrayOption = {
   id: string;
   label: string;
   iconSrc?: string;
+  toggleState?: UiMapLayerToggleState;
   active?: boolean;
   disabled?: boolean;
   accentColor?: string;
@@ -191,7 +195,7 @@ type UiThemeJson = {
 
 type AviationThemeColorKey = keyof UiThemeJson["aviation"];
 
-type TrayDockStyle = "compact" | "plate_narrow" | "plate_wide";
+type TrayDockStyle = "compact" | "plate_narrow" | "plate_wide" | "wide";
 type PlateFolderCategory = ChartAsset["folder_category"];
 
 type NexradManifest = {
@@ -827,14 +831,20 @@ function emptyMapFollowUiState(): MapFollowUiState {
   };
 }
 
+function defaultUiMapLayerState(): UiMapLayerState {
+  return {
+    vectors: { visible: true, enabled: true },
+    nexrad: { visible: false, enabled: true },
+    terrain_warning: { visible: true, enabled: true },
+  };
+}
+
 export default function App() {
   const [sessionStartMs] = useState(() => Date.now());
   const uptimeLabel = useSessionUptimeLabel(sessionStartMs);
   const [debugTileLabels, setDebugTileLabels] = useState(
     () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugTiles"),
   );
-  const [debugShowVectorLayer, setDebugShowVectorLayer] = useState(true);
-  const [debugShowNexradLayer, setDebugShowNexradLayer] = useState(false);
   const persistedUiState = useMemo(readPersistedWebUiState, []);
   const [page, setPage] = useState<AppPage>(persistedUiState.page ?? "map");
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
@@ -912,6 +922,7 @@ export default function App() {
       selected_airport_id: initialChartPageState.selected_airport_id,
       selected_chart_id: initialChartPageState.selected_chart_id,
     },
+    map_layer_state: defaultUiMapLayerState(),
   });
   const [playbackSourcePath, setPlaybackSourcePath] = useState(defaultPlaybackTracePath);
   const [debugWarningActive, setDebugWarningActive] = useState(false);
@@ -1365,10 +1376,7 @@ export default function App() {
           uptimeLabel={uptimeLabel}
           debugTileLabels={debugTileLabels}
           onDebugTileLabelsChange={setDebugTileLabels}
-          debugShowVectorLayer={debugShowVectorLayer}
-          onDebugShowVectorLayerChange={setDebugShowVectorLayer}
-          debugShowNexradLayer={debugShowNexradLayer}
-          onDebugShowNexradLayerChange={setDebugShowNexradLayer}
+          mapLayerState={sessionSnapshot.map_layer_state}
           selectedMapId={selectedMapId}
           selectedMap={selectedMap}
           selectedFamilyMapViews={selectedFamilyMapViews}
@@ -1663,10 +1671,7 @@ function MapPage(props: {
   uptimeLabel: string;
   debugTileLabels: boolean;
   onDebugTileLabelsChange: (enabled: boolean) => void;
-  debugShowVectorLayer: boolean;
-  onDebugShowVectorLayerChange: (enabled: boolean) => void;
-  debugShowNexradLayer: boolean;
-  onDebugShowNexradLayerChange: (enabled: boolean) => void;
+  mapLayerState: UiMapLayerState;
   selectedMapId: string;
   selectedMap: MapViewOptionJson;
   selectedFamilyMapViews: MapViewOptionJson[];
@@ -1698,10 +1703,7 @@ function MapPage(props: {
     appCoreAdapter,
     debugTileLabels,
     onDebugTileLabelsChange,
-    debugShowVectorLayer,
-    onDebugShowVectorLayerChange,
-    debugShowNexradLayer,
-    onDebugShowNexradLayerChange,
+    mapLayerState,
     page,
     pageHistory,
     uptimeLabel,
@@ -1729,8 +1731,9 @@ function MapPage(props: {
     onFirstVisualReady,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const trayGroup = useModalTrayGroup(["page", "family"] as const);
+  const trayGroup = useModalTrayGroup(["page", "family", "layers"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
+  const [layerToggleBusyId, setLayerToggleBusyId] = useState<MapLayerId | null>(null);
   const [mapOverlay, setMapOverlay] = useState<MapOverlayQueryResult>({
     needed_point_tiles: [],
     needed_airspace_ref_tiles: [],
@@ -1981,6 +1984,20 @@ function MapPage(props: {
     ownship.orientation_deg?.toFixed(0) ?? "none",
     ownship.speed_kt?.toFixed(0) ?? "none",
   ].join(":");
+  const setMapLayerVisible = useCallback(async (layerId: MapLayerId, visible: boolean) => {
+    if (!uiSession || layerToggleBusyId !== null) {
+      return;
+    }
+    setLayerToggleBusyId(layerId);
+    try {
+      const nextSnapshot = await uiSession.setMapLayerVisibility(layerId, visible);
+      onPlaybackSnapshotChange(nextSnapshot);
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+      trayGroup.close("layers");
+    } finally {
+      setLayerToggleBusyId((current) => (current === layerId ? null : current));
+    }
+  }, [layerToggleBusyId, onPlaybackSnapshotChange, trayGroup, uiSession]);
   const nexradOverlay = useMemo(() => {
     const frame = nexradFrames[nexradFrameIndex];
     if (!frame || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -2012,7 +2029,7 @@ function MapPage(props: {
   }, [flightPlanRoute, surfaceSize.height, surfaceSize.width, viewport]);
 
   useEffect(() => {
-    if (!debugShowNexradLayer) {
+    if (!mapLayerState.nexrad.visible || !mapLayerState.nexrad.enabled) {
       setNexradStatus({ state: "unavailable", reason: "hidden" });
       setNexradFrames([]);
       setNexradFrameIndex(0);
@@ -2025,6 +2042,9 @@ function MapPage(props: {
     async function loadNexrad() {
       const response = await fetch("/fast-products/nexrad/nexrad.json", { signal: controller.signal });
       if (response.status === 404) {
+        if (uiSession) {
+          void uiSession.setMapLayerEnabled("nexrad", false).then(onPlaybackSnapshotChange).catch(() => {});
+        }
         return {
           status: { state: "unavailable", reason: "not_found" } satisfies NexradLayerStatus,
           frames: [],
@@ -2080,7 +2100,7 @@ function MapPage(props: {
       cancelled = true;
       controller.abort();
     };
-  }, [debugShowNexradLayer]);
+  }, [mapLayerState.nexrad.enabled, mapLayerState.nexrad.visible, onPlaybackSnapshotChange, uiSession]);
 
   useEffect(() => {
     if (nexradFrames.length <= 1) {
@@ -2114,6 +2134,14 @@ function MapPage(props: {
 
   useEffect(() => {
     if (!mapIsVisible || !uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      terrainRenderSessionRef.current = null;
+      terrainCurrentBucketRef.current = null;
+      terrainPendingFrameRef.current = null;
+      terrainRenderQueueRef.current.clear();
+      setTerrainOverlay({ query: null, images: [] });
+      return;
+    }
+    if (!mapLayerState.terrain_warning.visible) {
       terrainRenderSessionRef.current = null;
       terrainCurrentBucketRef.current = null;
       terrainPendingFrameRef.current = null;
@@ -2214,7 +2242,7 @@ function MapPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [mapIsVisible, surfaceSize.height, surfaceSize.width, terrainAltitudeBucket, uiSession, viewport]);
+  }, [mapIsVisible, mapLayerState.terrain_warning.visible, surfaceSize.height, surfaceSize.width, terrainAltitudeBucket, uiSession, viewport]);
 
   useEffect(() => {
     debugLog("map.nav_element.render", {
@@ -2341,7 +2369,7 @@ function MapPage(props: {
     if (!mapIsVisible) {
       return;
     }
-    if (!debugShowVectorLayer) {
+    if (!mapLayerState.vectors.visible) {
       setMapOverlay({
         needed_point_tiles: [],
         needed_airspace_ref_tiles: [],
@@ -2676,7 +2704,7 @@ function MapPage(props: {
       controller.abort();
     };
   }, [
-    debugShowVectorLayer,
+    mapLayerState.vectors.visible,
     mapIsVisible,
     mapOverlayOwnshipKey,
     onDebugWarning,
@@ -2874,6 +2902,29 @@ function MapPage(props: {
       .filter((image) => terrainOverlay.query?.tile_requests.some((request) => request.key === image.key))
       .map((image) => terrainImageForViewport(image, viewport, surfaceSize.width, surfaceSize.height))
     : [];
+  const layerTrayOptions: TrayOption[] = [
+    {
+      id: "vectors",
+      label: "Vectors",
+      toggleState: mapLayerState.vectors,
+      disabled: !mapLayerState.vectors.enabled,
+      onSelect: () => void setMapLayerVisible("vectors", !mapLayerState.vectors.visible),
+    },
+    {
+      id: "nexrad",
+      label: "NEXRAD",
+      toggleState: mapLayerState.nexrad,
+      disabled: !mapLayerState.nexrad.enabled,
+      onSelect: () => void setMapLayerVisible("nexrad", !mapLayerState.nexrad.visible),
+    },
+    {
+      id: "terrain_warning",
+      label: "Terrain Warning",
+      toggleState: mapLayerState.terrain_warning,
+      disabled: !mapLayerState.terrain_warning.enabled,
+      onSelect: () => void setMapLayerVisible("terrain_warning", !mapLayerState.terrain_warning.visible),
+    },
+  ];
 
   return (
     <section className="pageSurface">
@@ -3283,6 +3334,13 @@ function MapPage(props: {
               },
             }))}
           />
+          <TrayDock
+            launcherLabel="LAYERS"
+            open={trayGroup.isOpen("layers")}
+            onToggle={() => trayGroup.toggle("layers")}
+            ariaLabel="Layers"
+            options={layerTrayOptions}
+          />
         </div>
 
         <NavElementButton
@@ -3335,22 +3393,6 @@ function MapPage(props: {
                 onChange={(event) => onDebugTileLabelsChange(event.currentTarget.checked)}
               />
               tile labels
-            </label>
-            <label className="debugToggle">
-              <input
-                type="checkbox"
-                checked={debugShowVectorLayer}
-                onChange={(event) => onDebugShowVectorLayerChange(event.currentTarget.checked)}
-              />
-              vector layer
-            </label>
-            <label className="debugToggle">
-              <input
-                type="checkbox"
-                checked={debugShowNexradLayer}
-                onChange={(event) => onDebugShowNexradLayerChange(event.currentTarget.checked)}
-              />
-              nexrad
             </label>
           </DebugDock>
         </div>
@@ -4969,8 +5011,8 @@ function TrayDock(props: {
   const trayRef = useRef<HTMLElement | null>(null);
   const [trayPosition, setTrayPosition] = useState<{ left: number; top: number } | null>(null);
   const [trayThemeStyle, setTrayThemeStyle] = useState<CSSProperties | null>(null);
-  const launcherWide = style === "plate_wide";
-  const trayWide = style === "plate_narrow" || style === "plate_wide";
+  const launcherWide = style === "plate_wide" || style === "wide";
+  const trayWide = style === "plate_narrow" || style === "plate_wide" || style === "wide";
   const launcherDisabled = disabled && !open;
 
   useEffect(() => {
@@ -5048,20 +5090,30 @@ function TrayDock(props: {
                 <button
                   key={option.id}
                   type="button"
-                  className={`trayButton${option.active ? " isActive" : ""}${option.iconSrc ? " trayButtonWithIcon" : ""}`}
+                  className={`trayButton${option.active ? " isActive" : ""}${option.iconSrc ? " trayButtonWithIcon" : ""}${option.toggleState ? " trayButtonHasToggle" : ""}${option.toggleState?.visible && option.toggleState.enabled ? " isOn" : ""}${option.toggleState && option.toggleState.enabled && !option.toggleState.visible ? " isOff" : ""}`}
                   disabled={option.disabled}
                   style={option.accentColor ? ({ ["--tray-accent" as string]: option.accentColor } as CSSProperties) : undefined}
                   onPointerDown={stopPointer}
                   onPointerUp={stopPointer}
                   onDoubleClick={stopDoubleClick}
-                  onClick={option.onSelect}
+                  onClick={option.disabled ? undefined : option.onSelect}
                 >
-                  {option.iconSrc ? (
+                  {option.iconSrc || option.toggleState ? (
                     <span className="trayButtonContent">
-                      <span className="trayButtonIconFrame" aria-hidden="true">
-                        <img className="trayButtonIcon" src={option.iconSrc} alt="" />
-                      </span>
+                      {option.iconSrc ? (
+                        <span className="trayButtonIconFrame" aria-hidden="true">
+                          <img className="trayButtonIcon" src={option.iconSrc} alt="" />
+                        </span>
+                      ) : null}
                       <span className="trayButtonText">{option.label}</span>
+                      {option.toggleState ? (
+                        <span
+                          className={`trayButtonToggle${option.toggleState.visible ? " isOn" : ""}${option.toggleState.enabled ? "" : " isDisabled"}`}
+                          aria-hidden="true"
+                        >
+                          <span className="trayButtonToggleKnob" />
+                        </span>
+                      ) : null}
                     </span>
                   ) : option.label}
                 </button>

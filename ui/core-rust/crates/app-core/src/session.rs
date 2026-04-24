@@ -33,6 +33,19 @@ pub struct UiChartPageState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiMapLayerToggleState {
+    pub visible: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiMapLayerState {
+    pub vectors: UiMapLayerToggleState,
+    pub nexrad: UiMapLayerToggleState,
+    pub terrain_warning: UiMapLayerToggleState,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionSnapshot {
     pub app_state: UiSnapshotAppState,
     pub app_ui_state: AppUiState,
@@ -40,6 +53,7 @@ pub struct UiSessionSnapshot {
     pub map_follow_ui_state: MapFollowUiState,
     pub map_follow_target_viewport: Option<MapViewport>,
     pub chart_page_state: UiChartPageState,
+    pub map_layer_state: UiMapLayerState,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -61,6 +75,7 @@ struct UiSession {
     guidance_leg_geometry: HashMap<String, GuidanceLegGeometry>,
     map_overlay_config: MapOverlayConfig,
     chart_page_state: UiChartPageState,
+    map_layer_state: UiMapLayerState,
     point_tile_cache: HashMap<String, PointTilePayload>,
     airspace_ref_tile_cache: HashMap<String, AirspaceReferenceTilePayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
@@ -72,6 +87,13 @@ const DIRECT_SITUATION_SOURCE_ID: &str = "__direct_situation__";
 const PLAYBACK_SOURCE_ID: &str = "__playback_trace__";
 const CDI_NM_PER_DOT: f64 = 1.0;
 const CDI_OFFSCALE_DOTS: f64 = 2.1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MapLayerId {
+    Vectors,
+    Nexrad,
+    TerrainWarning,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GuidanceLegGeometry {
@@ -149,6 +171,7 @@ fn create_ui_session_inner(
         selected_airport_id,
         selected_chart_id,
     );
+    let map_layer_state = default_map_layer_state();
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_derive_chart_page_state");
     }
@@ -178,6 +201,7 @@ fn create_ui_session_inner(
         map_follow_ui_state,
         map_follow_target_viewport,
         chart_page_state: chart_page_state.clone(),
+        map_layer_state: map_layer_state.clone(),
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     sessions().lock().expect("session store poisoned").insert(
@@ -189,6 +213,7 @@ fn create_ui_session_inner(
             guidance_leg_geometry: HashMap::new(),
             map_overlay_config,
             chart_page_state,
+            map_layer_state,
             point_tile_cache: HashMap::new(),
             airspace_ref_tile_cache: HashMap::new(),
             airspace_feature_cache: HashMap::new(),
@@ -221,6 +246,34 @@ pub fn remove_leg_in_session(handle: u32, index: usize) -> AppResult<UiSessionSn
         Some(&session.chart_page_state.selected_airport_id),
         Some(&session.chart_page_state.selected_chart_id),
     );
+    Ok(snapshot_for_session(session))
+}
+
+pub fn set_map_layer_visibility_in_session(
+    handle: u32,
+    layer_id: &str,
+    visible: bool,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let layer = parse_map_layer_id(layer_id)?;
+    map_layer_toggle_mut(&mut session.map_layer_state, layer).visible = visible;
+    Ok(snapshot_for_session(session))
+}
+
+pub fn set_map_layer_enabled_in_session(
+    handle: u32,
+    layer_id: &str,
+    enabled: bool,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let layer = parse_map_layer_id(layer_id)?;
+    let toggle = map_layer_toggle_mut(&mut session.map_layer_state, layer);
+    toggle.enabled = enabled;
+    if !enabled {
+        toggle.visible = false;
+    }
     Ok(snapshot_for_session(session))
 }
 
@@ -644,6 +697,9 @@ pub fn get_map_overlay_in_session(
 ) -> AppResult<MapOverlayQueryResult> {
     let sessions = sessions().lock().expect("session store poisoned");
     let session = session_ref(&sessions, handle)?;
+    if !session.map_layer_state.vectors.visible {
+        return Ok(empty_map_overlay_query());
+    }
     Ok(query_map_overlay(
         &viewport,
         width_px,
@@ -666,6 +722,12 @@ pub fn get_terrain_overlay_in_session(
 ) -> AppResult<TerrainOverlayQueryResult> {
     let sessions = sessions().lock().expect("session store poisoned");
     let session = session_ref(&sessions, handle)?;
+    if !session.map_layer_state.terrain_warning.visible {
+        return Ok(TerrainOverlayQueryResult {
+            status: crate::TerrainOverlayStatus::Hidden,
+            tile_requests: Vec::new(),
+        });
+    }
     let kinematics = session.app_state.ownship.resolved.kinematics.as_ref();
     let has_position = kinematics.is_some_and(|kinematics| {
         kinematics.position.lat.is_finite() && kinematics.position.lon.is_finite()
@@ -829,6 +891,62 @@ fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
             .map_follow
             .target_viewport(&session.app_state.ownship.render),
         chart_page_state: session.chart_page_state.clone(),
+        map_layer_state: session.map_layer_state.clone(),
+    }
+}
+
+fn default_map_layer_state() -> UiMapLayerState {
+    UiMapLayerState {
+        vectors: UiMapLayerToggleState {
+            visible: true,
+            enabled: true,
+        },
+        nexrad: UiMapLayerToggleState {
+            visible: false,
+            enabled: true,
+        },
+        terrain_warning: UiMapLayerToggleState {
+            visible: true,
+            enabled: true,
+        },
+    }
+}
+
+fn parse_map_layer_id(layer_id: &str) -> AppResult<MapLayerId> {
+    match layer_id {
+        "vectors" => Ok(MapLayerId::Vectors),
+        "nexrad" => Ok(MapLayerId::Nexrad),
+        "terrain_warning" => Ok(MapLayerId::TerrainWarning),
+        _ => Err(AppError {
+            kind: AppErrorKind::Internal,
+            message: format!("unknown map layer id: {layer_id}"),
+        }),
+    }
+}
+
+fn map_layer_toggle_mut(
+    map_layer_state: &mut UiMapLayerState,
+    layer_id: MapLayerId,
+) -> &mut UiMapLayerToggleState {
+    match layer_id {
+        MapLayerId::Vectors => &mut map_layer_state.vectors,
+        MapLayerId::Nexrad => &mut map_layer_state.nexrad,
+        MapLayerId::TerrainWarning => &mut map_layer_state.terrain_warning,
+    }
+}
+
+fn empty_map_overlay_query() -> MapOverlayQueryResult {
+    MapOverlayQueryResult {
+        needed_point_tiles: Vec::new(),
+        needed_airspace_ref_tiles: Vec::new(),
+        needed_airspace_features: Vec::new(),
+        needed_airspace_label_tiles: Vec::new(),
+        needed_tfrs: false,
+        visible_features: Vec::new(),
+        airspace_paths: Vec::new(),
+        tfr_paths: Vec::new(),
+        airspace_labels: Vec::new(),
+        warnings: Vec::new(),
     }
 }
 

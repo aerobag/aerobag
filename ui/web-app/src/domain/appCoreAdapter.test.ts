@@ -36,6 +36,11 @@ const snapshotJson = JSON.stringify({
     selected_airport_id: "",
     selected_chart_id: "",
   },
+  map_layer_state: {
+    vectors: { visible: true, enabled: true },
+    nexrad: { visible: false, enabled: true },
+    terrain_warning: { visible: true, enabled: true },
+  },
 });
 
 describe("loadBestAvailableAdapter", () => {
@@ -66,6 +71,8 @@ describe("loadBestAvailableAdapter", () => {
       update_ownship_source_status_in_session: async () => snapshotJson,
       push_situation_sample_in_session: async () => snapshotJson,
       select_ownship_source_in_session: async () => snapshotJson,
+      set_map_layer_visibility_in_session: async () => snapshotJson,
+      set_map_layer_enabled_in_session: async () => snapshotJson,
       replace_flight_plan_in_session: async () => snapshotJson,
       set_guidance_leg_geometry_in_session: async () => snapshotJson,
       select_airport_in_session: async () => snapshotJson,

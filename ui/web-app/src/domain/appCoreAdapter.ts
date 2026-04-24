@@ -85,6 +85,20 @@ export type UiSessionSnapshot = {
     pitch_deg: number;
   } | null;
   chart_page_state: UiChartPageState;
+  map_layer_state: UiMapLayerState;
+};
+
+export type MapLayerId = "vectors" | "nexrad" | "terrain_warning";
+
+export type UiMapLayerToggleState = {
+  visible: boolean;
+  enabled: boolean;
+};
+
+export type UiMapLayerState = {
+  vectors: UiMapLayerToggleState;
+  nexrad: UiMapLayerToggleState;
+  terrain_warning: UiMapLayerToggleState;
 };
 
 export type UiChartPageState = {
@@ -276,6 +290,7 @@ export type MapOverlayQueryResult = {
 };
 
 export type TerrainOverlayStatus =
+  | { state: "hidden" }
   | { state: "no_position" }
   | { state: "no_altitude" }
   | { state: "too_many_tiles"; count: number }
@@ -323,6 +338,8 @@ export interface UiSession {
   updateOwnshipSourceStatus(update: OwnshipSourceStatusUpdate): Promise<UiSessionSnapshot>;
   pushSituationSample(sample: SituationSample): Promise<UiSessionSnapshot>;
   selectOwnshipSource(selection: OwnshipSelectionCommand): Promise<UiSessionSnapshot>;
+  setMapLayerVisibility(layerId: MapLayerId, visible: boolean): Promise<UiSessionSnapshot>;
+  setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
@@ -488,6 +505,8 @@ type WasmModule = {
   update_ownship_source_status_in_session(handle: number, updateJson: string): Promise<string> | string;
   push_situation_sample_in_session(handle: number, sampleJson: string): Promise<string> | string;
   select_ownship_source_in_session(handle: number, selectionJson: string): Promise<string> | string;
+  set_map_layer_visibility_in_session(handle: number, layerIdJson: string, visible: boolean): Promise<string> | string;
+  set_map_layer_enabled_in_session(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
   replace_flight_plan_in_session(handle: number, planJson: string): Promise<string> | string;
   set_guidance_leg_geometry_in_session(handle: number, geometriesJson: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
@@ -711,6 +730,22 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       selectOwnshipSource: async (selection) => {
         snapshot = await parseSessionSnapshot(
           this.module.select_ownship_source_in_session(handle, JSON.stringify(selection)),
+        );
+        return snapshot;
+      },
+      setMapLayerVisibility: async (layerId, visible) => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(
+            this.module.set_map_layer_visibility_in_session(handle, JSON.stringify(layerId), visible),
+          ),
+        );
+        return snapshot;
+      },
+      setMapLayerEnabled: async (layerId, enabled) => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(
+            this.module.set_map_layer_enabled_in_session(handle, JSON.stringify(layerId), enabled),
+          ),
         );
         return snapshot;
       },
@@ -1198,6 +1233,8 @@ export async function loadBestAvailableAdapter(
     typeof mod.update_ownship_source_status_in_session !== "function" ||
     typeof mod.push_situation_sample_in_session !== "function" ||
     typeof mod.select_ownship_source_in_session !== "function" ||
+    typeof mod.set_map_layer_visibility_in_session !== "function" ||
+    typeof mod.set_map_layer_enabled_in_session !== "function" ||
     typeof mod.replace_flight_plan_in_session !== "function" ||
     typeof mod.set_guidance_leg_geometry_in_session !== "function" ||
     typeof mod.select_airport_in_session !== "function" ||

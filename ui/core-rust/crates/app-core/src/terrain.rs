@@ -101,6 +101,7 @@ pub struct TerrainOverlayQueryResult {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum TerrainOverlayStatus {
+    Hidden,
     NoPosition,
     NoAltitude,
     TooManyTiles { count: usize },

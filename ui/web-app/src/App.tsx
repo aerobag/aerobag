@@ -216,6 +216,7 @@ type NexradFrame = {
 const bootstrap = bootstrapJson as DevBootstrapJson;
 const samplePlan = bootstrap.flight_plan;
 const emptyChartPage: ChartPageData = { airports: [] };
+const O88_POSITION = { lat: 38.19338888888888, lon: -121.70363888888889 };
 
 type NexradOverlayFrame = NexradFrame & {
   url: string;
@@ -472,7 +473,6 @@ const loadedUiTheme = uiTheme as UiThemeJson;
 const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
 const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
-const KMSY_POSITION = { lat: 29.993389, lon: -90.258028 };
 const defaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json";
 const startupHighLatencyWarningGraceMs = 10_000;
 const rasterTileDebugTargets = [
@@ -935,7 +935,7 @@ export default function App() {
 
   const selectedMap = mapSelectorState.selected_map;
   const [mapViewport, setMapViewport] = useState<MapViewportState>(() => {
-    const center = latLonToWorld(KMSY_POSITION.lat, KMSY_POSITION.lon);
+    const center = latLonToWorld(O88_POSITION.lat, O88_POSITION.lon);
     return {
       centerWorldX: center.x,
       centerWorldY: center.y,
@@ -1249,6 +1249,7 @@ export default function App() {
         "--theme-cdi-pointer": controlTheme.cdi_pointer,
         "--theme-class-b-d-blue": loadedUiTheme.aviation.class_b_d_blue,
         "--theme-class-c-magenta": loadedUiTheme.aviation.class_c_magenta,
+        "--theme-tfr-red": loadedUiTheme.aviation.tfr_red,
         "--theme-intersection-cyan": loadedUiTheme.aviation.intersection_cyan,
         "--theme-aviation-dark-gray": loadedUiTheme.aviation.dark_gray,
       }) as CSSProperties,

@@ -142,8 +142,7 @@ button {
   stroke-linecap: square;
 }
 
-.airspaceLabel-class_c,
-.airspaceLabel-class_d {
+.airspaceLabel-class_c .airspaceLabel {
   fill: var(--theme-class-c-magenta);
 }
 
@@ -151,12 +150,20 @@ button {
   stroke: var(--theme-class-c-magenta);
 }
 
-.airspaceLabel-class_d {
+.airspaceLabel-class_d .airspaceLabel {
   fill: var(--theme-class-b-d-blue);
 }
 
 .airspaceLabel-class_d .airspaceLabelDivider {
   stroke: var(--theme-class-b-d-blue);
+}
+
+.airspaceLabel-tfr .airspaceLabel {
+  fill: var(--theme-tfr-red);
+}
+
+.airspaceLabel-tfr .airspaceLabelDivider {
+  stroke: var(--theme-tfr-red);
 }
 
 .nexradOverlay {

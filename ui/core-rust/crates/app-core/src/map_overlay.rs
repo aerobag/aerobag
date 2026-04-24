@@ -506,7 +506,11 @@ pub fn query_map_overlay(
         visible_features,
         airspace_paths: airspace.paths,
         tfr_paths: tfrs.paths,
-        airspace_labels: airspace.labels,
+        airspace_labels: {
+            let mut labels = airspace.labels;
+            labels.extend(tfrs.labels);
+            labels
+        },
         warnings,
     }
 }
@@ -514,6 +518,7 @@ pub fn query_map_overlay(
 struct TfrOverlayProjection {
     needed_tfrs: bool,
     paths: Vec<AirspaceDisplayPath>,
+    labels: Vec<AirspaceDisplayLabel>,
 }
 
 fn query_tfr_overlay(
@@ -528,15 +533,18 @@ fn query_tfr_overlay(
         return TfrOverlayProjection {
             needed_tfrs: false,
             paths: Vec::new(),
+            labels: Vec::new(),
         };
     }
     let Some(payload) = tfr_payload else {
         return TfrOverlayProjection {
             needed_tfrs: true,
             paths: Vec::new(),
+            labels: Vec::new(),
         };
     };
     let mut paths = Vec::new();
+    let mut labels = Vec::new();
     for area in &payload.areas {
         if area.polygon.len() < 3 {
             continue;
@@ -567,16 +575,25 @@ fn query_tfr_overlay(
                 y: point.y,
             })
             .collect::<Vec<_>>();
+        if let Some(label_point) =
+            tfr_label_screen_point(area, &projected_points, center_world, scale, width_px, height_px)
+        {
+            labels.push(AirspaceDisplayLabel {
+                feature_id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
+                text: format!(
+                    "{}/{}",
+                    area.upper_limit.value_text.trim(),
+                    area.lower_limit.value_text.trim()
+                ),
+                style_key: "tfr".to_string(),
+                screen_x: label_point.x,
+                screen_y: label_point.y,
+            });
+        }
         paths.push(AirspaceDisplayPath {
             id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
             name: area.notam_id.trim().to_string(),
-            label: format!(
-                "{} / {}-{} {}",
-                area.notam_id.trim(),
-                area.lower_limit.value_text.trim(),
-                area.upper_limit.value_text.trim(),
-                area.upper_limit.unit.trim(),
-            ),
+            label: area.notam_id.trim().to_string(),
             style_key: "tfr".to_string(),
             style: AirspaceDisplayStyle {
                 fill_color_key: "tfr_red".to_string(),
@@ -599,6 +616,7 @@ fn query_tfr_overlay(
     TfrOverlayProjection {
         needed_tfrs: false,
         paths,
+        labels,
     }
 }
 
@@ -616,6 +634,102 @@ fn tfr_bbox(area: &TfrAreaPayload) -> Option<[f64; 4]> {
         north = north.max(point.lat);
     }
     Some([west, south, east, north])
+}
+
+fn tfr_label_screen_point(
+    area: &TfrAreaPayload,
+    projected_points: &[AirspaceScreenPoint],
+    center_world: WorldPoint,
+    scale: f64,
+    width_px: f64,
+    height_px: f64,
+) -> Option<AirspaceScreenPoint> {
+    if !tfr_polygon_can_fit_label(area, projected_points) {
+        return None;
+    }
+    let centroid = tfr_polygon_centroid(area)?;
+    let point = world_to_screen(center_world, scale, width_px, height_px, centroid);
+    if point.x < 0.0 || point.x > width_px || point.y < 0.0 || point.y > height_px {
+        return None;
+    }
+    Some(AirspaceScreenPoint {
+        x: point.x,
+        y: point.y,
+    })
+}
+
+fn tfr_polygon_centroid(area: &TfrAreaPayload) -> Option<LatLon> {
+    if area.polygon.len() < 3 {
+        return None;
+    }
+    let mut twice_signed_area = 0.0;
+    let mut centroid_lon = 0.0;
+    let mut centroid_lat = 0.0;
+    for index in 0..area.polygon.len() {
+        let current = &area.polygon[index];
+        let next = &area.polygon[(index + 1) % area.polygon.len()];
+        let cross = current.lon * next.lat - next.lon * current.lat;
+        twice_signed_area += cross;
+        centroid_lon += (current.lon + next.lon) * cross;
+        centroid_lat += (current.lat + next.lat) * cross;
+    }
+    if twice_signed_area.abs() < f64::EPSILON {
+        let (sum_lat, sum_lon, count) = area
+            .polygon
+            .iter()
+            .fold((0.0, 0.0, 0usize), |(sum_lat, sum_lon, count), point| {
+                (sum_lat + point.lat, sum_lon + point.lon, count + 1)
+            });
+        if count == 0 {
+            return None;
+        }
+        return Some(LatLon {
+            lat: sum_lat / count as f64,
+            lon: sum_lon / count as f64,
+        });
+    }
+    let scale = 1.0 / (3.0 * twice_signed_area);
+    Some(LatLon {
+        lat: centroid_lat * scale,
+        lon: centroid_lon * scale,
+    })
+}
+
+fn tfr_polygon_can_fit_label(
+    area: &TfrAreaPayload,
+    projected_points: &[AirspaceScreenPoint],
+) -> bool {
+    let Some((bbox_width, bbox_height)) = projected_bbox_size(projected_points) else {
+        return false;
+    };
+    let label_width = tfr_fraction_label_width_px(area);
+    let label_height = 22.0;
+    bbox_width >= label_width && bbox_height >= label_height
+}
+
+fn projected_bbox_size(points: &[AirspaceScreenPoint]) -> Option<(f64, f64)> {
+    let mut iter = points.iter();
+    let first = iter.next()?;
+    let (mut min_x, mut max_x) = (first.x, first.x);
+    let (mut min_y, mut max_y) = (first.y, first.y);
+    for point in iter {
+        min_x = min_x.min(point.x);
+        max_x = max_x.max(point.x);
+        min_y = min_y.min(point.y);
+        max_y = max_y.max(point.y);
+    }
+    Some((max_x - min_x, max_y - min_y))
+}
+
+fn tfr_fraction_label_width_px(area: &TfrAreaPayload) -> f64 {
+    let width_chars = area
+        .upper_limit
+        .value_text
+        .trim()
+        .len()
+        .max(area.lower_limit.value_text.trim().len())
+        .max(2);
+    (width_chars as f64) * 7.2 + 6.0
 }
 
 struct AirspaceOverlayProjection {
@@ -1345,6 +1459,7 @@ mod tests {
             airspace_ref_tile_cache,
             airspace_feature_cache,
             airspace_label_tile_cache,
+            None,
         )
     }
 
@@ -1757,6 +1872,144 @@ mod tests {
             airspace_feather_style("warning"),
             Some(("class_b_d_blue".to_string(), 1.4))
         );
+    }
+
+    #[test]
+    fn tfr_overlay_emits_fraction_label_at_polygon_centroid() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            zoom: 10.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let width_px = 1200.0;
+        let height_px = 900.0;
+        let scale = 2.0_f64.powf(viewport.zoom);
+        let center_world = lat_lon_to_world(viewport.center);
+        let payload = TfrProductPayload {
+            schema_version: 1,
+            version_label: "test".to_string(),
+            notam_count: 1,
+            area_group_count: 1,
+            areas: vec![TfrAreaPayload {
+                notam_id: "1/2345".to_string(),
+                area_index: 0,
+                schedule_fragments: Vec::new(),
+                upper_limit: TfrAltitudeLimit {
+                    value_text: "5000".to_string(),
+                    unit: "FT MSL".to_string(),
+                },
+                lower_limit: TfrAltitudeLimit {
+                    value_text: "SFC".to_string(),
+                    unit: "FT MSL".to_string(),
+                },
+                polygon: vec![
+                    TfrLatLonPoint {
+                        lat: 47.08,
+                        lon: -122.08,
+                    },
+                    TfrLatLonPoint {
+                        lat: 47.08,
+                        lon: -121.92,
+                    },
+                    TfrLatLonPoint {
+                        lat: 46.92,
+                        lon: -121.92,
+                    },
+                    TfrLatLonPoint {
+                        lat: 46.92,
+                        lon: -122.08,
+                    },
+                ],
+                avare_text: String::new(),
+            }],
+        };
+
+        let result = query_tfr_overlay(
+            &viewport,
+            width_px,
+            height_px,
+            center_world,
+            scale,
+            Some(&payload),
+        );
+
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.labels.len(), 1);
+        assert_eq!(result.labels[0].style_key, "tfr");
+        assert_eq!(result.labels[0].text, "5000/SFC");
+        assert!((result.labels[0].screen_x - width_px / 2.0).abs() < 1.0);
+        assert!((result.labels[0].screen_y - height_px / 2.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn tfr_overlay_elides_fraction_label_when_polygon_is_too_small() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            zoom: 8.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let width_px = 1200.0;
+        let height_px = 900.0;
+        let scale = 2.0_f64.powf(viewport.zoom);
+        let center_world = lat_lon_to_world(viewport.center);
+        let payload = TfrProductPayload {
+            schema_version: 1,
+            version_label: "test".to_string(),
+            notam_count: 1,
+            area_group_count: 1,
+            areas: vec![TfrAreaPayload {
+                notam_id: "1/2345".to_string(),
+                area_index: 0,
+                schedule_fragments: Vec::new(),
+                upper_limit: TfrAltitudeLimit {
+                    value_text: "18000".to_string(),
+                    unit: "FT MSL".to_string(),
+                },
+                lower_limit: TfrAltitudeLimit {
+                    value_text: "SFC".to_string(),
+                    unit: "FT MSL".to_string(),
+                },
+                polygon: vec![
+                    TfrLatLonPoint {
+                        lat: 47.001,
+                        lon: -122.001,
+                    },
+                    TfrLatLonPoint {
+                        lat: 47.001,
+                        lon: -121.999,
+                    },
+                    TfrLatLonPoint {
+                        lat: 46.999,
+                        lon: -121.999,
+                    },
+                    TfrLatLonPoint {
+                        lat: 46.999,
+                        lon: -122.001,
+                    },
+                ],
+                avare_text: String::new(),
+            }],
+        };
+
+        let result = query_tfr_overlay(
+            &viewport,
+            width_px,
+            height_px,
+            center_world,
+            scale,
+            Some(&payload),
+        );
+
+        assert_eq!(result.paths.len(), 1);
+        assert!(result.labels.is_empty());
     }
 
     #[test]

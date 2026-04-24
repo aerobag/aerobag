@@ -580,11 +580,7 @@ fn query_tfr_overlay(
         {
             labels.push(AirspaceDisplayLabel {
                 feature_id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
-                text: format!(
-                    "{}/{}",
-                    area.upper_limit.value_text.trim(),
-                    area.lower_limit.value_text.trim()
-                ),
+                text: format!("{}/{}", tfr_limit_label(&area.upper_limit), tfr_limit_label(&area.lower_limit)),
                 style_key: "tfr".to_string(),
                 screen_x: label_point.x,
                 screen_y: label_point.y,
@@ -722,14 +718,21 @@ fn projected_bbox_size(points: &[AirspaceScreenPoint]) -> Option<(f64, f64)> {
 }
 
 fn tfr_fraction_label_width_px(area: &TfrAreaPayload) -> f64 {
-    let width_chars = area
-        .upper_limit
-        .value_text
-        .trim()
-        .len()
-        .max(area.lower_limit.value_text.trim().len())
-        .max(2);
+    let upper = tfr_limit_label(&area.upper_limit);
+    let lower = tfr_limit_label(&area.lower_limit);
+    let width_chars = upper.len().max(lower.len()).max(2);
     (width_chars as f64) * 7.2 + 6.0
+}
+
+fn tfr_limit_label(limit: &TfrAltitudeLimit) -> String {
+    let value = limit.value_text.trim();
+    if value == "0" {
+        return "SFC".to_string();
+    }
+    if limit.unit.trim() == "FL" {
+        return format!("FL{value}");
+    }
+    value.to_string()
 }
 
 struct AirspaceOverlayProjection {
@@ -1899,12 +1902,12 @@ mod tests {
                 area_index: 0,
                 schedule_fragments: Vec::new(),
                 upper_limit: TfrAltitudeLimit {
-                    value_text: "5000".to_string(),
-                    unit: "FT MSL".to_string(),
+                    value_text: "180".to_string(),
+                    unit: "FL".to_string(),
                 },
                 lower_limit: TfrAltitudeLimit {
-                    value_text: "SFC".to_string(),
-                    unit: "FT MSL".to_string(),
+                    value_text: "0".to_string(),
+                    unit: "FT".to_string(),
                 },
                 polygon: vec![
                     TfrLatLonPoint {
@@ -1940,7 +1943,7 @@ mod tests {
         assert_eq!(result.paths.len(), 1);
         assert_eq!(result.labels.len(), 1);
         assert_eq!(result.labels[0].style_key, "tfr");
-        assert_eq!(result.labels[0].text, "5000/SFC");
+        assert_eq!(result.labels[0].text, "FL180/SFC");
         assert!((result.labels[0].screen_x - width_px / 2.0).abs() < 1.0);
         assert!((result.labels[0].screen_y - height_px / 2.0).abs() < 1.0);
     }

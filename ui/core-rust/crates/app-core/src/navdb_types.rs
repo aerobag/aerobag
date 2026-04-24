@@ -169,6 +169,7 @@ pub struct ProcedureLegMaterializationRecord {
     pub path_termination: String,
     pub path_termination_kind: PathTermination,
     pub turn_direction: Option<String>,
+    pub theta_deg: Option<f64>,
     pub magnetic_course_deg: Option<f64>,
     pub route_distance_or_time: Option<String>,
 }
@@ -206,6 +207,8 @@ struct ProcedureLegMaterializationRecordSerde {
     #[serde(default)]
     turn_direction: Option<String>,
     #[serde(default)]
+    theta_deg: Option<f64>,
+    #[serde(default)]
     magnetic_course_deg: Option<f64>,
     #[serde(default)]
     route_distance_or_time: Option<String>,
@@ -234,6 +237,7 @@ impl Serialize for ProcedureLegMaterializationRecord {
             path_termination: self.path_termination.clone(),
             path_termination_kind: Some(self.path_termination_kind.clone()),
             turn_direction: self.turn_direction.clone(),
+            theta_deg: self.theta_deg,
             magnetic_course_deg: self.magnetic_course_deg,
             route_distance_or_time: self.route_distance_or_time.clone(),
         }
@@ -267,6 +271,7 @@ impl<'de> Deserialize<'de> for ProcedureLegMaterializationRecord {
                 .unwrap_or_else(|| interpret_path_termination(&raw.path_termination)),
             path_termination: raw.path_termination,
             turn_direction: raw.turn_direction,
+            theta_deg: raw.theta_deg,
             magnetic_course_deg: raw.magnetic_course_deg,
             route_distance_or_time: raw.route_distance_or_time,
         })

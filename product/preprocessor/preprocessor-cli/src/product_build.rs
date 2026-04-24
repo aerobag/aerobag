@@ -5438,6 +5438,7 @@ fn load_nav_kv_procedure_rows(
           trim(altitude_2),
           trim(path_and_termination),
           trim(turn_direction),
+          trim(theta),
           trim(magnetic_course),
           trim(route_distance_holding_distance_or_time)
         FROM cifp_sid_star_app
@@ -5461,6 +5462,7 @@ fn load_nav_kv_procedure_rows(
             row.get::<_, String>(10)?,
             row.get::<_, String>(11)?,
             row.get::<_, String>(12)?,
+            row.get::<_, String>(13)?,
         ))
     })?;
     for row in rows {
@@ -5476,6 +5478,7 @@ fn load_nav_kv_procedure_rows(
             altitude_2,
             path_termination,
             turn_direction,
+            theta,
             magnetic_course,
             route_distance_or_time,
         ) = row?;
@@ -5538,6 +5541,7 @@ fn load_nav_kv_procedure_rows(
                 "altitude_2_ft": parse_nav_kv_cifp_altitude_ft(&altitude_2),
                 "path_termination": path_termination,
                 "turn_direction": non_empty_json_string(turn_direction),
+                "theta_deg": parse_nav_kv_cifp_tenths_value(&theta),
                 "magnetic_course_deg": parse_nav_kv_cifp_tenths_value(&magnetic_course),
                 "route_distance_or_time": non_empty_json_string(route_distance_or_time),
             }));

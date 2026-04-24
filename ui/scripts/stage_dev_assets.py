@@ -313,6 +313,11 @@ def stage_nav_kv() -> None:
         ensure_hard_link(page, values_root / f"{index:04}")
 
 
+def stage_bundle_manifests() -> None:
+    ensure_hard_link(CURRENT_ARTIFACTS_FILE, WEB_STATIC_ROOT / "current-artifacts.json")
+    ensure_hard_link(PRODUCT_BUILD_FILE, WEB_STATIC_ROOT / "cycle-bundle.json")
+
+
 def current_stage_stamp() -> dict:
     def file_stamp(path: Path) -> dict:
         stat = path.stat()
@@ -343,7 +348,7 @@ def current_stage_stamp() -> dict:
             for package in PRODUCT_BUILD.get("packages", [])
             if isinstance(package, dict)
         ],
-        "version": 8,
+        "version": 9,
     }
 
 
@@ -365,6 +370,7 @@ def main() -> None:
     WEB_STATIC_ROOT.mkdir(parents=True, exist_ok=True)
     if stage_is_current():
         return
+    stage_bundle_manifests()
     stage_sectional_packages()
     stage_chart_assets()
     stage_vectors()

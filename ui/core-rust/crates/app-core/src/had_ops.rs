@@ -348,6 +348,7 @@ struct MapViewRecord {
     chart_name: String,
     chart_index: i64,
     tile_root: String,
+    tile_url_root: String,
     tile_path_template: String,
     tile_size: i64,
     min_zoom: f64,
@@ -1448,6 +1449,154 @@ mod tests {
 
         assert_eq!(snapshot.chart_page_state.selected_airport_id, "KPAE");
         assert_eq!(snapshot.chart_page_state.selected_chart_id, vor_a.id);
+    }
+
+    #[test]
+    fn generated_nav_kv_chart_catalog_lists_multiple_regions() {
+        let store = load_generated_nav_kv_store();
+        let catalog = match run_had_operation(&store, HadOperation::ChartCatalog)
+            .expect("load generated chart catalog")
+        {
+            HadOperationOutcome::Complete { result } => {
+                serde_json::from_value::<Vec<MapViewOptionRecord>>(result)
+                    .expect("decode generated chart catalog")
+            }
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete generated chart catalog, got missing pages: {pages:?}");
+            }
+        };
+
+        let regions = catalog
+            .iter()
+            .map(|view| view.region_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let ids = catalog
+            .iter()
+            .map(|view| view.id.as_str())
+            .collect::<Vec<_>>();
+
+        println!("generated chart catalog regions: {regions:?}");
+        println!("generated chart catalog ids: {ids:?}");
+
+        assert!(regions.len() > 1, "expected multi-region chart catalog, got {regions:?}");
+    }
+
+    #[test]
+    fn generated_nav_kv_default_map_selector_state_displays_all_tac_and_sec_regions() {
+        let store = load_generated_nav_kv_store();
+        let state = match run_had_operation(
+            &store,
+            HadOperation::MapSelectorState {
+                selected_map_id: None,
+            },
+        )
+        .expect("load generated map selector state")
+        {
+            HadOperationOutcome::Complete { result } => {
+                serde_json::from_value::<MapSelectorState>(result)
+                    .expect("decode generated map selector state")
+            }
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete generated map selector state, got missing pages: {pages:?}");
+            }
+        };
+
+        let displayed_ids = state
+            .displayed_maps
+            .iter()
+            .map(|view| view.id.as_str())
+            .collect::<Vec<_>>();
+        let displayed_regions = state
+            .displayed_maps
+            .iter()
+            .map(|view| view.region_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        println!("default selected map id: {}", state.selected_map_id);
+        println!("default displayed map ids: {displayed_ids:?}");
+        println!("default displayed regions: {displayed_regions:?}");
+
+        assert_eq!(state.selected_map_id, "tac:nw");
+        assert!(displayed_ids.iter().any(|id| *id == "sec:sc"));
+        assert!(displayed_ids.iter().any(|id| *id == "tac:sc"));
+        let sec_sc = state
+            .displayed_maps
+            .iter()
+            .find(|view| view.id == "sec:sc")
+            .expect("missing sec:sc map");
+        assert_eq!(
+            sec_sc.map_view.tile_url_root,
+            "/sectional-packages/SC_SEC_2603/tiles"
+        );
+        assert!(displayed_regions.len() > 1, "expected multi-region displayed maps, got {displayed_regions:?}");
+    }
+
+    #[test]
+    fn generated_nav_kv_south_central_maps_cover_kmsy_tile() {
+        let store = load_generated_nav_kv_store();
+        let state = match run_had_operation(
+            &store,
+            HadOperation::MapSelectorState {
+                selected_map_id: None,
+            },
+        )
+        .expect("load generated map selector state")
+        {
+            HadOperationOutcome::Complete { result } => {
+                serde_json::from_value::<MapSelectorState>(result)
+                    .expect("decode generated map selector state")
+            }
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete generated map selector state, got missing pages: {pages:?}");
+            }
+        };
+
+        fn lat_lon_to_tile_tms(lat: f64, lon: f64, zoom: f64) -> (i64, i64) {
+            let world_size = 256.0f64;
+            let max_latitude = 85.05112878f64;
+            let clamped_lat = lat.max(-max_latitude).min(max_latitude);
+            let world_x = ((lon + 180.0) / 360.0) * world_size;
+            let world_y =
+                ((1.0 - clamped_lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0)
+                    * world_size;
+            let scale = 2.0f64.powf(zoom);
+            let x_xyz = (world_x * scale / world_size).floor() as i64;
+            let y_xyz = (world_y * scale / world_size).floor() as i64;
+            let y_tms = ((2.0f64.powf(zoom) as i64) - 1) - y_xyz;
+            (x_xyz, y_tms)
+        }
+
+        let kmsy_lat = 29.993389f64;
+        let kmsy_lon = -90.258028f64;
+        for map_id in ["sec:sc", "tac:sc"] {
+            let view = state
+                .displayed_maps
+                .iter()
+                .find(|view| view.id == map_id)
+                .unwrap_or_else(|| panic!("missing displayed map {map_id}"));
+            let level = view
+                .map_view
+                .levels
+                .iter()
+                .find(|level| (level.zoom - 10.0).abs() < f64::EPSILON)
+                .unwrap_or_else(|| panic!("missing zoom-10 level for {map_id}: {:?}", view.map_view.levels));
+            let (x, y_tms) = lat_lon_to_tile_tms(kmsy_lat, kmsy_lon, level.zoom);
+            println!(
+                "{map_id} zoom {} tile x={} y_tms={} bounds x={}..={} y={}..={}",
+                level.zoom,
+                x,
+                y_tms,
+                level.x_min,
+                level.x_max,
+                level.y_tms_min,
+                level.y_tms_max
+            );
+            assert!(
+                x >= level.x_min && x <= level.x_max && y_tms >= level.y_tms_min && y_tms <= level.y_tms_max,
+                "{map_id} does not cover KMSY at zoom {}",
+                level.zoom
+            );
+        }
     }
 
     #[test]

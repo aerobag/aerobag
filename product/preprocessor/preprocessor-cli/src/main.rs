@@ -35,8 +35,9 @@ use preprocessor_resource_index::{
 use preprocessor_tools::{comparison_targets, ToolInvocation};
 use preprocessor_tpp::{run_native_tpp, NativeTppRunRequest};
 use preprocessor_vectors::{
-    build_bravo_union_svg, build_obstacle_dataset, build_vectors_dataset,
-    BuildBravoUnionSvgRequest, BuildObstacleDatasetRequest, BuildVectorsRequest,
+    analyze_obstacle_thresholds, build_bravo_union_svg, build_obstacle_dataset,
+    build_vectors_dataset, AnalyzeObstacleThresholdsRequest, BuildBravoUnionSvgRequest,
+    BuildObstacleDatasetRequest, BuildVectorsRequest,
 };
 use product_build::{
     build_cycle, build_fast_subset, build_product, default_artifact_write_path,
@@ -65,6 +66,7 @@ fn print_partial_run_hint(run_root: &PathBuf) {
 fn usage() -> &'static str {
     "usage:
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli build-fast-subset [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
 
 Use --long-help to show internal/debug commands."
@@ -100,6 +102,7 @@ fn long_usage() -> &'static str {
   preprocessor-cli build-vectors --main-db <path> --output-dir <path> --version-label <label> [--data-input-dir <path>] [--include-class-e-airspace]
   preprocessor-cli audit-bravo-unions --class-airspace-shp <path> --output-svg <path> [--version-label <label>]
   preprocessor-cli build-obstacles [--build-root <path>] [--fetch-jobs <count>] [--snapshot-date <YYYY-MM-DD>]
+  preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>]...
   preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
@@ -343,6 +346,90 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
         version_label: snapshot_label,
     })?;
     Ok((result.manifest_path, result.stats_path, result.zip_path))
+}
+
+fn run_analyze_obstacle_thresholds_command(args: &[String]) -> anyhow::Result<()> {
+    let mut input_dir = None;
+    let mut cap_per_tile = 100_usize;
+    let mut min_zoom = 0_u8;
+    let mut max_zoom = 12_u8;
+    let mut step_ft = 50_i32;
+    let mut index = 0;
+    while index < args.len() {
+        match args.get(index).map(String::as_str) {
+            Some("--input-dir") => {
+                input_dir = Some(PathBuf::from(
+                    args.get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                ));
+                index += 2;
+            }
+            Some("--cap") => {
+                cap_per_tile = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                    .parse()
+                    .context("failed to parse cap")?;
+                index += 2;
+            }
+            Some("--min-zoom") => {
+                min_zoom = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                    .parse()
+                    .context("failed to parse min zoom")?;
+                index += 2;
+            }
+            Some("--max-zoom") => {
+                max_zoom = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                    .parse()
+                    .context("failed to parse max zoom")?;
+                index += 2;
+            }
+            Some("--step-ft") => {
+                step_ft = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?
+                    .parse()
+                    .context("failed to parse step-ft")?;
+                index += 2;
+            }
+            _ => anyhow::bail!("{}", usage()),
+        }
+    }
+
+    let rows = analyze_obstacle_thresholds(&AnalyzeObstacleThresholdsRequest {
+        input_dir: input_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+        cap_per_tile,
+        min_zoom,
+        max_zoom,
+        threshold_step_ft: step_ft,
+    })?;
+
+    println!("rust_table [");
+    for row in &rows {
+        println!("    ({}, {}),", row.zoom, row.min_agl_ft);
+    }
+    println!("]");
+    println!();
+    println!(
+        "{:>4} {:>11} {:>20} {:>12} {:>14}",
+        "zoom", "min_agl_ft", "max_points_per_tile", "kept_points", "nonempty_tiles"
+    );
+    for row in &rows {
+        println!(
+            "{:>4} {:>11} {:>20} {:>12} {:>14}",
+            row.zoom,
+            row.min_agl_ft,
+            row.max_points_per_tile,
+            row.kept_points,
+            row.nonempty_tiles
+        );
+    }
+    Ok(())
 }
 
 fn read_zip_members(path: &Path) -> anyhow::Result<Vec<String>> {
@@ -2764,6 +2851,9 @@ fn main() -> anyhow::Result<()> {
             println!("manifest {}", manifest_path.display());
             println!("stats {}", stats_path.display());
             println!("zip {}", zip_path.display());
+        }
+        Some("analyze-obstacle-thresholds") => {
+            run_analyze_obstacle_thresholds_command(&args[2..])?;
         }
         Some("build-cycle") => {
             if maybe_reexec_build_cycle_under_cgroup(&args[2..])? {

@@ -13,7 +13,32 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 const POINT_LAYER_ZOOM_POLICY: &[(&str, u8)] =
     &[("airport", 9), ("fix", 9), ("nav", 9), ("awos", 9)];
+const MIN_OBSTACLE_AGL_FT: i32 = 400;
 const OBSTACLE_LAYER_ZOOM: u8 = 12;
+const OBSTACLE_LAYER_MIN_ZOOM: u8 = 0;
+const OBSTACLE_LAYER_MAX_ZOOM: u8 = 12;
+const OBSTACLE_THINNING_MAX_ZOOM: u8 = 11;
+// These AGL thresholds were derived with:
+// `preprocessor-cli analyze-obstacle-thresholds --input-dir <obstacle-input-dir>`
+// against the 2026-04-24 obstacle source, choosing the lowest 50 ft increment at each zoom that
+// kept the busiest tile at or below 100 obstacles. We only apply the additional thinning at z11
+// and below; z12 intentionally keeps the full obstacle set above the existing 400 ft AGL floor
+// even though the analyzer can suggest a higher cap-compliant threshold there.
+const OBSTACLE_MIN_AGL_BY_ZOOM: &[(u8, i32)] = &[
+    (0, 1800),
+    (1, 1800),
+    (2, 1600),
+    (3, 1550),
+    (4, 1500),
+    (5, 1150),
+    (6, 850),
+    (7, 750),
+    (8, 700),
+    (9, 700),
+    (10, 700),
+    (11, 700),
+    (12, MIN_OBSTACLE_AGL_FT),
+];
 const AIRSPACE_REF_MIN_ZOOM: u8 = 0;
 const AIRSPACE_REF_MAX_ZOOM: u8 = 12;
 const AIRSPACE_REF_MIN_PIXEL_SPAN: f64 = 30.0;
@@ -76,6 +101,24 @@ pub struct BuildObstacleDatasetResult {
     pub zip_path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct AnalyzeObstacleThresholdsRequest {
+    pub input_dir: PathBuf,
+    pub cap_per_tile: usize,
+    pub min_zoom: u8,
+    pub max_zoom: u8,
+    pub threshold_step_ft: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ObstacleThresholdAnalysisRow {
+    pub zoom: u8,
+    pub min_agl_ft: i32,
+    pub kept_points: usize,
+    pub nonempty_tiles: usize,
+    pub max_points_per_tile: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct VectorManifest {
     schema_version: u32,
@@ -129,11 +172,32 @@ struct PointLayerManifest {
     max_zoom: u8,
     available_zooms: Vec<u8>,
     tile_path_template: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    zoom_levels: Option<Vec<PointLayerZoomLevelManifest>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct PointLayerStats {
     zoom: u8,
+    tile_count: usize,
+    max_points_in_tile: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    zoom_levels: Option<Vec<PointLayerZoomLevelStats>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PointLayerZoomLevelManifest {
+    zoom: u8,
+    filtered: bool,
+    min_agl_ft: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PointLayerZoomLevelStats {
+    zoom: u8,
+    filtered: bool,
+    min_agl_ft: i32,
+    kept_points: usize,
     tile_count: usize,
     max_points_in_tile: usize,
 }
@@ -221,6 +285,12 @@ struct PointRecord {
     longest_runway_length_ft: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     longest_runway_heading_true_deg: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+struct ObstaclePointRecord {
+    record: PointRecord,
+    agl_ft: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -796,6 +866,7 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                 max_zoom: zoom,
                 available_zooms: vec![zoom],
                 tile_path_template,
+                zoom_levels: None,
             },
         );
         layer_stats.insert(
@@ -808,6 +879,7 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                     .map(|tile| tile.records.len())
                     .max()
                     .unwrap_or(0),
+                zoom_levels: None,
             },
         );
     }
@@ -1047,7 +1119,7 @@ pub fn build_obstacle_dataset(
     fs::create_dir_all(&request.output_dir)
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
 
-    let points = load_obstacle_points(&request.input_dir)?;
+    let obstacle_points = load_obstacle_points(&request.input_dir)?;
     let stats_path = request.output_dir.join("stats.json");
     let manifest_path = request
         .output_dir
@@ -1056,8 +1128,8 @@ pub fn build_obstacle_dataset(
         .output_dir
         .join(format!("obstacles_{}.zip", request.version_label));
 
-    let point_tiles = build_point_tiles(&points, OBSTACLE_LAYER_ZOOM);
-    let tile_path_template = format!("points/obstacle/{}/{{x}}/{{y}}.json", OBSTACLE_LAYER_ZOOM);
+    let available_zooms = (OBSTACLE_LAYER_MIN_ZOOM..=OBSTACLE_LAYER_MAX_ZOOM).collect::<Vec<_>>();
+    let tile_path_template = "points/obstacle/{z}/{x}/{y}.json".to_string();
 
     let mut files = BTreeMap::new();
     let mut point_layers = BTreeMap::new();
@@ -1065,22 +1137,44 @@ pub fn build_obstacle_dataset(
         ("obstacles".to_string(), manifest_path.clone()),
         ("stats.json".to_string(), stats_path.clone()),
     ];
+    let mut zoom_level_stats = Vec::new();
 
-    for tile in &point_tiles {
-        let relative_path = point_tile_relative_path("obstacle", tile.z, tile.x, tile.y);
-        let points_path = request.output_dir.join(&relative_path);
-        write_json_pretty(
-            &points_path,
-            &PointTileFile {
-                schema_version: 1,
-                layer: "obstacle".to_string(),
-                z: tile.z,
-                x: tile.x,
-                y: tile.y,
-                records: tile.records.clone(),
-            },
-        )?;
-        zip_members.push((relative_path, points_path));
+    for &(zoom, min_agl_ft) in OBSTACLE_MIN_AGL_BY_ZOOM {
+        let filtered = zoom <= OBSTACLE_THINNING_MAX_ZOOM;
+        let filtered_points = obstacle_points
+            .iter()
+            .filter(|point| point.agl_ft >= min_agl_ft)
+            .map(|point| point.record.clone())
+            .collect::<Vec<_>>();
+        let point_tiles = build_point_tiles(&filtered_points, zoom);
+        for tile in &point_tiles {
+            let relative_path = point_tile_relative_path("obstacle", tile.z, tile.x, tile.y);
+            let points_path = request.output_dir.join(&relative_path);
+            write_json_pretty(
+                &points_path,
+                &PointTileFile {
+                    schema_version: 1,
+                    layer: "obstacle".to_string(),
+                    z: tile.z,
+                    x: tile.x,
+                    y: tile.y,
+                    records: tile.records.clone(),
+                },
+            )?;
+            zip_members.push((relative_path, points_path));
+        }
+        zoom_level_stats.push(PointLayerZoomLevelStats {
+            zoom,
+            filtered,
+            min_agl_ft,
+            kept_points: filtered_points.len(),
+            tile_count: point_tiles.len(),
+            max_points_in_tile: point_tiles
+                .iter()
+                .map(|tile| tile.records.len())
+                .max()
+                .unwrap_or(0),
+        });
     }
 
     files.insert(
@@ -1092,10 +1186,20 @@ pub fn build_obstacle_dataset(
         "obstacle".to_string(),
         PointLayerManifest {
             zoom: OBSTACLE_LAYER_ZOOM,
-            min_zoom: OBSTACLE_LAYER_ZOOM,
-            max_zoom: OBSTACLE_LAYER_ZOOM,
-            available_zooms: vec![OBSTACLE_LAYER_ZOOM],
+            min_zoom: OBSTACLE_LAYER_MIN_ZOOM,
+            max_zoom: OBSTACLE_LAYER_MAX_ZOOM,
+            available_zooms,
             tile_path_template,
+            zoom_levels: Some(
+                OBSTACLE_MIN_AGL_BY_ZOOM
+                    .iter()
+                    .map(|&(zoom, min_agl_ft)| PointLayerZoomLevelManifest {
+                        zoom,
+                        filtered: zoom <= OBSTACLE_THINNING_MAX_ZOOM,
+                        min_agl_ft,
+                    })
+                    .collect(),
+            ),
         },
     );
 
@@ -1105,18 +1209,23 @@ pub fn build_obstacle_dataset(
             schema_version: 1,
             version_label: request.version_label.clone(),
             points: PointStats {
-                total_points: points.len(),
-                layer_counts: BTreeMap::from([("obstacle".to_string(), points.len())]),
+                total_points: obstacle_points.len(),
+                layer_counts: BTreeMap::from([("obstacle".to_string(), obstacle_points.len())]),
                 layers: BTreeMap::from([(
                     "obstacle".to_string(),
                     PointLayerStats {
                         zoom: OBSTACLE_LAYER_ZOOM,
-                        tile_count: point_tiles.len(),
-                        max_points_in_tile: point_tiles
+                        tile_count: zoom_level_stats
                             .iter()
-                            .map(|tile| tile.records.len())
-                            .max()
+                            .find(|stats| stats.zoom == OBSTACLE_LAYER_ZOOM)
+                            .map(|stats| stats.tile_count)
                             .unwrap_or(0),
+                        max_points_in_tile: zoom_level_stats
+                            .iter()
+                            .find(|stats| stats.zoom == OBSTACLE_LAYER_ZOOM)
+                            .map(|stats| stats.max_points_in_tile)
+                            .unwrap_or(0),
+                        zoom_levels: Some(zoom_level_stats),
                     },
                 )]),
             },
@@ -1146,6 +1255,59 @@ pub fn build_obstacle_dataset(
         stats_path,
         zip_path,
     })
+}
+
+pub fn analyze_obstacle_thresholds(
+    request: &AnalyzeObstacleThresholdsRequest,
+) -> anyhow::Result<Vec<ObstacleThresholdAnalysisRow>> {
+    let obstacle_points = load_obstacle_points(&request.input_dir)?;
+    let max_agl_ft = obstacle_points
+        .iter()
+        .map(|point| point.agl_ft)
+        .max()
+        .unwrap_or(MIN_OBSTACLE_AGL_FT);
+    let mut thresholds = Vec::new();
+    let mut threshold = ((max_agl_ft + request.threshold_step_ft - 1) / request.threshold_step_ft)
+        * request.threshold_step_ft;
+    while threshold >= MIN_OBSTACLE_AGL_FT {
+        thresholds.push(threshold);
+        threshold -= request.threshold_step_ft;
+    }
+    if thresholds.last().copied() != Some(MIN_OBSTACLE_AGL_FT) {
+        thresholds.push(MIN_OBSTACLE_AGL_FT);
+    }
+
+    let mut rows = Vec::new();
+    for zoom in request.min_zoom..=request.max_zoom {
+        let mut selected = None;
+        let mut fallback = None;
+        for min_agl_ft in thresholds.iter().copied().rev() {
+            let filtered_points = obstacle_points
+                .iter()
+                .filter(|point| point.agl_ft >= min_agl_ft)
+                .map(|point| point.record.clone())
+                .collect::<Vec<_>>();
+            let point_tiles = build_point_tiles(&filtered_points, zoom);
+            let row = ObstacleThresholdAnalysisRow {
+                zoom,
+                min_agl_ft,
+                kept_points: filtered_points.len(),
+                nonempty_tiles: point_tiles.len(),
+                max_points_per_tile: point_tiles
+                    .iter()
+                    .map(|tile| tile.records.len())
+                    .max()
+                    .unwrap_or(0),
+            };
+            fallback = Some(row.clone());
+            if row.max_points_per_tile <= request.cap_per_tile {
+                selected = Some(row);
+                break;
+            }
+        }
+        rows.push(selected.or(fallback).expect("threshold list should not be empty"));
+    }
+    Ok(rows)
 }
 
 fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
@@ -1272,7 +1434,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
     Ok(points)
 }
 
-fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<PointRecord>> {
+fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<ObstaclePointRecord>> {
     let dof_path = input_dir.join("DOF.DAT");
     let text = String::from_utf8_lossy(
         &fs::read(&dof_path).with_context(|| format!("failed to read {}", dof_path.display()))?,
@@ -1307,7 +1469,7 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<PointRecord>> {
         };
         let height_msl = parse_float(field(raw, 90, 5));
         let height_agl = parse_float(field(raw, 84, 5));
-        if height_agl < 400.0 || !valid_lat_lon(lat, lon) {
+        if height_agl < MIN_OBSTACLE_AGL_FT as f64 || !valid_lat_lon(lat, lon) {
             continue;
         }
         let id = dedup_id(
@@ -1316,22 +1478,25 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<PointRecord>> {
             lat,
             lon,
         );
-        points.push(PointRecord {
-            id,
-            kind: "obs".to_string(),
-            lat,
-            lon,
-            label: format!("Obstacle {:.0}ft", height_msl),
-            style_class: "obstacle".to_string(),
-            towered: None,
-            fuel_available: None,
-            public_use: None,
-            private_use: None,
-            has_paved_runway: None,
-            heliport: None,
-            has_water_runway: None,
-            longest_runway_length_ft: None,
-            longest_runway_heading_true_deg: None,
+        points.push(ObstaclePointRecord {
+            record: PointRecord {
+                id,
+                kind: "obs".to_string(),
+                lat,
+                lon,
+                label: format!("Obstacle {:.0}ft", height_msl),
+                style_class: "obstacle".to_string(),
+                towered: None,
+                fuel_available: None,
+                public_use: None,
+                private_use: None,
+                has_paved_runway: None,
+                heliport: None,
+                has_water_runway: None,
+                longest_runway_length_ft: None,
+                longest_runway_heading_true_deg: None,
+            },
+            agl_ft: height_agl.round() as i32,
         });
     }
     Ok(points)

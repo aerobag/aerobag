@@ -2643,7 +2643,19 @@ fn build_obstacles_product(
     let logical_url = format!(
         "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_{snapshot_label}.zip"
     );
-    let inputs = BTreeMap::from([("source_url".to_string(), logical_url.clone())]);
+    let inputs = BTreeMap::from([
+        ("product_id".to_string(), "obstacles".to_string()),
+        ("source_url".to_string(), logical_url.clone()),
+        (
+            "vectors_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-vectors/src/lib.rs"),
+            )?,
+        ),
+    ]);
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, "fast-obstacles")?,
         "fast-obstacles",

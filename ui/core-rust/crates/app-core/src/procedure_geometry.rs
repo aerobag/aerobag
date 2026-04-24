@@ -414,6 +414,16 @@ fn sequenced_leg_display_path(
                 current_position = end;
                 current_course_deg = Some(course_deg);
             }
+            "VR" => {
+                let (vr_elements, end, course_deg) = heading_to_radial_termination_path(
+                    step,
+                    current_position,
+                    current_course_deg,
+                )?;
+                elements.extend(vr_elements);
+                current_position = end;
+                current_course_deg = Some(course_deg);
+            }
             "AF" => {
                 let path = arc_to_fix_path_from_start(current_position, step)?;
                 current_position = step.nav_position?;
@@ -928,6 +938,29 @@ fn heading_to_dme_distance_path(
         end,
     });
     Some((elements, end, target_heading_deg))
+}
+
+fn heading_to_radial_termination_path(
+    step: &ProcedureLegMaterializationRecord,
+    start: LatLon,
+    _current_course_deg: Option<f64>,
+) -> Option<(Vec<LegDisplayElement>, LatLon, f64)> {
+    let radial_anchor = step.defining_nav_position?;
+    let flown_course_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
+    let radial_deg = step.theta_deg? + course_reference_variation_deg(step);
+    let mut elements = Vec::new();
+    let end = intersect_heading_with_course(
+        start,
+        flown_course_deg,
+        radial_anchor,
+        radial_deg,
+        radial_anchor,
+    )?;
+    if distance_between_points_nm(start, end) <= 0.05 {
+        return None;
+    }
+    elements.push(LegDisplayElement::Segment { start, end });
+    Some((elements, end, flown_course_deg))
 }
 
 fn delayed_turn_start_for_track_capture(

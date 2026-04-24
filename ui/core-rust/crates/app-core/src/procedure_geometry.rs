@@ -7,6 +7,9 @@ const NOMINAL_PROCEDURE_TURN_INITIAL_OUTBOUND_DISTANCE_NM: f64 = 5.0;
 const NOMINAL_PROCEDURE_TURN_GROUND_SPEED_KT: f64 = 120.0;
 const NOMINAL_PROCEDURE_TURN_BARB_TIME_MIN: f64 = 2.0;
 const NOMINAL_MANUAL_TERMINATION_DISTANCE_NM: f64 = 4.0;
+const MIN_GEOMETRY_DISTANCE_NM: f64 = 0.05;
+const MIN_ARC_SWEEP_DEG: f64 = 0.5;
+const POSITION_EPSILON_DEG: f64 = 0.0005;
 
 pub fn display_path_for_procedure_leg(
     segment_records: &[ProcedureLegMaterializationRecord],
@@ -179,7 +182,7 @@ fn arc_to_fix_path_from_start(
     };
     let start_radius_nm = distance_between_points_nm(center, start);
     let end_radius_nm = distance_between_points_nm(center, end);
-    if start_radius_nm <= 0.05 || end_radius_nm <= 0.05 {
+    if start_radius_nm <= MIN_GEOMETRY_DISTANCE_NM || end_radius_nm <= MIN_GEOMETRY_DISTANCE_NM {
         return None;
     }
     let radius_nm = start_radius_nm;
@@ -190,7 +193,7 @@ fn arc_to_fix_path_from_start(
         bearing_from(center, end_on_arc),
         clockwise,
     );
-    if sweep_degrees <= 0.5 {
+    if sweep_degrees <= MIN_ARC_SWEEP_DEG {
         return None;
     }
     Some(LegDisplayPath {
@@ -219,12 +222,12 @@ fn radius_to_fix_path_from_start(
     };
     let start_radius_nm = distance_between_points_nm(center, start);
     let end_radius_nm = distance_between_points_nm(center, end);
-    if start_radius_nm <= 0.05 || end_radius_nm <= 0.05 {
+    if start_radius_nm <= MIN_GEOMETRY_DISTANCE_NM || end_radius_nm <= MIN_GEOMETRY_DISTANCE_NM {
         return None;
     }
     let radius_nm = leg_end
         .arc_radius_nm
-        .filter(|radius| *radius > 0.05)
+        .filter(|radius| *radius > MIN_GEOMETRY_DISTANCE_NM)
         .unwrap_or(start_radius_nm);
     let start_on_arc = start;
     let end_on_arc = end;
@@ -233,7 +236,7 @@ fn radius_to_fix_path_from_start(
         bearing_from(center, end_on_arc),
         clockwise,
     );
-    if sweep_degrees <= 0.5 {
+    if sweep_degrees <= MIN_ARC_SWEEP_DEG {
         return None;
     }
     Some(LegDisplayPath {
@@ -480,7 +483,7 @@ fn build_procedure_leg_display_path(
                                 current_heading_deg,
                                 climb_distance_nm,
                             );
-                            if distance_between_points_nm(current_position, climb_end) > 0.05 {
+                            if distance_between_points_nm(current_position, climb_end) > MIN_GEOMETRY_DISTANCE_NM {
                                 elements.push(LegDisplayElement::Segment {
                                     start: current_position,
                                     end: climb_end,
@@ -511,7 +514,7 @@ fn build_procedure_leg_display_path(
             }
             "TF" => {
                 let fix = step.nav_position?;
-                if distance_between_points_nm(current_position, fix) > 0.05 {
+                if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
                     elements.push(LegDisplayElement::Segment {
                         start: current_position,
                         end: fix,
@@ -534,6 +537,7 @@ fn build_procedure_leg_display_path(
             _ => {}
         }
     }
+    prune_degenerate_display_elements(&mut elements);
     (!elements.is_empty()).then_some(LegDisplayPath {
         style: LegDisplayPathStyle::Solid,
         elements,
@@ -551,15 +555,9 @@ fn current_or_step_course_deg(
     step: &ProcedureLegMaterializationRecord,
     current_course_deg: Option<f64>,
 ) -> Option<f64> {
-    if step.defining_nav_ref.is_none() && step.nav_ref.is_none() {
-        current_course_deg.or_else(|| {
-            step.magnetic_course_deg
-                .map(|course| course + course_reference_variation_deg(step))
-        })
-    } else {
-        step.magnetic_course_deg
-            .map(|course| course + course_reference_variation_deg(step))
-    }
+    step.magnetic_course_deg
+        .map(|course| course + course_reference_variation_deg(step))
+        .or(current_course_deg)
 }
 
 fn append_course_track_path(
@@ -575,7 +573,7 @@ fn append_course_track_path(
     let track_limit = track_limit_position(&termination);
     let on_track_tolerance_nm = match termination {
         TrackTermination::ToDme { .. } => 0.5,
-        _ => 0.05,
+        _ => MIN_GEOMETRY_DISTANCE_NM,
     };
     let track_start = if let Some(current_heading_deg) = current_course_deg {
         if matches!(termination, TrackTermination::ToDme { .. })
@@ -643,7 +641,7 @@ fn append_course_track_path(
                 track_intercept_is_reasonable(*intercept, course_anchor, course_deg, track_limit)
             });
             let intercept = if let Some(intercept) = direct_intercept {
-                if distance_between_points_nm(current_position, intercept) > 0.05 {
+                if distance_between_points_nm(current_position, intercept) > MIN_GEOMETRY_DISTANCE_NM {
                     elements.push(LegDisplayElement::Segment {
                         start: current_position,
                         end: intercept,
@@ -668,7 +666,7 @@ fn append_course_track_path(
     } else {
         match termination {
             TrackTermination::ToFix(fix) => {
-                if distance_between_points_nm(current_position, fix) > 0.05 {
+                if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
                     elements.push(LegDisplayElement::Segment {
                         start: current_position,
                         end: fix,
@@ -680,7 +678,7 @@ fn append_course_track_path(
             TrackTermination::ToDme { center, radius_nm } => {
                 let end =
                     forward_heading_circle_intersection(current_position, course_deg, center, radius_nm)?;
-                if distance_between_points_nm(current_position, end) > 0.05 {
+                if distance_between_points_nm(current_position, end) > MIN_GEOMETRY_DISTANCE_NM {
                     elements.push(LegDisplayElement::Segment {
                         start: current_position,
                         end,
@@ -693,7 +691,7 @@ fn append_course_track_path(
 
     let final_position = match termination {
         TrackTermination::ToFix(fix) => {
-            if distance_between_points_nm(track_start, fix) > 0.05 {
+            if distance_between_points_nm(track_start, fix) > MIN_GEOMETRY_DISTANCE_NM {
                 elements.push(LegDisplayElement::Segment {
                     start: track_start,
                     end: fix,
@@ -710,7 +708,7 @@ fn append_course_track_path(
         ),
         TrackTermination::ToDme { center, radius_nm } => {
             let end = forward_heading_circle_intersection(track_start, course_deg, center, radius_nm)?;
-            if distance_between_points_nm(track_start, end) > 0.05 {
+            if distance_between_points_nm(track_start, end) > MIN_GEOMETRY_DISTANCE_NM {
                 elements.push(LegDisplayElement::Segment {
                     start: track_start,
                     end,
@@ -793,7 +791,7 @@ fn extend_climb_segment(
     let climb_minutes = ((target_alt_ft - start_alt_ft).max(0.0)) / NOMINAL_MISSED_APPROACH_CLIMB_FTPM;
     let climb_distance_nm =
         distance_nm_for_minutes_at_speed_kt(NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT, climb_minutes);
-    if climb_distance_nm <= 0.05 {
+    if climb_distance_nm <= MIN_GEOMETRY_DISTANCE_NM {
         *current_altitude_ft = Some(target_alt_ft);
         return current_position;
     }
@@ -951,7 +949,7 @@ fn heading_to_dme_distance_path(
 
     let end =
         forward_heading_circle_intersection(path_position, target_heading_deg, center, target_radius_nm)?;
-    if distance_between_points_nm(path_position, end) <= 0.05 {
+    if distance_between_points_nm(path_position, end) <= MIN_GEOMETRY_DISTANCE_NM {
         return None;
     }
     elements.push(LegDisplayElement::Segment {
@@ -977,7 +975,7 @@ fn heading_to_radial_termination_path(
         radial_deg,
         radial_anchor,
     )?;
-    if distance_between_points_nm(start, end) <= 0.05 {
+    if distance_between_points_nm(start, end) <= MIN_GEOMETRY_DISTANCE_NM {
         return None;
     }
     elements.push(LegDisplayElement::Segment { start, end });
@@ -1032,7 +1030,7 @@ fn course_to_intercept_path(
     .filter(|candidate| {
         track_intercept_is_reasonable(*candidate, next_defining_nav, next_course_deg, Some(next_fix))
     })?;
-    if distance_between_points_nm(path_position, intercept) > 0.05 {
+    if distance_between_points_nm(path_position, intercept) > MIN_GEOMETRY_DISTANCE_NM {
         elements.push(LegDisplayElement::Segment {
             start: path_position,
             end: intercept,
@@ -1176,7 +1174,7 @@ fn append_heading_change(
     } else {
         destination_point(current_position, initial_course_deg, extra_straight_nm)
     };
-    if distance_between_points_nm(current_position, turn_start) > 0.05 {
+    if distance_between_points_nm(current_position, turn_start) > MIN_GEOMETRY_DISTANCE_NM {
         elements.push(LegDisplayElement::Segment {
             start: current_position,
             end: turn_start,
@@ -1304,13 +1302,13 @@ fn directed_track_join_elements(
     );
     let turn_end = intersect_lines(base_turn_end, initial_dir, course_anchor, final_dir)?;
     let straight_nm = projection_along_course_nm(current_position, turn_end, initial_dir);
-    if straight_nm < -0.05 {
+    if straight_nm < -MIN_GEOMETRY_DISTANCE_NM {
         return None;
     }
     if !track_intercept_is_reasonable(turn_end, course_anchor, course_deg, track_limit) {
         return None;
     }
-    let turn_start = if straight_nm <= 0.05 {
+    let turn_start = if straight_nm <= MIN_GEOMETRY_DISTANCE_NM {
         current_position
     } else {
         destination_point(current_position, current_heading_deg, straight_nm)
@@ -1324,13 +1322,13 @@ fn directed_track_join_elements(
     let turn_end_from_center =
         point_on_turn_center(turn_center, course_deg, turn_clockwise, turn_radius_nm);
     let mut elements = Vec::new();
-    if distance_between_points_nm(current_position, turn_start) > 0.05 {
+    if distance_between_points_nm(current_position, turn_start) > MIN_GEOMETRY_DISTANCE_NM {
         elements.push(LegDisplayElement::Segment {
             start: current_position,
             end: turn_start,
         });
     }
-    if distance_between_points_nm(turn_start, turn_end_from_center) > 0.05 {
+    if distance_between_points_nm(turn_start, turn_end_from_center) > MIN_GEOMETRY_DISTANCE_NM {
         elements.push(LegDisplayElement::Arc {
             center: turn_center,
             radius_nm: turn_radius_nm,
@@ -1340,7 +1338,7 @@ fn directed_track_join_elements(
             sweep_degrees: heading_sweep_degrees(current_heading_deg, course_deg, turn_clockwise),
         });
     }
-    if distance_between_points_nm(turn_end_from_center, turn_end) > 0.05 {
+    if distance_between_points_nm(turn_end_from_center, turn_end) > MIN_GEOMETRY_DISTANCE_NM {
         elements.push(LegDisplayElement::Segment {
             start: turn_end_from_center,
             end: turn_end,
@@ -1388,7 +1386,7 @@ fn best_near_reciprocal_track_join(
             let final_segment_heading_deg = if distance_between_points_nm(
                 candidate.turn_end,
                 candidate.intercept,
-            ) > 0.05
+            ) > MIN_GEOMETRY_DISTANCE_NM
             {
                 bearing_from(candidate.turn_end, candidate.intercept)
             } else {
@@ -1458,7 +1456,7 @@ fn build_track_join_candidate(
         return None;
     }
     let mut elements = Vec::new();
-    if distance_between_points_nm(current_position, turn_start) > 0.05 {
+    if distance_between_points_nm(current_position, turn_start) > MIN_GEOMETRY_DISTANCE_NM {
         elements.push(LegDisplayElement::Segment {
             start: current_position,
             end: turn_start,
@@ -1476,7 +1474,7 @@ fn build_track_join_candidate(
             turn_clockwise,
         ),
     });
-    if distance_between_points_nm(turn_end, intercept) > 0.05 {
+    if distance_between_points_nm(turn_end, intercept) > MIN_GEOMETRY_DISTANCE_NM {
         elements.push(LegDisplayElement::Segment {
             start: turn_end,
             end: intercept,
@@ -1501,7 +1499,7 @@ fn track_intercept_is_reasonable(
     let course_unit = bearing_unit_vector(course_deg);
     let intercept_projection = projection_along_course_nm(defining_nav, intercept, course_unit);
     let fix_projection = projection_along_course_nm(defining_nav, fix, course_unit);
-    intercept_projection <= fix_projection + 0.05
+    intercept_projection <= fix_projection + MIN_GEOMETRY_DISTANCE_NM
 }
 
 fn current_position_is_on_track(
@@ -1643,7 +1641,7 @@ fn forward_heading_circle_intersection(
     Some(offset_latlon(ray_start, ray_dir.0 * t, ray_dir.1 * t))
 }
 
-fn display_element_end_course_deg(element: &LegDisplayElement) -> Option<f64> {
+pub(crate) fn display_element_end_course_deg(element: &LegDisplayElement) -> Option<f64> {
     match element {
         LegDisplayElement::Segment { start, end } => Some(bearing_from(*start, *end)),
         LegDisplayElement::Arc {
@@ -1790,6 +1788,8 @@ fn build_hold_display_path(
         },
     ]);
 
+    prune_degenerate_display_elements(&mut elements);
+
     LegDisplayPath {
         style: LegDisplayPathStyle::Solid,
         elements,
@@ -1829,12 +1829,12 @@ fn hold_entry_elements(
             ) else {
                 return Vec::new();
             };
-            vec![
-                LegDisplayElement::Segment {
-                    start: fix,
-                    end: entry_end,
-                },
-                LegDisplayElement::Arc {
+            let mut elements = vec![LegDisplayElement::Segment {
+                start: fix,
+                end: entry_end,
+            }];
+            if distance_between_points_nm(entry_end, turn_end) > MIN_GEOMETRY_DISTANCE_NM {
+                elements.push(LegDisplayElement::Arc {
                     center: turn_center,
                     radius_nm: turn_radius_nm,
                     start: entry_end,
@@ -1845,12 +1845,15 @@ fn hold_entry_elements(
                         rejoin_course_deg,
                         entry_turn_clockwise,
                     ),
-                },
-                LegDisplayElement::Segment {
+                });
+            }
+            if distance_between_points_nm(turn_end, fix) > MIN_GEOMETRY_DISTANCE_NM {
+                elements.push(LegDisplayElement::Segment {
                     start: turn_end,
                     end: fix,
-                },
-            ]
+                });
+            }
+            elements
         }
         HoldEntryKind::Teardrop => {
             let outbound_course_deg = normalize_bearing_degrees(inbound_course_deg + 180.0);
@@ -1876,12 +1879,12 @@ fn hold_entry_elements(
             ) else {
                 return Vec::new();
             };
-            vec![
-                LegDisplayElement::Segment {
-                    start: fix,
-                    end: entry_end,
-                },
-                LegDisplayElement::Arc {
+            let mut elements = vec![LegDisplayElement::Segment {
+                start: fix,
+                end: entry_end,
+            }];
+            if distance_between_points_nm(entry_end, turn_end) > MIN_GEOMETRY_DISTANCE_NM {
+                elements.push(LegDisplayElement::Arc {
                     center: turn_center,
                     radius_nm: turn_radius_nm,
                     start: entry_end,
@@ -1892,12 +1895,15 @@ fn hold_entry_elements(
                         rejoin_course_deg,
                         clockwise,
                     ),
-                },
-                LegDisplayElement::Segment {
+                });
+            }
+            if distance_between_points_nm(turn_end, fix) > MIN_GEOMETRY_DISTANCE_NM {
+                elements.push(LegDisplayElement::Segment {
                     start: turn_end,
                     end: fix,
-                },
-            ]
+                });
+            }
+            elements
         }
     }
 }
@@ -2039,6 +2045,28 @@ fn distance_between_points_nm(from: LatLon, to: LatLon) -> f64 {
     let east_nm = (to.lon - from.lon) * 60.0 * mean_lat.cos();
     let north_nm = (to.lat - from.lat) * 60.0;
     east_nm.hypot(north_nm)
+}
+
+fn positions_nearly_equal_for_geometry(a: LatLon, b: LatLon) -> bool {
+    (a.lat - b.lat).abs() < POSITION_EPSILON_DEG
+        && (a.lon - b.lon).abs() < POSITION_EPSILON_DEG
+}
+
+fn prune_degenerate_display_elements(elements: &mut Vec<LegDisplayElement>) {
+    elements.retain(|element| match element {
+        LegDisplayElement::Segment { start, end } => !positions_nearly_equal_for_geometry(*start, *end),
+        LegDisplayElement::Arc {
+            start,
+            end,
+            radius_nm,
+            sweep_degrees,
+            ..
+        } => {
+            !positions_nearly_equal_for_geometry(*start, *end)
+                && *radius_nm > MIN_GEOMETRY_DISTANCE_NM
+                && sweep_degrees.abs() > MIN_ARC_SWEEP_DEG
+        }
+    });
 }
 
 fn left_normal((east, north): (f64, f64)) -> (f64, f64) {

@@ -22,6 +22,44 @@ intercept/capture refactor, even if the materialized-path tests still pass.
   - reason: sibling of the same `KMSO I12-Y` missed-approach / intercept pattern
   - current artifact stem: `KMSO_I12-Y_JIROS`
 
+## Nationwide Audit Exemplars
+
+- `03D R12 / IDIXE`
+  - bucket: runway RNP heading continuity
+  - reason: representative of the dominant nationwide failure family; continuity break at the runway transition
+
+- `05U R18 / JEBEG`
+  - bucket: runway RNP heading continuity
+  - reason: same family, but with a much more dramatic near-hairpin runway handoff
+
+- `02G R25 / EWC`
+  - bucket: zero-length arc endpoints
+  - reason: representative zero-length arc construction failure in runway RNP geometry
+
+- `KACK I06 / MVY`
+  - bucket: non-RNP heading continuity
+  - reason: sharp continuity failure away from the runway RNP cluster; useful to keep us honest on non-`Rxx` procedures
+
+- `KBED I11 / BRONC`
+  - bucket: non-RNP heading continuity
+  - reason: especially suspicious because the validator is using the tighter `10 deg` threshold at `LOBBY`
+
+- `KATL I27R / YOUYU`
+  - bucket: small path continuity gaps
+  - reason: representative tiny `0.04 nm` stitch gap at `MMCAP`
+
+- `KBJC I30R / ROKXX`
+  - bucket: zero-length display path
+  - reason: representative degenerate `LAWNG -> LAWNG` leg with no display path
+
+- `KDFW I17R`
+  - bucket: zero-length segment
+  - reason: representative explicit zero-length rendered segment
+
+- `KMSO VOR-A / ALTON`
+  - bucket: zero-length display path
+  - reason: non-runway-procedure example of a degenerate same-fix leg
+
 ## How To Use
 
 - Put the latest rendered overlays in `/tmp/procedure-plots-after/`.

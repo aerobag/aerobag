@@ -138,6 +138,10 @@ pub use terrain::{
     TerrainOverlayStatus, TerrainOverlayTileRequest, TerrainTileInfo,
 };
 
+const MIN_GEOMETRY_DISTANCE_NM: f64 = 0.05;
+const MIN_ARC_SWEEP_DEG: f64 = 0.5;
+const POSITION_EPSILON_DEG: f64 = 0.0005;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirwayPlanMutation {
     pub plan: FlightPlan,
@@ -1579,7 +1583,9 @@ fn validate_no_zero_length_legs(resolved: &[ResolvedLeg], procedure_id: &str) {
                     sweep_degrees,
                     ..
                 } => {
-                    if *radius_nm <= 0.05 || sweep_degrees.abs() <= 0.5 {
+                    if *radius_nm <= MIN_GEOMETRY_DISTANCE_NM
+                        || sweep_degrees.abs() <= MIN_ARC_SWEEP_DEG
+                    {
                         panic!(
                             "procedure degenerate arc for {} leg={} element#{} center=({:.6},{:.6}) radius_nm={:.2} sweep_deg={:.2}",
                             procedure_id.trim(),
@@ -1821,7 +1827,8 @@ fn validate_heading_continuity_checks(
 }
 
 fn positions_nearly_equal(a: LatLon, b: LatLon) -> bool {
-    (a.lat - b.lat).abs() < 0.0005 && (a.lon - b.lon).abs() < 0.0005
+    (a.lat - b.lat).abs() < POSITION_EPSILON_DEG
+        && (a.lon - b.lon).abs() < POSITION_EPSILON_DEG
 }
 
 fn continuity_heading_tolerance_deg(
@@ -4585,7 +4592,7 @@ mod tests {
                 .filter(|record| matches!(record.key.route_type.as_str(), "A" | "I" | "L"))
             {
                 eprintln!(
-                    "rt={} tr={} seq={} pt={} turn={:?} nav={:?} def_nav={:?} theta={:?} course={:?} dist={:?} alt1={:?} alt2={:?}",
+                    "rt={} tr={} seq={} pt={} turn={:?} nav={:?} def_nav={:?} theta={:?} course={:?} dist={:?} alt1={:?} alt2={:?} airport_var={:?} nav_var={:?} def_nav_var={:?}",
                     record.key.route_type,
                     record.key.transition_id,
                     record.sequence,
@@ -4598,6 +4605,9 @@ mod tests {
                     record.route_distance_or_time,
                     record.altitude_1_ft,
                     record.altitude_2_ft,
+                    record.airport_magnetic_variation_deg,
+                    record.nav_magnetic_variation_deg,
+                    record.defining_nav_magnetic_variation_deg,
                 );
             }
         }
@@ -4843,6 +4853,80 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual audit for selected runway RNP heading continuity records"]
+    fn audit_selected_runway_rnp_records() {
+        let store = load_snapshot_nav_kv_store();
+        for (airport_id, procedure_id) in [("03D", "R12"), ("05U", "R18")] {
+            let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+                &store,
+                crate::NavKvQuery::ProcedureMaterializationRows {
+                    airport_id: airport_id.to_string(),
+                    procedure_id: procedure_id.to_string(),
+                },
+                "procedure materialization rows",
+            );
+            eprintln!("=== {airport_id} {procedure_id} ===");
+            for record in records
+                .iter()
+                .filter(|record| matches!(record.key.route_type.as_str(), "A" | "I" | "L" | "R"))
+            {
+                eprintln!(
+                    "rt={} tr={} seq={} pt={} turn={:?} nav={:?} def_nav={:?} theta={:?} course={:?} dist={:?} alt1={:?} alt2={:?}",
+                    record.key.route_type,
+                    record.key.transition_id,
+                    record.sequence,
+                    record.path_termination,
+                    record.turn_direction,
+                    record.nav_ref,
+                    record.defining_nav_ref,
+                    record.theta_deg,
+                    record.magnetic_course_deg,
+                    record.route_distance_or_time,
+                    record.altitude_1_ft,
+                    record.altitude_2_ft,
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual audit for selected zero-length arc records"]
+    fn audit_selected_zero_length_arc_records() {
+        let store = load_snapshot_nav_kv_store();
+        for (airport_id, procedure_id) in [("12D", "R08"), ("17J", "R01")] {
+            let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+                &store,
+                crate::NavKvQuery::ProcedureMaterializationRows {
+                    airport_id: airport_id.to_string(),
+                    procedure_id: procedure_id.to_string(),
+                },
+                "procedure materialization rows",
+            );
+            eprintln!("=== {airport_id} {procedure_id} ===");
+            for record in records
+                .iter()
+                .filter(|record| matches!(record.key.route_type.as_str(), "A" | "I" | "L" | "R"))
+            {
+                eprintln!(
+                    "rt={} tr={} seq={} pt={} turn={:?} nav={:?} def_nav={:?} theta={:?} course={:?} dist={:?} alt1={:?} alt2={:?}",
+                    record.key.route_type,
+                    record.key.transition_id,
+                    record.sequence,
+                    record.path_termination,
+                    record.turn_direction,
+                    record.nav_ref,
+                    record.defining_nav_ref,
+                    record.theta_deg,
+                    record.magnetic_course_deg,
+                    record.route_distance_or_time,
+                    record.altitude_1_ft,
+                    record.altitude_2_ft,
+                );
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "manual full snapshot approach audit with progress logging"]
     fn audit_all_snapshot_approaches_with_progress_logging() {
         let store = Arc::new(load_snapshot_nav_kv_store());
@@ -5017,10 +5101,127 @@ mod tests {
         );
     }
 
+    fn assert_first_display_element_course_near(
+        airport_id: &str,
+        procedure_id: &str,
+        enroute_transition: &str,
+        leg_id: &str,
+        expected_course_deg: f64,
+        tolerance_deg: f64,
+    ) {
+        let store = load_snapshot_nav_kv_store();
+        let materialized = materialize_snapshot_procedure(
+            &store,
+            airport_id,
+            procedure_id,
+            (!enroute_transition.trim().is_empty()).then(|| enroute_transition.to_string()),
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "materialize {} {} {}: {}",
+                airport_id, procedure_id, enroute_transition, error
+            )
+        });
+        let path = materialized
+            .resolved_legs
+            .iter()
+            .find(|leg| leg.id == leg_id)
+            .and_then(|leg| leg.procedure_provenance.as_ref())
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .unwrap_or_else(|| panic!("display path for {leg_id}"));
+        let actual_course_deg = path
+            .elements
+            .first()
+            .and_then(crate::procedure_geometry::display_element_end_course_deg)
+            .unwrap_or_else(|| panic!("first course for {leg_id}"));
+        assert!(
+            angular_difference_degrees(actual_course_deg, expected_course_deg) <= tolerance_deg,
+            "expected first course for {leg_id} near {expected_course_deg:.1}deg, got {actual_course_deg:.1}deg",
+        );
+    }
+
+    #[test]
+    fn materializes_03d_r12_idixe_with_ca_runway_heading() {
+        assert_first_display_element_course_near(
+            "03D",
+            "R12",
+            "IDIXE",
+            "procedure-R12-R-60",
+            118.9,
+            10.0,
+        );
+    }
+
+    #[test]
+    fn materializes_05u_r18_jebeg_with_ca_runway_heading() {
+        assert_first_display_element_course_near(
+            "05U",
+            "R18",
+            "JEBEG",
+            "procedure-R18-R-50",
+            191.0,
+            10.0,
+        );
+    }
+
+    fn assert_materializes_snapshot_procedure(
+        airport_id: &str,
+        procedure_id: &str,
+        enroute_transition: &str,
+    ) {
+        let store = load_snapshot_nav_kv_store();
+        materialize_snapshot_procedure(
+            &store,
+            airport_id,
+            procedure_id,
+            (!enroute_transition.trim().is_empty()).then(|| enroute_transition.to_string()),
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "materialize {} {} {}: {}",
+                airport_id, procedure_id, enroute_transition, error
+            )
+        });
+    }
+
+    #[test]
+    fn materializes_12d_r08_inker_without_zero_length_hold_entry_arc() {
+        assert_materializes_snapshot_procedure("12D", "R08", "INKER");
+    }
+
+    #[test]
+    fn materializes_17j_r01_fapex_without_zero_length_hold_entry_arc() {
+        assert_materializes_snapshot_procedure("17J", "R01", "FAPEX");
+    }
+
     #[test]
     #[ignore = "manual visual inspection overlay for KVLD L36 GEF"]
     fn writes_kvld_l36_gef_overlay_png() {
         render_procedure_overlay_to_paths("KVLD", "L36", "GEF", "KVLD_L36_GEF", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for 03D R12 IDIXE"]
+    fn writes_03d_r12_idixe_overlay_png() {
+        render_procedure_overlay_to_paths("03D", "R12", "IDIXE", "03D_R12_IDIXE", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for 05U R18 JEBEG"]
+    fn writes_05u_r18_jebeg_overlay_png() {
+        render_procedure_overlay_to_paths("05U", "R18", "JEBEG", "05U_R18_JEBEG", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for 12D R08 INKER"]
+    fn writes_12d_r08_inker_overlay_png() {
+        render_procedure_overlay_to_paths("12D", "R08", "INKER", "12D_R08_INKER", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for 17J R01 FAPEX"]
+    fn writes_17j_r01_fapex_overlay_png() {
+        render_procedure_overlay_to_paths("17J", "R01", "FAPEX", "17J_R01_FAPEX", false);
     }
 
     #[test]

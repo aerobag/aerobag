@@ -35,6 +35,9 @@ const configuredArtifactRoot = fs.readFileSync(artifactReadPathConfigFile, "utf8
 const configuredArtifactPath = path.isAbsolute(configuredArtifactRoot)
   ? configuredArtifactRoot
   : path.resolve(repoRoot, configuredArtifactRoot);
+const artifactReadRoot = process.env.AEROBAG_ARTIFACT_READ_PATH
+  ? path.resolve(process.env.AEROBAG_ARTIFACT_READ_PATH)
+  : configuredArtifactPath;
 const packagedDir = "published-packaged";
 const unpackedDir = "published-unpacked";
 function latestCurrentArtifacts(root: string): string | null {
@@ -47,7 +50,6 @@ function latestCurrentArtifacts(root: string): string | null {
     .sort();
   return manifests.length > 0 ? path.join(manifestDir, manifests[manifests.length - 1]) : null;
 }
-const artifactReadRoot = configuredArtifactPath;
 const currentArtifactsPath = latestCurrentArtifacts(artifactReadRoot) ?? path.join(artifactReadRoot, packagedDir, "current_artifacts_missing.json");
 const currentArtifacts = JSON.parse(fs.readFileSync(currentArtifactsPath, "utf8")) as {
   bundles?: Array<{ filename?: string; bundle_type?: string }>;

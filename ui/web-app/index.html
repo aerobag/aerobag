@@ -8,7 +8,7 @@
       :root {
         color-scheme: dark;
         --startup-bg-top: #071521;
-        --startup-bg-bottom: #10273b;
+        --startup-bg-bottom: #8fb8db;
         --startup-ink: #d8e7f3;
         --startup-accent: #89d0ff;
         --startup-muted: rgba(216, 231, 243, 0.72);
@@ -18,7 +18,16 @@
       body {
         margin: 0;
         min-height: 100%;
-        background: linear-gradient(180deg, var(--startup-bg-top), var(--startup-bg-bottom));
+        background:
+          linear-gradient(
+            180deg,
+            var(--startup-bg-top) 0%,
+            #0a1b2b 8%,
+            #14314a 18%,
+            #2c5678 34%,
+            #5f8db4 58%,
+            var(--startup-bg-bottom) 100%
+          );
       }
 
       body {
@@ -34,7 +43,15 @@
         color: var(--startup-ink);
         background:
           radial-gradient(circle at top, rgba(137, 208, 255, 0.14), transparent 38%),
-          linear-gradient(180deg, var(--startup-bg-top), var(--startup-bg-bottom));
+          linear-gradient(
+            180deg,
+            var(--startup-bg-top) 0%,
+            #0a1b2b 8%,
+            #14314a 18%,
+            #2c5678 34%,
+            #5f8db4 58%,
+            var(--startup-bg-bottom) 100%
+          );
         z-index: 9999;
       }
 
@@ -55,6 +72,13 @@
         padding: 28px 32px;
       }
 
+      .startup-logo {
+        width: min(68vw, 420px);
+        height: auto;
+        display: block;
+        filter: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.28));
+      }
+
       .startup-spinner {
         width: 34px;
         height: 34px;
@@ -62,14 +86,6 @@
         border: 3px solid rgba(216, 231, 243, 0.18);
         border-top-color: var(--startup-accent);
         animation: startup-spin 880ms linear infinite;
-      }
-
-      .startup-title {
-        font-size: 14px;
-        font-weight: 700;
-        letter-spacing: 0.22em;
-        text-transform: uppercase;
-        color: var(--startup-ink);
       }
 
       .startup-copy {
@@ -98,8 +114,8 @@
   <body>
     <div id="startup-shell" aria-hidden="true">
       <div class="startup-card">
+        <img class="startup-logo" src="/logo.svg" alt="Aerobag" />
         <div class="startup-spinner"></div>
-        <div class="startup-title">Aerobag</div>
         <div class="startup-copy">Loading charts and navigation data…</div>
       </div>
       <div id="startup-elapsed" class="startup-elapsed">0.0s</div>

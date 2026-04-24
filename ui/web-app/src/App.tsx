@@ -626,6 +626,7 @@ type VectorPointSymbolFeature = {
   kind: string;
   label: string;
   style_class: string;
+  obstacle_variant?: "short" | "tall" | null;
   towered: boolean;
   fuel_available: boolean;
   has_paved_runway?: boolean | null;
@@ -717,10 +718,23 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
       : feature.style_class === "obstacle-muted"
         ? "obstacleMarker obstacleMuted"
         : "obstacleMarker obstacleCaution";
+    const obstacleDotClass = feature.style_class === "obstacle-danger"
+      ? "obstacleDot obstacleDangerFill"
+      : feature.style_class === "obstacle-muted"
+        ? "obstacleDot obstacleMutedFill"
+        : "obstacleDot obstacleCautionFill";
+    const isTallObstacle = feature.obstacle_variant === "tall";
+    const obstaclePath = isTallObstacle
+      ? "M -8 7.2 Q -6.6 4.4 -4.2 -1.2 Q -2.4 -7.0 -1.2 -15.6 Q -0.4 -24.0 0 -34.0 Q 0.4 -24.0 1.2 -15.6 Q 2.4 -7.0 4.2 -1.2 Q 6.6 4.4 8 7.2"
+      : "M -7.2 7.2 L 0 -14.4 L 7.2 7.2";
+    const obstacleDotY = isTallObstacle ? 6.0 : 4.8;
+    const obstacleDotRadius = isTallObstacle ? 2.05 : 2.05;
     return (
       <>
-        <path d="M 0 -10 L 0 6 M -5 -2 L 0 -10 L 5 -2" className={`${obstacleClass} obstacleStemUnder`} />
-        <path d="M 0 -10 L 0 6 M -5 -2 L 0 -10 L 5 -2" className={obstacleClass} />
+        <path d={obstaclePath} className={`${obstacleClass} obstacleMarkerUnder`} />
+        <path d={obstaclePath} className={obstacleClass} />
+        <circle cx="0" cy={obstacleDotY} r={obstacleDotRadius} className="obstacleDotUnder" />
+        <circle cx="0" cy={obstacleDotY} r={obstacleDotRadius} className={obstacleDotClass} />
         {showLabel && feature.label ? (
           <text x="0" y={obstacleLabelY} textAnchor="middle" className="obstacleLabel">
             {feature.label}
@@ -1931,8 +1945,8 @@ function MapPage(props: {
     ownship.position?.lat.toFixed(6) ?? "none",
     ownship.position?.lon.toFixed(6) ?? "none",
     ownship.altitude_msl_ft?.toFixed(0) ?? ownship.pressure_altitude_ft?.toFixed(0) ?? "none",
-    ownship.track_deg_true?.toFixed(0) ?? "none",
-    ownship.ground_speed_kt?.toFixed(0) ?? "none",
+    ownship.orientation_deg?.toFixed(0) ?? "none",
+    ownship.speed_kt?.toFixed(0) ?? "none",
   ].join(":");
   const nexradOverlay = useMemo(() => {
     const frame = nexradFrames[nexradFrameIndex];

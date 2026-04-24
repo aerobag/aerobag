@@ -649,6 +649,7 @@ pub fn get_map_overlay_in_session(
         width_px,
         height_px,
         &session.map_overlay_config,
+        ownship_overlay_context(session).as_ref(),
         &session.point_tile_cache,
         &session.airspace_ref_tile_cache,
         &session.airspace_feature_cache,
@@ -776,6 +777,18 @@ fn ownship_terrain_altitude_ft(session: &UiSession) -> Option<f64> {
                 .altitude_msl_ft
                 .or(kinematics.pressure_altitude_ft)
         })
+}
+
+fn ownship_overlay_context(session: &UiSession) -> Option<crate::ObstacleOverlayContext> {
+    let kinematics = session.app_state.ownship.resolved.kinematics.as_ref()?;
+    Some(crate::ObstacleOverlayContext {
+        position: kinematics.position,
+        track_deg_true: kinematics.track_deg_true,
+        ground_speed_kt: kinematics.ground_speed_kt,
+        altitude_ft: kinematics
+            .altitude_msl_ft
+            .or(kinematics.pressure_altitude_ft),
+    })
 }
 
 fn session_ref(sessions: &HashMap<u32, UiSession>, handle: u32) -> AppResult<&UiSession> {

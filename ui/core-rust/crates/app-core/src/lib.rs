@@ -45,6 +45,7 @@ pub use map_overlay::{
     AirspaceDisplaySubpath, AirspaceFeaturePath, AirspaceFeaturePayload, AirspaceFeatureRequest,
     AirspaceLabelRecord, AirspaceLabelTilePayload, AirspaceReferenceTilePayload,
     AirspaceScreenPoint, MapOverlayConfig, MapOverlayQueryResult, MapOverlayWarning,
+    ObstacleOverlayContext,
     NavSymbolFeature, PointTilePayload, PointVectorRecord, TfrAltitudeLimit, TfrAreaPayload,
     TfrLatLonPoint, TfrProductPayload, TfrScheduleFragment, VectorTileRequest, VisibleMapFeature,
     AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,

@@ -417,6 +417,7 @@ export type NavSymbolFeature = {
   kind: string;
   label: string;
   style_class: string;
+  obstacle_variant?: "short" | "tall" | null;
   towered: boolean;
   fuel_available: boolean;
   has_paved_runway?: boolean | null;

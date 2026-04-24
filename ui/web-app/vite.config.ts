@@ -237,7 +237,7 @@ function mountFastProducts() {
       res.end("forbidden");
       return;
     }
-    return mountStaticTree(productRoot)({ url: `/${parts.join("/")}` }, res, next);
+    return mountStaticTree(productRoot, { missingStatus: 404 })({ url: `/${parts.join("/")}` }, res, next);
   };
 }
 

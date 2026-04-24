@@ -13,6 +13,12 @@ export type PointVectorRecord = {
   heliport?: boolean | null;
   has_water_runway?: boolean | null;
   longest_runway_heading_true_deg?: number | null;
+  obstacle?: {
+    height_agl_ft: number;
+    elevation_msl_ft: number;
+    top_msl_ft: number;
+    is_tall: boolean;
+  } | null;
 };
 
 export type PointTilePayload = {
@@ -92,6 +98,9 @@ export function visiblePointRecords(
 }
 
 export function pointTileUrl(layer: string, zoom: number, x: number, y: number) {
+  if (layer === "obstacle") {
+    return `/fast-products/obstacles/points/obstacle/${zoom}/${x}/${y}.json`;
+  }
   return `/vectors/points/${layer}/${zoom}/${x}/${y}.json`;
 }
 

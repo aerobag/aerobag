@@ -329,6 +329,63 @@ button {
   fill: white;
 }
 
+.obstacleMarker {
+  fill: none;
+  stroke-width: 1.2px;
+  stroke-linecap: butt;
+  stroke-linejoin: miter;
+}
+
+.obstacleMarkerUnder {
+  stroke: rgba(8, 18, 24, 0.82);
+  stroke-width: 2.4px;
+  stroke-linecap: butt;
+  stroke-linejoin: miter;
+}
+
+.obstacleDotUnder {
+  fill: rgba(8, 18, 24, 0.82);
+}
+
+.obstacleDot {
+  stroke: none;
+}
+
+.obstacleDanger {
+  stroke: #d83a2e;
+}
+
+.obstacleCaution {
+  stroke: #ffd34d;
+}
+
+.obstacleMuted {
+  stroke: rgba(255, 211, 77, 0.72);
+}
+
+.obstacleDangerFill {
+  fill: #d83a2e;
+}
+
+.obstacleCautionFill {
+  fill: #ffd34d;
+}
+
+.obstacleMutedFill {
+  fill: rgba(255, 211, 77, 0.72);
+}
+
+.obstacleLabel {
+  fill: white;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  paint-order: stroke;
+  stroke: rgba(8, 18, 24, 0.82);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
 .airportRunwayBarUnder {
   stroke: rgba(8, 18, 24, 0.7);
   stroke-width: 5px;

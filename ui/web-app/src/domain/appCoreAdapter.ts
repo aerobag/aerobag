@@ -114,6 +114,12 @@ export type PointTilePayload = {
     has_water_runway?: boolean | null;
     longest_runway_length_ft?: number | null;
     longest_runway_heading_true_deg?: number | null;
+    obstacle?: {
+      height_agl_ft: number;
+      elevation_msl_ft: number;
+      top_msl_ft: number;
+      is_tall: boolean;
+    } | null;
   }>;
 };
 
@@ -170,6 +176,7 @@ export type VisibleMapFeature = {
   kind: string;
   label: string;
   style_class: string;
+  obstacle_variant?: "short" | "tall" | null;
   screen_x: number;
   screen_y: number;
   towered: boolean;
@@ -428,7 +435,35 @@ async function fetchVectorManifestJson(): Promise<string> {
   if (!response.ok) {
     throw new Error(`failed to load vector manifest: ${response.status}`);
   }
-  return response.text();
+  const baseManifest = JSON.parse(await response.text()) as Record<string, unknown>;
+  try {
+    const obstacleResponse = await fetch("/fast-products/obstacles/obstacles", { cache: "no-cache" });
+    if (obstacleResponse.ok) {
+      const obstacleManifest = JSON.parse(await obstacleResponse.text()) as {
+        point_layers?: Record<string, unknown>;
+        files?: Record<string, unknown>;
+      };
+      if (obstacleManifest.point_layers?.obstacle) {
+        baseManifest.point_layers = {
+          ...(typeof baseManifest.point_layers === "object" && baseManifest.point_layers !== null
+            ? baseManifest.point_layers as Record<string, unknown>
+            : {}),
+          obstacle: obstacleManifest.point_layers.obstacle,
+        };
+      }
+      if (obstacleManifest.files?.point_tiles_obstacle || obstacleManifest.files?.stats) {
+        baseManifest.files = {
+          ...(typeof baseManifest.files === "object" && baseManifest.files !== null
+            ? baseManifest.files as Record<string, unknown>
+            : {}),
+          ...(obstacleManifest.files ?? {}),
+        };
+      }
+    }
+  } catch {
+    // Obstacle overlay is optional; keep the base vector manifest usable if the fast product is absent.
+  }
+  return JSON.stringify(baseManifest);
 }
 
 type WasmModule = {

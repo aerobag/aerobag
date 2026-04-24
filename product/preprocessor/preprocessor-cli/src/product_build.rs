@@ -42,9 +42,7 @@ use preprocessor_resource_index::{
     TileLevelRecord,
 };
 use preprocessor_tpp::{package_native_tpp_versioned, render_native_tpp, NativeTppRunRequest};
-use preprocessor_vectors::{
-    build_obstacle_dataset, build_vectors_dataset, BuildObstacleDatasetRequest, BuildVectorsRequest,
-};
+use preprocessor_vectors::{build_vectors_dataset, BuildVectorsRequest};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::{
@@ -419,22 +417,6 @@ fn build_fast_bundle_manifest(
     })
 }
 
-fn build_obstacle_bundle_package_artifact(
-    published_zip: &Path,
-    checksum_sha256: &str,
-    size_bytes: u64,
-) -> anyhow::Result<PublishedFastProductResult> {
-    let (_, published_at_utc) = stable_effective_date_from_published_file(published_zip)?;
-    Ok(PublishedFastProductResult {
-        id: "obstacles".to_string(),
-        source_zip_path: published_zip.to_path_buf(),
-        published_zip: published_zip.to_path_buf(),
-        checksum_sha256: checksum_sha256.to_string(),
-        size_bytes,
-        source_generated_at_utc: published_at_utc,
-    })
-}
-
 fn static_product_task_ids(config: &ProductBuildConfig) -> Vec<String> {
     let mut task_ids = vec!["publish-geo".to_string()];
     if include_static_terrain_products() {
@@ -728,11 +710,6 @@ enum ProductTaskValue {
     PublishedNavDb {
         package: BundlePackageArtifact,
     },
-    ObstaclesBuilt {
-        manifest_path: PathBuf,
-        stats_path: PathBuf,
-        zip_path: PathBuf,
-    },
     BuiltStandaloneProduct {
         zip_path: PathBuf,
         zip_sha256: Option<String>,
@@ -755,12 +732,6 @@ enum ProductTaskValue {
     TerrainDiscovery {
         index_path: PathBuf,
         source_fetched_at_utc: Option<String>,
-    },
-    PublishedObstacle {
-        source_zip_path: PathBuf,
-        published_zip: PathBuf,
-        sha256: String,
-        size_bytes: u64,
     },
     PublishedStandaloneProduct {
         id: String,
@@ -1028,14 +999,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         BundleManifest {
             cycle: String,
         },
-        ObstaclesBuild,
-        ObstaclesPublish,
-        TfrsBuild,
-        TfrsPublish,
-        MetarsBuild,
-        MetarsPublish,
-        NexradBuild,
-        NexradPublish,
         GeoBuild,
         GeoPublish,
         TerrainDiscovery,
@@ -2105,90 +2068,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 completion_detail: "published".to_string(),
                             })
                         }
-                        ProductScheduledTaskKind::ObstaclesBuild => {
-                            let (manifest_path, stats_path, zip_path) = build_obstacles_product(&config)?;
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![],
-                                value: ProductTaskValue::ObstaclesBuilt {
-                                    manifest_path,
-                                    stats_path,
-                                    zip_path,
-                                },
-                                completion_detail: "cache_or_rebuild".to_string(),
-                            })
-                        }
-                        ProductScheduledTaskKind::ObstaclesPublish => {
-                            let built = match task_values_snapshot.get("build-obstacles") {
-                                Some(ProductTaskValue::ObstaclesBuilt { zip_path, .. }) => zip_path.clone(),
-                                _ => bail!("missing obstacle build output"),
-                            };
-                            let (published_zip, sha256, size_bytes) =
-                                publish_content_addressed_obstacle_zip(&config.build_root, &built)?;
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![],
-                                value: ProductTaskValue::PublishedObstacle {
-                                    source_zip_path: built,
-                                    published_zip,
-                                    sha256,
-                                    size_bytes,
-                                },
-                                completion_detail: "published".to_string(),
-                            })
-                        }
-                        ProductScheduledTaskKind::TfrsBuild => {
-                            let (zip_path, source_generated_at_utc, record) =
-                                build_tfrs_product(&config)?;
-                            let cache_hit = record.cache_hit;
-                            let (zip_sha256, zip_size_bytes) =
-                                node_output_file_detail(&record, "zip");
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![record],
-                                value: ProductTaskValue::BuiltStandaloneProduct {
-                                    zip_path,
-                                    zip_sha256,
-                                    zip_size_bytes,
-                                    source_version: source_generated_at_utc,
-                                    source_fetched_at_utc: None,
-                                },
-                                completion_detail: format!("cache_hit={cache_hit}"),
-                            })
-                        }
-                        ProductScheduledTaskKind::MetarsBuild => {
-                            let (zip_path, source_generated_at_utc, record) =
-                                build_metars_product(&config)?;
-                            let cache_hit = record.cache_hit;
-                            let (zip_sha256, zip_size_bytes) =
-                                node_output_file_detail(&record, "zip");
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![record],
-                                value: ProductTaskValue::BuiltStandaloneProduct {
-                                    zip_path,
-                                    zip_sha256,
-                                    zip_size_bytes,
-                                    source_version: source_generated_at_utc,
-                                    source_fetched_at_utc: None,
-                                },
-                                completion_detail: format!("cache_hit={cache_hit}"),
-                            })
-                        }
-                        ProductScheduledTaskKind::NexradBuild => {
-                            let (zip_path, source_generated_at_utc, record) =
-                                build_nexrad_product(&config)?;
-                            let cache_hit = record.cache_hit;
-                            let (zip_sha256, zip_size_bytes) =
-                                node_output_file_detail(&record, "zip");
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![record],
-                                value: ProductTaskValue::BuiltStandaloneProduct {
-                                    zip_path,
-                                    zip_sha256,
-                                    zip_size_bytes,
-                                    source_version: source_generated_at_utc,
-                                    source_fetched_at_utc: None,
-                                },
-                                completion_detail: format!("cache_hit={cache_hit}"),
-                            })
-                        }
                         ProductScheduledTaskKind::GeoBuild => {
                             let (zip_path, source_version, record) = build_geo_product(&config)?;
                             let cache_hit = record.cache_hit;
@@ -2311,126 +2190,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     tile_levels,
                                 },
                                 completion_detail: format!("cache_hit={cache_hit}"),
-                            })
-                        }
-                        ProductScheduledTaskKind::TfrsPublish => {
-                            let built = match task_values_snapshot.get("build-tfrs") {
-                                Some(ProductTaskValue::BuiltStandaloneProduct {
-                                    zip_path,
-                                    zip_sha256,
-                                    zip_size_bytes,
-                                    source_version,
-                                    source_fetched_at_utc,
-                                    ..
-                                }) => (
-                                    zip_path.clone(),
-                                    zip_sha256.clone(),
-                                    *zip_size_bytes,
-                                    source_version.clone(),
-                                    source_fetched_at_utc.clone(),
-                                ),
-                                _ => bail!("missing TFR build output"),
-                            };
-                            let (published_zip, sha256, size_bytes) =
-                                publish_content_addressed_fast_product_zip(
-                                    &config.build_root,
-                                    "tfrs",
-                                    &built.0,
-                                    built.1.as_deref(),
-                                    built.2,
-                                )?;
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![],
-                                value: ProductTaskValue::PublishedStandaloneProduct {
-                                    id: "tfrs".to_string(),
-                                    source_zip_path: built.0,
-                                    published_zip,
-                                    sha256,
-                                    size_bytes,
-                                    source_version: built.3,
-                                    source_fetched_at_utc: built.4,
-                                },
-                                completion_detail: "published".to_string(),
-                            })
-                        }
-                        ProductScheduledTaskKind::MetarsPublish => {
-                            let built = match task_values_snapshot.get("build-metars") {
-                                Some(ProductTaskValue::BuiltStandaloneProduct {
-                                    zip_path,
-                                    zip_sha256,
-                                    zip_size_bytes,
-                                    source_version,
-                                    source_fetched_at_utc,
-                                    ..
-                                }) => (
-                                    zip_path.clone(),
-                                    zip_sha256.clone(),
-                                    *zip_size_bytes,
-                                    source_version.clone(),
-                                    source_fetched_at_utc.clone(),
-                                ),
-                                _ => bail!("missing METAR build output"),
-                            };
-                            let (published_zip, sha256, size_bytes) =
-                                publish_content_addressed_fast_product_zip(
-                                    &config.build_root,
-                                    "metars",
-                                    &built.0,
-                                    built.1.as_deref(),
-                                    built.2,
-                                )?;
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![],
-                                value: ProductTaskValue::PublishedStandaloneProduct {
-                                    id: "metars".to_string(),
-                                    source_zip_path: built.0,
-                                    published_zip,
-                                    sha256,
-                                    size_bytes,
-                                    source_version: built.3,
-                                    source_fetched_at_utc: built.4,
-                                },
-                                completion_detail: "published".to_string(),
-                            })
-                        }
-                        ProductScheduledTaskKind::NexradPublish => {
-                            let built = match task_values_snapshot.get("build-nexrad") {
-                                Some(ProductTaskValue::BuiltStandaloneProduct {
-                                    zip_path,
-                                    zip_sha256,
-                                    zip_size_bytes,
-                                    source_version,
-                                    source_fetched_at_utc,
-                                    ..
-                                }) => (
-                                    zip_path.clone(),
-                                    zip_sha256.clone(),
-                                    *zip_size_bytes,
-                                    source_version.clone(),
-                                    source_fetched_at_utc.clone(),
-                                ),
-                                _ => bail!("missing NEXRAD build output"),
-                            };
-                            let (published_zip, sha256, size_bytes) =
-                                publish_content_addressed_fast_product_zip(
-                                    &config.build_root,
-                                    "nexrad",
-                                    &built.0,
-                                    built.1.as_deref(),
-                                    built.2,
-                                )?;
-                            Ok(ProductTaskCompletion {
-                                node_records: vec![],
-                                value: ProductTaskValue::PublishedStandaloneProduct {
-                                    id: "nexrad".to_string(),
-                                    source_zip_path: built.0,
-                                    published_zip,
-                                    sha256,
-                                    size_bytes,
-                                    source_version: built.3,
-                                    source_fetched_at_utc: built.4,
-                                },
-                                completion_detail: "published".to_string(),
                             })
                         }
                         ProductScheduledTaskKind::GeoPublish => {
@@ -6714,74 +6473,6 @@ fn product_cycles_to_build(config: &ProductBuildConfig) -> anyhow::Result<Vec<St
     Ok(cycles)
 }
 
-fn obstacle_snapshot_label(value: &str) -> anyhow::Result<String> {
-    Ok(NaiveDate::parse_from_str(value, "%Y-%m-%d")
-        .with_context(|| format!("failed to parse obstacle snapshot date {value}"))?
-        .format("%Y.%m.%d")
-        .to_string())
-}
-
-fn build_obstacles_product(
-    config: &ProductBuildConfig,
-) -> anyhow::Result<(PathBuf, PathBuf, PathBuf)> {
-    let artifact_root = artifact_root_from_build_root(&config.build_root).to_path_buf();
-    let snapshot_date = env::var("AEROBAG_OBSTACLE_SNAPSHOT_DATE")
-        .unwrap_or_else(|_| Utc::now().format("%Y-%m-%d").to_string());
-    let snapshot_label = obstacle_snapshot_label(&snapshot_date)?;
-    let build_root = artifact_root
-        .join("private-work")
-        .join("obstacles")
-        .join(&snapshot_label);
-    let output_dir = build_root.join("output");
-    let manifest_path = output_dir.join(format!("obstacles_{snapshot_label}.manifest"));
-    let stats_path = output_dir.join("stats.json");
-    let zip_path = output_dir.join(format!("obstacles_{snapshot_label}.zip"));
-    if manifest_path.is_file() && stats_path.is_file() && zip_path.is_file() {
-        return Ok((manifest_path, stats_path, zip_path));
-    }
-
-    let fetch_cache = FetchCacheConfig {
-        root: config.fetch_cache_root.clone(),
-        mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
-    };
-    let work_dir = build_root.join("work");
-    fs::create_dir_all(&work_dir)
-        .with_context(|| format!("failed to create {}", work_dir.display()))?;
-    let provenance_dir = build_root.join("meta").join("provenance").join("obstacles");
-    fs::create_dir_all(&provenance_dir)
-        .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
-    let logical_url = format!(
-        "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_{snapshot_label}.zip"
-    );
-    fs::write(
-        provenance_dir.join("source_urls.jsonl"),
-        format!(
-            "{{\"event\":\"source_url\",\"label\":\"obstacles\",\"url\":\"{}\"}}\n",
-            logical_url
-        ),
-    )
-    .with_context(|| {
-        format!(
-            "failed to write {}",
-            provenance_dir.join("source_urls.jsonl").display()
-        )
-    })?;
-    prefetch_archives_with_provenance(
-        &[logical_url],
-        &work_dir,
-        config.fetch_jobs,
-        Some(&fetch_cache),
-        &provenance_dir,
-        "obstacles",
-    )?;
-    let result = build_obstacle_dataset(&BuildObstacleDatasetRequest {
-        input_dir: work_dir,
-        output_dir,
-        version_label: snapshot_label,
-    })?;
-    Ok((result.manifest_path, result.stats_path, result.zip_path))
-}
-
 fn build_tfrs_product(
     config: &ProductBuildConfig,
 ) -> anyhow::Result<(PathBuf, String, NodeRecord)> {
@@ -9310,13 +9001,6 @@ fn fast_product_source_generated_at(
         }
         other => bail!("unsupported fast product id {other}"),
     }
-}
-
-fn publish_content_addressed_obstacle_zip(
-    build_root: &Path,
-    obstacle_zip_path: &Path,
-) -> anyhow::Result<(PathBuf, String, u64)> {
-    publish_content_addressed_zip(build_root, obstacle_zip_path, "obstacles", None, None)
 }
 
 fn publish_content_addressed_fast_product_zip(

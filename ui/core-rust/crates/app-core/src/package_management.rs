@@ -90,6 +90,7 @@ pub struct PackageManagementPlan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct OfflinePackagesState {
     pub preferences: OfflinePackagePreferences,
+    pub now_override_epoch_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +98,8 @@ pub struct OfflinePackagesState {
 pub enum OfflinePackagesEvent {
     CycleRegion { id: String },
     CycleProduct { id: String },
+    UseSystemClock,
+    SetClockOverride { epoch_ms: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,9 +111,19 @@ pub struct OfflinePackagesUiRow {
     pub pause_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfflinePackagesClockOption {
+    pub id: String,
+    pub label: String,
+    pub active: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct OfflinePackagesUiState {
     pub summary_text: String,
+    pub clock_label: String,
+    pub clock_options: Vec<OfflinePackagesClockOption>,
+    pub core_products: Vec<OfflinePackagesUiRow>,
     pub regions: Vec<OfflinePackagesUiRow>,
     pub products: Vec<OfflinePackagesUiRow>,
 }
@@ -142,6 +155,9 @@ pub struct OfflinePackagesReduceInput {
 pub struct OfflinePackagesReduceResult {
     pub state: OfflinePackagesState,
     pub ui_state: OfflinePackagesUiState,
+    pub effective_now_epoch_ms: i64,
+    pub plan: PackageManagementPlan,
+    pub bundle: BundleManifest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,17 +198,33 @@ pub fn initialize_offline_packages(input: &OfflinePackagesInitInput) -> OfflineP
             &input.region_ids,
             &input.product_ids,
         ),
+        now_override_epoch_ms: input.state.as_ref().and_then(|state| state.now_override_epoch_ms),
     };
+    let effective_now_epoch_ms = effective_now_epoch_ms(&state, input.now_epoch_ms);
+    let bundle = resolve_cycle_bundle_manifest(
+        &input.discovery_manifests,
+        &input.bundle_manifests_by_filename,
+        effective_now_epoch_ms,
+    );
+    let plan = plan_offline_packages(&PackageManagementInput {
+        now_epoch_ms: effective_now_epoch_ms,
+        preferences: state.preferences.clone(),
+        bundle: bundle.clone(),
+        installed: input.installed.clone(),
+    });
     OfflinePackagesReduceResult {
         ui_state: project_offline_packages_ui_state(
             &state,
             &input.region_ids,
             &input.product_ids,
-            input.now_epoch_ms,
+            effective_now_epoch_ms,
             &input.discovery_manifests,
             &input.bundle_manifests_by_filename,
             &input.installed,
         ),
+        effective_now_epoch_ms,
+        plan,
+        bundle,
         state,
     }
 }
@@ -204,6 +236,7 @@ pub fn reduce_offline_packages(input: &OfflinePackagesReduceInput) -> OfflinePac
             &input.region_ids,
             &input.product_ids,
         ),
+        now_override_epoch_ms: input.state.now_override_epoch_ms,
     };
 
     match &input.event {
@@ -213,6 +246,12 @@ pub fn reduce_offline_packages(input: &OfflinePackagesReduceInput) -> OfflinePac
         OfflinePackagesEvent::CycleProduct { id } => {
             cycle_selection(&mut state.preferences.products, id);
         }
+        OfflinePackagesEvent::UseSystemClock => {
+            state.now_override_epoch_ms = None;
+        }
+        OfflinePackagesEvent::SetClockOverride { epoch_ms } => {
+            state.now_override_epoch_ms = Some(*epoch_ms);
+        }
     }
 
     state.preferences = normalize_preferences(
@@ -220,17 +259,32 @@ pub fn reduce_offline_packages(input: &OfflinePackagesReduceInput) -> OfflinePac
         &input.region_ids,
         &input.product_ids,
     );
+    let effective_now_epoch_ms = effective_now_epoch_ms(&state, input.now_epoch_ms);
+    let bundle = resolve_cycle_bundle_manifest(
+        &input.discovery_manifests,
+        &input.bundle_manifests_by_filename,
+        effective_now_epoch_ms,
+    );
+    let plan = plan_offline_packages(&PackageManagementInput {
+        now_epoch_ms: effective_now_epoch_ms,
+        preferences: state.preferences.clone(),
+        bundle: bundle.clone(),
+        installed: input.installed.clone(),
+    });
 
     OfflinePackagesReduceResult {
         ui_state: project_offline_packages_ui_state(
             &state,
             &input.region_ids,
             &input.product_ids,
-            input.now_epoch_ms,
+            effective_now_epoch_ms,
             &input.discovery_manifests,
             &input.bundle_manifests_by_filename,
             &input.installed,
         ),
+        effective_now_epoch_ms,
+        plan,
+        bundle,
         state,
     }
 }
@@ -336,6 +390,36 @@ fn project_offline_packages_ui_state(
             state.preferences.regions.values().filter(|&&s| s == OfflinePackageSelection::Play).count(),
             state.preferences.products.values().filter(|&&s| s == OfflinePackageSelection::Play).count(),
         ),
+        clock_label: clock_label(now_epoch_ms, state.now_override_epoch_ms),
+        clock_options: clock_options(discovery_manifests, state.now_override_epoch_ms),
+        core_products: {
+            let active_bundle = resolve_cycle_bundle_manifest(
+                discovery_manifests,
+                bundle_manifests_by_filename,
+                now_epoch_ms,
+            );
+            let mut ids = BTreeSet::new();
+            for pkg in &active_bundle.packages {
+                if pkg.region_id.is_none()
+                    && !product_ids.iter().any(|product_id| product_id == &pkg.family_id)
+                {
+                    ids.insert(pkg.family_id.clone());
+                }
+            }
+            ids.extend(counts.core_products.keys().cloned());
+            ids.into_iter()
+                .map(|id| {
+                    let counts = counts.core_products.get(&id);
+                    OfflinePackagesUiRow {
+                        id,
+                        selection: OfflinePackageSelection::Play,
+                        fetch_count: counts.map_or(0, |counts| counts.fetch_count),
+                        gc_count: counts.map_or(0, |counts| counts.gc_count),
+                        pause_count: counts.map_or(0, |counts| counts.pause_count),
+                    }
+                })
+                .collect()
+        },
         regions: region_ids
             .iter()
             .map(|id| OfflinePackagesUiRow {
@@ -369,6 +453,63 @@ fn project_offline_packages_ui_state(
     }
 }
 
+fn effective_now_epoch_ms(state: &OfflinePackagesState, fallback_now_epoch_ms: i64) -> i64 {
+    state.now_override_epoch_ms.unwrap_or(fallback_now_epoch_ms)
+}
+
+fn clock_label(now_epoch_ms: i64, override_epoch_ms: Option<i64>) -> String {
+    match override_epoch_ms {
+        Some(epoch_ms) => format!("CLOCK {}", format_epoch_ms_utc(epoch_ms)),
+        None => format!("CLOCK NOW ({})", format_epoch_ms_utc(now_epoch_ms)),
+    }
+}
+
+fn clock_options(
+    discovery_manifests: &[CurrentArtifactsManifest],
+    override_epoch_ms: Option<i64>,
+) -> Vec<OfflinePackagesClockOption> {
+    let mut options = vec![OfflinePackagesClockOption {
+        id: "system".to_string(),
+        label: "NOW".to_string(),
+        active: override_epoch_ms.is_none(),
+    }];
+    let mut seen = BTreeSet::new();
+    for manifest in discovery_manifests {
+        let Some(as_of_utc) = manifest.as_of_utc.as_deref() else {
+            continue;
+        };
+        let Some(epoch_ms) = as_of_utc_to_epoch_ms(as_of_utc) else {
+            continue;
+        };
+        if !seen.insert(epoch_ms) {
+            continue;
+        }
+        options.push(OfflinePackagesClockOption {
+            id: epoch_ms.to_string(),
+            label: manifest
+                .as_of_date
+                .clone()
+                .unwrap_or_else(|| format_epoch_ms_utc(epoch_ms)),
+            active: override_epoch_ms == Some(epoch_ms),
+        });
+    }
+    options.sort_by(|a, b| {
+        if a.id == "system" {
+            return std::cmp::Ordering::Less;
+        }
+        if b.id == "system" {
+            return std::cmp::Ordering::Greater;
+        }
+        a.id.cmp(&b.id)
+    });
+    if options.iter().all(|option| !option.active) {
+        if let Some(system) = options.first_mut() {
+            system.active = override_epoch_ms.is_none();
+        }
+    }
+    options
+}
+
 #[derive(Default)]
 struct DimensionCounts {
     fetch_count: usize,
@@ -378,6 +519,7 @@ struct DimensionCounts {
 
 #[derive(Default)]
 struct PlanCountsByDimension {
+    core_products: BTreeMap<String, DimensionCounts>,
     regions: BTreeMap<String, DimensionCounts>,
     products: BTreeMap<String, DimensionCounts>,
 }
@@ -399,6 +541,8 @@ fn plan_counts_by_dimension_from_packages(
         };
         if let Some(region_id) = &pkg.region_id {
             mutate(counts.regions.entry(region_id.clone()).or_default());
+        } else {
+            mutate(counts.core_products.entry(pkg.family_id.clone()).or_default());
         }
         mutate(counts.products.entry(pkg.family_id.clone()).or_default());
     }
@@ -422,13 +566,16 @@ fn plan_counts_by_dimension(
     bundle_manifests_by_filename: &BTreeMap<String, BundleManifest>,
     now_epoch_ms: i64,
 ) -> PlanCountsByDimension {
-    let bundle = resolve_cycle_bundle_manifest(
+    let _ = resolve_cycle_bundle_manifest(
         discovery_manifests,
         bundle_manifests_by_filename,
         now_epoch_ms,
     );
-    let packages_by_id: BTreeMap<&str, &BundlePackageArtifact> =
-        bundle.packages.iter().map(|pkg| (pkg.id.as_str(), pkg)).collect();
+    let packages_by_id: BTreeMap<&str, &BundlePackageArtifact> = bundle_manifests_by_filename
+        .values()
+        .flat_map(|bundle| bundle.packages.iter())
+        .map(|pkg| (pkg.id.as_str(), pkg))
+        .collect();
     plan_counts_by_dimension_from_packages(plan, &packages_by_id)
 }
 
@@ -562,6 +709,16 @@ fn as_of_utc_to_epoch_ms(value: &str) -> Option<i64> {
     Some(base + (((hour * 60 + minute) * 60 + second) * 1000))
 }
 
+fn format_epoch_ms_utc(epoch_ms: i64) -> String {
+    let seconds = epoch_ms.div_euclid(1000);
+    let days = seconds.div_euclid(86_400);
+    let seconds_of_day = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}Z")
+}
+
 fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
     let year = year - i32::from(month <= 2);
     let era = if year >= 0 { year } else { year - 399 } / 400;
@@ -570,6 +727,20 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
     let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day as i32 - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     (era * 146_097 + doe - 719_468) as i64
+}
+
+fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = (yoe as i32) + (era as i32) * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    year += if month <= 2 { 1 } else { 0 };
+    (year, month as u32, day as u32)
 }
 
 fn artifact_slot(artifact: &AvailablePackageArtifact) -> (String, Option<String>) {

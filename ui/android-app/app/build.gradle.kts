@@ -110,6 +110,18 @@ val discoveryCycleBundleFiles by lazy {
         .sorted()
         .map(::resolvePublishedFilename)
 }
+val discoveryPackageFiles by lazy {
+    discoveryCycleBundleFiles
+        .flatMap { bundleFile ->
+            val payload = JsonSlurper().parse(bundleFile) as Map<*, *>
+            (payload["packages"] as? List<*> ?: emptyList<Any?>())
+                .filterIsInstance<Map<*, *>>()
+                .mapNotNull { it["filename"] as? String }
+        }
+        .distinct()
+        .sorted()
+        .map(::resolvePublishedFilename)
+}
 
 fun resolvePublishedFilename(rawPath: String): File {
     val relative = File(rawPath)
@@ -204,6 +216,52 @@ val stageCanonicalAndroidAssets by tasks.registering {
         linkOrCopy(uiThemeFile, fixturesDir.resolve("ui-theme.json"))
         linkOrCopy(devBootstrapFile, fixturesDir.resolve("dev-bootstrap.json"))
         fixturesDir.resolve("android-dev-server-base-url.txt").writeText(androidDevServerBaseUrl)
+    }
+}
+
+val stageDevPackageManagementSourcePackages by tasks.registering {
+    outputs.dir(generatedPrototypeSeedChartPackagesDir.map { it.dir("package-management-source") })
+    outputs.upToDateWhen { false }
+    doLast {
+        val outputDir = generatedPrototypeSeedChartPackagesDir.get().dir("package-management-source").asFile
+        delete(outputDir)
+        outputDir.mkdirs()
+        discoveryPackageFiles.forEach { source ->
+            if (!source.isFile) {
+                throw GradleException("missing staged package management source package ${source.absolutePath}")
+            }
+            Files.copy(
+                source.toPath(),
+                outputDir.resolve(source.name).toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        }
+    }
+}
+
+val seedDevPackageManagementSourcePackages by tasks.registering {
+    dependsOn("installDebug")
+    dependsOn(stageDevPackageManagementSourcePackages)
+    doLast {
+        val packageDir = generatedPrototypeSeedChartPackagesDir.get().dir("package-management-source").asFile
+        if (!packageDir.isDirectory) {
+            throw GradleException("missing package management source directory ${packageDir.absolutePath}")
+        }
+        val targetDir = "/storage/emulated/0/Android/data/net.jonh.aerobag.prototype/files/package-management-source"
+        exec {
+            commandLine("adb", "shell", "rm", "-rf", targetDir)
+        }
+        exec {
+            commandLine("adb", "shell", "mkdir", "-p", targetDir)
+        }
+        packageDir.listFiles()
+            ?.filter { it.isFile && it.extension == "zip" }
+            ?.sortedBy { it.name }
+            ?.forEach { packageFile ->
+                exec {
+                    commandLine("adb", "push", packageFile.absolutePath, "$targetDir/${packageFile.name}")
+                }
+            }
     }
 }
 

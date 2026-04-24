@@ -207,7 +207,7 @@ private class FakeNativeBridge(
     private val mock = MockAppCoreAdapter()
 
     override fun initializeOfflinePackagesJson(inputJson: String): String =
-        """{"state":{"preferences":{"regions":{},"products":{}}},"ui_state":{"summary_text":"","regions":[],"products":[]}}"""
+        """{"state":{"preferences":{"regions":{},"products":{}},"now_override_epoch_ms":null},"ui_state":{"summary_text":"","clock_label":"","clock_options":[],"core_products":[],"regions":[],"products":[]},"effective_now_epoch_ms":0,"plan":{"fetch":[],"retain_installed":[],"gc":[],"protected_by_pause":[]},"bundle":{"packages":[]}}"""
 
     override fun reduceOfflinePackagesJson(inputJson: String): String =
         initializeOfflinePackagesJson(inputJson)

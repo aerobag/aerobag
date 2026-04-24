@@ -9,12 +9,17 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.put
 
-data class ContentFixture(
+data class BootstrapFixture(
     val currentArtifactsJson: String,
     val cycleBundleJson: String,
     val packageManagementDiscoveryJsons: List<String>,
     val packageManagementBundleJsonsByFilename: Map<String, String>,
     val packageManagementNowEpochMsOverride: Long?,
+    val samplePlan: FlightPlan,
+)
+
+data class ContentFixture(
+    val bootstrap: BootstrapFixture,
     val vectorManifestJson: String,
     val vectorPackageId: String,
     val mapView: MapView,
@@ -49,7 +54,7 @@ object SampleData {
         ignoreUnknownKeys = true
     }
 
-    fun load(context: Context): ContentFixture {
+    fun loadBootstrap(context: Context): BootstrapFixture {
         val bootstrapPayload = context.assets.open(BOOTSTRAP_ASSET_PATH).bufferedReader().use { it.readText() }
         val currentArtifactsPayload =
             context.assets.open(CURRENT_ARTIFACTS_ASSET_PATH).bufferedReader().use { it.readText() }
@@ -74,6 +79,20 @@ object SampleData {
                     .use { it.readText() }
             }
             .orEmpty()
+        return BootstrapFixture(
+            currentArtifactsJson = currentArtifactsPayload,
+            cycleBundleJson = cycleBundlePayload,
+            packageManagementDiscoveryJsons = packageManagementDiscoveryJsons,
+            packageManagementBundleJsonsByFilename = packageManagementBundleJsonsByFilename,
+            packageManagementNowEpochMsOverride = bootstrap.package_management_now_utc?.let {
+                Instant.parse(it).toEpochMilli()
+            },
+            samplePlan = bootstrap.flight_plan.toUiFlightPlan(),
+        )
+    }
+
+    fun loadRuntime(context: Context, bootstrapFixture: BootstrapFixture): ContentFixture {
+        val cycleBundle = json.decodeFromString<WireBundleManifest>(bootstrapFixture.cycleBundleJson)
         val navDbPackageId = cycleBundle.singlePackageId("nav-db")
         val vectorsPackageId = cycleBundle.singlePackageId("vectors")
         val navKvStore = NavKvStore.open(context, navDbPackageId)
@@ -92,10 +111,8 @@ object SampleData {
                 ),
             ).map { it.toUi() }
         val mapView = mapViews.first().mapView
-        val samplePlan = bootstrap.flight_plan.toUiFlightPlan()
+        val samplePlan = bootstrapFixture.samplePlan
         val airportIds = buildSet {
-            addAll(bootstrap.recent_airport_ids)
-            bootstrap.selected_airport_id?.let(::add)
             samplePlan.departure?.let(::add)
             samplePlan.destination?.let(::add)
         }
@@ -113,13 +130,7 @@ object SampleData {
         ).toUi()
         val defaultLevel = mapView.levels.maxBy { it.zoom }
         return ContentFixture(
-            currentArtifactsJson = currentArtifactsPayload,
-            cycleBundleJson = cycleBundlePayload,
-            packageManagementDiscoveryJsons = packageManagementDiscoveryJsons,
-            packageManagementBundleJsonsByFilename = packageManagementBundleJsonsByFilename,
-            packageManagementNowEpochMsOverride = bootstrap.package_management_now_utc?.let {
-                Instant.parse(it).toEpochMilli()
-            },
+            bootstrap = bootstrapFixture,
             vectorManifestJson = vectorManifestJson,
             vectorPackageId = vectorsPackageId,
             mapView = mapView,

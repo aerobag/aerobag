@@ -3,6 +3,7 @@ package net.jonh.aerobag.prototype.domain
 import android.content.Context
 import java.io.BufferedInputStream
 import java.io.File
+import java.io.InputStream
 import java.util.zip.ZipInputStream
 
 enum class InstalledPackageKind(val directoryName: String) {
@@ -33,6 +34,39 @@ object InstalledPackages {
     fun installedFile(context: Context, kind: InstalledPackageKind, packageId: String): File =
         existingInstalledFile(context, kind, packageId)
             ?: internalFile(context, kind, packageId)
+
+    fun replaceInstalledFile(context: Context, kind: InstalledPackageKind, packageId: String, bytes: ByteArray) {
+        val target = internalFile(context, kind, packageId)
+        target.parentFile?.mkdirs()
+        val temp = File(target.parentFile, "${target.name}.tmp")
+        temp.outputStream().use { it.write(bytes) }
+        if (!temp.renameTo(target)) {
+            temp.copyTo(target, overwrite = true)
+            temp.delete()
+        }
+    }
+
+    fun replaceInstalledFileFromStream(
+        context: Context,
+        kind: InstalledPackageKind,
+        packageId: String,
+        source: InputStream,
+    ) {
+        val target = internalFile(context, kind, packageId)
+        target.parentFile?.mkdirs()
+        val temp = File(target.parentFile, "${target.name}.tmp")
+        temp.outputStream().use { output ->
+            source.copyTo(output)
+        }
+        if (!temp.renameTo(target)) {
+            temp.copyTo(target, overwrite = true)
+            temp.delete()
+        }
+    }
+
+    fun deleteInstalledFile(context: Context, kind: InstalledPackageKind, packageId: String) {
+        existingInstalledFile(context, kind, packageId)?.delete()
+    }
 
     fun isInstalled(context: Context, kind: InstalledPackageKind, packageId: String): Boolean =
         existingInstalledFile(context, kind, packageId) != null

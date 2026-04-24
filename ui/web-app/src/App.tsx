@@ -218,6 +218,24 @@ const bootstrap = bootstrapJson as DevBootstrapJson;
 const samplePlan = bootstrap.flight_plan;
 const emptyChartPage: ChartPageData = { airports: [] };
 const O88_POSITION = { lat: 38.19338888888888, lon: -121.70363888888889 };
+const PAGE_CHART_ICON_SRC = "/icons/icons/page-chart-icon.png?v=20260424b";
+
+function chartFamilyIconSrc(familyId: ChartFamilyId | null | undefined): string | undefined {
+  switch (familyId) {
+    case "sec":
+      return "/icons/icons/sectional-icon.png?v=20260424b";
+    case "tac":
+      return "/icons/icons/tac-icon.png?v=20260424b";
+    case "enr-l":
+      return "/icons/icons/ifr-l-icon.png?v=20260424b";
+    case "enr-h":
+      return "/icons/icons/ifr-h-icon.png?v=20260424b";
+    case "shaded-relief":
+      return "/icons/icons/shaded-relief-icon.png?v=20260424b";
+    default:
+      return undefined;
+  }
+}
 
 type NexradOverlayFrame = NexradFrame & {
   url: string;
@@ -3216,6 +3234,14 @@ function MapPage(props: {
         <div className="chartDock">
           <TrayDock
             launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "CHT"}
+            launcherImageSrc={PAGE_CHART_ICON_SRC}
+            launcherStyle={{
+              backgroundColor: "#eef3e4",
+              backgroundImage: `url("${PAGE_CHART_ICON_SRC}")`,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+              backgroundRepeat: "no-repeat",
+            }}
             open={trayGroup.isOpen("page")}
             onToggle={() => trayGroup.toggle("page")}
             ariaLabel="Page"
@@ -3231,6 +3257,16 @@ function MapPage(props: {
           />
           <TrayDock
             launcherLabel={selectedFamily?.launcher_label ?? "---"}
+            launcherImageSrc={chartFamilyIconSrc(selectedFamily?.id)}
+            launcherStyle={chartFamilyIconSrc(selectedFamily?.id)
+              ? {
+                  backgroundColor: "#eef3e4",
+                  backgroundImage: `url("${chartFamilyIconSrc(selectedFamily?.id)}")`,
+                  backgroundSize: "cover",
+                  backgroundPosition: "center",
+                  backgroundRepeat: "no-repeat",
+                }
+              : undefined}
             open={trayGroup.isOpen("family")}
             onToggle={() => trayGroup.toggle("family")}
             ariaLabel="Chart family"
@@ -4922,6 +4958,8 @@ function FlightPlanPage(props: {
 
 function TrayDock(props: {
   launcherLabel: string;
+  launcherImageSrc?: string;
+  launcherStyle?: CSSProperties;
   open: boolean;
   onToggle: () => void;
   ariaLabel: string;
@@ -4930,7 +4968,7 @@ function TrayDock(props: {
   launcherAccentColor?: string;
   options: TrayOption[];
 }) {
-  const { launcherLabel, open, onToggle, ariaLabel, disabled = false, style = "compact", launcherAccentColor, options } = props;
+  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, style = "compact", launcherAccentColor, options } = props;
   const launcherRef = useRef<HTMLButtonElement | null>(null);
   const trayRef = useRef<HTMLElement | null>(null);
   const [trayPosition, setTrayPosition] = useState<{ left: number; top: number } | null>(null);
@@ -4985,6 +5023,7 @@ function TrayDock(props: {
         className={`chartButton${launcherWide ? " chartButtonWide" : ""}${open ? " isOpen" : ""}${launcherDisabled ? " isDisabled" : ""}`}
         aria-disabled={launcherDisabled}
         style={{
+          ...launcherStyle,
           ...(launcherAccentColor ? ({ ["--tray-accent" as string]: launcherAccentColor } as CSSProperties) : undefined),
         }}
         onPointerDown={stopPointer}
@@ -4992,6 +5031,7 @@ function TrayDock(props: {
         onDoubleClick={stopDoubleClick}
         onClick={launcherDisabled ? undefined : onToggle}
       >
+        {launcherImageSrc ? <img className="chartButtonIcon" src={launcherImageSrc} alt="" aria-hidden="true" /> : null}
         <span className={`chartButtonLabel${launcherWide ? " chartButtonLabelWide" : ""}`}>{launcherLabel}</span>
       </button>
       {open && typeof document !== "undefined"
@@ -5505,6 +5545,14 @@ function ChartsPage(props: {
         <div className="chartDock chartDockDouble">
           <TrayDock
             launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "PLT"}
+            launcherImageSrc="/icons/icons/page-plate-icon.png?v=20260424b"
+            launcherStyle={{
+              backgroundColor: "#eef3e4",
+              backgroundImage: 'url("/icons/icons/page-plate-icon.png?v=20260424b")',
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+              backgroundRepeat: "no-repeat",
+            }}
             open={trayGroup.isOpen("page")}
             onToggle={() => trayGroup.toggle("page")}
             ariaLabel="Page"
@@ -5536,6 +5584,14 @@ function ChartsPage(props: {
           />
           <TrayDock
             launcherLabel={selectedChart?.label ?? "---"}
+            launcherImageSrc="/icons/icons/page-chart-icon.png?v=20260424b"
+            launcherStyle={{
+              backgroundColor: "#eef3e4",
+              backgroundImage: 'url("/icons/icons/page-chart-icon.png?v=20260424b")',
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+              backgroundRepeat: "no-repeat",
+            }}
             open={trayGroup.isOpen("chart")}
             launcherAccentColor={selectedChart ? plateFolderColor(selectedChart.folder_category) : undefined}
             onToggle={() => trayGroup.toggle("chart")}

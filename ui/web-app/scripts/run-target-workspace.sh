@@ -29,6 +29,7 @@ cp "$WEB_SOURCE_DIR/index.html" "$WORKSPACE_DIR/index.html"
 ln -sfn "$WEB_SOURCE_DIR/src" "$WORKSPACE_DIR/src"
 ln -sfn "$WEB_SOURCE_DIR/public" "$WORKSPACE_DIR/public"
 ln -sfn "$WEB_SOURCE_DIR/scripts" "$WORKSPACE_DIR/scripts"
+ln -sfn "$REPO_ROOT/ui/icons" "$WORKSPACE_DIR/icons"
 
 SOURCE_LOCK_HASH="$(sha256sum "$WEB_SOURCE_DIR/package-lock.json" | awk '{print $1}')"
 STAMP_FILE="$WORKSPACE_DIR/.package-lock.sha256"

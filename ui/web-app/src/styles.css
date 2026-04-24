@@ -539,6 +539,17 @@ button {
   overflow: hidden;
 }
 
+.chartButtonIcon {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  pointer-events: none;
+  user-select: none;
+}
+
 .chartButton.isOpen {
   background-color: color-mix(in srgb, var(--theme-button-bg) 88%, white);
   background-image:
@@ -572,6 +583,8 @@ button {
 }
 
 .chartButtonLabel {
+  position: relative;
+  z-index: 1;
   max-width: calc(var(--thumb) * 0.8);
   font-size: calc(var(--thumb) * 0.22);
   font-weight: 700;
@@ -579,6 +592,10 @@ button {
   line-height: 1.05;
   text-align: center;
   white-space: pre-line;
+  paint-order: stroke fill;
+  stroke: rgba(8, 18, 24, 0.96);
+  stroke-width: 4.6px;
+  stroke-linejoin: round;
 }
 
 .chartButtonWide {

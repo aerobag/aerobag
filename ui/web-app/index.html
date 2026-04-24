@@ -72,16 +72,30 @@
         padding: 28px 32px;
       }
 
-      .startup-logo {
+      .startup-logoBox {
+        position: relative;
         width: min(68vw, 420px);
+      }
+
+      .startup-logo {
+        width: 100%;
         height: auto;
         display: block;
         filter: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.28));
       }
 
+      .startup-spinnerAnchor {
+        position: absolute;
+        left: 48.855%;
+        top: 57.117%;
+        width: 13.147%;
+        aspect-ratio: 1;
+        transform: translate(-50%, -50%);
+      }
+
       .startup-spinner {
-        width: 34px;
-        height: 34px;
+        width: 100%;
+        height: 100%;
         border-radius: 50%;
         border: 3px solid rgba(216, 231, 243, 0.18);
         border-top-color: var(--startup-accent);
@@ -106,7 +120,7 @@
 
       @keyframes startup-spin {
         to {
-          transform: rotate(360deg);
+          transform: rotate(-360deg);
         }
       }
     </style>
@@ -114,8 +128,12 @@
   <body>
     <div id="startup-shell" aria-hidden="true">
       <div class="startup-card">
-        <img class="startup-logo" src="/logo.svg" alt="Aerobag" />
-        <div class="startup-spinner"></div>
+        <div class="startup-logoBox">
+          <img class="startup-logo" src="/logo.svg" alt="Aerobag" />
+          <div class="startup-spinnerAnchor">
+            <div class="startup-spinner"></div>
+          </div>
+        </div>
         <div class="startup-copy">Loading charts and navigation data…</div>
       </div>
       <div id="startup-elapsed" class="startup-elapsed">0.0s</div>

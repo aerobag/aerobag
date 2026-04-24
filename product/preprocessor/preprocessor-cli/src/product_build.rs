@@ -262,6 +262,8 @@ impl BundleManifestLike {
 struct CurrentArtifactsManifest {
     schema_version: u32,
     as_of_date: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    as_of_utc: String,
     bundles: Vec<CurrentBundleEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     diagnostics: Option<CurrentDiagnosticsEntry>,
@@ -2300,14 +2302,15 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             })
                         }
                         ProductScheduledTaskKind::CurrentArtifacts => {
+                            let as_of_utc = Utc::now();
                             let diagnostics = write_product_build_diagnostics(
                                 &config.build_root,
-                                Utc::now().date_naive(),
+                                as_of_utc.date_naive(),
                                 &task_values_snapshot,
                             )?;
                             let current_artifacts_path = write_current_artifacts_manifest(
                                 &config.build_root,
-                                Utc::now().date_naive(),
+                                as_of_utc,
                                 diagnostics.clone(),
                             )?;
                             cleanup_published_packaged_root(
@@ -2596,19 +2599,19 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
     let fast_bundle_manifest_path =
         publish_fast_bundle_manifest(&config.build_root, &fast_bundle_products, &published_at_utc)?;
     sync_unpacked_fast_bundle_manifest(config, &fast_bundle_manifest_path)?;
-    current.as_of_date = Utc::now().date_naive().format("%Y-%m-%d").to_string();
-    current.bundles = build_current_bundle_entries(&config.build_root, Utc::now().date_naive())?;
+    let as_of_utc = Utc::now();
+    current.as_of_date = as_of_utc.date_naive().format("%Y-%m-%d").to_string();
+    current.as_of_utc = as_of_utc.to_rfc3339_opts(SecondsFormat::Secs, true);
+    current.bundles = build_current_bundle_entries(&config.build_root, as_of_utc.date_naive())?;
 
-    let output_path = config.build_root.join(format!(
-        "current_artifacts_{}.json",
-        Utc::now().date_naive().format("%Y%m%d")
-    ));
-    fs::write(
-        &output_path,
-        serde_json::to_vec_pretty(&current)
-            .context("failed to encode current artifacts manifest")?,
-    )
-    .with_context(|| format!("failed to write {}", output_path.display()))?;
+    let output_path = config
+        .build_root
+        .join(current_artifacts_latest_alias_filename());
+    let immutable_path = config
+        .build_root
+        .join(current_artifacts_immutable_filename(as_of_utc));
+    write_current_artifacts_json(&immutable_path, &current)?;
+    write_current_artifacts_json(&output_path, &current)?;
     cleanup_published_packaged_root(&config.build_root, &output_path)?;
 
     sync_fast_subset_unpacked(
@@ -2626,6 +2629,51 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
         current_artifacts_path: output_path,
         fast_products,
     })
+}
+
+pub fn publish_discovery_manifest(
+    config: &ProductBuildConfig,
+    as_of_utc: DateTime<Utc>,
+    bundle_filenames: &[String],
+) -> anyhow::Result<PathBuf> {
+    fs::create_dir_all(&config.build_root)
+        .with_context(|| format!("failed to create {}", config.build_root.display()))?;
+    if bundle_filenames.is_empty() {
+        bail!("publish-discovery-manifest requires at least one --bundle");
+    }
+    let latest_alias_path = config
+        .build_root
+        .join(current_artifacts_latest_alias_filename());
+    if !latest_alias_path.is_file() {
+        bail!(
+            "missing current artifacts alias {}; build-product first",
+            latest_alias_path.display()
+        );
+    }
+    let bundles = bundle_filenames
+        .iter()
+        .map(|filename| current_bundle_entry_from_path(&config.build_root.join(filename)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let manifest = CurrentArtifactsManifest {
+        schema_version: 1,
+        as_of_date: as_of_utc.date_naive().format("%Y-%m-%d").to_string(),
+        as_of_utc: as_of_utc.to_rfc3339_opts(SecondsFormat::Secs, true),
+        bundles,
+        diagnostics: None,
+    };
+    let immutable_path = config
+        .build_root
+        .join(current_artifacts_immutable_filename(as_of_utc));
+    write_current_artifacts_json(&immutable_path, &manifest)?;
+    let unpacked_root = published_unpacked_root(config)?;
+    fs::create_dir_all(&unpacked_root)
+        .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
+    sync_unpacked_discovery_manifests(&config.build_root, &latest_alias_path, &unpacked_root)?;
+    cleanup_published_packaged_root(&config.build_root, &latest_alias_path)?;
+    cleanup_published_unpacked_root(&unpacked_root, &latest_alias_path)?;
+    validate_packaged_contract(&config.build_root, &latest_alias_path)?;
+    validate_unpacked_contract(&config.build_root, &unpacked_root, &latest_alias_path)?;
+    Ok(immutable_path)
 }
 
 fn obstacle_snapshot_label(value: &str) -> anyhow::Result<String> {
@@ -2767,12 +2815,11 @@ fn publish_built_fast_product(
 }
 
 fn current_artifacts_path_for_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
-    let today_path = config.build_root.join(format!(
-        "current_artifacts_{}.json",
-        Utc::now().date_naive().format("%Y%m%d")
-    ));
-    if today_path.is_file() {
-        return Ok(today_path);
+    let latest_alias = config
+        .build_root
+        .join(current_artifacts_latest_alias_filename());
+    if latest_alias.is_file() {
+        return Ok(latest_alias);
     }
 
     let mut candidates = fs::read_dir(&config.build_root)
@@ -2785,14 +2832,18 @@ fn current_artifacts_path_for_fast_subset(config: &ProductBuildConfig) -> anyhow
             path.file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| {
-                    name.starts_with("current_artifacts_") && name.ends_with(".json")
+                    name.starts_with("current_artifacts_")
+                        && name.ends_with(".json")
+                        && name
+                            .strip_prefix("current_artifacts_")
+                            .is_some_and(|suffix| suffix.contains('T'))
                 })
         })
         .collect::<Vec<_>>();
     candidates.sort();
     candidates.pop().with_context(|| {
         format!(
-            "no current_artifacts_YYYYMMDD.json exists in {}; run build-product first",
+            "no current_artifacts discovery manifest exists in {}; run build-product first",
             config.build_root.display()
         )
     })
@@ -2807,7 +2858,7 @@ fn sync_fast_subset_unpacked(
     let unpacked_root = published_unpacked_root_from_build_root(build_root)?;
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
-    sync_unpacked_file(current_artifacts_path, &unpacked_root)?;
+    sync_unpacked_discovery_manifests(build_root, current_artifacts_path, &unpacked_root)?;
     let current: CurrentArtifactsManifest = serde_json::from_slice(
         &fs::read(current_artifacts_path)
             .with_context(|| format!("failed to read {}", current_artifacts_path.display()))?,
@@ -3900,6 +3951,11 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             write_hashed_bundle_manifest(&config.build_root, &bundle_manifest)?;
         validate_bundle_manifest(&config.build_root, &bundle_manifest_path)?;
         sync_unpacked_metadata(config, &bundle_manifest, &bundle_manifest_path, None)?;
+        record_gc_roots_from_build_manifest(
+            config,
+            &format!("cycle:{bundle_cycle}"),
+            &build_manifest,
+        )?;
         Ok(bundle_manifest_path)
     })();
 
@@ -6631,6 +6687,17 @@ fn sync_cycle_bundle_unpacked_zips(
     unpacked_root: &Path,
     task_values: Option<&BTreeMap<String, ProductTaskValue>>,
 ) -> anyhow::Result<()> {
+    let build_manifest = if task_values.is_none() {
+        let path = internal_build_manifest_path(config, &bundle_manifest.cycle)?;
+        Some(
+            serde_json::from_slice::<BuildManifest>(
+                &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
+            )
+            .with_context(|| format!("failed to parse {}", path.display()))?,
+        )
+    } else {
+        None
+    };
     for package in &bundle_manifest.packages {
         if package.family_id == "nav-db" {
             let cycle = package
@@ -6702,13 +6769,18 @@ fn sync_cycle_bundle_unpacked_zips(
                 continue;
             }
         }
-        let task_values =
-            task_values.context("missing task values snapshot for cycle bundle unpack sync")?;
-        let package_root =
+        let package_root = if let Some(task_values) = task_values {
             resolve_cycle_bundle_package_root(task_values, &bundle_manifest.cycle, package)?
-                .with_context(|| {
-                    format!("failed to resolve source root for package {}", package.id)
-                })?;
+        } else {
+            resolve_cycle_bundle_package_root_from_build_manifest(
+                config,
+                build_manifest
+                    .as_ref()
+                    .expect("build manifest fallback should exist for standalone cycle unpack"),
+                package,
+            )?
+        }
+        .with_context(|| format!("failed to resolve source root for package {}", package.id))?;
         sync_unpacked_zip_from_source(
             &config.build_root.join(&package.filename),
             &package_root,
@@ -6719,6 +6791,53 @@ fn sync_cycle_bundle_unpacked_zips(
         .with_context(|| format!("failed to unpack package {}", package.id))?;
     }
     Ok(())
+}
+
+fn resolve_cycle_bundle_package_root_from_build_manifest(
+    config: &ProductBuildConfig,
+    build_manifest: &BuildManifest,
+    package: &BundlePackageArtifact,
+) -> anyhow::Result<Option<PathBuf>> {
+    if package.cycle.is_none() {
+        return Ok(None);
+    }
+    let region_id = package
+        .region_id
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let node_name = match package.family_id.as_str() {
+        "csup" => format!("csup-package-{region_id}"),
+        "tpp" => format!("tpp-{region_id}-package"),
+        "sec" | "tac" | "enr-l" | "enr-h" => {
+            format!("charts-{}-package-{region_id}", package.family_id)
+        }
+        "vectors" => "vectors".to_string(),
+        _ => return Ok(None),
+    };
+    let record = match build_manifest.nodes.iter().find(|node| node.name == node_name) {
+        Some(record) => record,
+        None => return Ok(None),
+    };
+    let root = match package.family_id.as_str() {
+        "tpp" => record
+            .outputs
+            .get("package_root")
+            .map(|path| resolve_artifact_path(config, path))
+            .or_else(|| {
+                record
+                    .outputs
+                    .get("zip")
+                    .map(|path| resolve_artifact_path(config, path))
+                    .and_then(|path| path.parent().map(Path::to_path_buf))
+            }),
+        _ => record
+            .outputs
+            .get("zip")
+            .map(|path| resolve_artifact_path(config, path))
+            .and_then(|path| path.parent().map(Path::to_path_buf)),
+    };
+    Ok(root)
 }
 
 fn resolve_cycle_bundle_package_root(
@@ -6774,6 +6893,17 @@ fn sync_unpacked_file(source_path: &Path, unpacked_root: &Path) -> anyhow::Resul
     publish_flat_artifact(source_path, &published_path)
 }
 
+fn sync_unpacked_discovery_manifests(
+    packaged_root: &Path,
+    current_artifacts_path: &Path,
+    unpacked_root: &Path,
+) -> anyhow::Result<()> {
+    for discovery_path in discovery_manifest_paths(packaged_root, current_artifacts_path)? {
+        sync_unpacked_file(&discovery_path, unpacked_root)?;
+    }
+    Ok(())
+}
+
 fn sync_product_level_unpacked(
     build_root: &Path,
     current_artifacts_path: &Path,
@@ -6784,7 +6914,7 @@ fn sync_product_level_unpacked(
     remove_legacy_unpacked_subtree(&unpacked_root)?;
     fs::create_dir_all(&unpacked_root)
         .with_context(|| format!("failed to create {}", unpacked_root.display()))?;
-    sync_unpacked_file(current_artifacts_path, &unpacked_root)?;
+    sync_unpacked_discovery_manifests(build_root, current_artifacts_path, &unpacked_root)?;
     let current: CurrentArtifactsManifest = serde_json::from_slice(
         &fs::read(current_artifacts_path)
             .with_context(|| format!("failed to read {}", current_artifacts_path.display()))?,
@@ -9488,74 +9618,28 @@ fn build_current_bundle_entries(
         let metadata = fs::metadata(&bundle_path)
             .with_context(|| format!("failed to stat {}", bundle_path.display()))?;
         let modified_at = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let filename = filename_string(&bundle_path)?;
+        let entry = current_bundle_entry_from_path(&bundle_path)?;
+        let filename = entry.filename.clone();
         if filename.starts_with("bundle_cycle_") {
+            let end_valid_date = NaiveDate::parse_from_str(&entry.end_valid, "%Y-%m-%d")
+                .with_context(|| {
+                    format!("failed to parse bundle end_valid {}", entry.end_valid)
+                })?;
+            if end_valid_date < as_of_date {
+                continue;
+            }
             let bundle_manifest: serde_json::Value = serde_json::from_slice(
                 &fs::read(&bundle_path)
                     .with_context(|| format!("failed to read {}", bundle_path.display()))?,
             )
             .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
-            let bundle_cycle = bundle_manifest
-                .get("cycle")
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| anyhow::anyhow!("bundle manifest missing top-level cycle"))?;
-            let bundle_cycle_version = bundle_manifest
-                .get("cycle_version")
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            let (file_cycle, file_cycle_version, file_hash) =
-                parse_cycle_bundle_filename(&bundle_path)?;
-            if bundle_cycle != file_cycle || bundle_cycle_version != file_cycle_version {
-                anyhow::bail!(
-                    "bundle cycle mismatch for {}: payload cycle {}_{} != filename cycle {}_{}",
-                    bundle_path.display(),
-                    bundle_cycle,
-                    bundle_cycle_version,
-                    file_cycle,
-                    file_cycle_version
-                );
-            }
-            let bundle_sha256 = hash_file(&bundle_path)?;
-            if bundle_sha256 != file_hash {
-                anyhow::bail!(
-                    "bundle hash mismatch for {}: filename hash {} != content hash {}",
-                    bundle_path.display(),
-                    file_hash,
-                    bundle_sha256
-                );
-            }
-            let start_valid = bundle_manifest
-                .get("start_valid")
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| anyhow::anyhow!("bundle manifest missing start_valid"))?;
-            let end_valid = bundle_manifest
-                .get("end_valid")
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| anyhow::anyhow!("bundle manifest missing end_valid"))?;
-            let end_valid_date = NaiveDate::parse_from_str(end_valid, "%Y-%m-%d")
-                .with_context(|| format!("failed to parse bundle end_valid {end_valid}"))?;
-            if end_valid_date < as_of_date {
-                continue;
-            }
             let generated_at_utc = bundle_manifest
                 .get("generated_at_utc")
                 .and_then(|value| value.as_str())
                 .unwrap_or_default()
                 .to_string();
-            let cycle_version_rank = bundle_cycle_version.parse::<u32>().unwrap_or(0);
-            let entry = CurrentBundleEntry {
-                filename: filename.clone(),
-                relative_path: filename,
-                id: format!("cycle_{bundle_cycle}_{bundle_cycle_version}"),
-                bundle_type: "cycle".to_string(),
-                cycle: bundle_cycle.to_string(),
-                cycle_version: bundle_cycle_version.to_string(),
-                start_valid: start_valid.to_string(),
-                end_valid: end_valid.to_string(),
-                checksum_sha256: bundle_sha256,
-                size_bytes: metadata.len(),
-            };
-            let should_replace = match cycle_bundles_by_cycle.get(bundle_cycle) {
+            let cycle_version_rank = entry.cycle_version.parse::<u32>().unwrap_or(0);
+            let should_replace = match cycle_bundles_by_cycle.get(&entry.cycle) {
                 Some((
                     existing_version_rank,
                     existing_generated_at_utc,
@@ -9573,7 +9657,7 @@ fn build_current_bundle_entries(
             };
             if should_replace {
                 cycle_bundles_by_cycle.insert(
-                    bundle_cycle.to_string(),
+                    entry.cycle.clone(),
                     (cycle_version_rank, generated_at_utc, modified_at, entry),
                 );
             }
@@ -9585,29 +9669,7 @@ fn build_current_bundle_entries(
                     .with_context(|| format!("failed to read {}", bundle_path.display()))?,
             )
             .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
-            let file_hash = parse_fast_bundle_filename(&bundle_path)?;
-            let bundle_sha256 = hash_file(&bundle_path)?;
-            if bundle_sha256 != file_hash {
-                anyhow::bail!(
-                    "fast bundle hash mismatch for {}: filename hash {} != content hash {}",
-                    bundle_path.display(),
-                    file_hash,
-                    bundle_sha256
-                );
-            }
             let published_at_utc = bundle_manifest.published_at_utc.clone();
-            let entry = CurrentBundleEntry {
-                filename: filename.clone(),
-                relative_path: filename,
-                id: bundle_manifest.bundle_id.clone(),
-                bundle_type: "fast".to_string(),
-                cycle: String::new(),
-                cycle_version: String::new(),
-                start_valid: String::new(),
-                end_valid: String::new(),
-                checksum_sha256: bundle_sha256,
-                size_bytes: metadata.len(),
-            };
             let should_replace = match &latest_fast_bundle {
                 Some((existing_published_at_utc, existing_modified_at, _)) => {
                     published_at_utc > *existing_published_at_utc
@@ -9643,6 +9705,97 @@ fn build_current_bundle_entries(
         left_key.cmp(&right_key)
     });
     Ok(bundles)
+}
+
+fn current_bundle_entry_from_path(bundle_path: &Path) -> anyhow::Result<CurrentBundleEntry> {
+    let metadata = fs::metadata(bundle_path)
+        .with_context(|| format!("failed to stat {}", bundle_path.display()))?;
+    let filename = filename_string(bundle_path)?;
+    if filename.starts_with("bundle_cycle_") {
+        let bundle_manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(bundle_path)
+                .with_context(|| format!("failed to read {}", bundle_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+        let bundle_cycle = bundle_manifest
+            .get("cycle")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing top-level cycle"))?;
+        let bundle_cycle_version = bundle_manifest
+            .get("cycle_version")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let (file_cycle, file_cycle_version, file_hash) = parse_cycle_bundle_filename(bundle_path)?;
+        if bundle_cycle != file_cycle || bundle_cycle_version != file_cycle_version {
+            anyhow::bail!(
+                "bundle cycle mismatch for {}: payload cycle {}_{} != filename cycle {}_{}",
+                bundle_path.display(),
+                bundle_cycle,
+                bundle_cycle_version,
+                file_cycle,
+                file_cycle_version
+            );
+        }
+        let bundle_sha256 = hash_file(bundle_path)?;
+        if bundle_sha256 != file_hash {
+            anyhow::bail!(
+                "bundle hash mismatch for {}: filename hash {} != content hash {}",
+                bundle_path.display(),
+                file_hash,
+                bundle_sha256
+            );
+        }
+        let start_valid = bundle_manifest
+            .get("start_valid")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing start_valid"))?;
+        let end_valid = bundle_manifest
+            .get("end_valid")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("bundle manifest missing end_valid"))?;
+        return Ok(CurrentBundleEntry {
+            filename: filename.clone(),
+            relative_path: filename,
+            id: format!("cycle_{bundle_cycle}_{bundle_cycle_version}"),
+            bundle_type: "cycle".to_string(),
+            cycle: bundle_cycle.to_string(),
+            cycle_version: bundle_cycle_version.to_string(),
+            start_valid: start_valid.to_string(),
+            end_valid: end_valid.to_string(),
+            checksum_sha256: bundle_sha256,
+            size_bytes: metadata.len(),
+        });
+    }
+    if filename.starts_with("bundle_fast_") {
+        let bundle_manifest: FastBundleManifest = serde_json::from_slice(
+            &fs::read(bundle_path)
+                .with_context(|| format!("failed to read {}", bundle_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+        let file_hash = parse_fast_bundle_filename(bundle_path)?;
+        let bundle_sha256 = hash_file(bundle_path)?;
+        if bundle_sha256 != file_hash {
+            anyhow::bail!(
+                "fast bundle hash mismatch for {}: filename hash {} != content hash {}",
+                bundle_path.display(),
+                file_hash,
+                bundle_sha256
+            );
+        }
+        return Ok(CurrentBundleEntry {
+            filename: filename.clone(),
+            relative_path: filename,
+            id: bundle_manifest.bundle_id.clone(),
+            bundle_type: "fast".to_string(),
+            cycle: String::new(),
+            cycle_version: String::new(),
+            start_valid: String::new(),
+            end_valid: String::new(),
+            checksum_sha256: bundle_sha256,
+            size_bytes: metadata.len(),
+        });
+    }
+    bail!("unsupported bundle filename {}", bundle_path.display());
 }
 
 fn parse_cycle_bundle_filename(path: &Path) -> anyhow::Result<(String, String, String)> {
@@ -9686,29 +9839,48 @@ fn parse_fast_bundle_filename(path: &Path) -> anyhow::Result<String> {
     Ok(hash.to_string())
 }
 
+fn current_artifacts_timestamp_string(as_of_utc: DateTime<Utc>) -> String {
+    as_of_utc.format("%Y%m%dT%H%M%SZ").to_string()
+}
+
+fn current_artifacts_immutable_filename(as_of_utc: DateTime<Utc>) -> String {
+    format!(
+        "current_artifacts_{}.json",
+        current_artifacts_timestamp_string(as_of_utc)
+    )
+}
+
+fn current_artifacts_latest_alias_filename() -> &'static str {
+    "current_artifacts.json"
+}
+
+fn write_current_artifacts_json(path: &Path, manifest: &CurrentArtifactsManifest) -> anyhow::Result<()> {
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(manifest).context("failed to encode current artifacts manifest")?,
+    )
+    .with_context(|| format!("failed to write {}", path.display()))
+}
+
 fn write_current_artifacts_manifest(
     build_root: &Path,
-    as_of_date: NaiveDate,
+    as_of_utc: DateTime<Utc>,
     diagnostics: Option<CurrentDiagnosticsEntry>,
 ) -> anyhow::Result<PathBuf> {
+    let as_of_date = as_of_utc.date_naive();
     let bundles = build_current_bundle_entries(build_root, as_of_date)?;
     let manifest = CurrentArtifactsManifest {
         schema_version: 1,
         as_of_date: as_of_date.format("%Y-%m-%d").to_string(),
+        as_of_utc: as_of_utc.to_rfc3339_opts(SecondsFormat::Secs, true),
         bundles,
         diagnostics,
     };
-    let manifest_path = build_root.join(format!(
-        "current_artifacts_{}.json",
-        as_of_date.format("%Y%m%d")
-    ));
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest)
-            .context("failed to encode current artifacts manifest")?,
-    )
-    .with_context(|| format!("failed to write {}", manifest_path.display()))?;
-    Ok(manifest_path)
+    let immutable_path = build_root.join(current_artifacts_immutable_filename(as_of_utc));
+    let latest_alias_path = build_root.join(current_artifacts_latest_alias_filename());
+    write_current_artifacts_json(&immutable_path, &manifest)?;
+    write_current_artifacts_json(&latest_alias_path, &manifest)?;
+    Ok(latest_alias_path)
 }
 
 fn write_product_build_diagnostics(
@@ -9817,21 +9989,23 @@ fn collect_reachable_packaged_entries(
     packaged_root: &Path,
     current_artifacts_path: &Path,
 ) -> anyhow::Result<BTreeSet<String>> {
-    let current = load_current_artifacts_manifest(current_artifacts_path)?;
     let mut keep = BTreeSet::new();
-    keep.insert(filename_string(current_artifacts_path)?);
-    if let Some(diagnostics) = &current.diagnostics {
-        keep.insert(diagnostics.filename.clone());
-    }
-    for bundle_ref in &current.bundles {
-        keep.insert(bundle_ref.filename.clone());
-        let bundle = load_bundle_manifest_like(&packaged_root.join(&bundle_ref.filename))?;
-        let bundle_refs = bundle.bundle_refs();
-        for artifact in bundle_refs.ancillary {
-            keep.insert(artifact.filename.clone());
+    for discovery_path in discovery_manifest_paths(packaged_root, current_artifacts_path)? {
+        let current = load_current_artifacts_manifest(&discovery_path)?;
+        keep.insert(filename_string(&discovery_path)?);
+        if let Some(diagnostics) = &current.diagnostics {
+            keep.insert(diagnostics.filename.clone());
         }
-        for package in bundle_refs.packages {
-            keep.insert(package.filename.clone());
+        for bundle_ref in &current.bundles {
+            keep.insert(bundle_ref.filename.clone());
+            let bundle = load_bundle_manifest_like(&packaged_root.join(&bundle_ref.filename))?;
+            let bundle_refs = bundle.bundle_refs();
+            for artifact in bundle_refs.ancillary {
+                keep.insert(artifact.filename.clone());
+            }
+            for package in bundle_refs.packages {
+                keep.insert(package.filename.clone());
+            }
         }
     }
     Ok(keep)
@@ -9840,32 +10014,58 @@ fn collect_reachable_packaged_entries(
 fn collect_reachable_unpacked_entries(
     current_artifacts_path: &Path,
 ) -> anyhow::Result<BTreeSet<String>> {
-    let current = load_current_artifacts_manifest(current_artifacts_path)?;
     let mut keep = BTreeSet::new();
-    keep.insert(filename_string(current_artifacts_path)?);
-    if let Some(diagnostics) = &current.diagnostics {
-        keep.insert(diagnostics.filename.clone());
-    }
-    for bundle_ref in &current.bundles {
-        keep.insert(bundle_ref.filename.clone());
-        let bundle_path = current_artifacts_path
-            .parent()
-            .context("current artifacts path missing parent")?
-            .join(&bundle_ref.filename);
-        let bundle = load_bundle_manifest_like(&bundle_path)?;
-        let bundle_refs = bundle.bundle_refs();
-        for artifact in bundle_refs.ancillary {
-            if artifact.filename.ends_with(".zip") {
-                keep.insert(zip_stem(&artifact.filename)?);
-            } else {
-                keep.insert(artifact.filename.clone());
-            }
+    let unpacked_root = current_artifacts_path
+        .parent()
+        .context("current artifacts path missing parent")?;
+    for discovery_path in discovery_manifest_paths(unpacked_root, current_artifacts_path)? {
+        let current = load_current_artifacts_manifest(&discovery_path)?;
+        keep.insert(filename_string(&discovery_path)?);
+        if let Some(diagnostics) = &current.diagnostics {
+            keep.insert(diagnostics.filename.clone());
         }
-        for package in bundle_refs.packages {
-            keep.insert(zip_stem(&package.filename)?);
+        for bundle_ref in &current.bundles {
+            keep.insert(bundle_ref.filename.clone());
+            let bundle_path = unpacked_root.join(&bundle_ref.filename);
+            let bundle = load_bundle_manifest_like(&bundle_path)?;
+            let bundle_refs = bundle.bundle_refs();
+            for artifact in bundle_refs.ancillary {
+                if artifact.filename.ends_with(".zip") {
+                    keep.insert(zip_stem(&artifact.filename)?);
+                } else {
+                    keep.insert(artifact.filename.clone());
+                }
+            }
+            for package in bundle_refs.packages {
+                keep.insert(zip_stem(&package.filename)?);
+            }
         }
     }
     Ok(keep)
+}
+
+fn discovery_manifest_paths(root: &Path, current_artifacts_path: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut paths = vec![current_artifacts_path.to_path_buf()];
+    let mut seen = BTreeSet::from([current_artifacts_path.to_path_buf()]);
+    for entry in fs::read_dir(root)
+        .with_context(|| format!("failed to read {}", root.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to iterate {}", root.display()))?
+    {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let is_discovery = name == current_artifacts_latest_alias_filename()
+            || (name.starts_with("current_artifacts_")
+                && name.contains('T')
+                && name.ends_with(".json"));
+        if is_discovery && seen.insert(path.clone()) {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
 }
 
 fn prune_root_to_keep_set(root: &Path, keep: &BTreeSet<String>) -> anyhow::Result<()> {
@@ -9928,37 +10128,39 @@ fn validate_packaged_contract(
     packaged_root: &Path,
     current_artifacts_path: &Path,
 ) -> anyhow::Result<()> {
-    validate_no_internal_paths_in_json(current_artifacts_path)?;
-    let current = load_current_artifacts_manifest(current_artifacts_path)?;
+    for discovery_path in discovery_manifest_paths(packaged_root, current_artifacts_path)? {
+        validate_no_internal_paths_in_json(&discovery_path)?;
+        let current = load_current_artifacts_manifest(&discovery_path)?;
 
-    for bundle in &current.bundles {
-        validate_public_filename(&bundle.filename, "current_artifacts.bundles[].filename")?;
-        if !bundle.relative_path.is_empty() {
-            validate_public_filename(
-                &bundle.relative_path,
-                "current_artifacts.bundles[].relative_path",
-            )?;
-            if bundle.filename != bundle.relative_path {
-                bail!(
-                    "bundle filename/relative_path mismatch in current_artifacts: {} != {}",
-                    bundle.filename,
-                    bundle.relative_path
-                );
+        for bundle in &current.bundles {
+            validate_public_filename(&bundle.filename, "current_artifacts.bundles[].filename")?;
+            if !bundle.relative_path.is_empty() {
+                validate_public_filename(
+                    &bundle.relative_path,
+                    "current_artifacts.bundles[].relative_path",
+                )?;
+                if bundle.filename != bundle.relative_path {
+                    bail!(
+                        "bundle filename/relative_path mismatch in current_artifacts: {} != {}",
+                        bundle.filename,
+                        bundle.relative_path
+                    );
+                }
             }
+            let bundle_path = packaged_root.join(&bundle.filename);
+            ensure_public_file_exists(&bundle_path)?;
+            validate_embedded_sha256_filename(&bundle.filename, &bundle.checksum_sha256)?;
+            validate_bundle_manifest(packaged_root, &bundle_path)?;
         }
-        let bundle_path = packaged_root.join(&bundle.filename);
-        ensure_public_file_exists(&bundle_path)?;
-        validate_embedded_sha256_filename(&bundle.filename, &bundle.checksum_sha256)?;
-        validate_bundle_manifest(packaged_root, &bundle_path)?;
-    }
-    if let Some(diagnostics) = &current.diagnostics {
-        validate_public_filename(
-            &diagnostics.filename,
-            "current_artifacts.diagnostics.filename",
-        )?;
-        let diagnostics_path = packaged_root.join(&diagnostics.filename);
-        ensure_public_file_exists(&diagnostics_path)?;
-        validate_no_internal_paths_in_json(&diagnostics_path)?;
+        if let Some(diagnostics) = &current.diagnostics {
+            validate_public_filename(
+                &diagnostics.filename,
+                "current_artifacts.diagnostics.filename",
+            )?;
+            let diagnostics_path = packaged_root.join(&diagnostics.filename);
+            ensure_public_file_exists(&diagnostics_path)?;
+            validate_no_internal_paths_in_json(&diagnostics_path)?;
+        }
     }
 
     Ok(())
@@ -10085,31 +10287,33 @@ fn validate_unpacked_contract(
     current_artifacts_path: &Path,
 ) -> anyhow::Result<()> {
     validate_packaged_contract(packaged_root, current_artifacts_path)?;
-    let current_filename = current_artifacts_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("current artifacts path has no filename")?;
-    let unpacked_current_path = unpacked_root.join(current_filename);
-    ensure_public_file_exists(&unpacked_current_path)?;
-    validate_no_internal_paths_in_json(&unpacked_current_path)?;
+    for discovery_path in discovery_manifest_paths(packaged_root, current_artifacts_path)? {
+        let current_filename = discovery_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("current artifacts path has no filename")?;
+        let unpacked_current_path = unpacked_root.join(current_filename);
+        ensure_public_file_exists(&unpacked_current_path)?;
+        validate_no_internal_paths_in_json(&unpacked_current_path)?;
 
-    let current = load_current_artifacts_manifest(current_artifacts_path)?;
+        let current = load_current_artifacts_manifest(&discovery_path)?;
 
-    for bundle in &current.bundles {
-        let unpacked_bundle_path = unpacked_root.join(&bundle.filename);
-        ensure_public_file_exists(&unpacked_bundle_path)?;
-        validate_no_internal_paths_in_json(&unpacked_bundle_path)?;
-        let bundle = load_bundle_manifest_like(&unpacked_bundle_path)?;
-        let bundle_refs = bundle.bundle_refs();
-        for artifact in bundle_refs.ancillary {
-            if artifact.filename.ends_with(".zip") {
-                ensure_public_dir_exists(&unpacked_root.join(zip_stem(&artifact.filename)?))?;
-            } else {
-                ensure_public_file_exists(&unpacked_root.join(&artifact.filename))?;
+        for bundle in &current.bundles {
+            let unpacked_bundle_path = unpacked_root.join(&bundle.filename);
+            ensure_public_file_exists(&unpacked_bundle_path)?;
+            validate_no_internal_paths_in_json(&unpacked_bundle_path)?;
+            let bundle = load_bundle_manifest_like(&unpacked_bundle_path)?;
+            let bundle_refs = bundle.bundle_refs();
+            for artifact in bundle_refs.ancillary {
+                if artifact.filename.ends_with(".zip") {
+                    ensure_public_dir_exists(&unpacked_root.join(zip_stem(&artifact.filename)?))?;
+                } else {
+                    ensure_public_file_exists(&unpacked_root.join(&artifact.filename))?;
+                }
             }
-        }
-        for package in bundle_refs.packages {
-            ensure_public_dir_exists(&unpacked_root.join(zip_stem(&package.filename)?))?;
+            for package in bundle_refs.packages {
+                ensure_public_dir_exists(&unpacked_root.join(zip_stem(&package.filename)?))?;
+            }
         }
     }
 
@@ -10453,6 +10657,21 @@ fn record_gc_roots(
     }
     write_gc_roots(&roots_path, &roots)?;
     Ok(roots_path)
+}
+
+fn record_gc_roots_from_build_manifest(
+    config: &ProductBuildConfig,
+    scope: &str,
+    build_manifest: &BuildManifest,
+) -> anyhow::Result<PathBuf> {
+    let mut task_records = BTreeMap::<String, Vec<NodeRecord>>::new();
+    for record in &build_manifest.nodes {
+        task_records
+            .entry(record.name.clone())
+            .or_default()
+            .push(record.clone());
+    }
+    record_gc_roots(config, scope, &task_records)
 }
 
 fn bootstrap_gc_roots_from_build_manifests(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
@@ -10987,6 +11206,9 @@ impl ProductBuildConfig {
                         .parse()
                         .context("failed to parse --max-heavy-jobs")?;
                     max_heavy_jobs = max_heavy_jobs.max(1);
+                    index += 2;
+                }
+                "--as-of-utc" | "--bundle" => {
                     index += 2;
                 }
                 other => bail!("unknown cycle-build argument: {other}"),

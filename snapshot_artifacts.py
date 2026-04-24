@@ -20,14 +20,32 @@ def timed_copytree(src: pathlib.Path, dst: pathlib.Path) -> None:
 
 
 def load_current_artifacts(packaged_root: pathlib.Path) -> tuple[pathlib.Path, bytes, dict]:
-    current_artifacts = max(packaged_root.glob("current_artifacts_*.json"))
+    current_artifacts = packaged_root / "current_artifacts.json"
+    if not current_artifacts.is_file():
+        raise FileNotFoundError(f"missing {current_artifacts}")
     raw = current_artifacts.read_bytes()
     return current_artifacts, raw, json.loads(raw)
 
-def collect_packed_artifacts(source_root: pathlib.Path) -> tuple[pathlib.Path, bytes, set[pathlib.Path]]:
+def discovery_manifests(packaged_root: pathlib.Path) -> list[pathlib.Path]:
+    manifests = []
+    latest = packaged_root / "current_artifacts.json"
+    if latest.is_file():
+        manifests.append(latest)
+    manifests.extend(sorted(packaged_root.glob("current_artifacts_*T*.json")))
+    deduped = []
+    seen = set()
+    for manifest in manifests:
+        if manifest not in seen:
+            seen.add(manifest)
+            deduped.append(manifest)
+    return deduped
+
+
+def collect_packed_artifacts(source_root: pathlib.Path) -> tuple[pathlib.Path, bytes, list[pathlib.Path], set[pathlib.Path]]:
     packaged_root = source_root / "published-packaged"
     current_artifacts_path, current_artifacts_raw, current = load_current_artifacts(packaged_root)
     files_to_copy: set[pathlib.Path] = set()
+    discovery_paths = discovery_manifests(packaged_root)
 
     def add_required_packed(filename: str, label: str) -> None:
         artifact_path = packaged_root / filename
@@ -42,32 +60,40 @@ def collect_packed_artifacts(source_root: pathlib.Path) -> tuple[pathlib.Path, b
             raise FileNotFoundError(f"bundle references missing {label}: {artifact_path}")
         files_to_copy.add(artifact_path)
 
-    for bundle_entry in current["bundles"]:
-        bundle_path = packaged_root / bundle_entry["filename"]
-        if not bundle_path.is_file():
-            raise FileNotFoundError(f"current artifacts references missing bundle: {bundle_path}")
-        files_to_copy.add(bundle_path)
+    for discovery_path in discovery_paths:
+        current = json.loads(discovery_path.read_bytes())
+        for bundle_entry in current["bundles"]:
+            bundle_path = packaged_root / bundle_entry["filename"]
+            if not bundle_path.is_file():
+                raise FileNotFoundError(f"current artifacts references missing bundle: {bundle_path}")
+            files_to_copy.add(bundle_path)
 
-        bundle = json.loads(bundle_path.read_text())
-        for artifact in bundle.get("ancillary", []):
-            add_required_bundle_artifact(artifact, f"ancillary artifact {artifact.get('filename', '(unknown)')}")
-        for package in bundle.get("packages", []):
-            add_required_bundle_artifact(package, f"package {package.get('id', '(unknown)')}")
+            bundle = json.loads(bundle_path.read_text())
+            for artifact in bundle.get("ancillary", []):
+                add_required_bundle_artifact(artifact, f"ancillary artifact {artifact.get('filename', '(unknown)')}")
+            for package in bundle.get("packages", []):
+                add_required_bundle_artifact(package, f"package {package.get('id', '(unknown)')}")
 
-    diagnostics = current.get("diagnostics")
-    if isinstance(diagnostics, dict):
-        filename = diagnostics.get("filename")
-        if isinstance(filename, str) and filename:
-            add_required_packed(filename, "diagnostics artifact")
+        diagnostics = current.get("diagnostics")
+        if isinstance(diagnostics, dict):
+            filename = diagnostics.get("filename")
+            if isinstance(filename, str) and filename:
+                add_required_packed(filename, "diagnostics artifact")
 
-    return current_artifacts_path, current_artifacts_raw, files_to_copy
+    return current_artifacts_path, current_artifacts_raw, discovery_paths, files_to_copy
 
 
 def link_packed_artifacts(source_root: pathlib.Path, dest_root: pathlib.Path) -> None:
-    current_artifacts_path, current_artifacts_raw, source_paths = collect_packed_artifacts(source_root)
+    current_artifacts_path, current_artifacts_raw, discovery_paths, source_paths = collect_packed_artifacts(source_root)
     current_dest_path = dest_root / current_artifacts_path.relative_to(source_root)
     current_dest_path.parent.mkdir(parents=True, exist_ok=True)
     current_dest_path.write_bytes(current_artifacts_raw)
+    for discovery_path in discovery_paths:
+        dest_path = dest_root / discovery_path.relative_to(source_root)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        if discovery_path == current_artifacts_path:
+            continue
+        dest_path.write_bytes(discovery_path.read_bytes())
 
     for source_path in sorted(source_paths):
         relative = source_path.relative_to(source_root)

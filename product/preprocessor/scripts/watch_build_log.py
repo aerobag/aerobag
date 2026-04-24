@@ -345,8 +345,11 @@ def read_diagnostics_state(state: BuildState) -> DiagnosticsState:
 
 
 def latest_current_artifacts_path(build_root: Path) -> Path | None:
+    latest_alias = build_root / "current_artifacts.json"
+    if latest_alias.is_file():
+        return latest_alias
     try:
-        candidates = sorted(build_root.glob("current_artifacts_*.json"))
+        candidates = sorted(build_root.glob("current_artifacts_*T*.json"))
     except OSError:
         return None
     return candidates[-1] if candidates else None

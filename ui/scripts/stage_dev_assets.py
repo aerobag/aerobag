@@ -26,9 +26,9 @@ def resolve_artifact_root() -> Path:
     env_value = os.environ.get("AEROBAG_ARTIFACT_READ_PATH")
     if env_value:
         candidate = Path(env_value).expanduser()
-        if not any(candidate.joinpath(PACKAGED_DIR).glob("current_artifacts_*.json")):
+        if not candidate.joinpath(PACKAGED_DIR, "current_artifacts.json").is_file():
             raise RuntimeError(
-                f"AEROBAG_ARTIFACT_READ_PATH does not contain current_artifacts_*.json under "
+                f"AEROBAG_ARTIFACT_READ_PATH does not contain current_artifacts.json under "
                 f"{candidate.joinpath(PACKAGED_DIR)}"
             )
         return candidate
@@ -36,9 +36,9 @@ def resolve_artifact_root() -> Path:
     candidate = Path(configured)
     if not candidate.is_absolute():
         candidate = (ROOT / candidate).resolve()
-    if not any(candidate.joinpath(PACKAGED_DIR).glob("current_artifacts_*.json")):
+    if not candidate.joinpath(PACKAGED_DIR, "current_artifacts.json").is_file():
         raise RuntimeError(
-            f"configured artifact root does not contain current_artifacts_*.json under "
+            f"configured artifact root does not contain current_artifacts.json under "
             f"{candidate.joinpath(PACKAGED_DIR)}"
         )
     return candidate
@@ -51,10 +51,10 @@ STAGE_STAMP_PATH = WEB_STATIC_ROOT / ".stage-stamp.json"
 
 
 def latest_current_artifacts(root: Path) -> Path:
-    manifests = sorted(root.joinpath(PACKAGED_DIR).glob("current_artifacts_*.json"))
-    if not manifests:
-        raise RuntimeError(f"missing current_artifacts_*.json under {root.joinpath(PACKAGED_DIR)}")
-    return manifests[-1]
+    manifest = root.joinpath(PACKAGED_DIR, "current_artifacts.json")
+    if not manifest.is_file():
+        raise RuntimeError(f"missing current_artifacts.json under {root.joinpath(PACKAGED_DIR)}")
+    return manifest
 
 CURRENT_ARTIFACTS_FILE = latest_current_artifacts(ARTIFACT_ROOT)
 CURRENT_ARTIFACTS = json.loads(CURRENT_ARTIFACTS_FILE.read_text())

@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::Context;
-use chrono::{NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 mod emit_source_urls;
 mod product_build;
 use preprocessor_charts::{
@@ -42,6 +42,7 @@ use preprocessor_vectors::{
 use product_build::{
     build_cycle, build_fast_subset, build_product, default_artifact_write_path,
     explain_product_build, gc_build_cache, maybe_reexec_build_cycle_under_cgroup,
+    publish_discovery_manifest,
     BuildCacheGcConfig, BuildCacheGcMode, ProductBuildConfig, ProductBuildProfile,
 };
 use sha2::{Digest, Sha256};
@@ -66,6 +67,7 @@ fn print_partial_run_hint(run_root: &PathBuf) {
 fn usage() -> &'static str {
     "usage:
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli build-fast-subset [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
 
@@ -106,6 +108,7 @@ fn long_usage() -> &'static str {
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>]...
   preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
   preprocessor-cli build-fast-subset [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli gc-build-cache [--profile <validation|production>] [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>] [--bootstrap-from-build-manifests]
   preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
@@ -2873,6 +2876,46 @@ fn main() -> anyhow::Result<()> {
                 "current_artifacts {}",
                 result.current_artifacts_path.display()
             );
+        }
+        Some("publish-discovery-manifest") => {
+            let config = ProductBuildConfig::from_env_and_args(&args[2..])?;
+            let mut as_of_utc = None;
+            let mut bundles = Vec::new();
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--profile" | "--source-root" | "--build-root" | "--fetch-jobs"
+                    | "--cpu-jobs" | "--max-heavy-jobs" | "--cycle" => {
+                        index += 2;
+                    }
+                    "--as-of-utc" => {
+                        as_of_utc = Some(
+                            DateTime::parse_from_rfc3339(
+                                args.get(index + 1)
+                                    .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                            )
+                            .context("invalid --as-of-utc")?
+                            .with_timezone(&Utc),
+                        );
+                        index += 2;
+                    }
+                    "--bundle" => {
+                        bundles.push(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        );
+                        index += 2;
+                    }
+                    _ => anyhow::bail!("{}", usage()),
+                }
+            }
+            let path = publish_discovery_manifest(
+                &config,
+                as_of_utc.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                &bundles,
+            )?;
+            println!("{}", path.display());
         }
         Some("build-fast-subset") => {
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;

@@ -4245,7 +4245,10 @@ fn build_nav_kv_chart_coverage_pairs(
         .values()
         .map(|polygon_set| {
             Ok(NavKvPair {
-                key: format!("geometry/polygon-set/{}", polygon_set.id),
+                key: format!(
+                    "geometry/polygon-set/{}",
+                    had_key_component(&polygon_set.id)
+                ),
                 value: serde_json::to_vec(polygon_set)
                     .context("failed to encode chart coverage polygon set")?,
             })
@@ -13421,7 +13424,13 @@ mod tests {
         let pairs = build_nav_kv_chart_coverage_pairs(&polygon_sets).expect("coverage pairs");
         let pair = pairs
             .iter()
-            .find(|pair| pair.key == "geometry/polygon-set/chart-coverage:sec:nw")
+            .find(|pair| {
+                pair.key
+                    == format!(
+                        "geometry/polygon-set/{}",
+                        had_key_component("chart-coverage:sec:nw")
+                    )
+            })
             .expect("coverage pair");
         let polygon_set: ChartCoveragePolygonSetRecord =
             serde_json::from_slice(&pair.value).expect("decode polygon set");

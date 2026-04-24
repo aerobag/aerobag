@@ -1291,8 +1291,24 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 })
             };
             let provenance_record = hold_record.unwrap_or(pair[1]);
-            let display_path =
-                display_path_for_procedure_leg(leg_records, pair[0], pair[1], hold_record);
+            let initial_position_override = (from == to)
+                .then(|| {
+                    previous_display_path
+                        .as_ref()
+                        .and_then(previous_display_path_terminal_position)
+                })
+                .flatten();
+            let initial_course_override = (from == to)
+                .then(|| previous_display_path.as_ref().and_then(final_course_of_display_path))
+                .flatten();
+            let display_path = display_path_for_procedure_leg(
+                leg_records,
+                pair[0],
+                pair[1],
+                hold_record,
+                initial_position_override,
+                initial_course_override,
+            );
             let signatures = heading_signatures_for_leg(
                 next_heading_step_index,
                 display_path.as_ref(),
@@ -1338,8 +1354,16 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     .nav_ref
                     .clone()
                     .expect("filtered non-waypoint trailing procedure leg");
-                let display_path =
-                    display_path_for_procedure_leg(leg_records, last_fix, last_fix, None);
+                let display_path = display_path_for_procedure_leg(
+                    leg_records,
+                    last_fix,
+                    last_fix,
+                    None,
+                    previous_display_path
+                        .as_ref()
+                        .and_then(previous_display_path_terminal_position),
+                    previous_display_path.as_ref().and_then(final_course_of_display_path),
+                );
                 if display_path.is_some() {
                     let signatures = heading_signatures_for_leg(
                         next_heading_step_index,
@@ -1388,8 +1412,16 @@ fn resolve_procedure_materialization_legs_with_provenance(
                         standalone.sequence
                     ),
                 })?;
-                let display_path =
-                    display_path_for_procedure_leg(leg_records, standalone, standalone, None);
+                let display_path = display_path_for_procedure_leg(
+                    leg_records,
+                    standalone,
+                    standalone,
+                    None,
+                    previous_display_path
+                        .as_ref()
+                        .and_then(previous_display_path_terminal_position),
+                    previous_display_path.as_ref().and_then(final_course_of_display_path),
+                );
                 let signatures = heading_signatures_for_leg(
                     next_heading_step_index,
                     display_path.as_ref(),
@@ -3632,6 +3664,70 @@ mod tests {
     #[ignore = "manual visual inspection overlay for KCOE I06"]
     fn writes_kcoe_i06_geg_overlay_png() {
         render_procedure_overlay_to_paths("KCOE", "I06", "GEG", "KCOE_I06_GEG", false);
+    }
+
+    #[test]
+    fn materializes_kcoe_i06_geg_with_fa_overshoot_continuation() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_optional_from_store::<Vec<ProcedureDistinctRow>>(
+            &store,
+            crate::NavKvQuery::ProcedureDistinctRows {
+                airport_id: "KCOE".to_string(),
+                procedure_id: "I06".to_string(),
+            },
+        )
+        .expect("distinct rows for KCOE I06");
+        let records = read_optional_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KCOE".to_string(),
+                procedure_id: "I06".to_string(),
+            },
+        )
+        .expect("materialization rows for KCOE I06");
+        let coe = records
+            .iter()
+            .find(|record| record.sequence == 50 && record.key.route_type == "I")
+            .and_then(|record| record.nav_position)
+            .expect("COE position");
+        let materialized = materialize_procedure_from_records(
+            "KCOE",
+            "I06",
+            ProcedureKind::Approach,
+            None,
+            Some("GEG".to_string()),
+            0,
+            rows,
+            records,
+        )
+        .expect("materialize KCOE I06 GEG");
+        let i50_path = materialized
+            .resolved_legs
+            .iter()
+            .find(|leg| leg.id == "procedure-I06-I-50")
+            .and_then(|leg| leg.procedure_provenance.as_ref())
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .expect("display path for KCOE I06 I-50");
+        let i70_path = materialized
+            .resolved_legs
+            .iter()
+            .find(|leg| leg.id == "procedure-I06-I-70")
+            .and_then(|leg| leg.procedure_provenance.as_ref())
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .expect("display path for KCOE I06 I-70");
+        let i50_end = previous_display_path_terminal_position(i50_path).expect("I-50 end");
+        assert!(
+            great_circle_distance_nm(i50_end, coe) > 5.0,
+            "expected FA overshoot beyond COE, got end={i50_end:?} coe={coe:?}"
+        );
+        let i70_start = match i70_path.elements.first().expect("I-70 first element") {
+            LegDisplayElement::Segment { start, .. } => *start,
+            LegDisplayElement::Arc { start, .. } => *start,
+        };
+        assert!(
+            positions_nearly_equal(i70_start, i50_end),
+            "expected I-70 to continue from I-50 end, got start={i70_start:?} end={i50_end:?}"
+        );
     }
 
     #[test]

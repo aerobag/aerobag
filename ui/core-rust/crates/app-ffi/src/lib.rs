@@ -3,7 +3,6 @@ use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::jstring;
 use jni::JNIEnv;
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -56,14 +55,6 @@ pub fn insert_waypoint_ui_json(
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
-pub fn project_flight_plan_route_json(db_path: &str, plan_json: &str) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let route =
-        app_core::project_flight_plan_route(db_path, &plan).map_err(|err| err.to_string())?;
-    serde_json::to_string(&route).map_err(|err| err.to_string())
-}
-
 pub fn activate_leg_ui_json(plan_json: &str, leg_index: usize) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
@@ -97,89 +88,6 @@ pub fn sequence_active_leg_ui_json(plan_json: &str) -> Result<String, String> {
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let mutation = app_core::sequence_active_leg_ui(&plan).map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-pub fn suggest_airways_near_json(
-    db_path: &str,
-    anchor_json: &str,
-    limit: usize,
-) -> Result<String, String> {
-    let anchor: app_core::NavRef =
-        serde_json::from_str(anchor_json).map_err(|err| err.to_string())?;
-    let suggestions = app_core::suggest_airways_near(std::path::Path::new(db_path), &anchor, limit)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&suggestions).map_err(|err| err.to_string())
-}
-
-pub fn resolve_nav_ref_position_json(db_path: &str, nav_ref_json: &str) -> Result<String, String> {
-    let nav_ref: app_core::NavRef =
-        serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
-    let position = app_core::resolve_nav_ref_position(Path::new(db_path), &nav_ref)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&position).map_err(|err| err.to_string())
-}
-
-pub fn resolve_nav_ref_identifier_json(db_path: &str, identifier: &str) -> Result<String, String> {
-    let nav_ref = app_core::resolve_nav_ref_identifier(Path::new(db_path), identifier)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&nav_ref).map_err(|err| err.to_string())
-}
-
-pub fn resolve_nav_symbol_feature_json(
-    db_path: &str,
-    nav_ref_json: &str,
-) -> Result<String, String> {
-    let nav_ref: app_core::NavRef =
-        serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
-    let feature = app_core::resolve_nav_symbol_feature(Path::new(db_path), &nav_ref)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&feature).map_err(|err| err.to_string())
-}
-
-pub fn suggest_waypoint_identifiers_json(
-    db_path: &str,
-    plan_json: &str,
-    component_index: usize,
-    before: bool,
-    prefix: &str,
-    limit: usize,
-) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let suggestions = app_core::suggest_waypoint_identifiers(
-        Path::new(db_path),
-        &plan,
-        component_index,
-        before,
-        prefix,
-        limit,
-    )
-    .map_err(|err| err.to_string())?;
-    serde_json::to_string(&suggestions).map_err(|err| err.to_string())
-}
-
-pub fn resolve_nav_ref_position_with_airport_json(
-    db_path: &str,
-    nav_ref_json: &str,
-    airport_id_json: &str,
-) -> Result<String, String> {
-    let nav_ref: app_core::NavRef =
-        serde_json::from_str(nav_ref_json).map_err(|err| err.to_string())?;
-    let airport_id: Option<String> =
-        serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
-    let position = app_core::resolve_nav_ref_position_with_procedure_airport(
-        Path::new(db_path),
-        &nav_ref,
-        airport_id.as_deref(),
-    )
-    .map_err(|err| err.to_string())?;
-    serde_json::to_string(&position).map_err(|err| err.to_string())
-}
-
-pub fn load_airway_branches_json(db_path: &str, airway_name: &str) -> Result<String, String> {
-    let branches = app_core::load_airway_branches(std::path::Path::new(db_path), airway_name)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&branches).map_err(|err| err.to_string())
 }
 
 pub fn list_airway_entry_candidates_json(
@@ -218,64 +126,6 @@ pub fn list_airway_exit_candidates_json(
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&selection.candidates).map_err(|err| err.to_string())
-}
-
-pub fn list_procedures_json(
-    db_path: &str,
-    airport_id: &str,
-    kind_json: &str,
-) -> Result<String, String> {
-    let kind: app_core::ProcedureKind =
-        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
-    let procedures = app_core::list_procedures(std::path::Path::new(db_path), airport_id, kind)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&procedures).map_err(|err| err.to_string())
-}
-
-pub fn describe_procedure_options_json(
-    db_path: &str,
-    airport_id: &str,
-    procedure_id: &str,
-    kind_json: &str,
-) -> Result<String, String> {
-    let kind: app_core::ProcedureKind =
-        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
-    let options = app_core::describe_procedure_options(
-        std::path::Path::new(db_path),
-        airport_id,
-        procedure_id,
-        kind,
-    )
-    .map_err(|err| err.to_string())?;
-    serde_json::to_string(&options).map_err(|err| err.to_string())
-}
-
-pub fn materialize_procedure_selection_json(
-    db_path: &str,
-    airport_id: &str,
-    procedure_id: &str,
-    kind_json: &str,
-    runway_transition_json: &str,
-    enroute_transition_json: &str,
-    component_index: usize,
-) -> Result<String, String> {
-    let kind: app_core::ProcedureKind =
-        serde_json::from_str(kind_json).map_err(|err| err.to_string())?;
-    let runway_transition: Option<String> =
-        serde_json::from_str(runway_transition_json).map_err(|err| err.to_string())?;
-    let enroute_transition: Option<String> =
-        serde_json::from_str(enroute_transition_json).map_err(|err| err.to_string())?;
-    let built = app_core::materialize_procedure_selection(
-        std::path::Path::new(db_path),
-        airport_id,
-        procedure_id,
-        kind,
-        runway_transition.as_deref(),
-        enroute_transition.as_deref(),
-        component_index,
-    )
-    .map_err(|err| err.to_string())?;
-    serde_json::to_string(&built).map_err(|err| err.to_string())
 }
 
 pub fn activate_direct_to_leg_ui_json(
@@ -1221,141 +1071,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ref
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_suggestAirwaysNearJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    db_path: JString,
-    anchor_json: JString,
-    limit: i32,
-) -> jstring {
-    let result = (|| {
-        let db_path = get_java_string(&mut env, db_path)?;
-        let anchor_json = get_java_string(&mut env, anchor_json)?;
-        suggest_airways_near_json(&db_path, &anchor_json, limit as usize)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_resolveNavRefPositionJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    db_path: JString,
-    nav_ref_json: JString,
-) -> jstring {
-    let result = (|| {
-        let db_path = get_java_string(&mut env, db_path)?;
-        let nav_ref_json = get_java_string(&mut env, nav_ref_json)?;
-        resolve_nav_ref_position_json(&db_path, &nav_ref_json)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_resolveNavRefIdentifierJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    db_path: JString,
-    identifier: JString,
-) -> jstring {
-    let result = (|| {
-        let db_path = get_java_string(&mut env, db_path)?;
-        let identifier = get_java_string(&mut env, identifier)?;
-        resolve_nav_ref_identifier_json(&db_path, &identifier)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_resolveNavSymbolFeatureJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    db_path: JString,
-    nav_ref_json: JString,
-) -> jstring {
-    let result = (|| {
-        let db_path = get_java_string(&mut env, db_path)?;
-        let nav_ref_json = get_java_string(&mut env, nav_ref_json)?;
-        resolve_nav_symbol_feature_json(&db_path, &nav_ref_json)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_suggestWaypointIdentifiersJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    db_path: JString,
-    plan_json: JString,
-    component_index: i32,
-    before: bool,
-    prefix: JString,
-    limit: i32,
-) -> jstring {
-    let result = (|| {
-        let db_path = get_java_string(&mut env, db_path)?;
-        let plan_json = get_java_string(&mut env, plan_json)?;
-        let prefix = get_java_string(&mut env, prefix)?;
-        suggest_waypoint_identifiers_json(
-            &db_path,
-            &plan_json,
-            component_index as usize,
-            before,
-            &prefix,
-            limit as usize,
-        )
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_resolveNavRefPositionWithAirportJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    db_path: JString,
-    nav_ref_json: JString,
-    airport_id_json: JString,
-) -> jstring {
-    let result = (|| {
-        let db_path = get_java_string(&mut env, db_path)?;
-        let nav_ref_json = get_java_string(&mut env, nav_ref_json)?;
-        let airport_id_json = get_java_string(&mut env, airport_id_json)?;
-        resolve_nav_ref_position_with_airport_json(&db_path, &nav_ref_json, &airport_id_json)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_projectFlightPlanRouteJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    db_path: JString,
-    plan_json: JString,
-) -> jstring {
-    let result = (|| {
-        let db_path = get_java_string(&mut env, db_path)?;
-        let plan_json = get_java_string(&mut env, plan_json)?;
-        project_flight_plan_route_json(&db_path, &plan_json)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_loadAirwayBranchesJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    db_path: JString,
-    airway_name: JString,
-) -> jstring {
-    let result = (|| {
-        let db_path = get_java_string(&mut env, db_path)?;
-        let airway_name = get_java_string(&mut env, airway_name)?;
-        load_airway_branches_json(&db_path, &airway_name)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_listAirwayEntryCandidatesJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -1391,74 +1106,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_lis
             &airway_name,
             &entry_json,
             &destination_anchor_json,
-        )
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_listProceduresJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    db_path: JString,
-    airport_id: JString,
-    kind_json: JString,
-) -> jstring {
-    let result = (|| {
-        let db_path = get_java_string(&mut env, db_path)?;
-        let airport_id = get_java_string(&mut env, airport_id)?;
-        let kind_json = get_java_string(&mut env, kind_json)?;
-        list_procedures_json(&db_path, &airport_id, &kind_json)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_describeProcedureOptionsJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    db_path: JString,
-    airport_id: JString,
-    procedure_id: JString,
-    kind_json: JString,
-) -> jstring {
-    let result = (|| {
-        let db_path = get_java_string(&mut env, db_path)?;
-        let airport_id = get_java_string(&mut env, airport_id)?;
-        let procedure_id = get_java_string(&mut env, procedure_id)?;
-        let kind_json = get_java_string(&mut env, kind_json)?;
-        describe_procedure_options_json(&db_path, &airport_id, &procedure_id, &kind_json)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_materializeProcedureSelectionJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    db_path: JString,
-    airport_id: JString,
-    procedure_id: JString,
-    kind_json: JString,
-    runway_transition_json: JString,
-    enroute_transition_json: JString,
-    component_index: i32,
-) -> jstring {
-    let result = (|| {
-        let db_path = get_java_string(&mut env, db_path)?;
-        let airport_id = get_java_string(&mut env, airport_id)?;
-        let procedure_id = get_java_string(&mut env, procedure_id)?;
-        let kind_json = get_java_string(&mut env, kind_json)?;
-        let runway_transition_json = get_java_string(&mut env, runway_transition_json)?;
-        let enroute_transition_json = get_java_string(&mut env, enroute_transition_json)?;
-        materialize_procedure_selection_json(
-            &db_path,
-            &airport_id,
-            &procedure_id,
-            &kind_json,
-            &runway_transition_json,
-            &enroute_transition_json,
-            component_index as usize,
         )
     })();
     return_string(&mut env, result)

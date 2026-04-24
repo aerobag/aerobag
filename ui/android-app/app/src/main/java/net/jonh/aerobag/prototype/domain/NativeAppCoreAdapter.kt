@@ -232,16 +232,6 @@ class NativeAppCoreAdapter(
         return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result).map { it.toUi() }
     }
 
-    fun resolveNavRefPosition(dbPath: String, navRef: NavRef, procedureAirportId: String?): LatLonPoint {
-        val nextJson =
-            bridge.resolveNavRefPositionWithAirportJson(
-                dbPath,
-                json.encodeToString(navRef.toWire()),
-                json.encodeToString(procedureAirportId),
-            )
-        return json.decodeFromString<WireLatLon>(nextJson).toUi()
-    }
-
     fun projectFlightPlanRoute(plan: FlightPlan): List<FlightPlanRouteSegment> {
         val result = runHadOperationElement(
             buildJsonObject {
@@ -250,11 +240,6 @@ class NativeAppCoreAdapter(
             },
         )
         return json.decodeFromJsonElement<List<WireFlightPlanRouteSegment>>(result).map { it.toUi() }
-    }
-
-    fun loadAirwayBranches(dbPath: String, airwayName: String): List<AirwayBranch> {
-        val nextJson = bridge.loadAirwayBranchesJson(dbPath, airwayName)
-        return json.decodeFromString<List<WireAirwayBranch>>(nextJson).map { it.toUi() }
     }
 
     fun prepareAirwayPresentationForAnchors(

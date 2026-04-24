@@ -212,44 +212,6 @@ private class FakeNativeBridge(
     override fun coreHadOperation(handle: Long, operationJson: String): String = """{"state":"complete","result":null}"""
     override fun situationRingCandidatesJson(): String = "[]"
 
-    override fun suggestAirwaysNearJson(dbPath: String, anchorJson: String, limit: Int): String = "[]"
-
-    override fun resolveNavRefPositionJson(dbPath: String, navRefJson: String): String = """{"lat":0.0,"lon":0.0}"""
-    override fun resolveNavRefIdentifierJson(dbPath: String, identifier: String): String = """{"Fix":"$identifier"}"""
-    override fun resolveNavSymbolFeatureJson(dbPath: String, navRefJson: String): String = "null"
-    override fun suggestWaypointIdentifiersJson(
-        dbPath: String,
-        planJson: String,
-        componentIndex: Int,
-        before: Boolean,
-        prefix: String,
-        limit: Int,
-    ): String = "[]"
-    override fun resolveNavRefPositionWithAirportJson(dbPath: String, navRefJson: String, airportIdJson: String): String =
-        """{"lat":0.0,"lon":0.0}"""
-    override fun projectFlightPlanRouteJson(dbPath: String, planJson: String): String = "[]"
-
-    override fun loadAirwayBranchesJson(dbPath: String, airwayName: String): String = "[]"
-
-    override fun listProceduresJson(dbPath: String, airportId: String, kindJson: String): String = "[]"
-
-    override fun describeProcedureOptionsJson(
-        dbPath: String,
-        airportId: String,
-        procedureId: String,
-        kindJson: String,
-    ): String = """{"valid_choices":[],"invalid_reason":null}"""
-
-    override fun materializeProcedureSelectionJson(
-        dbPath: String,
-        airportId: String,
-        procedureId: String,
-        kindJson: String,
-        runwayTransitionJson: String,
-        enrouteTransitionJson: String,
-        componentIndex: Int,
-    ): String = """{"procedure_id":"","summary":"","legs":[]}"""
-
     override fun activateLegUiJson(planJson: String, legIndex: Int): String =
         """{"plan":$planJson,"ui_state":{"components":[],"resolved_legs":[],"guidance":null,"display_split_leg_index":null}}"""
 

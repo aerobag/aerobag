@@ -1,6 +1,5 @@
 import bootstrapJson from "@shared-bootstrap";
-import catalogJson from "@product-catalog";
-import { resourceIndex } from "./productResourceIndex";
+import { sampleCatalogFixture, sampleResourceIndexFixture } from "./sampleFixtures";
 import { deriveChartPage, deriveMapViews } from "./resourceIndexAdapters";
 import type {
   AppState,
@@ -13,13 +12,13 @@ import type {
 
 export const bootstrap = bootstrapJson as DevBootstrapJson;
 
-export const sampleCatalog = catalogJson as CatalogJson;
+export const sampleCatalog = sampleCatalogFixture as CatalogJson;
 export const sampleGeometry: GeometryJson = {
   schema_version: 1,
   polygons: [],
 };
 
-export const mapViews = deriveMapViews(resourceIndex, []);
+export const mapViews = deriveMapViews(sampleResourceIndexFixture, []);
 export const mapView = mapViews[0].map_view;
 const defaultLevel = mapView.levels.reduce((best, current) => (current.zoom > best.zoom ? current : best));
 export const mapTileView: MapTileViewJson = {
@@ -37,7 +36,7 @@ export const mapTileView: MapTileViewJson = {
 };
 
 export const samplePlan = bootstrap.flight_plan;
-export const chartPage = deriveChartPage(resourceIndex, samplePlan);
+export const chartPage = deriveChartPage(sampleResourceIndexFixture, samplePlan);
 
 export const remoteOnlyInventory: ContentInventory = {
   installed_packages: [],

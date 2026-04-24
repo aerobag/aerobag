@@ -1,4 +1,3 @@
-import resourceIndexJson from "@product-resource-index";
-import type { ResourceIndexJson } from "./types";
+import { sampleResourceIndexFixture } from "./sampleFixtures";
 
-export const resourceIndex = resourceIndexJson as ResourceIndexJson;
+export const resourceIndex = sampleResourceIndexFixture;

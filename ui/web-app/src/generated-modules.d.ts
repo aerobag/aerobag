@@ -1,13 +1,3 @@
-declare module "@product-resource-index" {
-  const value: unknown;
-  export default value;
-}
-
-declare module "@product-catalog" {
-  const value: unknown;
-  export default value;
-}
-
 declare module "@current-artifacts" {
   const value: unknown;
   export default value;

@@ -110,17 +110,6 @@ function resolveProductBuildOutput(nodeName: string, outputName: string): string
   }
   throw new Error(`missing product build output ${nodeName}.${outputName}`);
 }
-const resourceIndexPath = resolveProductBuildOutput("resource_index", "resource_index");
-const catalogPath = resolveProductBuildOutput("catalog", "catalog");
-
-for (const [label, resolvedPath] of [
-  ["catalog", catalogPath],
-  ["resource index", resourceIndexPath],
-] as const) {
-  if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isFile()) {
-    throw new Error(`missing ${label} artifact at ${resolvedPath}`);
-  }
-}
 
 function mountStaticTree(sourceRoot: string, options: { missingStatus?: number } = {}) {
   return (req: { headers?: Record<string, string | string[] | undefined>; url?: string }, res: { statusCode: number; end: (body?: string) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
@@ -437,8 +426,6 @@ export default defineConfig({
     alias: {
       "@generated": generatedRoot,
       "@current-artifacts": currentArtifactsPath,
-      "@product-catalog": catalogPath,
-      "@product-resource-index": resourceIndexPath,
       "@shared-bootstrap": path.join(sharedRoot, "dev-bootstrap.json"),
       "@shared-ui-theme": path.join(sharedFixturesRoot, "ui-theme.json"),
     },
@@ -455,8 +442,6 @@ export default defineConfig({
         sharedFixturesRoot,
         generatedRoot,
         staticRoot,
-        path.dirname(resourceIndexPath),
-        path.dirname(catalogPath),
         artifactReadRoot,
         path.join(artifactReadRoot, unpackedDir),
         fastProductRoot,

@@ -54,7 +54,11 @@ def collect_packed_artifacts(source_root: pathlib.Path) -> set[pathlib.Path]:
         for package in bundle.get("packages", []):
             add_required_bundle_artifact(package, f"package {package.get('id', '(unknown)')}")
 
-    add_required_packed(current["obstacles"]["filename"], "obstacles artifact")
+    diagnostics = current.get("diagnostics")
+    if isinstance(diagnostics, dict):
+        filename = diagnostics.get("filename")
+        if isinstance(filename, str) and filename:
+            add_required_packed(filename, "diagnostics artifact")
 
     return files_to_copy
 

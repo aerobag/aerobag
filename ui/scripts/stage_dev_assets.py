@@ -107,64 +107,6 @@ def bundle_package_filenames_by_id() -> dict[str, str]:
 BUNDLE_PACKAGE_FILENAMES = bundle_package_filenames_by_id()
 
 
-def resolve_published_filename(raw_path: str) -> Path:
-    relative = Path(raw_path)
-    if relative.is_absolute():
-        raise RuntimeError(f"expected published filename, got absolute path: {raw_path}")
-    if len(relative.parts) != 1:
-        raise RuntimeError(f"expected flat published filename, got {raw_path}")
-    return PACKAGED_ROOT / relative
-
-
-def resolve_product_build_output(node_name: str, output_name: str) -> Path:
-    if isinstance(PRODUCT_BUILD.get(node_name), dict):
-        record = PRODUCT_BUILD[node_name]
-        raw_path = record.get("relative_path")
-        if isinstance(raw_path, str) and raw_path:
-            resolved = resolve_published_filename(raw_path)
-            if resolved.exists():
-                return resolved
-            raise RuntimeError(f"missing product build output {node_name}: {resolved}")
-    for node in PRODUCT_BUILD.get("nodes", []):
-        if not isinstance(node, dict) or node.get("name") != node_name:
-            continue
-        outputs = node.get("outputs")
-        if not isinstance(outputs, dict):
-            break
-        raw_path = outputs.get(output_name)
-        if isinstance(raw_path, str) and raw_path:
-            resolved = resolve_published_filename(raw_path)
-            if resolved.exists():
-                return resolved
-            raise RuntimeError(f"missing product build output {node_name}.{output_name}: {resolved}")
-        break
-    raise RuntimeError(f"missing product build output {node_name}.{output_name} in {PRODUCT_BUILD_FILE}")
-
-
-def resolve_product_build_relative_path(node_name: str, output_name: str) -> str:
-    if isinstance(PRODUCT_BUILD.get(node_name), dict):
-        record = PRODUCT_BUILD[node_name]
-        raw_path = record.get("relative_path")
-        if isinstance(raw_path, str) and raw_path:
-            return raw_path
-    for node in PRODUCT_BUILD.get("nodes", []):
-        if not isinstance(node, dict) or node.get("name") != node_name:
-            continue
-        outputs = node.get("outputs")
-        if not isinstance(outputs, dict):
-            break
-        raw_path = outputs.get(output_name)
-        if isinstance(raw_path, str) and raw_path:
-            return raw_path
-        break
-    raise RuntimeError(f"missing product build relative path {node_name}.{output_name} in {PRODUCT_BUILD_FILE}")
-
-
-RESOURCE_INDEX_PATH = resolve_product_build_output("resource_index", "resource_index")
-VECTOR_ZIP_RELATIVE_PATH = resolve_product_build_relative_path("vectors", "zip")
-NAV_KV = PRODUCT_BUILD.get("nav_kv") if isinstance(PRODUCT_BUILD.get("nav_kv"), dict) else None
-
-
 def reset_dir(path: Path) -> None:
     if path.exists() or path.is_symlink():
         if path.is_dir() and not path.is_symlink():
@@ -199,6 +141,7 @@ def ensure_hard_link(source: Path, target: Path) -> None:
             os.link(source, target)
             return
         if exc.errno == errno.EXDEV:
+            target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
             return
         raise
@@ -211,17 +154,6 @@ def ensure_symlink(source: Path, target: Path) -> None:
     target.symlink_to(source)
 
 
-def load_resource_index() -> dict:
-    return json.loads(RESOURCE_INDEX_PATH.read_text())
-
-
-RESOURCE_INDEX = load_resource_index()
-
-
-def published_path_from_relative(relative_path: str) -> Path:
-    return resolve_published_filename(relative_path)
-
-
 def unpacked_dir_from_relative_zip(relative_zip_path: str) -> Path:
     relative = Path(relative_zip_path)
     if relative.suffix != ".zip":
@@ -231,27 +163,40 @@ def unpacked_dir_from_relative_zip(relative_zip_path: str) -> Path:
     return UNPACKED_ROOT / relative.with_suffix("")
 
 
-def family_tiles_roots() -> dict[str, Path]:
-    roots: dict[str, Path] = {}
-    for package in RESOURCE_INDEX.get("packages", []):
+def packages_by_family() -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for package in PRODUCT_BUILD.get("packages", []):
         if not isinstance(package, dict):
             continue
         family_id = package.get("family_id")
-        if family_id not in {"sec", "tac", "enr-l", "enr-h"}:
+        filename = package.get("filename")
+        if not isinstance(family_id, str) or not isinstance(filename, str) or not filename:
             continue
-        package_id = package.get("id")
-        if not isinstance(package_id, str) or package_id in roots:
-            continue
-        package_filename = BUNDLE_PACKAGE_FILENAMES.get(package_id)
-        if not isinstance(package_filename, str) or not package_filename:
-            continue
-        tiles_root = unpacked_dir_from_relative_zip(package_filename) / "tiles"
-        if tiles_root.is_dir():
-            roots[package_id] = tiles_root
+        grouped.setdefault(family_id, []).append(package)
+    return grouped
+
+
+PACKAGE_ROWS_BY_FAMILY = packages_by_family()
+
+
+def family_tiles_roots() -> dict[str, Path]:
+    roots: dict[str, Path] = {}
+    for family_id in ("sec", "tac", "enr-l", "enr-h"):
+        for package in PACKAGE_ROWS_BY_FAMILY.get(family_id, []):
+            package_id = package.get("id")
+            package_filename = package.get("filename")
+            if not isinstance(package_id, str) or package_id in roots:
+                continue
+            if not isinstance(package_filename, str) or not package_filename:
+                continue
+            tiles_root = unpacked_dir_from_relative_zip(package_filename) / "tiles"
+            if tiles_root.is_dir():
+                roots[package_id] = tiles_root
     expected = {
         package["id"]
-        for package in RESOURCE_INDEX.get("packages", [])
-        if isinstance(package, dict) and package.get("family_id") in {"sec", "tac", "enr-l", "enr-h"}
+        for family_id in ("sec", "tac", "enr-l", "enr-h")
+        for package in PACKAGE_ROWS_BY_FAMILY.get(family_id, [])
+        if isinstance(package.get("id"), str)
     }
     missing = expected - set(roots)
     if missing:
@@ -270,38 +215,48 @@ def stage_sectional_packages() -> None:
     package_root = WEB_STATIC_ROOT / "sectional-packages"
     reset_dir(package_root)
     tiles_by_package = family_tiles_roots()
-    for package in RESOURCE_INDEX["packages"]:
-        package_id = package["id"]
-        if package_id not in tiles_by_package:
-            continue
-        ensure_symlink(tiles_by_package[package_id], package_root / package_id / "tiles")
+    for package_id, tiles_root in tiles_by_package.items():
+        ensure_symlink(tiles_root, package_root / package_id / "tiles")
 
 
 def stage_chart_assets() -> None:
     for relative_root in ("plates", "afd", "thumbnails"):
         reset_dir(WEB_STATIC_ROOT / relative_root)
-    package_dirs = unpacked_package_dirs_by_id()
-    for kind, records in (("plate", RESOURCE_INDEX.get("plates", [])), ("csup", RESOURCE_INDEX.get("csups", []))):
-        for record in records:
-            package_dir = package_dirs.get(record["package_id"])
-            if package_dir is None or not package_dir.is_dir():
-                raise RuntimeError(f"missing unpacked package dir for {record['package_id']}")
-            asset_source = package_dir / record["asset_path"]
-            if not asset_source.is_file():
-                raise RuntimeError(f"missing staged asset {asset_source}")
-            ensure_hard_link(asset_source, WEB_STATIC_ROOT / record["asset_path"])
-            thumbnail_path = record.get("thumbnail_path")
-            if thumbnail_path:
-                thumbnail_source = package_dir / thumbnail_path
-                if not thumbnail_source.is_file():
-                    raise RuntimeError(f"missing staged thumbnail {thumbnail_source}")
-                ensure_hard_link(thumbnail_source, WEB_STATIC_ROOT / thumbnail_path)
+    for family_id in ("tpp", "csup"):
+        for package in PACKAGE_ROWS_BY_FAMILY.get(family_id, []):
+            package_filename = package.get("filename")
+            if not isinstance(package_filename, str) or not package_filename:
+                continue
+            package_dir = unpacked_dir_from_relative_zip(package_filename)
+            if not package_dir.is_dir():
+                raise RuntimeError(f"missing unpacked package dir for {package_filename}")
+            for relative_root in ("plates", "afd", "thumbnails"):
+                source_root = package_dir / relative_root
+                if not source_root.is_dir():
+                    continue
+                for source in sorted(source_root.rglob("*")):
+                    if source.is_dir():
+                        continue
+                    ensure_hard_link(source, WEB_STATIC_ROOT / source.relative_to(package_dir))
 
 
 def stage_vectors() -> None:
     target = WEB_STATIC_ROOT / "vectors"
     reset_dir(target)
-    vectors_root = unpacked_dir_from_relative_zip(VECTOR_ZIP_RELATIVE_PATH)
+    vectors_package = next(
+        (
+            package
+            for package in PRODUCT_BUILD.get("packages", [])
+            if isinstance(package, dict) and package.get("family_id") == "vectors"
+        ),
+        None,
+    )
+    if not isinstance(vectors_package, dict):
+        raise RuntimeError("cycle bundle missing vectors package")
+    vectors_filename = vectors_package.get("filename")
+    if not isinstance(vectors_filename, str) or not vectors_filename:
+        raise RuntimeError("vectors package missing filename")
+    vectors_root = unpacked_dir_from_relative_zip(vectors_filename)
     for relative_root in ("points", "airspace", "had"):
         source = vectors_root / relative_root
         if not source.is_dir():
@@ -333,25 +288,29 @@ def stage_fast_products() -> None:
 def stage_nav_kv() -> None:
     target = WEB_STATIC_ROOT / "nav-kv"
     reset_dir(target)
-    if not NAV_KV:
-        return
-    root = NAV_KV.get("root")
-    pages = NAV_KV.get("value_pages")
-    if not isinstance(root, dict) or not isinstance(pages, list):
-        raise RuntimeError("bundle nav_kv must contain root and value_pages")
-    root_filename = root.get("filename")
-    if not isinstance(root_filename, str) or not root_filename:
-        raise RuntimeError("bundle nav_kv root missing filename")
-    ensure_hard_link(UNPACKED_ROOT / root_filename, target / "root")
+    nav_db_package = next(
+        (
+            package
+            for package in PRODUCT_BUILD.get("packages", [])
+            if isinstance(package, dict) and package.get("family_id") == "nav-db"
+        ),
+        None,
+    )
+    if not isinstance(nav_db_package, dict):
+        raise RuntimeError("cycle bundle missing nav-db package")
+    nav_db_filename = nav_db_package.get("filename")
+    if not isinstance(nav_db_filename, str) or not nav_db_filename:
+        raise RuntimeError("nav-db package missing filename")
+    nav_db_root = unpacked_dir_from_relative_zip(nav_db_filename)
+    root_candidates = sorted(nav_db_root.glob("*.root"))
+    if len(root_candidates) != 1:
+        raise RuntimeError(f"expected one nav-kv root under {nav_db_root}, found {len(root_candidates)}")
+    ensure_hard_link(root_candidates[0], target / "root")
+    pages = sorted(nav_db_root.glob("*.values_*"))
     values_root = target / "values"
     values_root.mkdir(parents=True, exist_ok=True)
     for index, page in enumerate(pages):
-        if not isinstance(page, dict):
-            raise RuntimeError("bundle nav_kv value page must be an object")
-        page_filename = page.get("filename")
-        if not isinstance(page_filename, str) or not page_filename:
-            raise RuntimeError("bundle nav_kv value page missing filename")
-        ensure_hard_link(UNPACKED_ROOT / page_filename, values_root / f"{index:04}")
+        ensure_hard_link(page, values_root / f"{index:04}")
 
 
 def current_stage_stamp() -> dict:
@@ -364,8 +323,6 @@ def current_stage_stamp() -> dict:
         }
 
     return {
-        "resource_index": file_stamp(RESOURCE_INDEX_PATH),
-        "vectors_root": file_stamp(unpacked_dir_from_relative_zip(VECTOR_ZIP_RELATIVE_PATH)),
         "current_artifacts": file_stamp(CURRENT_ARTIFACTS_FILE),
         "bundle_manifest": file_stamp(PRODUCT_BUILD_FILE),
         "fast_products": [
@@ -377,8 +334,16 @@ def current_stage_stamp() -> dict:
             for product in FAST_BUNDLE.get("packages", [])
             if isinstance(product, dict)
         ],
-        "nav_kv": NAV_KV,
-        "version": 7,
+        "packages": [
+            {
+                "id": package.get("id"),
+                "filename": package.get("filename"),
+                "checksum_sha256": package.get("checksum_sha256"),
+            }
+            for package in PRODUCT_BUILD.get("packages", [])
+            if isinstance(package, dict)
+        ],
+        "version": 8,
     }
 
 

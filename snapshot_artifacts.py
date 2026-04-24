@@ -19,15 +19,15 @@ def timed_copytree(src: pathlib.Path, dst: pathlib.Path) -> None:
     print(f"copied {src} -> {dst} in {elapsed:.3f}s")
 
 
-def load_current_artifacts(packaged_root: pathlib.Path) -> tuple[pathlib.Path, dict]:
+def load_current_artifacts(packaged_root: pathlib.Path) -> tuple[pathlib.Path, bytes, dict]:
     current_artifacts = max(packaged_root.glob("current_artifacts_*.json"))
-    return current_artifacts, json.loads(current_artifacts.read_text())
+    raw = current_artifacts.read_bytes()
+    return current_artifacts, raw, json.loads(raw)
 
-
-def collect_packed_artifacts(source_root: pathlib.Path) -> set[pathlib.Path]:
+def collect_packed_artifacts(source_root: pathlib.Path) -> tuple[pathlib.Path, bytes, set[pathlib.Path]]:
     packaged_root = source_root / "published-packaged"
-    current_artifacts_path, current = load_current_artifacts(packaged_root)
-    files_to_copy: set[pathlib.Path] = {current_artifacts_path}
+    current_artifacts_path, current_artifacts_raw, current = load_current_artifacts(packaged_root)
+    files_to_copy: set[pathlib.Path] = set()
 
     def add_required_packed(filename: str, label: str) -> None:
         artifact_path = packaged_root / filename
@@ -60,11 +60,16 @@ def collect_packed_artifacts(source_root: pathlib.Path) -> set[pathlib.Path]:
         if isinstance(filename, str) and filename:
             add_required_packed(filename, "diagnostics artifact")
 
-    return files_to_copy
+    return current_artifacts_path, current_artifacts_raw, files_to_copy
 
 
 def link_packed_artifacts(source_root: pathlib.Path, dest_root: pathlib.Path) -> None:
-    for source_path in sorted(collect_packed_artifacts(source_root)):
+    current_artifacts_path, current_artifacts_raw, source_paths = collect_packed_artifacts(source_root)
+    current_dest_path = dest_root / current_artifacts_path.relative_to(source_root)
+    current_dest_path.parent.mkdir(parents=True, exist_ok=True)
+    current_dest_path.write_bytes(current_artifacts_raw)
+
+    for source_path in sorted(source_paths):
         relative = source_path.relative_to(source_root)
         dest_path = dest_root / relative
         dest_path.parent.mkdir(parents=True, exist_ok=True)

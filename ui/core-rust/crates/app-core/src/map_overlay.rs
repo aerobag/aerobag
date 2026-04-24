@@ -1716,6 +1716,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires generated vector fixtures under ui-target/web/generated-static/vectors"]
     fn real_vamps_viewport_returns_visible_fix_features() {
         let viewport = MapViewport {
             center: LatLon {

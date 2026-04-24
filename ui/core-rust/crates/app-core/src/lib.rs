@@ -2477,10 +2477,14 @@ mod tests {
     use super::*;
     use app_fixtures::load_fixture_nav_kv_pages;
     use image::{DynamicImage, Rgba, RgbaImage};
-    use serde::{de::DeserializeOwned, Deserialize};
-    use std::collections::HashMap;
+    use serde::{de::DeserializeOwned, Deserialize, Serialize};
+    use std::collections::{HashMap, VecDeque};
     use std::fs;
+    use std::io::Write;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
 
     fn sample_plan() -> FlightPlan {
         FlightPlan {
@@ -3109,6 +3113,112 @@ mod tests {
             rows,
             records,
         )
+    }
+
+    #[derive(Clone, Serialize)]
+    struct ApproachAuditCase {
+        airport_id: String,
+        procedure_id: String,
+        enroute_transition: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    struct ApproachAuditFailure {
+        airport_id: String,
+        procedure_id: String,
+        enroute_transition: Option<String>,
+        failure_kind: String,
+        message: String,
+    }
+
+    fn enumerate_snapshot_approach_cases(store: &crate::NavKvStore) -> Vec<ApproachAuditCase> {
+        let unpacked_root = latest_snapshot_unpacked_root();
+        let georef_plates = collect_georeferenced_plates_from_packages(&unpacked_root);
+        let plate_paths = georef_plates.keys().cloned().collect::<Vec<_>>();
+        let plate_index = build_plate_index(&plate_paths);
+        let mut cases = Vec::<ApproachAuditCase>::new();
+
+        let mut airport_keys = plate_index.keys().cloned().collect::<Vec<_>>();
+        airport_keys.sort();
+        for airport_key in airport_keys {
+            for airport_id in candidate_airport_ids_for_plate_key(&airport_key) {
+                let Some(procedures) = read_optional_from_store::<Vec<ProcedureSummary>>(
+                    store,
+                    crate::NavKvQuery::ProcedureList {
+                        airport_id: airport_id.clone(),
+                        procedure_kind: ProcedureKind::Approach,
+                    },
+                ) else {
+                    continue;
+                };
+                for procedure in procedures {
+                    if find_matching_plate_path(&plate_index, &airport_id, &procedure.procedure_id)
+                        .is_none()
+                    {
+                        continue;
+                    }
+                    let Some(rows) = read_optional_from_store::<Vec<ProcedureDistinctRow>>(
+                        store,
+                        crate::NavKvQuery::ProcedureDistinctRows {
+                            airport_id: airport_id.clone(),
+                            procedure_id: procedure.procedure_id.clone(),
+                        },
+                    ) else {
+                        continue;
+                    };
+                    let Ok(options) = describe_procedure_options_from_rows(
+                        &airport_id,
+                        &procedure.procedure_id,
+                        ProcedureKind::Approach,
+                        rows,
+                    ) else {
+                        continue;
+                    };
+                    for choice in options.valid_choices {
+                        cases.push(ApproachAuditCase {
+                            airport_id: airport_id.clone(),
+                            procedure_id: procedure.procedure_id.clone(),
+                            enroute_transition: choice.enroute_transition.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        cases.sort_by(|left, right| {
+            (
+                left.airport_id.as_str(),
+                left.procedure_id.as_str(),
+                left.enroute_transition.as_deref().unwrap_or(""),
+            )
+                .cmp(&(
+                    right.airport_id.as_str(),
+                    right.procedure_id.as_str(),
+                    right.enroute_transition.as_deref().unwrap_or(""),
+                ))
+        });
+        cases
+    }
+
+    fn append_progress_log_line(file: &Mutex<fs::File>, line: &str) {
+        let mut file = file.lock().expect("lock progress log");
+        writeln!(file, "{line}").expect("append progress log line");
+        file.flush().expect("flush progress log");
+    }
+
+    fn rewrite_audit_status_file(
+        path: &Path,
+        total: usize,
+        completed: usize,
+        failures: usize,
+        elapsed_secs: f64,
+    ) {
+        fs::write(
+            path,
+            format!(
+                "total={total}\ncompleted={completed}\nfailures={failures}\nelapsed_secs={elapsed_secs:.1}\n"
+            ),
+        )
+        .expect("write audit status file");
     }
 
     fn procedure_path_dump_lines(
@@ -4730,6 +4840,181 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    #[ignore = "manual full snapshot approach audit with progress logging"]
+    fn audit_all_snapshot_approaches_with_progress_logging() {
+        let store = Arc::new(load_snapshot_nav_kv_store());
+        let cases = enumerate_snapshot_approach_cases(&store);
+        let total = cases.len();
+        assert!(total > 0, "expected at least one approach case to audit");
+
+        let progress_log_path = PathBuf::from("/tmp/aerobag-approach-audit-progress.log");
+        let failures_jsonl_path = PathBuf::from("/tmp/aerobag-approach-audit-failures.jsonl");
+        let status_path = PathBuf::from("/tmp/aerobag-approach-audit-status.txt");
+        let summary_path = PathBuf::from("/tmp/aerobag-approach-audit-summary.json");
+
+        let _ = fs::remove_file(&progress_log_path);
+        let _ = fs::remove_file(&failures_jsonl_path);
+
+        let progress_log = Mutex::new(
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&progress_log_path)
+                .expect("open progress log"),
+        );
+        let failures_log = Mutex::new(
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&failures_jsonl_path)
+                .expect("open failures log"),
+        );
+
+        append_progress_log_line(
+            &progress_log,
+            &format!("starting full approach audit total_cases={total}"),
+        );
+        rewrite_audit_status_file(&status_path, total, 0, 0, 0.0);
+
+        let queue = Arc::new(Mutex::new(VecDeque::from(cases)));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let failure_count = Arc::new(AtomicUsize::new(0));
+        let start = Instant::now();
+        let worker_count = std::thread::available_parallelism()
+            .map(|count| usize::min(count.get(), 8))
+            .unwrap_or(4)
+            .max(1);
+
+        std::thread::scope(|scope| {
+            for worker_index in 0..worker_count {
+                let queue = Arc::clone(&queue);
+                let store = Arc::clone(&store);
+                let completed = Arc::clone(&completed);
+                let failure_count = Arc::clone(&failure_count);
+                let progress_log = &progress_log;
+                let failures_log = &failures_log;
+                let status_path = status_path.clone();
+                scope.spawn(move || loop {
+                    let case = {
+                        let mut queue = queue.lock().expect("lock audit queue");
+                        queue.pop_front()
+                    };
+                    let Some(case) = case else {
+                        break;
+                    };
+
+                    let result = std::panic::catch_unwind(|| {
+                        materialize_snapshot_procedure(
+                            &store,
+                            &case.airport_id,
+                            &case.procedure_id,
+                            case.enroute_transition.clone(),
+                        )
+                    });
+
+                    let maybe_failure = match result {
+                        Ok(Ok(_)) => None,
+                        Ok(Err(err)) => Some(ApproachAuditFailure {
+                            airport_id: case.airport_id.clone(),
+                            procedure_id: case.procedure_id.clone(),
+                            enroute_transition: case.enroute_transition.clone(),
+                            failure_kind: "app_error".to_string(),
+                            message: err.message,
+                        }),
+                        Err(payload) => {
+                            let message = if let Some(text) = payload.downcast_ref::<&str>() {
+                                (*text).to_string()
+                            } else if let Some(text) = payload.downcast_ref::<String>() {
+                                text.clone()
+                            } else {
+                                "panic without string payload".to_string()
+                            };
+                            Some(ApproachAuditFailure {
+                                airport_id: case.airport_id.clone(),
+                                procedure_id: case.procedure_id.clone(),
+                                enroute_transition: case.enroute_transition.clone(),
+                                failure_kind: "panic".to_string(),
+                                message,
+                            })
+                        }
+                    };
+
+                    let completed_now = completed.fetch_add(1, Ordering::SeqCst) + 1;
+                    let elapsed_secs = start.elapsed().as_secs_f64();
+                    if let Some(failure) = maybe_failure {
+                        let failures_now = failure_count.fetch_add(1, Ordering::SeqCst) + 1;
+                        {
+                            let mut file = failures_log.lock().expect("lock failures log");
+                            serde_json::to_writer(&mut *file, &failure)
+                                .expect("write failure json");
+                            writeln!(file).expect("newline after failure json");
+                            file.flush().expect("flush failures log");
+                        }
+                        append_progress_log_line(
+                            progress_log,
+                            &format!(
+                                "[worker {worker_index}] {completed_now}/{total} FAIL {} {} enroute={:?} kind={} msg={}",
+                                failure.airport_id,
+                                failure.procedure_id,
+                                failure.enroute_transition,
+                                failure.failure_kind,
+                                failure.message.replace('\n', " "),
+                            ),
+                        );
+                        rewrite_audit_status_file(
+                            &status_path,
+                            total,
+                            completed_now,
+                            failures_now,
+                            elapsed_secs,
+                        );
+                    } else {
+                        if completed_now == 1 || completed_now % 50 == 0 || completed_now == total {
+                            append_progress_log_line(
+                                progress_log,
+                                &format!(
+                                    "[worker {worker_index}] {completed_now}/{total} OK {} {} enroute={:?}",
+                                    case.airport_id, case.procedure_id, case.enroute_transition
+                                ),
+                            );
+                        }
+                        rewrite_audit_status_file(
+                            &status_path,
+                            total,
+                            completed_now,
+                            failure_count.load(Ordering::SeqCst),
+                            elapsed_secs,
+                        );
+                    }
+                });
+            }
+        });
+
+        let failures_total = failure_count.load(Ordering::SeqCst);
+        let elapsed_secs = start.elapsed().as_secs_f64();
+        fs::write(
+            &summary_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "total_cases": total,
+                "failures": failures_total,
+                "elapsed_secs": elapsed_secs,
+                "progress_log_path": progress_log_path,
+                "failures_jsonl_path": failures_jsonl_path,
+                "status_path": status_path,
+            }))
+            .expect("serialize audit summary"),
+        )
+        .expect("write audit summary");
+        append_progress_log_line(
+            &progress_log,
+            &format!(
+                "completed full approach audit total_cases={} failures={} elapsed_secs={:.1}",
+                total, failures_total, elapsed_secs
+            ),
+        );
     }
 
     #[test]

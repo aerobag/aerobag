@@ -2783,16 +2783,6 @@ fn main() -> anyhow::Result<()> {
                 "current_artifacts {}",
                 result.current_artifacts_path.display()
             );
-            println!(
-                "obstacle_manifest {}",
-                result.obstacle_manifest_path.display()
-            );
-            println!("obstacle_stats {}", result.obstacle_stats_path.display());
-            println!("obstacle_zip {}", result.obstacle_zip_path.display());
-            println!(
-                "published_obstacle_zip {}",
-                result.published_obstacle_zip.display()
-            );
         }
         Some("build-fast-subset") => {
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;

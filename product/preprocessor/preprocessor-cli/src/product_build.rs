@@ -359,10 +359,6 @@ struct BuiltNavDbArtifacts {
 pub struct ProductBuildResult {
     pub cycle_manifest_paths: Vec<PathBuf>,
     pub current_artifacts_path: PathBuf,
-    pub obstacle_manifest_path: PathBuf,
-    pub obstacle_stats_path: PathBuf,
-    pub obstacle_zip_path: PathBuf,
-    pub published_obstacle_zip: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1255,54 +1251,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         }
 
         pending_tasks.push(ProductScheduledTask {
-            id: "build-obstacles".to_string(),
-            deps: vec![],
-            weight: 1,
-            kind: ProductScheduledTaskKind::ObstaclesBuild,
-        });
-        pending_tasks.push(ProductScheduledTask {
-            id: "publish-obstacles".to_string(),
-            deps: vec!["build-obstacles".to_string()],
-            weight: 1,
-            kind: ProductScheduledTaskKind::ObstaclesPublish,
-        });
-        pending_tasks.push(ProductScheduledTask {
-            id: "build-tfrs".to_string(),
-            deps: vec![],
-            weight: 1,
-            kind: ProductScheduledTaskKind::TfrsBuild,
-        });
-        pending_tasks.push(ProductScheduledTask {
-            id: "publish-tfrs".to_string(),
-            deps: vec!["build-tfrs".to_string()],
-            weight: 1,
-            kind: ProductScheduledTaskKind::TfrsPublish,
-        });
-        pending_tasks.push(ProductScheduledTask {
-            id: "build-metars".to_string(),
-            deps: vec![],
-            weight: 1,
-            kind: ProductScheduledTaskKind::MetarsBuild,
-        });
-        pending_tasks.push(ProductScheduledTask {
-            id: "publish-metars".to_string(),
-            deps: vec!["build-metars".to_string()],
-            weight: 1,
-            kind: ProductScheduledTaskKind::MetarsPublish,
-        });
-        pending_tasks.push(ProductScheduledTask {
-            id: "build-nexrad".to_string(),
-            deps: vec![],
-            weight: 1,
-            kind: ProductScheduledTaskKind::NexradBuild,
-        });
-        pending_tasks.push(ProductScheduledTask {
-            id: "publish-nexrad".to_string(),
-            deps: vec!["build-nexrad".to_string()],
-            weight: 1,
-            kind: ProductScheduledTaskKind::NexradPublish,
-        });
-        pending_tasks.push(ProductScheduledTask {
             id: "build-geo".to_string(),
             deps: vec![],
             weight: 1,
@@ -1361,10 +1309,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         let mut current_artifacts_deps = cycles
             .iter()
             .map(|cycle| cycle_task_id(cycle, "bundle-manifest"))
-            .chain(std::iter::once("publish-obstacles".to_string()))
-            .chain(std::iter::once("publish-tfrs".to_string()))
-            .chain(std::iter::once("publish-metars".to_string()))
-            .chain(std::iter::once("publish-nexrad".to_string()))
             .chain(std::iter::once("publish-geo".to_string()))
             .collect::<Vec<_>>();
         if include_static_terrain_products() {
@@ -1388,10 +1332,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         });
         let mut product_unpack_deps = vec![
             "current-artifacts".to_string(),
-            "publish-obstacles".to_string(),
-            "publish-tfrs".to_string(),
-            "publish-metars".to_string(),
-            "publish-nexrad".to_string(),
             "publish-geo".to_string(),
         ];
         if include_static_terrain_products() {
@@ -2623,53 +2563,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             })
                         }
                         ProductScheduledTaskKind::CurrentArtifacts => {
-                            let published_obstacle = match task_values_snapshot.get("publish-obstacles") {
-                                Some(ProductTaskValue::PublishedObstacle {
-                                    published_zip,
-                                    sha256,
-                                    size_bytes,
-                                    ..
-                                }) => (published_zip.clone(), sha256.clone(), *size_bytes),
-                                _ => bail!("missing published obstacle output"),
-                            };
-                            let fast_products = ["publish-tfrs", "publish-metars", "publish-nexrad"]
-                                .iter()
-                                .map(|task_id| match task_values_snapshot.get(*task_id) {
-                                    Some(ProductTaskValue::PublishedStandaloneProduct {
-                                        id,
-                                        published_zip,
-                                        sha256,
-                                        size_bytes,
-                                        source_version,
-                                        ..
-                                    }) => Ok(PublishedFastProductResult {
-                                        id: id.clone(),
-                                        source_zip_path: published_zip.clone(),
-                                        published_zip: published_zip.clone(),
-                                        checksum_sha256: sha256.clone(),
-                                        size_bytes: *size_bytes,
-                                        source_generated_at_utc: source_version.clone(),
-                                    }),
-                                    _ => bail!("missing published fast product output for {}", task_id),
-                                })
-                                .collect::<anyhow::Result<Vec<_>>>()?;
-                            let obstacle_package = build_obstacle_bundle_package_artifact(
-                                &published_obstacle.0,
-                                &published_obstacle.1,
-                                published_obstacle.2,
-                            )?;
-                            let mut fast_bundle_packages = vec![obstacle_package];
-                            fast_bundle_packages.extend(fast_products.iter().cloned());
-                            let fast_bundle_published_at_utc = utc_now_string();
-                            let fast_bundle_manifest_path = publish_fast_bundle_manifest(
-                                &config.build_root,
-                                &fast_bundle_packages,
-                                &fast_bundle_published_at_utc,
-                            )?;
-                            sync_unpacked_fast_bundle_manifest(
-                                &config,
-                                &fast_bundle_manifest_path,
-                            )?;
                             let diagnostics = write_product_build_diagnostics(
                                 &config.build_root,
                                 Utc::now().date_naive(),
@@ -2742,35 +2635,21 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     Some(&task_values_snapshot),
                                 )?;
                             }
-                            let obstacle = match task_values_snapshot.get("publish-obstacles") {
-                                Some(ProductTaskValue::PublishedObstacle {
-                                    source_zip_path,
-                                    published_zip,
-                                    sha256,
-                                    ..
-                                }) => PublishedZipArtifact {
-                                    source_zip_path: source_zip_path.clone(),
-                                    published_zip_path: published_zip.clone(),
-                                    checksum_sha256: sha256.clone(),
-                                },
-                                _ => bail!("missing published obstacle output"),
+                            let fast_products = match current_bundle_path(
+                                &current_artifacts,
+                                &config.build_root,
+                                "fast",
+                            ) {
+                                Some(path) => load_fast_bundle_products(&path)?
+                                    .into_iter()
+                                    .map(|product| PublishedZipArtifact {
+                                        source_zip_path: product.source_zip_path,
+                                        published_zip_path: product.published_zip,
+                                        checksum_sha256: product.checksum_sha256,
+                                    })
+                                    .collect::<Vec<_>>(),
+                                None => Vec::new(),
                             };
-                            let fast_products = ["publish-tfrs", "publish-metars", "publish-nexrad"]
-                                .iter()
-                                .map(|task_id| match task_values_snapshot.get(*task_id) {
-                                    Some(ProductTaskValue::PublishedStandaloneProduct {
-                                        source_zip_path,
-                                        published_zip,
-                                        sha256,
-                                        ..
-                                    }) => Ok(PublishedZipArtifact {
-                                        source_zip_path: source_zip_path.clone(),
-                                        published_zip_path: published_zip.clone(),
-                                        checksum_sha256: sha256.clone(),
-                                    }),
-                                    _ => bail!("missing published fast product output for {}", task_id),
-                                })
-                                .collect::<anyhow::Result<Vec<_>>>()?;
                             let static_products = static_product_task_ids(&config)
                                 .iter()
                                 .map(|task_id| match task_values_snapshot.get(task_id) {
@@ -2787,7 +2666,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     _ => bail!("missing published static product output for {}", task_id),
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
-                            let mut zip_artifacts = vec![obstacle];
+                            let mut zip_artifacts = Vec::new();
                             zip_artifacts.extend(fast_products);
                             zip_artifacts.extend(static_products);
                             sync_product_level_unpacked(
@@ -2917,21 +2796,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             )
             .collect::<anyhow::Result<Vec<_>>>()?;
         cycle_manifest_paths.sort();
-        let (obstacle_manifest_path, obstacle_stats_path, obstacle_zip_path) =
-            match task_values.get("build-obstacles") {
-                Some(ProductTaskValue::ObstaclesBuilt {
-                    manifest_path,
-                    stats_path,
-                    zip_path,
-                }) => (manifest_path.clone(), stats_path.clone(), zip_path.clone()),
-                _ => bail!("missing obstacle build outputs"),
-            };
-        let published_obstacle_zip = match task_values.get("publish-obstacles") {
-            Some(ProductTaskValue::PublishedObstacle { published_zip, .. }) => {
-                published_zip.clone()
-            }
-            _ => bail!("missing published obstacle output"),
-        };
         let current_artifacts_path = match task_values.get("current-artifacts") {
             Some(ProductTaskValue::CurrentArtifacts { path }) => path.clone(),
             _ => bail!("missing current artifacts output"),
@@ -2941,10 +2805,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         Ok(ProductBuildResult {
             cycle_manifest_paths,
             current_artifacts_path,
-            obstacle_manifest_path,
-            obstacle_stats_path,
-            obstacle_zip_path,
-            published_obstacle_zip,
         })
     })();
 
@@ -4547,6 +4407,15 @@ fn build_nav_kv_chart_catalog(
                     family_display_name(resource_index, &collection.family_id),
                 ),
                 "region_id": collection.region_id,
+                "coverage": {
+                    "kind": "bbox",
+                    "value": {
+                        "south": collection.coverage_bounds.lat_min,
+                        "north": collection.coverage_bounds.lat_max,
+                        "west": collection.coverage_bounds.lon_min,
+                        "east": collection.coverage_bounds.lon_max,
+                    },
+                },
                 "map_view": {
                     "chart_family": collection.family_id,
                     "chart_name": format!(
@@ -13559,6 +13428,24 @@ mod tests {
             sectional["map_view"]["tile_path_template"],
             "0/{z}/{x}/{y}.webp"
         );
+    }
+
+    #[test]
+    fn nav_kv_chart_catalog_emits_bbox_coverage_for_chart_packages() {
+        let catalog = build_nav_kv_chart_catalog(&minimal_resource_index(), &[]);
+        let entries = catalog
+            .as_array()
+            .expect("chart catalog should be an array");
+        let sectional = entries
+            .iter()
+            .find(|entry| entry["id"] == "sec:nw")
+            .expect("sectional entry");
+
+        assert_eq!(sectional["coverage"]["kind"], "bbox");
+        assert_eq!(sectional["coverage"]["value"]["south"], 40.0);
+        assert_eq!(sectional["coverage"]["value"]["north"], 50.0);
+        assert_eq!(sectional["coverage"]["value"]["west"], -125.0);
+        assert_eq!(sectional["coverage"]["value"]["east"], -103.0);
     }
 
     #[test]

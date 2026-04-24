@@ -3,7 +3,7 @@ use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::jstring;
 use jni::JNIEnv;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -763,7 +763,8 @@ struct OfflinePackagesInitInputWire {
     region_ids: Vec<String>,
     product_ids: Vec<String>,
     now_epoch_ms: i64,
-    bundle_json: String,
+    discovery_jsons: Vec<String>,
+    bundle_jsons_by_filename: BTreeMap<String, String>,
     installed: Vec<app_core::InstalledArtifact>,
 }
 
@@ -774,7 +775,8 @@ struct OfflinePackagesReduceInputWire {
     region_ids: Vec<String>,
     product_ids: Vec<String>,
     now_epoch_ms: i64,
-    bundle_json: String,
+    discovery_jsons: Vec<String>,
+    bundle_jsons_by_filename: BTreeMap<String, String>,
     installed: Vec<app_core::InstalledArtifact>,
 }
 
@@ -795,14 +797,28 @@ pub fn plan_offline_packages_from_bundle_json(input_json: &str) -> Result<String
 pub fn initialize_offline_packages_json(input_json: &str) -> Result<String, String> {
     let input: OfflinePackagesInitInputWire =
         serde_json::from_str(input_json).map_err(|err| err.to_string())?;
-    let bundle: app_core::BundleManifest =
-        serde_json::from_str(&input.bundle_json).map_err(|err| err.to_string())?;
+    let discovery_manifests = input
+        .discovery_jsons
+        .into_iter()
+        .map(|payload| serde_json::from_str::<app_core::CurrentArtifactsManifest>(&payload))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())?;
+    let bundle_manifests_by_filename = input
+        .bundle_jsons_by_filename
+        .into_iter()
+        .map(|(filename, payload)| {
+            serde_json::from_str::<app_core::BundleManifest>(&payload)
+                .map(|bundle| (filename, bundle))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()
+        .map_err(|err| err.to_string())?;
     let result = app_core::initialize_offline_packages(&app_core::OfflinePackagesInitInput {
         state: input.state,
         region_ids: input.region_ids,
         product_ids: input.product_ids,
         now_epoch_ms: input.now_epoch_ms,
-        bundle,
+        discovery_manifests,
+        bundle_manifests_by_filename,
         installed: input.installed,
     });
     serde_json::to_string(&result).map_err(|err| err.to_string())
@@ -811,15 +827,29 @@ pub fn initialize_offline_packages_json(input_json: &str) -> Result<String, Stri
 pub fn reduce_offline_packages_json(input_json: &str) -> Result<String, String> {
     let input: OfflinePackagesReduceInputWire =
         serde_json::from_str(input_json).map_err(|err| err.to_string())?;
-    let bundle: app_core::BundleManifest =
-        serde_json::from_str(&input.bundle_json).map_err(|err| err.to_string())?;
+    let discovery_manifests = input
+        .discovery_jsons
+        .into_iter()
+        .map(|payload| serde_json::from_str::<app_core::CurrentArtifactsManifest>(&payload))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())?;
+    let bundle_manifests_by_filename = input
+        .bundle_jsons_by_filename
+        .into_iter()
+        .map(|(filename, payload)| {
+            serde_json::from_str::<app_core::BundleManifest>(&payload)
+                .map(|bundle| (filename, bundle))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()
+        .map_err(|err| err.to_string())?;
     let result = app_core::reduce_offline_packages(&app_core::OfflinePackagesReduceInput {
         state: input.state,
         event: input.event,
         region_ids: input.region_ids,
         product_ids: input.product_ids,
         now_epoch_ms: input.now_epoch_ms,
-        bundle,
+        discovery_manifests,
+        bundle_manifests_by_filename,
         installed: input.installed,
     });
     serde_json::to_string(&result).map_err(|err| err.to_string())

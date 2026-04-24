@@ -51,6 +51,7 @@ version = "0.1.0"
 dependencies = [
  "app-core",
  "jni",
+ "serde",
  "serde_json",
 ]
 

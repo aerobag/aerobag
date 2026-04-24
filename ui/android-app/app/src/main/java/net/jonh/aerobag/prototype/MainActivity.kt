@@ -564,8 +564,10 @@ private data class OfflinePackagesInitInputWire(
     val productIds: List<String>,
     @SerialName("now_epoch_ms")
     val nowEpochMs: Long,
-    @SerialName("bundle_json")
-    val bundleJson: String,
+    @SerialName("discovery_jsons")
+    val discoveryJsons: List<String>,
+    @SerialName("bundle_jsons_by_filename")
+    val bundleJsonsByFilename: Map<String, String>,
     val installed: List<InstalledArtifactWire>,
 )
 
@@ -585,8 +587,10 @@ private data class OfflinePackagesReduceInputWire(
     val productIds: List<String>,
     @SerialName("now_epoch_ms")
     val nowEpochMs: Long,
-    @SerialName("bundle_json")
-    val bundleJson: String,
+    @SerialName("discovery_jsons")
+    val discoveryJsons: List<String>,
+    @SerialName("bundle_jsons_by_filename")
+    val bundleJsonsByFilename: Map<String, String>,
     val installed: List<InstalledArtifactWire>,
 )
 
@@ -1557,13 +1561,21 @@ private fun SettingsPage(
     val regionIds = remember(regionOptions) { regionOptions.map { it.id } }
     val productIds = remember { OfflineProductOptions.map { it.id } }
     var offlinePackagesResult by remember { mutableStateOf<OfflinePackagesReduceResultWire?>(null) }
-    LaunchedEffect(fixture.cycleBundleJson, regionIds, productIds) {
+    LaunchedEffect(
+        fixture.packageManagementDiscoveryJsons,
+        fixture.packageManagementBundleJsonsByFilename,
+        fixture.packageManagementNowEpochMsOverride,
+        regionIds,
+        productIds,
+    ) {
         offlinePackagesResult = runCatching {
             withContext(Dispatchers.IO) {
                 initializeOfflinePackages(
                     context = context.applicationContext,
                     prefs = prefs,
-                    bundleJson = fixture.cycleBundleJson,
+                    discoveryJsons = fixture.packageManagementDiscoveryJsons,
+                    bundleJsonsByFilename = fixture.packageManagementBundleJsonsByFilename,
+                    nowEpochMs = fixture.packageManagementNowEpochMsOverride ?: System.currentTimeMillis(),
                     regionIds = regionIds,
                     productIds = productIds,
                 )
@@ -1668,7 +1680,9 @@ private fun SettingsPage(
                             prefs = prefs,
                             current = offlinePackagesResult,
                             event = event,
-                            bundleJson = fixture.cycleBundleJson,
+                            discoveryJsons = fixture.packageManagementDiscoveryJsons,
+                            bundleJsonsByFilename = fixture.packageManagementBundleJsonsByFilename,
+                            nowEpochMs = fixture.packageManagementNowEpochMsOverride ?: System.currentTimeMillis(),
                             regionIds = regionIds,
                             productIds = productIds,
                         )
@@ -1912,7 +1926,9 @@ private fun listInstalledPackageArtifacts(context: Context): List<InstalledArtif
 private fun initializeOfflinePackages(
     context: Context,
     prefs: android.content.SharedPreferences,
-    bundleJson: String,
+    discoveryJsons: List<String>,
+    bundleJsonsByFilename: Map<String, String>,
+    nowEpochMs: Long,
     regionIds: List<String>,
     productIds: List<String>,
 ): OfflinePackagesReduceResultWire {
@@ -1920,8 +1936,9 @@ private fun initializeOfflinePackages(
         state = readOfflinePackagesState(prefs),
         regionIds = regionIds,
         productIds = productIds,
-        nowEpochMs = System.currentTimeMillis(),
-        bundleJson = bundleJson,
+        nowEpochMs = nowEpochMs,
+        discoveryJsons = discoveryJsons,
+        bundleJsonsByFilename = bundleJsonsByFilename,
         installed = listInstalledPackageArtifacts(context),
     )
     val result = PackageManagementJson.decodeFromString<OfflinePackagesReduceResultWire>(
@@ -1936,7 +1953,9 @@ private fun reduceOfflinePackages(
     prefs: android.content.SharedPreferences,
     current: OfflinePackagesReduceResultWire?,
     event: OfflinePackagesEventWire,
-    bundleJson: String,
+    discoveryJsons: List<String>,
+    bundleJsonsByFilename: Map<String, String>,
+    nowEpochMs: Long,
     regionIds: List<String>,
     productIds: List<String>,
 ): OfflinePackagesReduceResultWire {
@@ -1946,8 +1965,9 @@ private fun reduceOfflinePackages(
         event = event,
         regionIds = regionIds,
         productIds = productIds,
-        nowEpochMs = System.currentTimeMillis(),
-        bundleJson = bundleJson,
+        nowEpochMs = nowEpochMs,
+        discoveryJsons = discoveryJsons,
+        bundleJsonsByFilename = bundleJsonsByFilename,
         installed = listInstalledPackageArtifacts(context),
     )
     val result = PackageManagementJson.decodeFromString<OfflinePackagesReduceResultWire>(

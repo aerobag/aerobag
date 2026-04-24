@@ -69,7 +69,8 @@ pub use ownship::{
     SituationKinematics, SituationRingCandidate, SituationSample, SourceConnectionState,
 };
 pub use package_management::{
-    default_offline_package_preferences, BundleManifest, BundlePackageArtifact, InstalledArtifact,
+    default_offline_package_preferences, BundleManifest, BundlePackageArtifact,
+    CurrentArtifactsBundleRef, CurrentArtifactsManifest, InstalledArtifact,
     OfflinePackagePreferences, OfflinePackageSelection, OfflinePackagesEvent,
     OfflinePackagesInitInput, OfflinePackagesReduceInput, OfflinePackagesReduceResult,
     OfflinePackagesState, OfflinePackagesUiRow, OfflinePackagesUiState, PackageManagementInput,

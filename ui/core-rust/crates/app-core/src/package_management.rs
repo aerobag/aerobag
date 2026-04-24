@@ -43,6 +43,28 @@ pub struct BundleManifest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentArtifactsManifest {
+    pub schema_version: Option<u32>,
+    pub as_of_date: Option<String>,
+    pub as_of_utc: Option<String>,
+    pub bundles: Vec<CurrentArtifactsBundleRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentArtifactsBundleRef {
+    pub filename: String,
+    pub relative_path: String,
+    pub id: String,
+    pub bundle_type: String,
+    pub cycle: Option<String>,
+    pub cycle_version: Option<String>,
+    pub start_valid: Option<String>,
+    pub end_valid: Option<String>,
+    pub checksum_sha256: Option<String>,
+    pub size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstalledArtifact {
     pub artifact_id: String,
     pub size_bytes: Option<u64>,
@@ -99,7 +121,8 @@ pub struct OfflinePackagesInitInput {
     pub region_ids: Vec<String>,
     pub product_ids: Vec<String>,
     pub now_epoch_ms: i64,
-    pub bundle: BundleManifest,
+    pub discovery_manifests: Vec<CurrentArtifactsManifest>,
+    pub bundle_manifests_by_filename: BTreeMap<String, BundleManifest>,
     pub installed: Vec<InstalledArtifact>,
 }
 
@@ -110,7 +133,8 @@ pub struct OfflinePackagesReduceInput {
     pub region_ids: Vec<String>,
     pub product_ids: Vec<String>,
     pub now_epoch_ms: i64,
-    pub bundle: BundleManifest,
+    pub discovery_manifests: Vec<CurrentArtifactsManifest>,
+    pub bundle_manifests_by_filename: BTreeMap<String, BundleManifest>,
     pub installed: Vec<InstalledArtifact>,
 }
 
@@ -165,7 +189,8 @@ pub fn initialize_offline_packages(input: &OfflinePackagesInitInput) -> OfflineP
             &input.region_ids,
             &input.product_ids,
             input.now_epoch_ms,
-            &input.bundle,
+            &input.discovery_manifests,
+            &input.bundle_manifests_by_filename,
             &input.installed,
         ),
         state,
@@ -202,7 +227,8 @@ pub fn reduce_offline_packages(input: &OfflinePackagesReduceInput) -> OfflinePac
             &input.region_ids,
             &input.product_ids,
             input.now_epoch_ms,
-            &input.bundle,
+            &input.discovery_manifests,
+            &input.bundle_manifests_by_filename,
             &input.installed,
         ),
         state,
@@ -219,10 +245,6 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
 
     let installed: BTreeSet<String> = input
         .installed
-        .iter()
-        .map(|artifact| artifact.artifact_id.clone())
-        .collect();
-    let available: BTreeSet<String> = available_artifacts
         .iter()
         .map(|artifact| artifact.artifact_id.clone())
         .collect();
@@ -286,16 +308,27 @@ fn project_offline_packages_ui_state(
     region_ids: &[String],
     product_ids: &[String],
     now_epoch_ms: i64,
-    bundle: &BundleManifest,
+    discovery_manifests: &[CurrentArtifactsManifest],
+    bundle_manifests_by_filename: &BTreeMap<String, BundleManifest>,
     installed: &[InstalledArtifact],
 ) -> OfflinePackagesUiState {
+    let bundle = resolve_cycle_bundle_manifest(
+        discovery_manifests,
+        bundle_manifests_by_filename,
+        now_epoch_ms,
+    );
     let plan = plan_offline_packages(&PackageManagementInput {
         now_epoch_ms,
         preferences: state.preferences.clone(),
-        bundle: bundle.clone(),
+        bundle,
         installed: installed.to_vec(),
     });
-    let counts = plan_counts_by_dimension(bundle, &plan);
+    let counts = plan_counts_by_dimension(
+        &plan,
+        discovery_manifests,
+        bundle_manifests_by_filename,
+        now_epoch_ms,
+    );
 
     OfflinePackagesUiState {
         summary_text: format!(
@@ -349,9 +382,10 @@ struct PlanCountsByDimension {
     products: BTreeMap<String, DimensionCounts>,
 }
 
-fn plan_counts_by_dimension(bundle: &BundleManifest, plan: &PackageManagementPlan) -> PlanCountsByDimension {
-    let packages_by_id: BTreeMap<&str, &BundlePackageArtifact> =
-        bundle.packages.iter().map(|pkg| (pkg.id.as_str(), pkg)).collect();
+fn plan_counts_by_dimension_from_packages(
+    plan: &PackageManagementPlan,
+    packages_by_id: &BTreeMap<&str, &BundlePackageArtifact>,
+) -> PlanCountsByDimension {
     let mut counts = PlanCountsByDimension::default();
 
     fn apply(
@@ -380,6 +414,22 @@ fn plan_counts_by_dimension(bundle: &BundleManifest, plan: &PackageManagementPla
     }
 
     counts
+}
+
+fn plan_counts_by_dimension(
+    plan: &PackageManagementPlan,
+    discovery_manifests: &[CurrentArtifactsManifest],
+    bundle_manifests_by_filename: &BTreeMap<String, BundleManifest>,
+    now_epoch_ms: i64,
+) -> PlanCountsByDimension {
+    let bundle = resolve_cycle_bundle_manifest(
+        discovery_manifests,
+        bundle_manifests_by_filename,
+        now_epoch_ms,
+    );
+    let packages_by_id: BTreeMap<&str, &BundlePackageArtifact> =
+        bundle.packages.iter().map(|pkg| (pkg.id.as_str(), pkg)).collect();
+    plan_counts_by_dimension_from_packages(plan, &packages_by_id)
 }
 
 fn normalize_preferences(
@@ -424,6 +474,43 @@ fn normalize_preferences(
     }
 }
 
+fn resolve_cycle_bundle_manifest(
+    discovery_manifests: &[CurrentArtifactsManifest],
+    bundle_manifests_by_filename: &BTreeMap<String, BundleManifest>,
+    now_epoch_ms: i64,
+) -> BundleManifest {
+    let discovery = discovery_manifests
+        .iter()
+        .filter_map(|manifest| {
+            Some((as_of_utc_to_epoch_ms(manifest.as_of_utc.as_deref()?)?, manifest))
+        })
+        .filter(|(as_of_epoch_ms, _)| *as_of_epoch_ms <= now_epoch_ms)
+        .max_by_key(|(as_of_epoch_ms, _)| *as_of_epoch_ms)
+        .map(|(_, manifest)| manifest)
+        .or_else(|| discovery_manifests.iter().max_by_key(|manifest| manifest.as_of_utc.as_deref()))
+        .unwrap_or_else(|| panic!("no discovery manifests available for offline packages"));
+
+    let mut merged_packages = Vec::new();
+    let mut seen_ids = BTreeSet::new();
+    for bundle_ref in discovery
+        .bundles
+        .iter()
+        .filter(|bundle_ref| bundle_ref.bundle_type == "cycle")
+    {
+        let bundle = bundle_manifests_by_filename
+            .get(&bundle_ref.filename)
+            .unwrap_or_else(|| panic!("missing bundle manifest {}", bundle_ref.filename));
+        for pkg in &bundle.packages {
+            if seen_ids.insert(pkg.id.clone()) {
+                merged_packages.push(pkg.clone());
+            }
+        }
+    }
+    BundleManifest {
+        packages: merged_packages,
+    }
+}
+
 fn cycle_selection(
     selections: &mut BTreeMap<String, OfflinePackageSelection>,
     id: &str,
@@ -459,6 +546,20 @@ fn ymd_date_to_epoch_ms(date: &str) -> Option<i64> {
         return None;
     }
     Some(days_from_civil(year, month, day) * 86_400_000)
+}
+
+fn as_of_utc_to_epoch_ms(value: &str) -> Option<i64> {
+    let trimmed = value.strip_suffix('Z')?;
+    let (date, time) = trimmed.split_once('T')?;
+    let base = ymd_date_to_epoch_ms(date)?;
+    let mut parts = time.split(':');
+    let hour = parts.next()?.parse::<i64>().ok()?;
+    let minute = parts.next()?.parse::<i64>().ok()?;
+    let second = parts.next()?.parse::<i64>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(base + (((hour * 60 + minute) * 60 + second) * 1000))
 }
 
 fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
@@ -686,14 +787,36 @@ mod tests {
 
     #[test]
     fn reducer_cycles_region_in_core() {
+        let discovery = CurrentArtifactsManifest {
+            schema_version: Some(1),
+            as_of_date: Some("2026-04-15".to_string()),
+            as_of_utc: Some("2026-04-15T12:00:00Z".to_string()),
+            bundles: vec![CurrentArtifactsBundleRef {
+                filename: "bundle_cycle_2604.json".to_string(),
+                relative_path: "bundle_cycle_2604.json".to_string(),
+                id: "cycle-2604".to_string(),
+                bundle_type: "cycle".to_string(),
+                cycle: Some("2604".to_string()),
+                cycle_version: Some("01".to_string()),
+                start_valid: None,
+                end_valid: None,
+                checksum_sha256: None,
+                size_bytes: None,
+            }],
+        };
+        let bundles = BTreeMap::from([(
+            "bundle_cycle_2604.json".to_string(),
+            BundleManifest {
+                packages: vec![pkg("NW_SEC_2604", "sec", Some("nw"), None, Some("2099-01-01"))],
+            },
+        )]);
         let init = initialize_offline_packages(&OfflinePackagesInitInput {
             state: None,
             region_ids: vec!["nw".to_string()],
             product_ids: vec!["sec".to_string()],
             now_epoch_ms: 200,
-            bundle: BundleManifest {
-                packages: vec![pkg("NW_SEC_2604", "sec", Some("nw"), None, Some("2099-01-01"))],
-            },
+            discovery_manifests: vec![discovery.clone()],
+            bundle_manifests_by_filename: bundles.clone(),
             installed: vec![],
         });
 
@@ -706,13 +829,118 @@ mod tests {
             region_ids: vec!["nw".to_string()],
             product_ids: vec!["sec".to_string()],
             now_epoch_ms: 200,
-            bundle: BundleManifest {
-                packages: vec![pkg("NW_SEC_2604", "sec", Some("nw"), None, Some("2099-01-01"))],
-            },
+            discovery_manifests: vec![discovery],
+            bundle_manifests_by_filename: bundles,
             installed: vec![],
         });
 
         assert_eq!(paused.ui_state.regions[0].selection, OfflinePackageSelection::Pause);
         assert_eq!(paused.ui_state.summary_text, "0 regions playing, 1 products playing");
+    }
+
+    #[test]
+    fn discovery_selects_latest_manifest_not_after_now_and_merges_cycle_bundles() {
+        let early = CurrentArtifactsManifest {
+            schema_version: Some(1),
+            as_of_date: Some("2026-03-25".to_string()),
+            as_of_utc: Some("2026-03-25T12:00:00Z".to_string()),
+            bundles: vec![CurrentArtifactsBundleRef {
+                filename: "bundle_cycle_2603.json".to_string(),
+                relative_path: "bundle_cycle_2603.json".to_string(),
+                id: "cycle-2603".to_string(),
+                bundle_type: "cycle".to_string(),
+                cycle: Some("2603".to_string()),
+                cycle_version: Some("01".to_string()),
+                start_valid: None,
+                end_valid: None,
+                checksum_sha256: None,
+                size_bytes: None,
+            }],
+        };
+        let overlap = CurrentArtifactsManifest {
+            schema_version: Some(1),
+            as_of_date: Some("2026-04-15".to_string()),
+            as_of_utc: Some("2026-04-15T12:00:00Z".to_string()),
+            bundles: vec![
+                CurrentArtifactsBundleRef {
+                    filename: "bundle_cycle_2603.json".to_string(),
+                    relative_path: "bundle_cycle_2603.json".to_string(),
+                    id: "cycle-2603".to_string(),
+                    bundle_type: "cycle".to_string(),
+                    cycle: Some("2603".to_string()),
+                    cycle_version: Some("01".to_string()),
+                    start_valid: None,
+                    end_valid: None,
+                    checksum_sha256: None,
+                    size_bytes: None,
+                },
+                CurrentArtifactsBundleRef {
+                    filename: "bundle_cycle_2604.json".to_string(),
+                    relative_path: "bundle_cycle_2604.json".to_string(),
+                    id: "cycle-2604".to_string(),
+                    bundle_type: "cycle".to_string(),
+                    cycle: Some("2604".to_string()),
+                    cycle_version: Some("01".to_string()),
+                    start_valid: None,
+                    end_valid: None,
+                    checksum_sha256: None,
+                    size_bytes: None,
+                },
+            ],
+        };
+        let bundles = BTreeMap::from([
+            (
+                "bundle_cycle_2603.json".to_string(),
+                BundleManifest {
+                    packages: vec![pkg(
+                        "NW_SEC_2603",
+                        "sec",
+                        Some("nw"),
+                        Some("2026-03-19"),
+                        Some("2026-04-16"),
+                    )],
+                },
+            ),
+            (
+                "bundle_cycle_2604.json".to_string(),
+                BundleManifest {
+                    packages: vec![pkg(
+                        "NW_SEC_2604",
+                        "sec",
+                        Some("nw"),
+                        Some("2026-04-16"),
+                        Some("2026-05-14"),
+                    )],
+                },
+            ),
+        ]);
+
+        let before_rollover = resolve_cycle_bundle_manifest(
+            &[early.clone(), overlap.clone()],
+            &bundles,
+            as_of_utc_to_epoch_ms("2026-04-15T18:00:00Z").unwrap(),
+        );
+        assert_eq!(
+            before_rollover
+                .packages
+                .iter()
+                .map(|pkg| pkg.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["NW_SEC_2603", "NW_SEC_2604"]
+        );
+
+        let before_overlap = resolve_cycle_bundle_manifest(
+            &[early, overlap],
+            &bundles,
+            as_of_utc_to_epoch_ms("2026-04-01T00:00:00Z").unwrap(),
+        );
+        assert_eq!(
+            before_overlap
+                .packages
+                .iter()
+                .map(|pkg| pkg.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["NW_SEC_2603"]
+        );
     }
 }

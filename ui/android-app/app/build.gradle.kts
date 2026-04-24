@@ -69,10 +69,18 @@ fun latestCurrentArtifacts(root: File): File? =
         ?.filter { it.isFile && it.name.startsWith("current_artifacts_") && it.name.endsWith(".json") }
         ?.maxByOrNull { it.name }
 
+fun allCurrentArtifacts(root: File): List<File> =
+    root.resolve("published-packaged")
+        .listFiles()
+        ?.filter { it.isFile && it.name == "current_artifacts.json" || (it.isFile && it.name.startsWith("current_artifacts_") && it.name.endsWith(".json")) }
+        ?.sortedBy { it.name }
+        ?: emptyList()
+
 val resolvedArtifactRoot = artifactRoot
 val currentArtifactsFile = latestCurrentArtifacts(resolvedArtifactRoot)
     ?: throw GradleException("missing current_artifacts_*.json under ${resolvedArtifactRoot.resolve("published-packaged").absolutePath}")
 val currentArtifactsPayload by lazy { JsonSlurper().parse(currentArtifactsFile) as Map<*, *> }
+val allCurrentArtifactsFiles by lazy { allCurrentArtifacts(resolvedArtifactRoot) }
 val bundleFilename = ((currentArtifactsPayload["bundles"] as? List<*>)?.firstOrNull {
     (it as? Map<*, *>)?.get("bundle_type") == "cycle"
 } as? Map<*, *>)?.get("filename") as? String
@@ -88,6 +96,19 @@ val bundlePackagesById by lazy {
             id to entry
         }
         .toMap()
+}
+val discoveryCycleBundleFiles by lazy {
+    allCurrentArtifactsFiles
+        .flatMap { manifestFile ->
+            val payload = JsonSlurper().parse(manifestFile) as Map<*, *>
+            (payload["bundles"] as? List<*> ?: emptyList<Any?>())
+                .filterIsInstance<Map<*, *>>()
+                .filter { it["bundle_type"] == "cycle" }
+                .mapNotNull { it["filename"] as? String }
+        }
+        .distinct()
+        .sorted()
+        .map(::resolvePublishedFilename)
 }
 
 fun resolvePublishedFilename(rawPath: String): File {
@@ -170,6 +191,16 @@ val stageCanonicalAndroidAssets by tasks.registering {
         fixturesDir.mkdirs()
         linkOrCopy(currentArtifactsFile, fixturesDir.resolve("current-artifacts.json"))
         linkOrCopy(productBuildFile, fixturesDir.resolve("cycle-bundle.json"))
+        val packageManagementDiscoveryDir = fixturesDir.resolve("package-management/discovery")
+        val packageManagementBundlesDir = fixturesDir.resolve("package-management/bundles")
+        packageManagementDiscoveryDir.mkdirs()
+        packageManagementBundlesDir.mkdirs()
+        allCurrentArtifactsFiles.forEach { manifestFile ->
+            linkOrCopy(manifestFile, packageManagementDiscoveryDir.resolve(manifestFile.name))
+        }
+        discoveryCycleBundleFiles.forEach { bundleFile ->
+            linkOrCopy(bundleFile, packageManagementBundlesDir.resolve(bundleFile.name))
+        }
         linkOrCopy(uiThemeFile, fixturesDir.resolve("ui-theme.json"))
         linkOrCopy(devBootstrapFile, fixturesDir.resolve("dev-bootstrap.json"))
         fixturesDir.resolve("android-dev-server-base-url.txt").writeText(androidDevServerBaseUrl)

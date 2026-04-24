@@ -1,6 +1,7 @@
 package net.jonh.aerobag.prototype.domain
 
 import android.content.Context
+import java.time.Instant
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -11,6 +12,9 @@ import kotlinx.serialization.json.put
 data class ContentFixture(
     val currentArtifactsJson: String,
     val cycleBundleJson: String,
+    val packageManagementDiscoveryJsons: List<String>,
+    val packageManagementBundleJsonsByFilename: Map<String, String>,
+    val packageManagementNowEpochMsOverride: Long?,
     val vectorManifestJson: String,
     val vectorPackageId: String,
     val mapView: MapView,
@@ -30,12 +34,15 @@ private data class WireDevBootstrap(
     val recent_airport_ids: List<String> = emptyList(),
     val selected_airport_id: String? = null,
     val selected_chart_id: String? = null,
+    val package_management_now_utc: String? = null,
 )
 
 object SampleData {
     private const val BOOTSTRAP_ASSET_PATH = "fixtures/dev-bootstrap.json"
     private const val CURRENT_ARTIFACTS_ASSET_PATH = "fixtures/current-artifacts.json"
     private const val CYCLE_BUNDLE_ASSET_PATH = "fixtures/cycle-bundle.json"
+    private const val PACKAGE_MANAGEMENT_DISCOVERY_ASSET_PATH = "fixtures/package-management/discovery"
+    private const val PACKAGE_MANAGEMENT_BUNDLES_ASSET_PATH = "fixtures/package-management/bundles"
 
     private val json = Json {
         encodeDefaults = true
@@ -49,6 +56,24 @@ object SampleData {
         val cycleBundlePayload = context.assets.open(CYCLE_BUNDLE_ASSET_PATH).bufferedReader().use { it.readText() }
         val bootstrap = json.decodeFromString<WireDevBootstrap>(bootstrapPayload)
         val cycleBundle = json.decodeFromString<WireBundleManifest>(cycleBundlePayload)
+        val packageManagementDiscoveryJsons = context.assets
+            .list(PACKAGE_MANAGEMENT_DISCOVERY_ASSET_PATH)
+            ?.sorted()
+            ?.map { filename ->
+                context.assets.open("$PACKAGE_MANAGEMENT_DISCOVERY_ASSET_PATH/$filename")
+                    .bufferedReader()
+                    .use { it.readText() }
+            }
+            .orEmpty()
+        val packageManagementBundleJsonsByFilename = context.assets
+            .list(PACKAGE_MANAGEMENT_BUNDLES_ASSET_PATH)
+            ?.sorted()
+            ?.associateWith { filename ->
+                context.assets.open("$PACKAGE_MANAGEMENT_BUNDLES_ASSET_PATH/$filename")
+                    .bufferedReader()
+                    .use { it.readText() }
+            }
+            .orEmpty()
         val navDbPackageId = cycleBundle.singlePackageId("nav-db")
         val vectorsPackageId = cycleBundle.singlePackageId("vectors")
         val navKvStore = NavKvStore.open(context, navDbPackageId)
@@ -90,6 +115,11 @@ object SampleData {
         return ContentFixture(
             currentArtifactsJson = currentArtifactsPayload,
             cycleBundleJson = cycleBundlePayload,
+            packageManagementDiscoveryJsons = packageManagementDiscoveryJsons,
+            packageManagementBundleJsonsByFilename = packageManagementBundleJsonsByFilename,
+            packageManagementNowEpochMsOverride = bootstrap.package_management_now_utc?.let {
+                Instant.parse(it).toEpochMilli()
+            },
             vectorManifestJson = vectorManifestJson,
             vectorPackageId = vectorsPackageId,
             mapView = mapView,

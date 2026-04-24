@@ -19,3 +19,28 @@ of the current implementation unless explicitly pulled into scope.
   value extraction, page-byte caching, and domain key construction. The web
   `navHad.ts` helper layer is gone; keep pushing toward explicit
   `NeedHadPages`/resume APIs so platform code only fetches opaque page bytes.
+
+## Async Transport Boundary
+
+- Current web feature loading for map overlays still uses a clumsy
+  query/need-data/fetch/ingest/requery loop:
+  - UI asks core for feature state
+  - core returns "I need X"
+  - web fetches X and stuffs it back into core
+  - UI asks again
+- This works with synchronous wasm exports and asynchronous browser fetch, but
+  it entangles transport orchestration with the UI layer.
+- Preferred shape:
+  - UI asks core for feature state
+  - core requests transport through a platform callback or adapter-owned
+    continuation loop
+  - platform fetches bytes/JSON
+  - core resumes and returns the final UI answer
+- Near-term cleanup:
+  - move fetch/ingest/requery orchestration out of React/UI code and into the
+    web/android adapter boundary
+  - expose generic core transport requests instead of feature-specific booleans
+    like `needed_tfrs`
+- Longer-term cleanup:
+  - make the core/platform boundary properly async so core can suspend on host
+    transport instead of forcing a manual continuation protocol

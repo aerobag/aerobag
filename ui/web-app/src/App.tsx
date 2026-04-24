@@ -78,6 +78,7 @@ import type {
   MapOverlayQueryResult,
   TerrainOverlayQueryResult,
   TerrainOverlayTileRequest,
+  TfrProductPayload,
 } from "./domain/appCoreAdapter";
 import { airwayEntryCandidateFromPresentation, airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import { debugLog, debugTiming, installGlobalErrorLogging } from "./domain/debugLog";
@@ -176,6 +177,7 @@ type UiThemeJson = {
   aviation: {
     class_b_d_blue: string;
     class_c_magenta: string;
+    tfr_red: string;
     intersection_cyan: string;
     dark_gray: string;
   };
@@ -1661,8 +1663,10 @@ function MapPage(props: {
     needed_airspace_ref_tiles: [],
     needed_airspace_features: [],
     needed_airspace_label_tiles: [],
+    needed_tfrs: false,
     visible_features: [],
     airspace_paths: [],
+    tfr_paths: [],
     airspace_labels: [],
     warnings: [],
   });
@@ -2253,8 +2257,10 @@ function MapPage(props: {
         needed_airspace_ref_tiles: [],
         needed_airspace_features: [],
         needed_airspace_label_tiles: [],
+        needed_tfrs: false,
         visible_features: [],
         airspace_paths: [],
+        tfr_paths: [],
         airspace_labels: [],
         warnings: [],
       });
@@ -2267,8 +2273,10 @@ function MapPage(props: {
         needed_airspace_ref_tiles: [],
         needed_airspace_features: [],
         needed_airspace_label_tiles: [],
+        needed_tfrs: false,
         visible_features: [],
         airspace_paths: [],
+        tfr_paths: [],
         airspace_labels: [],
         warnings: [],
       });
@@ -2300,7 +2308,8 @@ function MapPage(props: {
         overlay.needed_point_tiles.length > 0 ||
         overlay.needed_airspace_ref_tiles.length > 0 ||
         overlay.needed_airspace_features.length > 0 ||
-        overlay.needed_airspace_label_tiles.length > 0
+        overlay.needed_airspace_label_tiles.length > 0 ||
+        overlay.needed_tfrs
       );
     }
 
@@ -2438,6 +2447,23 @@ function MapPage(props: {
         debugLog("map.overlay.airspace_labels.done", {
           zoom: viewport.zoom,
           count: tiles.length,
+          elapsed_ms: Math.round(performance.now() - startedAt),
+        });
+        ingested = true;
+      }
+      if (overlay.needed_tfrs) {
+        const startedAt = performance.now();
+        const response = await fetch("/fast-products/tfrs/tfrs.json", {
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`failed to load TFR product: ${response.status}`);
+        }
+        const payload = (await response.json()) as TfrProductPayload;
+        await session.ingestTfrs(payload);
+        debugLog("map.overlay.tfrs.ingest.done", {
+          zoom: viewport.zoom,
+          areas: payload.areas.length,
           elapsed_ms: Math.round(performance.now() - startedAt),
         });
         ingested = true;
@@ -2790,7 +2816,7 @@ function MapPage(props: {
             ))}
           </div>
         ) : null}
-        {mapIsVisible && (mapOverlay.airspace_paths.length > 0 || mapOverlay.airspace_labels.length > 0) ? (
+        {mapIsVisible && (mapOverlay.airspace_paths.length > 0 || mapOverlay.tfr_paths.length > 0 || mapOverlay.airspace_labels.length > 0) ? (
           <svg
             className="airspaceOverlay"
             viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
@@ -2832,6 +2858,32 @@ function MapPage(props: {
                     strokeLinejoin="round"
                     vectorEffect="non-scaling-stroke"
                   />
+                ))}
+              </g>
+            ))}
+            {mapOverlay.tfr_paths.map((feature) => (
+              <g key={feature.id}>
+                {feature.paths.map((path, index) => (
+                  <Fragment key={`${feature.id}:${index}`}>
+                    <path
+                      d={airspaceSvgPathD(path)}
+                      fill={path.closed ? colorWithOpacity(aviationThemeColor(feature.style.fill_color_key), feature.style.fill_opacity) : "none"}
+                      stroke="none"
+                    />
+                    {feature.style.strokes.map((stroke, strokeIndex) => (
+                      <path
+                        key={strokeIndex}
+                        d={airspaceSvgPathD(path)}
+                        fill="none"
+                        stroke={aviationThemeColor(stroke.color_key)}
+                        strokeWidth={stroke.width_px}
+                        strokeDasharray={airspaceDashArray(stroke.dash_px)}
+                        strokeLinecap={svgStrokeLinecap(stroke.line_cap)}
+                        strokeLinejoin="round"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    ))}
+                  </Fragment>
                 ))}
               </g>
             ))}

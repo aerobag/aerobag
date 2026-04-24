@@ -20,6 +20,7 @@ use crate::{
     AppResult, AppState, AppUiState, FlightPlan,
     LatLon, MapOverlayConfig, MapOverlayQueryResult, MapViewport, NavRef, PlanLeg,
     PlaybackUiState, PointTilePayload, SequencingMode, TerrainOverlayQueryResult,
+    TfrProductPayload,
     UiSnapshotAppState, guidance_detail_id_for_index,
 };
 
@@ -64,6 +65,7 @@ struct UiSession {
     airspace_ref_tile_cache: HashMap<String, AirspaceReferenceTilePayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     airspace_label_tile_cache: HashMap<String, AirspaceLabelTilePayload>,
+    tfr_payload: Option<TfrProductPayload>,
 }
 
 const DIRECT_SITUATION_SOURCE_ID: &str = "__direct_situation__";
@@ -191,6 +193,7 @@ fn create_ui_session_inner(
             airspace_ref_tile_cache: HashMap::new(),
             airspace_feature_cache: HashMap::new(),
             airspace_label_tile_cache: HashMap::new(),
+            tfr_payload: None,
         },
     );
     if let Some(mark) = mark.as_deref_mut() {
@@ -626,6 +629,13 @@ pub fn ingest_airspace_label_tiles_in_session(
     Ok(())
 }
 
+pub fn ingest_tfrs_in_session(handle: u32, payload: &TfrProductPayload) -> AppResult<()> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.tfr_payload = Some(payload.clone());
+    Ok(())
+}
+
 pub fn get_map_overlay_in_session(
     handle: u32,
     viewport: MapViewport,
@@ -643,6 +653,7 @@ pub fn get_map_overlay_in_session(
         &session.airspace_ref_tile_cache,
         &session.airspace_feature_cache,
         &session.airspace_label_tile_cache,
+        session.tfr_payload.as_ref(),
     ))
 }
 

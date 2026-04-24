@@ -118,6 +118,44 @@ pub struct AirspaceFeaturePath {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TfrProductPayload {
+    pub schema_version: u32,
+    pub version_label: String,
+    pub notam_count: u32,
+    pub area_group_count: u32,
+    pub areas: Vec<TfrAreaPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TfrAreaPayload {
+    pub notam_id: String,
+    pub area_index: u32,
+    pub schedule_fragments: Vec<TfrScheduleFragment>,
+    pub upper_limit: TfrAltitudeLimit,
+    pub lower_limit: TfrAltitudeLimit,
+    pub polygon: Vec<TfrLatLonPoint>,
+    pub avare_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TfrScheduleFragment {
+    pub kind: String,
+    pub value_utc: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TfrAltitudeLimit {
+    pub value_text: String,
+    pub unit: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TfrLatLonPoint {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirspaceFeatureRequest {
     pub id: String,
     pub path: String,
@@ -226,8 +264,10 @@ pub struct MapOverlayQueryResult {
     pub needed_airspace_ref_tiles: Vec<VectorTileRequest>,
     pub needed_airspace_features: Vec<AirspaceFeatureRequest>,
     pub needed_airspace_label_tiles: Vec<VectorTileRequest>,
+    pub needed_tfrs: bool,
     pub visible_features: Vec<VisibleMapFeature>,
     pub airspace_paths: Vec<AirspaceDisplayPath>,
+    pub tfr_paths: Vec<AirspaceDisplayPath>,
     pub airspace_labels: Vec<AirspaceDisplayLabel>,
     pub warnings: Vec<MapOverlayWarning>,
 }
@@ -366,6 +406,7 @@ pub fn query_map_overlay(
     airspace_ref_tile_cache: &HashMap<String, AirspaceReferenceTilePayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     airspace_label_tile_cache: &HashMap<String, AirspaceLabelTilePayload>,
+    tfr_payload: Option<&TfrProductPayload>,
 ) -> MapOverlayQueryResult {
     let tile_window = visible_point_tile_window(viewport, width_px, height_px);
     let mut needed_point_tiles = Vec::new();
@@ -447,17 +488,134 @@ pub fn query_map_overlay(
     );
     let mut warnings = warnings;
     warnings.extend(airspace.warnings);
+    let tfrs = query_tfr_overlay(
+        viewport,
+        width_px,
+        height_px,
+        center_world,
+        scale,
+        tfr_payload,
+    );
 
     MapOverlayQueryResult {
         needed_point_tiles,
         needed_airspace_ref_tiles: airspace.needed_ref_tiles,
         needed_airspace_features: airspace.needed_features,
         needed_airspace_label_tiles: airspace.needed_label_tiles,
+        needed_tfrs: tfrs.needed_tfrs,
         visible_features,
         airspace_paths: airspace.paths,
+        tfr_paths: tfrs.paths,
         airspace_labels: airspace.labels,
         warnings,
     }
+}
+
+struct TfrOverlayProjection {
+    needed_tfrs: bool,
+    paths: Vec<AirspaceDisplayPath>,
+}
+
+fn query_tfr_overlay(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    center_world: WorldPoint,
+    scale: f64,
+    tfr_payload: Option<&TfrProductPayload>,
+) -> TfrOverlayProjection {
+    if width_px <= 0.0 || height_px <= 0.0 || viewport.zoom < AIRSPACE_MIN_DISPLAY_ZOOM {
+        return TfrOverlayProjection {
+            needed_tfrs: false,
+            paths: Vec::new(),
+        };
+    }
+    let Some(payload) = tfr_payload else {
+        return TfrOverlayProjection {
+            needed_tfrs: true,
+            paths: Vec::new(),
+        };
+    };
+    let mut paths = Vec::new();
+    for area in &payload.areas {
+        if area.polygon.len() < 3 {
+            continue;
+        }
+        let Some(bbox) = tfr_bbox(area) else {
+            continue;
+        };
+        if !airspace_bbox_may_intersect_screen(bbox, center_world, scale, width_px, height_px) {
+            continue;
+        }
+        let projected_points = area
+            .polygon
+            .iter()
+            .map(|point| {
+                world_to_screen(
+                    center_world,
+                    scale,
+                    width_px,
+                    height_px,
+                    LatLon {
+                        lat: point.lat,
+                        lon: point.lon,
+                    },
+                )
+            })
+            .map(|point| AirspaceScreenPoint {
+                x: point.x,
+                y: point.y,
+            })
+            .collect::<Vec<_>>();
+        paths.push(AirspaceDisplayPath {
+            id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
+            name: area.notam_id.trim().to_string(),
+            label: format!(
+                "{} / {}-{} {}",
+                area.notam_id.trim(),
+                area.lower_limit.value_text.trim(),
+                area.upper_limit.value_text.trim(),
+                area.upper_limit.unit.trim(),
+            ),
+            style_key: "tfr".to_string(),
+            style: AirspaceDisplayStyle {
+                fill_color_key: "tfr_red".to_string(),
+                fill_opacity: 0.08,
+                strokes: vec![AirspaceDisplayStroke {
+                    color_key: "tfr_red".to_string(),
+                    width_px: 2.0,
+                    dash_px: Vec::new(),
+                    line_cap: "round".to_string(),
+                }],
+            },
+            paths: vec![AirspaceDisplaySubpath {
+                closed: true,
+                interior_side: None,
+                points: projected_points,
+            }],
+            decorations: Vec::new(),
+        });
+    }
+    TfrOverlayProjection {
+        needed_tfrs: false,
+        paths,
+    }
+}
+
+fn tfr_bbox(area: &TfrAreaPayload) -> Option<[f64; 4]> {
+    let mut iter = area.polygon.iter();
+    let first = iter.next()?;
+    let mut west = first.lon;
+    let mut south = first.lat;
+    let mut east = first.lon;
+    let mut north = first.lat;
+    for point in iter {
+        west = west.min(point.lon);
+        south = south.min(point.lat);
+        east = east.max(point.lon);
+        north = north.max(point.lat);
+    }
+    Some([west, south, east, north])
 }
 
 struct AirspaceOverlayProjection {

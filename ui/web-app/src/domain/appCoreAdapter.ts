@@ -216,13 +216,43 @@ export type AirspaceDisplayLabel = {
   screen_y: number;
 };
 
+export type TfrProductPayload = {
+  schema_version: number;
+  version_label: string;
+  notam_count: number;
+  area_group_count: number;
+  areas: Array<{
+    notam_id: string;
+    area_index: number;
+    schedule_fragments: Array<{
+      kind: string;
+      value_utc: string;
+    }>;
+    upper_limit: {
+      value_text: string;
+      unit: string;
+    };
+    lower_limit: {
+      value_text: string;
+      unit: string;
+    };
+    polygon: Array<{
+      lat: number;
+      lon: number;
+    }>;
+    avare_text: string;
+  }>;
+};
+
 export type MapOverlayQueryResult = {
   needed_point_tiles: VectorTileRequest[];
   needed_airspace_ref_tiles: VectorTileRequest[];
   needed_airspace_features: AirspaceFeatureRequest[];
   needed_airspace_label_tiles: VectorTileRequest[];
+  needed_tfrs: boolean;
   visible_features: VisibleMapFeature[];
   airspace_paths: AirspaceDisplayPath[];
+  tfr_paths: AirspaceDisplayPath[];
   airspace_labels: AirspaceDisplayLabel[];
   warnings: Array<{
     code: string;
@@ -284,6 +314,7 @@ export interface UiSession {
   ingestAirspaceRefTiles(tiles: AirspaceReferenceTilePayload[]): Promise<void>;
   ingestAirspaceFeatures(features: AirspaceFeaturePayload[]): Promise<void>;
   ingestAirspaceLabelTiles(tiles: AirspaceLabelTilePayload[]): Promise<void>;
+  ingestTfrs(payload: TfrProductPayload): Promise<void>;
   queryMapOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<MapOverlayQueryResult>;
   queryTerrainOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<TerrainOverlayQueryResult>;
   renderTerrainOverlayTile(tileBytes: Uint8Array, aircraftAltitudeFt: number): Promise<Uint8Array>;
@@ -422,6 +453,7 @@ type WasmModule = {
   ingest_airspace_ref_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_airspace_features_in_session(handle: number, featuresJson: string): Promise<void> | void;
   ingest_airspace_label_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
+  ingest_tfrs_in_session(handle: number, payloadJson: string): Promise<void> | void;
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
   render_terrain_overlay_tile_in_session(handle: number, terrainTileBytes: Uint8Array, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
@@ -753,6 +785,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       ingestAirspaceLabelTiles: async (tiles) => {
         await withSessionRetry(async () => {
           await this.module.ingest_airspace_label_tiles_in_session(handle, JSON.stringify(tiles));
+        });
+      },
+      ingestTfrs: async (payload) => {
+        await withSessionRetry(async () => {
+          await this.module.ingest_tfrs_in_session(handle, JSON.stringify(payload));
         });
       },
       queryMapOverlay: async (viewport, widthPx, heightPx) =>
@@ -1119,6 +1156,7 @@ export async function loadBestAvailableAdapter(
     typeof mod.ingest_airspace_ref_tiles_in_session !== "function" ||
     typeof mod.ingest_airspace_features_in_session !== "function" ||
     typeof mod.ingest_airspace_label_tiles_in_session !== "function" ||
+    typeof mod.ingest_tfrs_in_session !== "function" ||
     typeof mod.get_map_overlay_in_session !== "function" ||
     typeof mod.get_terrain_overlay_in_session !== "function" ||
     typeof mod.render_terrain_overlay_tile_in_session !== "function" ||

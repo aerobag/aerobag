@@ -45,7 +45,8 @@ pub use map_overlay::{
     AirspaceDisplaySubpath, AirspaceFeaturePath, AirspaceFeaturePayload, AirspaceFeatureRequest,
     AirspaceLabelRecord, AirspaceLabelTilePayload, AirspaceReferenceTilePayload,
     AirspaceScreenPoint, MapOverlayConfig, MapOverlayQueryResult, MapOverlayWarning,
-    NavSymbolFeature, PointTilePayload, PointVectorRecord, VectorTileRequest, VisibleMapFeature,
+    NavSymbolFeature, PointTilePayload, PointVectorRecord, TfrAltitudeLimit, TfrAreaPayload,
+    TfrLatLonPoint, TfrProductPayload, TfrScheduleFragment, VectorTileRequest, VisibleMapFeature,
     AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 pub use navdb_types::{
@@ -93,7 +94,8 @@ pub use session::{
     disengage_map_follow_in_session, engage_map_follow_in_session, get_map_overlay_in_session,
     get_session_snapshot, get_terrain_overlay_in_session, ingest_airspace_features_in_session,
     ingest_airspace_label_tiles_in_session, ingest_airspace_ref_tiles_in_session,
-    ingest_point_tiles_in_session, load_playback_trace_in_session, move_waypoint_in_session,
+    ingest_point_tiles_in_session, ingest_tfrs_in_session, load_playback_trace_in_session,
+    move_waypoint_in_session,
     pause_playback_in_session, play_playback_in_session, push_situation_sample_in_session,
     register_ownship_source_in_session, remove_leg_in_session,
     render_terrain_overlay_tile_in_session, render_terrain_overlay_tiles_in_session,

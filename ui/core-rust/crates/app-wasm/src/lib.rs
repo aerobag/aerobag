@@ -502,6 +502,11 @@ pub fn ingest_airspace_label_tiles_in_session(
 }
 
 #[wasm_bindgen]
+pub fn ingest_tfrs_in_session(handle: u32, payload_json: &str) -> Result<(), JsValue> {
+    ingest_tfrs_in_session_json(handle, payload_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn get_map_overlay_in_session(
     handle: u32,
     viewport_json: &str,
@@ -1113,6 +1118,12 @@ fn ingest_airspace_label_tiles_in_session_json(
     let tiles: Vec<app_core::AirspaceLabelTilePayload> =
         serde_json::from_str(tiles_json).map_err(|err| err.to_string())?;
     app_core::ingest_airspace_label_tiles_in_session(handle, &tiles).map_err(|err| err.to_string())
+}
+
+fn ingest_tfrs_in_session_json(handle: u32, payload_json: &str) -> Result<(), String> {
+    let payload: app_core::TfrProductPayload =
+        serde_json::from_str(payload_json).map_err(|err| err.to_string())?;
+    app_core::ingest_tfrs_in_session(handle, &payload).map_err(|err| err.to_string())
 }
 
 fn get_map_overlay_in_session_json(

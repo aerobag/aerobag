@@ -67,6 +67,12 @@ export type DerivedMapSelectorState = {
   }>;
 };
 
+const EMPTY_GEOMETRY: GeometryJson = {
+  schema_version: 1,
+  polygons: [],
+  polygon_sets: [],
+};
+
 export type UiSessionSnapshot = {
   app_state: UiSnapshotAppState;
   app_ui_state: AppUiState;
@@ -859,10 +865,17 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   }
 
   async deriveMapSelectorState(selectedMapId?: string): Promise<DerivedMapSelectorState> {
-    return runCoreHadOperation<DerivedMapSelectorState>({
+    const state = await runCoreHadOperation<Partial<DerivedMapSelectorState>>({
       kind: "map_selector_state",
       selected_map_id: selectedMapId ?? null,
     });
+    return {
+      selected_map_id: state.selected_map_id ?? "",
+      selected_map: state.selected_map ?? null,
+      displayed_maps: state.displayed_maps ?? [],
+      geometry: state.geometry ?? EMPTY_GEOMETRY,
+      family_options: state.family_options ?? [],
+    };
   }
 
   async projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]> {

@@ -11,6 +11,7 @@ import type {
   FlightPlanRouteSegment,
   FlightPlanUiMutation,
   FlightPlanUiState,
+  GeometryJson,
   LatLon,
   MapViewOptionJson,
   MaterializedProcedure,

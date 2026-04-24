@@ -136,8 +136,11 @@ function polygonIntersectsRect(polygon: Polygon, rect: TileBounds): boolean {
   return false;
 }
 
-function buildPolygonSetLookup(geometry: GeometryJson): PolygonSetLookup {
-  const polygonsById = new Map(geometry.polygons.map((polygon) => [polygon.id, polygon.points]));
+function buildPolygonSetLookup(geometry?: GeometryJson | null): PolygonSetLookup {
+  if (!geometry) {
+    return new Map();
+  }
+  const polygonsById = new Map((geometry.polygons ?? []).map((polygon) => [polygon.id, polygon.points]));
   const polygonSets = geometry.polygon_sets ?? [];
   return new Map(polygonSets.map((polygonSet) => {
     const polygons = polygonSet.polygon_ids.map((id) => {
@@ -326,7 +329,7 @@ export function viewportCenterLatLon(viewport: MapViewportState): { lat: number;
 
 export function renderTiles(
   mapViews: Array<MapView & { id?: string }>,
-  geometry: GeometryJson,
+  geometry: GeometryJson | null | undefined,
   viewport: MapViewportState,
   width: number,
   height: number,

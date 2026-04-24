@@ -923,6 +923,9 @@ export default function App() {
       selected_chart_id: initialChartPageState.selected_chart_id,
     },
     map_layer_state: defaultUiMapLayerState(),
+    caution_state: {
+      obstacle_display_limited: false,
+    },
   });
   const [playbackSourcePath, setPlaybackSourcePath] = useState(defaultPlaybackTracePath);
   const [debugWarningActive, setDebugWarningActive] = useState(false);

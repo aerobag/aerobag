@@ -46,6 +46,11 @@ pub struct UiMapLayerState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiCautionState {
+    pub obstacle_display_limited: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionSnapshot {
     pub app_state: UiSnapshotAppState,
     pub app_ui_state: AppUiState,
@@ -54,6 +59,7 @@ pub struct UiSessionSnapshot {
     pub map_follow_target_viewport: Option<MapViewport>,
     pub chart_page_state: UiChartPageState,
     pub map_layer_state: UiMapLayerState,
+    pub caution_state: UiCautionState,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,6 +82,7 @@ struct UiSession {
     map_overlay_config: MapOverlayConfig,
     chart_page_state: UiChartPageState,
     map_layer_state: UiMapLayerState,
+    caution_state: UiCautionState,
     point_tile_cache: HashMap<String, PointTilePayload>,
     airspace_ref_tile_cache: HashMap<String, AirspaceReferenceTilePayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
@@ -200,9 +207,10 @@ fn create_ui_session_inner(
         playback_ui_state,
         map_follow_ui_state,
         map_follow_target_viewport,
-        chart_page_state: chart_page_state.clone(),
-        map_layer_state: map_layer_state.clone(),
-    };
+            chart_page_state: chart_page_state.clone(),
+            map_layer_state: map_layer_state.clone(),
+            caution_state: default_caution_state(),
+        };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     sessions().lock().expect("session store poisoned").insert(
         handle,
@@ -214,6 +222,7 @@ fn create_ui_session_inner(
             map_overlay_config,
             chart_page_state,
             map_layer_state,
+            caution_state: default_caution_state(),
             point_tile_cache: HashMap::new(),
             airspace_ref_tile_cache: HashMap::new(),
             airspace_feature_cache: HashMap::new(),
@@ -695,12 +704,13 @@ pub fn get_map_overlay_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<MapOverlayQueryResult> {
-    let sessions = sessions().lock().expect("session store poisoned");
-    let session = session_ref(&sessions, handle)?;
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
     if !session.map_layer_state.vectors.visible {
+        session.caution_state.obstacle_display_limited = false;
         return Ok(empty_map_overlay_query());
     }
-    Ok(query_map_overlay(
+    let overlay = query_map_overlay(
         &viewport,
         width_px,
         height_px,
@@ -711,7 +721,12 @@ pub fn get_map_overlay_in_session(
         &session.airspace_feature_cache,
         &session.airspace_label_tile_cache,
         session.tfr_payload.as_ref(),
-    ))
+    );
+    session.caution_state.obstacle_display_limited = overlay
+        .warnings
+        .iter()
+        .any(|warning| warning.code == "vector_display_feature_limit");
+    Ok(overlay)
 }
 
 pub fn get_terrain_overlay_in_session(
@@ -892,6 +907,7 @@ fn snapshot_for_session(session: &UiSession) -> UiSessionSnapshot {
             .target_viewport(&session.app_state.ownship.render),
         chart_page_state: session.chart_page_state.clone(),
         map_layer_state: session.map_layer_state.clone(),
+        caution_state: session.caution_state.clone(),
     }
 }
 
@@ -909,6 +925,12 @@ fn default_map_layer_state() -> UiMapLayerState {
             visible: true,
             enabled: true,
         },
+    }
+}
+
+fn default_caution_state() -> UiCautionState {
+    UiCautionState {
+        obstacle_display_limited: false,
     }
 }
 

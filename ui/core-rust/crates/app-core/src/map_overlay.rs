@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{geometry::LatLon, great_circle_distance_nm, AppError, AppErrorKind, AppResult, MapViewport};
 
-pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 300;
+pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 500;
 pub const AIRSPACE_DISPLAY_FEATURE_LIMIT: usize = 700;
 pub const AIRSPACE_FEATHER_LIMIT: usize = 5_000;
 const POINT_TILE_ZOOM: u32 = 9;
@@ -12,6 +12,7 @@ const AIRSPACE_MIN_DISPLAY_ZOOM: f64 = 6.0;
 const AIRPORT_MIN_DISPLAY_ZOOM: f64 = 8.0;
 const FIX_MIN_DISPLAY_ZOOM: f64 = 9.0;
 const NAV_MIN_DISPLAY_ZOOM: f64 = 7.0;
+const OBSTACLE_MIN_DISPLAY_ZOOM: f64 = 8.0;
 const OBSTACLE_LOOKAHEAD_MINUTES: f64 = 5.0;
 const OBSTACLE_LOOKAHEAD_DEFAULT_DIAMETER_NM: f64 = 5.0;
 const OBSTACLE_LOOKAHEAD_CENTER_OFFSET_DIAMETER_RATIO: f64 = 0.3;
@@ -493,6 +494,9 @@ fn visible_obstacle_tile_window(
     height_px: f64,
     obstacle_context: Option<&ObstacleOverlayContext>,
 ) -> Vec<VectorTileRequest> {
+    if viewport.zoom < OBSTACLE_MIN_DISPLAY_ZOOM {
+        return Vec::new();
+    }
     let display_zoom = nearest_available_zoom(config, viewport.zoom.floor() as u32);
     let mut requests = visible_layer_tile_window("obstacle", display_zoom, viewport, width_px, height_px);
     let Some(context) = obstacle_context else {

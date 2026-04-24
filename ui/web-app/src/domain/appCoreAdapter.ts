@@ -86,6 +86,11 @@ export type UiSessionSnapshot = {
   } | null;
   chart_page_state: UiChartPageState;
   map_layer_state: UiMapLayerState;
+  caution_state: UiCautionState;
+};
+
+export type UiCautionState = {
+  obstacle_display_limited: boolean;
 };
 
 export type MapLayerId = "vectors" | "nexrad" | "terrain_warning";

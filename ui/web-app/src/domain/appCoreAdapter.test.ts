@@ -41,6 +41,9 @@ const snapshotJson = JSON.stringify({
     nexrad: { visible: false, enabled: true },
     terrain_warning: { visible: true, enabled: true },
   },
+  caution_state: {
+    obstacle_display_limited: false,
+  },
 });
 
 describe("loadBestAvailableAdapter", () => {

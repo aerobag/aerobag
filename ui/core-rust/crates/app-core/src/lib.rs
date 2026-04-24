@@ -825,7 +825,7 @@ pub fn materialize_procedure_from_records(
             component_index,
             true,
             &segments,
-        );
+        )?;
 
         return Ok(MaterializedProcedure {
             procedure: ProcedureSegment {
@@ -913,7 +913,7 @@ pub fn materialize_procedure_from_records(
         component_index,
         true,
         &segments,
-    );
+    )?;
 
     Ok(MaterializedProcedure {
         procedure: ProcedureSegment {
@@ -1008,7 +1008,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
         Vec<ConcretizedNavItem>,
         bool,
     )],
-) -> Vec<ResolvedLeg> {
+) -> AppResult<Vec<ResolvedLeg>> {
     let mut resolved = Vec::<ResolvedLeg>::new();
     let mut previous_display_path: Option<LegDisplayPath> = None;
     let mut previous_leg_to: Option<NavRef> = None;
@@ -1034,8 +1034,22 @@ fn resolve_procedure_materialization_legs_with_provenance(
             if skip_through_index.is_some_and(|skip_index| index <= skip_index) {
                 continue;
             }
-            let from = pair[0].nav_ref.clone().expect("filtered non-waypoint leg");
-            let to = pair[1].nav_ref.clone().expect("filtered non-waypoint leg");
+            let from = pair[0].nav_ref.clone().ok_or_else(|| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!(
+                    "procedure {} leg materialization encountered missing from-anchor nav_ref at sequence {}",
+                    procedure_id.trim(),
+                    pair[0].sequence
+                ),
+            })?;
+            let to = pair[1].nav_ref.clone().ok_or_else(|| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!(
+                    "procedure {} leg materialization encountered missing to-anchor nav_ref at sequence {}",
+                    procedure_id.trim(),
+                    pair[1].sequence
+                ),
+            })?;
             if should_skip_reconciliation_anchor_leg(
                 previous_display_path.as_ref(),
                 previous_leg_to.as_ref(),
@@ -1108,10 +1122,14 @@ fn resolve_procedure_materialization_legs_with_provenance(
         if fix_records.len() == 1 {
             let standalone = fix_records[0];
             if standalone.path_termination.trim() == "PI" {
-                let nav_ref = standalone
-                    .nav_ref
-                    .clone()
-                    .expect("filtered non-waypoint standalone procedure leg");
+                let nav_ref = standalone.nav_ref.clone().ok_or_else(|| AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: format!(
+                        "procedure {} standalone PI leg materialization encountered missing nav_ref at sequence {}",
+                        procedure_id.trim(),
+                        standalone.sequence
+                    ),
+                })?;
                 let display_path =
                     display_path_for_procedure_leg(leg_records, standalone, standalone, None);
                 let signatures = heading_signatures_for_leg(
@@ -1150,9 +1168,9 @@ fn resolve_procedure_materialization_legs_with_provenance(
         }
     }
 
-    validate_heading_continuity_checks(&heading_checks, validate_heading_continuity, procedure_id);
+    validate_heading_continuity_checks(&heading_checks, validate_heading_continuity, procedure_id)?;
 
-    resolved
+    Ok(resolved)
 }
 
 #[derive(Clone)]
@@ -1264,9 +1282,9 @@ fn validate_heading_continuity_checks(
     checks: &[DisplayElementHeadingSignature],
     validate_heading_continuity: bool,
     procedure_id: &str,
-) {
+) -> AppResult<()> {
     if !validate_heading_continuity {
-        return;
+        return Ok(());
     }
     let mut worst_violation: Option<(
         f64,
@@ -1308,20 +1326,24 @@ fn validate_heading_continuity_checks(
                 .start_magnetic_variation_deg
                 .or(previous.end_magnetic_variation_deg),
         );
-        panic!(
-            "procedure heading continuity violated for {}: {:.1} deg (allowed {:.1}) at {} ({:.6},{:.6}) inbound_mh={:.1} outbound_mh={:.1} steps={:02}->{:02}",
-            procedure_id.trim(),
-            delta,
-            allowed_delta_deg,
-            fix_description,
-            previous.end_position.lat,
-            previous.end_position.lon,
-            inbound_magnetic_heading,
-            outbound_magnetic_heading,
-            previous.step_index,
-            current.step_index,
-        );
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!(
+                "procedure heading continuity violated for {}: {:.1} deg (allowed {:.1}) at {} ({:.6},{:.6}) inbound_mh={:.1} outbound_mh={:.1} steps={:02}->{:02}",
+                procedure_id.trim(),
+                delta,
+                allowed_delta_deg,
+                fix_description,
+                previous.end_position.lat,
+                previous.end_position.lon,
+                inbound_magnetic_heading,
+                outbound_magnetic_heading,
+                previous.step_index,
+                current.step_index,
+            ),
+        });
     }
+    Ok(())
 }
 
 fn positions_nearly_equal(a: LatLon, b: LatLon) -> bool {
@@ -2971,7 +2993,8 @@ mod tests {
                 0,
                 false,
                 &segments,
-            );
+            )
+            .map_err(|err| err.to_string())?;
             Ok(MaterializedProcedure {
                 procedure: ProcedureSegment {
                     airport_id: AirportId(airport_id.trim().to_string()),
@@ -4159,6 +4182,61 @@ mod tests {
 
         assert_eq!(presentation.suggested_entry_index, 0);
         assert_eq!(presentation.suggested_exit_index, None);
+    }
+
+    #[test]
+    fn heading_continuity_violation_returns_error_instead_of_panicking() {
+        let checks = vec![
+            DisplayElementHeadingSignature {
+                step_index: 0,
+                airport_id: "KPAE".to_string(),
+                procedure_id: "VOR-A".to_string(),
+                start_position: LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+                start_course_deg: 0.0,
+                start_label: "A".to_string(),
+                start_magnetic_variation_deg: None,
+                end_position: LatLon {
+                    lat: 47.1,
+                    lon: -122.1,
+                },
+                end_course_deg: 0.0,
+                end_label: "ECEPO".to_string(),
+                end_magnetic_variation_deg: None,
+                hold_fix_position: None,
+                starts_procedure_turn: false,
+                element_kind: DisplayElementKind::Segment,
+            },
+            DisplayElementHeadingSignature {
+                step_index: 1,
+                airport_id: "KPAE".to_string(),
+                procedure_id: "VOR-A".to_string(),
+                start_position: LatLon {
+                    lat: 47.1,
+                    lon: -122.1,
+                },
+                start_course_deg: 200.0,
+                start_label: "ECEPO".to_string(),
+                start_magnetic_variation_deg: None,
+                end_position: LatLon {
+                    lat: 47.2,
+                    lon: -122.2,
+                },
+                end_course_deg: 200.0,
+                end_label: "B".to_string(),
+                end_magnetic_variation_deg: None,
+                hold_fix_position: None,
+                starts_procedure_turn: false,
+                element_kind: DisplayElementKind::Segment,
+            },
+        ];
+
+        let err = validate_heading_continuity_checks(&checks, true, "VOR-A").unwrap_err();
+
+        assert_eq!(err.kind, AppErrorKind::InvalidFlightPlan);
+        assert!(err.message.contains("procedure heading continuity violated for VOR-A"));
     }
 
     #[test]

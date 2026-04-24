@@ -1341,12 +1341,33 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     previous_was_course_to_intercept
                         || great_circle_distance_nm(previous_end, anchor_position) > 0.25
                 });
-            let initial_position_override = if from == to || continuing_if_to_cf_join {
+            let continuing_same_anchor_window = (from != to)
+                && hold_record.is_some()
+                && pair[0].path_termination.trim() == "CF"
+                && pair[1].path_termination.trim() == "TF"
+                && previous_terminal_position
+                    .zip(pair[0].nav_position)
+                    .is_some_and(|(previous_end, anchor_position)| {
+                        great_circle_distance_nm(previous_end, anchor_position) <= 0.05
+                    });
+            let continuing_from_fa_window = (from != to)
+                && pair[0].path_termination.trim() == "FA"
+                && previous_leg_to.as_ref().is_some_and(|previous_to| previous_to == &from)
+                && previous_terminal_position.is_some();
+            let initial_position_override = if from == to
+                || continuing_if_to_cf_join
+                || continuing_same_anchor_window
+                || continuing_from_fa_window
+            {
                 previous_terminal_position
             } else {
                 None
             };
-            let initial_course_override = if from == to || continuing_if_to_cf_join {
+            let initial_course_override = if from == to
+                || continuing_if_to_cf_join
+                || continuing_same_anchor_window
+                || continuing_from_fa_window
+            {
                 previous_terminal_course
             } else {
                 None
@@ -1865,6 +1886,9 @@ fn continuity_path_boundary_tolerance_deg(
 ) -> f64 {
     let default_tolerance_deg = 10.0;
     if previous.end_label == "synthesized-path" || current.start_label == "synthesized-path" {
+        return 120.0;
+    }
+    if current.element_kind == DisplayElementKind::Arc {
         return 120.0;
     }
     match (
@@ -4082,7 +4106,7 @@ mod tests {
     #[test]
     #[ignore = "manual visual inspection overlay for KDEN I16L"]
     fn writes_kden_i16l_jeepr_overlay_png() {
-        render_procedure_overlay_to_paths("KDEN", "I16L", "JEEPR", "KDEN_I16L_JEEPR", false);
+        render_procedure_overlay_to_paths("KDEN", "I16L", "KAILE", "KDEN_I16L_KAILE", false);
     }
 
     #[test]
@@ -4866,10 +4890,42 @@ mod tests {
                 "procedure materialization rows",
             );
             eprintln!("=== {airport_id} {procedure_id} ===");
-            for record in records
-                .iter()
-                .filter(|record| matches!(record.key.route_type.as_str(), "A" | "I" | "L" | "R"))
-            {
+            for record in records.iter() {
+                eprintln!(
+                    "rt={} tr={} seq={} pt={} turn={:?} nav={:?} def_nav={:?} theta={:?} course={:?} dist={:?} alt1={:?} alt2={:?}",
+                    record.key.route_type,
+                    record.key.transition_id,
+                    record.sequence,
+                    record.path_termination,
+                    record.turn_direction,
+                    record.nav_ref,
+                    record.defining_nav_ref,
+                    record.theta_deg,
+                    record.magnetic_course_deg,
+                    record.route_distance_or_time,
+                    record.altitude_1_ft,
+                    record.altitude_2_ft,
+                );
+            }
+        }
+    }
+
+
+    #[test]
+    #[ignore = "manual audit for selected zero-length arc records"]
+    fn audit_selected_zero_length_arc_records() {
+        let store = load_snapshot_nav_kv_store();
+        for (airport_id, procedure_id) in [("12D", "R08"), ("17J", "R01")] {
+            let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+                &store,
+                crate::NavKvQuery::ProcedureMaterializationRows {
+                    airport_id: airport_id.to_string(),
+                    procedure_id: procedure_id.to_string(),
+                },
+                "procedure materialization rows",
+            );
+            eprintln!("=== {airport_id} {procedure_id} ===");
+            for record in records.iter() {
                 eprintln!(
                     "rt={} tr={} seq={} pt={} turn={:?} nav={:?} def_nav={:?} theta={:?} course={:?} dist={:?} alt1={:?} alt2={:?}",
                     record.key.route_type,
@@ -4890,10 +4946,18 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual audit for selected zero-length arc records"]
-    fn audit_selected_zero_length_arc_records() {
+    #[ignore = "manual audit for selected non-RNP heading continuity records"]
+    fn audit_selected_non_rnp_heading_records() {
         let store = load_snapshot_nav_kv_store();
-        for (airport_id, procedure_id) in [("12D", "R08"), ("17J", "R01")] {
+        for (airport_id, procedure_id) in [("KYKM", "VOR-A")] {
+            let rows = read_required_from_store::<Vec<ProcedureDistinctRow>>(
+                &store,
+                crate::NavKvQuery::ProcedureDistinctRows {
+                    airport_id: airport_id.to_string(),
+                    procedure_id: procedure_id.to_string(),
+                },
+                "procedure distinct rows",
+            );
             let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
                 &store,
                 crate::NavKvQuery::ProcedureMaterializationRows {
@@ -4903,10 +4967,10 @@ mod tests {
                 "procedure materialization rows",
             );
             eprintln!("=== {airport_id} {procedure_id} ===");
-            for record in records
-                .iter()
-                .filter(|record| matches!(record.key.route_type.as_str(), "A" | "I" | "L" | "R"))
-            {
+            for row in &rows {
+                eprintln!("distinct rt={} tr={}", row.route_type, row.transition_id);
+            }
+            for record in records.iter() {
                 eprintln!(
                     "rt={} tr={} seq={} pt={} turn={:?} nav={:?} def_nav={:?} theta={:?} course={:?} dist={:?} alt1={:?} alt2={:?}",
                     record.key.route_type,
@@ -4923,6 +4987,41 @@ mod tests {
                     record.altitude_2_ft,
                 );
             }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for KSEA I34R COYLA tail window"]
+    fn audit_ksea_i34r_coyla_tail_window() {
+        let store = load_snapshot_nav_kv_store();
+        let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KSEA".to_string(),
+                procedure_id: "I34R".to_string(),
+            },
+            "procedure materialization rows",
+        );
+        let i_records = records
+            .iter()
+            .filter(|record| record.key.route_type.trim() == "I")
+            .cloned()
+            .collect::<Vec<_>>();
+        let leg_start = i_records.iter().find(|record| record.sequence == 50).unwrap();
+        let leg_end = i_records.iter().find(|record| record.sequence == 60).unwrap();
+        let hold_record = i_records.iter().find(|record| record.sequence == 70).unwrap();
+        let path = display_path_for_procedure_leg(
+            &i_records,
+            leg_start,
+            leg_end,
+            Some(hold_record),
+            leg_start.nav_position,
+            Some(343.0),
+        )
+        .unwrap();
+        eprintln!("elements={}", path.elements.len());
+        for (index, element) in path.elements.iter().enumerate() {
+            eprintln!("element#{index}: {:?}", element);
         }
     }
 
@@ -5222,6 +5321,18 @@ mod tests {
     #[ignore = "manual visual inspection overlay for 17J R01 FAPEX"]
     fn writes_17j_r01_fapex_overlay_png() {
         render_procedure_overlay_to_paths("17J", "R01", "FAPEX", "17J_R01_FAPEX", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KACK I06 MVY"]
+    fn writes_kack_i06_mvy_overlay_png() {
+        render_procedure_overlay_to_paths("KYKM", "VOR-A", "SELAH", "KYKM_VOR-A_SELAH", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KBED I11 BRONC"]
+    fn writes_kbed_i11_bronc_overlay_png() {
+        render_procedure_overlay_to_paths("KBED", "I11", "BRONC", "KBED_I11_BRONC", false);
     }
 
     #[test]

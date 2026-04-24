@@ -14,6 +14,7 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 const POINT_LAYER_ZOOM_POLICY: &[(&str, u8)] =
     &[("airport", 9), ("fix", 9), ("nav", 9), ("awos", 9)];
 const MIN_OBSTACLE_AGL_FT: i32 = 400;
+const TALL_OBSTACLE_MIN_AGL_FT: i32 = 1000;
 const OBSTACLE_LAYER_ZOOM: u8 = 12;
 const OBSTACLE_LAYER_MIN_ZOOM: u8 = 0;
 const OBSTACLE_LAYER_MAX_ZOOM: u8 = 12;
@@ -268,6 +269,8 @@ struct PointRecord {
     label: String,
     style_class: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    obstacle: Option<ObstacleProperties>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     towered: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fuel_available: Option<bool>,
@@ -285,6 +288,14 @@ struct PointRecord {
     longest_runway_length_ft: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     longest_runway_heading_true_deg: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ObstacleProperties {
+    height_agl_ft: f64,
+    elevation_msl_ft: f64,
+    top_msl_ft: f64,
+    is_tall: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1409,6 +1420,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                 lon,
                 label,
                 style_class: style_class.to_string(),
+                obstacle: None,
                 towered,
                 fuel_available,
                 public_use,
@@ -1472,6 +1484,7 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<ObstaclePointRec
         if height_agl < MIN_OBSTACLE_AGL_FT as f64 || !valid_lat_lon(lat, lon) {
             continue;
         }
+        let elevation_msl = height_msl - height_agl;
         let id = dedup_id(
             &mut seen,
             &format!("obs:{lat:.6}:{lon:.6}:{height_msl:.0}"),
@@ -1484,8 +1497,14 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<ObstaclePointRec
                 kind: "obs".to_string(),
                 lat,
                 lon,
-                label: format!("Obstacle {:.0}ft", height_msl),
+                label: format!("{:.0}", height_msl),
                 style_class: "obstacle".to_string(),
+                obstacle: Some(ObstacleProperties {
+                    height_agl_ft: height_agl,
+                    elevation_msl_ft: elevation_msl,
+                    top_msl_ft: height_msl,
+                    is_tall: height_agl >= TALL_OBSTACLE_MIN_AGL_FT as f64,
+                }),
                 towered: None,
                 fuel_available: None,
                 public_use: None,

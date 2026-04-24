@@ -2867,59 +2867,113 @@ fn sync_fast_subset_unpacked(
     if let Some(diagnostics) = &current.diagnostics {
         sync_unpacked_file(&build_root.join(&diagnostics.filename), &unpacked_root)?;
     }
-    remove_stale_fast_unpacked_dirs(&unpacked_root, previous_fast_products, fast_products)?;
-    for product in fast_products {
-        let published_filename = product
-            .published_zip
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| anyhow::anyhow!("failed to determine published fast filename"))?;
-        sync_unpacked_zip_from_source(
-            &product.published_zip,
-            product
-                .source_zip_path
-                .parent()
-                .unwrap_or_else(|| Path::new("/")),
-            &unpacked_root,
-            published_filename,
-            Some(&product.checksum_sha256),
-        )?;
-    }
+    sync_referenced_fast_bundle_unpacked_zips(
+        build_root,
+        &unpacked_root,
+        current_artifacts_path,
+        previous_fast_products,
+        fast_products,
+    )?;
     cleanup_published_unpacked_root(&unpacked_root, current_artifacts_path)?;
     Ok(())
 }
 
-fn remove_stale_fast_unpacked_dirs(
+fn sync_referenced_fast_bundle_unpacked_zips(
+    build_root: &Path,
     unpacked_root: &Path,
+    current_artifacts_path: &Path,
     previous_fast_products: &[PublishedFastProductResult],
     fast_products: &[PublishedFastProductResult],
 ) -> anyhow::Result<()> {
-    let current_dirs = fast_products
-        .iter()
-        .map(|product| {
-            let filename = product
-                .published_zip
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| anyhow::anyhow!("failed to determine published fast filename"))?;
-            zip_stem(filename)
-        })
-        .collect::<anyhow::Result<std::collections::BTreeSet<_>>>()?;
-    for product in previous_fast_products {
-        let filename = product
+    let mut products_by_filename = BTreeMap::<String, PublishedFastProductResult>::new();
+    for product in previous_fast_products.iter().chain(fast_products.iter()) {
+        let Some(filename) = product
             .published_zip
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or_else(|| anyhow::anyhow!("failed to determine previous fast filename"))?;
-        let previous_dir = zip_stem(filename)?;
-        if current_dirs.contains(&previous_dir) {
+            .map(str::to_string)
+        else {
+            bail!("failed to determine published fast filename");
+        };
+        products_by_filename.insert(filename, product.clone());
+    }
+    for entry in fs::read_dir(build_root)
+        .with_context(|| format!("failed to read {}", build_root.display()))?
+    {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !(name.starts_with("bundle_fast_") && name.ends_with(".json")) {
             continue;
         }
-        let path = unpacked_root.join(&previous_dir);
-        if path.exists() {
-            fs::remove_dir_all(&path).with_context(|| {
-                format!("failed to remove stale fast product {}", path.display())
-            })?;
+        for product in load_fast_bundle_products(&path)? {
+            let Some(filename) = product
+                .published_zip
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_string)
+            else {
+                bail!("failed to determine published fast filename");
+            };
+            products_by_filename.entry(filename).or_insert(product);
+        }
+    }
+    for discovery_path in discovery_manifest_paths(build_root, current_artifacts_path)? {
+        let current: CurrentArtifactsManifest = serde_json::from_slice(
+            &fs::read(&discovery_path)
+                .with_context(|| format!("failed to read {}", discovery_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", discovery_path.display()))?;
+        for bundle in current
+            .bundles
+            .iter()
+            .filter(|bundle| bundle.bundle_type == "fast")
+        {
+            let bundle_path = build_root.join(&bundle.filename);
+            let fast_bundle: FastBundleManifest = serde_json::from_slice(
+                &fs::read(&bundle_path)
+                    .with_context(|| format!("failed to read {}", bundle_path.display()))?,
+            )
+            .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+            for package in &fast_bundle.packages {
+                let unpack_dir = unpacked_target_dir(unpacked_root, &package.filename)?;
+                let marker_path = unpacked_marker_path(unpacked_root, &package.filename)?;
+                if unpack_dir.is_dir()
+                    && fs::read_to_string(&marker_path)
+                        .ok()
+                        .as_deref()
+                        .map(str::trim)
+                        == Some(package.checksum_sha256.as_str())
+                {
+                    continue;
+                }
+                let Some(product) = products_by_filename.get(&package.filename) else {
+                    bail!(
+                        "no source mapping available to mirror historical fast package {}",
+                        package.filename
+                    );
+                };
+                if product.source_zip_path == product.published_zip {
+                    sync_unpacked_zip_by_extract(
+                        &product.published_zip,
+                        unpacked_root,
+                        &package.filename,
+                        Some(&package.checksum_sha256),
+                    )?;
+                } else {
+                    sync_unpacked_zip_from_source(
+                        &product.published_zip,
+                        product
+                            .source_zip_path
+                            .parent()
+                            .unwrap_or_else(|| Path::new("/")),
+                        unpacked_root,
+                        &package.filename,
+                        Some(&package.checksum_sha256),
+                    )?;
+                }
+            }
         }
     }
     Ok(())
@@ -6555,6 +6609,65 @@ fn sync_unpacked_dir_from_existing(
     }
     hardlink_dir_recursive(source_dir, &unpack_dir)?;
     fs::write(&marker_path, format!("{known_sha256}\n"))
+        .with_context(|| format!("failed to write {}", marker_path.display()))?;
+    Ok((false, unpack_dir))
+}
+
+fn sync_unpacked_zip_by_extract(
+    zip_path: &Path,
+    unpacked_root: &Path,
+    published_filename: &str,
+    known_sha256: Option<&str>,
+) -> anyhow::Result<(bool, PathBuf)> {
+    let unpack_dir = unpacked_target_dir(unpacked_root, published_filename)?;
+    let marker_path = unpacked_marker_path(unpacked_root, published_filename)?;
+    let zip_sha256 = match known_sha256 {
+        Some(value) => value.to_string(),
+        None => hash_file(zip_path)?,
+    };
+    if unpack_dir.is_dir()
+        && fs::read_to_string(&marker_path)
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            == Some(zip_sha256.as_str())
+    {
+        return Ok((true, unpack_dir));
+    }
+    if unpack_dir.exists() {
+        fs::remove_dir_all(&unpack_dir)
+            .with_context(|| format!("failed to remove {}", unpack_dir.display()))?;
+    }
+    fs::create_dir_all(&unpack_dir)
+        .with_context(|| format!("failed to create {}", unpack_dir.display()))?;
+    let file =
+        File::open(zip_path).with_context(|| format!("failed to open {}", zip_path.display()))?;
+    let mut archive = ZipArchive::new(file)
+        .with_context(|| format!("failed to open zip {}", zip_path.display()))?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).with_context(|| {
+            format!(
+                "failed to read zip member #{index} from {}",
+                zip_path.display()
+            )
+        })?;
+        let member = entry.name().to_string();
+        let outpath = unpack_dir.join(&member);
+        if member.ends_with('/') || entry.is_dir() {
+            fs::create_dir_all(&outpath)
+                .with_context(|| format!("failed to create {}", outpath.display()))?;
+            continue;
+        }
+        if let Some(parent) = outpath.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let mut out = File::create(&outpath)
+            .with_context(|| format!("failed to create {}", outpath.display()))?;
+        std::io::copy(&mut entry, &mut out)
+            .with_context(|| format!("failed to extract {}", outpath.display()))?;
+    }
+    fs::write(&marker_path, format!("{zip_sha256}\n"))
         .with_context(|| format!("failed to write {}", marker_path.display()))?;
     Ok((false, unpack_dir))
 }

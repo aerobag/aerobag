@@ -3611,6 +3611,175 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual visual inspection overlay for 0R4 R14"]
+    fn writes_0r4_r14_mojos_overlay_png() {
+        render_procedure_overlay_to_paths("0R4", "R14", "MOJOS", "0R4_R14_MOJOS", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for 0R4 R32"]
+    fn writes_0r4_r32_johon_overlay_png() {
+        render_procedure_overlay_to_paths("0R4", "R32", "JOHON", "0R4_R32_JOHON", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for I73 RNV-A"]
+    fn writes_i73_rnva_eikon_overlay_png() {
+        render_procedure_overlay_to_paths("I73", "RNV-A", "EIKON", "I73_RNV-A_EIKON", false);
+    }
+
+    #[test]
+    #[ignore = "manual audit for FA overshoot prevalence"]
+    fn audit_fix_to_altitude_overshoot_prevalence() {
+        let unpacked_root = latest_snapshot_unpacked_root();
+        let georef_plates = collect_georeferenced_plates_from_packages(&unpacked_root);
+        let plate_paths = georef_plates.keys().cloned().collect::<Vec<_>>();
+        let plate_index = build_plate_index(&plate_paths);
+        let store = load_snapshot_nav_kv_store();
+        let mut total_cases = 0usize;
+        let mut overshoot_cases = Vec::<String>::new();
+
+        let mut airport_keys = plate_index.keys().cloned().collect::<Vec<_>>();
+        airport_keys.sort();
+        for airport_key in airport_keys {
+            for airport_id in candidate_airport_ids_for_plate_key(&airport_key) {
+                let Some(procedures) = read_optional_from_store::<Vec<ProcedureSummary>>(
+                    &store,
+                    crate::NavKvQuery::ProcedureList {
+                        airport_id: airport_id.clone(),
+                        procedure_kind: ProcedureKind::Approach,
+                    },
+                ) else {
+                    continue;
+                };
+                for procedure in procedures {
+                    if find_matching_plate_path(&plate_index, &airport_id, &procedure.procedure_id)
+                        .is_none()
+                    {
+                        continue;
+                    }
+                    let Some(rows) = read_optional_from_store::<Vec<ProcedureDistinctRow>>(
+                        &store,
+                        crate::NavKvQuery::ProcedureDistinctRows {
+                            airport_id: airport_id.clone(),
+                            procedure_id: procedure.procedure_id.clone(),
+                        },
+                    ) else {
+                        continue;
+                    };
+                    let Some(records) =
+                        read_optional_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+                            &store,
+                            crate::NavKvQuery::ProcedureMaterializationRows {
+                                airport_id: airport_id.clone(),
+                                procedure_id: procedure.procedure_id.clone(),
+                            },
+                        )
+                    else {
+                        continue;
+                    };
+                    if !records
+                        .iter()
+                        .any(|record| record.path_termination.trim() == "FA")
+                    {
+                        continue;
+                    }
+                    let Ok(options) = describe_procedure_options_from_rows(
+                        &airport_id,
+                        &procedure.procedure_id,
+                        ProcedureKind::Approach,
+                        rows.clone(),
+                    ) else {
+                        continue;
+                    };
+                    let common_route_type = approach_common_route_type(&rows);
+                    for choice in options.valid_choices {
+                        let mut selected_records = Vec::new();
+                        if let Some(transition) = choice.enroute_transition.as_deref() {
+                            selected_records.extend(filter_procedure_records(
+                                &records,
+                                &airport_id,
+                                &procedure.procedure_id,
+                                "A",
+                                transition,
+                            ));
+                        }
+                        if let Some(common_route_type) = common_route_type.as_deref() {
+                            selected_records.extend(filter_procedure_records(
+                                &records,
+                                &airport_id,
+                                &procedure.procedure_id,
+                                common_route_type,
+                                "",
+                            ));
+                        }
+                        if selected_records.is_empty() {
+                            continue;
+                        }
+                        selected_records.sort_by_key(|record| record.sequence);
+                        let mut current_position = selected_records[0].nav_position;
+                        let mut current_altitude_ft = selected_records[0].altitude_1_ft;
+                        for step in selected_records.iter().skip(1) {
+                            if step.path_termination.trim() == "FA" {
+                                total_cases += 1;
+                                if let (
+                                    Some(start_position),
+                                    Some(fix_position),
+                                    Some(start_altitude_ft),
+                                    Some(target_altitude_ft),
+                                ) = (
+                                    current_position,
+                                    step.nav_position,
+                                    current_altitude_ft,
+                                    step.altitude_1_ft,
+                                ) {
+                                    let distance_to_fix_nm =
+                                        great_circle_distance_nm(start_position, fix_position);
+                                    let climb_minutes = ((target_altitude_ft - start_altitude_ft)
+                                        .max(0.0))
+                                        / 500.0;
+                                    let climb_distance_nm =
+                                        90.0 * (climb_minutes / 60.0);
+                                    let overshoot_nm =
+                                        (climb_distance_nm - distance_to_fix_nm).max(0.0);
+                                    if overshoot_nm > 0.1 {
+                                        overshoot_cases.push(format!(
+                                            "{} {} transition={} seq={} dist_to_fix_nm={:.2} climb_nm={:.2} overshoot_nm={:.2}",
+                                            airport_id,
+                                            procedure.procedure_id,
+                                            choice
+                                                .enroute_transition
+                                                .as_deref()
+                                                .unwrap_or(""),
+                                            step.sequence,
+                                            distance_to_fix_nm,
+                                            climb_distance_nm,
+                                            overshoot_nm,
+                                        ));
+                                    }
+                                }
+                            }
+                            if step.nav_position.is_some() {
+                                current_position = step.nav_position;
+                            }
+                            if step.altitude_1_ft.is_some() {
+                                current_altitude_ft = step.altitude_1_ft;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        overshoot_cases.sort();
+        eprintln!("fa_total_cases={total_cases}");
+        eprintln!("fa_overshoot_cases={}", overshoot_cases.len());
+        for case in overshoot_cases.iter().take(50) {
+            eprintln!("{case}");
+        }
+    }
+
+    #[test]
     #[ignore = "manual visual inspection overlay for KVLD L36 GEF"]
     fn writes_kvld_l36_gef_overlay_png() {
         render_procedure_overlay_to_paths("KVLD", "L36", "GEF", "KVLD_L36_GEF", true);

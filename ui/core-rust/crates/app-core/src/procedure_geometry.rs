@@ -358,6 +358,26 @@ fn sequenced_leg_display_path(
                 );
                 current_course_deg = Some(course_deg);
             }
+            "FA" => {
+                if let Some(fix) = step.nav_position {
+                    if distance_between_points_nm(current_position, fix) > 0.05 {
+                        elements.push(LegDisplayElement::Segment {
+                            start: current_position,
+                            end: fix,
+                        });
+                        current_position = fix;
+                    }
+                }
+                let course_deg = current_or_step_course_deg(step, current_course_deg)?;
+                current_position = extend_climb_segment(
+                    &mut elements,
+                    current_position,
+                    course_deg,
+                    &mut current_altitude_ft,
+                    step.altitude_1_ft,
+                );
+                current_course_deg = Some(course_deg);
+            }
             "VA" | "VI" | "VM" => {
                 current_position = heading_leg_display_path(
                     &mut elements,

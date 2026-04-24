@@ -100,7 +100,7 @@ pub use planning::{
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use procedure_geometry::{
-    display_path_for_procedure_leg, display_path_for_trailing_course_to_intercept_leg,
+    build_trailing_course_to_intercept_display_path, display_path_for_procedure_leg,
 };
 pub use procedure_legs::{
     interpret_path_termination, leading_procedure_discontinuity, parse_airport_magnetic_variation,
@@ -1418,7 +1418,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     previous_display_path.as_ref().and_then(final_course_of_display_path);
                 let display_path = if trailing_record.path_termination.trim() == "CI" {
                     next_segment_records.and_then(|next_records| {
-                        display_path_for_trailing_course_to_intercept_leg(
+                        build_trailing_course_to_intercept_display_path(
                             trailing_record,
                             initial_position_override,
                             initial_course_override,

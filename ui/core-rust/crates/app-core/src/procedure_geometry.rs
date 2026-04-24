@@ -25,7 +25,7 @@ pub fn display_path_for_procedure_leg(
     } else {
         hold_record.unwrap_or(leg_end)
     };
-    interpret_procedure_step_window(
+    build_procedure_leg_display_path(
         segment_records,
         leg_start,
         terminal_record,
@@ -34,7 +34,7 @@ pub fn display_path_for_procedure_leg(
     )
 }
 
-pub fn display_path_for_trailing_course_to_intercept_leg(
+pub fn build_trailing_course_to_intercept_display_path(
     trailing_record: &ProcedureLegMaterializationRecord,
     initial_position_override: Option<LatLon>,
     initial_course_override: Option<f64>,
@@ -55,7 +55,7 @@ pub fn display_path_for_trailing_course_to_intercept_leg(
             Some(intercept_step),
         )?;
     let mut altitude_ft = trailing_record.altitude_1_ft;
-    let _ = append_track_capture_and_termination(
+    let _ = append_course_track_path(
         &mut elements,
         intercept,
         Some(intercept_step.magnetic_course_deg? + course_reference_variation_deg(intercept_step)),
@@ -267,7 +267,7 @@ enum TrackTermination {
     ToDme { center: LatLon, radius_nm: f64 },
 }
 
-fn interpret_procedure_step_window(
+fn build_procedure_leg_display_path(
     segment_records: &[ProcedureLegMaterializationRecord],
     leg_start: &ProcedureLegMaterializationRecord,
     terminal_record: &ProcedureLegMaterializationRecord,
@@ -316,7 +316,7 @@ fn interpret_procedure_step_window(
                 current_course_deg = Some(course_deg);
             }
             "FA" => {
-                let (new_position, course_deg) = append_track_capture_and_termination(
+                let (new_position, course_deg) = append_course_track_path(
                     &mut elements,
                     current_position,
                     current_course_deg,
@@ -330,7 +330,7 @@ fn interpret_procedure_step_window(
             "CD" => {
                 let center = step.defining_nav_position?;
                 let radius_nm = parse_distance_tenths_nm(step.route_distance_or_time.as_deref())?;
-                let (new_position, course_deg) = append_track_capture_and_termination(
+                let (new_position, course_deg) = append_course_track_path(
                     &mut elements,
                     current_position,
                     current_course_deg,
@@ -342,7 +342,7 @@ fn interpret_procedure_step_window(
                 current_course_deg = Some(course_deg);
             }
             "VA" | "VI" | "VM" => {
-                let new_position = heading_leg_display_path(
+                let new_position = append_heading_leg_path(
                     &mut elements,
                     step,
                     current_position,
@@ -491,7 +491,7 @@ fn interpret_procedure_step_window(
                         }
                     }
                 }
-                if let Some((new_position, _)) = append_track_capture_and_termination(
+                if let Some((new_position, _)) = append_course_track_path(
                     &mut elements,
                     current_position,
                     current_course_deg,
@@ -562,7 +562,7 @@ fn current_or_step_course_deg(
     }
 }
 
-fn append_track_capture_and_termination(
+fn append_course_track_path(
     elements: &mut Vec<LegDisplayElement>,
     current_position: LatLon,
     current_course_deg: Option<f64>,
@@ -806,7 +806,7 @@ fn extend_climb_segment(
     climb_end
 }
 
-fn heading_leg_display_path(
+fn append_heading_leg_path(
     elements: &mut Vec<LegDisplayElement>,
     step: &ProcedureLegMaterializationRecord,
     current_position: LatLon,

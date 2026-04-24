@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -1134,6 +1134,195 @@ fn insert_cifp_with_ids(
     Ok(count)
 }
 
+fn cifp_localizer_id(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric())
+        .take(4)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn cifp_compact_coord_lat(value: &str) -> Option<f64> {
+    let trimmed = value.trim();
+    if trimmed.len() != 9 {
+        return None;
+    }
+    let hemi = trimmed.chars().next()?;
+    let deg = trimmed.get(1..3)?.trim().parse::<f64>().ok()?;
+    let min = trimmed.get(3..5)?.trim().parse::<f64>().ok()?;
+    let sec = trimmed.get(5..9)?.trim().parse::<f64>().ok()? / 100.0;
+    let coord = deg + min / 60.0 + sec / 3600.0;
+    Some(match hemi {
+        'N' => coord,
+        'S' => -coord,
+        _ => return None,
+    })
+}
+
+fn cifp_compact_coord_lon(value: &str) -> Option<f64> {
+    let trimmed = value.trim();
+    if trimmed.len() != 10 {
+        return None;
+    }
+    let hemi = trimmed.chars().next()?;
+    let deg = trimmed.get(1..4)?.trim().parse::<f64>().ok()?;
+    let min = trimmed.get(4..6)?.trim().parse::<f64>().ok()?;
+    let sec = trimmed.get(6..10)?.trim().parse::<f64>().ok()? / 100.0;
+    let coord = deg + min / 60.0 + sec / 3600.0;
+    Some(match hemi {
+        'E' => coord,
+        'W' => -coord,
+        _ => return None,
+    })
+}
+
+fn cifp_signed_tenths_value(value: &str) -> Option<f64> {
+    let trimmed = value.trim();
+    if trimmed.len() < 2 {
+        return None;
+    }
+    let sign = match trimmed.chars().next()? {
+        'E' | 'N' | '+' => 1.0,
+        'W' | 'S' | '-' => -1.0,
+        _ => return None,
+    };
+    let magnitude = trimmed.get(1..)?.trim().parse::<f64>().ok()? / 10.0;
+    Some(sign * magnitude)
+}
+
+#[derive(Debug, Clone)]
+struct CifpProcedureNavaid {
+    id: String,
+    lat: f64,
+    lon: f64,
+    kind: String,
+    variation: f64,
+    class: String,
+    hiwas: String,
+    elevation: String,
+}
+
+fn parse_cifp_procedure_navaid(line: &str) -> Option<CifpProcedureNavaid> {
+    if line.len() < 132 {
+        return None;
+    }
+    let section = field(line, 4, 1);
+    let subsection = field(line, 12, 1);
+
+    if section == "P" && subsection == "I" {
+        let id = cifp_localizer_id(field(line, 13, 6));
+        let lat = cifp_compact_coord_lat(field(line, 32, 9))?;
+        let lon = cifp_compact_coord_lon(field(line, 41, 10))?;
+        let variation = cifp_signed_tenths_value(field(line, 90, 5)).unwrap_or_default();
+        return Some(CifpProcedureNavaid {
+            id,
+            lat,
+            lon,
+            kind: "ILS".to_string(),
+            variation,
+            class: String::new(),
+            hiwas: String::new(),
+            elevation: trim(field(line, 94, 5)).to_string(),
+        });
+    }
+
+    if section == "D" {
+        let id = cifp_localizer_id(field(line, 13, 6));
+        if !id.starts_with('I') {
+            return None;
+        }
+        let lat = cifp_compact_coord_lat(field(line, 55, 9))?;
+        let lon = cifp_compact_coord_lon(field(line, 64, 10))?;
+        let variation = cifp_signed_tenths_value(field(line, 74, 5)).unwrap_or_default();
+        return Some(CifpProcedureNavaid {
+            id,
+            lat,
+            lon,
+            kind: "ILS".to_string(),
+            variation,
+            class: String::new(),
+            hiwas: String::new(),
+            elevation: trim(field(line, 79, 5)).to_string(),
+        });
+    }
+
+    None
+}
+
+fn insert_cifp_procedure_navaids(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
+    let needed = {
+        let mut stmt = conn.prepare(
+            "
+            SELECT DISTINCT trim(recommended_navaid)
+            FROM cifp_sid_star_app
+            WHERE trim(recommended_navaid) <> ''
+            ",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut ids = BTreeSet::new();
+        for row in rows {
+            let id = row?.trim().to_ascii_uppercase();
+            if !id.is_empty() {
+                ids.insert(id);
+            }
+        }
+        ids
+    };
+    if needed.is_empty() {
+        return Ok(0);
+    }
+
+    let existing_nav = {
+        let mut stmt = conn.prepare(
+            "
+            SELECT trim(LocationID)
+            FROM nav
+            WHERE trim(LocationID) <> ''
+            ",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut ids = BTreeSet::new();
+        for row in rows {
+            ids.insert(row?.trim().to_ascii_uppercase());
+        }
+        ids
+    };
+
+    let path = input_dir.join("FAACIFP18");
+    let text = read_text_lossy(&path)?;
+    let mut stmt = conn.prepare("INSERT INTO nav VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
+    let mut count = 0;
+    let mut inserted = BTreeSet::<String>::new();
+    for line in text.lines() {
+        let Some(record) = parse_cifp_procedure_navaid(line) else {
+            continue;
+        };
+        let id = record.id.trim().to_ascii_uppercase();
+        if id.is_empty()
+            || !needed.contains(&id)
+            || existing_nav.contains(&id)
+            || !inserted.insert(id.clone())
+        {
+            continue;
+        }
+        stmt.execute(params![
+            id,
+            record.lat,
+            record.lon,
+            record.kind,
+            format!("{id} CIFP"),
+            record.variation,
+            record.class,
+            record.hiwas,
+            record.elevation,
+        ])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
 pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuildResult> {
     fs::create_dir_all(&request.output_dir)
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
@@ -1191,6 +1380,10 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
     row_counts.insert(
         "cifp_sid_star_app".to_string(),
         insert_cifp_with_ids(&tx, &request.input_dir, &airport_ids)?,
+    );
+    row_counts.insert(
+        "cifp_procedure_navaids".to_string(),
+        insert_cifp_procedure_navaids(&tx, &request.input_dir)?,
     );
     tx.commit()?;
 
@@ -1367,6 +1560,46 @@ mod tests {
         String::from_utf8(line).unwrap()
     }
 
+    fn build_cifp_line_with_recommended_navaid(faa: &str, recommended_navaid: &str) -> String {
+        let mut line = build_cifp_line(faa).into_bytes();
+        put_field(&mut line, 50, 4, recommended_navaid);
+        String::from_utf8(line).unwrap()
+    }
+
+    fn build_cifp_localizer_record_p(id: &str) -> String {
+        let mut line = vec![b' '; 132];
+        put_field(&mut line, 0, 4, "SUSA");
+        put_field(&mut line, 4, 1, "P");
+        put_field(&mut line, 6, 4, "KDEN");
+        put_field(&mut line, 10, 2, "K2");
+        put_field(&mut line, 12, 1, "I");
+        put_field(&mut line, 13, 6, &format!("{id}1"));
+        put_field(&mut line, 32, 9, "N39514067");
+        put_field(&mut line, 41, 10, "W104411400");
+        put_field(&mut line, 90, 5, "E0080");
+        put_field(&mut line, 94, 5, "05605");
+        put_field(&mut line, 123, 9, "692322603");
+        String::from_utf8(line).unwrap()
+    }
+
+    fn build_cifp_localizer_record_d(id: &str) -> String {
+        let mut line = vec![b' '; 132];
+        put_field(&mut line, 0, 4, "SCAN");
+        put_field(&mut line, 4, 1, "D");
+        put_field(&mut line, 6, 4, "PADQ");
+        put_field(&mut line, 10, 2, "PA");
+        put_field(&mut line, 13, 6, id);
+        put_field(&mut line, 19, 1, "P");
+        put_field(&mut line, 51, 4, id);
+        put_field(&mut line, 55, 9, "N57450608");
+        put_field(&mut line, 64, 10, "W152311612");
+        put_field(&mut line, 74, 5, "E0140");
+        put_field(&mut line, 79, 5, "00133");
+        put_field(&mut line, 90, 9, "NARKODIAK");
+        put_field(&mut line, 123, 9, "003321909");
+        String::from_utf8(line).unwrap()
+    }
+
     fn write_empty(path: &Path) {
         fs::write(path, "").unwrap();
     }
@@ -1481,6 +1714,81 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cifp_id, "KSEA");
+    }
+
+    #[test]
+    fn build_data_package_imports_cifp_localizer_navaids_into_nav() {
+        let dir = tempdir().unwrap();
+        let input_dir = dir.path().join("input");
+        let output_dir = dir.path().join("output");
+        fs::create_dir_all(&input_dir).unwrap();
+
+        write_empty(&input_dir.join("APT.txt"));
+        write_empty(&input_dir.join("TWR.txt"));
+        write_empty(&input_dir.join("AWOS.txt"));
+        fs::write(
+            input_dir.join("FAACIFP18"),
+            format!(
+                "{}\n{}\n{}\n{}\n",
+                build_cifp_line_with_recommended_navaid("KDEN", "ILTT"),
+                build_cifp_line_with_recommended_navaid("PADQ", "IADQ"),
+                build_cifp_localizer_record_p("ILTT"),
+                build_cifp_localizer_record_d("IADQ"),
+            ),
+        )
+        .unwrap();
+        for name in ["NAV.txt", "FIX.txt", "DOF.DAT", "AWY.txt"] {
+            write_empty(&input_dir.join(name));
+        }
+        let request = DataBuildRequest {
+            input_dir,
+            output_dir,
+            manifest_version: "2604".to_string(),
+            mode: DataBuildMode::Production,
+            artifact_stem: None,
+        };
+        let result = build_data_package(&request).unwrap();
+        let conn = Connection::open(result.main_db).unwrap();
+
+        let iltt = conn
+            .query_row(
+                "SELECT CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL), trim(Type), CAST(Variation AS REAL)
+                 FROM nav WHERE trim(LocationID)='ILTT'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, f64>(0)?,
+                        row.get::<_, f64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, f64>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(iltt.2, "ILS");
+        assert!((iltt.0 - 39.8612972222).abs() < 1e-6);
+        assert!((iltt.1 - -104.6872222222).abs() < 1e-6);
+        assert!((iltt.3 - 8.0).abs() < 1e-6);
+
+        let iadq = conn
+            .query_row(
+                "SELECT CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL), trim(Type), CAST(Variation AS REAL)
+                 FROM nav WHERE trim(LocationID)='IADQ'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, f64>(0)?,
+                        row.get::<_, f64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, f64>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(iadq.2, "ILS");
+        assert!((iadq.0 - 57.7516888889).abs() < 1e-6);
+        assert!((iadq.1 - -152.5211444444).abs() < 1e-6);
+        assert!((iadq.3 - 14.0).abs() < 1e-6);
     }
 
     #[test]

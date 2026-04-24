@@ -4445,6 +4445,17 @@ fn build_nav_kv_artifact(
                     .with_context(|| format!("failed to write {}", page_source_path.display()))?;
                 page_filenames.push(page_filename);
             }
+            let published_source_dir = artifact_root_from_build_root(&config.build_root)
+                .join("private-work")
+                .join("nav-kv")
+                .join(config.profile.as_str())
+                .join(cycle);
+            if published_source_dir.exists() {
+                fs::remove_dir_all(&published_source_dir).with_context(|| {
+                    format!("failed to remove {}", published_source_dir.display())
+                })?;
+            }
+            hardlink_dir_recursive(&source_dir, &published_source_dir)?;
             let mut zip_entries = vec![root_filename.as_str()];
             let page_entry_names = page_filenames.iter().map(String::as_str).collect::<Vec<_>>();
             zip_entries.extend(page_entry_names.iter().copied());
@@ -6640,11 +6651,22 @@ fn sync_cycle_bundle_unpacked_zips(
                 .cycle
                 .as_deref()
                 .context("nav-db package missing cycle")?;
-            let source_dir = artifact_root_from_build_root(&config.build_root)
-                .join("private-work")
-                .join("nav-kv")
-                .join(config.profile.as_str())
-                .join(cycle);
+            let source_dir = task_values
+                .and_then(|values| values.get(&format!("{cycle}:nav-db")))
+                .and_then(|value| match value {
+                    ProductTaskValue::FingerprintedZip { zip, .. } => {
+                        Some(zip.parent().map(|parent| parent.join("nav_db")))
+                    }
+                    _ => None,
+                })
+                .flatten()
+                .unwrap_or_else(|| {
+                    artifact_root_from_build_root(&config.build_root)
+                        .join("private-work")
+                        .join("nav-kv")
+                        .join(config.profile.as_str())
+                        .join(cycle)
+                });
             sync_unpacked_zip_from_source(
                 &config.build_root.join(&package.filename),
                 &source_dir,
@@ -12031,6 +12053,15 @@ fn build_data_nodes(
             data_manifest_version.clone(),
         ),
         ("artifact_stem".to_string(), artifact_stem.clone()),
+        (
+            "data_lib".to_string(),
+            hash_file(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("preprocessor-cli should live under workspace root")
+                    .join("preprocessor-data/src/lib.rs"),
+            )?,
+        ),
     ]);
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, node_name)?,

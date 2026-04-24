@@ -89,6 +89,41 @@ pub fn display_path_for_procedure_leg(
     None
 }
 
+pub fn display_path_for_trailing_course_to_intercept_leg(
+    trailing_record: &ProcedureLegMaterializationRecord,
+    initial_position_override: Option<LatLon>,
+    initial_course_override: Option<f64>,
+    next_segment_records: &[ProcedureLegMaterializationRecord],
+) -> Option<LegDisplayPath> {
+    if trailing_record.path_termination.trim() != "CI" {
+        return None;
+    }
+    let start = initial_position_override?;
+    let intercept_step = next_segment_records
+        .iter()
+        .find(|record| record.path_termination.trim() == "CF")?;
+    let (mut elements, intercept, _flown_course_deg) =
+        course_to_intercept_path(
+            trailing_record,
+            start,
+            initial_course_override,
+            Some(intercept_step),
+        )?;
+    let mut altitude_ft = trailing_record.altitude_1_ft;
+    let _ = append_track_capture_and_termination(
+        &mut elements,
+        intercept,
+        Some(intercept_step.magnetic_course_deg? + course_reference_variation_deg(intercept_step)),
+        &mut altitude_ft,
+        intercept_step,
+        TrackTermination::ToFix(intercept_step.nav_position?),
+    )?;
+    Some(LegDisplayPath {
+        style: LegDisplayPathStyle::Solid,
+        elements,
+    })
+}
+
 fn hold_display_path(
     leg: &ProcedureLegMaterializationRecord,
     arrival_course_deg: Option<f64>,
@@ -403,6 +438,22 @@ fn sequenced_leg_display_path(
                 )?;
                 current_course_deg =
                     Some(step.magnetic_course_deg? + course_reference_variation_deg(step));
+            }
+            "CI" => {
+                let next_cf_step = steps
+                    .iter()
+                    .skip(index + 1)
+                    .copied()
+                    .find(|candidate| candidate.path_termination.trim() == "CF");
+                let (ci_elements, end, course_deg) = course_to_intercept_path(
+                    step,
+                    current_position,
+                    current_course_deg,
+                    next_cf_step,
+                )?;
+                elements.extend(ci_elements);
+                current_position = end;
+                current_course_deg = Some(course_deg);
             }
             "VD" => {
                 let (vd_elements, end, course_deg) = heading_to_dme_distance_path(
@@ -961,6 +1012,63 @@ fn heading_to_radial_termination_path(
     }
     elements.push(LegDisplayElement::Segment { start, end });
     Some((elements, end, flown_course_deg))
+}
+
+fn course_to_intercept_path(
+    step: &ProcedureLegMaterializationRecord,
+    start: LatLon,
+    current_course_deg: Option<f64>,
+    intercept_step: Option<&ProcedureLegMaterializationRecord>,
+) -> Option<(Vec<LegDisplayElement>, LatLon, f64)> {
+    let flown_course_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
+    let mut elements = Vec::new();
+    let mut path_position = start;
+
+    if let Some(initial_course_deg) = current_course_deg {
+        let heading_delta_deg = angular_difference_degrees(initial_course_deg, flown_course_deg);
+        if heading_delta_deg > 1.0 {
+            let turn_clockwise = match step.turn_direction.as_deref().unwrap_or("").trim() {
+                "L" => false,
+                "R" => true,
+                _ => shortest_turn_clockwise(initial_course_deg, flown_course_deg),
+            };
+            path_position = append_heading_change(
+                &mut elements,
+                path_position,
+                initial_course_deg,
+                flown_course_deg,
+                turn_clockwise,
+                0.0,
+                missed_approach_turn_radius_nm(),
+            );
+        }
+    }
+
+    let intercept_step = intercept_step?;
+    if intercept_step.path_termination.trim() != "CF" {
+        return None;
+    }
+    let next_fix = intercept_step.nav_position?;
+    let next_defining_nav = intercept_step.defining_nav_position?;
+    let next_course_deg =
+        intercept_step.magnetic_course_deg? + course_reference_variation_deg(intercept_step);
+    let intercept = intersect_heading_with_course(
+        path_position,
+        flown_course_deg,
+        next_defining_nav,
+        next_course_deg,
+        next_fix,
+    )
+    .filter(|candidate| {
+        track_intercept_is_reasonable(*candidate, next_defining_nav, next_course_deg, Some(next_fix))
+    })?;
+    if distance_between_points_nm(path_position, intercept) > 0.05 {
+        elements.push(LegDisplayElement::Segment {
+            start: path_position,
+            end: intercept,
+        });
+    }
+    Some((elements, intercept, flown_course_deg))
 }
 
 fn delayed_turn_start_for_track_capture(

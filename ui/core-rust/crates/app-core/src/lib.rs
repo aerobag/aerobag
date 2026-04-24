@@ -99,7 +99,9 @@ pub use planning::{
     SequencingMode,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
-pub use procedure_geometry::display_path_for_procedure_leg;
+pub use procedure_geometry::{
+    display_path_for_procedure_leg, display_path_for_trailing_course_to_intercept_leg,
+};
 pub use procedure_legs::{
     interpret_path_termination, leading_procedure_discontinuity, parse_airport_magnetic_variation,
     parse_cifp_altitude_ft, parse_cifp_tenths_value, parse_cifp_thousandths_value,
@@ -1239,7 +1241,10 @@ fn resolve_procedure_materialization_legs_with_provenance(
     let mut heading_checks = Vec::<DisplayElementHeadingSignature>::new();
     let mut next_heading_step_index = 0usize;
 
-    for (role, leg_records, _, reversed) in segments {
+    for (segment_index, (role, leg_records, _, reversed)) in segments.iter().enumerate() {
+        let next_segment_records = segments
+            .get(segment_index + 1)
+            .map(|(_, records, _, _)| records.as_slice());
         let mut fix_records = leg_records
             .iter()
             .filter(|leg| leg.nav_ref.is_some())
@@ -1309,24 +1314,58 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 })
             };
             let provenance_record = hold_record.unwrap_or(pair[1]);
-            let initial_position_override = (from == to)
-                .then(|| {
-                    previous_display_path
-                        .as_ref()
-                        .and_then(previous_display_path_terminal_position)
+            let previous_terminal_position = previous_display_path
+                .as_ref()
+                .and_then(previous_display_path_terminal_position);
+            let previous_terminal_course =
+                previous_display_path.as_ref().and_then(final_course_of_display_path);
+            let previous_was_course_to_intercept = resolved.last().is_some_and(|previous| {
+                previous.procedure_provenance.as_ref().is_some_and(|provenance| {
+                    matches!(
+                        &provenance.path_termination,
+                        PathTermination::Other(label) if label.trim() == "CI"
+                    )
                 })
-                .flatten();
-            let initial_course_override = (from == to)
-                .then(|| previous_display_path.as_ref().and_then(final_course_of_display_path))
-                .flatten();
-            let display_path = display_path_for_procedure_leg(
-                leg_records,
-                pair[0],
-                pair[1],
-                hold_record,
-                initial_position_override,
-                initial_course_override,
-            );
+            });
+            let continuing_if_to_cf_join = (from != to)
+                && pair[0].path_termination.trim() == "IF"
+                && pair[1].path_termination.trim() == "CF"
+                && previous_terminal_position.is_some_and(|previous_end| {
+                    let Some(anchor_position) = pair[0].nav_position else {
+                        return false;
+                    };
+                    previous_was_course_to_intercept
+                        || great_circle_distance_nm(previous_end, anchor_position) > 0.25
+                });
+            let initial_position_override = if from == to || continuing_if_to_cf_join {
+                previous_terminal_position
+            } else {
+                None
+            };
+            let initial_course_override = if from == to || continuing_if_to_cf_join {
+                previous_terminal_course
+            } else {
+                None
+            };
+            let display_path = if continuing_if_to_cf_join
+                && initial_position_override
+                    .zip(pair[1].nav_position)
+                    .is_some_and(|(start, end)| great_circle_distance_nm(start, end) <= 0.05)
+            {
+                Some(LegDisplayPath {
+                    style: LegDisplayPathStyle::Solid,
+                    elements: Vec::new(),
+                })
+            } else {
+                display_path_for_procedure_leg(
+                    leg_records,
+                    pair[0],
+                    pair[1],
+                    hold_record,
+                    initial_position_override,
+                    initial_course_override,
+                )
+            };
             let signatures = heading_signatures_for_leg(
                 next_heading_step_index,
                 display_path.as_ref(),
@@ -1372,16 +1411,30 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     .nav_ref
                     .clone()
                     .expect("filtered non-waypoint trailing procedure leg");
-                let display_path = display_path_for_procedure_leg(
-                    leg_records,
-                    last_fix,
-                    last_fix,
-                    None,
-                    previous_display_path
-                        .as_ref()
-                        .and_then(previous_display_path_terminal_position),
-                    previous_display_path.as_ref().and_then(final_course_of_display_path),
-                );
+                let initial_position_override = previous_display_path
+                    .as_ref()
+                    .and_then(previous_display_path_terminal_position);
+                let initial_course_override =
+                    previous_display_path.as_ref().and_then(final_course_of_display_path);
+                let display_path = if trailing_record.path_termination.trim() == "CI" {
+                    next_segment_records.and_then(|next_records| {
+                        display_path_for_trailing_course_to_intercept_leg(
+                            trailing_record,
+                            initial_position_override,
+                            initial_course_override,
+                            next_records,
+                        )
+                    })
+                } else {
+                    display_path_for_procedure_leg(
+                        leg_records,
+                        last_fix,
+                        last_fix,
+                        None,
+                        initial_position_override,
+                        initial_course_override,
+                    )
+                };
                 if display_path.is_some() {
                     let signatures = heading_signatures_for_leg(
                         next_heading_step_index,
@@ -4441,6 +4494,125 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual audit for CI approach examples"]
+    fn audit_ci_approach_examples() {
+        let unpacked_root = latest_snapshot_unpacked_root();
+        let georef_plates = collect_georeferenced_plates_from_packages(&unpacked_root);
+        let plate_paths = georef_plates.keys().cloned().collect::<Vec<_>>();
+        let plate_index = build_plate_index(&plate_paths);
+        let store = load_snapshot_nav_kv_store();
+        let mut matches = Vec::<String>::new();
+
+        let mut airport_keys = plate_index.keys().cloned().collect::<Vec<_>>();
+        airport_keys.sort();
+        for airport_key in airport_keys {
+            for airport_id in candidate_airport_ids_for_plate_key(&airport_key) {
+                let Some(procedures) = read_optional_from_store::<Vec<ProcedureSummary>>(
+                    &store,
+                    crate::NavKvQuery::ProcedureList {
+                        airport_id: airport_id.clone(),
+                        procedure_kind: ProcedureKind::Approach,
+                    },
+                ) else {
+                    continue;
+                };
+                for procedure in procedures {
+                    if find_matching_plate_path(&plate_index, &airport_id, &procedure.procedure_id)
+                        .is_none()
+                    {
+                        continue;
+                    }
+                    let Some(rows) = read_optional_from_store::<Vec<ProcedureDistinctRow>>(
+                        &store,
+                        crate::NavKvQuery::ProcedureDistinctRows {
+                            airport_id: airport_id.clone(),
+                            procedure_id: procedure.procedure_id.clone(),
+                        },
+                    ) else {
+                        continue;
+                    };
+                    let Some(records) =
+                        read_optional_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+                            &store,
+                            crate::NavKvQuery::ProcedureMaterializationRows {
+                                airport_id: airport_id.clone(),
+                                procedure_id: procedure.procedure_id.clone(),
+                            },
+                        )
+                    else {
+                        continue;
+                    };
+                    if !records
+                        .iter()
+                        .any(|record| record.path_termination.trim() == "CI")
+                    {
+                        continue;
+                    }
+                    let Ok(options) = describe_procedure_options_from_rows(
+                        &airport_id,
+                        &procedure.procedure_id,
+                        ProcedureKind::Approach,
+                        rows,
+                    ) else {
+                        continue;
+                    };
+                    for choice in options.valid_choices {
+                        matches.push(format!(
+                            "{} {} runway={:?} enroute={:?}",
+                            airport_id,
+                            procedure.procedure_id,
+                            choice.runway_transition,
+                            choice.enroute_transition
+                        ));
+                    }
+                }
+            }
+        }
+        matches.sort();
+        for line in &matches {
+            eprintln!("{line}");
+        }
+        assert!(!matches.is_empty(), "expected at least one CI approach example");
+    }
+
+    #[test]
+    #[ignore = "manual audit for selected CI records"]
+    fn audit_selected_ci_records() {
+        let store = load_snapshot_nav_kv_store();
+        for (airport_id, procedure_id) in [("KDDC", "I14"), ("KLNK", "I18-Y"), ("KPBF", "I18")] {
+            let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+                &store,
+                crate::NavKvQuery::ProcedureMaterializationRows {
+                    airport_id: airport_id.to_string(),
+                    procedure_id: procedure_id.to_string(),
+                },
+                "procedure materialization rows",
+            );
+            eprintln!("=== {airport_id} {procedure_id} ===");
+            for record in records
+                .iter()
+                .filter(|record| matches!(record.key.route_type.as_str(), "A" | "I" | "L"))
+            {
+                eprintln!(
+                    "rt={} tr={} seq={} pt={} turn={:?} nav={:?} def_nav={:?} theta={:?} course={:?} dist={:?} alt1={:?} alt2={:?}",
+                    record.key.route_type,
+                    record.key.transition_id,
+                    record.sequence,
+                    record.path_termination,
+                    record.turn_direction,
+                    record.nav_ref,
+                    record.defining_nav_ref,
+                    record.theta_deg,
+                    record.magnetic_course_deg,
+                    record.route_distance_or_time,
+                    record.altitude_1_ft,
+                    record.altitude_2_ft,
+                );
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "manual visual inspection overlay for KVLD L36 GEF"]
     fn writes_kvld_l36_gef_overlay_png() {
         render_procedure_overlay_to_paths("KVLD", "L36", "GEF", "KVLD_L36_GEF", true);
@@ -4480,6 +4652,24 @@ mod tests {
     #[ignore = "manual visual inspection overlay for KTOA I29R SLI"]
     fn writes_ktoa_i29r_sli_overlay_png() {
         render_procedure_overlay_to_paths("KTOA", "I29R", "SLI", "KTOA_I29R_SLI", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KDDC I14 FLACK"]
+    fn writes_kddc_i14_flack_overlay_png() {
+        render_procedure_overlay_to_paths("KDDC", "I14", "FLACK", "KDDC_I14_FLACK", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KLNK I18-Y LNK"]
+    fn writes_klnk_i18y_lnk_overlay_png() {
+        render_procedure_overlay_to_paths("KLNK", "I18-Y", "LNK", "KLNK_I18-Y_LNK", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KPBF I18 PBF"]
+    fn writes_kpbf_i18_pbf_overlay_png() {
+        render_procedure_overlay_to_paths("KPBF", "I18", "PBF", "KPBF_I18_PBF", false);
     }
 
     #[test]

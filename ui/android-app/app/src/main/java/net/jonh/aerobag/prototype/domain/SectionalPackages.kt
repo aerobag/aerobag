@@ -9,53 +9,10 @@ import java.util.zip.ZipFile
 
 object SectionalPackages {
     private const val TAG = "AerobagTiles"
-    private const val ASSET_DIR = "sectional-packages"
-    private const val INSTALL_DIR = "sectional-packages"
     private val packageStore = ZipPackageStore()
 
-    private fun internalInstalledFile(context: Context, packageName: String): File =
-        File(File(context.filesDir, INSTALL_DIR), "$packageName.zip")
-
-    private fun externalInstalledFile(context: Context, packageName: String): File? =
-        context.getExternalFilesDir(null)?.let { File(File(it, INSTALL_DIR), "$packageName.zip") }
-
-    fun installedFile(context: Context, packageName: String): File =
-        existingInstalledFile(context, packageName) ?: internalInstalledFile(context, packageName)
-
-    fun existingInstalledFile(context: Context, packageName: String): File? {
-        val external = externalInstalledFile(context, packageName)
-        if (external?.isFile == true) {
-            return external
-        }
-        val internal = internalInstalledFile(context, packageName)
-        if (internal.isFile) {
-            return internal
-        }
-        return null
-    }
-
     fun isInstalled(context: Context, packageName: String): Boolean =
-        existingInstalledFile(context, packageName)?.isFile == true
-
-    fun install(context: Context, packageName: String): File? {
-        existingInstalledFile(context, packageName)?.let { existing ->
-            return existing
-        }
-        val assetPath = "$ASSET_DIR/$packageName.zip"
-        if (!assetExists(context, assetPath)) {
-            return null
-        }
-        val target = internalInstalledFile(context, packageName)
-        if (target.isFile) {
-            return target
-        }
-        target.parentFile?.mkdirs()
-        context.assets.open(assetPath).use { input ->
-            target.outputStream().use { output -> input.copyTo(output) }
-        }
-        packageStore.invalidate(target)
-        return target
-    }
+        InstalledPackages.isInstalled(context, InstalledPackageKind.Charts, packageName)
 
     fun loadTileBytes(
         context: Context,
@@ -63,22 +20,21 @@ object SectionalPackages {
     ): ByteArray? {
         return when (tile.mapView.storageKind) {
             TileStorageKind.AssetTree ->
-                runCatching {
-                    context.assets.open(tileAssetPath(tile)).use { it.readBytes() }
-                }.getOrNull()
+                error("asset-tree tile loading is no longer supported on Android")
 
             TileStorageKind.StaticProduct ->
-                runCatching {
-                    val productName = tile.mapView.packageName ?: return@runCatching null
-                    context.assets.open("$productName/${tileRelativePath(tile, tile.mapView)}").use { it.readBytes() }
-                }.getOrNull()
+                error("static-product tile loading is no longer supported on Android")
 
             TileStorageKind.SectionalPackage -> {
                 val candidates = tile.candidateMapViews
                     .distinctBy { "${it.packageName}:${it.tileRoot}:${it.chartIndex}" }
                 candidates.forEach { candidateMapView ->
                     val candidateName = candidateMapView.packageName ?: return@forEach
-                    val installed = existingInstalledFile(context, candidateName) ?: return@forEach
+                    val installed = InstalledPackages.existingInstalledFile(
+                        context,
+                        InstalledPackageKind.Charts,
+                        candidateName,
+                    ) ?: return@forEach
                     if (!installed.isFile) {
                         return@forEach
                     }
@@ -101,13 +57,6 @@ object SectionalPackages {
                 null
             }
         }
-    }
-
-    private fun assetExists(context: Context, assetPath: String): Boolean {
-        return runCatching {
-            context.assets.open(assetPath).close()
-            true
-        }.getOrDefault(false)
     }
 }
 

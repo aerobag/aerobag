@@ -91,7 +91,6 @@ data class MapOverlayQueryResult(
 )
 
 class NativeAppCoreAdapter(
-    private val catalogJson: String,
     private val vectorManifestJson: String,
     private val navKvStore: NavKvStore? = null,
     private val bridge: NativeBridge = NativeBindings,
@@ -111,7 +110,6 @@ class NativeAppCoreAdapter(
         selectedChartId: String?,
     ): NativeUiSession {
         val resultJson = bridge.createUiSessionJson(
-            catalogJson,
             vectorManifestJson,
             json.encodeToString(plan.toWire()),
             json.encodeToString(recentAirportIds),
@@ -163,24 +161,24 @@ class NativeAppCoreAdapter(
         return json.decodeFromString<WireFlightPlan>(nextJson).toUiFlightPlan()
     }
 
-    override fun replaceFlightPlan(state: AppState, catalog: Catalog, plan: FlightPlan): AppState {
+    override fun replaceFlightPlan(state: AppState, plan: FlightPlan): AppState {
         val stateJson = json.encodeToString(state.toWire())
         val planJson = json.encodeToString(plan.toWire())
-        val nextJson = bridge.replaceFlightPlanStateJson(stateJson, catalogJson, planJson)
+        val nextJson = bridge.replaceFlightPlanStateJson(stateJson, planJson)
         return json.decodeFromString<WireAppState>(nextJson).toUi()
     }
 
     override fun setContentPolicy(state: AppState, policy: ContentPolicy): AppState {
         val stateJson = json.encodeToString(state.toWire())
         val policyJson = json.encodeToString(policy.toWire())
-        val nextJson = bridge.setContentPolicyStateJson(stateJson, catalogJson, policyJson)
+        val nextJson = bridge.setContentPolicyStateJson(stateJson, policyJson)
         return json.decodeFromString<WireAppState>(nextJson).toUi()
     }
 
     override fun refreshContent(state: AppState, inventory: ContentInventory): AppState {
         val stateJson = json.encodeToString(state.toWire())
         val inventoryJson = json.encodeToString(inventory.toWire())
-        val nextJson = bridge.refreshContentStateJson(stateJson, catalogJson, inventoryJson)
+        val nextJson = bridge.refreshContentStateJson(stateJson, inventoryJson)
         return json.decodeFromString<WireAppState>(nextJson).toUi()
     }
 
@@ -1980,70 +1978,6 @@ private fun WireContentPolicy.toUi() = when (this) {
     WireContentPolicy.StreamAllowed -> ContentPolicy.StreamAllowed
 }
 
-internal fun Catalog.toWireForTesting() = WireCatalog(
-    schema_version = 1,
-    cycle = cycle,
-    catalog_revision = "test",
-    families = packages.map { it.id.family }.distinct().map { family ->
-        WireCatalogFamily(
-            id = when (family) {
-                "sec" -> WireChartFamilyId.Sec
-                "tac" -> WireChartFamilyId.Tac
-                "enr-l" -> WireChartFamilyId.EnrL
-                "enr-h" -> WireChartFamilyId.EnrH
-                "shaded-relief" -> WireChartFamilyId.ShadedRelief
-                else -> error("Unsupported family: $family")
-            },
-            display_name = family,
-            kind = "tiled_raster",
-        )
-    },
-    regions = packages
-        .map { it.regionId.lowercase() }
-        .distinct()
-        .sortedBy { regionSortOrder(it) }
-        .map { regionId ->
-            WireCatalogRegion(
-                id = regionId.toWireRegion(),
-                display_name = regionDisplayName(regionId),
-                sort_order = regionSortOrder(regionId),
-            )
-        },
-    packages = packages.map { pkg ->
-        WireCatalogPackage(
-            id = pkg.id.toWire(),
-            package_name = pkg.packageName,
-            family_id = pkg.id.toWire().family,
-            region_id = pkg.regionId.toWireRegion(),
-            cycle = pkg.id.cycle,
-            artifact_kind = "zip",
-            relative_url = pkg.packageName,
-            manifest_name = pkg.packageName,
-        )
-    },
-    charts = emptyList(),
-    plates = plates.mapIndexed { index, plate ->
-        WirePlateRecord(
-            id = WirePlateId(
-                airport_id = plate.airportId,
-                procedure_code = "plate-$index",
-                page = 1,
-                cycle = cycle,
-            ),
-            airport_id = plate.airportId,
-            region_id = plate.regionId.toWireRegion(),
-            cycle = cycle,
-            procedure_code = "plate-$index",
-            display_name = "plate-$index",
-            kind = "approach",
-            georeferenced = true,
-            page_count = 1,
-            asset_base_path = "plates/${plate.airportId}/plate-$index",
-        )
-    },
-    supplements = emptyList(),
-)
-
 internal fun FlightPlan.toWireForTesting() = toWire()
 
 internal fun ContentInventory.toWireForTesting() = toWire()
@@ -2051,23 +1985,6 @@ internal fun ContentInventory.toWireForTesting() = toWire()
 internal fun AppState.toWireForTesting() = toWire()
 
 internal fun WireAppState.toUiForTesting() = toUi()
-
-internal fun WireCatalog.toUiCatalog() = Catalog(
-    cycle = cycle,
-    packages = packages.map { pkg ->
-        CatalogPackage(
-            id = pkg.id.toUi(),
-            packageName = pkg.package_name,
-            regionId = pkg.region_id.toUiRegion(),
-        )
-    },
-    plates = plates.map { plate ->
-        PlateRecord(
-            airportId = plate.airport_id,
-            regionId = plate.region_id.toUiRegion(),
-        )
-    },
-)
 
 internal fun WireFlightPlan.toUiForTesting() = toUiFlightPlan()
 
@@ -2079,5 +1996,3 @@ internal fun WireContentInventory.toUiInventory() = ContentInventory(
         )
     },
 )
-
-internal fun WireCatalog.toUiForTesting() = toUiCatalog()

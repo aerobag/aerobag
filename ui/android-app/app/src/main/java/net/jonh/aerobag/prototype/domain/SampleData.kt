@@ -7,13 +7,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.put
-import java.io.BufferedInputStream
-import java.util.zip.ZipInputStream
 
 data class ContentFixture(
-    val catalogJson: String,
     val vectorManifestJson: String,
-    val resourceIndexJson: String,
+    val vectorPackageId: String,
     val mapView: MapView,
     val mapViews: List<MapViewOption>,
     val chartPage: ChartPageFixture,
@@ -35,8 +32,7 @@ private data class WireDevBootstrap(
 
 object SampleData {
     private const val BOOTSTRAP_ASSET_PATH = "fixtures/dev-bootstrap.json"
-    private const val RESOURCE_INDEX_ASSET_PATH = "fixtures/resource-index.json"
-    private const val VECTORS_ASSET_PATH = "fixtures/vectors.zip"
+    private const val CYCLE_BUNDLE_ASSET_PATH = "fixtures/cycle-bundle.json"
 
     private val json = Json {
         encodeDefaults = true
@@ -45,10 +41,18 @@ object SampleData {
 
     fun load(context: Context): ContentFixture {
         val bootstrapPayload = context.assets.open(BOOTSTRAP_ASSET_PATH).bufferedReader().use { it.readText() }
-        val resourceIndexPayload = context.assets.open(RESOURCE_INDEX_ASSET_PATH).bufferedReader().use { it.readText() }
-        val vectorManifestJson = readZipTextAsset(context, VECTORS_ASSET_PATH, "vectors")
+        val cycleBundlePayload = context.assets.open(CYCLE_BUNDLE_ASSET_PATH).bufferedReader().use { it.readText() }
         val bootstrap = json.decodeFromString<WireDevBootstrap>(bootstrapPayload)
-        val navKvStore = NavKvStore.open(context)
+        val cycleBundle = json.decodeFromString<WireBundleManifest>(cycleBundlePayload)
+        val navDbPackageId = cycleBundle.singlePackageId("nav-db")
+        val vectorsPackageId = cycleBundle.singlePackageId("vectors")
+        val navKvStore = NavKvStore.open(context, navDbPackageId)
+        val vectorManifestJson = InstalledPackages.readZipEntryText(
+            context,
+            InstalledPackageKind.Data,
+            vectorsPackageId,
+            "vectors",
+        )
         val mapViews =
             json.decodeFromJsonElement<List<WireMapViewOption>>(
                 navKvStore.runCoreOperationElement(
@@ -59,8 +63,6 @@ object SampleData {
             ).map { it.toUi() }
         val mapView = mapViews.first().mapView
         val samplePlan = bootstrap.flight_plan.toUiFlightPlan()
-        val resourceIndex = json.decodeFromString<WireResourceIndex>(resourceIndexPayload)
-        val catalogJson = json.encodeToString(deriveWireCatalog(resourceIndex))
         val airportIds = buildSet {
             addAll(bootstrap.recent_airport_ids)
             bootstrap.selected_airport_id?.let(::add)
@@ -81,9 +83,8 @@ object SampleData {
         ).toUi()
         val defaultLevel = mapView.levels.maxBy { it.zoom }
         return ContentFixture(
-            catalogJson = catalogJson,
             vectorManifestJson = vectorManifestJson,
-            resourceIndexJson = resourceIndexPayload,
+            vectorPackageId = vectorsPackageId,
             mapView = mapView,
             mapViews = mapViews,
             chartPage = chartPage,
@@ -106,21 +107,22 @@ object SampleData {
             navKvStore = navKvStore,
         )
     }
-
-    private fun readZipTextAsset(context: Context, assetPath: String, entryName: String): String {
-        context.assets.open(assetPath).use { assetStream ->
-            ZipInputStream(BufferedInputStream(assetStream)).use { zipStream ->
-                while (true) {
-                    val entry = zipStream.nextEntry ?: break
-                    if (!entry.isDirectory && entry.name == entryName) {
-                        return zipStream.readBytes().decodeToString()
-                    }
-                }
-            }
-        }
-        error("missing $entryName in $assetPath")
-    }
 }
+
+@Serializable
+private data class WireBundleManifest(
+    val packages: List<WireBundlePackage>,
+)
+
+@Serializable
+private data class WireBundlePackage(
+    val id: String,
+    val family_id: String,
+)
+
+private fun WireBundleManifest.singlePackageId(familyId: String): String =
+    packages.singleOrNull { it.family_id == familyId }?.id
+        ?: error("expected exactly one $familyId package in cycle bundle")
 
 private fun WireMapViewOption.toUi() = MapViewOption(
     id = id,

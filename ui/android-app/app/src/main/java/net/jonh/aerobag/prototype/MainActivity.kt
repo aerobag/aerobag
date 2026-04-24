@@ -155,6 +155,8 @@ import net.jonh.aerobag.prototype.domain.FlightPlanRouteSegment
 import net.jonh.aerobag.prototype.domain.FlightPlanUiState
 import net.jonh.aerobag.prototype.domain.GuidanceLegGeometry
 import net.jonh.aerobag.prototype.domain.GuidanceState
+import net.jonh.aerobag.prototype.domain.InstalledPackageKind
+import net.jonh.aerobag.prototype.domain.InstalledPackages
 import net.jonh.aerobag.prototype.domain.LatLonPoint
 import net.jonh.aerobag.prototype.domain.MapChartFamily
 import net.jonh.aerobag.prototype.domain.MapFollowUiState
@@ -263,13 +265,16 @@ private data class SituationCardinalLabel(
 )
 
 private object VectorTileAssets {
-    private const val VECTOR_ZIP_ASSET_PATH = "fixtures/vectors.zip"
     private val json = Json {
         ignoreUnknownKeys = true
     }
     private val cache = mutableMapOf<String, PointTilePayload?>()
 
-    suspend fun loadPointTiles(context: Context, requests: List<net.jonh.aerobag.prototype.domain.VectorTileRequest>): List<PointTilePayload> =
+    suspend fun loadPointTiles(
+        context: Context,
+        vectorPackageId: String,
+        requests: List<net.jonh.aerobag.prototype.domain.VectorTileRequest>,
+    ): List<PointTilePayload> =
         withContext(Dispatchers.IO) {
             if (requests.isEmpty()) {
                 return@withContext emptyList()
@@ -280,21 +285,21 @@ private object VectorTileAssets {
             val missing = synchronized(cache) { entryNames.filter { !cache.containsKey(it) }.toSet() }
             if (missing.isNotEmpty()) {
                 val unresolved = missing.toMutableSet()
-                context.assets.open(VECTOR_ZIP_ASSET_PATH).use { assetStream ->
-                    ZipInputStream(BufferedInputStream(assetStream)).use { zipStream ->
-                        while (true) {
-                            val entry = zipStream.nextEntry ?: break
-                            if (entry.isDirectory || entry.name !in unresolved) {
-                                continue
-                            }
-                            val payload = runCatching {
-                                json.decodeFromString<PointTilePayload>(zipStream.readBytes().decodeToString())
-                            }.getOrNull()
-                            synchronized(cache) {
-                                cache[entry.name] = payload
-                            }
-                            unresolved.remove(entry.name)
+                val vectorZip = InstalledPackages.existingInstalledFile(context, InstalledPackageKind.Data, vectorPackageId)
+                    ?: error("missing installed data package $vectorPackageId")
+                ZipInputStream(BufferedInputStream(vectorZip.inputStream())).use { zipStream ->
+                    while (true) {
+                        val entry = zipStream.nextEntry ?: break
+                        if (entry.isDirectory || entry.name !in unresolved) {
+                            continue
                         }
+                        val payload = runCatching {
+                            json.decodeFromString<PointTilePayload>(zipStream.readBytes().decodeToString())
+                        }.getOrNull()
+                        synchronized(cache) {
+                            cache[entry.name] = payload
+                        }
+                        unresolved.remove(entry.name)
                     }
                 }
                 synchronized(cache) {
@@ -1118,9 +1123,8 @@ private fun AerobagApp() {
     val context = LocalContext.current
     val fixture = remember(context) { SampleData.load(context.applicationContext) }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
-    val appCore = remember(fixture.catalogJson, fixture.vectorManifestJson, fixture.navKvStore) {
+    val appCore = remember(fixture.vectorManifestJson, fixture.navKvStore) {
         NativeAppCoreAdapter(
-            fixture.catalogJson,
             fixture.vectorManifestJson,
             navKvStore = fixture.navKvStore,
         )
@@ -1143,7 +1147,7 @@ private fun AerobagApp() {
     }
     var pageHistory by remember { mutableStateOf<List<AppViewSnapshot>>(emptyList()) }
     var selectedMapId by remember { mutableStateOf(initialMapId(fixture)) }
-    val uiSession = remember(appCore, fixture.resourceIndexJson) {
+    val uiSession = remember(appCore) {
         appCore.createUiSession(
             initialPlanMutation.plan,
             storedRecentAirportIds,
@@ -2115,7 +2119,11 @@ private fun MapExplorerPage(
         runCatching {
             val firstPass = uiSession.queryMapOverlay(viewport, surfaceWidthUnits.toDouble(), surfaceHeightUnits.toDouble())
             val payloads = if (firstPass.neededPointTiles.isNotEmpty()) {
-                VectorTileAssets.loadPointTiles(context.applicationContext, firstPass.neededPointTiles)
+                VectorTileAssets.loadPointTiles(
+                    context.applicationContext,
+                    fixture.vectorPackageId,
+                    firstPass.neededPointTiles,
+                )
             } else {
                 emptyList()
             }
@@ -2199,22 +2207,6 @@ private fun MapExplorerPage(
                 activity.onHardwareZoomDelta = null
             }
         }
-    }
-
-    LaunchedEffect(selectedMap.id, selectedPackageName, selectedPackageInstalled) {
-        if (selectedMap.mapView.storageKind != TileStorageKind.SectionalPackage) {
-            return@LaunchedEffect
-        }
-        val packageName = selectedPackageName
-        if (packageName == null || selectedPackageInstalled) {
-            return@LaunchedEffect
-        }
-        installingPackage = packageName
-        withContext(Dispatchers.IO) {
-            SectionalPackages.install(context, packageName)
-        }
-        installRevision += 1
-        installingPackage = null
     }
 
     Box(

@@ -395,8 +395,8 @@ async function fetchVectorManifestJson(): Promise<string> {
 type WasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
   situation_ring_candidates_json(): Promise<string> | string;
-  create_ui_session(catalogJson: string, vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
-  create_ui_session_profiled?: (catalogJson: string, vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
+  create_ui_session(vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
+  create_ui_session_profiled?: (vectorManifestJson: string, planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string) => Promise<string> | string;
   remove_leg_in_session(handle: number, index: number): Promise<string> | string;
   move_waypoint_in_session(handle: number, waypointIndex: number, delta: number): Promise<string> | string;
   set_situation_in_session(handle: number, situationJson: string): Promise<string> | string;
@@ -516,7 +516,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<UiSession> {
-    const catalogJson = "{}";
     const vectorManifestJson = await debugTiming("startup.vector_manifest.fetch", () => this.vectorManifestJson());
     const module = this.module;
     const createSession = async (
@@ -531,7 +530,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       const selectedChartIdJson = JSON.stringify(nextSelectedChartId ?? null);
       const createUiSession = module.create_ui_session_profiled ?? module.create_ui_session;
       const createdJson = await debugTiming("startup.session.wasm_call", () => createUiSession(
-        catalogJson,
         vectorManifestJson,
         planJson,
         recentAirportIdsJson,

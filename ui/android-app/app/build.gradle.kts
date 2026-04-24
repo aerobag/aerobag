@@ -31,7 +31,7 @@ val rustOutputAbiDir = layout.buildDirectory.dir("generated/rustJniLibs/x86_64")
 val generatedPrototypeAssetsDir = project.objects.directoryProperty().convention(layout.dir(project.provider { uiTargetRoot.resolve("android/assets") }))
 val generatedPrototypeSeedPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedPackages")
 val generatedPrototypeSeedChartPackagesDir = layout.buildDirectory.dir("generated/prototypeSeedChartPackages")
-val repoRoot = rootDir.parentFile.parentFile
+val repoRoot = file("../../..")
 val instanceConfigFile = repoRoot.parentFile.resolve("INSTANCE_CONFIG")
 fun readInstanceConfigValue(key: String): String? {
     if (!instanceConfigFile.isFile) return null
@@ -73,20 +73,19 @@ val resolvedArtifactRoot = artifactRoot
 val currentArtifactsFile = latestCurrentArtifacts(resolvedArtifactRoot)
     ?: throw GradleException("missing current_artifacts_*.json under ${resolvedArtifactRoot.resolve("published-packaged").absolutePath}")
 val currentArtifactsPayload by lazy { JsonSlurper().parse(currentArtifactsFile) as Map<*, *> }
-val bundleFilename = ((currentArtifactsPayload["bundles"] as? List<*>)?.lastOrNull() as? Map<*, *>)?.get("filename") as? String
-    ?: throw GradleException("missing bundles[-1].filename in ${currentArtifactsFile.absolutePath}")
+val bundleFilename = ((currentArtifactsPayload["bundles"] as? List<*>)?.firstOrNull {
+    (it as? Map<*, *>)?.get("bundle_type") == "cycle"
+} as? Map<*, *>)?.get("filename") as? String
+    ?: throw GradleException("missing cycle bundle filename in ${currentArtifactsFile.absolutePath}")
 val productBuildFile = resolvedArtifactRoot.resolve("published-packaged").resolve(bundleFilename)
 val productBuildPayload by lazy { JsonSlurper().parse(productBuildFile) as Map<*, *> }
-val productCycle = productBuildPayload["cycle"] as? String
-    ?: throw GradleException("missing cycle in ${productBuildFile.absolutePath}")
-val bundlePackageFilenamesById by lazy {
+val bundlePackagesById by lazy {
     val packages = productBuildPayload["packages"] as? List<*> ?: emptyList<Any?>()
     packages
         .filterIsInstance<Map<*, *>>()
         .mapNotNull { entry ->
             val id = entry["id"] as? String ?: return@mapNotNull null
-            val filename = entry["filename"] as? String ?: return@mapNotNull null
-            id to filename
+            id to entry
         }
         .toMap()
 }
@@ -102,44 +101,29 @@ fun resolvePublishedFilename(rawPath: String): File {
     return resolvedArtifactRoot.resolve("published-packaged").resolve(rawPath)
 }
 
-fun resolveProductBuildOutput(nodeName: String, outputName: String): File {
-    val topLevel = productBuildPayload[nodeName] as? Map<*, *>
-    if (topLevel != null) {
-        val rawPath = topLevel["relative_path"] as? String
-        if (!rawPath.isNullOrBlank()) {
-            val resolved = resolvePublishedFilename(rawPath)
-            if (resolved.isFile) {
-                return resolved
-            }
-            throw GradleException("missing product build output $nodeName at ${resolved.absolutePath}")
-        }
-    }
-    val nodes = productBuildPayload["nodes"] as? List<*> ?: emptyList<Any?>()
-    for (node in nodes) {
-        val nodeMap = node as? Map<*, *> ?: continue
-        if (nodeMap["name"] != nodeName) continue
-        val outputs = nodeMap["outputs"] as? Map<*, *> ?: break
-        val rawPath = outputs[outputName] as? String
-        if (!rawPath.isNullOrBlank()) {
-            val resolved = resolvePublishedFilename(rawPath)
-            if (resolved.isFile) {
-                return resolved
-            }
-            throw GradleException("missing product build output ${nodeName}.${outputName} at ${resolved.absolutePath}")
-        }
-        break
-    }
-    throw GradleException("missing product build output ${nodeName}.${outputName} in ${productBuildFile.absolutePath}")
-}
-
-val resourceIndexFile = resolveProductBuildOutput("resource_index", "resource_index")
-val vectorsZipFile = resolveProductBuildOutput("vectors", "zip")
-val navKvPayload by lazy {
-    productBuildPayload["nav_kv"] as? Map<*, *>
-        ?: throw GradleException("missing nav_kv in ${productBuildFile.absolutePath}")
-}
 val uiThemeFile = file("../../shared-fixtures/ui-theme.json")
 val devBootstrapFile = file("../../shared/dev-bootstrap.json")
+
+fun resolveBundlePackageFile(packageId: String): File {
+    val packageEntry = bundlePackagesById[packageId]
+        ?: throw GradleException("missing bundle package $packageId in ${productBuildFile.absolutePath}")
+    val filename = packageEntry["filename"] as? String
+        ?: throw GradleException("missing filename for bundle package $packageId in ${productBuildFile.absolutePath}")
+    return resolvePublishedFilename(filename)
+}
+
+fun resolveBundlePackagesForFamilies(vararg familyIds: String): List<Pair<File, String>> {
+    val wanted = familyIds.toSet()
+    val packages = productBuildPayload["packages"] as? List<*> ?: emptyList<Any?>()
+    return packages
+        .filterIsInstance<Map<*, *>>()
+        .filter { (it["family_id"] as? String) in wanted }
+        .map { entry ->
+            val packageId = entry["id"] as? String
+                ?: throw GradleException("missing package id in ${productBuildFile.absolutePath}")
+            resolveBundlePackageFile(packageId) to "$packageId.zip"
+        }
+}
 
 fun linkOrCopy(source: File, target: File) {
     target.parentFile.mkdirs()
@@ -183,52 +167,21 @@ val stageCanonicalAndroidAssets by tasks.registering {
     doLast {
         val assetRoot = generatedPrototypeAssetsDir.get().asFile
         val fixturesDir = assetRoot.resolve("fixtures")
-        val navKvDir = assetRoot.resolve("nav-kv")
         fixturesDir.mkdirs()
-        navKvDir.mkdirs()
-        linkOrCopy(resourceIndexFile, fixturesDir.resolve("resource-index.json"))
-        linkOrCopy(vectorsZipFile, fixturesDir.resolve("vectors.zip"))
+        linkOrCopy(currentArtifactsFile, fixturesDir.resolve("current-artifacts.json"))
+        linkOrCopy(productBuildFile, fixturesDir.resolve("cycle-bundle.json"))
         linkOrCopy(uiThemeFile, fixturesDir.resolve("ui-theme.json"))
         linkOrCopy(devBootstrapFile, fixturesDir.resolve("dev-bootstrap.json"))
         fixturesDir.resolve("android-dev-server-base-url.txt").writeText(androidDevServerBaseUrl)
-        val navKvRoot = navKvPayload["root"] as? Map<*, *>
-            ?: throw GradleException("nav_kv.root missing in ${productBuildFile.absolutePath}")
-        val navKvRootPath = navKvRoot["relative_path"] as? String
-            ?: throw GradleException("nav_kv.root.relative_path missing in ${productBuildFile.absolutePath}")
-        linkOrCopy(resolvePublishedFilename(navKvRootPath), navKvDir.resolve("root"))
-        val navKvValuesDir = navKvDir.resolve("values")
-        navKvValuesDir.mkdirs()
-        val pages = navKvPayload["value_pages"] as? List<*>
-            ?: throw GradleException("nav_kv.value_pages missing in ${productBuildFile.absolutePath}")
-        pages.forEachIndexed { index, page ->
-            val pageMap = page as? Map<*, *>
-                ?: throw GradleException("nav_kv value page $index is not an object")
-            val relativePath = pageMap["relative_path"] as? String
-                ?: throw GradleException("nav_kv value page $index missing relative_path")
-            linkOrCopy(resolvePublishedFilename(relativePath), navKvValuesDir.resolve(index.toString().padStart(4, '0')))
-        }
     }
 }
 
-val stagePrototypeSectionalPackages by tasks.registering {
-    outputs.dir(generatedPrototypeSeedPackagesDir.map { it.dir("sectional-packages") })
+val stageDevChartPackages by tasks.registering {
+    outputs.dir(generatedPrototypeSeedPackagesDir.map { it.dir("chart-packages") })
     outputs.upToDateWhen { false }
     doLast {
-        val payload = JsonSlurper().parse(resourceIndexFile) as Map<*, *>
-        val packages = (payload["packages"] as List<*>)
-            .filterIsInstance<Map<*, *>>()
-            .filter {
-                val familyId = it["family_id"] as? String
-                familyId in setOf("sec", "tac", "enr-l", "enr-h")
-            }
-            .map {
-                val packageId = it["id"] as? String
-                    ?: throw GradleException("missing package id in ${resourceIndexFile.absolutePath}")
-                val filename = bundlePackageFilenamesById[packageId]
-                    ?: throw GradleException("missing bundle filename for $packageId in ${productBuildFile.absolutePath}")
-                resolvePublishedFilename(filename) to "$packageId.zip"
-            }
-        val outputDir = generatedPrototypeSeedPackagesDir.get().dir("sectional-packages").asFile
+        val packages = resolveBundlePackagesForFamilies("sec", "tac", "enr-l", "enr-h", "shaded-relief")
+        val outputDir = generatedPrototypeSeedPackagesDir.get().dir("chart-packages").asFile
         delete(outputDir)
         outputDir.mkdirs()
         packages.forEach { (source, targetName) ->
@@ -244,90 +197,15 @@ val stagePrototypeSectionalPackages by tasks.registering {
     }
 }
 
-val seedPrototypeSectionalPackages by tasks.registering {
+val seedDevChartPackages by tasks.registering {
     dependsOn("installDebug")
-    dependsOn(stagePrototypeSectionalPackages)
+    dependsOn(stageDevChartPackages)
     doLast {
-        val packageDir = generatedPrototypeSeedPackagesDir.get().dir("sectional-packages").asFile
+        val packageDir = generatedPrototypeSeedPackagesDir.get().dir("chart-packages").asFile
         if (!packageDir.isDirectory) {
             throw GradleException("missing staged package directory ${packageDir.absolutePath}")
         }
-        val tempDir = "/data/local/tmp/aerobag-packages"
-        exec {
-            commandLine("adb", "shell", "mkdir", "-p", tempDir)
-        }
-        exec {
-            commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "rm", "-rf", "files/sectional-packages")
-        }
-        exec {
-            commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "mkdir", "-p", "files/sectional-packages")
-        }
-        packageDir.listFiles()
-            ?.filter { it.isFile && it.extension == "zip" }
-            ?.sortedBy { it.name }
-            ?.forEach { packageFile ->
-                exec {
-                    commandLine("adb", "push", packageFile.absolutePath, "$tempDir/${packageFile.name}")
-                }
-                exec {
-                    commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "cp", "$tempDir/${packageFile.name}", "files/sectional-packages/${packageFile.name}")
-                }
-                exec {
-                    commandLine("adb", "shell", "rm", "-f", "$tempDir/${packageFile.name}")
-                }
-            }
-        exec {
-            commandLine("adb", "shell", "rm", "-rf", tempDir)
-        }
-    }
-}
-
-val stagePrototypeChartPackages by tasks.registering {
-    outputs.dir(generatedPrototypeSeedChartPackagesDir.map { it.dir("chart-packages") })
-    outputs.upToDateWhen { false }
-    doLast {
-        val payload = JsonSlurper().parse(resourceIndexFile) as Map<*, *>
-        val packages = (payload["packages"] as List<*>)
-            .filterIsInstance<Map<*, *>>()
-            .filter {
-                val packageId = it["id"] as? String ?: return@filter false
-                packageId.startsWith("NW_TPP") || packageId.startsWith("NW_CSUP")
-            }
-            .map {
-                val packageId = it["id"] as? String
-                    ?: throw GradleException("missing package id in ${resourceIndexFile.absolutePath}")
-                val filename = bundlePackageFilenamesById[packageId]
-                    ?: throw GradleException("missing bundle filename for $packageId in ${productBuildFile.absolutePath}")
-                resolvePublishedFilename(filename) to "$packageId.zip"
-            }
-        val outputDir = generatedPrototypeSeedChartPackagesDir.get().dir("chart-packages").asFile
-        delete(outputDir)
-        outputDir.mkdirs()
-        packages.forEach { (source, targetName) ->
-            if (!source.isFile) {
-                throw GradleException("missing staged chart package ${source.absolutePath}")
-            }
-            Files.copy(
-                source.toPath(),
-                outputDir.resolve(targetName).toPath(),
-                StandardCopyOption.REPLACE_EXISTING,
-            )
-        }
-    }
-}
-
-val seedPrototypeChartPackages by tasks.registering {
-    dependsOn("installDebug")
-    dependsOn(stagePrototypeChartPackages)
-    doLast {
-        val packageDir = generatedPrototypeSeedChartPackagesDir.get().dir("chart-packages").asFile
-        if (!packageDir.isDirectory) {
-            throw GradleException("missing staged chart package directory ${packageDir.absolutePath}")
-        }
         val tempDir = "/data/local/tmp/aerobag-chart-packages"
-        exec {
-            commandLine("adb", "shell", "rm", "-rf", tempDir)
-        }
         exec {
             commandLine("adb", "shell", "mkdir", "-p", tempDir)
         }
@@ -346,6 +224,133 @@ val seedPrototypeChartPackages by tasks.registering {
                 }
                 exec {
                     commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "cp", "$tempDir/${packageFile.name}", "files/chart-packages/${packageFile.name}")
+                }
+                exec {
+                    commandLine("adb", "shell", "rm", "-f", "$tempDir/${packageFile.name}")
+                }
+            }
+        exec {
+            commandLine("adb", "shell", "rm", "-rf", tempDir)
+        }
+    }
+}
+
+val stageDevPlatePackages by tasks.registering {
+    outputs.dir(generatedPrototypeSeedChartPackagesDir.map { it.dir("plate-packages") })
+    outputs.upToDateWhen { false }
+    doLast {
+        val packages = resolveBundlePackagesForFamilies("tpp", "csup")
+            .filter { (_, targetName) ->
+                targetName.startsWith("NW_") || targetName.startsWith("SW_")
+            }
+        val outputDir = generatedPrototypeSeedChartPackagesDir.get().dir("plate-packages").asFile
+        delete(outputDir)
+        outputDir.mkdirs()
+        packages.forEach { (source, targetName) ->
+            if (!source.isFile) {
+                throw GradleException("missing staged chart package ${source.absolutePath}")
+            }
+            Files.copy(
+                source.toPath(),
+                outputDir.resolve(targetName).toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        }
+    }
+}
+
+val seedDevPlatePackages by tasks.registering {
+    dependsOn("installDebug")
+    dependsOn(stageDevPlatePackages)
+    doLast {
+        val packageDir = generatedPrototypeSeedChartPackagesDir.get().dir("plate-packages").asFile
+        if (!packageDir.isDirectory) {
+            throw GradleException("missing staged chart package directory ${packageDir.absolutePath}")
+        }
+        val tempDir = "/data/local/tmp/aerobag-plate-packages"
+        exec {
+            commandLine("adb", "shell", "rm", "-rf", tempDir)
+        }
+        exec {
+            commandLine("adb", "shell", "mkdir", "-p", tempDir)
+        }
+        exec {
+            commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "rm", "-rf", "files/plate-packages")
+        }
+        exec {
+            commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "mkdir", "-p", "files/plate-packages")
+        }
+        packageDir.listFiles()
+            ?.filter { it.isFile && it.extension == "zip" }
+            ?.sortedBy { it.name }
+            ?.forEach { packageFile ->
+                exec {
+                    commandLine("adb", "push", packageFile.absolutePath, "$tempDir/${packageFile.name}")
+                }
+                exec {
+                    commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "cp", "$tempDir/${packageFile.name}", "files/plate-packages/${packageFile.name}")
+                }
+                exec {
+                    commandLine("adb", "shell", "rm", "-f", "$tempDir/${packageFile.name}")
+                }
+            }
+        exec {
+            commandLine("adb", "shell", "rm", "-rf", tempDir)
+        }
+    }
+}
+
+val stageDevDataPackages by tasks.registering {
+    outputs.dir(generatedPrototypeSeedChartPackagesDir.map { it.dir("data-packages") })
+    outputs.upToDateWhen { false }
+    doLast {
+        val packages = resolveBundlePackagesForFamilies("nav-db", "vectors")
+        val outputDir = generatedPrototypeSeedChartPackagesDir.get().dir("data-packages").asFile
+        delete(outputDir)
+        outputDir.mkdirs()
+        packages.forEach { (source, targetName) ->
+            if (!source.isFile) {
+                throw GradleException("missing staged data package ${source.absolutePath}")
+            }
+            Files.copy(
+                source.toPath(),
+                outputDir.resolve(targetName).toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        }
+    }
+}
+
+val seedDevDataPackages by tasks.registering {
+    dependsOn("installDebug")
+    dependsOn(stageDevDataPackages)
+    doLast {
+        val packageDir = generatedPrototypeSeedChartPackagesDir.get().dir("data-packages").asFile
+        if (!packageDir.isDirectory) {
+            throw GradleException("missing staged data package directory ${packageDir.absolutePath}")
+        }
+        val tempDir = "/data/local/tmp/aerobag-data-packages"
+        exec {
+            commandLine("adb", "shell", "rm", "-rf", tempDir)
+        }
+        exec {
+            commandLine("adb", "shell", "mkdir", "-p", tempDir)
+        }
+        exec {
+            commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "rm", "-rf", "files/data-packages")
+        }
+        exec {
+            commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "mkdir", "-p", "files/data-packages")
+        }
+        packageDir.listFiles()
+            ?.filter { it.isFile && it.extension == "zip" }
+            ?.sortedBy { it.name }
+            ?.forEach { packageFile ->
+                exec {
+                    commandLine("adb", "push", packageFile.absolutePath, "$tempDir/${packageFile.name}")
+                }
+                exec {
+                    commandLine("adb", "shell", "run-as", "net.jonh.aerobag.prototype", "cp", "$tempDir/${packageFile.name}", "files/data-packages/${packageFile.name}")
                 }
                 exec {
                     commandLine("adb", "shell", "rm", "-f", "$tempDir/${packageFile.name}")

@@ -128,11 +128,6 @@ pub fn situation_ring_candidates_json() -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn load_catalog(catalog_json: &str) -> Result<String, JsValue> {
-    load_catalog_json(catalog_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn build_flight_plan(plan_json: &str) -> Result<String, JsValue> {
     build_flight_plan_json(plan_json).map_err(|err| JsValue::from_str(&err))
 }
@@ -374,7 +369,6 @@ pub fn replace_procedure_materialized_ui(
 
 #[wasm_bindgen]
 pub fn create_ui_session(
-    catalog_json: &str,
     vector_manifest_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
@@ -382,7 +376,6 @@ pub fn create_ui_session(
     selected_chart_id_json: &str,
 ) -> Result<String, JsValue> {
     create_ui_session_json(
-        catalog_json,
         vector_manifest_json,
         plan_json,
         recent_airport_ids_json,
@@ -394,7 +387,6 @@ pub fn create_ui_session(
 
 #[wasm_bindgen]
 pub fn create_ui_session_profiled(
-    catalog_json: &str,
     vector_manifest_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
@@ -402,7 +394,6 @@ pub fn create_ui_session_profiled(
     selected_chart_id_json: &str,
 ) -> Result<String, JsValue> {
     create_ui_session_profiled_json(
-        catalog_json,
         vector_manifest_json,
         plan_json,
         recent_airport_ids_json,
@@ -731,11 +722,6 @@ fn unpack_packed_terrain_tile_bytes(
     Ok(tiles)
 }
 
-fn load_catalog_json(catalog_json: &str) -> Result<String, String> {
-    let handle = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
-    serde_json::to_string(&handle).map_err(|err| err.to_string())
-}
-
 fn build_flight_plan_json(plan_json: &str) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
@@ -1055,7 +1041,6 @@ fn classify_procedure_identifier_json(
 }
 
 fn create_ui_session_json(
-    catalog_json: &str,
     vector_manifest_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
@@ -1071,7 +1056,6 @@ fn create_ui_session_json(
     let selected_chart_id: Option<String> =
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
     let result = app_core::create_ui_session(
-        catalog_json,
         vector_manifest_json,
         plan,
         &recent_airport_ids,
@@ -1083,7 +1067,6 @@ fn create_ui_session_json(
 }
 
 fn create_ui_session_profiled_json(
-    catalog_json: &str,
     vector_manifest_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
@@ -1103,7 +1086,6 @@ fn create_ui_session_profiled_json(
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
     profiler.mark("parse_selected_ids_json");
     let result = app_core::create_ui_session_profiled(
-        catalog_json,
         vector_manifest_json,
         plan,
         &recent_airport_ids,

@@ -9,22 +9,24 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.io.File
 import java.util.Locale
-
-private const val NAV_KV_ROOT_ASSET_PATH = "nav-kv/root"
-private const val NAV_KV_VALUE_ASSET_ROOT = "nav-kv/values"
+import java.util.zip.ZipFile
 
 class NavKvStore private constructor(
     private val context: Context,
     private val bridge: NativeBridge,
     private val json: Json,
     private val handle: Long,
+    private val navDbPackageId: String,
+    private val valueEntryPrefix: String,
 ) : AutoCloseable {
     private val loadedPages = mutableSetOf<Int>()
 
     companion object {
         fun open(
             context: Context,
+            navDbPackageId: String,
             bridge: NativeBridge = NativeBindings,
             json: Json = Json {
                 encodeDefaults = true
@@ -32,9 +34,22 @@ class NavKvStore private constructor(
             },
         ): NavKvStore {
             val appContext = context.applicationContext
-            val rootBytes = appContext.assets.open(NAV_KV_ROOT_ASSET_PATH).use { it.readBytes() }
+            val navDbZip = InstalledPackages.installedFile(appContext, InstalledPackageKind.Data, navDbPackageId)
+            val layout = detectNavKvLayout(navDbZip)
+            val rootBytes = InstalledPackages.readZipEntryBytes(navDbZip, layout.rootEntryName)
             val handle = bridge.navKvOpen(rootBytes)
-            return NavKvStore(appContext, bridge, json, handle)
+            return NavKvStore(appContext, bridge, json, handle, navDbPackageId, layout.valueEntryPrefix)
+        }
+
+        private fun detectNavKvLayout(zipFile: File): NavKvLayout {
+            ZipFile(zipFile).use { zip ->
+                val rootEntryName = zip.entries().asSequence()
+                    .map { it.name }
+                    .firstOrNull { it.endsWith(".root") }
+                    ?: error("missing *.root entry in ${zipFile.absolutePath}")
+                val valueEntryPrefix = rootEntryName.removeSuffix(".root") + ".values_"
+                return NavKvLayout(rootEntryName = rootEntryName, valueEntryPrefix = valueEntryPrefix)
+            }
         }
     }
 
@@ -63,7 +78,12 @@ class NavKvStore private constructor(
             return
         }
         val pageName = String.format(Locale.US, "%04d", pageIndex)
-        val pageBytes = context.assets.open("$NAV_KV_VALUE_ASSET_ROOT/$pageName").use { it.readBytes() }
+        val pageBytes = InstalledPackages.readZipEntryBytes(
+            context,
+            InstalledPackageKind.Data,
+            navDbPackageId,
+            "$valueEntryPrefix$pageName",
+        )
         bridge.navKvInsertPage(handle, pageIndex, pageBytes)
     }
 
@@ -71,3 +91,8 @@ class NavKvStore private constructor(
         bridge.navKvDestroy(handle)
     }
 }
+
+private data class NavKvLayout(
+    val rootEntryName: String,
+    val valueEntryPrefix: String,
+)

@@ -154,7 +154,6 @@ interface NativeBridge {
     ): String
 
     fun createUiSessionJson(
-        catalogJson: String,
         vectorManifestJson: String,
         planJson: String,
         recentAirportIdsJson: String,
@@ -300,19 +299,16 @@ interface NativeBridge {
 
     fun replaceFlightPlanStateJson(
         stateJson: String,
-        catalogJson: String,
         planJson: String,
     ): String
 
     fun setContentPolicyStateJson(
         stateJson: String,
-        catalogJson: String,
         policyJson: String,
     ): String
 
     fun refreshContentStateJson(
         stateJson: String,
-        catalogJson: String,
         inventoryJson: String,
     ): String
 
@@ -492,7 +488,6 @@ object NativeBindings : NativeBridge {
     ): String
 
     external override fun createUiSessionJson(
-        catalogJson: String,
         vectorManifestJson: String,
         planJson: String,
         recentAirportIdsJson: String,
@@ -638,19 +633,16 @@ object NativeBindings : NativeBridge {
 
     external override fun replaceFlightPlanStateJson(
         stateJson: String,
-        catalogJson: String,
         planJson: String,
     ): String
 
     external override fun setContentPolicyStateJson(
         stateJson: String,
-        catalogJson: String,
         policyJson: String,
     ): String
 
     external override fun refreshContentStateJson(
         stateJson: String,
-        catalogJson: String,
         inventoryJson: String,
     ): String
 

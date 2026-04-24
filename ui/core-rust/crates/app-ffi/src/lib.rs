@@ -7,11 +7,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-pub fn load_catalog_json(catalog_json: &str) -> Result<String, String> {
-    let handle = app_core::load_catalog(catalog_json).map_err(|err| err.to_string())?;
-    serde_json::to_string(&handle).map_err(|err| err.to_string())
-}
-
 pub fn build_flight_plan_json(plan_json: &str) -> Result<String, String> {
     let plan: app_core::FlightPlan =
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
@@ -444,7 +439,6 @@ pub fn replace_procedure_from_selection_ui_json(
 
 pub fn replace_flight_plan_state_json(
     state_json: &str,
-    _catalog_json: &str,
     plan_json: &str,
 ) -> Result<String, String> {
     let state: app_core::AppState =
@@ -458,7 +452,6 @@ pub fn replace_flight_plan_state_json(
 
 pub fn replace_flight_plan_ui_state_json(
     state_json: &str,
-    _catalog_json: &str,
     plan_json: &str,
 ) -> Result<String, String> {
     let state: app_core::AppState =
@@ -472,7 +465,6 @@ pub fn replace_flight_plan_ui_state_json(
 
 pub fn set_content_policy_state_json(
     state_json: &str,
-    _catalog_json: &str,
     policy_json: &str,
 ) -> Result<String, String> {
     let state: app_core::AppState =
@@ -486,7 +478,6 @@ pub fn set_content_policy_state_json(
 
 pub fn set_content_policy_ui_state_json(
     state_json: &str,
-    _catalog_json: &str,
     policy_json: &str,
 ) -> Result<String, String> {
     let state: app_core::AppState =
@@ -500,7 +491,6 @@ pub fn set_content_policy_ui_state_json(
 
 pub fn refresh_content_state_json(
     state_json: &str,
-    _catalog_json: &str,
     inventory_json: &str,
 ) -> Result<String, String> {
     let state: app_core::AppState =
@@ -514,7 +504,6 @@ pub fn refresh_content_state_json(
 
 pub fn refresh_content_ui_state_json(
     state_json: &str,
-    _catalog_json: &str,
     inventory_json: &str,
 ) -> Result<String, String> {
     let state: app_core::AppState =
@@ -773,7 +762,6 @@ pub fn describe_load_procedure_from_plate_json(
 }
 
 pub fn create_ui_session_json(
-    catalog_json: &str,
     vector_manifest_json: &str,
     plan_json: &str,
     recent_airport_ids_json: &str,
@@ -789,7 +777,6 @@ pub fn create_ui_session_json(
     let selected_chart_id: Option<String> =
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
     let result = app_core::create_ui_session(
-        catalog_json,
         vector_manifest_json,
         plan,
         &recent_airport_ids,
@@ -1180,14 +1167,12 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_rep
     mut env: JNIEnv,
     _class: JClass,
     state_json: JString,
-    catalog_json: JString,
     plan_json: JString,
 ) -> jstring {
     let result = (|| {
         let state = get_java_string(&mut env, state_json)?;
-        let catalog = get_java_string(&mut env, catalog_json)?;
         let plan = get_java_string(&mut env, plan_json)?;
-        replace_flight_plan_state_json(&state, &catalog, &plan)
+        replace_flight_plan_state_json(&state, &plan)
     })();
     return_string(&mut env, result)
 }
@@ -1197,14 +1182,12 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_rep
     mut env: JNIEnv,
     _class: JClass,
     state_json: JString,
-    catalog_json: JString,
     plan_json: JString,
 ) -> jstring {
     let result = (|| {
         let state = get_java_string(&mut env, state_json)?;
-        let catalog = get_java_string(&mut env, catalog_json)?;
         let plan = get_java_string(&mut env, plan_json)?;
-        replace_flight_plan_ui_state_json(&state, &catalog, &plan)
+        replace_flight_plan_ui_state_json(&state, &plan)
     })();
     return_string(&mut env, result)
 }
@@ -1228,14 +1211,12 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
     mut env: JNIEnv,
     _class: JClass,
     state_json: JString,
-    catalog_json: JString,
     policy_json: JString,
 ) -> jstring {
     let result = (|| {
         let state = get_java_string(&mut env, state_json)?;
-        let catalog = get_java_string(&mut env, catalog_json)?;
         let policy = get_java_string(&mut env, policy_json)?;
-        set_content_policy_state_json(&state, &catalog, &policy)
+        set_content_policy_state_json(&state, &policy)
     })();
     return_string(&mut env, result)
 }
@@ -1245,14 +1226,12 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
     mut env: JNIEnv,
     _class: JClass,
     state_json: JString,
-    catalog_json: JString,
     policy_json: JString,
 ) -> jstring {
     let result = (|| {
         let state = get_java_string(&mut env, state_json)?;
-        let catalog = get_java_string(&mut env, catalog_json)?;
         let policy = get_java_string(&mut env, policy_json)?;
-        set_content_policy_ui_state_json(&state, &catalog, &policy)
+        set_content_policy_ui_state_json(&state, &policy)
     })();
     return_string(&mut env, result)
 }
@@ -1262,14 +1241,12 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ref
     mut env: JNIEnv,
     _class: JClass,
     state_json: JString,
-    catalog_json: JString,
     inventory_json: JString,
 ) -> jstring {
     let result = (|| {
         let state = get_java_string(&mut env, state_json)?;
-        let catalog = get_java_string(&mut env, catalog_json)?;
         let inventory = get_java_string(&mut env, inventory_json)?;
-        refresh_content_state_json(&state, &catalog, &inventory)
+        refresh_content_state_json(&state, &inventory)
     })();
     return_string(&mut env, result)
 }
@@ -1279,14 +1256,12 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_ref
     mut env: JNIEnv,
     _class: JClass,
     state_json: JString,
-    catalog_json: JString,
     inventory_json: JString,
 ) -> jstring {
     let result = (|| {
         let state = get_java_string(&mut env, state_json)?;
-        let catalog = get_java_string(&mut env, catalog_json)?;
         let inventory = get_java_string(&mut env, inventory_json)?;
-        refresh_content_ui_state_json(&state, &catalog, &inventory)
+        refresh_content_ui_state_json(&state, &inventory)
     })();
     return_string(&mut env, result)
 }
@@ -1949,7 +1924,6 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_der
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_createUiSessionJson(
     mut env: JNIEnv,
     _class: JClass,
-    catalog_json: JString,
     vector_manifest_json: JString,
     plan_json: JString,
     recent_airport_ids_json: JString,
@@ -1957,14 +1931,12 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_cre
     selected_chart_id_json: JString,
 ) -> jstring {
     let result = (|| {
-        let catalog = get_java_string(&mut env, catalog_json)?;
         let vector_manifest = get_java_string(&mut env, vector_manifest_json)?;
         let plan = get_java_string(&mut env, plan_json)?;
         let recent_airport_ids = get_java_string(&mut env, recent_airport_ids_json)?;
         let selected_airport_id = get_java_string(&mut env, selected_airport_id_json)?;
         let selected_chart_id = get_java_string(&mut env, selected_chart_id_json)?;
         create_ui_session_json(
-            &catalog,
             &vector_manifest,
             &plan,
             &recent_airport_ids,
@@ -2392,85 +2364,6 @@ mod tests {
     use super::*;
     use std::sync::OnceLock;
 
-    fn sample_catalog_json() -> String {
-        serde_json::json!({
-            "schema_version": 1,
-            "cycle": "2026-04-16",
-            "catalog_revision": "2026-04-05T22:00:00Z",
-            "families": [
-                {
-                    "id": "sec",
-                    "display_name": "VFR Sectional Charts",
-                    "kind": "tiled_raster",
-                    "max_zoom": 10,
-                    "tile_size": 512
-                }
-            ],
-            "regions": [
-                {
-                    "id": "ne",
-                    "display_name": "Northeast",
-                    "sort_order": 0
-                }
-            ],
-            "packages": [
-                {
-                    "id": {
-                        "region": "ne",
-                        "family": "sec",
-                        "cycle": "2026-04-16"
-                    },
-                    "package_name": "NE_SEC",
-                    "family_id": "sec",
-                    "region_id": "ne",
-                    "cycle": "2026-04-16",
-                    "artifact_kind": "zip",
-                    "relative_url": "/2026-04-16/NE_SEC.zip",
-                    "manifest_name": "NE_SEC",
-                    "size_bytes": null,
-                    "checksum_sha256": null
-                }
-            ],
-            "charts": [
-                {
-                    "id": {
-                        "family": "sec",
-                        "name": "Boston",
-                        "cycle": "2026-04-16"
-                    },
-                    "family_id": "sec",
-                    "name": "Boston",
-                    "display_name": "Boston",
-                    "cycle": "2026-04-16",
-                    "region_ids": ["ne"],
-                    "max_zoom": 10,
-                    "tile_path_template": "tiles/{chart_index}/{z}/{x}/{y}"
-                }
-            ],
-            "plates": [
-                {
-                    "id": {
-                        "airport_id": "KBOS",
-                        "procedure_code": "IAP-ILS-RWY-04R",
-                        "page": 1,
-                        "cycle": "2026-04-16"
-                    },
-                    "airport_id": "KBOS",
-                    "region_id": "ne",
-                    "cycle": "2026-04-16",
-                    "procedure_code": "IAP-ILS-RWY-04R",
-                    "display_name": "ILS OR LOC RWY 04R",
-                    "kind": "approach",
-                    "georeferenced": true,
-                    "page_count": 1,
-                    "asset_base_path": "plates/KBOS/IAP-ILS-RWY-04R"
-                }
-            ],
-            "supplements": []
-        })
-        .to_string()
-    }
-
     fn empty_state_json() -> String {
         serde_json::to_string(&app_core::AppState::default()).unwrap()
     }
@@ -2561,7 +2454,6 @@ mod tests {
     fn replace_flight_plan_state_json_sets_active_plan() {
         let next_json = replace_flight_plan_state_json(
             &empty_state_json(),
-            &sample_catalog_json(),
             &sample_plan_json(),
         )
         .unwrap();
@@ -2574,7 +2466,6 @@ mod tests {
     fn replace_flight_plan_ui_state_json_returns_projected_app_view() {
         let next_json = replace_flight_plan_ui_state_json(
             &empty_state_json(),
-            &sample_catalog_json(),
             &sample_plan_json(),
         )
         .unwrap();
@@ -2715,21 +2606,18 @@ mod tests {
     fn stream_allowed_policy_survives_json_boundary() {
         let with_plan_json = replace_flight_plan_state_json(
             &empty_state_json(),
-            &sample_catalog_json(),
             &sample_plan_json(),
         )
         .unwrap();
 
         let web_state_json = set_content_policy_state_json(
             &with_plan_json,
-            &sample_catalog_json(),
             &serde_json::to_string(&app_core::ContentPolicy::StreamAllowed).unwrap(),
         )
         .unwrap();
 
         let refreshed_json = refresh_content_state_json(
             &web_state_json,
-            &sample_catalog_json(),
             &serde_json::json!({
                 "installed_packages": [],
                 "cached_tilesets": [],

@@ -45,6 +45,12 @@ ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-${EMULATOR_CONSOLE_PORT}}"
 
 mkdir -p "$GRADLE_USER_HOME" "$PROJECT_CACHE_DIR"
 
+echo "[0/6] clear previously seeded package dirs"
+adb -s "$ANDROID_SERIAL" shell run-as "$APP_ID" rm -rf \
+  files/chart-packages \
+  files/plate-packages \
+  files/data-packages >/dev/null 2>&1 || true
+
 echo "[1/6] installDebug"
 (
   cd "$ROOT"
@@ -54,7 +60,7 @@ echo "[1/6] installDebug"
 echo "[2/6] seed chart payloads"
 (
   cd "$ROOT"
-  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" ANDROID_SERIAL="$ANDROID_SERIAL" "$APP_DIR/gradlew" --project-cache-dir "$PROJECT_CACHE_DIR" -p "$APP_DIR" seedPrototypeSectionalPackages seedPrototypeChartPackages
+  env GRADLE_USER_HOME="$GRADLE_USER_HOME" ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" ANDROID_SERIAL="$ANDROID_SERIAL" "$APP_DIR/gradlew" --project-cache-dir "$PROJECT_CACHE_DIR" -p "$APP_DIR" seedDevDataPackages seedDevChartPackages seedDevPlatePackages
 )
 
 echo "[3/6] clear logcat"

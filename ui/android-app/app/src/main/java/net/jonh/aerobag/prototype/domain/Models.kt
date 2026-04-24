@@ -434,23 +434,6 @@ data class MaterializedProcedure(
     val resolvedLegs: List<ResolvedLeg>,
 )
 
-data class PlateRecord(
-    val airportId: String,
-    val regionId: String,
-)
-
-data class CatalogPackage(
-    val id: PackageId,
-    val packageName: String,
-    val regionId: String,
-)
-
-data class Catalog(
-    val cycle: String,
-    val packages: List<CatalogPackage>,
-    val plates: List<PlateRecord>,
-)
-
 enum class MapChartFamily {
     Sec,
     Tac,

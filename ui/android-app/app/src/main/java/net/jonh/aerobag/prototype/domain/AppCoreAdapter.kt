@@ -1,17 +1,13 @@
 package net.jonh.aerobag.prototype.domain
 
 interface AppCoreAdapter {
-    fun replaceFlightPlan(state: AppState, catalog: Catalog, plan: FlightPlan): AppState
+    fun replaceFlightPlan(state: AppState, plan: FlightPlan): AppState
     fun setContentPolicy(state: AppState, policy: ContentPolicy): AppState
     fun refreshContent(state: AppState, inventory: ContentInventory): AppState
 }
 
 class MockAppCoreAdapter : AppCoreAdapter {
-    override fun replaceFlightPlan(state: AppState, catalog: Catalog, plan: FlightPlan): AppState {
-        @Suppress("UNUSED_PARAMETER")
-        val ignoredCatalog = catalog
-        @Suppress("UNUSED_VARIABLE")
-        ignoredCatalog
+    override fun replaceFlightPlan(state: AppState, plan: FlightPlan): AppState {
         require(plan.legs.isNotEmpty()) { "Flight plan must contain at least one leg" }
 
         return state.copy(

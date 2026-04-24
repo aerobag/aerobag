@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-pub mod catalog;
 pub mod chart_page;
 pub mod content;
 pub mod errors;
@@ -24,10 +23,6 @@ pub mod situation;
 pub mod state;
 pub mod terrain;
 
-pub use catalog::{
-    CatalogBundle, CatalogFamily, CatalogHandle, CatalogPackage, CatalogRegion, ChartRecord,
-    PlateRecord, SupplementRecord,
-};
 pub use chart_page::{
     build_chart_catalog, derive_chart_page, derive_chart_page_from_catalog,
     derive_chart_page_state, derive_chart_page_state_from_airports,
@@ -499,14 +494,6 @@ use std::{
     hash::{Hash, Hasher},
     sync::{Arc, Mutex, OnceLock},
 };
-
-pub fn load_catalog(catalog_json: &str) -> AppResult<CatalogHandle> {
-    let bundle: CatalogBundle = serde_json::from_str(catalog_json).map_err(|err| AppError {
-        kind: AppErrorKind::InvalidCatalog,
-        message: format!("failed to parse catalog json: {err}"),
-    })?;
-    Ok(CatalogHandle { bundle })
-}
 
 pub fn load_geometry(geometry_json: &str) -> AppResult<GeometryBundle> {
     serde_json::from_str(geometry_json).map_err(|err| AppError {
@@ -2663,66 +2650,6 @@ fn component_procedure(plan: &FlightPlan, component_index: usize) -> AppResult<P
     }
 }
 
-pub fn plan_content_requirements(
-    catalog: &CatalogHandle,
-    plan: &FlightPlan,
-) -> AppResult<Vec<ContentRequirement>> {
-    let mut package_ids = Vec::new();
-
-    for airport_code in plan_airport_codes(plan) {
-        for plate in &catalog.bundle.plates {
-            if plate.airport_id.0.eq_ignore_ascii_case(airport_code) {
-                if let Some(pkg) = catalog
-                    .bundle
-                    .packages
-                    .iter()
-                    .find(|pkg| pkg.region_id == plate.region_id)
-                {
-                    package_ids.push(pkg.id.clone());
-                }
-            }
-        }
-    }
-
-    package_ids.sort();
-    package_ids.dedup();
-
-    Ok(vec![ContentRequirement {
-        package_ids,
-        chart_ids: Vec::new(),
-        plate_ids: Vec::new(),
-    }])
-}
-
-fn plan_airport_codes(plan: &FlightPlan) -> Vec<&str> {
-    let mut codes = Vec::new();
-
-    for component in &plan.route_components {
-        match component {
-            RouteComponent::Waypoint { waypoint } => {
-                if let Some(code) = waypoint.airport_code() {
-                    codes.push(code);
-                }
-            }
-            RouteComponent::Airway { airway } => {
-                if let Some(code) = airway.entry.airport_code() {
-                    codes.push(code);
-                }
-                if let Some(code) = airway.exit.airport_code() {
-                    codes.push(code);
-                }
-            }
-            RouteComponent::Procedure { procedure } => {
-                codes.push(procedure.airport_id.0.as_str());
-            }
-        }
-    }
-
-    codes.sort();
-    codes.dedup();
-    codes
-}
-
 pub fn resolve_content_status(
     requirements: &[ContentRequirement],
     inventory: &ContentInventory,
@@ -2783,85 +2710,6 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
-
-    fn sample_catalog_json() -> String {
-        serde_json::json!({
-            "schema_version": 1,
-            "cycle": "2026-04-16",
-            "catalog_revision": "2026-04-05T22:00:00Z",
-            "families": [
-                {
-                    "id": "sec",
-                    "display_name": "VFR Sectional Charts",
-                    "kind": "tiled_raster",
-                    "max_zoom": 10,
-                    "tile_size": 512
-                }
-            ],
-            "regions": [
-                {
-                    "id": "ne",
-                    "display_name": "Northeast",
-                    "sort_order": 0
-                }
-            ],
-            "packages": [
-                {
-                    "id": {
-                        "region": "ne",
-                        "family": "sec",
-                        "cycle": "2026-04-16"
-                    },
-                    "package_name": "NE_SEC",
-                    "family_id": "sec",
-                    "region_id": "ne",
-                    "cycle": "2026-04-16",
-                    "artifact_kind": "zip",
-                    "relative_url": "/2026-04-16/NE_SEC.zip",
-                    "manifest_name": "NE_SEC",
-                    "size_bytes": null,
-                    "checksum_sha256": null
-                }
-            ],
-            "charts": [
-                {
-                    "id": {
-                        "family": "sec",
-                        "name": "Boston",
-                        "cycle": "2026-04-16"
-                    },
-                    "family_id": "sec",
-                    "name": "Boston",
-                    "display_name": "Boston",
-                    "cycle": "2026-04-16",
-                    "region_ids": ["ne"],
-                    "max_zoom": 10,
-                    "tile_path_template": "tiles/{chart_index}/{z}/{x}/{y}"
-                }
-            ],
-            "plates": [
-                {
-                    "id": {
-                        "airport_id": "KBOS",
-                        "procedure_code": "IAP-ILS-RWY-04R",
-                        "page": 1,
-                        "cycle": "2026-04-16"
-                    },
-                    "airport_id": "KBOS",
-                    "region_id": "ne",
-                    "cycle": "2026-04-16",
-                    "procedure_code": "IAP-ILS-RWY-04R",
-                    "display_name": "ILS OR LOC RWY 04R",
-                    "kind": "approach",
-                    "georeferenced": true,
-                    "page_count": 1,
-                    "asset_base_path": "plates/KBOS/IAP-ILS-RWY-04R"
-                }
-            ],
-            "supplements": []
-        })
-        .to_string()
-    }
 
     fn sample_plan() -> FlightPlan {
         FlightPlan {
@@ -4238,14 +4086,6 @@ mod tests {
     }
 
     #[test]
-    fn loads_catalog_with_structured_ids() {
-        let handle = load_catalog(&sample_catalog_json()).unwrap();
-        assert_eq!(handle.bundle.schema_version, 1);
-        assert_eq!(handle.bundle.families[0].id, ChartFamilyId::Sectional);
-        assert_eq!(handle.bundle.regions[0].id, RegionId::Ne);
-    }
-
-    #[test]
     fn rejects_empty_flight_plan() {
         let result = build_flight_plan(FlightPlan {
             id: "plan-1".to_string(),
@@ -4263,15 +4103,6 @@ mod tests {
             version: 1,
         });
         assert_eq!(result.unwrap_err().kind, AppErrorKind::InvalidFlightPlan);
-    }
-
-    #[test]
-    fn deduplicates_required_packages_across_matching_legs() {
-        let catalog = load_catalog(&sample_catalog_json()).unwrap();
-        let requirements = plan_content_requirements(&catalog, &sample_plan()).unwrap();
-        assert_eq!(requirements.len(), 1);
-        assert_eq!(requirements[0].package_ids.len(), 1);
-        assert_eq!(requirements[0].package_ids[0].region, RegionId::Ne);
     }
 
     #[test]
@@ -6623,48 +6454,6 @@ mod tests {
             RouteComponent::Procedure { .. }
         ));
         assert!(!replaced.resolved_legs.is_empty());
-    }
-
-    #[test]
-    fn content_requirements_consider_airports_from_procedure_components() {
-        let catalog = load_catalog(&sample_catalog_json()).unwrap();
-        let plan = build_flight_plan(FlightPlan {
-            id: "proc".to_string(),
-            name: "Procedure".to_string(),
-            legs: Vec::new(),
-            route_components: vec![RouteComponent::Procedure {
-                procedure: ProcedureSegment {
-                    airport_id: AirportId("KBOS".to_string()),
-                    procedure_id: "IAP-ILS-RWY-04R".to_string(),
-                    kind: ProcedureKind::Approach,
-                    runway_transition: Some("04R".to_string()),
-                    enroute_transition: None,
-                    terminal_discontinuity: None,
-                },
-            }],
-            resolved_legs: vec![ResolvedLeg {
-                id: "proc-0".to_string(),
-                from: NavRef::Fix("NOONY".to_string()),
-                to: NavRef::Airport("KBOS".to_string()),
-                source: ResolvedLegSource::RouteComponent { component_index: 0 },
-                procedure_provenance: None,
-            }],
-            guidance: None,
-            departure: None,
-            destination: Some(AirportId("KBOS".to_string())),
-            alternate: None,
-            cruise_altitude_ft: None,
-            notes: None,
-            updated_at_epoch_ms: 0,
-            version: 1,
-        })
-        .unwrap();
-
-        let requirements = plan_content_requirements(&catalog, &plan).unwrap();
-
-        assert_eq!(requirements.len(), 1);
-        assert_eq!(requirements[0].package_ids.len(), 1);
-        assert_eq!(requirements[0].package_ids[0].package_name(), "NE_SEC");
     }
 
     #[test]

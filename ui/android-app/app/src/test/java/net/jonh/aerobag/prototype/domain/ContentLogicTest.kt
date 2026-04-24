@@ -16,7 +16,7 @@ class ContentLogicTest {
 
     @Test
     fun refreshContentDoesNotFabricateReportWithoutHadRequirements() {
-        var state = appCore.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
+        var state = appCore.replaceFlightPlan(AppState(), SampleDataFixture.samplePlan)
         state = appCore.setContentPolicy(state, ContentPolicy.StreamAllowed)
         state = appCore.refreshContent(state, SampleDataFixture.remoteOnlyInventory)
 
@@ -27,7 +27,6 @@ class ContentLogicTest {
     fun emptyPlansAreRejected() {
         appCore.replaceFlightPlan(
             AppState(),
-            SampleDataFixture.catalog,
             SampleDataFixture.samplePlan.copy(legs = emptyList()),
         )
     }
@@ -35,17 +34,16 @@ class ContentLogicTest {
     @Test
     fun nativeAdapterMatchesMockContractForRemoteOnlyStreaming() {
         val nativeAdapter = NativeAppCoreAdapter(
-            catalogJson = SampleDataFixture.catalogJson,
             vectorManifestJson = SampleDataFixture.vectorManifestJson,
             bridge = FakeNativeBridge(json),
             json = json,
         )
 
-        var mockState = appCore.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
+        var mockState = appCore.replaceFlightPlan(AppState(), SampleDataFixture.samplePlan)
         mockState = appCore.setContentPolicy(mockState, ContentPolicy.StreamAllowed)
         mockState = appCore.refreshContent(mockState, SampleDataFixture.remoteOnlyInventory)
 
-        var nativeState = nativeAdapter.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
+        var nativeState = nativeAdapter.replaceFlightPlan(AppState(), SampleDataFixture.samplePlan)
         nativeState = nativeAdapter.setContentPolicy(nativeState, ContentPolicy.StreamAllowed)
         nativeState = nativeAdapter.refreshContent(nativeState, SampleDataFixture.remoteOnlyInventory)
 
@@ -55,17 +53,16 @@ class ContentLogicTest {
     @Test
     fun nativeAdapterMatchesMockContractForInstalledOffline() {
         val nativeAdapter = NativeAppCoreAdapter(
-            catalogJson = SampleDataFixture.catalogJson,
             vectorManifestJson = SampleDataFixture.vectorManifestJson,
             bridge = FakeNativeBridge(json),
             json = json,
         )
 
-        var mockState = appCore.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
+        var mockState = appCore.replaceFlightPlan(AppState(), SampleDataFixture.samplePlan)
         mockState = appCore.setContentPolicy(mockState, ContentPolicy.OfflineRequired)
         mockState = appCore.refreshContent(mockState, SampleDataFixture.installedInventory)
 
-        var nativeState = nativeAdapter.replaceFlightPlan(AppState(), SampleDataFixture.catalog, SampleDataFixture.samplePlan)
+        var nativeState = nativeAdapter.replaceFlightPlan(AppState(), SampleDataFixture.samplePlan)
         nativeState = nativeAdapter.setContentPolicy(nativeState, ContentPolicy.OfflineRequired)
         nativeState = nativeAdapter.refreshContent(nativeState, SampleDataFixture.installedInventory)
 
@@ -152,28 +149,6 @@ private object SampleDataFixture {
         ignoreUnknownKeys = true
     }
 
-    val catalog = Catalog(
-        cycle = "2026-04-16",
-        packages = listOf(
-            CatalogPackage(
-                id = PackageId(
-                    region = "ne",
-                    family = "sec",
-                    cycle = "2026-04-16",
-                ),
-                packageName = "NE_SEC",
-                regionId = "ne",
-            ),
-        ),
-        plates = listOf(
-            PlateRecord(
-                airportId = "BOS",
-                regionId = "ne",
-            ),
-        ),
-    )
-
-    val catalogJson = json.encodeToString(catalog.toWireForTesting())
     val vectorManifestJson = """{"airspace":{"reference_tile_min_zoom":0,"reference_tile_max_zoom":12,"label_tile_min_zoom":0,"label_tile_max_zoom":12}}"""
 
     val samplePlan = FlightPlan(
@@ -224,59 +199,6 @@ private object SampleDataFixture {
             ),
         ),
     )
-}
-
-private object SampleMapFixture {
-    val catalogJson =
-        """
-        {
-          "schema_version": 1,
-          "cycle": "2026-04-16",
-          "catalog_revision": "2026-04-06T00:00:00Z",
-          "families": [
-            {
-              "id": "sec",
-              "display_name": "VFR Sectional Charts",
-              "kind": "tiled_raster",
-              "max_zoom": 10,
-              "tile_size": 512
-            },
-            {
-              "id": "tac",
-              "display_name": "Terminal Area Charts",
-              "kind": "tiled_raster",
-              "max_zoom": 11,
-              "tile_size": 512
-            }
-          ],
-          "regions": [
-            {
-              "id": "ne",
-              "display_name": "Northeast",
-              "sort_order": 0
-            }
-          ],
-          "packages": [],
-          "charts": [
-            {
-              "id": {
-                "family": "tac",
-                "name": "Boston TAC",
-                "cycle": "2026-04-16"
-              },
-              "family_id": "tac",
-              "name": "Boston TAC",
-              "display_name": "Boston TAC",
-              "cycle": "2026-04-16",
-              "region_ids": ["ne"],
-              "max_zoom": 11,
-              "tile_path_template": "tiles/charts-tac/boston/{z}/{x}/{y}"
-            }
-          ],
-          "plates": [],
-          "supplements": []
-        }
-        """.trimIndent()
 }
 
 private class FakeNativeBridge(
@@ -404,7 +326,6 @@ private class FakeNativeBridge(
     ): String = """{"procedure_id":"","summary":"","legs":[]}"""
 
     override fun createUiSessionJson(
-        catalogJson: String,
         vectorManifestJson: String,
         planJson: String,
         recentAirportIdsJson: String,
@@ -542,18 +463,15 @@ private class FakeNativeBridge(
 
     override fun replaceFlightPlanStateJson(
         stateJson: String,
-        catalogJson: String,
         planJson: String,
     ): String {
         val state = json.decodeFromString<WireAppState>(stateJson).toUiForTesting()
-        val catalog = json.decodeFromString<WireCatalog>(catalogJson).toUiForTesting()
         val plan = json.decodeFromString<WireFlightPlan>(planJson).toUiForTesting()
-        return json.encodeToString(mock.replaceFlightPlan(state, catalog, plan).toWireForTesting())
+        return json.encodeToString(mock.replaceFlightPlan(state, plan).toWireForTesting())
     }
 
     override fun setContentPolicyStateJson(
         stateJson: String,
-        catalogJson: String,
         policyJson: String,
     ): String {
         val state = json.decodeFromString<WireAppState>(stateJson).toUiForTesting()
@@ -563,7 +481,6 @@ private class FakeNativeBridge(
 
     override fun refreshContentStateJson(
         stateJson: String,
-        catalogJson: String,
         inventoryJson: String,
     ): String {
         val state = json.decodeFromString<WireAppState>(stateJson).toUiForTesting()

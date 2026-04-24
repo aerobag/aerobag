@@ -88,7 +88,6 @@ fn sessions() -> &'static Mutex<HashMap<u32, UiSession>> {
 }
 
 pub fn create_ui_session(
-    catalog_json: &str,
     vector_manifest_json: &str,
     plan: FlightPlan,
     recent_airport_ids: &[String],
@@ -96,7 +95,6 @@ pub fn create_ui_session(
     selected_chart_id: Option<&str>,
 ) -> AppResult<UiSessionInitResult> {
     create_ui_session_inner(
-        catalog_json,
         vector_manifest_json,
         plan,
         recent_airport_ids,
@@ -107,7 +105,6 @@ pub fn create_ui_session(
 }
 
 pub fn create_ui_session_profiled(
-    catalog_json: &str,
     vector_manifest_json: &str,
     plan: FlightPlan,
     recent_airport_ids: &[String],
@@ -116,7 +113,6 @@ pub fn create_ui_session_profiled(
     mark: &mut dyn FnMut(&'static str),
 ) -> AppResult<UiSessionInitResult> {
     create_ui_session_inner(
-        catalog_json,
         vector_manifest_json,
         plan,
         recent_airport_ids,
@@ -127,7 +123,6 @@ pub fn create_ui_session_profiled(
 }
 
 fn create_ui_session_inner(
-    _catalog_json: &str,
     vector_manifest_json: &str,
     plan: FlightPlan,
     recent_airport_ids: &[String],
@@ -135,9 +130,6 @@ fn create_ui_session_inner(
     selected_chart_id: Option<&str>,
     mut mark: Option<&mut dyn FnMut(&'static str)>,
 ) -> AppResult<UiSessionInitResult> {
-    if let Some(mark) = mark.as_deref_mut() {
-        mark("core_skip_catalog_load");
-    }
     let map_overlay_config = map_overlay_config_from_vector_manifest_json(vector_manifest_json)?;
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_parse_vector_manifest");

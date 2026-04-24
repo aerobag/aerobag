@@ -4811,12 +4811,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_kbfi_i14r_sea_hairpin() {
+    fn materializes_kbfi_i14r_sea_with_hf_geometry() {
         let store = load_snapshot_nav_kv_store();
-        let err = materialize_snapshot_procedure(&store, "KBFI", "I14R", Some("SEA".to_string()))
-            .expect_err("expected KBFI I14R SEA to fail heading continuity validation");
-        assert!(err.message.contains("procedure heading continuity violated for I14R"));
-        assert!(err.message.contains("ISOGE"));
+        let materialized =
+            materialize_snapshot_procedure(&store, "KBFI", "I14R", Some("SEA".to_string()))
+                .expect("expected KBFI I14R SEA to materialize after unified step interpretation");
+        let hold_leg = materialized
+            .resolved_legs
+            .iter()
+            .find(|leg| leg.id == "procedure-I14R-A-30")
+            .expect("expected ISOGE hold leg");
+        let elements = &hold_leg
+            .procedure_provenance
+            .as_ref()
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .expect("expected hold display path")
+            .elements;
+        assert!(
+            elements.iter().any(|element| matches!(element, LegDisplayElement::Arc { .. })),
+            "expected ISOGE hold leg to include hold-turn arc geometry"
+        );
     }
 
     #[test]

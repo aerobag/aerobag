@@ -16,17 +16,6 @@ pub fn display_path_for_procedure_leg(
     initial_position_override: Option<LatLon>,
     initial_course_override: Option<f64>,
 ) -> Option<LegDisplayPath> {
-    if matches!(leg_end.path_termination.trim(), "FM" | "HA") {
-        panic!(
-            "{} procedure legs are not implemented: {} {} {} {} seq {}",
-            leg_end.path_termination.trim(),
-            leg_end.key.airport_id.trim(),
-            leg_end.key.procedure_id.trim(),
-            leg_end.key.route_type.trim(),
-            leg_end.key.transition_id.trim(),
-            leg_end.sequence
-        );
-    }
     let terminal_record = if leg_start.sequence == leg_end.sequence {
         segment_records
             .iter()
@@ -36,57 +25,13 @@ pub fn display_path_for_procedure_leg(
     } else {
         hold_record.unwrap_or(leg_end)
     };
-    let has_intervening_steps = segment_records.iter().any(|record| {
-        record.sequence > leg_start.sequence && record.sequence < leg_end.sequence
-    });
-    if has_intervening_steps && terminal_record.sequence > leg_start.sequence {
-        if let Some(path) = sequenced_leg_display_path(
-            segment_records,
-            leg_start,
-            terminal_record,
-            initial_position_override,
-            initial_course_override,
-        ) {
-            return Some(path);
-        }
-    }
-    if leg_end.path_termination.trim() == "PI" {
-        return procedure_turn_display_path(leg_end);
-    }
-    if leg_end.path_termination.trim() == "AF" {
-        return arc_to_fix_display_path(leg_start, leg_end);
-    }
-    if leg_end.path_termination.trim() == "RF" {
-        return radius_to_fix_display_path(leg_start, leg_end);
-    }
-    if leg_end.path_termination.trim() == "FC" {
-        return course_from_fix_display_path(leg_end);
-    }
-    if terminal_record.sequence > leg_start.sequence {
-        if let Some(path) = sequenced_leg_display_path(
-            segment_records,
-            leg_start,
-            terminal_record,
-            initial_position_override,
-            initial_course_override,
-        ) {
-            return Some(path);
-        }
-    }
-    let arrival_course_deg = procedure_arrival_course_deg(leg_start, leg_end);
-    if let Some(hold) = hold_record {
-        let mut path = hold_display_path(hold, arrival_course_deg)?;
-        if hold.path_termination.trim() == "HF" {
-            let start = leg_start.nav_position?;
-            let fix = hold.nav_position?;
-            if distance_between_points_nm(start, fix) > 0.05 {
-                path.elements
-                    .insert(0, LegDisplayElement::Segment { start, end: fix });
-            }
-        }
-        return Some(path);
-    }
-    None
+    interpret_procedure_step_window(
+        segment_records,
+        leg_start,
+        terminal_record,
+        initial_position_override,
+        initial_course_override,
+    )
 }
 
 pub fn display_path_for_trailing_course_to_intercept_leg(
@@ -151,13 +96,6 @@ fn hold_display_path(
         arrival_course_deg,
         hold_kind == "HF",
     ))
-}
-
-fn procedure_arrival_course_deg(
-    leg_start: &ProcedureLegMaterializationRecord,
-    leg_end: &ProcedureLegMaterializationRecord,
-) -> Option<f64> {
-    Some(bearing_from(leg_start.nav_position?, leg_end.nav_position?))
 }
 
 fn procedure_turn_display_path(leg: &ProcedureLegMaterializationRecord) -> Option<LegDisplayPath> {
@@ -226,20 +164,6 @@ fn procedure_turn_display_path(leg: &ProcedureLegMaterializationRecord) -> Optio
             },
         ],
     })
-}
-
-fn arc_to_fix_display_path(
-    leg_start: &ProcedureLegMaterializationRecord,
-    leg_end: &ProcedureLegMaterializationRecord,
-) -> Option<LegDisplayPath> {
-    arc_to_fix_path_from_start(leg_start.nav_position?, leg_end)
-}
-
-fn radius_to_fix_display_path(
-    leg_start: &ProcedureLegMaterializationRecord,
-    leg_end: &ProcedureLegMaterializationRecord,
-) -> Option<LegDisplayPath> {
-    radius_to_fix_path_from_start(leg_start.nav_position?, leg_end)
 }
 
 fn arc_to_fix_path_from_start(
@@ -325,24 +249,6 @@ fn radius_to_fix_path_from_start(
     })
 }
 
-fn course_from_fix_display_path(leg: &ProcedureLegMaterializationRecord) -> Option<LegDisplayPath> {
-    let (element, ..) = course_from_fix_segment(leg)?;
-    Some(LegDisplayPath {
-        style: LegDisplayPathStyle::Solid,
-        elements: vec![element],
-    })
-}
-
-fn course_from_fix_segment(
-    leg: &ProcedureLegMaterializationRecord,
-) -> Option<(LegDisplayElement, LatLon, f64)> {
-    let start = leg.nav_position?;
-    let course_deg = leg.magnetic_course_deg? + course_reference_variation_deg(leg);
-    let distance_nm = parse_distance_tenths_nm(leg.route_distance_or_time.as_deref())?;
-    let end = destination_point(start, course_deg, distance_nm);
-    Some((LegDisplayElement::Segment { start, end }, end, course_deg))
-}
-
 fn nominal_procedure_turn_barb_distance_nm() -> f64 {
     distance_nm_for_minutes_at_speed_kt(
         NOMINAL_PROCEDURE_TURN_GROUND_SPEED_KT,
@@ -361,7 +267,7 @@ enum TrackTermination {
     ToDme { center: LatLon, radius_nm: f64 },
 }
 
-fn sequenced_leg_display_path(
+fn interpret_procedure_step_window(
     segment_records: &[ProcedureLegMaterializationRecord],
     leg_start: &ProcedureLegMaterializationRecord,
     terminal_record: &ProcedureLegMaterializationRecord,
@@ -377,17 +283,10 @@ fn sequenced_leg_display_path(
     let mut current_altitude_ft = leg_start.altitude_1_ft;
     let mut elements = Vec::new();
 
-    if leg_start.path_termination.trim() == "FC" {
-        let (element, end, course_deg) = course_from_fix_segment(leg_start)?;
-        elements.push(element);
-        current_position = end;
-        current_course_deg = Some(course_deg);
-    }
-
     let mut steps = segment_records
         .iter()
         .filter(|record| {
-            record.sequence > leg_start.sequence && record.sequence <= terminal_record.sequence
+            record.sequence >= leg_start.sequence && record.sequence <= terminal_record.sequence
         })
         .collect::<Vec<_>>();
     steps.sort_by_key(|record| record.sequence);
@@ -499,6 +398,12 @@ fn sequenced_leg_display_path(
             }
             "RF" => {
                 let path = radius_to_fix_path_from_start(current_position, step)?;
+                current_position = step.nav_position?;
+                current_course_deg = path.elements.last().and_then(display_element_end_course_deg);
+                elements.extend(path.elements);
+            }
+            "PI" => {
+                let path = procedure_turn_display_path(step)?;
                 current_position = step.nav_position?;
                 current_course_deg = path.elements.last().and_then(display_element_end_course_deg);
                 elements.extend(path.elements);
@@ -615,8 +520,14 @@ fn sequenced_leg_display_path(
                 current_course_deg = Some(bearing_from(current_position, fix));
                 current_position = fix;
             }
-            "HM" => {
+            "HF" | "HM" => {
                 if let Some(hold_path) = hold_display_path(step, current_course_deg) {
+                    current_position = hold_path
+                        .elements
+                        .last()
+                        .and_then(display_element_end_position)
+                        .unwrap_or(current_position);
+                    current_course_deg = hold_path.elements.last().and_then(display_element_end_course_deg);
                     elements.extend(hold_path.elements);
                 }
             }
@@ -627,6 +538,13 @@ fn sequenced_leg_display_path(
         style: LegDisplayPathStyle::Solid,
         elements,
     })
+}
+
+fn display_element_end_position(element: &LegDisplayElement) -> Option<LatLon> {
+    match element {
+        LegDisplayElement::Segment { end, .. } => Some(*end),
+        LegDisplayElement::Arc { end, .. } => Some(*end),
+    }
 }
 
 fn current_or_step_course_deg(

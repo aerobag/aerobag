@@ -3629,6 +3629,30 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual visual inspection overlay for KCOE I06"]
+    fn writes_kcoe_i06_geg_overlay_png() {
+        render_procedure_overlay_to_paths("KCOE", "I06", "GEG", "KCOE_I06_GEG", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KMSO I12-Y"]
+    fn writes_kmso_i12y_emibe_overlay_png() {
+        render_procedure_overlay_to_paths("KMSO", "I12-Y", "EMIBE", "KMSO_I12-Y_EMIBE", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KCOE L06"]
+    fn writes_kcoe_l06_geg_overlay_png() {
+        render_procedure_overlay_to_paths("KCOE", "L06", "GEG", "KCOE_L06_GEG", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KMSO I12-Y JIROS"]
+    fn writes_kmso_i12y_jiros_overlay_png() {
+        render_procedure_overlay_to_paths("KMSO", "I12-Y", "JIROS", "KMSO_I12-Y_JIROS", false);
+    }
+
+    #[test]
     #[ignore = "manual audit for FA overshoot prevalence"]
     fn audit_fix_to_altitude_overshoot_prevalence() {
         let unpacked_root = latest_snapshot_unpacked_root();

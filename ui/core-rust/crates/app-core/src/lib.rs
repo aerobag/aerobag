@@ -12,6 +12,7 @@ pub mod map_overlay;
 pub mod navdb_types;
 pub mod navkv;
 pub mod ownship;
+pub mod package_management;
 pub mod planning;
 pub mod playback;
 pub mod procedure_geometry;
@@ -66,6 +67,14 @@ pub use ownship::{
     OwnshipSourceMenuItem, OwnshipSourceRegistration, OwnshipSourceStatus,
     OwnshipSourceStatusUpdate, OwnshipState, OwnshipUiState, ResolvedOwnshipState,
     SituationKinematics, SituationRingCandidate, SituationSample, SourceConnectionState,
+};
+pub use package_management::{
+    default_offline_package_preferences, BundleManifest, BundlePackageArtifact, InstalledArtifact,
+    OfflinePackagePreferences, OfflinePackageSelection, OfflinePackagesEvent,
+    OfflinePackagesInitInput, OfflinePackagesReduceInput, OfflinePackagesReduceResult,
+    OfflinePackagesState, OfflinePackagesUiRow, OfflinePackagesUiState, PackageManagementInput,
+    PackageManagementPlan, initialize_offline_packages, plan_offline_packages,
+    reduce_offline_packages,
 };
 pub use planning::{
     activate_direct_to, activate_direct_to_leg, activate_leg, activate_next_leg,

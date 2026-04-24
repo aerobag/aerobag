@@ -9,6 +9,8 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.put
 
 data class ContentFixture(
+    val currentArtifactsJson: String,
+    val cycleBundleJson: String,
     val vectorManifestJson: String,
     val vectorPackageId: String,
     val mapView: MapView,
@@ -32,6 +34,7 @@ private data class WireDevBootstrap(
 
 object SampleData {
     private const val BOOTSTRAP_ASSET_PATH = "fixtures/dev-bootstrap.json"
+    private const val CURRENT_ARTIFACTS_ASSET_PATH = "fixtures/current-artifacts.json"
     private const val CYCLE_BUNDLE_ASSET_PATH = "fixtures/cycle-bundle.json"
 
     private val json = Json {
@@ -41,6 +44,8 @@ object SampleData {
 
     fun load(context: Context): ContentFixture {
         val bootstrapPayload = context.assets.open(BOOTSTRAP_ASSET_PATH).bufferedReader().use { it.readText() }
+        val currentArtifactsPayload =
+            context.assets.open(CURRENT_ARTIFACTS_ASSET_PATH).bufferedReader().use { it.readText() }
         val cycleBundlePayload = context.assets.open(CYCLE_BUNDLE_ASSET_PATH).bufferedReader().use { it.readText() }
         val bootstrap = json.decodeFromString<WireDevBootstrap>(bootstrapPayload)
         val cycleBundle = json.decodeFromString<WireBundleManifest>(cycleBundlePayload)
@@ -83,6 +88,8 @@ object SampleData {
         ).toUi()
         val defaultLevel = mapView.levels.maxBy { it.zoom }
         return ContentFixture(
+            currentArtifactsJson = currentArtifactsPayload,
+            cycleBundleJson = cycleBundlePayload,
             vectorManifestJson = vectorManifestJson,
             vectorPackageId = vectorsPackageId,
             mapView = mapView,

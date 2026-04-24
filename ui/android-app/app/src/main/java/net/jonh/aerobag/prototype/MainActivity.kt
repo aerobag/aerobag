@@ -165,6 +165,7 @@ import net.jonh.aerobag.prototype.domain.MapView
 import net.jonh.aerobag.prototype.domain.MapViewOption
 import net.jonh.aerobag.prototype.domain.MapViewportState
 import net.jonh.aerobag.prototype.domain.NativeAppCoreAdapter
+import net.jonh.aerobag.prototype.domain.NativeBindings
 import net.jonh.aerobag.prototype.domain.NativeUiSession
 import net.jonh.aerobag.prototype.domain.NavRef
 import net.jonh.aerobag.prototype.domain.NavElementUiView
@@ -214,7 +215,12 @@ import net.jonh.aerobag.prototype.domain.viewportCenterLatLon
 import net.jonh.aerobag.prototype.domain.zoomAroundPoint
 import net.jonh.aerobag.prototype.domain.zoomImageAroundPoint
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import java.io.BufferedInputStream
+import java.io.File
 import java.net.URL
 import java.util.zip.ZipInputStream
 import kotlin.math.abs
@@ -335,7 +341,12 @@ private const val UiPrefsPageKey = "page"
 private const val UiPrefsSelectedAirportKey = "selected_airport_id"
 private const val UiPrefsSelectedChartKey = "selected_chart_id"
 private const val UiPrefsRecentAirportsKey = "recent_airport_ids"
+private const val UiPrefsOfflinePackagePreferencesKey = "offline_package_preferences"
 private const val MaxViewHistoryDepth = 64
+private val PackageManagementJson = Json {
+    encodeDefaults = true
+    ignoreUnknownKeys = true
+}
 
 private enum class AppPage {
     Map,
@@ -486,6 +497,99 @@ private data class OfflinePackageDimension(
     val label: String,
 )
 
+@Serializable
+private enum class OfflinePackageSelection {
+    @SerialName("unselected")
+    Unselected,
+    @SerialName("pause")
+    Pause,
+    @SerialName("play")
+    Play,
+}
+
+@Serializable
+private data class OfflinePackagePreferencesWire(
+    val regions: Map<String, OfflinePackageSelection> = emptyMap(),
+    val products: Map<String, OfflinePackageSelection> = emptyMap(),
+)
+
+@Serializable
+private data class InstalledArtifactWire(
+    @SerialName("artifact_id")
+    val artifactId: String,
+    @SerialName("size_bytes")
+    val sizeBytes: Long? = null,
+    @SerialName("checksum_sha256")
+    val checksumSha256: String? = null,
+)
+
+@Serializable
+private data class OfflinePackagesStateWire(
+    val preferences: OfflinePackagePreferencesWire = OfflinePackagePreferencesWire(),
+)
+
+@Serializable
+private data class OfflinePackagesUiRowWire(
+    val id: String,
+    val selection: OfflinePackageSelection,
+    @SerialName("fetch_count")
+    val fetchCount: Int = 0,
+    @SerialName("gc_count")
+    val gcCount: Int = 0,
+    @SerialName("pause_count")
+    val pauseCount: Int = 0,
+)
+
+@Serializable
+private data class OfflinePackagesUiStateWire(
+    @SerialName("summary_text")
+    val summaryText: String = "",
+    val regions: List<OfflinePackagesUiRowWire> = emptyList(),
+    val products: List<OfflinePackagesUiRowWire> = emptyList(),
+)
+
+@Serializable
+private data class OfflinePackagesReduceResultWire(
+    val state: OfflinePackagesStateWire,
+    @SerialName("ui_state")
+    val uiState: OfflinePackagesUiStateWire,
+)
+
+@Serializable
+private data class OfflinePackagesInitInputWire(
+    val state: OfflinePackagesStateWire? = null,
+    @SerialName("region_ids")
+    val regionIds: List<String>,
+    @SerialName("product_ids")
+    val productIds: List<String>,
+    @SerialName("now_epoch_ms")
+    val nowEpochMs: Long,
+    @SerialName("bundle_json")
+    val bundleJson: String,
+    val installed: List<InstalledArtifactWire>,
+)
+
+@Serializable
+private data class OfflinePackagesEventWire(
+    val kind: String,
+    val id: String,
+)
+
+@Serializable
+private data class OfflinePackagesReduceInputWire(
+    val state: OfflinePackagesStateWire,
+    val event: OfflinePackagesEventWire,
+    @SerialName("region_ids")
+    val regionIds: List<String>,
+    @SerialName("product_ids")
+    val productIds: List<String>,
+    @SerialName("now_epoch_ms")
+    val nowEpochMs: Long,
+    @SerialName("bundle_json")
+    val bundleJson: String,
+    val installed: List<InstalledArtifactWire>,
+)
+
 private data class SettingsGridButton(
     val key: String,
     val label: String,
@@ -536,7 +640,8 @@ private val OfflineProductOptions = listOf(
     OfflinePackageDimension("shaded-relief", "Shaded Relief"),
     OfflinePackageDimension("enr-l", "IFR-L"),
     OfflinePackageDimension("enr-h", "IFR-H"),
-    OfflinePackageDimension("plates", "Plates"),
+    OfflinePackageDimension("tpp", "TPP"),
+    OfflinePackageDimension("csup", "CSUP"),
 )
 
 private val SettingsGridButtons = listOf(
@@ -1443,12 +1548,28 @@ private fun SettingsPage(
     onOpenPlan: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
+    val context = LocalContext.current
+    val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
     var pageTrayOpen by remember { mutableStateOf(false) }
     var offlinePackagesOpen by remember { mutableStateOf(false) }
     var debugPanelOpen by remember { mutableStateOf(false) }
     val regionOptions = remember(fixture.mapViews) { offlineRegionOptions(fixture.mapViews) }
-    var selectedRegionIds by remember(regionOptions) { mutableStateOf(regionOptions.map { it.id }.toSet()) }
-    var selectedProductIds by remember { mutableStateOf(OfflineProductOptions.map { it.id }.toSet()) }
+    val regionIds = remember(regionOptions) { regionOptions.map { it.id } }
+    val productIds = remember { OfflineProductOptions.map { it.id } }
+    var offlinePackagesResult by remember { mutableStateOf<OfflinePackagesReduceResultWire?>(null) }
+    LaunchedEffect(fixture.cycleBundleJson, regionIds, productIds) {
+        offlinePackagesResult = runCatching {
+            withContext(Dispatchers.IO) {
+                initializeOfflinePackages(
+                    context = context.applicationContext,
+                    prefs = prefs,
+                    bundleJson = fixture.cycleBundleJson,
+                    regionIds = regionIds,
+                    productIds = productIds,
+                )
+            }
+        }.getOrNull()
+    }
 
     Box(
         modifier = Modifier
@@ -1538,11 +1659,21 @@ private fun SettingsPage(
             Scrim { offlinePackagesOpen = false }
             OfflinePackagesPanel(
                 regionOptions = regionOptions,
-                selectedRegionIds = selectedRegionIds,
-                onRegionSelectionChange = { selectedRegionIds = it },
                 productOptions = OfflineProductOptions,
-                selectedProductIds = selectedProductIds,
-                onProductSelectionChange = { selectedProductIds = it },
+                uiState = offlinePackagesResult?.uiState ?: OfflinePackagesUiStateWire(),
+                onRowClick = { event ->
+                    offlinePackagesResult = runCatching {
+                        reduceOfflinePackages(
+                            context = context.applicationContext,
+                            prefs = prefs,
+                            current = offlinePackagesResult,
+                            event = event,
+                            bundleJson = fixture.cycleBundleJson,
+                            regionIds = regionIds,
+                            productIds = productIds,
+                        )
+                    }.getOrNull()
+                },
                 onClose = { offlinePackagesOpen = false },
                 modifier = Modifier
                     .align(Alignment.Center)
@@ -1556,11 +1687,9 @@ private fun SettingsPage(
 @Composable
 private fun OfflinePackagesPanel(
     regionOptions: List<OfflinePackageDimension>,
-    selectedRegionIds: Set<String>,
-    onRegionSelectionChange: (Set<String>) -> Unit,
     productOptions: List<OfflinePackageDimension>,
-    selectedProductIds: Set<String>,
-    onProductSelectionChange: (Set<String>) -> Unit,
+    uiState: OfflinePackagesUiStateWire,
+    onRowClick: (OfflinePackagesEventWire) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1605,7 +1734,7 @@ private fun OfflinePackagesPanel(
             }
 
             Text(
-                text = "${selectedRegionIds.size} regions, ${selectedProductIds.size} products selected",
+                text = uiState.summaryText,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold,
                 color = uiTheme.controls.panelFg,
@@ -1619,16 +1748,20 @@ private fun OfflinePackagesPanel(
                     OfflinePackageSection(
                         title = "REGIONS",
                         options = regionOptions,
-                        selectedIds = selectedRegionIds,
-                        onSelectionChange = onRegionSelectionChange,
+                        rows = uiState.regions,
+                        onRowClick = { id ->
+                            onRowClick(OfflinePackagesEventWire(kind = "cycle_region", id = id))
+                        },
                     )
                 }
                 item("products") {
                     OfflinePackageSection(
                         title = "PRODUCTS",
                         options = productOptions,
-                        selectedIds = selectedProductIds,
-                        onSelectionChange = onProductSelectionChange,
+                        rows = uiState.products,
+                        onRowClick = { id ->
+                            onRowClick(OfflinePackagesEventWire(kind = "cycle_product", id = id))
+                        },
                     )
                 }
             }
@@ -1640,10 +1773,11 @@ private fun OfflinePackagesPanel(
 private fun OfflinePackageSection(
     title: String,
     options: List<OfflinePackageDimension>,
-    selectedIds: Set<String>,
-    onSelectionChange: (Set<String>) -> Unit,
+    rows: List<OfflinePackagesUiRowWire>,
+    onRowClick: (String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
+    val rowsById = rows.associateBy { it.id }
     MenuPanel(modifier = Modifier.fillMaxWidth()) {
         Text(
             text = title,
@@ -1653,50 +1787,174 @@ private fun OfflinePackageSection(
             color = uiTheme.controls.panelMuted,
         )
         options.forEach { option ->
-            OfflinePackageCheckboxRow(
+            val row = rowsById[option.id] ?: OfflinePackagesUiRowWire(
+                id = option.id,
+                selection = OfflinePackageSelection.Play,
+            )
+            OfflinePackageSelectionRow(
                 label = option.label,
-                checked = selectedIds.contains(option.id),
-                onCheckedChange = { checked ->
-                    onSelectionChange(if (checked) selectedIds + option.id else selectedIds - option.id)
-                },
+                row = row,
+                onClick = { onRowClick(option.id) },
             )
         }
     }
 }
 
 @Composable
-private fun OfflinePackageCheckboxRow(
+private fun OfflinePackageSelectionRow(
     label: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
+    row: OfflinePackagesUiRowWire,
+    onClick: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
+    val accent = when (row.selection) {
+        OfflinePackageSelection.Play -> Color(0xFF38BDA7)
+        OfflinePackageSelection.Pause -> Color(0xFFD98B38)
+        OfflinePackageSelection.Unselected -> uiTheme.controls.panelMuted
+    }
+    val background = when (row.selection) {
+        OfflinePackageSelection.Play -> lerp(uiTheme.controls.buttonBg, Color.White, 0.14f)
+        OfflinePackageSelection.Pause -> lerp(uiTheme.controls.buttonBg, Color(0xFFFFC166), 0.18f)
+        OfflinePackageSelection.Unselected -> uiTheme.controls.buttonBg
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(ThumbSize * 0.82f)
             .clip(RoundedCornerShape(ThumbRadius))
-            .background(if (checked) lerp(uiTheme.controls.buttonBg, Color.White, 0.14f) else uiTheme.controls.buttonBg)
+            .background(background)
             .clickable(
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() },
-            ) { onCheckedChange(!checked) }
+            ) { onClick() }
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Checkbox(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
+        Text(
+            text = row.selection.label(),
+            style = MaterialTheme.typography.labelMedium,
+            color = accent,
+            fontWeight = FontWeight.ExtraBold,
+            maxLines = 1,
         )
         Text(
             text = label,
+            modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.labelLarge,
             color = uiTheme.controls.buttonFg,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+        val planLabel = row.label()
+        if (planLabel.isNotBlank()) {
+            Text(
+                text = planLabel,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.ExtraBold,
+                color = uiTheme.controls.panelFg,
+                maxLines = 1,
+            )
+        }
     }
+}
+
+private fun OfflinePackageSelection.label(): String = when (this) {
+    OfflinePackageSelection.Play -> "PLAY"
+    OfflinePackageSelection.Pause -> "PAUSE"
+    OfflinePackageSelection.Unselected -> "OFF"
+}
+
+private fun OfflinePackagesUiRowWire.label(): String =
+    listOfNotNull(
+        fetchCount.takeIf { it > 0 }?.let { "Fetch $it" },
+        gcCount.takeIf { it > 0 }?.let { "GC $it" },
+        pauseCount.takeIf { it > 0 }?.let { "Pause $it" },
+    ).joinToString("   ")
+
+private fun readOfflinePackagesState(
+    prefs: android.content.SharedPreferences,
+): OfflinePackagesStateWire? =
+    prefs.getString(UiPrefsOfflinePackagePreferencesKey, null)
+        ?.let { runCatching { PackageManagementJson.decodeFromString<OfflinePackagesStateWire>(it) }.getOrNull() }
+
+private fun writeOfflinePackagesState(
+    prefs: android.content.SharedPreferences,
+    state: OfflinePackagesStateWire,
+) {
+    prefs.edit()
+        .putString(UiPrefsOfflinePackagePreferencesKey, PackageManagementJson.encodeToString(state))
+        .apply()
+}
+
+private fun listInstalledPackageArtifacts(context: Context): List<InstalledArtifactWire> {
+    fun artifactIds(kind: InstalledPackageKind): Sequence<String> {
+        val directories = sequenceOf(
+            File(context.filesDir, kind.directoryName),
+            context.getExternalFilesDir(null)?.let { File(it, kind.directoryName) },
+        ).filterNotNull()
+        return directories
+            .filter { it.isDirectory }
+            .flatMap { dir -> dir.listFiles()?.asSequence().orEmpty() }
+            .filter { it.isFile && it.extension == "zip" }
+            .map { it.name.removeSuffix(".zip") }
+    }
+
+    return InstalledPackageKind.entries
+        .asSequence()
+        .flatMap(::artifactIds)
+        .distinct()
+        .sorted()
+        .map { InstalledArtifactWire(artifactId = it) }
+        .toList()
+}
+
+private fun initializeOfflinePackages(
+    context: Context,
+    prefs: android.content.SharedPreferences,
+    bundleJson: String,
+    regionIds: List<String>,
+    productIds: List<String>,
+): OfflinePackagesReduceResultWire {
+    val input = OfflinePackagesInitInputWire(
+        state = readOfflinePackagesState(prefs),
+        regionIds = regionIds,
+        productIds = productIds,
+        nowEpochMs = System.currentTimeMillis(),
+        bundleJson = bundleJson,
+        installed = listInstalledPackageArtifacts(context),
+    )
+    val result = PackageManagementJson.decodeFromString<OfflinePackagesReduceResultWire>(
+        NativeBindings.initializeOfflinePackagesJson(PackageManagementJson.encodeToString(input)),
+    )
+    writeOfflinePackagesState(prefs, result.state)
+    return result
+}
+
+private fun reduceOfflinePackages(
+    context: Context,
+    prefs: android.content.SharedPreferences,
+    current: OfflinePackagesReduceResultWire?,
+    event: OfflinePackagesEventWire,
+    bundleJson: String,
+    regionIds: List<String>,
+    productIds: List<String>,
+): OfflinePackagesReduceResultWire {
+    val state = current?.state ?: readOfflinePackagesState(prefs) ?: OfflinePackagesStateWire()
+    val input = OfflinePackagesReduceInputWire(
+        state = state,
+        event = event,
+        regionIds = regionIds,
+        productIds = productIds,
+        nowEpochMs = System.currentTimeMillis(),
+        bundleJson = bundleJson,
+        installed = listInstalledPackageArtifacts(context),
+    )
+    val result = PackageManagementJson.decodeFromString<OfflinePackagesReduceResultWire>(
+        NativeBindings.reduceOfflinePackagesJson(PackageManagementJson.encodeToString(input)),
+    )
+    writeOfflinePackagesState(prefs, result.state)
+    return result
 }
 
 private fun offlineRegionOptions(mapViews: List<MapViewOption>): List<OfflinePackageDimension> {

@@ -206,6 +206,15 @@ private class FakeNativeBridge(
 ) : NativeBridge {
     private val mock = MockAppCoreAdapter()
 
+    override fun initializeOfflinePackagesJson(inputJson: String): String =
+        """{"state":{"preferences":{"regions":{},"products":{}}},"ui_state":{"summary_text":"","regions":[],"products":[]}}"""
+
+    override fun reduceOfflinePackagesJson(inputJson: String): String =
+        initializeOfflinePackagesJson(inputJson)
+
+    override fun planOfflinePackagesFromBundleJson(inputJson: String): String =
+        """{"fetch":[],"retain_installed":[],"gc":[],"protected_by_pause":[]}"""
+
     override fun navKvOpen(rootBytes: ByteArray): Long = 1
     override fun navKvInsertPage(handle: Long, pageIndex: Int, pageBytes: ByteArray) = Unit
     override fun navKvDestroy(handle: Long) = Unit

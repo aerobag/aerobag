@@ -1,6 +1,12 @@
 package net.jonh.aerobag.prototype.domain
 
 interface NativeBridge {
+    fun initializeOfflinePackagesJson(inputJson: String): String
+
+    fun reduceOfflinePackagesJson(inputJson: String): String
+
+    fun planOfflinePackagesFromBundleJson(inputJson: String): String
+
     fun navKvOpen(rootBytes: ByteArray): Long
 
     fun navKvInsertPage(handle: Long, pageIndex: Int, pageBytes: ByteArray)
@@ -249,6 +255,12 @@ object NativeBindings : NativeBridge {
     init {
         System.loadLibrary("app_ffi")
     }
+
+    external override fun initializeOfflinePackagesJson(inputJson: String): String
+
+    external override fun reduceOfflinePackagesJson(inputJson: String): String
+
+    external override fun planOfflinePackagesFromBundleJson(inputJson: String): String
 
     external override fun navKvOpen(rootBytes: ByteArray): Long
 

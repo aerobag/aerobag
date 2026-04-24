@@ -2,6 +2,7 @@ pub use app_core::*;
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::jstring;
 use jni::JNIEnv;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -748,6 +749,82 @@ pub fn core_had_operation_json(handle: u64, operation_json: &str) -> Result<Stri
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
+#[derive(Deserialize)]
+struct BundlePackageManagementInputWire {
+    now_epoch_ms: i64,
+    preferences: app_core::OfflinePackagePreferences,
+    bundle_json: String,
+    installed: Vec<app_core::InstalledArtifact>,
+}
+
+#[derive(Deserialize)]
+struct OfflinePackagesInitInputWire {
+    state: Option<app_core::OfflinePackagesState>,
+    region_ids: Vec<String>,
+    product_ids: Vec<String>,
+    now_epoch_ms: i64,
+    bundle_json: String,
+    installed: Vec<app_core::InstalledArtifact>,
+}
+
+#[derive(Deserialize)]
+struct OfflinePackagesReduceInputWire {
+    state: app_core::OfflinePackagesState,
+    event: app_core::OfflinePackagesEvent,
+    region_ids: Vec<String>,
+    product_ids: Vec<String>,
+    now_epoch_ms: i64,
+    bundle_json: String,
+    installed: Vec<app_core::InstalledArtifact>,
+}
+
+pub fn plan_offline_packages_from_bundle_json(input_json: &str) -> Result<String, String> {
+    let input: BundlePackageManagementInputWire =
+        serde_json::from_str(input_json).map_err(|err| err.to_string())?;
+    let bundle: app_core::BundleManifest =
+        serde_json::from_str(&input.bundle_json).map_err(|err| err.to_string())?;
+    let plan = app_core::plan_offline_packages(&app_core::PackageManagementInput {
+        now_epoch_ms: input.now_epoch_ms,
+        preferences: input.preferences,
+        bundle,
+        installed: input.installed,
+    });
+    serde_json::to_string(&plan).map_err(|err| err.to_string())
+}
+
+pub fn initialize_offline_packages_json(input_json: &str) -> Result<String, String> {
+    let input: OfflinePackagesInitInputWire =
+        serde_json::from_str(input_json).map_err(|err| err.to_string())?;
+    let bundle: app_core::BundleManifest =
+        serde_json::from_str(&input.bundle_json).map_err(|err| err.to_string())?;
+    let result = app_core::initialize_offline_packages(&app_core::OfflinePackagesInitInput {
+        state: input.state,
+        region_ids: input.region_ids,
+        product_ids: input.product_ids,
+        now_epoch_ms: input.now_epoch_ms,
+        bundle,
+        installed: input.installed,
+    });
+    serde_json::to_string(&result).map_err(|err| err.to_string())
+}
+
+pub fn reduce_offline_packages_json(input_json: &str) -> Result<String, String> {
+    let input: OfflinePackagesReduceInputWire =
+        serde_json::from_str(input_json).map_err(|err| err.to_string())?;
+    let bundle: app_core::BundleManifest =
+        serde_json::from_str(&input.bundle_json).map_err(|err| err.to_string())?;
+    let result = app_core::reduce_offline_packages(&app_core::OfflinePackagesReduceInput {
+        state: input.state,
+        event: input.event,
+        region_ids: input.region_ids,
+        product_ids: input.product_ids,
+        now_epoch_ms: input.now_epoch_ms,
+        bundle,
+        installed: input.installed,
+    });
+    serde_json::to_string(&result).map_err(|err| err.to_string())
+}
+
 fn get_java_string(env: &mut JNIEnv, value: JString) -> Result<String, String> {
     env.get_string(&value)
         .map(|s| s.into())
@@ -781,6 +858,45 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sit
         serde_json::to_string(&app_core::situation_ring_candidates())
             .map_err(|err| err.to_string()),
     )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_planOfflinePackagesFromBundleJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    input_json: JString,
+) -> jstring {
+    let result = (|| {
+        let input = get_java_string(&mut env, input_json)?;
+        plan_offline_packages_from_bundle_json(&input)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_initializeOfflinePackagesJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    input_json: JString,
+) -> jstring {
+    let result = (|| {
+        let input = get_java_string(&mut env, input_json)?;
+        initialize_offline_packages_json(&input)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_reduceOfflinePackagesJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    input_json: JString,
+) -> jstring {
+    let result = (|| {
+        let input = get_java_string(&mut env, input_json)?;
+        reduce_offline_packages_json(&input)
+    })();
+    return_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]

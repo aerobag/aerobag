@@ -541,13 +541,31 @@ button {
 
 .chartButtonIcon {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+  inset: 8px;
+  width: calc(100% - 16px);
+  height: calc(100% - 16px);
+  object-fit: contain;
   object-position: center;
   pointer-events: none;
   user-select: none;
+  border-radius: calc(var(--thumb-radius) * 0.72);
+  box-shadow: inset 0 0 0 8px var(--theme-class-b-d-blue);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.chartButton:has(.chartButtonIcon) {
+  background-image: none;
+  align-items: flex-end;
+  padding-bottom: 6px;
+}
+
+.chartButton:has(.chartButtonIcon).isOpen {
+  background-image: none;
+}
+
+.chartButton:has(.chartButtonIcon).isDisabled,
+.chartButton:has(.chartButtonIcon):disabled {
+  background-image: none;
 }
 
 .chartButton.isOpen {
@@ -592,10 +610,15 @@ button {
   line-height: 1.05;
   text-align: center;
   white-space: pre-line;
-  paint-order: stroke fill;
-  stroke: rgba(8, 18, 24, 0.96);
-  stroke-width: 4.6px;
-  stroke-linejoin: round;
+  text-shadow:
+    -1px -1px 0 #000,
+    0 -1px 0 #000,
+    1px -1px 0 #000,
+    -1px 0 0 #000,
+    1px 0 0 #000,
+    -1px 1px 0 #000,
+    0 1px 0 #000,
+    1px 1px 0 #000;
 }
 
 .chartButtonWide {
@@ -665,6 +688,43 @@ button {
   font-size: var(--thumb-font-small);
   font-weight: 700;
   letter-spacing: 0.04em;
+}
+
+.trayButtonWithIcon {
+  min-width: calc(var(--thumb) * 2.9);
+  padding-inline: calc(var(--thumb) * 0.14) calc(var(--thumb) * 0.22);
+}
+
+.trayButtonContent {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--thumb) * 0.16);
+  width: 100%;
+}
+
+.trayButtonIconFrame {
+  position: relative;
+  flex: 0 0 calc(var(--thumb) * 0.72);
+  width: calc(var(--thumb) * 0.72);
+  height: calc(var(--thumb) * 0.72);
+  border-radius: calc(var(--thumb-radius) * 0.84);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: inset 0 0 0 8px var(--theme-button-bg);
+  overflow: hidden;
+}
+
+.trayButtonIcon {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+}
+
+.trayButtonText {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .chartTray.chartTrayWide .trayButton {

@@ -156,6 +156,7 @@ type ChartAsset = NonNullable<ChartPageData["airports"][number]>["charts"][numbe
 type TrayOption = {
   id: string;
   label: string;
+  iconSrc?: string;
   active?: boolean;
   disabled?: boolean;
   accentColor?: string;
@@ -219,6 +220,7 @@ const samplePlan = bootstrap.flight_plan;
 const emptyChartPage: ChartPageData = { airports: [] };
 const O88_POSITION = { lat: 38.19338888888888, lon: -121.70363888888889 };
 const PAGE_CHART_ICON_SRC = "/icons/icons/page-chart-icon.png?v=20260424b";
+const PAGE_PLAN_ICON_SRC = "/icons/icons/page-plan1-icon.png?v=20260424b";
 
 function chartFamilyIconSrc(familyId: ChartFamilyId | null | undefined): string | undefined {
   switch (familyId) {
@@ -479,12 +481,25 @@ function TerrainOverlayCanvasTile({ tile }: { tile: TerrainOverlayImage }) {
   );
 }
 
-const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string }> = [
-  { id: "map", label: "CHART", launcherLabel: "CHT" },
-  { id: "charts", label: "PLATE", launcherLabel: "PLT" },
-  { id: "plan", label: "PLAN", launcherLabel: "PLN" },
+const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string; iconSrc?: string }> = [
+  { id: "map", label: "CHART", launcherLabel: "CHT", iconSrc: PAGE_CHART_ICON_SRC },
+  { id: "charts", label: "PLATE", launcherLabel: "PLT", iconSrc: "/icons/icons/page-plate-icon.png?v=20260424b" },
+  { id: "plan", label: "PLAN", launcherLabel: "PLN", iconSrc: PAGE_PLAN_ICON_SRC },
   { id: "settings", label: "SETTINGS", launcherLabel: "STGS" },
 ];
+
+function buildPageTrayOptions(currentPage: AppPage, onSelectPage: (page: AppPage) => void, onClose: () => void): TrayOption[] {
+  return pageOptions.map((option) => ({
+    id: option.id,
+    label: option.label,
+    iconSrc: option.iconSrc,
+    active: option.id === currentPage,
+    onSelect: () => {
+      onSelectPage(option.id);
+      onClose();
+    },
+  }));
+}
 
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
 const maxViewHistoryDepth = 64;
@@ -3236,35 +3251,19 @@ function MapPage(props: {
             launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "CHT"}
             launcherImageSrc={PAGE_CHART_ICON_SRC}
             launcherStyle={{
-              backgroundColor: "#eef3e4",
-              backgroundImage: `url("${PAGE_CHART_ICON_SRC}")`,
-              backgroundSize: "cover",
-              backgroundPosition: "center",
-              backgroundRepeat: "no-repeat",
+              backgroundColor: "var(--theme-button-bg)",
             }}
             open={trayGroup.isOpen("page")}
             onToggle={() => trayGroup.toggle("page")}
             ariaLabel="Page"
-            options={pageOptions.map((option) => ({
-              id: option.id,
-              label: option.label,
-              active: option.id === page,
-              onSelect: () => {
-                onSelectPage(option.id);
-                trayGroup.close("page");
-              },
-            }))}
+            options={buildPageTrayOptions(page, onSelectPage, () => trayGroup.close("page"))}
           />
           <TrayDock
             launcherLabel={selectedFamily?.launcher_label ?? "---"}
             launcherImageSrc={chartFamilyIconSrc(selectedFamily?.id)}
             launcherStyle={chartFamilyIconSrc(selectedFamily?.id)
               ? {
-                  backgroundColor: "#eef3e4",
-                  backgroundImage: `url("${chartFamilyIconSrc(selectedFamily?.id)}")`,
-                  backgroundSize: "cover",
-                  backgroundPosition: "center",
-                  backgroundRepeat: "no-repeat",
+                  backgroundColor: "var(--theme-button-bg)",
                 }
               : undefined}
             open={trayGroup.isOpen("family")}
@@ -4364,18 +4363,14 @@ function FlightPlanPage(props: {
       <div className="chartDock">
         <TrayDock
           launcherLabel={pageOptions.find((option) => option.id === props.page)?.launcherLabel ?? "PLN"}
+          launcherImageSrc={PAGE_PLAN_ICON_SRC}
+          launcherStyle={{
+            backgroundColor: "var(--theme-button-bg)",
+          }}
           open={trayGroup.isOpen("page")}
           onToggle={() => trayGroup.toggle("page")}
           ariaLabel="Page"
-          options={pageOptions.map((option) => ({
-            id: option.id,
-            label: option.label,
-            active: option.id === props.page,
-            onSelect: () => {
-              props.onSelectPage(option.id);
-              trayGroup.close("page");
-            },
-          }))}
+          options={buildPageTrayOptions(props.page, props.onSelectPage, () => trayGroup.close("page"))}
         />
       </div>
 
@@ -5052,7 +5047,7 @@ function TrayDock(props: {
                 <button
                   key={option.id}
                   type="button"
-                  className={`trayButton${option.active ? " isActive" : ""}`}
+                  className={`trayButton${option.active ? " isActive" : ""}${option.iconSrc ? " trayButtonWithIcon" : ""}`}
                   disabled={option.disabled}
                   style={option.accentColor ? ({ ["--tray-accent" as string]: option.accentColor } as CSSProperties) : undefined}
                   onPointerDown={stopPointer}
@@ -5060,7 +5055,14 @@ function TrayDock(props: {
                   onDoubleClick={stopDoubleClick}
                   onClick={option.onSelect}
                 >
-                  {option.label}
+                  {option.iconSrc ? (
+                    <span className="trayButtonContent">
+                      <span className="trayButtonIconFrame" aria-hidden="true">
+                        <img className="trayButtonIcon" src={option.iconSrc} alt="" />
+                      </span>
+                      <span className="trayButtonText">{option.label}</span>
+                    </span>
+                  ) : option.label}
                 </button>
               ))}
             </section>,
@@ -5547,24 +5549,12 @@ function ChartsPage(props: {
             launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "PLT"}
             launcherImageSrc="/icons/icons/page-plate-icon.png?v=20260424b"
             launcherStyle={{
-              backgroundColor: "#eef3e4",
-              backgroundImage: 'url("/icons/icons/page-plate-icon.png?v=20260424b")',
-              backgroundSize: "cover",
-              backgroundPosition: "center",
-              backgroundRepeat: "no-repeat",
+              backgroundColor: "var(--theme-button-bg)",
             }}
             open={trayGroup.isOpen("page")}
             onToggle={() => trayGroup.toggle("page")}
             ariaLabel="Page"
-            options={pageOptions.map((option) => ({
-              id: option.id,
-              label: option.label,
-              active: option.id === page,
-              onSelect: () => {
-                onSelectPage(option.id);
-                trayGroup.close("page");
-              },
-            }))}
+            options={buildPageTrayOptions(page, onSelectPage, () => trayGroup.close("page"))}
           />
           <TrayDock
             launcherLabel={selectedAirport?.id ?? "---"}
@@ -5584,14 +5574,6 @@ function ChartsPage(props: {
           />
           <TrayDock
             launcherLabel={selectedChart?.label ?? "---"}
-            launcherImageSrc="/icons/icons/page-chart-icon.png?v=20260424b"
-            launcherStyle={{
-              backgroundColor: "#eef3e4",
-              backgroundImage: 'url("/icons/icons/page-chart-icon.png?v=20260424b")',
-              backgroundSize: "cover",
-              backgroundPosition: "center",
-              backgroundRepeat: "no-repeat",
-            }}
             open={trayGroup.isOpen("chart")}
             launcherAccentColor={selectedChart ? plateFolderColor(selectedChart.folder_category) : undefined}
             onToggle={() => trayGroup.toggle("chart")}
@@ -5685,15 +5667,7 @@ function SettingsPage(props: {
           open={trayGroup.isOpen("page")}
           onToggle={() => trayGroup.toggle("page")}
           ariaLabel="Page"
-          options={pageOptions.map((option) => ({
-            id: option.id,
-            label: option.label,
-            active: option.id === page,
-            onSelect: () => {
-              onSelectPage(option.id);
-              trayGroup.close("page");
-            },
-          }))}
+          options={buildPageTrayOptions(page, onSelectPage, () => trayGroup.close("page"))}
         />
       </div>
 

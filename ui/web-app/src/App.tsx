@@ -5356,14 +5356,14 @@ function ChartsPage(props: {
             }))}
           />
           <TrayDock
-            launcherLabel={selectedAirport?.label ?? "---"}
+            launcherLabel={selectedAirport?.id ?? "---"}
             open={trayGroup.isOpen("airport")}
             onToggle={() => trayGroup.toggle("airport")}
             ariaLabel="Airport"
             style="plate_narrow"
             options={airports.map((airport) => ({
               id: airport.id,
-              label: airport.label,
+              label: airport.id,
               active: airport.id === selectedAirport?.id,
               onSelect: () => {
                 onSelectAirport(airport.id);

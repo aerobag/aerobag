@@ -3814,12 +3814,12 @@ private fun ChartViewerSelectors(
         )
 
         MenuDock(
-            launcherLabel = selectedAirport?.label ?: "---",
+            launcherLabel = selectedAirport?.id ?: "---",
             open = airportTrayOpen,
             onToggle = onToggleAirportTray,
             style = MenuDockStyle.PlateAirport,
             options = airports.map { airport ->
-                MenuDockOption(airport.id, airport.label, active = airport.id == selectedAirport?.id) { onSelectAirport(airport.id) }
+                MenuDockOption(airport.id, airport.id, active = airport.id == selectedAirport?.id) { onSelectAirport(airport.id) }
             },
         )
 

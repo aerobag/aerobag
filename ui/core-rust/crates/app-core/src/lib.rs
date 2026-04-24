@@ -24,11 +24,8 @@ pub mod state;
 pub mod terrain;
 
 pub use chart_page::{
-    build_chart_catalog, derive_chart_page, derive_chart_page_from_catalog,
-    derive_chart_page_state, derive_chart_page_state_from_airports,
-    derive_chart_page_state_from_catalog, airport_ids_from_plan, DerivedChartAirport,
+    airport_ids_from_plan, derive_chart_page_state_from_airports, DerivedChartAirport,
     DerivedChartAsset, DerivedChartCatalog, DerivedChartPage, DerivedChartPageState,
-    ResourceAirportResources, ResourceCsup, ResourceIndexChartPageInput, ResourcePlate,
 };
 pub use content::{
     AvailabilityDetail, CachedPlate, CachedTileset, ContentAvailability, ContentInventory,
@@ -489,49 +486,11 @@ where
     Ok(route)
 }
 
-use std::{
-    collections::HashMap,
-    hash::{Hash, Hasher},
-    sync::{Arc, Mutex, OnceLock},
-};
-
 pub fn load_geometry(geometry_json: &str) -> AppResult<GeometryBundle> {
     serde_json::from_str(geometry_json).map_err(|err| AppError {
         kind: AppErrorKind::InvalidCatalog,
         message: format!("failed to parse geometry json: {err}"),
     })
-}
-
-pub fn load_resource_index_chart_page_input(
-    resource_index_json: &str,
-) -> AppResult<Arc<ResourceIndexChartPageInput>> {
-    static CACHE: OnceLock<Mutex<HashMap<u64, Arc<ResourceIndexChartPageInput>>>> = OnceLock::new();
-
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    resource_index_json.hash(&mut hasher);
-    let key = hasher.finish();
-
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(cached) = cache
-        .lock()
-        .expect("resource index cache poisoned")
-        .get(&key)
-        .cloned()
-    {
-        return Ok(cached);
-    }
-
-    let parsed: ResourceIndexChartPageInput =
-        serde_json::from_str(resource_index_json).map_err(|err| AppError {
-            kind: AppErrorKind::InvalidCatalog,
-            message: format!("failed to parse resource index json: {err}"),
-        })?;
-    let parsed = Arc::new(parsed);
-    cache
-        .lock()
-        .expect("resource index cache poisoned")
-        .insert(key, parsed.clone());
-    Ok(parsed)
 }
 
 pub fn build_flight_plan(plan: FlightPlan) -> AppResult<FlightPlan> {

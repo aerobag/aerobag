@@ -51,7 +51,7 @@ chart asset arrays.
 
 Current consumer: PLT/FLDR selected airport and recent-plan airports.
 
-Current old source: `derive_chart_page` over bulk `resource_index`.
+Previous prototype source, now removed: `derive_chart_page` over bulk `resource_index`.
 
 Value: one `DerivedChartAirport` / `ChartPageData["airports"][number]`.
 

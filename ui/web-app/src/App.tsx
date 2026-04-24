@@ -620,6 +620,7 @@ const airportCircleMarkerPath = [
 const airportLabelY = -24;
 const vorLabelY = -24;
 const fixLabelY = -15;
+const obstacleLabelY = -14;
 
 type VectorPointSymbolFeature = {
   kind: string;
@@ -638,6 +639,7 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
   const { feature, showLabel = true } = props;
   const isAirport = feature.style_class === "airport" || feature.kind.toLowerCase() === "airport";
   const isVor = feature.kind.toLowerCase().includes("vor") || feature.style_class === "nav";
+  const isObstacle = feature.style_class.startsWith("obstacle") || feature.kind.toLowerCase() === "obs" || feature.kind.toLowerCase() === "obstacle";
   const airportClass = feature.towered ? "airportMarker airportTowered" : "airportMarker airportUntowered";
   const airportLabelClass = feature.towered ? "airportLabel airportToweredLabel" : "airportLabel airportUntoweredLabel";
   if (isAirport) {
@@ -703,6 +705,24 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
         <path d={vorOuterHexPath} className="vorBorder" />
         {showLabel ? (
           <text x="0" y={vorLabelY} textAnchor="middle" className="vorLabel">
+            {feature.label}
+          </text>
+        ) : null}
+      </>
+    );
+  }
+  if (isObstacle) {
+    const obstacleClass = feature.style_class === "obstacle-danger"
+      ? "obstacleMarker obstacleDanger"
+      : feature.style_class === "obstacle-muted"
+        ? "obstacleMarker obstacleMuted"
+        : "obstacleMarker obstacleCaution";
+    return (
+      <>
+        <path d="M 0 -10 L 0 6 M -5 -2 L 0 -10 L 5 -2" className={`${obstacleClass} obstacleStemUnder`} />
+        <path d="M 0 -10 L 0 6 M -5 -2 L 0 -10 L 5 -2" className={obstacleClass} />
+        {showLabel && feature.label ? (
+          <text x="0" y={obstacleLabelY} textAnchor="middle" className="obstacleLabel">
             {feature.label}
           </text>
         ) : null}
@@ -1907,6 +1927,13 @@ function MapPage(props: {
     () => resolveSituationOverlay(ownship, viewport, surfaceSize.width, surfaceSize.height, situationRingCandidates),
     [ownship, viewport, surfaceSize.height, surfaceSize.width, situationRingCandidates],
   );
+  const mapOverlayOwnshipKey = [
+    ownship.position?.lat.toFixed(6) ?? "none",
+    ownship.position?.lon.toFixed(6) ?? "none",
+    ownship.altitude_msl_ft?.toFixed(0) ?? ownship.pressure_altitude_ft?.toFixed(0) ?? "none",
+    ownship.track_deg_true?.toFixed(0) ?? "none",
+    ownship.ground_speed_kt?.toFixed(0) ?? "none",
+  ].join(":");
   const nexradOverlay = useMemo(() => {
     const frame = nexradFrames[nexradFrameIndex];
     if (!frame || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -2355,7 +2382,27 @@ function MapPage(props: {
             if (!response.ok) {
               throw new Error(`failed to load vector tile ${tile.z}/${tile.x}/${tile.y}: ${response.status}`);
             }
-            return (await response.json()) as PointTilePayload;
+            try {
+              return (await response.json()) as PointTilePayload;
+            } catch (error) {
+              if (tile.layer === "obstacle") {
+                debugLog("map.overlay.obstacle_tile.parse_fallback", {
+                  z: tile.z,
+                  x: tile.x,
+                  y: tile.y,
+                  error: errorMessage(error),
+                });
+                return {
+                  schema_version: 1,
+                  layer: tile.layer,
+                  z: tile.z,
+                  x: tile.x,
+                  y: tile.y,
+                  records: [],
+                } satisfies PointTilePayload;
+              }
+              throw error;
+            }
           }),
         );
         debugLog("map.overlay.tiles.fetch.done", {
@@ -2581,7 +2628,16 @@ function MapPage(props: {
       cancelled = true;
       controller.abort();
     };
-  }, [debugShowVectorLayer, mapIsVisible, onDebugWarning, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+  }, [
+    debugShowVectorLayer,
+    mapIsVisible,
+    mapOverlayOwnshipKey,
+    onDebugWarning,
+    surfaceSize.height,
+    surfaceSize.width,
+    uiSession,
+    viewport,
+  ]);
 
   const overlayTransform = useMemo(() => {
     if (!mapOverlayViewport) {

@@ -2454,6 +2454,13 @@ mod tests {
         }
     }
 
+    fn fixture_repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../")
+            .canonicalize()
+            .expect("canonicalize fixture repo root")
+    }
+
     fn load_snapshot_nav_kv_store() -> crate::NavKvStore {
         let (root_bytes, page_paths) = load_fixture_nav_kv_pages();
         let root = crate::NavKvRoot::parse(&root_bytes).expect("parse fixture nav_kv root");
@@ -2799,38 +2806,34 @@ mod tests {
             .unwrap_or_else(|| panic!("load {} {} plate georef", airport_id, procedure_id));
 
         let store = load_snapshot_nav_kv_store();
-        let rows = read_required_from_store::<Vec<ProcedureDistinctRow>>(
-            &store,
-            crate::NavKvQuery::ProcedureDistinctRows {
-                airport_id: airport_id.to_string(),
-                procedure_id: procedure_id.to_string(),
-            },
-            "procedure distinct rows",
-        );
-        let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
-            &store,
-            crate::NavKvQuery::ProcedureMaterializationRows {
-                airport_id: airport_id.to_string(),
-                procedure_id: procedure_id.to_string(),
-            },
-            "procedure materialization rows",
-        );
         let materialized = std::panic::catch_unwind(|| {
-            materialize_procedure_from_records(
+            materialize_snapshot_procedure(
+                &store,
                 airport_id,
                 procedure_id,
-                ProcedureKind::Approach,
-                None,
                 selected_enroute_transition.clone(),
-                0,
-                rows.clone(),
-                records.clone(),
             )
         })
         .ok()
         .and_then(Result::ok)
         .ok_or_else(|| "normal materialization failed".to_string())
         .or_else(|_| {
+            let rows = read_required_from_store::<Vec<ProcedureDistinctRow>>(
+                &store,
+                crate::NavKvQuery::ProcedureDistinctRows {
+                    airport_id: airport_id.to_string(),
+                    procedure_id: procedure_id.to_string(),
+                },
+                "procedure distinct rows",
+            );
+            let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+                &store,
+                crate::NavKvQuery::ProcedureMaterializationRows {
+                    airport_id: airport_id.to_string(),
+                    procedure_id: procedure_id.to_string(),
+                },
+                "procedure materialization rows",
+            );
             let options = describe_procedure_options_from_rows(
                 airport_id,
                 procedure_id,
@@ -2940,7 +2943,7 @@ mod tests {
         let padded_plate = padded_plate_georef(&plate, padding);
         let mut canvas = padded_canvas(&base_canvas, padding);
         let mut draw_steps = Vec::<(String, Vec<(f64, f64)>, Rgba<u8>)>::new();
-        let mut path_dump_lines = Vec::<String>::new();
+        let path_dump_lines = procedure_path_dump_lines(&store, airport_id, &materialized);
         for leg in &materialized.resolved_legs {
             let elements = if let Some(path) = leg
                 .procedure_provenance
@@ -2957,13 +2960,6 @@ mod tests {
                 };
                 vec![LegDisplayElement::Segment { start, end }]
             };
-            for (element_index, element) in elements.iter().enumerate() {
-                path_dump_lines.push(format_path_element_line_basic(
-                    leg.id.as_str(),
-                    element_index,
-                    element,
-                ));
-            }
             if let Some(path) = leg
                 .procedure_provenance
                 .as_ref()
@@ -3026,6 +3022,73 @@ mod tests {
             }
         }
         eprintln!("wrote {output_path}");
+    }
+
+    fn materialize_snapshot_procedure(
+        store: &crate::NavKvStore,
+        airport_id: &str,
+        procedure_id: &str,
+        enroute_transition: Option<String>,
+    ) -> AppResult<MaterializedProcedure> {
+        let rows = read_required_from_store::<Vec<ProcedureDistinctRow>>(
+            store,
+            crate::NavKvQuery::ProcedureDistinctRows {
+                airport_id: airport_id.to_string(),
+                procedure_id: procedure_id.to_string(),
+            },
+            "procedure distinct rows",
+        );
+        let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: airport_id.to_string(),
+                procedure_id: procedure_id.to_string(),
+            },
+            "procedure materialization rows",
+        );
+        materialize_procedure_from_records(
+            airport_id,
+            procedure_id,
+            ProcedureKind::Approach,
+            None,
+            enroute_transition,
+            0,
+            rows,
+            records,
+        )
+    }
+
+    fn procedure_path_dump_lines(
+        store: &crate::NavKvStore,
+        airport_id: &str,
+        materialized: &MaterializedProcedure,
+    ) -> Vec<String> {
+        let mut path_dump_lines = Vec::<String>::new();
+        for leg in &materialized.resolved_legs {
+            let elements = if let Some(path) = leg
+                .procedure_provenance
+                .as_ref()
+                .and_then(|provenance| provenance.display_path.as_ref())
+            {
+                path.elements.clone()
+            } else {
+                let Some(start) = nav_ref_position_from_store(store, airport_id, &leg.from) else {
+                    continue;
+                };
+                let Some(end) = nav_ref_position_from_store(store, airport_id, &leg.to) else {
+                    continue;
+                };
+                vec![LegDisplayElement::Segment { start, end }]
+            };
+            for (element_index, element) in elements.iter().enumerate() {
+                path_dump_lines.push(format_path_element_line_basic(
+                    leg.id.as_str(),
+                    element_index,
+                    element,
+                ));
+            }
+        }
+        path_dump_lines
     }
 
     fn format_path_element_line_basic(
@@ -3132,7 +3195,7 @@ mod tests {
     }
 
     fn latest_snapshot_unpacked_root() -> PathBuf {
-        let repo_root = Path::new("/root/aerobag-three/aerobag");
+        let repo_root = fixture_repo_root();
         let configured_root = fs::read_to_string(repo_root.join(".aerobag-artifact-read-path"))
             .ok()
             .map(|value| value.trim().to_string())
@@ -3949,6 +4012,143 @@ mod tests {
         assert!(
             positions_nearly_equal(i70_start, i50_end),
             "expected I-70 to continue from I-50 end, got start={i70_start:?} end={i50_end:?}"
+        );
+    }
+
+    fn assert_snapshot_procedure_path_dump_eq(
+        airport_id: &str,
+        procedure_id: &str,
+        enroute_transition: &str,
+        expected: &[&str],
+    ) {
+        let store = load_snapshot_nav_kv_store();
+        let materialized = materialize_snapshot_procedure(
+            &store,
+            airport_id,
+            procedure_id,
+            (!enroute_transition.trim().is_empty()).then(|| enroute_transition.to_string()),
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "materialize {} {} {}: {}",
+                airport_id, procedure_id, enroute_transition, error
+            )
+        });
+        let actual = procedure_path_dump_lines(&store, airport_id, &materialized);
+        let expected = expected
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn materialized_path_dump_for_ksea_i16l_pae_stays_stable() {
+        assert_snapshot_procedure_path_dump_eq(
+            "KSEA",
+            "I16L",
+            "PAE",
+            &[
+                "procedure-I16L-A-20 element#0 SEG 47.919833,-122.277802 -> 47.804872,-122.304747 th=188.9 len_nm=6.98",
+                "procedure-I16L-A-30 element#0 SEG 47.804872,-122.304747 -> 47.752564,-122.305211 th=180.3 len_nm=3.14",
+                "procedure-I16L-A-40 element#0 SEG 47.752564,-122.305211 -> 47.699881,-122.305675 th=180.3 len_nm=3.16",
+                "procedure-I16L-A-50 element#0 SEG 47.699881,-122.305675 -> 47.647950,-122.306136 th=180.3 len_nm=3.12",
+                "procedure-I16L-I-11 element#0 SEG 47.647950,-122.306136 -> 47.605975,-122.306506 th=180.3 len_nm=2.52",
+                "procedure-I16L-I-20 element#0 SEG 47.605975,-122.306506 -> 47.537658,-122.307103 th=180.3 len_nm=4.10",
+                "procedure-I16L-I-30 element#0 SEG 47.537658,-122.307103 -> 47.463795,-122.307750 th=180.3 len_nm=4.43",
+                "procedure-I16L-I-50 element#0 SEG 47.463795,-122.307750 -> 47.443198,-122.308282 th=181.0 len_nm=1.24",
+                "procedure-I16L-I-50 element#1 SEG 47.443198,-122.308282 -> 47.395403,-122.309516 th=181.0 len_nm=2.87",
+                "procedure-I16L-I-70 element#0 SEG 47.395400,-122.309272 -> 47.252153,-122.308003 th=179.7 len_nm=8.59",
+                "procedure-I16L-I-70 element#1 SEG 47.252153,-122.308003 -> 47.218875,-122.305176 th=176.7 len_nm=2.00",
+                "procedure-I16L-I-70 element#2 ARC 47.218875,-122.305176 -> 47.226106,-122.277373 center=47.219485,-122.289580 cw=false start_th=176.7 end_th=321.4 radius_nm=0.64 arc_len_nm=2.39 sweep_deg=215.3",
+                "procedure-I16L-I-70 element#3 SEG 47.226106,-122.277373 -> 47.252153,-122.308003 th=321.4 len_nm=2.00",
+                "procedure-I16L-I-70 element#4 ARC 47.252153,-122.308003 -> 47.253374,-122.276791 center=47.252764,-122.292397 cw=true start_th=356.7 end_th=176.7 radius_nm=0.64 arc_len_nm=2.00 sweep_deg=180.0",
+                "procedure-I16L-I-70 element#5 SEG 47.253374,-122.276791 -> 47.220096,-122.273964 th=176.7 len_nm=2.00",
+                "procedure-I16L-I-70 element#6 ARC 47.220096,-122.273964 -> 47.218875,-122.305157 center=47.219485,-122.289561 cw=true start_th=176.7 end_th=356.7 radius_nm=0.64 arc_len_nm=2.00 sweep_deg=180.0",
+                "procedure-I16L-I-70 element#7 SEG 47.218875,-122.305157 -> 47.252153,-122.308003 th=356.7 len_nm=2.00",
+            ],
+        );
+    }
+
+    #[test]
+    fn materialized_path_dump_for_krfd_l07_henor_stays_stable() {
+        assert_snapshot_procedure_path_dump_eq(
+            "KRFD",
+            "L07",
+            "HENOR",
+            &[
+                "procedure-L07-A-20 element#0 SEG 42.170708,-89.582314 -> 42.111344,-89.350642 th=109.0 len_nm=10.91",
+                "procedure-L07-L-20 element#0 SEG 42.111344,-89.350642 -> 42.153186,-89.228561 th=65.2 len_nm=5.98",
+                "procedure-L07-L-21 element#0 SEG 42.153186,-89.228561 -> 42.172867,-89.170872 th=65.3 len_nm=2.82",
+                "procedure-L07-L-30 element#0 SEG 42.172867,-89.170872 -> 42.190229,-89.119923 th=65.3 len_nm=2.49",
+                "procedure-L07-L-50 element#0 SEG 42.190229,-89.119923 -> 42.235978,-88.985056 th=65.3 len_nm=6.59",
+                "procedure-L07-L-50 element#1 SEG 42.235978,-88.985056 -> 42.263730,-88.903186 th=65.4 len_nm=4.00",
+            ],
+        );
+    }
+
+    #[test]
+    fn materialized_path_dump_for_kden_i16l_jeepr_stays_stable() {
+        assert_snapshot_procedure_path_dump_eq(
+            "KDEN",
+            "I16L",
+            "JEEPR",
+            &[
+                "procedure-I16L-A-20 element#0 SEG 40.207258,-104.683203 -> 40.161650,-104.683736 th=180.5 len_nm=2.74",
+                "procedure-I16L-I-11 element#0 SEG 40.161650,-104.683736 -> 40.097183,-104.684486 th=180.5 len_nm=3.87",
+                "procedure-I16L-I-12 element#0 SEG 40.097183,-104.684486 -> 40.033067,-104.685231 th=180.5 len_nm=3.85",
+                "procedure-I16L-I-20 element#0 SEG 40.033067,-104.685231 -> 39.980528,-104.685839 th=180.5 len_nm=3.15",
+                "procedure-I16L-I-30 element#0 SEG 39.980528,-104.685839 -> 39.897036,-104.686806 th=180.5 len_nm=5.01",
+                "procedure-I16L-I-60 element#0 SEG 39.897036,-104.686806 -> 39.811572,-104.689723 th=181.5 len_nm=5.13",
+                "procedure-I16L-I-60 element#1 SEG 39.811572,-104.689723 -> 39.809016,-104.689810 th=181.5 len_nm=0.15",
+                "procedure-I16L-I-60 element#2 SEG 39.809016,-104.689810 -> 39.500897,-104.922006 th=210.2 len_nm=21.37",
+                "procedure-I16L-I-60 element#3 ARC 39.500897,-104.922006 -> 39.511636,-104.945727 center=39.506266,-104.933866 cw=true start_th=210.4 end_th=30.4 radius_nm=0.64 arc_len_nm=2.00 sweep_deg=180.0",
+                "procedure-I16L-I-60 element#4 SEG 39.511636,-104.945727 -> 39.540386,-104.923863 th=30.4 len_nm=2.00",
+                "procedure-I16L-I-60 element#5 ARC 39.540386,-104.923863 -> 39.529648,-104.900130 center=39.535017,-104.911996 cw=true start_th=30.4 end_th=210.4 radius_nm=0.64 arc_len_nm=2.00 sweep_deg=180.0",
+                "procedure-I16L-I-60 element#6 SEG 39.529648,-104.900130 -> 39.500897,-104.922006 th=210.4 len_nm=2.00",
+            ],
+        );
+    }
+
+    #[test]
+    fn materialized_path_dump_for_kfxy_vora_mcw_stays_stable() {
+        assert_snapshot_procedure_path_dump_eq(
+            "KFXY",
+            "VOR-A",
+            "MCW",
+            &[
+                "procedure-VOR-A-A-20 element#0 SEG 43.094757,-93.329872 -> 43.158217,-93.463553 th=303.1 len_nm=6.98",
+                "procedure-VOR-A-S-20 element#0 SEG 43.158217,-93.463553 -> 43.203461,-93.559211 th=303.0 len_nm=4.99",
+                "procedure-VOR-A-S-30 element#0 SEG 43.203461,-93.559211 -> 43.229639,-93.614697 th=302.9 len_nm=2.89",
+                "procedure-VOR-A-S-60 element#0 ARC 43.229639,-93.614697 -> 43.230903,-93.621407 center=43.222965,-93.620646 cw=false start_th=303.0 end_th=266.0 radius_nm=0.48 arc_len_nm=0.31 sweep_deg=37.0",
+                "procedure-VOR-A-S-60 element#1 SEG 43.230903,-93.621407 -> 43.224296,-93.751086 th=266.0 len_nm=5.68",
+                "procedure-VOR-A-S-60 element#2 ARC 43.224296,-93.751086 -> 43.172319,-93.772608 center=43.094757,-93.329872 cw=false start_th=203.0 end_th=193.7 radius_nm=20.01 arc_len_nm=3.27 sweep_deg=9.4",
+                "procedure-VOR-A-S-60 element#3 ARC 43.172319,-93.772608 -> 43.151461,-93.777960 center=43.161890,-93.775285 cw=true start_th=100.6 end_th=280.6 radius_nm=0.64 arc_len_nm=2.00 sweep_deg=180.0",
+                "procedure-VOR-A-S-60 element#4 SEG 43.151461,-93.777960 -> 43.157593,-93.822871 th=280.6 len_nm=2.00",
+                "procedure-VOR-A-S-60 element#5 ARC 43.157593,-93.822871 -> 43.178451,-93.817519 center=43.168022,-93.820195 cw=true start_th=280.6 end_th=100.6 radius_nm=0.64 arc_len_nm=2.00 sweep_deg=180.0",
+                "procedure-VOR-A-S-60 element#6 SEG 43.178451,-93.817519 -> 43.172319,-93.772608 th=100.6 len_nm=2.00",
+            ],
+        );
+    }
+
+    #[test]
+    fn materialized_path_dump_for_padq_i26y_cinek_stays_stable() {
+        assert_snapshot_procedure_path_dump_eq(
+            "PADQ",
+            "I26-Y",
+            "CINEK",
+            &[
+                "procedure-I26-Y-A-20 element#0 ARC 57.937047,-152.269614 -> 57.742233,-152.034769 center=57.775036,-152.339840 cw=true start_th=103.0 end_th=191.3 radius_nm=9.98 arc_len_nm=15.38 sweep_deg=88.3",
+                "procedure-I26-Y-I-20 element#0 SEG 57.742233,-152.034769 -> 57.747147,-152.262514 th=272.4 len_nm=7.30",
+                "procedure-I26-Y-I-30 element#0 SEG 57.747147,-152.262514 -> 57.750136,-152.413031 th=272.2 len_nm=4.82",
+                "procedure-I26-Y-I-70 element#0 ARC 57.750136,-152.413031 -> 57.734372,-152.410706 center=57.742183,-152.413551 cw=false start_th=272.0 end_th=79.0 radius_nm=0.48 arc_len_nm=1.61 sweep_deg=193.0",
+                "procedure-I26-Y-I-70 element#1 SEG 57.734372,-152.410706 -> 57.774117,-152.027684 th=78.8 len_nm=12.49",
+                "procedure-I26-Y-I-70 element#2 ARC 57.774117,-152.027684 -> 57.937047,-152.269614 center=57.775036,-152.339840 cw=false start_th=0.2 end_th=283.0 radius_nm=9.99 arc_len_nm=13.46 sweep_deg=77.2",
+                "procedure-I26-Y-I-70 element#3 ARC 57.937047,-152.269614 -> 57.941821,-152.308565 center=57.939434,-152.289089 cw=true start_th=193.0 end_th=13.0 radius_nm=0.64 arc_len_nm=2.00 sweep_deg=180.0",
+                "procedure-I26-Y-I-70 element#4 SEG 57.941821,-152.308565 -> 57.974300,-152.294438 th=13.0 len_nm=2.00",
+                "procedure-I26-Y-I-70 element#5 ARC 57.974300,-152.294438 -> 57.969526,-152.255449 center=57.971913,-152.274943 cw=true start_th=13.0 end_th=193.0 radius_nm=0.64 arc_len_nm=2.00 sweep_deg=180.0",
+                "procedure-I26-Y-I-70 element#6 SEG 57.969526,-152.255449 -> 57.937047,-152.269614 th=193.0 len_nm=2.00",
+            ],
         );
     }
 

@@ -16,6 +16,7 @@ export const sampleCatalog = sampleCatalogFixture as CatalogJson;
 export const sampleGeometry: GeometryJson = {
   schema_version: 1,
   polygons: [],
+  polygon_sets: [],
 };
 
 export const mapViews = deriveMapViews(sampleResourceIndexFixture, []);

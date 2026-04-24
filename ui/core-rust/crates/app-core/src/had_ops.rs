@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
@@ -11,7 +11,8 @@ use crate::{
     materialize_procedure_from_records, prepare_airway_presentation, project_flight_plan_route_with_resolver, AirwayAutoSelection,
     AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate, AirwayPresentationPlan, AirwaySegment,
     AirwaySpatialPoint, AirwaySuggestion, AppError, AppErrorKind, AppResult, CifpTppMatchRow,
-    FlightPlan, FlightPlanRouteSegment, FlightPlanUiMutation, FlightPlanUiState, LatLon, MaterializedProcedure, NavKvLookup, NavKvQuery, NavKvStore, NavRef,
+    FlightPlan, FlightPlanRouteSegment, FlightPlanUiMutation, FlightPlanUiState, LatLon,
+    MaterializedProcedure, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PolygonRecord,
     NavSymbolFeature, PlateProcedureLoadCandidateInput, ProcedureDistinctRow, ProcedureKind,
     ProcedureLegMaterializationRecord, ProcedureLoadOption, ProcedureOptions, ProcedureSummary,
     ResolvedLeg, ResolvedLegSource, RouteComponent, WaypointIdentifierRecord,
@@ -321,6 +322,7 @@ struct MapSelectorState {
     selected_map_id: String,
     selected_map: Option<MapViewOptionRecord>,
     displayed_maps: Vec<MapViewOptionRecord>,
+    geometry: DisplayGeometryRecord,
     family_options: Vec<MapFamilyOption>,
 }
 
@@ -339,7 +341,39 @@ struct MapViewOptionRecord {
     id: String,
     label: String,
     region_id: String,
+    coverage: Option<ChartCoverageRecord>,
     map_view: MapViewRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+enum ChartCoverageRecord {
+    PolygonSetRef(PolygonSetRefRecord),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct PolygonSetRefRecord {
+    polygon_set_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct PolygonSetRecord {
+    schema_version: u32,
+    id: String,
+    polygons: Vec<PolygonRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DisplayGeometryRecord {
+    schema_version: u32,
+    polygons: Vec<PolygonRecord>,
+    polygon_sets: Vec<DisplayPolygonSetRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DisplayPolygonSetRecord {
+    id: String,
+    polygon_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -534,10 +568,11 @@ fn map_selector_state(
         .as_ref()
         .map(|view| view.map_view.chart_family.as_str())
         .unwrap_or("sec");
-    let displayed_maps = displayed_family_maps(&map_views, selected_family_id)
+    let displayed_maps: Vec<MapViewOptionRecord> = displayed_family_maps(&map_views, selected_family_id)
         .into_iter()
         .cloned()
         .collect();
+    let geometry = displayed_geometry(store, &displayed_maps)?;
     let selected_region_id = selected_map.as_ref().map(|view| view.region_id.as_str());
     let family_options = supported_chart_families()
         .into_iter()
@@ -560,7 +595,50 @@ fn map_selector_state(
             .unwrap_or_default(),
         selected_map,
         displayed_maps,
+        geometry,
         family_options,
+    })
+}
+
+fn displayed_geometry(
+    store: &NavKvStore,
+    displayed_maps: &[MapViewOptionRecord],
+) -> Result<DisplayGeometryRecord, HadReadError> {
+    let mut polygons = Vec::new();
+    let mut polygon_sets = Vec::new();
+    let mut seen_polygon_ids = HashSet::new();
+
+    for view in displayed_maps {
+        let Some(ChartCoverageRecord::PolygonSetRef(coverage)) = &view.coverage else {
+            continue;
+        };
+        let polygon_set = read_required::<PolygonSetRecord>(
+            store,
+            NavKvQuery::PolygonSet {
+                polygon_set_id: coverage.polygon_set_id.clone(),
+            },
+            "chart coverage polygon set",
+        )?;
+        let polygon_ids = polygon_set
+            .polygons
+            .iter()
+            .map(|polygon| polygon.id.clone())
+            .collect::<Vec<_>>();
+        for polygon in polygon_set.polygons {
+            if seen_polygon_ids.insert(polygon.id.clone()) {
+                polygons.push(polygon);
+            }
+        }
+        polygon_sets.push(DisplayPolygonSetRecord {
+            id: polygon_set.id,
+            polygon_ids,
+        });
+    }
+
+    Ok(DisplayGeometryRecord {
+        schema_version: 1,
+        polygons,
+        polygon_sets,
     })
 }
 
@@ -1527,6 +1605,26 @@ mod tests {
         assert_eq!(
             sec_sc.map_view.tile_url_root,
             "/sectional-packages/SC_SEC_2603/tiles"
+        );
+        assert!(matches!(
+            sec_sc.coverage,
+            Some(ChartCoverageRecord::PolygonSetRef(_))
+        ));
+        let tac_sc = state
+            .displayed_maps
+            .iter()
+            .find(|view| view.id == "tac:sc")
+            .expect("missing tac:sc map");
+        assert!(matches!(
+            tac_sc.coverage,
+            Some(ChartCoverageRecord::PolygonSetRef(_))
+        ));
+        assert!(
+            state
+                .geometry
+                .polygon_sets
+                .iter()
+                .any(|set| set.id == "chart-coverage:tac:sc")
         );
         assert!(displayed_regions.len() > 1, "expected multi-region displayed maps, got {displayed_regions:?}");
     }

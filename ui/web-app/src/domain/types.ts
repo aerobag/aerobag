@@ -737,10 +737,19 @@ export type MapViewJson = {
   }>;
 };
 
+export type ChartCoverageJson =
+  {
+      kind: "polygon_set_ref";
+      value: {
+        polygon_set_id: string;
+      };
+    };
+
 export type MapViewOptionJson = {
   id: string;
   label: string;
   region_id: RegionId;
+  coverage?: ChartCoverageJson | null;
   map_view: MapViewJson;
 };
 
@@ -768,6 +777,10 @@ export type GeometryJson = {
   polygons: Array<{
     id: string;
     points: number[][];
+  }>;
+  polygon_sets?: Array<{
+    id: string;
+    polygon_ids: string[];
   }>;
 };
 

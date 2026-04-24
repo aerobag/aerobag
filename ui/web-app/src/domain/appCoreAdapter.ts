@@ -20,6 +20,7 @@ import type {
   GuidanceState,
   LatLon,
   MapFollowUiState,
+  GeometryJson,
   MapViewOptionJson,
   MaterializedProcedure,
   NavRef,
@@ -55,6 +56,7 @@ export type DerivedMapSelectorState = {
   selected_map_id: string;
   selected_map: MapViewOptionJson | null;
   displayed_maps: MapViewOptionJson[];
+  geometry: GeometryJson;
   family_options: Array<{
     id: ChartFamilyId;
     label: string;

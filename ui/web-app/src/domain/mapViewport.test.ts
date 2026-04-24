@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapView } from "./sampleData";
+import { mapView, sampleGeometry } from "./sampleData";
 import {
   applyPinchGesture,
   createInitialViewport,
@@ -48,7 +48,7 @@ describe("mapViewport", () => {
 
   it("initial viewport renders real package tiles and round-trips its center lat/lon", () => {
     const viewport = createInitialViewport(mapView);
-    const tiles = renderTiles([{ ...mapView, id: "test" }], viewport, 1200, 900);
+    const tiles = renderTiles([{ ...mapView, id: "test" }], sampleGeometry, viewport, 1200, 900);
     const center = viewportCenterLatLon(viewport);
 
     expect(tiles.length).toBeGreaterThan(0);
@@ -83,7 +83,7 @@ describe("mapViewport", () => {
       initial_viewport: { lat: 40.1, lon: -113.9, zoom: 7.0 },
     });
 
-    const tiles = renderTiles([northwest, southwest], viewport, 1200, 900);
+    const tiles = renderTiles([northwest, southwest], sampleGeometry, viewport, 1200, 900);
 
     expect(tiles.some((tile) => tile.packageName === "NW_SEC")).toBe(true);
     expect(tiles.some((tile) => tile.packageName === "SW_SEC")).toBe(true);
@@ -106,7 +106,7 @@ describe("mapViewport", () => {
       levels: [{ zoom: 8, x_min: 40, x_max: 42, y_tms_min: 160, y_tms_max: 168 }],
     };
     const viewport = createInitialViewport(shadedRelief);
-    const tiles = renderTiles([shadedRelief], viewport, 1200, 900);
+    const tiles = renderTiles([shadedRelief], sampleGeometry, viewport, 1200, 900);
 
     expect(tiles.length).toBeGreaterThan(0);
     expect(tiles[0].src).toMatch(/^\/shaded-relief-products\/shaded-relief-nw\/tiles\/8\/\d+\/\d+\.webp$/);
@@ -133,17 +133,65 @@ describe("mapViewport", () => {
       ],
     };
     const viewport = createInitialViewport(shadedRelief);
-    const tiles = renderTiles([shadedRelief], viewport, 1200, 900);
+    const tiles = renderTiles([shadedRelief], sampleGeometry, viewport, 1200, 900);
 
     expect(tiles.length).toBeGreaterThan(0);
     expect(new Set(tiles.map((tile) => tile.zoom))).toEqual(new Set([8]));
+  });
+
+  it("clips chart-package tiles to published coverage polygons", () => {
+    const tacView = {
+      ...mapView,
+      id: "tac:clip-test",
+      chart_family: "tac" as const,
+      package_name: "SC_TAC",
+      min_zoom: 4.2,
+      max_zoom: 12.5,
+      initial_viewport: { lat: 29.993389, lon: -90.258028, zoom: 8 },
+      levels: [{ zoom: 8, x_min: 52, x_max: 64, y_tms_min: 149, y_tms_max: 156 }],
+      coverage: {
+        kind: "polygon_set_ref" as const,
+        value: {
+          polygon_set_id: "chart-coverage:tac:clip-test",
+        },
+      },
+    };
+    const geometry = {
+      schema_version: 1,
+      polygons: [
+        {
+          id: "chart-coverage:tac:clip-test:0",
+          points: [
+            [-94.0, 30.5],
+            [-93.0, 30.5],
+            [-93.0, 29.5],
+            [-94.0, 29.5],
+            [-94.0, 30.5],
+          ],
+        },
+      ],
+      polygon_sets: [
+        {
+          id: "chart-coverage:tac:clip-test",
+          polygon_ids: ["chart-coverage:tac:clip-test:0"],
+        },
+      ],
+    };
+    const viewport = createInitialViewport(tacView);
+
+    const tiles = renderTiles([tacView], geometry, viewport, 1200, 900);
+
+    expect(tiles.length).toBeGreaterThan(0);
+    expect(tiles.length).toBeLessThan(20);
+    expect(tiles.every((tile) => tile.x >= 60 && tile.x <= 62)).toBe(true);
+    expect(tiles.every((tile) => tile.yTms >= 149 && tile.yTms <= 154)).toBe(true);
   });
 
   it("renders persisted chart map views that predate tile path templates", () => {
     const persistedMapView = { ...mapView, id: "persisted" };
     delete (persistedMapView as { tile_path_template?: string }).tile_path_template;
     const viewport = createInitialViewport(persistedMapView);
-    const tiles = renderTiles([persistedMapView], viewport, 1200, 900);
+    const tiles = renderTiles([persistedMapView], sampleGeometry, viewport, 1200, 900);
 
     expect(tiles.length).toBeGreaterThan(0);
     expect(tiles[0].src).toContain(`/${persistedMapView.chart_index}/${tiles[0].zoom}/${tiles[0].x}/${tiles[0].yTms}.webp`);

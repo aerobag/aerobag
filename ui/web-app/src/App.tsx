@@ -781,6 +781,7 @@ export default function App() {
     selected_map_id: "",
     selected_map: null,
     displayed_maps: [],
+    geometry: { schema_version: 1, polygons: [], polygon_sets: [] },
     family_options: [],
   });
   const [mapSelectorLoadError, setMapSelectorLoadError] = useState<string | null>(null);
@@ -1303,6 +1304,7 @@ export default function App() {
           selectedMapId={selectedMapId}
           selectedMap={selectedMap}
           selectedFamilyMapViews={selectedFamilyMapViews}
+          geometry={mapSelectorState.geometry}
           selectedFamily={selectedFamily}
           familyOptions={mapSelectorState.family_options}
           viewport={mapViewport}
@@ -1600,6 +1602,7 @@ function MapPage(props: {
   selectedMapId: string;
   selectedMap: MapViewOptionJson;
   selectedFamilyMapViews: MapViewOptionJson[];
+  geometry: GeometryJson;
   selectedFamily: DerivedMapSelectorState["family_options"][number] | null;
   familyOptions: DerivedMapSelectorState["family_options"];
   viewport: MapViewportState;
@@ -1636,6 +1639,7 @@ function MapPage(props: {
     uptimeLabel,
     selectedMap,
     selectedFamilyMapViews,
+    geometry,
     selectedFamily,
     familyOptions,
     viewport,
@@ -1863,8 +1867,18 @@ function MapPage(props: {
     if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return [];
     }
-    return renderTiles(selectedFamilyMapViews.map((view) => ({ ...view.map_view, id: view.id })), viewport, surfaceSize.width, surfaceSize.height);
-  }, [selectedFamilyMapViews, surfaceSize, viewport]);
+    return renderTiles(
+      selectedFamilyMapViews.map((view) => ({
+        ...view.map_view,
+        id: view.id,
+        coverage: view.coverage,
+      })),
+      geometry,
+      viewport,
+      surfaceSize.width,
+      surfaceSize.height,
+    );
+  }, [geometry, selectedFamilyMapViews, surfaceSize, viewport]);
   const mapIsVisible = page === "map";
   useEffect(() => {
     if (!selectedFamily) {

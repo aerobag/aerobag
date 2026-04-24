@@ -1298,6 +1298,9 @@ fn resolve_procedure_materialization_legs_with_provenance(
             if from == to && pair[1].path_termination.trim() == "FC" {
                 continue;
             }
+            if from == to && pair[1].path_termination.trim() == "TF" {
+                continue;
+            }
             let duplicate_of_previous = resolved
                 .last()
                 .is_some_and(|previous| previous.from == from && previous.to == to);
@@ -1518,6 +1521,9 @@ fn resolve_procedure_materialization_legs_with_provenance(
                         .and_then(previous_display_path_terminal_position),
                     previous_display_path.as_ref().and_then(final_course_of_display_path),
                 );
+                if display_path.is_none() {
+                    continue;
+                }
                 let signatures = heading_signatures_for_leg(
                     next_heading_step_index,
                     display_path.as_ref(),
@@ -1569,10 +1575,15 @@ fn validate_no_zero_length_legs(resolved: &[ResolvedLeg], procedure_id: &str) {
 
         if leg.from == leg.to && path.is_none() {
             panic!(
-                "procedure zero-length leg without display path for {}: {} -> {}",
+                "procedure zero-length leg without display path for {}: {} -> {} id={} seq={:?} pt={:?}",
                 procedure_id.trim(),
                 describe_nav_ref(&leg.from),
                 describe_nav_ref(&leg.to),
+                leg.id,
+                leg.procedure_provenance.as_ref().map(|p| p.leg_sequence),
+                leg.procedure_provenance
+                    .as_ref()
+                    .map(|p| &p.path_termination),
             );
         }
 
@@ -4738,14 +4749,16 @@ mod tests {
                 .filter(|record| matches!(record.key.route_type.as_str(), "A" | "I" | "L"))
             {
                 eprintln!(
-                    "rt={} tr={} seq={} pt={} turn={:?} nav={:?} def_nav={:?} theta={:?} course={:?} dist={:?} alt1={:?} alt2={:?}",
+                    "rt={} tr={} seq={} pt={} turn={:?} nav={:?} nav_pos={:?} def_nav={:?} def_nav_pos={:?} theta={:?} course={:?} dist={:?} alt1={:?} alt2={:?}",
                     record.key.route_type,
                     record.key.transition_id,
                     record.sequence,
                     record.path_termination,
                     record.turn_direction,
                     record.nav_ref,
+                    record.nav_position,
                     record.defining_nav_ref,
+                    record.defining_nav_position,
                     record.theta_deg,
                     record.magnetic_course_deg,
                     record.route_distance_or_time,
@@ -4915,7 +4928,7 @@ mod tests {
     #[ignore = "manual audit for selected zero-length arc records"]
     fn audit_selected_zero_length_arc_records() {
         let store = load_snapshot_nav_kv_store();
-        for (airport_id, procedure_id) in [("12D", "R08"), ("17J", "R01")] {
+        for (airport_id, procedure_id) in [("KBJC", "I30R"), ("KMSO", "VOR-A"), ("KRWF", "VOR-A")] {
             let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
                 &store,
                 crate::NavKvQuery::ProcedureMaterializationRows {
@@ -5022,6 +5035,126 @@ mod tests {
         eprintln!("elements={}", path.elements.len());
         for (index, element) in path.elements.iter().enumerate() {
             eprintln!("element#{index}: {:?}", element);
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for KMSO VOR-A FA-to-DF/HM tail window"]
+    fn audit_kmso_vora_fa_tail_window() {
+        let store = load_snapshot_nav_kv_store();
+        let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KMSO".to_string(),
+                procedure_id: "VOR-A".to_string(),
+            },
+            "procedure materialization rows",
+        );
+        let s_records = records
+            .iter()
+            .filter(|record| record.key.route_type.trim() == "S")
+            .cloned()
+            .collect::<Vec<_>>();
+        let leg_start = s_records.iter().find(|record| record.sequence == 50).unwrap();
+        let leg_end = s_records.iter().find(|record| record.sequence == 60).unwrap();
+        let hold_record = s_records.iter().find(|record| record.sequence == 70).unwrap();
+        let path = display_path_for_procedure_leg(
+            &s_records,
+            leg_start,
+            leg_end,
+            Some(hold_record),
+            Some(LatLon {
+                lat: 46.648130,
+                lon: -114.009722,
+            }),
+            Some(168.9),
+        )
+        .unwrap();
+        eprintln!("elements={}", path.elements.len());
+        for (index, element) in path.elements.iter().enumerate() {
+            eprintln!("element#{index}: {:?}", element);
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for KRWF VOR-A standalone PI path"]
+    fn audit_krwf_vora_standalone_pi() {
+        let store = load_snapshot_nav_kv_store();
+        let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KRWF".to_string(),
+                procedure_id: "VOR-A".to_string(),
+            },
+            "procedure materialization rows",
+        );
+        let a_records = records
+            .iter()
+            .filter(|record| record.key.route_type.trim() == "A" && record.key.transition_id.trim() == "RWF")
+            .cloned()
+            .collect::<Vec<_>>();
+        let standalone = a_records.iter().find(|record| record.sequence == 10).unwrap();
+        eprintln!(
+            "nav_ref={:?} nav_pos={:?} def_nav={:?} def_nav_pos={:?} turn={:?} course={:?} dist={:?}",
+            standalone.nav_ref,
+            standalone.nav_position,
+            standalone.defining_nav_ref,
+            standalone.defining_nav_position,
+            standalone.turn_direction,
+            standalone.magnetic_course_deg,
+            standalone.route_distance_or_time,
+        );
+        let path = display_path_for_procedure_leg(
+            &a_records,
+            standalone,
+            standalone,
+            None,
+            None,
+            None,
+        );
+        eprintln!("path={path:?}");
+    }
+
+    #[test]
+    #[ignore = "manual audit for zero-length resolved legs"]
+    fn audit_selected_zero_length_resolved_legs() {
+        let store = load_snapshot_nav_kv_store();
+        for (airport_id, procedure_id, enroute_transition) in [
+            ("KBJC", "I30R", "ROKXX"),
+            ("KMSO", "VOR-A", "ALTON"),
+            ("KRWF", "VOR-A", "RWF"),
+        ] {
+            let materialized = materialize_snapshot_procedure(
+                &store,
+                airport_id,
+                procedure_id,
+                Some(enroute_transition.to_string()),
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "materialize {} {} {}: {}",
+                    airport_id, procedure_id, enroute_transition, error
+                )
+            });
+            eprintln!("=== {airport_id} {procedure_id} {enroute_transition} ===");
+            for leg in &materialized.resolved_legs {
+                let path = leg
+                    .procedure_provenance
+                    .as_ref()
+                    .and_then(|provenance| provenance.display_path.as_ref());
+                if leg.from == leg.to && path.is_none() {
+                    eprintln!(
+                        "id={} from={} to={} seq={:?} pt={:?}",
+                        leg.id,
+                        describe_nav_ref(&leg.from),
+                        describe_nav_ref(&leg.to),
+                        leg.procedure_provenance.as_ref().map(|p| p.leg_sequence),
+                        leg.procedure_provenance
+                            .as_ref()
+                            .map(|p| &p.path_termination),
+                    );
+                }
+            }
         }
     }
 
@@ -5326,7 +5459,7 @@ mod tests {
     #[test]
     #[ignore = "manual visual inspection overlay for KACK I06 MVY"]
     fn writes_kack_i06_mvy_overlay_png() {
-        render_procedure_overlay_to_paths("KYKM", "VOR-A", "SELAH", "KYKM_VOR-A_SELAH", false);
+        render_procedure_overlay_to_paths("KMSO", "VOR-A", "SPUNK", "KMSO_VOR-A_SPUNK", false);
     }
 
     #[test]

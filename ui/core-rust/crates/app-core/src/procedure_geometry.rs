@@ -283,7 +283,12 @@ fn build_procedure_leg_display_path(
             .magnetic_course_deg
             .map(|course| course + course_reference_variation_deg(leg_start))
     });
-    let mut current_altitude_ft = leg_start.altitude_1_ft;
+    let mut current_altitude_ft = segment_records
+        .iter()
+        .filter(|record| record.sequence <= leg_start.sequence)
+        .filter_map(|record| record.altitude_1_ft)
+        .next_back()
+        .or(leg_start.altitude_1_ft);
     let mut elements = Vec::new();
 
     let mut steps = segment_records
@@ -429,8 +434,15 @@ fn build_procedure_leg_display_path(
                 elements.extend(path.elements);
             }
             "PI" => {
+                let fix = step.nav_position?;
+                if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
+                    elements.push(LegDisplayElement::Segment {
+                        start: current_position,
+                        end: fix,
+                    });
+                }
                 let path = procedure_turn_display_path(step)?;
-                current_position = step.nav_position?;
+                current_position = fix;
                 current_course_deg = path.elements.last().and_then(display_element_end_course_deg);
                 elements.extend(path.elements);
             }
@@ -645,7 +657,11 @@ fn append_course_track_path(
         TrackTermination::ToDme { .. } => 0.5,
         _ => MIN_GEOMETRY_DISTANCE_NM,
     };
-    let track_start = if let Some(current_heading_deg) = current_course_deg {
+    let track_start = if distance_between_points_nm(current_position, course_anchor)
+        <= MIN_GEOMETRY_DISTANCE_NM
+    {
+        current_position
+    } else if let Some(current_heading_deg) = current_course_deg {
         if matches!(termination, TrackTermination::ToDme { .. })
             && angular_difference_degrees(current_heading_deg, course_deg) <= 20.0
         {

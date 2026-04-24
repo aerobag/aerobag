@@ -1,5 +1,8 @@
 use app_core::{GeometryBundle, PolygonRecord};
 use serde::Serialize;
+use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 pub fn sample_geometry() -> GeometryBundle {
     GeometryBundle {
@@ -13,6 +16,179 @@ pub fn sample_geometry() -> GeometryBundle {
 
 pub fn sample_geometry_json() -> String {
     serde_json::to_string(&sample_geometry()).expect("sample geometry should serialize")
+}
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../..")
+        .canonicalize()
+        .expect("resolve repository root")
+}
+
+pub fn fixture_snapshot_root() -> PathBuf {
+    std::env::var_os("AEROBAG_FIXTURE_SNAPSHOT_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/root/aerobag-artifacts-snapshot"))
+}
+
+pub fn fixture_published_unpacked_root() -> PathBuf {
+    if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_UNPACKED_ROOT") {
+        let path = PathBuf::from(value);
+        assert!(
+            path.is_dir(),
+            "AEROBAG_FIXTURE_UNPACKED_ROOT does not name a directory: {}",
+            path.display()
+        );
+        return path;
+    }
+    let root = fixture_snapshot_root().join("published-unpacked");
+    assert!(
+        root.is_dir(),
+        "fixture published-unpacked root missing: {}",
+        root.display()
+    );
+    root
+}
+
+pub fn fixture_published_packaged_root() -> PathBuf {
+    let root = fixture_snapshot_root().join("published-packaged");
+    assert!(
+        root.is_dir(),
+        "fixture published-packaged root missing: {}",
+        root.display()
+    );
+    root
+}
+
+pub fn fixture_nav_db_package_zip_path() -> PathBuf {
+    if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_NAV_DB_PACKAGE") {
+        let path = PathBuf::from(value);
+        assert!(
+            path.is_file(),
+            "AEROBAG_FIXTURE_NAV_DB_PACKAGE does not name a file: {}",
+            path.display()
+        );
+        return path;
+    }
+    let root = fixture_published_packaged_root();
+    let mut matches = fs::read_dir(&root)
+        .unwrap_or_else(|err| panic!("read {}: {err}", root.display()))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("nav_db_") && name.ends_with(".zip"))
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    assert!(
+        matches.len() == 1,
+        "expected exactly one nav_db zip under {}, found {}",
+        root.display(),
+        matches.len()
+    );
+    matches.pop().expect("nav_db match after length check")
+}
+
+pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
+    let zip_path = fixture_nav_db_package_zip_path();
+    let file =
+        fs::File::open(&zip_path).unwrap_or_else(|err| panic!("open {}: {err}", zip_path.display()));
+    let mut archive = zip::ZipArchive::new(file)
+        .unwrap_or_else(|err| panic!("parse {} as zip: {err}", zip_path.display()));
+
+    let mut root_name = None;
+    for index in 0..archive.len() {
+        let name = archive
+            .by_index(index)
+            .unwrap_or_else(|err| panic!("read zip entry {index} from {}: {err}", zip_path.display()))
+            .name()
+            .to_string();
+        if name.ends_with(".root") {
+            root_name = Some(name);
+            break;
+        }
+    }
+    let root_name = root_name.unwrap_or_else(|| {
+        panic!(
+            "nav_db package {} does not contain a *.root nav_kv entry",
+            zip_path.display()
+        )
+    });
+    let value_prefix = root_name.trim_end_matches(".root").to_string();
+
+    let mut root_bytes = Vec::new();
+    archive
+        .by_name(&root_name)
+        .unwrap_or_else(|err| panic!("open {} in {}: {err}", root_name, zip_path.display()))
+        .read_to_end(&mut root_bytes)
+        .unwrap_or_else(|err| panic!("read {} in {}: {err}", root_name, zip_path.display()));
+
+    let root = app_core::NavKvRoot::parse(&root_bytes)
+        .unwrap_or_else(|err| panic!("parse {} in {}: {err}", root_name, zip_path.display()));
+    let page_count = ((root.value_bytes_len() + root.page_size() - 1) / root.page_size()) as usize;
+    let mut pages = Vec::with_capacity(page_count);
+    for page_index in 0..page_count {
+        let entry_name = format!("{value_prefix}.values_{page_index:04}");
+        let mut page_bytes = Vec::new();
+        archive
+            .by_name(&entry_name)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "open {} in {}: {err}",
+                    entry_name,
+                    zip_path.display()
+                )
+            })
+            .read_to_end(&mut page_bytes)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "read {} in {}: {err}",
+                    entry_name,
+                    zip_path.display()
+                )
+            });
+        pages.push(page_bytes);
+    }
+    (root_bytes, pages)
+}
+
+pub fn generated_static_vectors_root() -> PathBuf {
+    let ui_dir = repo_root().join("ui");
+    let target_root_raw =
+        fs::read_to_string(ui_dir.join("target-root.txt")).expect("read ui/target-root.txt");
+    let target_root = repo_root()
+        .join(target_root_raw.trim())
+        .canonicalize()
+        .expect("resolve ui target root");
+    let path = target_root.join("web/generated-static/vectors");
+    assert!(
+        path.is_dir(),
+        "generated vector fixture root missing: {}",
+        path.display()
+    );
+    path
+}
+
+pub fn fixture_vector_tile_root(layer: &str, z: u8) -> PathBuf {
+    if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_VECTOR_ROOT") {
+        let path = PathBuf::from(value);
+        assert!(
+            path.is_dir(),
+            "AEROBAG_FIXTURE_VECTOR_ROOT does not name a directory: {}",
+            path.display()
+        );
+        return path;
+    }
+    let path = generated_static_vectors_root().join(format!("points/{layer}/{z}"));
+    assert!(
+        path.is_dir(),
+        "generated vector tile fixture root missing: {}",
+        path.display()
+    );
+    path
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

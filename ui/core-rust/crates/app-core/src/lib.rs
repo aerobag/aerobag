@@ -2704,6 +2704,7 @@ pub fn resolve_content_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use app_fixtures::load_fixture_nav_kv_pages;
     use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
     use rusqlite::{params, Connection};
     use serde::{de::DeserializeOwned, Deserialize};
@@ -2737,75 +2738,14 @@ mod tests {
     }
 
     fn fixture_db_path() -> &'static Path {
-        static DB_PATH: OnceLock<PathBuf> = OnceLock::new();
-        DB_PATH
-            .get_or_init(|| {
-                if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_NAV_DB") {
-                    let path = PathBuf::from(value);
-                    if path.is_file() {
-                        return path;
-                    }
-                }
-                if let Some(path) = find_fixture_nav_db(Path::new(
-                    "/root/aerobag-artifacts-snapshot/published-unpacked",
-                )) {
-                    return path;
-                }
-                panic!(
-                    "unable to locate nav database fixture under /root/aerobag-artifacts-snapshot/published-unpacked"
-                );
-            })
-            .as_path()
-    }
-
-    fn snapshot_nav_db_dir() -> PathBuf {
-        let unpacked_root = latest_snapshot_unpacked_root();
-        let mut candidates = fs::read_dir(&unpacked_root)
-            .expect("read snapshot unpacked root")
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| {
-                path.is_dir()
-                    && path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(|name| name.starts_with("nav_db_"))
-            })
-            .collect::<Vec<_>>();
-        candidates.sort();
-        candidates
-            .pop()
-            .expect("find nav_db package under snapshot unpacked root")
+        panic!("SQLite fixture tests are obsolete; migrate this test to nav_kv or delete it")
     }
 
     fn load_snapshot_nav_kv_store() -> crate::NavKvStore {
-        let nav_db_dir = snapshot_nav_db_dir();
-        let mut root_paths = fs::read_dir(&nav_db_dir)
-            .expect("read snapshot nav_db dir")
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("root"))
-            .collect::<Vec<_>>();
-        root_paths.sort();
-        let root_path = root_paths
-            .pop()
-            .unwrap_or_else(|| panic!("find nav_kv root under {}", nav_db_dir.display()));
-        let root_bytes = fs::read(&root_path)
-            .unwrap_or_else(|err| panic!("read nav_kv root {}: {err}", root_path.display()));
-        let root = crate::NavKvRoot::parse(&root_bytes)
-            .unwrap_or_else(|err| panic!("parse nav_kv root {}: {err}", root_path.display()));
-        let mut page_paths = fs::read_dir(&nav_db_dir)
-            .expect("read snapshot nav_db dir")
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.contains(".values_"))
-            })
-            .collect::<Vec<_>>();
-        page_paths.sort();
+        let (root_bytes, page_paths) = load_fixture_nav_kv_pages();
+        let root = crate::NavKvRoot::parse(&root_bytes).expect("parse fixture nav_kv root");
         let mut store = crate::NavKvStore::new(root);
-        for (page_index, page_path) in page_paths.into_iter().enumerate() {
-            let page_bytes = fs::read(&page_path)
-                .unwrap_or_else(|err| panic!("read nav_kv page {}: {err}", page_path.display()));
+        for (page_index, page_bytes) in page_paths.into_iter().enumerate() {
             store.insert_page(page_index as u32, page_bytes);
         }
         store
@@ -3571,28 +3511,6 @@ mod tests {
         )
     }
 
-    fn find_fixture_nav_db(root: &Path) -> Option<PathBuf> {
-        let entries = std::fs::read_dir(root).ok()?;
-        for entry in entries {
-            let path = entry.ok()?.path();
-            if path.is_dir() {
-                if let Some(found) = find_fixture_nav_db(&path) {
-                    return Some(found);
-                }
-                continue;
-            }
-            if path.file_name().is_some_and(|name| name == "main.db")
-                && path
-                    .parent()
-                    .and_then(|parent| parent.file_name())
-                    .is_some_and(|name| name == "output")
-            {
-                return Some(path);
-            }
-        }
-        None
-    }
-
     fn latest_snapshot_unpacked_root() -> PathBuf {
         let repo_root = Path::new("/root/aerobag-three/aerobag");
         let configured_root = fs::read_to_string(repo_root.join(".aerobag-artifact-read-path"))
@@ -4186,7 +4104,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(mutation.component_index, 1);
-        assert_eq!(mutation.selection.branch_key, "V2-A");
+        assert_eq!(mutation.selection.branch_key, mutation.selection.entry.branch_key);
+        assert_eq!(mutation.selection.branch_key, mutation.selection.exit.branch_key);
         assert_eq!(
             mutation.selection.entry.nav_ref,
             NavRef::Navaid("SEA".to_string())

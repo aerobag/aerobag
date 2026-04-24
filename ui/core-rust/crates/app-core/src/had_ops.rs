@@ -843,7 +843,7 @@ fn prepare_airway_presentation_for_anchors(
         .map_err(Into::into)
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct MaterializedAirwayResponse {
     selection: AirwayAutoSelection,
     airway: AirwaySegment,
@@ -1165,6 +1165,7 @@ impl From<serde_json::Error> for HadReadError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use app_fixtures::load_fixture_nav_kv_pages;
     use crate::{AirportId, NavKvRoot, ProcedureKind, SequencingMode};
     use std::{fs, path::{Path, PathBuf}};
 
@@ -1249,46 +1250,35 @@ mod tests {
             .join("../../../../../ui-target/web/generated-static/nav-kv")
     }
 
-    fn fixture_db_path() -> PathBuf {
-        if let Some(path) = find_fixture_nav_db(Path::new(
-            "/root/aerobag-artifacts-snapshot/published-unpacked",
-        )) {
-            return path;
-        }
-        panic!(
-            "unable to locate nav database fixture under /root/aerobag-artifacts-snapshot/published-unpacked"
-        );
-    }
-
-    fn find_fixture_nav_db(root: &Path) -> Option<PathBuf> {
-        let entries = fs::read_dir(root).ok()?;
-        for entry in entries {
-            let path = entry.ok()?.path();
-            if path.is_dir() {
-                if let Some(found) = find_fixture_nav_db(&path) {
-                    return Some(found);
-                }
-            } else if path.file_name().and_then(|name| name.to_str()) == Some("main.db") {
-                return Some(path);
-            }
-        }
-        None
-    }
-
     fn load_generated_nav_kv_store() -> NavKvStore {
         let nav_kv_dir = generated_nav_kv_dir();
         let root_bytes = fs::read(nav_kv_dir.join("root")).expect("read generated nav_kv root");
         let root = NavKvRoot::parse(&root_bytes).expect("parse generated nav_kv root");
-        let page_count =
-            ((root.value_bytes_len() + root.page_size() - 1) / root.page_size()) as usize;
+        let mut page_paths = fs::read_dir(nav_kv_dir.join("values"))
+            .expect("read generated nav_kv values dir")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .collect::<Vec<_>>();
+        page_paths.sort();
+        assert!(
+            !page_paths.is_empty(),
+            "generated nav_kv fixture is missing values pages under {}",
+            nav_kv_dir.join("values").display()
+        );
         let mut store = NavKvStore::new(root);
-        for page_index in 0..page_count {
-            let page_path = nav_kv_dir
-                .join("values")
-                .join(format!("{page_index:04}"));
+        for (page_index, page_path) in page_paths.into_iter().enumerate() {
             let page_bytes = fs::read(&page_path)
                 .unwrap_or_else(|err| panic!("read nav_kv page {}: {err}", page_path.display()));
             store.insert_page(page_index as u32, page_bytes);
+        }
+        store
+    }
+
+    fn load_fixture_nav_kv_store() -> NavKvStore {
+        let (root_bytes, pages) = load_fixture_nav_kv_pages();
+        let root = NavKvRoot::parse(&root_bytes).expect("parse fixture nav_kv root");
+        let mut store = NavKvStore::new(root);
+        for (index, page) in pages.into_iter().enumerate() {
+            store.insert_page(index as u32, page);
         }
         store
     }
@@ -1328,16 +1318,27 @@ mod tests {
             updated_at_epoch_ms: 0,
             version: 1,
         };
-        let built = crate::materialize_procedure_selection(
-            fixture_db_path().as_path(),
-            "KPAE",
-            "VOR-A",
-            ProcedureKind::Approach,
-            None,
-            Some("ECEPO"),
-            2,
+        let built = match run_had_operation(
+            &store,
+            HadOperation::MaterializeProcedure {
+                airport_id: "KPAE".to_string(),
+                procedure_id: "VOR-A".to_string(),
+                procedure_kind: ProcedureKind::Approach,
+                runway_transition: None,
+                enroute_transition: Some("ECEPO".to_string()),
+                component_index: 2,
+            },
         )
-        .expect("materialize KPAE VOR-A ECEPO");
+        .expect("materialize KPAE VOR-A ECEPO through generated nav_kv")
+        {
+            HadOperationOutcome::Complete { result } => {
+                serde_json::from_value::<MaterializedProcedure>(result)
+                    .expect("decode materialized procedure")
+            }
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete outcome, got missing pages: {pages:?}");
+            }
+        };
         let mutation = crate::insert_procedure_materialized_ui(&plan, 1, 2, built)
             .expect("insert KPAE VOR-A ECEPO");
 
@@ -1434,7 +1435,6 @@ mod tests {
         };
 
         let init = crate::create_ui_session(
-            "{}",
             r#"{"airspace":{"reference_tile_min_zoom":0,"reference_tile_max_zoom":12,"label_tile_min_zoom":0,"label_tile_max_zoom":12}}"#,
             plan,
             &["KPAE".to_string()],
@@ -1451,11 +1451,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "procedure heading continuity violated for VOR-A")]
-    fn generated_nav_kv_materialize_procedure_kpae_vor_a_from_ecepo_panics() {
+    fn generated_nav_kv_materialize_procedure_kpae_vor_a_from_ecepo_succeeds() {
         let store = load_generated_nav_kv_store();
 
-        let _ = run_had_operation(
+        let outcome = run_had_operation(
             &store,
             HadOperation::MaterializeProcedure {
                 airport_id: "KPAE".to_string(),
@@ -1467,5 +1466,138 @@ mod tests {
             },
         )
         .expect("materialize KPAE VOR-A ECEPO through generated nav_kv");
+
+        match outcome {
+            HadOperationOutcome::Complete { result } => {
+                let materialized = serde_json::from_value::<MaterializedProcedure>(result)
+                    .expect("decode materialized procedure");
+                assert_eq!(materialized.procedure.procedure_id, "VOR-A");
+                assert_eq!(
+                    materialized.procedure.enroute_transition.as_deref(),
+                    Some("ECEPO")
+                );
+                assert!(!materialized.resolved_legs.is_empty());
+            }
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete outcome, got missing pages: {pages:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn fixture_nav_kv_resolves_waypoint_identifier() {
+        let store = load_fixture_nav_kv_store();
+        let outcome = run_had_operation(
+            &store,
+            HadOperation::ResolveWaypointIdentifier {
+                identifier: "OLM".to_string(),
+            },
+        )
+        .expect("resolve OLM through fixture nav_kv");
+        match outcome {
+            HadOperationOutcome::Complete { result } => {
+                let nav_ref = serde_json::from_value::<Option<NavRef>>(result)
+                    .expect("decode nav ref");
+                assert_eq!(nav_ref, Some(NavRef::Navaid("OLM".to_string())));
+            }
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete outcome, got missing pages: {pages:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn fixture_nav_kv_suggests_airways_near_krnt() {
+        let store = load_fixture_nav_kv_store();
+        let outcome = run_had_operation(
+            &store,
+            HadOperation::SuggestAirwaysNearAnchor {
+                anchor: NavRef::Airport("KRNT".to_string()),
+                limit: 5,
+            },
+        )
+        .expect("suggest nearby airways through fixture nav_kv");
+        match outcome {
+            HadOperationOutcome::Complete { result } => {
+                let suggestions = serde_json::from_value::<Vec<AirwaySuggestion>>(result)
+                    .expect("decode airway suggestions");
+                assert!(!suggestions.is_empty());
+                assert!(suggestions.windows(2).all(|pair| {
+                    pair[0].distance_from_anchor_nm <= pair[1].distance_from_anchor_nm
+                }));
+                assert!(suggestions.iter().all(|suggestion| {
+                    suggestion.distance_from_anchor_nm.is_finite()
+                        && !suggestion.airway_name.trim().is_empty()
+                }));
+            }
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete outcome, got missing pages: {pages:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn fixture_nav_kv_prepares_and_materializes_v2_between_krnt_and_kuao() {
+        let store = load_fixture_nav_kv_store();
+        let presentation = match run_had_operation(
+            &store,
+            HadOperation::PrepareAirwayPresentationForAnchors {
+                airway_name: "V2".to_string(),
+                origin_anchor: NavRef::Airport("KRNT".to_string()),
+                destination_anchor: Some(NavRef::Airport("KUAO".to_string())),
+            },
+        )
+        .expect("prepare airway presentation through fixture nav_kv")
+        {
+            HadOperationOutcome::Complete { result } => {
+                serde_json::from_value::<AirwayPresentationPlan>(result)
+                    .expect("decode airway presentation")
+            }
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete outcome, got missing pages: {pages:?}");
+            }
+        };
+
+        let entry_index = presentation
+            .points
+            .iter()
+            .position(|point| point.nav_ref == NavRef::Navaid("SEA".to_string()))
+            .expect("presentation should include SEA");
+        let exit_index = presentation
+            .points
+            .iter()
+            .position(|point| point.nav_ref == NavRef::Fix("VAMPS".to_string()))
+            .expect("presentation should include VAMPS");
+
+        let materialized = match run_had_operation(
+            &store,
+            HadOperation::MaterializeAirwayPresentationSelection {
+                start_component_index: 0,
+                presentation,
+                entry_index,
+                exit_index,
+                origin_anchor: NavRef::Airport("KRNT".to_string()),
+                destination_anchor: Some(NavRef::Airport("KUAO".to_string())),
+            },
+        )
+        .expect("materialize airway presentation selection through fixture nav_kv")
+        {
+            HadOperationOutcome::Complete { result } => {
+                serde_json::from_value::<MaterializedAirwayResponse>(result)
+                    .expect("decode materialized airway response")
+            }
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete outcome, got missing pages: {pages:?}");
+            }
+        };
+
+        assert_eq!(materialized.airway.name, "V2");
+        assert_eq!(materialized.selection.entry.nav_ref, NavRef::Navaid("SEA".to_string()));
+        assert_eq!(materialized.selection.exit.nav_ref, NavRef::Fix("VAMPS".to_string()));
+        assert_eq!(materialized.airway.entry, materialized.selection.entry.nav_ref);
+        assert_eq!(materialized.airway.exit, materialized.selection.exit.nav_ref);
+        assert!(!materialized.resolved_legs.is_empty());
+        assert_eq!(materialized.resolved_legs.first().unwrap().from, materialized.airway.entry);
+        assert_eq!(materialized.resolved_legs.last().unwrap().to, materialized.airway.exit);
     }
 }

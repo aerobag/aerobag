@@ -1156,9 +1156,9 @@ fn world_to_screen(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use app_fixtures::fixture_vector_tile_root as app_fixture_vector_tile_root;
     use std::sync::OnceLock;
-    use std::{fs, path::PathBuf};
+    use std::fs;
 
     fn test_map_overlay_config() -> MapOverlayConfig {
         MapOverlayConfig {
@@ -1874,33 +1874,8 @@ mod tests {
         assert_eq!(result.visible_features[0].id, "airports:KSEA");
     }
 
-    fn fixture_vector_tile_root() -> &'static Path {
-        static ROOT: OnceLock<PathBuf> = OnceLock::new();
-        ROOT.get_or_init(|| {
-            if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_VECTOR_ROOT") {
-                let path = PathBuf::from(value);
-                if path.is_dir() {
-                    return path;
-                }
-            }
-            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            let ui_dir = manifest_dir
-                .join("../../..")
-                .canonicalize()
-                .expect("resolve ui dir");
-            let repo_root = ui_dir.parent().expect("ui dir parent");
-            let target_root_raw = fs::read_to_string(ui_dir.join("target-root.txt"))
-                .expect("read ui/target-root.txt");
-            let target_root = repo_root
-                .join(target_root_raw.trim())
-                .canonicalize()
-                .expect("resolve ui target root");
-            let path = target_root.join("web/generated-static/vectors/points/fix/9");
-            if path.is_dir() {
-                return path;
-            }
-            panic!("unable to locate vector tile fixture root");
-        })
-        .as_path()
+    fn fixture_vector_tile_root() -> &'static std::path::Path {
+        static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
+        ROOT.get_or_init(|| app_fixture_vector_tile_root("fix", 9)).as_path()
     }
 }

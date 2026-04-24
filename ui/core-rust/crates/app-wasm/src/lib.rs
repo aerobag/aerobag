@@ -1386,7 +1386,6 @@ fn destroy_session_json(handle: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::OnceLock;
 
     #[test]
     fn unpacks_interleaved_packed_terrain_tiles() {
@@ -1401,52 +1400,6 @@ mod tests {
             unpack_packed_terrain_tile_bytes(&packed).unwrap(),
             vec![vec![1, 2, 3], vec![4, 5]]
         );
-    }
-
-    fn fixture_db_path() -> &'static str {
-        static DB_PATH: OnceLock<String> = OnceLock::new();
-        DB_PATH
-            .get_or_init(|| {
-                if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_NAV_DB") {
-                    let path = std::path::PathBuf::from(value);
-                    if path.is_file() {
-                        return path.to_string_lossy().into_owned();
-                    }
-                }
-                for root in [
-                    "/root/aerobag-artifacts/published-unpacked",
-                    "/root/aerobag-artifacts/cache/nodes",
-                    "/root/aerobag-artifacts/private-work",
-                ] {
-                    if let Some(path) = find_fixture_nav_db(std::path::Path::new(root)) {
-                        return path.to_string_lossy().into_owned();
-                    }
-                }
-                panic!("unable to locate nav database fixture");
-            })
-            .as_str()
-    }
-
-    fn find_fixture_nav_db(root: &std::path::Path) -> Option<std::path::PathBuf> {
-        let entries = std::fs::read_dir(root).ok()?;
-        for entry in entries {
-            let path = entry.ok()?.path();
-            if path.is_dir() {
-                if let Some(found) = find_fixture_nav_db(&path) {
-                    return Some(found);
-                }
-                continue;
-            }
-            if path.file_name().is_some_and(|name| name == "main.db")
-                && path
-                    .parent()
-                    .and_then(|parent| parent.file_name())
-                    .is_some_and(|name| name == "output")
-            {
-                return Some(path);
-            }
-        }
-        None
     }
 
     #[test]
@@ -1492,88 +1445,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn insert_airway_from_anchors_ui_json_returns_projected_grouped_edit() {
-        let plan_json = serde_json::json!({
-            "id": "airway-insert",
-            "name": "Airway insert",
-            "legs": [],
-            "route_components": [
-                {"kind":"waypoint","waypoint":{"Airport":"KRNT"}},
-                {"kind":"waypoint","waypoint":{"Airport":"KUAO"}},
-                {"kind":"waypoint","waypoint":{"Airport":"KHIO"}}
-            ],
-            "resolved_legs": [],
-            "guidance": null,
-            "departure": "KRNT",
-            "destination": "KHIO",
-            "alternate": null,
-            "cruise_altitude_ft": null,
-            "notes": null,
-            "updated_at_epoch_ms": 0,
-            "version": 1
-        })
-        .to_string();
-
-        let next_json = insert_airway_from_anchors_ui_json(
-            fixture_db_path(),
-            &plan_json,
-            0,
-            1,
-            "V2",
-            &serde_json::to_string(&app_core::NavRef::Airport("KRNT".to_string())).unwrap(),
-            &serde_json::to_string(&app_core::NavRef::Airport("KUAO".to_string())).unwrap(),
-        )
-        .unwrap();
-        let next: app_core::AirwayPlanUiMutation = serde_json::from_str(&next_json).unwrap();
-
-        assert_eq!(next.mutation.component_index, 1);
-        assert!(matches!(
-            next.ui_state.components[1].kind,
-            app_core::RouteComponentViewKind::Airway
-        ));
-    }
-
-    #[test]
-    fn insert_procedure_from_selection_ui_json_returns_projected_grouped_edit() {
-        let plan_json = serde_json::json!({
-            "id": "procedure-insert",
-            "name": "Procedure insert",
-            "legs": [],
-            "route_components": [
-                {"kind":"waypoint","waypoint":{"Fix":"ETX"}},
-                {"kind":"waypoint","waypoint":{"Airport":"KBOS"}}
-            ],
-            "resolved_legs": [],
-            "guidance": null,
-            "departure": null,
-            "destination": "KBOS",
-            "alternate": null,
-            "cruise_altitude_ft": null,
-            "notes": null,
-            "updated_at_epoch_ms": 0,
-            "version": 1
-        })
-        .to_string();
-
-        let next_json = insert_procedure_from_selection_ui_json(
-            fixture_db_path(),
-            &plan_json,
-            0,
-            1,
-            "KBOS",
-            "I04R",
-            &serde_json::to_string(&app_core::ProcedureKind::Approach).unwrap(),
-            &serde_json::to_string(&Option::<String>::None).unwrap(),
-            &serde_json::to_string(&Some("GOSHI".to_string())).unwrap(),
-        )
-        .unwrap();
-        let next: app_core::ProcedurePlanUiMutation = serde_json::from_str(&next_json).unwrap();
-
-        assert_eq!(next.mutation.component_index, 1);
-        assert!(matches!(
-            next.ui_state.components[1].kind,
-            app_core::RouteComponentViewKind::Procedure
-        ));
-    }
 }

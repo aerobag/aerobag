@@ -8,3 +8,4 @@ version.workspace = true
 app-core = { path = "../app-core" }
 serde.workspace = true
 serde_json.workspace = true
+zip = { version = "2", default-features = false, features = ["deflate"] }

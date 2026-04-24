@@ -1250,25 +1250,14 @@ mod tests {
     }
 
     fn fixture_db_path() -> PathBuf {
-        for candidate in [
-            "/root/aerobag-four/ui-target/android/assets/nav-db/main.db",
-            "/root/aerobag-three/ui-target/android/assets/nav-db/main.db",
-        ] {
-            let path = PathBuf::from(candidate);
-            if path.is_file() {
-                return path;
-            }
+        if let Some(path) = find_fixture_nav_db(Path::new(
+            "/root/aerobag-artifacts-snapshot/published-unpacked",
+        )) {
+            return path;
         }
-        for root in [
-            "/root/aerobag-artifacts/published-unpacked",
-            "/root/aerobag-artifacts/cache/nodes",
-            "/root/aerobag-artifacts/private-work",
-        ] {
-            if let Some(path) = find_fixture_nav_db(Path::new(root)) {
-                return path;
-            }
-        }
-        panic!("unable to locate nav database fixture");
+        panic!(
+            "unable to locate nav database fixture under /root/aerobag-artifacts-snapshot/published-unpacked"
+        );
     }
 
     fn find_fixture_nav_db(root: &Path) -> Option<PathBuf> {
@@ -1408,7 +1397,7 @@ mod tests {
             "expected VOR-A asset path, got {:?}",
             vor_a
         );
-        let chart_catalog = crate::DerivedChartCatalog {
+        let _chart_catalog = crate::DerivedChartCatalog {
             airports: vec![kpae],
         };
         let plan = FlightPlan {
@@ -1447,7 +1436,6 @@ mod tests {
         let init = crate::create_ui_session(
             "{}",
             r#"{"airspace":{"reference_tile_min_zoom":0,"reference_tile_max_zoom":12,"label_tile_min_zoom":0,"label_tile_max_zoom":12}}"#,
-            &serde_json::to_string(&chart_catalog).expect("encode chart catalog"),
             plan,
             &["KPAE".to_string()],
             Some("KPAE"),

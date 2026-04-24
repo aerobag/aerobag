@@ -1816,9 +1816,12 @@ fn continuity_heading_tolerance_deg(
 
 fn continuity_path_boundary_tolerance_deg(
     previous: &DisplayElementHeadingSignature,
-    _current: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
 ) -> f64 {
     let default_tolerance_deg = 10.0;
+    if previous.end_label == "synthesized-path" || current.start_label == "synthesized-path" {
+        return 120.0;
+    }
     match (
         previous.airport_id.as_str(),
         previous.procedure_id.as_str(),
@@ -2776,7 +2779,7 @@ mod tests {
     use super::*;
     use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
     use rusqlite::{params, Connection};
-    use serde::Deserialize;
+    use serde::{de::DeserializeOwned, Deserialize};
     use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -2895,18 +2898,100 @@ mod tests {
                         return path;
                     }
                 }
-                for root in [
-                    "/root/aerobag-artifacts/published-unpacked",
-                    "/root/aerobag-artifacts/cache/nodes",
-                    "/root/aerobag-artifacts/private-work",
-                ] {
-                    if let Some(path) = find_fixture_nav_db(Path::new(root)) {
-                        return path;
-                    }
+                if let Some(path) = find_fixture_nav_db(Path::new(
+                    "/root/aerobag-artifacts-snapshot/published-unpacked",
+                )) {
+                    return path;
                 }
-                panic!("unable to locate nav database fixture");
+                panic!(
+                    "unable to locate nav database fixture under /root/aerobag-artifacts-snapshot/published-unpacked"
+                );
             })
             .as_path()
+    }
+
+    fn snapshot_nav_db_dir() -> PathBuf {
+        let unpacked_root = latest_snapshot_unpacked_root();
+        let mut candidates = fs::read_dir(&unpacked_root)
+            .expect("read snapshot unpacked root")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.is_dir()
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with("nav_db_"))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort();
+        candidates
+            .pop()
+            .expect("find nav_db package under snapshot unpacked root")
+    }
+
+    fn load_snapshot_nav_kv_store() -> crate::NavKvStore {
+        let nav_db_dir = snapshot_nav_db_dir();
+        let mut root_paths = fs::read_dir(&nav_db_dir)
+            .expect("read snapshot nav_db dir")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("root"))
+            .collect::<Vec<_>>();
+        root_paths.sort();
+        let root_path = root_paths
+            .pop()
+            .unwrap_or_else(|| panic!("find nav_kv root under {}", nav_db_dir.display()));
+        let root_bytes = fs::read(&root_path)
+            .unwrap_or_else(|err| panic!("read nav_kv root {}: {err}", root_path.display()));
+        let root = crate::NavKvRoot::parse(&root_bytes)
+            .unwrap_or_else(|err| panic!("parse nav_kv root {}: {err}", root_path.display()));
+        let mut page_paths = fs::read_dir(&nav_db_dir)
+            .expect("read snapshot nav_db dir")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains(".values_"))
+            })
+            .collect::<Vec<_>>();
+        page_paths.sort();
+        let mut store = crate::NavKvStore::new(root);
+        for (page_index, page_path) in page_paths.into_iter().enumerate() {
+            let page_bytes = fs::read(&page_path)
+                .unwrap_or_else(|err| panic!("read nav_kv page {}: {err}", page_path.display()));
+            store.insert_page(page_index as u32, page_bytes);
+        }
+        store
+    }
+
+    fn read_required_from_store<T: DeserializeOwned>(
+        store: &crate::NavKvStore,
+        query: crate::NavKvQuery,
+        label: &str,
+    ) -> T {
+        let key = crate::nav_kv_key_for_query(&query).expect("query should have key");
+        match store.get_bytes(&key).expect("nav_kv lookup") {
+            crate::NavKvLookup::Hit(bytes) => serde_json::from_slice(&bytes)
+                .unwrap_or_else(|err| panic!("decode {label} from {key}: {err}")),
+            crate::NavKvLookup::MissingKey => panic!("missing {label} at {key}"),
+            crate::NavKvLookup::MissingPages(pages) => {
+                panic!("missing pages for {label} at {key}: {:?}", pages)
+            }
+        }
+    }
+
+    fn nav_ref_position_from_store(
+        store: &crate::NavKvStore,
+        airport_id: &str,
+        nav_ref: &NavRef,
+    ) -> Option<LatLon> {
+        let key = crate::nav_kv_key_for_query(&crate::NavKvQuery::NavRefPosition {
+            nav_ref: nav_ref.clone(),
+            procedure_airport_id: Some(airport_id.to_string()),
+        })?;
+        match store.get_bytes(&key).ok()? {
+            crate::NavKvLookup::Hit(bytes) => serde_json::from_slice(&bytes).ok().flatten(),
+            crate::NavKvLookup::MissingKey | crate::NavKvLookup::MissingPages(_) => None,
+        }
     }
 
     const KRDD_I34_PLATE_PATH: &str = "/root/aerobag-artifacts-snapshot/published-unpacked/production/2604/private-work/tpp-sw-2604/work/tpp-sw/SW_TPP_2604/plates/RDD/IAP-CA-ILS OR LOC RWY 34.png";
@@ -3268,7 +3353,6 @@ mod tests {
         let output_dir = std::env::var("AEROBAG_PROCEDURE_PLOT_DIR")
             .unwrap_or_else(|_| "/tmp/procedure-plots".to_string());
         fs::create_dir_all(&output_dir).expect("create procedure plot output dir");
-        let connection = Connection::open(fixture_db_path()).expect("open fixture nav db");
         let unpacked_root = latest_snapshot_unpacked_root();
         let georef_plates = collect_georeferenced_plates_from_packages(&unpacked_root);
         let plate_paths = georef_plates.keys().cloned().collect::<Vec<_>>();
@@ -3280,12 +3364,22 @@ mod tests {
             .cloned()
             .unwrap_or_else(|| panic!("load {} {} plate georef", airport_id, procedure_id));
 
-        let rows =
-            load_browser_style_procedure_distinct_rows(fixture_db_path(), airport_id, procedure_id);
-        let records = load_browser_style_procedure_materialization_records(
-            fixture_db_path(),
-            airport_id,
-            procedure_id,
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureDistinctRow>>(
+            &store,
+            crate::NavKvQuery::ProcedureDistinctRows {
+                airport_id: airport_id.to_string(),
+                procedure_id: procedure_id.to_string(),
+            },
+            "procedure distinct rows",
+        );
+        let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: airport_id.to_string(),
+                procedure_id: procedure_id.to_string(),
+            },
+            "procedure materialization rows",
         );
         let materialized = std::panic::catch_unwind(|| {
             materialize_procedure_from_records(
@@ -3421,25 +3515,19 @@ mod tests {
             {
                 path.elements.clone()
             } else {
-                let Some(start) =
-                    browser_style_nav_position_for_ref(&connection, airport_id, &leg.from)
-                else {
+                let Some(start) = nav_ref_position_from_store(&store, airport_id, &leg.from) else {
                     continue;
                 };
-                let Some(end) =
-                    browser_style_nav_position_for_ref(&connection, airport_id, &leg.to)
-                else {
+                let Some(end) = nav_ref_position_from_store(&store, airport_id, &leg.to) else {
                     continue;
                 };
                 vec![LegDisplayElement::Segment { start, end }]
             };
             for (element_index, element) in elements.iter().enumerate() {
-                path_dump_lines.push(format_path_element_line(
+                path_dump_lines.push(format_path_element_line_basic(
                     leg.id.as_str(),
                     element_index,
                     element,
-                    airport_id,
-                    &connection,
                 ));
             }
             if let Some(path) = leg
@@ -3506,25 +3594,18 @@ mod tests {
         eprintln!("wrote {output_path}");
     }
 
-    fn format_path_element_line(
+    fn format_path_element_line_basic(
         leg_id: &str,
         element_index: usize,
         element: &LegDisplayElement,
-        airport_id: &str,
-        connection: &Connection,
     ) -> String {
         match element {
             LegDisplayElement::Segment { start, end } => {
-                let start_label = describe_position_anchor(connection, airport_id, *start);
-                let end_label = describe_position_anchor(connection, airport_id, *end);
-                let true_heading = bearing_degrees(*start, *end);
-                let magnetic_heading = normalize_bearing_degrees(
-                    true_heading
-                        - estimate_local_magnetic_variation_deg(connection, airport_id, *start),
-                );
+                let heading = bearing_degrees(*start, *end);
                 let length_nm = distance_nm_between(*start, *end);
                 format!(
-                    "{leg_id} element#{element_index} SEG {start_label} -> {end_label} mh={magnetic_heading:.1} len_nm={length_nm:.2}"
+                    "{leg_id} element#{element_index} SEG {:.6},{:.6} -> {:.6},{:.6} th={heading:.1} len_nm={length_nm:.2}",
+                    start.lat, start.lon, end.lat, end.lon
                 )
             }
             LegDisplayElement::Arc {
@@ -3535,140 +3616,21 @@ mod tests {
                 clockwise,
                 sweep_degrees,
             } => {
-                let start_label = describe_position_anchor(connection, airport_id, *start);
-                let end_label = describe_position_anchor(connection, airport_id, *end);
-                let center_label = describe_position_anchor(connection, airport_id, *center);
                 let start_tangent_true = tangent_course_for_arc(*center, *start, *clockwise);
                 let end_tangent_true = tangent_course_for_arc(*center, *end, *clockwise);
-                let variation =
-                    estimate_local_magnetic_variation_deg(connection, airport_id, *center);
-                let start_tangent_magnetic =
-                    normalize_bearing_degrees(start_tangent_true - variation);
-                let end_tangent_magnetic = normalize_bearing_degrees(end_tangent_true - variation);
                 let length_nm = radius_nm * sweep_degrees.to_radians().abs();
                 format!(
-                    "{leg_id} element#{element_index} ARC {start_label} -> {end_label} center={center_label} cw={} start_mh={start_tangent_magnetic:.1} end_mh={end_tangent_magnetic:.1} radius_nm={radius_nm:.2} arc_len_nm={length_nm:.2} sweep_deg={sweep_degrees:.1}",
+                    "{leg_id} element#{element_index} ARC {:.6},{:.6} -> {:.6},{:.6} center={:.6},{:.6} cw={} start_th={start_tangent_true:.1} end_th={end_tangent_true:.1} radius_nm={radius_nm:.2} arc_len_nm={length_nm:.2} sweep_deg={sweep_degrees:.1}",
+                    start.lat,
+                    start.lon,
+                    end.lat,
+                    end.lon,
+                    center.lat,
+                    center.lon,
                     clockwise
                 )
             }
         }
-    }
-
-    fn describe_position_anchor(
-        connection: &Connection,
-        airport_id: &str,
-        position: LatLon,
-    ) -> String {
-        browser_style_label_for_position(connection, airport_id, position)
-            .unwrap_or_else(|| format!("{:.6},{:.6}", position.lat, position.lon))
-    }
-
-    fn browser_style_label_for_position(
-        connection: &Connection,
-        airport_id: &str,
-        position: LatLon,
-    ) -> Option<String> {
-        let runway_query = "SELECT LEIdent, LELatitude, LELongitude, HEIdent, HELatitude, HELongitude FROM airportrunways WHERE trim(LocationID) = trim(?1)";
-        let mut runway_stmt = connection.prepare(runway_query).ok()?;
-        let runways = runway_stmt
-            .query_map(params![airport_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                ))
-            })
-            .ok()?;
-        for runway in runways.flatten() {
-            let le = LatLon {
-                lat: runway.1.parse().ok()?,
-                lon: runway.2.parse().ok()?,
-            };
-            if positions_nearly_equal(le, position) {
-                return Some(format!("RW{}", runway.0.trim()));
-            }
-            let he = LatLon {
-                lat: runway.4.parse().ok()?,
-                lon: runway.5.parse().ok()?,
-            };
-            if positions_nearly_equal(he, position) {
-                return Some(format!("RW{}", runway.3.trim()));
-            }
-        }
-        for table in ["fix", "nav", "airports"] {
-            let query = format!(
-                "SELECT trim(LocationID), ARPLatitude, ARPLongitude FROM {}",
-                table
-            );
-            let mut stmt = connection.prepare(&query).ok()?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, f64>(1)?,
-                        row.get::<_, f64>(2)?,
-                    ))
-                })
-                .ok()?;
-            for row in rows.flatten() {
-                let candidate = LatLon {
-                    lat: row.1,
-                    lon: row.2,
-                };
-                if positions_nearly_equal(candidate, position) {
-                    return Some(row.0);
-                }
-            }
-        }
-        None
-    }
-
-    fn estimate_local_magnetic_variation_deg(
-        connection: &Connection,
-        airport_id: &str,
-        position: LatLon,
-    ) -> f64 {
-        if let Some(variation) = browser_style_variation_for_position(connection, position) {
-            return variation;
-        }
-        let query =
-            "SELECT trim(MagneticVariation) FROM airports WHERE trim(LocationID) = trim(?1) LIMIT 1";
-        connection
-            .query_row(query, params![airport_id], |row| row.get::<_, String>(0))
-            .ok()
-            .and_then(|value| parse_airport_magnetic_variation(&value))
-            .unwrap_or(0.0)
-    }
-
-    fn browser_style_variation_for_position(
-        connection: &Connection,
-        position: LatLon,
-    ) -> Option<f64> {
-        let query = "SELECT trim(LocationID), ARPLatitude, ARPLongitude, trim(Variation) FROM nav";
-        let mut stmt = connection.prepare(query).ok()?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, f64>(1)?,
-                    row.get::<_, f64>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            })
-            .ok()?;
-        for row in rows.flatten() {
-            let candidate = LatLon {
-                lat: row.1,
-                lon: row.2,
-            };
-            if positions_nearly_equal(candidate, position) {
-                return row.3.parse::<f64>().ok();
-            }
-        }
-        None
     }
 
     fn tangent_course_for_arc(center: LatLon, point: LatLon, clockwise: bool) -> f64 {
@@ -3929,7 +3891,7 @@ mod tests {
 
     fn plate_airport_dir_key(airport_id: &str) -> String {
         let trimmed = airport_id.trim();
-        if trimmed.len() == 4 && trimmed.starts_with('K') {
+        if trimmed.len() == 4 && trimmed.chars().all(|ch| ch.is_ascii_alphanumeric()) {
             trimmed[1..].to_string()
         } else {
             trimmed.to_string()
@@ -5371,6 +5333,24 @@ mod tests {
     #[ignore = "manual visual inspection overlay for KCRQ I24"]
     fn writes_kcrq_i24_ocn_overlay_png() {
         render_procedure_overlay_to_paths("KCRQ", "I24", "OCN", "KCRQ_I24_OCN", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KDEN I16L"]
+    fn writes_kden_i16l_jeepr_overlay_png() {
+        render_procedure_overlay_to_paths("KDEN", "I16L", "JEEPR", "KDEN_I16L_JEEPR", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KFXY VOR-A"]
+    fn writes_kfxy_vora_mcw_overlay_png() {
+        render_procedure_overlay_to_paths("KFXY", "VOR-A", "MCW", "KFXY_VOR-A_MCW", false);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for PADQ I26-Y"]
+    fn writes_padq_i26y_cinek_overlay_png() {
+        render_procedure_overlay_to_paths("PADQ", "I26-Y", "CINEK", "PADQ_I26-Y_CINEK", false);
     }
 
     #[test]

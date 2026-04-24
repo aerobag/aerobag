@@ -2433,16 +2433,14 @@ mod tests {
                         return path;
                     }
                 }
-                for root in [
-                    "/root/aerobag-artifacts/published-unpacked",
-                    "/root/aerobag-artifacts/cache/nodes",
-                    "/root/aerobag-artifacts/private-work",
-                ] {
-                    if let Some(path) = find_fixture_nav_db(Path::new(root)) {
-                        return path;
-                    }
+                if let Some(path) = find_fixture_nav_db(Path::new(
+                    "/root/aerobag-artifacts-snapshot/published-unpacked",
+                )) {
+                    return path;
                 }
-                panic!("unable to locate nav database fixture");
+                panic!(
+                    "unable to locate nav database fixture under /root/aerobag-artifacts-snapshot/published-unpacked"
+                );
             })
             .as_path()
     }

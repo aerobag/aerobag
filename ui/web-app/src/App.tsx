@@ -35,6 +35,7 @@ import {
   type AdapterBackendKind,
   type AppCoreAdapter,
   type DerivedChartPageState,
+  type DerivedMapSelectorState,
   type UiSession,
   type UiSessionSnapshot,
 } from "./domain/appCoreAdapter";
@@ -408,39 +409,6 @@ const WEB_MERCATOR_HALF_WORLD_M = 20037508.342789244;
 const NEXRAD_FRAME_INTERVAL_MS = 900;
 const RASTER_TILE_OVERDRAW_PX = 1;
 
-const chartFamilies: Array<{ id: ChartFamilyId; label: string; launcherLabel: string }> = [
-  { id: "sec", label: "SECTIONAL", launcherLabel: "SEC" },
-  { id: "tac", label: "TAC", launcherLabel: "TAC" },
-  { id: "enr-l", label: "IFR-LOW", launcherLabel: "IFR L" },
-  { id: "enr-h", label: "IFR-HIGH", launcherLabel: "IFR H" },
-  { id: "shaded-relief", label: "SHADED RELIEF", launcherLabel: "RELIEF" },
-];
-
-function mapViewsForDisplayedFamily(
-  allMapViews: MapViewOptionJson[],
-  familyId: ChartFamilyId,
-): MapViewOptionJson[] {
-  if (familyId === "tac") {
-    return allMapViews.filter((view) => {
-      const chartFamily = view.map_view.chart_family;
-      return chartFamily === "sec" || chartFamily === "tac";
-    });
-  }
-  return allMapViews.filter((view) => view.map_view.chart_family === familyId);
-}
-
-function preferredFamilyMap(
-  allMapViews: MapViewOptionJson[],
-  familyId: ChartFamilyId,
-  fallbackRegionId: string | null,
-): MapViewOptionJson | undefined {
-  const familyMaps = allMapViews.filter((view) => view.map_view.chart_family === familyId);
-  return (
-    familyMaps.find((view) => view.region_id === fallbackRegionId)
-    ?? familyMaps[0]
-  );
-}
-
 function mercatorMetersToWorld(xMeters: number, yMeters: number): { x: number; y: number } {
   const worldSpanMeters = WEB_MERCATOR_HALF_WORLD_M * 2;
   return {
@@ -789,10 +757,6 @@ function emptyMapFollowUiState(): MapFollowUiState {
   };
 }
 
-function initialMapId(mapViews: MapViewOptionJson[]) {
-  return preferredFamilyMap(mapViews, "tac", "nw")?.id ?? mapViews[0]?.id ?? "";
-}
-
 export default function App() {
   const [sessionStartMs] = useState(() => Date.now());
   const uptimeLabel = useSessionUptimeLabel(sessionStartMs);
@@ -811,8 +775,13 @@ export default function App() {
   const startupVisualReadyRef = useRef(false);
   const highLatencyWarningsSuppressedRef = useRef(true);
   const highLatencyWarningTimerRef = useRef<number | null>(null);
-  const [mapViews, setMapViews] = useState<MapViewOptionJson[]>([]);
-  const [mapViewsLoadError, setMapViewsLoadError] = useState<string | null>(null);
+  const [mapSelectorState, setMapSelectorState] = useState<DerivedMapSelectorState>({
+    selected_map_id: "",
+    selected_map: null,
+    displayed_maps: [],
+    family_options: [],
+  });
+  const [mapSelectorLoadError, setMapSelectorLoadError] = useState<string | null>(null);
   const [selectedMapId, setSelectedMapId] = useState<string>("");
   const initialRecentAirportIds = useMemo(
     () => mergeRecentAirportIds(emptyChartPage.airports, persistedUiState.recentAirportIds ?? []),
@@ -962,10 +931,7 @@ export default function App() {
   const selectedAirportId = derivedChartPageState.selected_airport_id;
   const selectedChartId = derivedChartPageState.selected_chart_id;
 
-  const selectedMap = useMemo(
-    () => mapViews.find((view) => view.id === selectedMapId) ?? mapViews[0] ?? null,
-    [selectedMapId],
-  );
+  const selectedMap = mapSelectorState.selected_map;
   const [mapViewport, setMapViewport] = useState<MapViewportState>(() => {
     const center = latLonToWorld(KMSY_POSITION.lat, KMSY_POSITION.lon);
     return {
@@ -977,17 +943,10 @@ export default function App() {
   const [chartViewport, setChartViewport] = useState<ImageViewportState | null>(null);
   const [chartFolderOpen, setChartFolderOpen] = useState(false);
   const selectedFamily = useMemo(
-    () => chartFamilies.find((family) => family.id === selectedMap?.map_view.chart_family) ?? chartFamilies[0],
-    [selectedMap],
+    () => mapSelectorState.family_options.find((family) => family.active) ?? null,
+    [mapSelectorState.family_options],
   );
-  const availableFamilies = useMemo(
-    () => new Set(mapViews.map((view) => view.map_view.chart_family)),
-    [mapViews],
-  );
-  const selectedFamilyMapViews = useMemo(
-    () => selectedMap ? mapViewsForDisplayedFamily(mapViews, selectedMap.map_view.chart_family) : [],
-    [mapViews, selectedMap],
-  );
+  const selectedFamilyMapViews = mapSelectorState.displayed_maps;
   const selectedAirport = useMemo(
     () => chartPageData.airports.find((airport) => airport.id === selectedAirportId) ?? chartPageData.airports[0] ?? null,
     [chartPageData, selectedAirportId],
@@ -1073,28 +1032,28 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    debugTiming("startup.chart_catalog.load", () => runCoreHadOperation<MapViewOptionJson[] | null>({ kind: "chart_catalog" })).then((loaded) => {
+    if (!appCoreAdapter) {
+      return;
+    }
+    debugTiming(
+      "map.selector_state.load",
+      () => appCoreAdapter.deriveMapSelectorState(selectedMapId || undefined),
+    ).then((state) => {
       if (cancelled) {
         return;
       }
-      if (!loaded || loaded.length === 0) {
-        throw new Error("nav_kv chart/catalog is missing or empty");
-      }
-      setMapViews(loaded);
-      setSelectedMapId((current) =>
-        loaded.some((view) => view.id === current)
-          ? current
-          : initialMapId(loaded),
-      );
+      setMapSelectorState(state);
+      setSelectedMapId(state.selected_map_id);
+      setMapSelectorLoadError(null);
     }).catch((error) => {
       if (!cancelled) {
-        setMapViewsLoadError(`failed to load chart catalog: ${errorMessage(error)}`);
+        setMapSelectorLoadError(`failed to derive map selector state: ${errorMessage(error)}`);
       }
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [appCoreAdapter, selectedMapId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1287,7 +1246,7 @@ export default function App() {
     }
     const shouldHideStartupShell =
       sessionInitError !== null ||
-      mapViewsLoadError !== null ||
+      mapSelectorLoadError !== null ||
       chartPageStateLoadError !== null ||
       (appReady &&
         currentPlan !== null &&
@@ -1295,13 +1254,13 @@ export default function App() {
     if (shouldHideStartupShell) {
       window.__aerobag_hide_startup_shell?.();
     }
-  }, [appReady, chartPageStateLoadError, currentPlan, mapViewsLoadError, planUiState, sessionInitError]);
+  }, [appReady, chartPageStateLoadError, currentPlan, mapSelectorLoadError, planUiState, sessionInitError]);
 
-  if (sessionInitError || mapViewsLoadError || chartPageStateLoadError) {
+  if (sessionInitError || mapSelectorLoadError || chartPageStateLoadError) {
     return (
       <main className="appFrame">
         <section className="appPage planPage">
-          <div className="planGuidanceSummary">{sessionInitError ?? mapViewsLoadError ?? chartPageStateLoadError}</div>
+          <div className="planGuidanceSummary">{sessionInitError ?? mapSelectorLoadError ?? chartPageStateLoadError}</div>
         </section>
       </main>
     );
@@ -1326,11 +1285,10 @@ export default function App() {
           debugShowNexradLayer={debugShowNexradLayer}
           onDebugShowNexradLayerChange={setDebugShowNexradLayer}
           selectedMapId={selectedMapId}
-          mapViews={mapViews}
           selectedMap={selectedMap}
           selectedFamilyMapViews={selectedFamilyMapViews}
           selectedFamily={selectedFamily}
-          availableFamilies={availableFamilies}
+          familyOptions={mapSelectorState.family_options}
           viewport={mapViewport}
           onViewportChange={setMapViewport}
           onSelectMapId={(mapId) => {
@@ -1613,11 +1571,10 @@ function MapPage(props: {
   debugShowNexradLayer: boolean;
   onDebugShowNexradLayerChange: (enabled: boolean) => void;
   selectedMapId: string;
-  mapViews: MapViewOptionJson[];
   selectedMap: MapViewOptionJson;
   selectedFamilyMapViews: MapViewOptionJson[];
-  selectedFamily: (typeof chartFamilies)[number];
-  availableFamilies: Set<string>;
+  selectedFamily: DerivedMapSelectorState["family_options"][number] | null;
+  familyOptions: DerivedMapSelectorState["family_options"];
   viewport: MapViewportState;
   onViewportChange: (next: MapViewportState) => void;
   onSelectMapId: (mapId: string) => void;
@@ -1653,7 +1610,7 @@ function MapPage(props: {
     selectedMap,
     selectedFamilyMapViews,
     selectedFamily,
-    availableFamilies,
+    familyOptions,
     viewport,
     onViewportChange,
     onSelectMapId,
@@ -1881,6 +1838,9 @@ function MapPage(props: {
   }, [selectedFamilyMapViews, surfaceSize, viewport]);
   const mapIsVisible = page === "map";
   useEffect(() => {
+    if (!selectedFamily) {
+      return;
+    }
     const matchingTiles = tiles
       .filter((tile) => isRasterTileDebugTarget(tile))
       .map((tile) => ({
@@ -1897,7 +1857,7 @@ function MapPage(props: {
       selected_family_id: selectedFamily.id,
       matching_tiles: matchingTiles,
     });
-  }, [selectedFamily.id, selectedMap.id, tiles]);
+  }, [selectedFamily, selectedMap.id, tiles]);
   const situationRingCandidates = useMemo(() => appCoreAdapter.situationRingCandidates(), [appCoreAdapter]);
   const situationOverlay = useMemo(
     () => resolveSituationOverlay(ownship, viewport, surfaceSize.width, surfaceSize.height, situationRingCandidates),
@@ -3107,31 +3067,22 @@ function MapPage(props: {
             }))}
           />
           <TrayDock
-            launcherLabel={selectedFamily.launcherLabel}
+            launcherLabel={selectedFamily?.launcher_label ?? "---"}
             open={trayGroup.isOpen("family")}
             onToggle={() => trayGroup.toggle("family")}
             ariaLabel="Chart family"
-            options={chartFamilies.map((family) => {
-              const available = availableFamilies.has(family.id);
-              const active = selectedMap.map_view.chart_family === family.id;
-              return {
-                id: family.id,
-                label: family.label,
-                active,
-                disabled: !available,
-                onSelect: () => {
-                  const nextMap = preferredFamilyMap(
-                    props.mapViews,
-                    family.id,
-                    selectedMap.region_id,
-                  );
-                  if (nextMap) {
-                    onSelectMapId(nextMap.id);
-                  }
-                  trayGroup.close("family");
-                },
-              };
-            })}
+            options={familyOptions.map((family) => ({
+              id: family.id,
+              label: family.label,
+              active: family.active,
+              disabled: !family.enabled || !family.next_map_id,
+              onSelect: () => {
+                if (family.next_map_id) {
+                  onSelectMapId(family.next_map_id);
+                }
+                trayGroup.close("family");
+              },
+            }))}
           />
         </div>
 

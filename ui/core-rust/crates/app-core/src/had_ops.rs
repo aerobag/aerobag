@@ -31,6 +31,9 @@ pub enum HadOperationOutcome {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HadOperation {
     ChartCatalog,
+    MapSelectorState {
+        selected_map_id: Option<String>,
+    },
     ChartPageState {
         plan: FlightPlan,
         recent_airport_ids: Vec<String>,
@@ -150,6 +153,9 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
         HadOperation::ChartCatalog => {
             serde_json::to_value(read_optional::<Value>(store, NavKvQuery::ChartCatalog)?)?
         }
+        HadOperation::MapSelectorState { selected_map_id } => serde_json::to_value(
+            map_selector_state(store, selected_map_id.as_deref())?,
+        )?,
         HadOperation::ChartPageState {
             plan,
             recent_airport_ids,
@@ -312,6 +318,64 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
     Ok(value)
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MapSelectorState {
+    selected_map_id: String,
+    selected_map: Option<MapViewOptionRecord>,
+    displayed_maps: Vec<MapViewOptionRecord>,
+    family_options: Vec<MapFamilyOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MapFamilyOption {
+    id: String,
+    label: String,
+    launcher_label: String,
+    enabled: bool,
+    active: bool,
+    next_map_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MapViewOptionRecord {
+    id: String,
+    label: String,
+    region_id: String,
+    map_view: MapViewRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MapViewRecord {
+    chart_family: String,
+    chart_name: String,
+    chart_index: i64,
+    tile_root: String,
+    tile_path_template: String,
+    tile_size: i64,
+    min_zoom: f64,
+    max_zoom: f64,
+    storage_kind: String,
+    package_name: Option<String>,
+    initial_viewport: MapInitialViewportRecord,
+    levels: Vec<MapViewLevelRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MapInitialViewportRecord {
+    lat: f64,
+    lon: f64,
+    zoom: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MapViewLevelRecord {
+    zoom: f64,
+    x_min: i64,
+    x_max: i64,
+    y_tms_min: i64,
+    y_tms_max: i64,
+}
+
 fn read_required<T: DeserializeOwned>(
     store: &NavKvStore,
     query: NavKvQuery,
@@ -444,6 +508,100 @@ fn chart_page_state(
         candidate_airport_id,
         candidate_chart_id,
     ))
+}
+
+fn map_selector_state(
+    store: &NavKvStore,
+    selected_map_id: Option<&str>,
+) -> Result<MapSelectorState, HadReadError> {
+    let map_views = read_required::<Vec<MapViewOptionRecord>>(
+        store,
+        NavKvQuery::ChartCatalog,
+        "chart catalog",
+    )?;
+    let selected_map = map_views
+        .iter()
+        .find(|view| Some(view.id.as_str()) == selected_map_id)
+        .cloned()
+        .or_else(|| preferred_family_map(&map_views, "tac", Some("nw")).cloned())
+        .or_else(|| map_views.first().cloned());
+    let selected_family_id = selected_map
+        .as_ref()
+        .map(|view| view.map_view.chart_family.as_str())
+        .unwrap_or("sec");
+    let displayed_maps = displayed_family_maps(&map_views, selected_family_id)
+        .into_iter()
+        .cloned()
+        .collect();
+    let selected_region_id = selected_map.as_ref().map(|view| view.region_id.as_str());
+    let family_options = supported_chart_families()
+        .into_iter()
+        .map(|(id, label, launcher_label)| MapFamilyOption {
+            id: id.to_string(),
+            label: label.to_string(),
+            launcher_label: launcher_label.to_string(),
+            enabled: map_views
+                .iter()
+                .any(|view| view.map_view.chart_family == id),
+            active: selected_family_id == id,
+            next_map_id: preferred_family_map(&map_views, id, selected_region_id)
+                .map(|view| view.id.clone()),
+        })
+        .collect();
+    Ok(MapSelectorState {
+        selected_map_id: selected_map
+            .as_ref()
+            .map(|view| view.id.clone())
+            .unwrap_or_default(),
+        selected_map,
+        displayed_maps,
+        family_options,
+    })
+}
+
+fn supported_chart_families() -> [(&'static str, &'static str, &'static str); 5] {
+    [
+        ("sec", "SECTIONAL", "SEC"),
+        ("tac", "TAC", "TAC"),
+        ("enr-l", "IFR-LOW", "IFR L"),
+        ("enr-h", "IFR-HIGH", "IFR H"),
+        ("shaded-relief", "SHADED RELIEF", "RELIEF"),
+    ]
+}
+
+fn displayed_family_maps<'a>(
+    map_views: &'a [MapViewOptionRecord],
+    family_id: &str,
+) -> Vec<&'a MapViewOptionRecord> {
+    if family_id == "tac" {
+        return map_views
+            .iter()
+            .filter(|view| {
+                let chart_family = view.map_view.chart_family.as_str();
+                chart_family == "sec" || chart_family == "tac"
+            })
+            .collect();
+    }
+    map_views
+        .iter()
+        .filter(|view| view.map_view.chart_family == family_id)
+        .collect()
+}
+
+fn preferred_family_map<'a>(
+    map_views: &'a [MapViewOptionRecord],
+    family_id: &str,
+    fallback_region_id: Option<&str>,
+) -> Option<&'a MapViewOptionRecord> {
+    let family_maps = map_views
+        .iter()
+        .filter(|view| view.map_view.chart_family == family_id)
+        .collect::<Vec<_>>();
+    family_maps
+        .iter()
+        .find(|view| Some(view.region_id.as_str()) == fallback_region_id)
+        .copied()
+        .or_else(|| family_maps.first().copied())
 }
 
 fn project_flight_plan_route(

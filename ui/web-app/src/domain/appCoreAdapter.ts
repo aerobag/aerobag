@@ -20,6 +20,7 @@ import type {
   GuidanceState,
   LatLon,
   MapFollowUiState,
+  MapViewOptionJson,
   MaterializedProcedure,
   NavRef,
   OwnshipSelectionCommand,
@@ -48,6 +49,20 @@ export type DerivedChartPageState = {
   recent_airport_ids: string[];
   selected_airport_id: string;
   selected_chart_id: string;
+};
+
+export type DerivedMapSelectorState = {
+  selected_map_id: string;
+  selected_map: MapViewOptionJson | null;
+  displayed_maps: MapViewOptionJson[];
+  family_options: Array<{
+    id: ChartFamilyId;
+    label: string;
+    launcher_label: string;
+    enabled: boolean;
+    active: boolean;
+    next_map_id: string | null;
+  }>;
 };
 
 export type UiSessionSnapshot = {
@@ -292,6 +307,7 @@ export interface AppCoreAdapter {
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<DerivedChartPageState>;
+  deriveMapSelectorState(selectedMapId?: string): Promise<DerivedMapSelectorState>;
   projectFlightPlanRoute(plan: FlightPlan, planUiState: FlightPlanUiState | null): Promise<FlightPlanRouteSegment[]>;
   activateLegUi(plan: FlightPlan, legIndex: number): Promise<FlightPlanUiMutation>;
   activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
@@ -802,6 +818,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       recent_airport_ids: recentAirportIds,
       selected_airport_id: selectedAirportId ?? null,
       selected_chart_id: selectedChartId ?? null,
+    });
+  }
+
+  async deriveMapSelectorState(selectedMapId?: string): Promise<DerivedMapSelectorState> {
+    return runCoreHadOperation<DerivedMapSelectorState>({
+      kind: "map_selector_state",
+      selected_map_id: selectedMapId ?? null,
     });
   }
 

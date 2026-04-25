@@ -220,6 +220,8 @@ pub struct LegDisplayPath {
     #[serde(default)]
     pub style: LegDisplayPathStyle,
     pub elements: Vec<LegDisplayElement>,
+    #[serde(default)]
+    pub debug_element_sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

@@ -1400,6 +1400,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 Some(LegDisplayPath {
                     style: LegDisplayPathStyle::Solid,
                     elements: Vec::new(),
+                    debug_element_sources: Vec::new(),
                 })
             } else {
                 display_path_for_procedure_leg(
@@ -3112,7 +3113,7 @@ mod tests {
                 .as_ref()
                 .and_then(|provenance| provenance.display_path.as_ref())
             {
-                for element in &path.elements {
+                for (element_index, element) in path.elements.iter().enumerate() {
                     let points = generic_plate_points_for_display_elements(
                         &padded_plate,
                         std::slice::from_ref(element),
@@ -3127,7 +3128,16 @@ mod tests {
                     };
                     draw_polyline(&mut canvas, &points, stroke, 2);
                     if emit_steps {
-                        draw_steps.push((format!("{} {:?}", leg.id, element), points, stroke));
+                        let source = path
+                            .debug_element_sources
+                            .get(element_index)
+                            .map(String::as_str)
+                            .unwrap_or("unknown");
+                        draw_steps.push((
+                            format!("{} {:?} @ {}", leg.id, element, source),
+                            points,
+                            stroke,
+                        ));
                     }
                 }
             } else {
@@ -5037,7 +5047,7 @@ mod tests {
     #[ignore = "manual audit for selected heading continuity records"]
     fn audit_selected_heading_continuity_records() {
         let store = load_snapshot_nav_kv_store();
-        for (airport_id, procedure_id) in [("KMCC", "I16")] {
+        for (airport_id, procedure_id) in [("KGJT", "I11")] {
             let rows = read_required_from_store::<Vec<ProcedureDistinctRow>>(
                 &store,
                 crate::NavKvQuery::ProcedureDistinctRows {
@@ -5534,7 +5544,7 @@ mod tests {
     #[test]
     #[ignore = "manual visual inspection overlay for selected heading continuity case"]
     fn writes_selected_heading_continuity_overlay_png() {
-        render_procedure_overlay_to_paths("KMCC", "I16", "LIN", "KMCC_I16_LIN", false);
+        render_procedure_overlay_to_paths("KGJT", "I11", "WINDO", "KGJT_I11_WINDO", false);
     }
 
     #[test]

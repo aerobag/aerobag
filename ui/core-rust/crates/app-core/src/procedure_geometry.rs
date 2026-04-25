@@ -1,6 +1,78 @@
 use crate::planning::LegDisplayPathStyle;
 use crate::{LatLon, LegDisplayElement, LegDisplayPath, ProcedureLegMaterializationRecord};
 
+macro_rules! debug_source {
+    () => {
+        format!("{}:{}", file!(), line!())
+    };
+}
+
+macro_rules! push_segment {
+    ($elements:expr, $sources:expr, $start:expr, $end:expr) => {{
+        $elements.push(LegDisplayElement::Segment {
+            start: $start,
+            end: $end,
+        });
+        $sources.push(debug_source!());
+    }};
+}
+
+macro_rules! push_arc {
+    ($elements:expr, $sources:expr, $center:expr, $radius_nm:expr, $start:expr, $end:expr, $clockwise:expr, $sweep_degrees:expr) => {{
+        $elements.push(LegDisplayElement::Arc {
+            center: $center,
+            radius_nm: $radius_nm,
+            start: $start,
+            end: $end,
+            clockwise: $clockwise,
+            sweep_degrees: $sweep_degrees,
+        });
+        $sources.push(debug_source!());
+    }};
+}
+
+fn solid_path(elements: Vec<LegDisplayElement>, debug_element_sources: Vec<String>) -> LegDisplayPath {
+    LegDisplayPath {
+        style: LegDisplayPathStyle::Solid,
+        elements,
+        debug_element_sources,
+    }
+}
+
+fn dashed_path(elements: Vec<LegDisplayElement>, debug_element_sources: Vec<String>) -> LegDisplayPath {
+    LegDisplayPath {
+        style: LegDisplayPathStyle::Dashed,
+        elements,
+        debug_element_sources,
+    }
+}
+
+fn extend_elements_with_sources(
+    dest_elements: &mut Vec<LegDisplayElement>,
+    dest_sources: &mut Vec<String>,
+    elements: Vec<LegDisplayElement>,
+    mut sources: Vec<String>,
+    fallback_source: String,
+) {
+    if sources.len() != elements.len() {
+        sources.resize(elements.len(), fallback_source);
+    }
+    dest_elements.extend(elements);
+    dest_sources.extend(sources);
+}
+
+fn extend_sources_for_new_elements(
+    sources: &mut Vec<String>,
+    old_len: usize,
+    elements: &[LegDisplayElement],
+    source: String,
+) {
+    sources.extend(std::iter::repeat_n(
+        source,
+        elements.len().saturating_sub(old_len),
+    ));
+}
+
 const NOMINAL_HOLD_GROUND_SPEED_KT: f64 = 120.0;
 const STANDARD_RATE_TURN_DEG_PER_SEC: f64 = 3.0;
 const NOMINAL_PROCEDURE_TURN_INITIAL_OUTBOUND_DISTANCE_NM: f64 = 5.0;
@@ -8,6 +80,7 @@ const NOMINAL_PROCEDURE_TURN_GROUND_SPEED_KT: f64 = 120.0;
 const NOMINAL_PROCEDURE_TURN_BARB_TIME_MIN: f64 = 2.0;
 const NOMINAL_MANUAL_TERMINATION_DISTANCE_NM: f64 = 4.0;
 const MIN_GEOMETRY_DISTANCE_NM: f64 = 0.05;
+const NEAR_INTERCEPT_SNAP_DISTANCE_NM: f64 = 0.1;
 const TO_FIX_TERMINATION_SNAP_DISTANCE_NM: f64 = 0.1;
 const MIN_ARC_SWEEP_DEG: f64 = 0.5;
 const POSITION_EPSILON_DEG: f64 = 0.0005;
@@ -59,18 +132,17 @@ pub fn build_trailing_course_to_intercept_display_path(
             Some(intercept_step),
         )?;
     let mut altitude_ft = trailing_record.altitude_1_ft;
+    let mut debug_sources = Vec::new();
     let _ = append_course_track_path(
         &mut elements,
+        &mut debug_sources,
         intercept,
         Some(intercept_step.magnetic_course_deg? + course_reference_variation_deg(intercept_step)),
         &mut altitude_ft,
         intercept_step,
         TrackTermination::ToFix(intercept_step.nav_position?),
     )?;
-    Some(LegDisplayPath {
-        style: LegDisplayPathStyle::Solid,
-        elements,
-    })
+    Some(solid_path(elements, debug_sources))
 }
 
 fn hold_display_path(
@@ -139,35 +211,23 @@ fn procedure_turn_display_path(leg: &ProcedureLegMaterializationRecord) -> Optio
         inbound_course_deg,
         fix,
     )?;
-    Some(LegDisplayPath {
-        style: LegDisplayPathStyle::Dashed,
-        elements: vec![
-            LegDisplayElement::Segment {
-                start: fix,
-                end: outbound_end,
-            },
-            LegDisplayElement::Segment {
-                start: outbound_end,
-                end: barb_end,
-            },
-            LegDisplayElement::Arc {
-                center: turn_center,
-                radius_nm: turn_radius_nm,
-                start: barb_end,
-                end: intercept_start,
-                clockwise,
-                sweep_degrees: 180.0,
-            },
-            LegDisplayElement::Segment {
-                start: intercept_start,
-                end: intercept,
-            },
-            LegDisplayElement::Segment {
-                start: intercept,
-                end: fix,
-            },
-        ],
-    })
+    let mut elements = Vec::new();
+    let mut sources = Vec::new();
+    push_segment!(elements, sources, fix, outbound_end);
+    push_segment!(elements, sources, outbound_end, barb_end);
+    push_arc!(
+        elements,
+        sources,
+        turn_center,
+        turn_radius_nm,
+        barb_end,
+        intercept_start,
+        clockwise,
+        180.0
+    );
+    push_segment!(elements, sources, intercept_start, intercept);
+    push_segment!(elements, sources, intercept, fix);
+    Some(dashed_path(elements, sources))
 }
 
 fn arc_to_fix_path_from_start(
@@ -197,17 +257,19 @@ fn arc_to_fix_path_from_start(
     if sweep_degrees <= MIN_ARC_SWEEP_DEG {
         return None;
     }
-    Some(LegDisplayPath {
-        style: LegDisplayPathStyle::Solid,
-        elements: vec![LegDisplayElement::Arc {
-            center,
-            radius_nm,
-            start: start_on_arc,
-            end: end_on_arc,
-            clockwise,
-            sweep_degrees,
-        }],
-    })
+    let mut elements = Vec::new();
+    let mut sources = Vec::new();
+    push_arc!(
+        elements,
+        sources,
+        center,
+        radius_nm,
+        start_on_arc,
+        end_on_arc,
+        clockwise,
+        sweep_degrees
+    );
+    Some(solid_path(elements, sources))
 }
 
 fn radius_to_fix_path_from_start(
@@ -240,17 +302,19 @@ fn radius_to_fix_path_from_start(
     if sweep_degrees <= MIN_ARC_SWEEP_DEG {
         return None;
     }
-    Some(LegDisplayPath {
-        style: LegDisplayPathStyle::Solid,
-        elements: vec![LegDisplayElement::Arc {
-            center,
-            radius_nm,
-            start: start_on_arc,
-            end: end_on_arc,
-            clockwise,
-            sweep_degrees,
-        }],
-    })
+    let mut elements = Vec::new();
+    let mut sources = Vec::new();
+    push_arc!(
+        elements,
+        sources,
+        center,
+        radius_nm,
+        start_on_arc,
+        end_on_arc,
+        clockwise,
+        sweep_degrees
+    );
+    Some(solid_path(elements, sources))
 }
 
 fn nominal_procedure_turn_barb_distance_nm() -> f64 {
@@ -291,6 +355,7 @@ fn build_procedure_leg_display_path(
         .next_back()
         .or(leg_start.altitude_1_ft);
     let mut elements = Vec::new();
+    let mut debug_sources = Vec::new();
 
     let mut steps = segment_records
         .iter()
@@ -315,6 +380,7 @@ fn build_procedure_leg_display_path(
             }
             "CA" => {
                 let course_deg = current_or_step_course_deg(step, current_course_deg)?;
+                let prior_len = elements.len();
                 current_position = extend_climb_segment(
                     &mut elements,
                     current_position,
@@ -322,11 +388,18 @@ fn build_procedure_leg_display_path(
                     &mut current_altitude_ft,
                     step.altitude_1_ft,
                 );
+                extend_sources_for_new_elements(
+                    &mut debug_sources,
+                    prior_len,
+                    &elements,
+                    debug_source!(),
+                );
                 current_course_deg = Some(course_deg);
             }
             "FA" => {
                 let (new_position, course_deg) = append_course_track_path(
                     &mut elements,
+                    &mut debug_sources,
                     current_position,
                     current_course_deg,
                     &mut current_altitude_ft,
@@ -341,6 +414,7 @@ fn build_procedure_leg_display_path(
                 let radius_nm = parse_distance_tenths_nm(step.route_distance_or_time.as_deref())?;
                 let (new_position, course_deg) = append_course_track_path(
                     &mut elements,
+                    &mut debug_sources,
                     current_position,
                     current_course_deg,
                     &mut current_altitude_ft,
@@ -354,26 +428,21 @@ fn build_procedure_leg_display_path(
                 let course_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
                 let fix = step.nav_position?;
                 if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
-                    elements.push(LegDisplayElement::Segment {
-                        start: current_position,
-                        end: fix,
-                    });
+                    push_segment!(elements, debug_sources, current_position, fix);
                 }
                 current_position = fix;
                 let distance_nm = parse_distance_tenths_nm(step.route_distance_or_time.as_deref())?;
                 if distance_nm > MIN_GEOMETRY_DISTANCE_NM {
                     let end = destination_point(current_position, course_deg, distance_nm);
                     if distance_between_points_nm(current_position, end) > MIN_GEOMETRY_DISTANCE_NM {
-                        elements.push(LegDisplayElement::Segment {
-                            start: current_position,
-                            end,
-                        });
+                        push_segment!(elements, debug_sources, current_position, end);
                     }
                     current_position = end;
                 }
                 current_course_deg = Some(course_deg);
             }
             "VA" | "VI" | "VM" => {
+                let prior_len = elements.len();
                 let new_position = append_heading_leg_path(
                     &mut elements,
                     step,
@@ -382,6 +451,12 @@ fn build_procedure_leg_display_path(
                     &mut current_altitude_ft,
                     steps.get(index + 1).copied(),
                 )?;
+                extend_sources_for_new_elements(
+                    &mut debug_sources,
+                    prior_len,
+                    &elements,
+                    debug_source!(),
+                );
                 current_position = new_position;
                 current_course_deg =
                     Some(step.magnetic_course_deg? + course_reference_variation_deg(step));
@@ -398,7 +473,13 @@ fn build_procedure_leg_display_path(
                     current_course_deg,
                     next_cf_step,
                 )?;
-                elements.extend(ci_elements);
+                extend_elements_with_sources(
+                    &mut elements,
+                    &mut debug_sources,
+                    ci_elements,
+                    Vec::new(),
+                    debug_source!(),
+                );
                 current_position = end;
                 current_course_deg = Some(course_deg);
             }
@@ -408,7 +489,13 @@ fn build_procedure_leg_display_path(
                     current_position,
                     current_course_deg,
                 )?;
-                elements.extend(vd_elements);
+                extend_elements_with_sources(
+                    &mut elements,
+                    &mut debug_sources,
+                    vd_elements,
+                    Vec::new(),
+                    debug_source!(),
+                );
                 current_position = end;
                 current_course_deg = Some(course_deg);
             }
@@ -418,7 +505,13 @@ fn build_procedure_leg_display_path(
                     current_position,
                     current_course_deg,
                 )?;
-                elements.extend(vr_elements);
+                extend_elements_with_sources(
+                    &mut elements,
+                    &mut debug_sources,
+                    vr_elements,
+                    Vec::new(),
+                    debug_source!(),
+                );
                 current_position = end;
                 current_course_deg = Some(course_deg);
             }
@@ -426,26 +519,41 @@ fn build_procedure_leg_display_path(
                 let path = arc_to_fix_path_from_start(current_position, step)?;
                 current_position = step.nav_position?;
                 current_course_deg = path.elements.last().and_then(display_element_end_course_deg);
-                elements.extend(path.elements);
+                extend_elements_with_sources(
+                    &mut elements,
+                    &mut debug_sources,
+                    path.elements,
+                    path.debug_element_sources,
+                    debug_source!(),
+                );
             }
             "RF" => {
                 let path = radius_to_fix_path_from_start(current_position, step)?;
                 current_position = step.nav_position?;
                 current_course_deg = path.elements.last().and_then(display_element_end_course_deg);
-                elements.extend(path.elements);
+                extend_elements_with_sources(
+                    &mut elements,
+                    &mut debug_sources,
+                    path.elements,
+                    path.debug_element_sources,
+                    debug_source!(),
+                );
             }
             "PI" => {
                 let fix = step.nav_position?;
                 let path = procedure_turn_display_path(step)?;
                 if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
-                    elements.push(LegDisplayElement::Segment {
-                        start: current_position,
-                        end: fix,
-                    });
+                    push_segment!(elements, debug_sources, current_position, fix);
                 }
                 current_position = fix;
                 current_course_deg = path.elements.last().and_then(display_element_end_course_deg);
-                elements.extend(path.elements);
+                extend_elements_with_sources(
+                    &mut elements,
+                    &mut debug_sources,
+                    path.elements,
+                    path.debug_element_sources,
+                    debug_source!(),
+                );
             }
             "DF" => {
                 let fix = step.nav_position?;
@@ -474,24 +582,23 @@ fn build_procedure_leg_display_path(
                         turn_clockwise,
                         turn_radius_nm,
                     );
-                    elements.push(LegDisplayElement::Arc {
-                        center: turn_center,
-                        radius_nm: turn_radius_nm,
-                        start: current_position,
-                        end: turn_end,
-                        clockwise: turn_clockwise,
-                        sweep_degrees: heading_sweep_degrees(
+                    push_arc!(
+                        elements,
+                        debug_sources,
+                        turn_center,
+                        turn_radius_nm,
+                        current_position,
+                        turn_end,
+                        turn_clockwise,
+                        heading_sweep_degrees(
                             initial_course_deg,
                             direct_course_deg,
                             turn_clockwise,
-                        ),
-                    });
+                        )
+                    );
                     current_position = turn_end;
                 }
-                elements.push(LegDisplayElement::Segment {
-                    start: current_position,
-                    end: fix,
-                });
+                push_segment!(elements, debug_sources, current_position, fix);
                 current_position = fix;
                 current_course_deg = Some(direct_course_deg);
             }
@@ -524,10 +631,7 @@ fn build_procedure_leg_display_path(
                                 climb_distance_nm,
                             );
                             if distance_between_points_nm(current_position, climb_end) > MIN_GEOMETRY_DISTANCE_NM {
-                                elements.push(LegDisplayElement::Segment {
-                                    start: current_position,
-                                    end: climb_end,
-                                });
+                                push_segment!(elements, debug_sources, current_position, climb_end);
                                 current_position = climb_end;
                             }
                             current_altitude_ft = Some(target_alt_ft);
@@ -536,6 +640,7 @@ fn build_procedure_leg_display_path(
                 }
                 if let Some((new_position, _)) = append_course_track_path(
                     &mut elements,
+                    &mut debug_sources,
                     current_position,
                     current_course_deg,
                     &mut current_altitude_ft,
@@ -549,6 +654,7 @@ fn build_procedure_leg_display_path(
                         (current_course_deg, cf_turn_direction(step))
                     {
                         if angular_difference_degrees(direct_course_deg, course_deg) <= 15.0 {
+                            let turn_prior_len = elements.len();
                             let turn_end = append_heading_change(
                                 &mut elements,
                                 current_position,
@@ -558,23 +664,20 @@ fn build_procedure_leg_display_path(
                                 0.0,
                                 missed_approach_turn_radius_nm(),
                             );
+                            extend_sources_for_new_elements(
+                                &mut debug_sources,
+                                turn_prior_len,
+                                &elements,
+                                debug_source!(),
+                            );
                             if distance_between_points_nm(turn_end, fix) > MIN_GEOMETRY_DISTANCE_NM {
-                                elements.push(LegDisplayElement::Segment {
-                                    start: turn_end,
-                                    end: fix,
-                                });
+                                push_segment!(elements, debug_sources, turn_end, fix);
                             }
                         } else {
-                            elements.push(LegDisplayElement::Segment {
-                                start: current_position,
-                                end: fix,
-                            });
+                            push_segment!(elements, debug_sources, current_position, fix);
                         }
                     } else {
-                        elements.push(LegDisplayElement::Segment {
-                            start: current_position,
-                            end: fix,
-                        });
+                        push_segment!(elements, debug_sources, current_position, fix);
                     }
                     current_position = fix;
                 }
@@ -590,10 +693,7 @@ fn build_procedure_leg_display_path(
                     fix
                 };
                 if distance_between_points_nm(current_position, effective_fix) > MIN_GEOMETRY_DISTANCE_NM {
-                    elements.push(LegDisplayElement::Segment {
-                        start: current_position,
-                        end: effective_fix,
-                    });
+                    push_segment!(elements, debug_sources, current_position, effective_fix);
                 }
                 current_course_deg = Some(bearing_from(current_position, effective_fix));
                 current_position = effective_fix;
@@ -606,18 +706,21 @@ fn build_procedure_leg_display_path(
                         .and_then(display_element_end_position)
                         .unwrap_or(current_position);
                     current_course_deg = hold_path.elements.last().and_then(display_element_end_course_deg);
-                    elements.extend(hold_path.elements);
+                    extend_elements_with_sources(
+                        &mut elements,
+                        &mut debug_sources,
+                        hold_path.elements,
+                        hold_path.debug_element_sources,
+                        debug_source!(),
+                    );
                 }
             }
             _ => {}
         }
     }
     snap_nearby_display_element_boundaries(&mut elements);
-    prune_degenerate_display_elements(&mut elements);
-    (!elements.is_empty()).then_some(LegDisplayPath {
-        style: LegDisplayPathStyle::Solid,
-        elements,
-    })
+    prune_degenerate_display_elements_with_sources(&mut elements, &mut debug_sources);
+    (!elements.is_empty()).then_some(solid_path(elements, debug_sources))
 }
 
 fn display_element_end_position(element: &LegDisplayElement) -> Option<LatLon> {
@@ -685,6 +788,7 @@ fn current_or_step_course_deg(
 
 fn append_course_track_path(
     elements: &mut Vec<LegDisplayElement>,
+    debug_sources: &mut Vec<String>,
     current_position: LatLon,
     current_course_deg: Option<f64>,
     current_altitude_ft: &mut Option<f64>,
@@ -711,6 +815,7 @@ fn append_course_track_path(
                 let heading_delta_deg = angular_difference_degrees(current_heading_deg, course_deg);
                 if heading_delta_deg > 1.0 {
                     let turn_clockwise = shortest_turn_clockwise(current_heading_deg, course_deg);
+                    let prior_len = elements.len();
                     append_heading_change(
                         elements,
                         current_position,
@@ -719,7 +824,17 @@ fn append_course_track_path(
                         turn_clockwise,
                         0.0,
                         missed_approach_turn_radius_nm(),
-                    )
+                    );
+                    extend_sources_for_new_elements(
+                        debug_sources,
+                        prior_len,
+                        elements,
+                        debug_source!(),
+                    );
+                    elements
+                        .last()
+                        .and_then(display_element_end_position)
+                        .unwrap_or(current_position)
                 } else {
                     current_position
                 }
@@ -756,7 +871,13 @@ fn append_course_track_path(
             ) else {
                 return None;
             };
-            elements.extend(join_elements);
+            extend_elements_with_sources(
+                elements,
+                debug_sources,
+                join_elements,
+                Vec::new(),
+                debug_source!(),
+            );
             intercept
         } else if let Some(turn_clockwise) = cf_turn_direction(step) {
             if let Some((join_elements, intercept)) = directed_track_join_elements(
@@ -768,7 +889,13 @@ fn append_course_track_path(
                 track_limit,
                 missed_approach_turn_radius_nm(),
             ) {
-                elements.extend(join_elements);
+                extend_elements_with_sources(
+                    elements,
+                    debug_sources,
+                    join_elements,
+                    Vec::new(),
+                    debug_source!(),
+                );
                 intercept
             } else {
                 let (join_elements, intercept) = best_nominal_intercept_track_join(
@@ -780,7 +907,13 @@ fn append_course_track_path(
                     track_limit,
                     missed_approach_turn_radius_nm(),
                 )?;
-                elements.extend(join_elements);
+                extend_elements_with_sources(
+                    elements,
+                    debug_sources,
+                    join_elements,
+                    Vec::new(),
+                    debug_source!(),
+                );
                 intercept
             }
         } else {
@@ -801,13 +934,11 @@ fn append_course_track_path(
                 )
             });
             let intercept = if let Some(intercept) = direct_intercept {
-                if distance_between_points_nm(current_position, intercept)
-                    > MIN_GEOMETRY_DISTANCE_NM
-                {
-                    elements.push(LegDisplayElement::Segment {
-                        start: current_position,
-                        end: intercept,
-                    });
+                let intercept_distance_nm = distance_between_points_nm(current_position, intercept);
+                if intercept_distance_nm <= NEAR_INTERCEPT_SNAP_DISTANCE_NM {
+                    current_position
+                } else if intercept_distance_nm > MIN_GEOMETRY_DISTANCE_NM {
+                    push_segment!(elements, debug_sources, current_position, intercept);
                     intercept
                 } else {
                     current_position
@@ -822,7 +953,13 @@ fn append_course_track_path(
                     track_limit,
                     missed_approach_turn_radius_nm(),
                 )?;
-                elements.extend(join_elements);
+                extend_elements_with_sources(
+                    elements,
+                    debug_sources,
+                    join_elements,
+                    Vec::new(),
+                    debug_source!(),
+                );
                 intercept
             };
             intercept
@@ -831,10 +968,7 @@ fn append_course_track_path(
         match termination {
             TrackTermination::ToFix(fix) => {
                 if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
-                    elements.push(LegDisplayElement::Segment {
-                        start: current_position,
-                        end: fix,
-                    });
+                    push_segment!(elements, debug_sources, current_position, fix);
                 }
                 fix
             }
@@ -843,10 +977,7 @@ fn append_course_track_path(
                 let end =
                     forward_heading_circle_intersection(current_position, course_deg, center, radius_nm)?;
                 if distance_between_points_nm(current_position, end) > MIN_GEOMETRY_DISTANCE_NM {
-                    elements.push(LegDisplayElement::Segment {
-                        start: current_position,
-                        end,
-                    });
+                    push_segment!(elements, debug_sources, current_position, end);
                 }
                 end
             }
@@ -861,10 +992,7 @@ fn append_course_track_path(
                     set_display_element_end_position(last_element, fix);
                 }
             } else if distance_to_fix_nm > MIN_GEOMETRY_DISTANCE_NM {
-                elements.push(LegDisplayElement::Segment {
-                    start: track_start,
-                    end: fix,
-                });
+                push_segment!(elements, debug_sources, track_start, fix);
             }
             fix
         }
@@ -878,10 +1006,7 @@ fn append_course_track_path(
         TrackTermination::ToDme { center, radius_nm } => {
             let end = forward_heading_circle_intersection(track_start, course_deg, center, radius_nm)?;
             if distance_between_points_nm(track_start, end) > MIN_GEOMETRY_DISTANCE_NM {
-                elements.push(LegDisplayElement::Segment {
-                    start: track_start,
-                    end,
-                });
+                push_segment!(elements, debug_sources, track_start, end);
             }
             end
         }
@@ -1984,48 +2109,39 @@ fn build_hold_display_path(
         leg_length_nm,
         turn_radius_nm,
     );
+    let mut debug_sources = vec![debug_source!(); elements.len()];
     if stop_when_established_inbound {
         if !matches!(entry_kind, Some(HoldEntryKind::Direct) | None) {
-            return LegDisplayPath {
-                style: LegDisplayPathStyle::Solid,
-                elements,
-            };
+            return solid_path(elements, debug_sources);
         }
     }
-    elements.extend(vec![
-        LegDisplayElement::Arc {
-            center: first_turn_center,
-            radius_nm: turn_radius_nm,
-            start: inbound_end,
-            end: outbound_start,
-            clockwise,
-            sweep_degrees: 180.0,
-        },
-        LegDisplayElement::Segment {
-            start: outbound_start,
-            end: outbound_end,
-        },
-        LegDisplayElement::Arc {
-            center: second_turn_center,
-            radius_nm: turn_radius_nm,
-            start: outbound_end,
-            end: inbound_rejoin,
-            clockwise,
-            sweep_degrees: 180.0,
-        },
-        LegDisplayElement::Segment {
-            start: inbound_rejoin,
-            end: inbound_end,
-        },
-    ]);
+    push_arc!(
+        elements,
+        debug_sources,
+        first_turn_center,
+        turn_radius_nm,
+        inbound_end,
+        outbound_start,
+        clockwise,
+        180.0
+    );
+    push_segment!(elements, debug_sources, outbound_start, outbound_end);
+    push_arc!(
+        elements,
+        debug_sources,
+        second_turn_center,
+        turn_radius_nm,
+        outbound_end,
+        inbound_rejoin,
+        clockwise,
+        180.0
+    );
+    push_segment!(elements, debug_sources, inbound_rejoin, inbound_end);
 
     snap_nearby_display_element_boundaries(&mut elements);
-    prune_degenerate_display_elements(&mut elements);
+    prune_degenerate_display_elements_with_sources(&mut elements, &mut debug_sources);
 
-    LegDisplayPath {
-        style: LegDisplayPathStyle::Solid,
-        elements,
-    }
+    solid_path(elements, debug_sources)
 }
 
 fn hold_entry_elements(
@@ -2284,21 +2400,39 @@ fn positions_nearly_equal_for_geometry(a: LatLon, b: LatLon) -> bool {
         && (a.lon - b.lon).abs() < POSITION_EPSILON_DEG
 }
 
-fn prune_degenerate_display_elements(elements: &mut Vec<LegDisplayElement>) {
-    elements.retain(|element| match element {
-        LegDisplayElement::Segment { start, end } => !positions_nearly_equal_for_geometry(*start, *end),
-        LegDisplayElement::Arc {
-            start,
-            end,
-            radius_nm,
-            sweep_degrees,
-            ..
-        } => {
-            !positions_nearly_equal_for_geometry(*start, *end)
-                && *radius_nm > MIN_GEOMETRY_DISTANCE_NM
-                && sweep_degrees.abs() > MIN_ARC_SWEEP_DEG
+fn prune_degenerate_display_elements_with_sources(
+    elements: &mut Vec<LegDisplayElement>,
+    debug_sources: &mut Vec<String>,
+) {
+    let original_elements = std::mem::take(elements);
+    let original_sources = std::mem::take(debug_sources);
+    for (index, element) in original_elements.into_iter().enumerate() {
+        let keep = match &element {
+            LegDisplayElement::Segment { start, end } => {
+                !positions_nearly_equal_for_geometry(*start, *end)
+            }
+            LegDisplayElement::Arc {
+                start,
+                end,
+                radius_nm,
+                sweep_degrees,
+                ..
+            } => {
+                !positions_nearly_equal_for_geometry(*start, *end)
+                    && *radius_nm > MIN_GEOMETRY_DISTANCE_NM
+                    && sweep_degrees.abs() > MIN_ARC_SWEEP_DEG
+            }
+        };
+        if keep {
+            elements.push(element);
+            debug_sources.push(
+                original_sources
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string()),
+            );
         }
-    });
+    }
 }
 
 fn left_normal((east, north): (f64, f64)) -> (f64, f64) {

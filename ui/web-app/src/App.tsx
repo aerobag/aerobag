@@ -6026,7 +6026,7 @@ function flightPlanActionLabel(actionId: string): string {
     case "remove":
       return "Remove";
     case "remove_all_above":
-      return "Remove All Above";
+      return "Remove to Here";
     case "insert_before":
       return "Insert Before";
     case "insert_after":

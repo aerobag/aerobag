@@ -1252,10 +1252,7 @@ fn group_row_actions(component: &RouteComponentUiView) -> Vec<FlightPlanRowActio
                 component.can_change_airway,
             ),
             action(FlightPlanRowActionId::RemoveAirway, component.can_remove),
-            action(
-                FlightPlanRowActionId::RemoveAllAbove,
-                component.component_index > 0,
-            ),
+            action(FlightPlanRowActionId::RemoveAllAbove, true),
         ],
         RouteComponentViewKind::Procedure => vec![
             action(
@@ -1285,7 +1282,7 @@ fn waypoint_or_discontinuity_actions(
             ),
             action(
                 FlightPlanRowActionId::RemoveAllAbove,
-                row.component_index.is_some_and(|component_index| component_index > 0),
+                row.component_index.is_some(),
             ),
             action(
                 FlightPlanRowActionId::InsertBefore,
@@ -1471,12 +1468,9 @@ pub fn remove_all_above(plan: &FlightPlan, component_index: usize) -> AppResult<
             message: format!("component index out of bounds: {component_index}"),
         });
     }
-    if component_index == 0 {
-        return Ok(plan);
-    }
-
-    let new_components = plan.route_components[component_index..].to_vec();
-    let old_index_by_new_index = (component_index..plan.route_components.len())
+    let keep_from = component_index.saturating_add(1);
+    let new_components = plan.route_components[keep_from..].to_vec();
+    let old_index_by_new_index = (keep_from..plan.route_components.len())
         .map(Some)
         .collect::<Vec<_>>();
 
@@ -4641,21 +4635,15 @@ mod tests {
     }
 
     #[test]
-    fn remove_all_above_keeps_selected_component_and_following_route() {
+    fn remove_all_above_removes_selected_component_and_preceding_route() {
         let trimmed = remove_all_above(&sample_four_waypoint_plan(), 2).unwrap();
 
-        assert_eq!(trimmed.route_components.len(), 2);
+        assert_eq!(trimmed.route_components.len(), 1);
         assert!(matches!(
             trimmed.route_components[0],
-            RouteComponent::Waypoint { waypoint: NavRef::Airport(ref id) } if id == "KPAE"
-        ));
-        assert!(matches!(
-            trimmed.route_components[1],
             RouteComponent::Waypoint { waypoint: NavRef::Airport(ref id) } if id == "KPDX"
         ));
-        assert_eq!(trimmed.resolved_legs.len(), 1);
-        assert_eq!(trimmed.resolved_legs[0].from, NavRef::Airport("KPAE".to_string()));
-        assert_eq!(trimmed.resolved_legs[0].to, NavRef::Airport("KPDX".to_string()));
+        assert!(trimmed.resolved_legs.is_empty());
     }
 
     #[test]
@@ -4722,7 +4710,7 @@ mod tests {
             .map(|action| (&action.id, action.enabled))
             .collect::<Vec<_>>();
 
-        assert!(first_actions.contains(&(&FlightPlanRowActionId::RemoveAllAbove, false)));
+        assert!(first_actions.contains(&(&FlightPlanRowActionId::RemoveAllAbove, true)));
         assert!(third_actions.contains(&(&FlightPlanRowActionId::RemoveAllAbove, true)));
     }
 

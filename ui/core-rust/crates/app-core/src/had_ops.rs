@@ -1527,7 +1527,7 @@ fn append_flight_plan_tokens(
         }
     }
     let normalized = next_plan.normalized();
-    if normalized.resolved_legs.is_empty() {
+    if normalized.resolved_legs.is_empty() && normalized.route_components.len() > 1 {
         return Err(HadReadError::Fatal(
             "flight plan append requires at least one flyable leg".to_string(),
         ));
@@ -2405,6 +2405,49 @@ mod tests {
         assert!(matches!(
             mutation.plan.route_components[3],
             RouteComponent::Waypoint { waypoint: NavRef::Airport(ref id) } if id == "KUAO"
+        ));
+    }
+
+    #[test]
+    fn append_flight_plan_entry_allows_empty_plan_to_gain_single_waypoint() {
+        let store = load_fixture_nav_kv_store();
+        let plan = FlightPlan {
+            id: "empty".to_string(),
+            name: "Empty".to_string(),
+            legs: Vec::new(),
+            route_components: Vec::new(),
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let mutation = match run_had_operation(
+            &store,
+            HadOperation::AppendFlightPlanEntry {
+                plan,
+                input: "KPAE".to_string(),
+            },
+        )
+        .expect("append route entry to empty plan")
+        {
+            HadOperationOutcome::Complete { result } => serde_json::from_value::<FlightPlanUiMutation>(result)
+                .expect("decode append mutation"),
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete append, got missing pages: {pages:?}");
+            }
+        };
+
+        assert_eq!(mutation.plan.route_components.len(), 1);
+        assert!(mutation.plan.resolved_legs.is_empty());
+        assert!(matches!(
+            mutation.plan.route_components[0],
+            RouteComponent::Waypoint { waypoint: NavRef::Airport(ref id) } if id == "KPAE"
         ));
     }
 }

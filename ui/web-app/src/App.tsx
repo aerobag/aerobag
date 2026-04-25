@@ -1485,6 +1485,11 @@ export default function App() {
             const mutation = await appCoreAdapter.moveComponentUi(currentPlan, componentIndex, delta);
             await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
+          onRemoveAllAbove={async (componentIndex) => {
+            if (!appCoreAdapter) return;
+            const mutation = await appCoreAdapter.removeAllAboveUi(currentPlan, componentIndex);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
+          }}
           onInsertAirportWaypoint={async (componentIndex, before, airportId) => {
             if (!appCoreAdapter) return;
             const waypoint = await appCoreAdapter.resolveWaypointIdentifier(airportId);
@@ -3887,6 +3892,7 @@ function FlightPlanPage(props: {
   onSelectPage: (page: AppPage) => void;
   onOpenCharts: (airportId: string | null, chartId?: string | null) => void;
   onMoveComponent: (componentIndex: number, delta: number) => void | Promise<void>;
+  onRemoveAllAbove: (componentIndex: number) => void | Promise<void>;
   onInsertAirportWaypoint: (componentIndex: number, before: boolean, airportId: string) => void | Promise<void>;
   onPreviewFlightPlanEntry: (input: string) => Promise<FlightPlanEntryPreview>;
   onAppendFlightPlanEntry: (input: string) => void | Promise<void>;
@@ -4159,6 +4165,15 @@ function FlightPlanPage(props: {
           }
           if (action.id === "remove" || action.id === "remove_airway" || action.id === "remove_procedure") {
             void props.onDeleteComponent(selectedRow.componentIndex!);
+            closeTray();
+            return;
+          }
+          if (action.id === "remove_all_above") {
+            if (selectedRow.componentIndex == null) {
+              return;
+            }
+            void props.onRemoveAllAbove(selectedRow.componentIndex)
+              .catch(() => {});
             closeTray();
             return;
           }
@@ -6010,6 +6025,8 @@ function flightPlanActionLabel(actionId: string): string {
       return "Activate Leg";
     case "remove":
       return "Remove";
+    case "remove_all_above":
+      return "Remove All Above";
     case "insert_before":
       return "Insert Before";
     case "insert_after":

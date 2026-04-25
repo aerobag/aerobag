@@ -306,6 +306,7 @@ pub enum FlightPlanDisplayRowKind {
 pub enum FlightPlanRowActionId {
     ActivateLeg,
     Remove,
+    RemoveAllAbove,
     InsertBefore,
     InsertAfter,
     Reorder,
@@ -1251,6 +1252,10 @@ fn group_row_actions(component: &RouteComponentUiView) -> Vec<FlightPlanRowActio
                 component.can_change_airway,
             ),
             action(FlightPlanRowActionId::RemoveAirway, component.can_remove),
+            action(
+                FlightPlanRowActionId::RemoveAllAbove,
+                component.component_index > 0,
+            ),
         ],
         RouteComponentViewKind::Procedure => vec![
             action(
@@ -1277,6 +1282,10 @@ fn waypoint_or_discontinuity_actions(
             action(
                 FlightPlanRowActionId::Remove,
                 row.component_index.is_some() && row.can_remove_component,
+            ),
+            action(
+                FlightPlanRowActionId::RemoveAllAbove,
+                row.component_index.is_some_and(|component_index| component_index > 0),
             ),
             action(
                 FlightPlanRowActionId::InsertBefore,
@@ -1421,6 +1430,7 @@ fn rebuild_after_component_remap(
         rebuild_resolved_legs_with_grouped_components(&new_components, &grouped_by_component);
 
     let mut plan = old_plan.clone();
+    plan.legs.clear();
     plan.route_components = new_components;
     plan.resolved_legs = resolved;
     plan.guidance = revalidate_guidance_after_plan_edit(plan.guidance, &plan.resolved_legs);
@@ -1445,6 +1455,30 @@ pub fn delete_component(plan: &FlightPlan, component_index: usize) -> AppResult<
         new_components.push(component);
         old_index_by_new_index.push(Some(old_index));
     }
+
+    Ok(rebuild_after_component_remap(
+        &plan,
+        new_components,
+        old_index_by_new_index,
+    ))
+}
+
+pub fn remove_all_above(plan: &FlightPlan, component_index: usize) -> AppResult<FlightPlan> {
+    let plan = plan.clone().normalized();
+    if component_index >= plan.route_components.len() {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("component index out of bounds: {component_index}"),
+        });
+    }
+    if component_index == 0 {
+        return Ok(plan);
+    }
+
+    let new_components = plan.route_components[component_index..].to_vec();
+    let old_index_by_new_index = (component_index..plan.route_components.len())
+        .map(Some)
+        .collect::<Vec<_>>();
 
     Ok(rebuild_after_component_remap(
         &plan,
@@ -3228,6 +3262,59 @@ mod tests {
         }
     }
 
+    fn sample_four_waypoint_plan() -> FlightPlan {
+        FlightPlan {
+            id: "plan-4pt".to_string(),
+            name: "Four waypoint".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KBFI".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPDX".to_string()),
+                },
+            ],
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "component-0-1".to_string(),
+                    from: NavRef::Airport("KRNT".to_string()),
+                    to: NavRef::Airport("KBFI".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "component-1-2".to_string(),
+                    from: NavRef::Airport("KBFI".to_string()),
+                    to: NavRef::Airport("KPAE".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "component-2-3".to_string(),
+                    from: NavRef::Airport("KPAE".to_string()),
+                    to: NavRef::Airport("KPDX".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 2 },
+                    procedure_provenance: None,
+                },
+            ],
+            guidance: None,
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KPDX".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        }
+    }
+
     fn sample_single_component_plan() -> FlightPlan {
         FlightPlan {
             id: "plan-1pt".to_string(),
@@ -4554,6 +4641,24 @@ mod tests {
     }
 
     #[test]
+    fn remove_all_above_keeps_selected_component_and_following_route() {
+        let trimmed = remove_all_above(&sample_four_waypoint_plan(), 2).unwrap();
+
+        assert_eq!(trimmed.route_components.len(), 2);
+        assert!(matches!(
+            trimmed.route_components[0],
+            RouteComponent::Waypoint { waypoint: NavRef::Airport(ref id) } if id == "KPAE"
+        ));
+        assert!(matches!(
+            trimmed.route_components[1],
+            RouteComponent::Waypoint { waypoint: NavRef::Airport(ref id) } if id == "KPDX"
+        ));
+        assert_eq!(trimmed.resolved_legs.len(), 1);
+        assert_eq!(trimmed.resolved_legs[0].from, NavRef::Airport("KPAE".to_string()));
+        assert_eq!(trimmed.resolved_legs[0].to, NavRef::Airport("KPDX".to_string()));
+    }
+
+    #[test]
     fn insert_airport_waypoint_adds_explicit_waypoint_before_or_after_component() {
         let inserted_before =
             insert_airport_waypoint(&sample_two_waypoint_plan(), 1, true, " khio ").unwrap();
@@ -4601,6 +4706,24 @@ mod tests {
 
         assert!(action_ids.contains(&(&FlightPlanRowActionId::InsertBefore, true)));
         assert!(action_ids.contains(&(&FlightPlanRowActionId::InsertAfter, true)));
+    }
+
+    #[test]
+    fn project_ui_state_exposes_remove_all_above_for_nonfirst_waypoints() {
+        let ui = project_ui_state(&sample_four_waypoint_plan());
+        let first_actions = ui.display_rows[0]
+            .actions
+            .iter()
+            .map(|action| (&action.id, action.enabled))
+            .collect::<Vec<_>>();
+        let third_actions = ui.display_rows[2]
+            .actions
+            .iter()
+            .map(|action| (&action.id, action.enabled))
+            .collect::<Vec<_>>();
+
+        assert!(first_actions.contains(&(&FlightPlanRowActionId::RemoveAllAbove, false)));
+        assert!(third_actions.contains(&(&FlightPlanRowActionId::RemoveAllAbove, true)));
     }
 
     #[test]

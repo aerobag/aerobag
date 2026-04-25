@@ -382,6 +382,7 @@ export interface AppCoreAdapter {
   activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   deleteComponentUi(plan: FlightPlan, componentIndex: number): Promise<FlightPlanUiMutation>;
   moveComponentUi(plan: FlightPlan, componentIndex: number, delta: number): Promise<FlightPlanUiMutation>;
+  removeAllAboveUi(plan: FlightPlan, componentIndex: number): Promise<FlightPlanUiMutation>;
   previewFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanEntryPreview>;
   appendFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanUiMutation>;
   resolveWaypointIdentifier(identifier: string): Promise<NavRef | null>;
@@ -539,6 +540,7 @@ type WasmModule = {
   activate_next_leg_ui(planJson: string): Promise<string> | string;
   delete_component_ui(planJson: string, componentIndex: number): Promise<string> | string;
   move_component_ui(planJson: string, componentIndex: number, delta: number): Promise<string> | string;
+  remove_all_above_ui(planJson: string, componentIndex: number): Promise<string> | string;
   insert_waypoint_ui(planJson: string, componentIndex: number, before: boolean, waypointJson: string): Promise<string> | string;
   suspend_sequencing_ui(planJson: string): Promise<string> | string;
   unsuspend_sequencing_ui(planJson: string): Promise<string> | string;
@@ -982,6 +984,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   async moveComponentUi(plan: FlightPlan, componentIndex: number, delta: number): Promise<FlightPlanUiMutation> {
     return this.enrichFlightPlanUiMutation(JSON.parse(
       await this.module.move_component_ui(JSON.stringify(plan), componentIndex, delta),
+    ) as FlightPlanUiMutation);
+  }
+
+  async removeAllAboveUi(plan: FlightPlan, componentIndex: number): Promise<FlightPlanUiMutation> {
+    return this.enrichFlightPlanUiMutation(JSON.parse(
+      await this.module.remove_all_above_ui(JSON.stringify(plan), componentIndex),
     ) as FlightPlanUiMutation);
   }
 

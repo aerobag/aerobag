@@ -84,6 +84,7 @@ pub use planning::{
     delete_waypoint_component, flatten_component_to_waypoints, insert_airport_waypoint,
     insert_airway_after_waypoint, insert_airway_between_waypoints,
     insert_procedure_between_waypoints, insert_waypoint, move_component, project_ui_state,
+    remove_all_above,
     replace_airway_component, replace_procedure_component, sequence_active_leg, suspend_sequencing,
     unsuspend_sequencing, AirwaySegment, ConcretizedNavItem, DirectToState, DirectToUiView,
     FlightPlan, FlightPlanUiState, GuidanceState, GuidanceUiView, LegDisplayElement,
@@ -496,7 +497,7 @@ pub fn load_geometry(geometry_json: &str) -> AppResult<GeometryBundle> {
 }
 
 pub fn build_flight_plan(plan: FlightPlan) -> AppResult<FlightPlan> {
-    if plan.route_components.is_empty() && plan.resolved_legs.is_empty() {
+    if plan.route_components.is_empty() && !plan.legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: "flight plan must contain structured route data".to_string(),
@@ -505,7 +506,7 @@ pub fn build_flight_plan(plan: FlightPlan) -> AppResult<FlightPlan> {
 
     let plan = plan.normalized();
 
-    if plan.resolved_legs.is_empty() {
+    if plan.resolved_legs.is_empty() && plan.route_components.len() > 1 {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: "flight plan must contain at least one flyable leg".to_string(),
@@ -2265,6 +2266,14 @@ pub fn delete_component_ui(
     Ok(project_plan_mutation(plan))
 }
 
+pub fn remove_all_above_ui(
+    plan: &FlightPlan,
+    component_index: usize,
+) -> AppResult<FlightPlanUiMutation> {
+    let plan = remove_all_above(plan, component_index)?;
+    Ok(project_plan_mutation(plan))
+}
+
 pub fn move_component_ui(
     plan: &FlightPlan,
     component_index: usize,
@@ -3309,8 +3318,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_flight_plan() {
-        let result = build_flight_plan(FlightPlan {
+    fn empty_flight_plan_is_allowed() {
+        let plan = build_flight_plan(FlightPlan {
             id: "plan-1".to_string(),
             name: "Empty".to_string(),
             legs: Vec::new(),
@@ -3324,8 +3333,10 @@ mod tests {
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
-        });
-        assert_eq!(result.unwrap_err().kind, AppErrorKind::InvalidFlightPlan);
+        })
+        .unwrap();
+        assert!(plan.route_components.is_empty());
+        assert!(plan.resolved_legs.is_empty());
     }
 
     #[test]
@@ -3334,6 +3345,94 @@ mod tests {
 
         assert_eq!(plan.route_components.len(), 2);
         assert_eq!(plan.resolved_legs.len(), 1);
+    }
+
+    #[test]
+    fn single_waypoint_plan_is_allowed() {
+        let plan = build_flight_plan(FlightPlan {
+            id: "single-waypoint".to_string(),
+            name: "Single waypoint".to_string(),
+            legs: Vec::new(),
+            route_components: vec![RouteComponent::Waypoint {
+                waypoint: NavRef::Airport("KPAE".to_string()),
+            }],
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KPAE".to_string())),
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        })
+        .unwrap();
+
+        assert_eq!(plan.route_components.len(), 1);
+        assert!(plan.resolved_legs.is_empty());
+    }
+
+    #[test]
+    fn delete_component_ui_allows_removing_last_waypoint() {
+        let mutation = delete_component_ui(
+            &FlightPlan {
+                id: "single-waypoint".to_string(),
+                name: "Single waypoint".to_string(),
+                legs: Vec::new(),
+                route_components: vec![RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                }],
+                resolved_legs: Vec::new(),
+                guidance: None,
+                departure: Some(AirportId("KPAE".to_string())),
+                destination: None,
+                alternate: None,
+                cruise_altitude_ft: None,
+                notes: None,
+                updated_at_epoch_ms: 0,
+                version: 1,
+            },
+            0,
+        )
+        .unwrap();
+
+        assert!(mutation.plan.route_components.is_empty());
+        assert!(mutation.plan.resolved_legs.is_empty());
+        assert!(mutation.ui_state.components.is_empty());
+        assert!(mutation.ui_state.display_rows.is_empty());
+    }
+
+    #[test]
+    fn delete_component_ui_clears_stale_legacy_legs_when_removing_last_waypoint() {
+        let mutation = delete_component_ui(
+            &FlightPlan {
+                id: "single-waypoint".to_string(),
+                name: "Single waypoint".to_string(),
+                legs: vec![PlanLeg {
+                    from: NavRef::Airport("KRNT".to_string()),
+                    to: NavRef::Airport("KPAE".to_string()),
+                    airway: None,
+                }],
+                route_components: vec![RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                }],
+                resolved_legs: Vec::new(),
+                guidance: None,
+                departure: Some(AirportId("KPAE".to_string())),
+                destination: None,
+                alternate: None,
+                cruise_altitude_ft: None,
+                notes: None,
+                updated_at_epoch_ms: 0,
+                version: 1,
+            },
+            0,
+        )
+        .unwrap();
+
+        assert!(mutation.plan.route_components.is_empty());
+        assert!(mutation.plan.resolved_legs.is_empty());
+        assert!(mutation.plan.legs.is_empty());
     }
 
     #[test]

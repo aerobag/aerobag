@@ -164,6 +164,11 @@ pub fn delete_component_ui(plan_json: &str, component_index: usize) -> Result<St
 }
 
 #[wasm_bindgen]
+pub fn remove_all_above_ui(plan_json: &str, component_index: usize) -> Result<String, JsValue> {
+    remove_all_above_ui_json(plan_json, component_index).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn move_component_ui(
     plan_json: &str,
     component_index: usize,
@@ -679,6 +684,14 @@ fn delete_component_ui_json(plan_json: &str, component_index: usize) -> Result<S
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let mutation =
         app_core::delete_component_ui(&plan, component_index).map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
+fn remove_all_above_ui_json(plan_json: &str, component_index: usize) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let mutation =
+        app_core::remove_all_above_ui(&plan, component_index).map_err(|err| err.to_string())?;
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 

@@ -5017,10 +5017,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual audit for selected non-RNP heading continuity records"]
-    fn audit_selected_non_rnp_heading_records() {
+    #[ignore = "manual audit for selected heading continuity records"]
+    fn audit_selected_heading_continuity_records() {
         let store = load_snapshot_nav_kv_store();
-        for (airport_id, procedure_id) in [("KYKM", "VOR-A")] {
+        for (airport_id, procedure_id) in [("KOFP", "L16")] {
             let rows = read_required_from_store::<Vec<ProcedureDistinctRow>>(
                 &store,
                 crate::NavKvQuery::ProcedureDistinctRows {
@@ -5515,9 +5515,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual visual inspection overlay for KACK I06 MVY"]
-    fn writes_kack_i06_mvy_overlay_png() {
-        render_procedure_overlay_to_paths("KMSO", "VOR-A", "SPUNK", "KMSO_VOR-A_SPUNK", false);
+    #[ignore = "manual visual inspection overlay for selected heading continuity case"]
+    fn writes_selected_heading_continuity_overlay_png() {
+        render_procedure_overlay_to_paths("KOFP", "L16", "COATT", "KOFP_L16_COATT", false);
     }
 
     #[test]

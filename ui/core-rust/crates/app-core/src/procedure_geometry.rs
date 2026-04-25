@@ -8,6 +8,7 @@ const NOMINAL_PROCEDURE_TURN_GROUND_SPEED_KT: f64 = 120.0;
 const NOMINAL_PROCEDURE_TURN_BARB_TIME_MIN: f64 = 2.0;
 const NOMINAL_MANUAL_TERMINATION_DISTANCE_NM: f64 = 4.0;
 const MIN_GEOMETRY_DISTANCE_NM: f64 = 0.05;
+const TO_FIX_TERMINATION_SNAP_DISTANCE_NM: f64 = 0.1;
 const MIN_ARC_SWEEP_DEG: f64 = 0.5;
 const POSITION_EPSILON_DEG: f64 = 0.0005;
 
@@ -543,10 +544,38 @@ fn build_procedure_leg_display_path(
                 ) {
                     current_position = new_position;
                 } else {
-                    elements.push(LegDisplayElement::Segment {
-                        start: current_position,
-                        end: fix,
-                    });
+                    let direct_course_deg = bearing_from(current_position, fix);
+                    if let (Some(current_heading_deg), Some(turn_clockwise)) =
+                        (current_course_deg, cf_turn_direction(step))
+                    {
+                        if angular_difference_degrees(direct_course_deg, course_deg) <= 15.0 {
+                            let turn_end = append_heading_change(
+                                &mut elements,
+                                current_position,
+                                current_heading_deg,
+                                direct_course_deg,
+                                turn_clockwise,
+                                0.0,
+                                missed_approach_turn_radius_nm(),
+                            );
+                            if distance_between_points_nm(turn_end, fix) > MIN_GEOMETRY_DISTANCE_NM {
+                                elements.push(LegDisplayElement::Segment {
+                                    start: turn_end,
+                                    end: fix,
+                                });
+                            }
+                        } else {
+                            elements.push(LegDisplayElement::Segment {
+                                start: current_position,
+                                end: fix,
+                            });
+                        }
+                    } else {
+                        elements.push(LegDisplayElement::Segment {
+                            start: current_position,
+                            end: fix,
+                        });
+                    }
                     current_position = fix;
                 }
                 current_course_deg = Some(course_deg);
@@ -615,6 +644,19 @@ fn set_display_element_start_position(element: &mut LegDisplayElement, start: La
             start: element_start,
             ..
         } => *element_start = start,
+    }
+}
+
+fn set_display_element_end_position(element: &mut LegDisplayElement, end: LatLon) {
+    match element {
+        LegDisplayElement::Segment {
+            end: element_end,
+            ..
+        } => *element_end = end,
+        LegDisplayElement::Arc {
+            end: element_end,
+            ..
+        } => *element_end = end,
     }
 }
 
@@ -813,7 +855,12 @@ fn append_course_track_path(
 
     let final_position = match termination {
         TrackTermination::ToFix(fix) => {
-            if distance_between_points_nm(track_start, fix) > MIN_GEOMETRY_DISTANCE_NM {
+            let distance_to_fix_nm = distance_between_points_nm(track_start, fix);
+            if distance_to_fix_nm <= TO_FIX_TERMINATION_SNAP_DISTANCE_NM {
+                if let Some(last_element) = elements.last_mut() {
+                    set_display_element_end_position(last_element, fix);
+                }
+            } else if distance_to_fix_nm > MIN_GEOMETRY_DISTANCE_NM {
                 elements.push(LegDisplayElement::Segment {
                     start: track_start,
                     end: fix,
@@ -1461,6 +1508,11 @@ fn directed_track_join_elements(
     );
     let turn_end_from_center =
         point_on_turn_center(turn_center, course_deg, turn_clockwise, turn_radius_nm);
+    let has_turn_arc =
+        distance_between_points_nm(turn_start, turn_end_from_center) > MIN_GEOMETRY_DISTANCE_NM;
+    if heading_change_deg > 10.0 && !has_turn_arc {
+        return None;
+    }
     let mut elements = Vec::new();
     if distance_between_points_nm(current_position, turn_start) > MIN_GEOMETRY_DISTANCE_NM {
         elements.push(LegDisplayElement::Segment {
@@ -1468,7 +1520,7 @@ fn directed_track_join_elements(
             end: turn_start,
         });
     }
-    if distance_between_points_nm(turn_start, turn_end_from_center) > MIN_GEOMETRY_DISTANCE_NM {
+    if has_turn_arc {
         elements.push(LegDisplayElement::Arc {
             center: turn_center,
             radius_nm: turn_radius_nm,
@@ -1477,6 +1529,9 @@ fn directed_track_join_elements(
             clockwise: turn_clockwise,
             sweep_degrees: heading_sweep_degrees(current_heading_deg, course_deg, turn_clockwise),
         });
+    }
+    if !directed_join_connector_is_reasonable(turn_end_from_center, turn_end, course_deg) {
+        return None;
     }
     let returned_turn_end = if distance_between_points_nm(turn_end_from_center, turn_end)
         > MIN_GEOMETRY_DISTANCE_NM
@@ -1641,6 +1696,22 @@ fn build_track_join_candidate(
         turn_end,
         intercept: returned_intercept,
     })
+}
+
+fn directed_join_connector_is_reasonable(
+    connector_start: LatLon,
+    connector_end: LatLon,
+    course_deg: f64,
+) -> bool {
+    if distance_between_points_nm(connector_start, connector_end) <= MIN_GEOMETRY_DISTANCE_NM {
+        return true;
+    }
+    let connector_heading_deg = bearing_from(connector_start, connector_end);
+    if angular_difference_degrees(connector_heading_deg, course_deg) > 45.0 {
+        return false;
+    }
+    projection_along_course_nm(connector_start, connector_end, bearing_unit_vector(course_deg))
+        >= -MIN_GEOMETRY_DISTANCE_NM
 }
 
 fn track_intercept_is_reasonable(

@@ -13,6 +13,11 @@
   --thumb-radius: calc(var(--thumb) * 0.18);
   --thumb-font: calc(var(--thumb) * 0.28);
   --thumb-font-small: calc(var(--thumb) * 0.22);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --app-height: 100vh;
   font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
 }
 
@@ -29,11 +34,17 @@ body,
 }
 
 body {
-  min-height: 100vh;
+  min-height: var(--app-height);
   background:
     radial-gradient(circle at top left, rgba(13, 111, 103, 0.16), transparent 30%),
     linear-gradient(180deg, #f6f1e7 0%, var(--bg) 100%);
   color: var(--ink);
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-height: 100dvh;
+  }
 }
 
 button {
@@ -42,13 +53,13 @@ button {
 
 .mapShell {
   width: 100%;
-  height: 100%;
+  height: var(--app-height);
 }
 
 .appShell {
   position: relative;
   width: 100%;
-  height: 100%;
+  height: var(--app-height);
   overflow: hidden;
 }
 
@@ -206,7 +217,7 @@ button {
 .nexradBadge {
   position: absolute;
   left: var(--thumb-gap);
-  bottom: calc(var(--thumb) + (var(--thumb-gap) * 2));
+  bottom: calc(var(--thumb) + (var(--thumb-gap) * 2) + var(--safe-bottom));
   z-index: 2;
   padding: 6px 9px;
   border: 1px solid rgba(20, 36, 44, 0.18);
@@ -643,7 +654,7 @@ button {
   display: flex;
   flex-direction: column;
   gap: var(--thumb-gap);
-  max-height: calc(100vh - (var(--thumb) * 2) - (var(--thumb-gap) * 4));
+  max-height: calc(var(--app-height) - var(--safe-top) - var(--safe-bottom) - (var(--thumb) * 2) - (var(--thumb-gap) * 4));
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: var(--thumb-gap);
@@ -844,7 +855,7 @@ button {
 .debugDock {
   position: absolute;
   left: var(--thumb-gap);
-  bottom: var(--thumb-gap);
+  bottom: calc(var(--thumb-gap) + var(--safe-bottom));
   z-index: 4;
   width: var(--thumb);
   height: var(--thumb);
@@ -878,7 +889,7 @@ button {
 .debugPanel {
   position: absolute;
   left: 0;
-  bottom: calc(var(--thumb) + var(--thumb-gap));
+  bottom: calc(var(--thumb) + var(--thumb-gap) + var(--safe-bottom));
   width: calc(var(--thumb) * 4);
   min-height: var(--thumb);
   overflow: hidden;
@@ -939,7 +950,7 @@ button {
 .navElement {
   position: absolute;
   left: 50%;
-  bottom: var(--thumb-gap);
+  bottom: calc(var(--thumb-gap) + var(--safe-bottom));
   z-index: 4;
   width: calc(var(--thumb) * 3);
   height: calc(var(--thumb) * 0.67);
@@ -1021,7 +1032,7 @@ button {
 .playbackWidget {
   position: absolute;
   right: var(--thumb-gap);
-  bottom: var(--thumb-gap);
+  bottom: calc(var(--thumb-gap) + var(--safe-bottom));
   z-index: 4;
   min-width: calc(var(--thumb) * 2.8);
   padding: calc(var(--thumb) * 0.12);
@@ -1214,7 +1225,7 @@ button {
 .centerHereButton {
   position: absolute;
   right: var(--thumb-gap);
-  bottom: var(--thumb-gap);
+  bottom: calc(var(--thumb-gap) + var(--safe-bottom));
   z-index: 4;
   width: var(--thumb);
   height: var(--thumb);
@@ -1569,7 +1580,7 @@ button {
 .planFooter {
   position: absolute;
   left: 50%;
-  bottom: var(--thumb-gap);
+  bottom: calc(var(--thumb-gap) + var(--safe-bottom));
   transform: translateX(-50%);
   color: var(--muted);
   font-size: calc(var(--thumb) * 0.22);
@@ -1581,7 +1592,7 @@ button {
   top: calc(var(--thumb) * 1.25);
   left: calc(var(--thumb-gap) + var(--thumb) * 3.15);
   width: min(calc(var(--thumb) * 2.35), calc(100% - var(--thumb-gap) * 2 - var(--thumb) * 3.15));
-  max-height: calc(100vh - (var(--thumb) * 2.25));
+  max-height: calc(var(--app-height) - var(--safe-top) - var(--safe-bottom) - (var(--thumb) * 2.25));
   overflow-y: auto;
   overflow-x: hidden;
   box-sizing: border-box;
@@ -1838,7 +1849,7 @@ button {
 
 .hudBottom {
   left: var(--thumb-gap);
-  bottom: var(--thumb-gap);
+  bottom: calc(var(--thumb-gap) + var(--safe-bottom));
 }
 
 .facts {
@@ -1876,7 +1887,7 @@ button {
   .hudBottom {
     left: var(--thumb-gap);
     right: var(--thumb-gap);
-    bottom: var(--thumb-gap);
+    bottom: calc(var(--thumb-gap) + var(--safe-bottom));
   }
 
   .facts {

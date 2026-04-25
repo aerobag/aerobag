@@ -1,5 +1,8 @@
 use crate::planning::LegDisplayPathStyle;
-use crate::{LatLon, LegDisplayElement, LegDisplayPath, ProcedureLegMaterializationRecord};
+use crate::{
+    heading_signature_for_element, LatLon, LegDisplayElement, LegDisplayPath,
+    ProcedureLegMaterializationRecord,
+};
 
 macro_rules! debug_source {
     () => {
@@ -378,6 +381,44 @@ fn build_procedure_leg_display_path(
                     step.sequence
                 );
             }
+            "IF" => {
+                if let Some(fix) = step.nav_position {
+                    if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
+                        let direct_course_deg = bearing_from(current_position, fix);
+                        if let Some(current_heading_deg) = current_course_deg {
+                            if angular_difference_degrees(current_heading_deg, direct_course_deg) > 5.0 {
+                                let prior_len = elements.len();
+                                let turn_end = append_heading_change(
+                                    &mut elements,
+                                    current_position,
+                                    current_heading_deg,
+                                    direct_course_deg,
+                                    shortest_turn_clockwise(current_heading_deg, direct_course_deg),
+                                    0.0,
+                                    missed_approach_turn_radius_nm(),
+                                );
+                                extend_sources_for_new_elements(
+                                    &mut debug_sources,
+                                    prior_len,
+                                    &elements,
+                                    debug_source!(),
+                                );
+                                current_position = turn_end;
+                            }
+                        }
+                        if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
+                            push_segment!(elements, debug_sources, current_position, fix);
+                        }
+                        current_course_deg = Some(direct_course_deg);
+                    } else {
+                        current_course_deg = step
+                            .magnetic_course_deg
+                            .map(|course| course + course_reference_variation_deg(step))
+                            .or(current_course_deg);
+                    }
+                    current_position = fix;
+                }
+            }
             "CA" => {
                 let course_deg = current_or_step_course_deg(step, current_course_deg)?;
                 let prior_len = elements.len();
@@ -541,11 +582,38 @@ fn build_procedure_leg_display_path(
             }
             "PI" => {
                 let fix = step.nav_position?;
-                let path = procedure_turn_display_path(step)?;
+                let mut path = procedure_turn_display_path(step)?;
                 if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
                     push_segment!(elements, debug_sources, current_position, fix);
                 }
                 current_position = fix;
+                if let (Some(current_heading_deg), Some(first_element)) =
+                    (current_course_deg, path.elements.first_mut())
+                {
+                    if let Some((_, outbound_course_deg, _, _)) = heading_signature_for_element(first_element) {
+                        if angular_difference_degrees(current_heading_deg, outbound_course_deg) > 5.0 {
+                            let prior_len = elements.len();
+                            let turn_clockwise =
+                                shortest_turn_clockwise(current_heading_deg, outbound_course_deg);
+                            let turn_end = append_heading_change(
+                                &mut elements,
+                                current_position,
+                                current_heading_deg,
+                                outbound_course_deg,
+                                turn_clockwise,
+                                0.0,
+                                missed_approach_turn_radius_nm(),
+                            );
+                            extend_sources_for_new_elements(
+                                &mut debug_sources,
+                                prior_len,
+                                &elements,
+                                debug_source!(),
+                            );
+                            set_display_element_start_position(first_element, turn_end);
+                        }
+                    }
+                }
                 current_course_deg = path.elements.last().and_then(display_element_end_course_deg);
                 extend_elements_with_sources(
                     &mut elements,
@@ -650,17 +718,17 @@ fn build_procedure_leg_display_path(
                     current_position = new_position;
                 } else {
                     let direct_course_deg = bearing_from(current_position, fix);
-                    if let (Some(current_heading_deg), Some(turn_clockwise)) =
-                        (current_course_deg, cf_turn_direction(step))
-                    {
-                        if angular_difference_degrees(direct_course_deg, course_deg) <= 15.0 {
+                    if let Some(current_heading_deg) = current_course_deg {
+                        if angular_difference_degrees(current_heading_deg, direct_course_deg) > 5.0 {
                             let turn_prior_len = elements.len();
                             let turn_end = append_heading_change(
                                 &mut elements,
                                 current_position,
                                 current_heading_deg,
                                 direct_course_deg,
-                                turn_clockwise,
+                                cf_turn_direction(step).unwrap_or_else(|| {
+                                    shortest_turn_clockwise(current_heading_deg, direct_course_deg)
+                                }),
                                 0.0,
                                 missed_approach_turn_radius_nm(),
                             );
@@ -673,10 +741,10 @@ fn build_procedure_leg_display_path(
                             if distance_between_points_nm(turn_end, fix) > MIN_GEOMETRY_DISTANCE_NM {
                                 push_segment!(elements, debug_sources, turn_end, fix);
                             }
-                        } else {
+                        } else if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
                             push_segment!(elements, debug_sources, current_position, fix);
                         }
-                    } else {
+                    } else if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
                         push_segment!(elements, debug_sources, current_position, fix);
                     }
                     current_position = fix;
@@ -692,10 +760,49 @@ fn build_procedure_leg_display_path(
                 } else {
                     fix
                 };
+                let outbound_course_deg = bearing_from(current_position, effective_fix);
+                if distance_between_points_nm(current_position, effective_fix) > MIN_GEOMETRY_DISTANCE_NM {
+                    if let Some(current_heading_deg) = current_course_deg {
+                        if angular_difference_degrees(current_heading_deg, outbound_course_deg) > 5.0 {
+                            let prior_len = elements.len();
+                            let turn_clockwise =
+                                shortest_turn_clockwise(current_heading_deg, outbound_course_deg);
+                            let turn_end = append_heading_change(
+                                &mut elements,
+                                current_position,
+                                current_heading_deg,
+                                outbound_course_deg,
+                                turn_clockwise,
+                                0.0,
+                                missed_approach_turn_radius_nm(),
+                            );
+                            extend_sources_for_new_elements(
+                                &mut debug_sources,
+                                prior_len,
+                                &elements,
+                                debug_source!(),
+                            );
+                            if distance_between_points_nm(turn_end, effective_fix) > MIN_GEOMETRY_DISTANCE_NM {
+                                push_segment!(elements, debug_sources, turn_end, effective_fix);
+                            }
+                            current_course_deg = Some(outbound_course_deg);
+                            current_position = effective_fix;
+                            continue;
+                        }
+                    }
+                }
                 if distance_between_points_nm(current_position, effective_fix) > MIN_GEOMETRY_DISTANCE_NM {
                     push_segment!(elements, debug_sources, current_position, effective_fix);
                 }
-                current_course_deg = Some(bearing_from(current_position, effective_fix));
+                current_course_deg = if distance_between_points_nm(current_position, effective_fix)
+                    <= MIN_GEOMETRY_DISTANCE_NM
+                {
+                    step.magnetic_course_deg
+                        .map(|course| course + course_reference_variation_deg(step))
+                        .or(current_course_deg)
+                } else {
+                    Some(outbound_course_deg)
+                };
                 current_position = effective_fix;
             }
             "HF" | "HM" => {
@@ -936,7 +1043,34 @@ fn append_course_track_path(
             let intercept = if let Some(intercept) = direct_intercept {
                 let intercept_distance_nm = distance_between_points_nm(current_position, intercept);
                 if intercept_distance_nm <= NEAR_INTERCEPT_SNAP_DISTANCE_NM {
-                    current_position
+                    if let TrackTermination::ToFix(fix) = termination {
+                        let direct_to_fix_course_deg = bearing_from(current_position, fix);
+                        if angular_difference_degrees(current_heading_deg, direct_to_fix_course_deg)
+                            > 5.0
+                        {
+                            let turn_prior_len = elements.len();
+                            let turn_end = append_heading_change(
+                                elements,
+                                current_position,
+                                current_heading_deg,
+                                direct_to_fix_course_deg,
+                                shortest_turn_clockwise(current_heading_deg, direct_to_fix_course_deg),
+                                0.0,
+                                missed_approach_turn_radius_nm(),
+                            );
+                            extend_sources_for_new_elements(
+                                debug_sources,
+                                turn_prior_len,
+                                elements,
+                                debug_source!(),
+                            );
+                            turn_end
+                        } else {
+                            current_position
+                        }
+                    } else {
+                        current_position
+                    }
                 } else if intercept_distance_nm > MIN_GEOMETRY_DISTANCE_NM {
                     push_segment!(elements, debug_sources, current_position, intercept);
                     intercept

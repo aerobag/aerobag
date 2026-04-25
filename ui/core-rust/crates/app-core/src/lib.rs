@@ -1357,10 +1357,16 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 && pair[0].path_termination.trim() == "FA"
                 && previous_leg_to.as_ref().is_some_and(|previous_to| previous_to == &from)
                 && previous_terminal_position.is_some();
+            let continuing_from_previous_anchor = previous_terminal_position
+                .zip(pair[0].nav_position)
+                .is_some_and(|(previous_end, anchor_position)| {
+                    great_circle_distance_nm(previous_end, anchor_position) <= 0.05
+                });
             let initial_position_override = if from == to
                 || continuing_if_to_cf_join
                 || continuing_same_anchor_window
                 || continuing_from_fa_window
+                || continuing_from_previous_anchor
             {
                 previous_terminal_position
             } else {
@@ -1370,6 +1376,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 || continuing_if_to_cf_join
                 || continuing_same_anchor_window
                 || continuing_from_fa_window
+                || continuing_from_previous_anchor
             {
                 previous_terminal_course
             } else {
@@ -2050,6 +2057,9 @@ fn reconciliation_resume_skip_through_index(
         .find_map(|(index, pair)| {
             let current_to = pair[1].nav_ref.as_ref()?;
             if current_to != previous_leg_to {
+                return None;
+            }
+            if pair[1].path_termination.trim() == "DF" {
                 return None;
             }
             let anchor_position = pair[0].nav_position?;
@@ -5047,7 +5057,7 @@ mod tests {
     #[ignore = "manual audit for selected heading continuity records"]
     fn audit_selected_heading_continuity_records() {
         let store = load_snapshot_nav_kv_store();
-        for (airport_id, procedure_id) in [("KGJT", "I11")] {
+        for (airport_id, procedure_id) in [("KMCC", "I16")] {
             let rows = read_required_from_store::<Vec<ProcedureDistinctRow>>(
                 &store,
                 crate::NavKvQuery::ProcedureDistinctRows {
@@ -5544,7 +5554,7 @@ mod tests {
     #[test]
     #[ignore = "manual visual inspection overlay for selected heading continuity case"]
     fn writes_selected_heading_continuity_overlay_png() {
-        render_procedure_overlay_to_paths("KGJT", "I11", "WINDO", "KGJT_I11_WINDO", false);
+        render_procedure_overlay_to_paths("KMCC", "I16", "LIN", "KMCC_I16_LIN", false);
     }
 
     #[test]

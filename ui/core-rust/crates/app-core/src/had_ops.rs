@@ -8,7 +8,8 @@ use crate::{
     chart_page::{airport_ids_from_plan, derive_chart_page_state_from_airports},
     describe_plate_procedure_load_options, describe_procedure_options_from_rows,
     describe_show_plate_for_procedure, flight_leg_distance_nm,
-    materialize_procedure_from_records, prepare_airway_presentation, project_flight_plan_route_with_resolver, AirwayAutoSelection,
+    insert_airway_after_waypoint, insert_waypoint, materialize_procedure_from_records,
+    prepare_airway_presentation, project_flight_plan_route_with_resolver, AirwayAutoSelection,
     AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate, AirwayPresentationPlan, AirwaySegment,
     AirwaySpatialPoint, AirwaySuggestion, AppError, AppErrorKind, AppResult, CifpTppMatchRow,
     FlightPlan, FlightPlanRouteSegment, FlightPlanUiMutation, FlightPlanUiState, LatLon,
@@ -50,6 +51,14 @@ pub enum HadOperation {
     },
     FlightPlanUiMutation {
         mutation: FlightPlanUiMutation,
+    },
+    PreviewFlightPlanEntry {
+        plan: FlightPlan,
+        input: String,
+    },
+    AppendFlightPlanEntry {
+        plan: FlightPlan,
+        input: String,
     },
     ProjectFlightPlanRoute {
         plan: FlightPlan,
@@ -183,6 +192,12 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
                 ui_state: flight_plan_ui_state(store, mutation.plan.clone())?,
                 ..mutation
             })?
+        }
+        HadOperation::PreviewFlightPlanEntry { plan, input } => {
+            serde_json::to_value(preview_flight_plan_entry(store, &plan, &input)?)?
+        }
+        HadOperation::AppendFlightPlanEntry { plan, input } => {
+            serde_json::to_value(append_flight_plan_entry(store, &plan, &input)?)?
         }
         HadOperation::ProjectFlightPlanRoute { plan } => {
             serde_json::to_value(project_flight_plan_route(store, &plan)?)?
@@ -930,6 +945,65 @@ struct MaterializedAirwayResponse {
     resolved_legs: Vec<ResolvedLeg>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FlightPlanEntryTokenState {
+    Neutral,
+    Recognized,
+    Invalid,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct FlightPlanEntryToken {
+    start: usize,
+    end: usize,
+    state: FlightPlanEntryTokenState,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct FlightPlanEntryIssue {
+    start: usize,
+    end: usize,
+    message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct FlightPlanEntryPreview {
+    can_commit: bool,
+    tokens: Vec<FlightPlanEntryToken>,
+    issues: Vec<FlightPlanEntryIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ParsedInputToken {
+    text: String,
+    start: usize,
+    end: usize,
+    terminated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum RecognizedInputToken {
+    Waypoint(NavRef),
+    Airway {
+        airway_name: String,
+        branches: Vec<AirwayBranch>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct EvaluatedInputToken {
+    parsed: ParsedInputToken,
+    token_state: FlightPlanEntryTokenState,
+    recognized: Option<RecognizedInputToken>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ExactAirwayMaterialization {
+    airway: AirwaySegment,
+    resolved_legs: Vec<ResolvedLeg>,
+}
+
 fn materialize_airway_selection(
     store: &NavKvStore,
     start_component_index: usize,
@@ -1186,6 +1260,387 @@ fn materialize_procedure(
         legs,
     )
     .map_err(Into::into)
+}
+
+fn preview_flight_plan_entry(
+    store: &NavKvStore,
+    plan: &FlightPlan,
+    input: &str,
+) -> Result<FlightPlanEntryPreview, HadReadError> {
+    let tokens = tokenize_flight_plan_entry(input);
+    let evaluated = evaluate_flight_plan_entry_tokens(store, &tokens)?;
+    let issues = validate_flight_plan_entry(plan, &evaluated)?;
+    let can_commit = !input.trim().is_empty()
+        && issues.is_empty()
+        && evaluated.iter().all(|token| {
+            token.recognized.is_some()
+                && (token.parsed.terminated
+                    || token.token_state == FlightPlanEntryTokenState::Recognized)
+        })
+        && append_flight_plan_tokens(plan, &evaluated).is_ok();
+    Ok(FlightPlanEntryPreview {
+        can_commit,
+        tokens: evaluated
+            .iter()
+            .map(|token| FlightPlanEntryToken {
+                start: token.parsed.start,
+                end: token.parsed.end,
+                state: token.token_state.clone(),
+            })
+            .collect(),
+        issues,
+    })
+}
+
+fn append_flight_plan_entry(
+    store: &NavKvStore,
+    plan: &FlightPlan,
+    input: &str,
+) -> Result<FlightPlanUiMutation, HadReadError> {
+    let tokens = tokenize_flight_plan_entry(input);
+    let evaluated = evaluate_flight_plan_entry_tokens(store, &tokens)?;
+    let issues = validate_flight_plan_entry(plan, &evaluated)?;
+    if !issues.is_empty() {
+        return Err(HadReadError::Fatal(
+            issues
+                .first()
+                .map(|issue| issue.message.clone())
+                .unwrap_or_else(|| "invalid route entry".to_string()),
+        ));
+    }
+    let appended = append_flight_plan_tokens(plan, &evaluated)?;
+    Ok(FlightPlanUiMutation {
+        ui_state: flight_plan_ui_state(store, appended.clone())?,
+        plan: appended,
+    })
+}
+
+fn tokenize_flight_plan_entry(input: &str) -> Vec<ParsedInputToken> {
+    let mut tokens = Vec::new();
+    let mut start = None;
+    for (index, ch) in input.char_indices() {
+        if ch.is_whitespace() {
+            if let Some(token_start) = start.take() {
+                tokens.push(ParsedInputToken {
+                    text: input[token_start..index].to_ascii_uppercase(),
+                    start: token_start,
+                    end: index,
+                    terminated: true,
+                });
+            }
+        } else if start.is_none() {
+            start = Some(index);
+        }
+    }
+    if let Some(token_start) = start {
+        tokens.push(ParsedInputToken {
+            text: input[token_start..].to_ascii_uppercase(),
+            start: token_start,
+            end: input.len(),
+            terminated: false,
+        });
+    }
+    tokens
+}
+
+fn evaluate_flight_plan_entry_tokens(
+    store: &NavKvStore,
+    tokens: &[ParsedInputToken],
+) -> Result<Vec<EvaluatedInputToken>, HadReadError> {
+    let mut evaluated = Vec::with_capacity(tokens.len());
+    for token in tokens {
+        let recognized = recognize_flight_plan_entry_token(store, &token.text)?;
+        let token_state = match (&recognized, token.terminated) {
+            (Some(_), _) => FlightPlanEntryTokenState::Recognized,
+            (None, true) => FlightPlanEntryTokenState::Invalid,
+            (None, false) => FlightPlanEntryTokenState::Neutral,
+        };
+        evaluated.push(EvaluatedInputToken {
+            parsed: token.clone(),
+            token_state,
+            recognized,
+        });
+    }
+    Ok(evaluated)
+}
+
+fn recognize_flight_plan_entry_token(
+    store: &NavKvStore,
+    token: &str,
+) -> Result<Option<RecognizedInputToken>, HadReadError> {
+    if token.trim().is_empty() {
+        return Ok(None);
+    }
+    if let Some(nav_ref) = read_optional::<NavRef>(
+        store,
+        NavKvQuery::WaypointIdentifier {
+            identifier: token.to_string(),
+        },
+    )? {
+        return Ok(Some(RecognizedInputToken::Waypoint(nav_ref)));
+    }
+    if let Some(branches) = read_optional::<Vec<AirwayBranch>>(
+        store,
+        NavKvQuery::AirwayBranches {
+            airway_name: token.to_string(),
+        },
+    )? {
+        if !branches.is_empty() {
+            return Ok(Some(RecognizedInputToken::Airway {
+                airway_name: token.to_string(),
+                branches,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+fn validate_flight_plan_entry(
+    plan: &FlightPlan,
+    tokens: &[EvaluatedInputToken],
+) -> Result<Vec<FlightPlanEntryIssue>, HadReadError> {
+    let mut issues = Vec::new();
+    let mut current_anchor = trailing_component_anchor(plan);
+    let mut pending_airway: Option<(usize, NavRef, String, Vec<AirwayBranch>)> = None;
+
+    for (index, token) in tokens.iter().enumerate() {
+        let Some(recognized) = &token.recognized else {
+            if token.parsed.terminated {
+                issues.push(FlightPlanEntryIssue {
+                    start: token.parsed.start,
+                    end: token.parsed.end,
+                    message: format!("unknown route element {}", token.parsed.text),
+                });
+            }
+            break;
+        };
+        match recognized {
+            RecognizedInputToken::Waypoint(nav_ref) => {
+                if let Some((airway_index, origin_anchor, airway_name, branches)) = pending_airway.take() {
+                    if exact_airway_materialization(
+                        &airway_name,
+                        &branches,
+                        &origin_anchor,
+                        nav_ref,
+                        plan.route_components.len(),
+                    )
+                    .is_err()
+                    {
+                        issues.push(FlightPlanEntryIssue {
+                            start: tokens[airway_index].parsed.start,
+                            end: token.parsed.end,
+                            message: format!("{} not on {}", nav_ref_display_label(nav_ref), airway_name),
+                        });
+                        break;
+                    }
+                }
+                current_anchor = Some(nav_ref.clone());
+            }
+            RecognizedInputToken::Airway { airway_name, branches } => {
+                let Some(origin_anchor) = current_anchor.clone() else {
+                    issues.push(FlightPlanEntryIssue {
+                        start: token.parsed.start,
+                        end: token.parsed.end,
+                        message: format!("{airway_name} requires a preceding waypoint"),
+                    });
+                    break;
+                };
+                if pending_airway.is_some() {
+                    issues.push(FlightPlanEntryIssue {
+                        start: token.parsed.start,
+                        end: token.parsed.end,
+                        message: "airway requires an exit waypoint".to_string(),
+                    });
+                    break;
+                }
+                pending_airway = Some((index, origin_anchor, airway_name.clone(), branches.clone()));
+            }
+        }
+    }
+
+    if issues.is_empty() && tokens.iter().all(|token| token.recognized.is_some()) {
+        if let Some((airway_index, _, airway_name, _)) = pending_airway {
+            if tokens[airway_index].parsed.terminated {
+                issues.push(FlightPlanEntryIssue {
+                    start: tokens[airway_index].parsed.start,
+                    end: tokens[airway_index].parsed.end,
+                    message: format!("{airway_name} requires an exit waypoint"),
+                });
+            }
+        }
+    }
+    Ok(issues)
+}
+
+fn append_flight_plan_tokens(
+    plan: &FlightPlan,
+    tokens: &[EvaluatedInputToken],
+) -> Result<FlightPlan, HadReadError> {
+    let mut next_plan = plan.clone();
+    let mut index = 0usize;
+    while index < tokens.len() {
+        let Some(recognized) = &tokens[index].recognized else {
+            return Err(HadReadError::Fatal(format!(
+                "unknown route element {}",
+                tokens[index].parsed.text
+            )));
+        };
+        match recognized {
+            RecognizedInputToken::Waypoint(nav_ref) => {
+                next_plan = append_waypoint_tail(&next_plan, nav_ref.clone())?;
+                index += 1;
+            }
+            RecognizedInputToken::Airway {
+                airway_name,
+                branches,
+            } => {
+                let origin_anchor = trailing_component_anchor(&next_plan).ok_or_else(|| {
+                    HadReadError::Fatal(format!("{airway_name} requires a preceding waypoint"))
+                })?;
+                let next_token = tokens.get(index + 1).ok_or_else(|| {
+                    HadReadError::Fatal(format!("{airway_name} requires an exit waypoint"))
+                })?;
+                let destination = match &next_token.recognized {
+                    Some(RecognizedInputToken::Waypoint(nav_ref)) => nav_ref.clone(),
+                    Some(RecognizedInputToken::Airway { .. }) => {
+                        return Err(HadReadError::Fatal(format!(
+                            "{airway_name} requires an exit waypoint"
+                        )))
+                    }
+                    None => {
+                        return Err(HadReadError::Fatal(format!(
+                            "unknown route element {}",
+                            next_token.parsed.text
+                        )))
+                    }
+                };
+                let materialized = exact_airway_materialization(
+                    airway_name,
+                    branches,
+                    &origin_anchor,
+                    &destination,
+                    next_plan.route_components.len(),
+                )?;
+                next_plan = append_airway_tail(&next_plan, materialized)?;
+                index += 2;
+            }
+        }
+    }
+    let normalized = next_plan.normalized();
+    if normalized.resolved_legs.is_empty() {
+        return Err(HadReadError::Fatal(
+            "flight plan append requires at least one flyable leg".to_string(),
+        ));
+    }
+    Ok(normalized)
+}
+
+fn append_waypoint_tail(plan: &FlightPlan, waypoint: NavRef) -> Result<FlightPlan, HadReadError> {
+    if plan.route_components.is_empty() {
+        let mut next_plan = plan.clone();
+        next_plan.route_components.push(RouteComponent::Waypoint { waypoint });
+        next_plan.resolved_legs.clear();
+        return Ok(next_plan.normalized());
+    }
+    insert_waypoint(plan, plan.route_components.len() - 1, false, waypoint).map_err(Into::into)
+}
+
+fn append_airway_tail(
+    plan: &FlightPlan,
+    materialized: ExactAirwayMaterialization,
+) -> Result<FlightPlan, HadReadError> {
+    let start_component_index = plan
+        .route_components
+        .len()
+        .checked_sub(1)
+        .ok_or_else(|| HadReadError::Fatal("cannot append airway to empty plan".to_string()))?;
+    insert_airway_after_waypoint(
+        plan,
+        start_component_index,
+        materialized.airway,
+        materialized.resolved_legs,
+    )
+    .map_err(Into::into)
+}
+
+fn exact_airway_materialization(
+    airway_name: &str,
+    branches: &[AirwayBranch],
+    origin_anchor: &NavRef,
+    destination_anchor: &NavRef,
+    component_index: usize,
+) -> Result<ExactAirwayMaterialization, HadReadError> {
+    for branch in branches
+        .iter()
+        .filter(|branch| branch.display_name.trim() == airway_name.trim())
+    {
+        let Some(entry_index) = branch
+            .points
+            .iter()
+            .position(|point| point.nav_ref == *origin_anchor)
+        else {
+            continue;
+        };
+        let Some(exit_index) = branch
+            .points
+            .iter()
+            .position(|point| point.nav_ref == *destination_anchor)
+        else {
+            continue;
+        };
+        let entry = AirwayEntryCandidate {
+            airway_name: airway_name.to_string(),
+            branch_key: branch.branch_key.clone(),
+            branch_point_index: entry_index,
+            sequence: branch.points[entry_index].sequence,
+            nav_ref: branch.points[entry_index].nav_ref.clone(),
+            distance_from_anchor_nm: 0.0,
+            previous_nav_ref: entry_index
+                .checked_sub(1)
+                .and_then(|idx| branch.points.get(idx))
+                .map(|point| point.nav_ref.clone()),
+            next_nav_ref: branch
+                .points
+                .get(entry_index + 1)
+                .map(|point| point.nav_ref.clone()),
+        };
+        let exit = AirwayExitCandidate {
+            airway_name: airway_name.to_string(),
+            branch_key: branch.branch_key.clone(),
+            branch_point_index: exit_index,
+            sequence: branch.points[exit_index].sequence,
+            nav_ref: branch.points[exit_index].nav_ref.clone(),
+            leg_offset_from_entry: exit_index as isize - entry_index as isize,
+            is_entry: exit_index == entry_index,
+            distance_from_target_nm: Some(0.0),
+        };
+        let (airway, resolved_legs) =
+            materialize_airway_from_branches(component_index, &entry, &exit, branches)?;
+        return Ok(ExactAirwayMaterialization {
+            airway,
+            resolved_legs,
+        });
+    }
+    Err(HadReadError::Fatal(format!(
+        "{} not on {}",
+        nav_ref_display_label(destination_anchor),
+        airway_name
+    )))
+}
+
+fn trailing_component_anchor(plan: &FlightPlan) -> Option<NavRef> {
+    match plan.route_components.last()? {
+        RouteComponent::Waypoint { waypoint } => Some(waypoint.clone()),
+        RouteComponent::Airway { airway } => Some(airway.exit.clone()),
+        RouteComponent::Procedure { .. } => None,
+    }
+}
+
+fn nav_ref_display_label(nav_ref: &NavRef) -> String {
+    match nav_ref {
+        NavRef::Airport(value) | NavRef::Navaid(value) | NavRef::Fix(value) => value.clone(),
+        NavRef::LatLon(value) => format!("{:.3},{:.3}", value.lat, value.lon),
+    }
 }
 
 fn describe_plate_loads(
@@ -1846,5 +2301,110 @@ mod tests {
         assert!(!materialized.resolved_legs.is_empty());
         assert_eq!(materialized.resolved_legs.first().unwrap().from, materialized.airway.entry);
         assert_eq!(materialized.resolved_legs.last().unwrap().to, materialized.airway.exit);
+    }
+
+    #[test]
+    fn fixture_nav_kv_previews_append_entry_with_relationship_issue() {
+        let store = load_fixture_nav_kv_store();
+        let plan = FlightPlan {
+            id: "krnt".to_string(),
+            name: "KRNT".to_string(),
+            legs: Vec::new(),
+            route_components: vec![RouteComponent::Waypoint {
+                waypoint: NavRef::Airport("KRNT".to_string()),
+            }],
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KRNT".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let preview = match run_had_operation(
+            &store,
+            HadOperation::PreviewFlightPlanEntry {
+                plan,
+                input: "SEA V112 VAMPS".to_string(),
+            },
+        )
+        .expect("preview route entry")
+        {
+            HadOperationOutcome::Complete { result } => {
+                serde_json::from_value::<FlightPlanEntryPreview>(result).expect("decode preview")
+            }
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete preview, got missing pages: {pages:?}");
+            }
+        };
+
+        assert!(!preview.can_commit);
+        assert_eq!(preview.tokens.len(), 3);
+        assert_eq!(preview.tokens[0].state, FlightPlanEntryTokenState::Recognized);
+        assert_eq!(preview.tokens[1].state, FlightPlanEntryTokenState::Recognized);
+        assert_eq!(preview.tokens[2].state, FlightPlanEntryTokenState::Recognized);
+        assert_eq!(preview.issues.len(), 1);
+        assert!(preview.issues[0].message.contains("V112"));
+        assert_eq!(preview.issues[0].start, 4);
+        assert_eq!(preview.issues[0].end, 14);
+    }
+
+    #[test]
+    fn fixture_nav_kv_appends_waypoint_airway_waypoint_sequence() {
+        let store = load_fixture_nav_kv_store();
+        let plan = FlightPlan {
+            id: "krnt".to_string(),
+            name: "KRNT".to_string(),
+            legs: Vec::new(),
+            route_components: vec![RouteComponent::Waypoint {
+                waypoint: NavRef::Airport("KRNT".to_string()),
+            }],
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KRNT".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+
+        let mutation = match run_had_operation(
+            &store,
+            HadOperation::AppendFlightPlanEntry {
+                plan,
+                input: "SEA V2 VAMPS KUAO".to_string(),
+            },
+        )
+        .expect("append route entry")
+        {
+            HadOperationOutcome::Complete { result } => serde_json::from_value::<FlightPlanUiMutation>(result)
+                .expect("decode append mutation"),
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete append, got missing pages: {pages:?}");
+            }
+        };
+
+        assert_eq!(mutation.plan.route_components.len(), 4);
+        assert!(matches!(
+            mutation.plan.route_components[0],
+            RouteComponent::Waypoint { .. }
+        ));
+        assert!(matches!(
+            mutation.plan.route_components[1],
+            RouteComponent::Waypoint { waypoint: NavRef::Navaid(ref id) } if id == "SEA"
+        ));
+        assert!(matches!(
+            mutation.plan.route_components[2],
+            RouteComponent::Airway { ref airway } if airway.name == "V2"
+        ));
+        assert!(matches!(
+            mutation.plan.route_components[3],
+            RouteComponent::Waypoint { waypoint: NavRef::Airport(ref id) } if id == "KUAO"
+        ));
     }
 }

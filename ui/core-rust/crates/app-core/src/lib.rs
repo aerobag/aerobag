@@ -2505,6 +2505,37 @@ mod tests {
         }
     }
 
+    fn read_optional_from_store<T: DeserializeOwned>(
+        store: &crate::NavKvStore,
+        query: crate::NavKvQuery,
+    ) -> Option<T> {
+        let key = crate::nav_kv_key_for_query(&query).expect("query should have key");
+        match store.get_bytes(&key).expect("nav_kv lookup") {
+            crate::NavKvLookup::Hit(bytes) => serde_json::from_slice(&bytes)
+                .unwrap_or_else(|err| panic!("decode optional value from {key}: {err}")),
+            crate::NavKvLookup::MissingKey => None,
+            crate::NavKvLookup::MissingPages(pages) => {
+                panic!("missing pages for optional value at {key}: {:?}", pages)
+            }
+        }
+    }
+
+    fn candidate_airport_ids_for_plate_key(airport_key: &str) -> Vec<String> {
+        let trimmed = airport_key.trim();
+        if trimmed.is_empty() {
+            return Vec::new();
+        }
+        let mut candidates = vec![trimmed.to_string()];
+        if trimmed.len() == 3 && trimmed.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+            for prefix in ["K", "P", "C", "T"] {
+                candidates.push(format!("{prefix}{trimmed}"));
+            }
+        }
+        candidates.sort();
+        candidates.dedup();
+        candidates
+    }
+
     fn nav_ref_position_from_store(
         store: &crate::NavKvStore,
         airport_id: &str,

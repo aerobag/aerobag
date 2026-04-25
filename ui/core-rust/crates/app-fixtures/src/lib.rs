@@ -84,12 +84,11 @@ pub fn fixture_nav_db_package_zip_path() -> PathBuf {
         .collect::<Vec<_>>();
     matches.sort();
     assert!(
-        matches.len() == 1,
-        "expected exactly one nav_db zip under {}, found {}",
+        !matches.is_empty(),
+        "expected at least one nav_db zip under {}, found 0",
         root.display(),
-        matches.len()
     );
-    matches.pop().expect("nav_db match after length check")
+    matches.pop().expect("nav_db match after non-empty check")
 }
 
 pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {

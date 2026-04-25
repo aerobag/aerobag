@@ -11,6 +11,7 @@ import type {
   CifpTppMatch,
   ChartPageData,
   FlightPlan,
+  FlightPlanEntryPreview,
   FlightPlanRouteSegment,
   FlightPlanUiMutation,
   FlightPlanUiState,
@@ -381,6 +382,8 @@ export interface AppCoreAdapter {
   activateNextLegUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   deleteComponentUi(plan: FlightPlan, componentIndex: number): Promise<FlightPlanUiMutation>;
   moveComponentUi(plan: FlightPlan, componentIndex: number, delta: number): Promise<FlightPlanUiMutation>;
+  previewFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanEntryPreview>;
+  appendFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanUiMutation>;
   resolveWaypointIdentifier(identifier: string): Promise<NavRef | null>;
   suggestWaypointIdentifiers(plan: FlightPlan, componentIndex: number, before: boolean, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
   insertWaypointUi(plan: FlightPlan, componentIndex: number, before: boolean, waypoint: NavRef): Promise<FlightPlanUiMutation>;
@@ -980,6 +983,22 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     return this.enrichFlightPlanUiMutation(JSON.parse(
       await this.module.move_component_ui(JSON.stringify(plan), componentIndex, delta),
     ) as FlightPlanUiMutation);
+  }
+
+  async previewFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanEntryPreview> {
+    return runCoreHadOperation<FlightPlanEntryPreview>({
+      kind: "preview_flight_plan_entry",
+      plan,
+      input,
+    });
+  }
+
+  async appendFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanUiMutation> {
+    return runCoreHadOperation<FlightPlanUiMutation>({
+      kind: "append_flight_plan_entry",
+      plan,
+      input,
+    });
   }
 
   async resolveWaypointIdentifier(identifier: string): Promise<NavRef | null> {

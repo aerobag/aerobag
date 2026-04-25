@@ -462,6 +462,26 @@ export type FlightPlanUiMutation = {
   ui_state: FlightPlanUiState;
 };
 
+export type FlightPlanEntryTokenState = "neutral" | "recognized" | "invalid";
+
+export type FlightPlanEntryToken = {
+  start: number;
+  end: number;
+  state: FlightPlanEntryTokenState;
+};
+
+export type FlightPlanEntryIssue = {
+  start: number;
+  end: number;
+  message: string;
+};
+
+export type FlightPlanEntryPreview = {
+  can_commit: boolean;
+  tokens: FlightPlanEntryToken[];
+  issues: FlightPlanEntryIssue[];
+};
+
 export type CatalogJson = {
   schema_version: number;
   cycle: string;

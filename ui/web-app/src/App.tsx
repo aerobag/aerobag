@@ -8,6 +8,7 @@ import type {
   ChartFamilyId,
   DevBootstrapJson,
   FlightPlan,
+  FlightPlanEntryPreview,
   FlightPlanRouteSegment,
   FlightPlanUiMutation,
   FlightPlanUiState,
@@ -1491,6 +1492,17 @@ export default function App() {
               throw new Error(`Unknown waypoint ${airportId}`);
             }
             const mutation = await appCoreAdapter.insertWaypointUi(currentPlan, componentIndex, before, waypoint);
+            await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
+          }}
+          onPreviewFlightPlanEntry={async (input) => {
+            if (!appCoreAdapter) {
+              throw new Error("app core adapter unavailable");
+            }
+            return appCoreAdapter.previewFlightPlanEntry(currentPlan, input);
+          }}
+          onAppendFlightPlanEntry={async (input) => {
+            if (!appCoreAdapter) return;
+            const mutation = await appCoreAdapter.appendFlightPlanEntry(currentPlan, input);
             await applyFlightPlanMutation(uiSession, setSessionSnapshot, mutation);
           }}
           onActivateLeg={async (legIndex) => {
@@ -3876,6 +3888,8 @@ function FlightPlanPage(props: {
   onOpenCharts: (airportId: string | null, chartId?: string | null) => void;
   onMoveComponent: (componentIndex: number, delta: number) => void | Promise<void>;
   onInsertAirportWaypoint: (componentIndex: number, before: boolean, airportId: string) => void | Promise<void>;
+  onPreviewFlightPlanEntry: (input: string) => Promise<FlightPlanEntryPreview>;
+  onAppendFlightPlanEntry: (input: string) => void | Promise<void>;
   onActivateLeg: (index: number) => void | Promise<void>;
   onDeleteComponent: (componentIndex: number) => void | Promise<void>;
   onActivateNextLeg: () => void | Promise<void>;
@@ -3944,6 +3958,15 @@ function FlightPlanPage(props: {
     loading: boolean;
     suggestions: WaypointIdentifierSuggestion[];
   } | null>(null);
+  const [routeEntryText, setRouteEntryText] = useState("");
+  const [routeEntryPreview, setRouteEntryPreview] = useState<FlightPlanEntryPreview>({
+    can_commit: false,
+    tokens: [],
+    issues: [],
+  });
+  const [routeEntryLoading, setRouteEntryLoading] = useState(false);
+  const [routeEntryError, setRouteEntryError] = useState<string | null>(null);
+  const [routeEntrySubmitting, setRouteEntrySubmitting] = useState(false);
   const trayGroup = useModalTrayGroup(["page"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
   const pageRef = useRef<HTMLElement | null>(null);
@@ -4001,6 +4024,37 @@ function FlightPlanPage(props: {
       cancelled = true;
     };
   }, [airportInsert?.airportId, airportInsert?.before, airportInsert?.componentIndex, props.appCoreAdapter, waypointSuggestionPlanKey]);
+  useEffect(() => {
+    if (!routeEntryText.trim()) {
+      setRouteEntryPreview({
+        can_commit: false,
+        tokens: [],
+        issues: [],
+      });
+      setRouteEntryLoading(false);
+      setRouteEntryError(null);
+      return;
+    }
+    let cancelled = false;
+    setRouteEntryLoading(true);
+    props.onPreviewFlightPlanEntry(routeEntryText)
+      .then((preview) => {
+        if (!cancelled) {
+          setRouteEntryPreview(preview);
+          setRouteEntryLoading(false);
+          setRouteEntryError(null);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setRouteEntryLoading(false);
+          setRouteEntryError(errorMessage(error));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.onPreviewFlightPlanEntry, routeEntryText, waypointSuggestionPlanKey]);
   const displayRows = useMemo(() => {
     return planUiState.display_rows.map((row, index) => ({
         showPlateTargetId:
@@ -4533,6 +4587,71 @@ function FlightPlanPage(props: {
                 </div>
               </Fragment>
             ))}
+            <div className="planEntryCell" style={{ gridColumn: "1 / -1" }}>
+              <form
+                className="planEntryForm"
+                onSubmit={async (event) => {
+                  event.preventDefault();
+                  if (!routeEntryPreview.can_commit || routeEntrySubmitting) {
+                    return;
+                  }
+                  setRouteEntrySubmitting(true);
+                  setRouteEntryError(null);
+                  try {
+                    await props.onAppendFlightPlanEntry(routeEntryText);
+                    setRouteEntryText("");
+                    setRouteEntryPreview({
+                      can_commit: false,
+                      tokens: [],
+                      issues: [],
+                    });
+                  } catch (error) {
+                    setRouteEntryError(errorMessage(error));
+                  } finally {
+                    setRouteEntrySubmitting(false);
+                  }
+                }}
+              >
+                <div className={`planEntryInputShell${routeEntryPreview.can_commit ? " isReady" : ""}`}>
+                  {routeEntryText ? (
+                    <div className="planEntryOverlay" aria-hidden="true">
+                      {flightPlanEntryPreviewSegments(routeEntryText, routeEntryPreview).map((segment, index) => (
+                        <span
+                          key={`${index}:${segment.text}`}
+                          className={[
+                            "planEntrySegment",
+                            `is${segment.tokenState[0].toUpperCase()}${segment.tokenState.slice(1)}`,
+                            segment.issue ? "hasIssue" : "",
+                          ].filter(Boolean).join(" ")}
+                        >
+                          {segment.text}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="planEntryPlaceholder" aria-hidden="true">Append route...</div>
+                  )}
+                  <input
+                    className="planEntryInput"
+                    value={routeEntryText}
+                    spellCheck={false}
+                    autoCapitalize="characters"
+                    autoCorrect="off"
+                    onChange={(event) => {
+                      setRouteEntryText(event.target.value.toUpperCase());
+                      setRouteEntryError(null);
+                    }}
+                  />
+                </div>
+              </form>
+              {routeEntryError ? (
+                <div className="planEntryFeedback">{routeEntryError}</div>
+              ) : routeEntryPreview.issues[0] ? (
+                <div className="planEntryFeedback">{routeEntryPreview.issues[0].message}</div>
+              ) : routeEntryLoading ? (
+                <div className="planEntryFeedback">Checking...</div>
+              ) : null}
+            </div>
           </div>
         </div>
       </div>
@@ -6219,6 +6338,38 @@ function formatPlanCourse(courseDeg: number | null) {
   }
   const rounded = Math.round(courseDeg) % 360;
   return rounded === 0 ? "360" : rounded.toString().padStart(3, "0");
+}
+
+function flightPlanEntryPreviewSegments(
+  input: string,
+  preview: FlightPlanEntryPreview,
+): Array<{ text: string; tokenState: "neutral" | "recognized" | "invalid"; issue: boolean }> {
+  const boundaries = new Set<number>([0, input.length]);
+  for (const token of preview.tokens) {
+    boundaries.add(token.start);
+    boundaries.add(token.end);
+  }
+  for (const issue of preview.issues) {
+    boundaries.add(issue.start);
+    boundaries.add(issue.end);
+  }
+  const ordered = [...boundaries].sort((left, right) => left - right);
+  const segments = [] as Array<{ text: string; tokenState: "neutral" | "recognized" | "invalid"; issue: boolean }>;
+  for (let index = 0; index < ordered.length - 1; index += 1) {
+    const start = ordered[index];
+    const end = ordered[index + 1];
+    if (start === end) {
+      continue;
+    }
+    const token = preview.tokens.find((entry) => entry.start <= start && entry.end >= end);
+    const issue = preview.issues.some((entry) => entry.start <= start && entry.end >= end);
+    segments.push({
+      text: input.slice(start, end),
+      tokenState: token?.state ?? "neutral",
+      issue,
+    });
+  }
+  return segments;
 }
 
 async function applyFlightPlanMutation(

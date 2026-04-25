@@ -1455,6 +1455,96 @@ button {
   vector-effect: non-scaling-stroke;
 }
 
+.planEntryCell {
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.planEntryForm {
+  margin: 0;
+}
+
+.planEntryInputShell {
+  position: relative;
+  min-height: var(--thumb);
+  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 76%, black);
+  border-radius: var(--thumb-radius);
+  background: color-mix(in srgb, white 88%, var(--theme-button-bg) 12%);
+  overflow: hidden;
+}
+
+.planEntryInputShell.isReady {
+  border-color: color-mix(in srgb, #1d6f3a 72%, black);
+}
+
+.planEntryOverlay,
+.planEntryPlaceholder,
+.planEntryInput {
+  padding: calc(var(--thumb) * 0.16) calc(var(--thumb) * 0.2);
+  font: inherit;
+  font-size: calc(var(--thumb) * 0.24);
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.planEntryOverlay,
+.planEntryPlaceholder {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow: hidden;
+}
+
+.planEntryPlaceholder {
+  color: color-mix(in srgb, var(--theme-panel-muted) 80%, transparent);
+}
+
+.planEntryInput {
+  position: relative;
+  width: 100%;
+  min-height: var(--thumb);
+  border: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--theme-panel-fg);
+  text-transform: uppercase;
+}
+
+.planEntryInput:focus {
+  outline: none;
+}
+
+.planEntrySegment.isNeutral {
+  color: var(--theme-panel-fg);
+}
+
+.planEntrySegment.isRecognized {
+  color: #1d6f3a;
+}
+
+.planEntrySegment.isInvalid {
+  color: #ab2d1f;
+}
+
+.planEntrySegment.hasIssue {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-decoration-color: #ab2d1f;
+  text-underline-offset: calc(var(--thumb) * 0.08);
+}
+
+.planEntryFeedback {
+  margin-top: calc(var(--thumb-gap) * 0.6);
+  padding: calc(var(--thumb) * 0.08) calc(var(--thumb) * 0.16);
+  border-radius: calc(var(--thumb-radius) * 0.7);
+  background: color-mix(in srgb, white 82%, #ab2d1f 18%);
+  color: #7a1f16;
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 700;
+}
+
 .planTableWrap.isReordering .planStructuredWaypointCell.isChildRow,
 .planTableWrap.isReordering .planStructuredDataCell.isChildRow {
   min-height: calc(var(--thumb) * 0.34);

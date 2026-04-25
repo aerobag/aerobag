@@ -1793,7 +1793,7 @@ pub fn insert_airway_between_waypoints(
     Ok(FlightPlan {
         route_components: new_components,
         resolved_legs: resolved_legs.clone(),
-        guidance: None,
+        guidance: revalidate_guidance_after_plan_edit(plan.guidance.clone(), &resolved_legs),
         ..plan
     })
 }
@@ -1857,7 +1857,7 @@ pub fn insert_airway_after_waypoint(
     Ok(FlightPlan {
         route_components: new_components,
         resolved_legs: resolved_legs.clone(),
-        guidance: None,
+        guidance: revalidate_guidance_after_plan_edit(plan.guidance.clone(), &resolved_legs),
         ..plan
     })
 }
@@ -4391,6 +4391,35 @@ mod tests {
         let last_leg = inserted.resolved_legs.last().unwrap();
         assert_eq!(last_leg.from, NavRef::Fix("SUMMA".to_string()));
         assert_eq!(last_leg.to, NavRef::Fix("VAMPS".to_string()));
+    }
+
+    #[test]
+    fn insert_airway_after_waypoint_preserves_existing_active_leg_guidance() {
+        let mut plan = sample_waypoint_only_plan();
+        plan.guidance = Some(GuidanceState {
+            active_leg_index: 0,
+            active_detail_index: Some(0),
+            display_split_leg_id: Some("component-0-1".to_string()),
+            sequencing_mode: SequencingMode::FollowPlan,
+            direct_to: None,
+            suspend_reason: None,
+        });
+
+        let inserted = insert_airway_after_waypoint(
+            &plan,
+            2,
+            sample_inserted_airway().0,
+            sample_inserted_airway().1,
+        )
+        .unwrap();
+
+        let guidance = inserted.guidance.as_ref().expect("guidance preserved");
+        assert_eq!(guidance.active_leg_index, 0);
+        assert_eq!(guidance.active_detail_index, Some(0));
+        assert_eq!(guidance.display_split_leg_id.as_deref(), Some("component-0-1"));
+        let active_leg = active_guidance_leg(&inserted).expect("active leg preserved");
+        assert_eq!(active_leg.from, NavRef::Airport("KRNT".to_string()));
+        assert_eq!(active_leg.to, NavRef::Airport("KUAO".to_string()));
     }
 
     #[test]

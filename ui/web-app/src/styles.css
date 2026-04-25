@@ -1285,13 +1285,25 @@ button {
   background: var(--theme-chart-surface-bg);
 }
 
-.planScrollSurface {
+.planScrollViewport {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
   overscroll-behavior: contain;
   padding-bottom: calc(var(--thumb) * 0.1);
   margin-bottom: calc(var(--thumb) * 0.1);
+}
+
+.planScrollContent {
+  position: relative;
+  min-height: 100%;
+}
+
+.planScrollSurface {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
 }
 
 .planTableWrap {
@@ -1299,7 +1311,8 @@ button {
 }
 
 .planTableWrap.isStructured {
-  padding-left: calc(var(--thumb) * 0.5);
+  --plan-structured-left-gutter: calc(var(--thumb) * 0.5);
+  padding-left: var(--plan-structured-left-gutter);
   padding-right: var(--thumb-gap);
 }
 
@@ -1319,6 +1332,7 @@ button {
   height: 100%;
   pointer-events: none;
   overflow: visible;
+  z-index: 2;
 }
 
 .planStructuredGroupBoxLayer {
@@ -1419,7 +1433,7 @@ button {
 .planStructuredWaypointCell {
   position: relative;
   position: sticky;
-  left: 0;
+  left: var(--plan-structured-left-gutter, 0px);
   z-index: 2;
 }
 
@@ -1473,7 +1487,7 @@ button {
 }
 
 .planHeader.planWaypointCell {
-  left: 0;
+  left: var(--plan-structured-left-gutter, 0px);
   z-index: 4;
 }
 
@@ -1491,6 +1505,13 @@ button {
   padding: 0;
   background: transparent;
   border: 0;
+}
+
+.planEntryDock {
+  margin-left: calc(var(--thumb) * 0.5);
+  margin-right: var(--thumb-gap);
+  margin-top: calc(var(--thumb) * 0.14);
+  z-index: 2;
 }
 
 .planEntryForm {

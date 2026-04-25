@@ -3986,6 +3986,8 @@ function FlightPlanPage(props: {
   const guidance = planUiState.guidance ?? null;
   const structuredSurfaceRef = useRef<HTMLDivElement | null>(null);
   const structuredTableRef = useRef<HTMLDivElement | null>(null);
+  const planScrollViewportRef = useRef<HTMLDivElement | null>(null);
+  const planScrollContentRef = useRef<HTMLDivElement | null>(null);
   const structuredRowRefs = useRef(new Map<string, HTMLElement>());
   const [structuredArrow, setStructuredArrow] = useState<{ path: string; head: string } | null>(null);
   const [structuredGroupBoxes, setStructuredGroupBoxes] = useState<Array<{ key: string; top: number; left: number; width: number; height: number }>>([]);
@@ -4363,8 +4365,9 @@ function FlightPlanPage(props: {
       return;
     }
     const activeLeg = guidance.active_leg;
-    const surface = structuredSurfaceRef.current;
-    if (!surface) {
+    const scrollPane = planScrollSurfaceRef.current;
+    const content = planScrollContentRef.current;
+    if (!scrollPane || !content) {
       setStructuredArrow(null);
       return;
     }
@@ -4398,31 +4401,50 @@ function FlightPlanPage(props: {
       return;
     }
 
-    const surfaceRect = surface.getBoundingClientRect();
-    const fromRect = fromElement.getBoundingClientRect();
-    const toRect = toElement.getBoundingClientRect();
-    const fromPoint = {
-      x: fromRect.left - surfaceRect.left,
-      y: fromRect.top - surfaceRect.top + fromRect.height / 2,
-    };
-    const toPoint = {
-      x: toRect.left - surfaceRect.left,
-      y: toRect.top - surfaceRect.top + toRect.height / 2,
-    };
-    const elbowX = thumbPixels(0.12);
-    const headLength = 20;
-    const shaftEnd = { x: Math.max(elbowX, toPoint.x - headLength + 5), y: toPoint.y };
+    let animationFrame = 0;
+    const measureArrow = () => {
+      const surfaceRect = content.getBoundingClientRect();
+      const fromRect = fromElement.getBoundingClientRect();
+      const toRect = toElement.getBoundingClientRect();
+      const leftGutterX = thumbPixels(0.12);
+      const waypointColumnLeftX = thumbPixels(0.5);
+      const waypointColumnHeadInsetX = thumbPixels(0.08);
+      const fromPoint = {
+        x: waypointColumnLeftX,
+        y: fromRect.top - surfaceRect.top + fromRect.height / 2,
+      };
+      const toPoint = {
+        x: waypointColumnLeftX + waypointColumnHeadInsetX,
+        y: toRect.top - surfaceRect.top + toRect.height / 2,
+      };
+      const elbowX = leftGutterX;
+      const headLength = 20;
+      const shaftEnd = { x: Math.max(elbowX, toPoint.x - headLength + 5), y: toPoint.y };
 
-    setStructuredArrow({
-      path: `M ${fromPoint.x} ${fromPoint.y} H ${elbowX} V ${toPoint.y} H ${shaftEnd.x}`,
-      head: arrowHeadPoints(shaftEnd, toPoint),
-    });
+      setStructuredArrow({
+        path: `M ${fromPoint.x} ${fromPoint.y} H ${elbowX} V ${toPoint.y} H ${shaftEnd.x}`,
+        head: arrowHeadPoints(shaftEnd, toPoint),
+      });
+    };
+    const scheduleMeasure = () => {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(measureArrow);
+    };
+
+    measureArrow();
 
     const handle = window.requestAnimationFrame(() => {
       fromElement.scrollIntoView({ block: "nearest", inline: "nearest" });
       toElement.scrollIntoView({ block: "nearest", inline: "nearest" });
     });
-    return () => window.cancelAnimationFrame(handle);
+    scrollPane?.addEventListener("scroll", scheduleMeasure, { passive: true });
+    window.addEventListener("resize", scheduleMeasure);
+    return () => {
+      window.cancelAnimationFrame(handle);
+      window.cancelAnimationFrame(animationFrame);
+      scrollPane?.removeEventListener("scroll", scheduleMeasure);
+      window.removeEventListener("resize", scheduleMeasure);
+    };
   }, [displayRows, guidance?.active_leg]);
 
   useEffect(() => {
@@ -4512,34 +4534,36 @@ function FlightPlanPage(props: {
         />
       </div>
 
-      <div className="planScrollSurface" ref={planScrollSurfaceRef}>
-          <div className={`planTableWrap isStructured${reorderOpen ? " isReordering" : ""}`} ref={structuredSurfaceRef}>
-          <div className="planStructuredGroupBoxLayer" aria-hidden="true">
-            {structuredGroupBoxes.map((box) => (
-              <div
-                key={box.key}
-                className="planStructuredGroupBoxOverlay"
-                style={{ top: `${box.top}px`, left: `${box.left}px`, width: `${box.width}px`, height: `${box.height}px` }}
-              />
-            ))}
-          </div>
+      <div className="planScrollViewport" ref={planScrollViewportRef}>
+        <div className="planScrollContent" ref={planScrollContentRef}>
           {structuredArrow ? (
             <svg className="planStructuredArrowLayer" aria-hidden="true">
               <path className="planStructuredArrowPath" d={structuredArrow.path} />
               <polygon className="planStructuredArrowHead" points={structuredArrow.head} />
             </svg>
           ) : null}
-          <div className="planTable" ref={structuredTableRef}>
-            <div className="planHeader planWaypointCell">Waypoint</div>
-            <div className="planHeader">Dist (nm)</div>
-            <div className="planHeader">ETA (h:m)</div>
-            <div className="planHeader">Leg (h:m)</div>
-            <div className="planHeader">Fuel (gal)</div>
-            <div className="planHeader">Course (°)</div>
-            {displayRows.map((row, index) => (
-              <Fragment key={row.id}>
-                <button
-                  key={`${row.id}:waypoint`}
+          <div className="planScrollSurface" ref={planScrollSurfaceRef}>
+            <div className={`planTableWrap isStructured${reorderOpen ? " isReordering" : ""}`} ref={structuredSurfaceRef}>
+              <div className="planStructuredGroupBoxLayer" aria-hidden="true">
+                {structuredGroupBoxes.map((box) => (
+                  <div
+                    key={box.key}
+                    className="planStructuredGroupBoxOverlay"
+                    style={{ top: `${box.top}px`, left: `${box.left}px`, width: `${box.width}px`, height: `${box.height}px` }}
+                  />
+                ))}
+              </div>
+              <div className="planTable" ref={structuredTableRef}>
+                <div className="planHeader planWaypointCell">Waypoint</div>
+                <div className="planHeader">Dist (nm)</div>
+                <div className="planHeader">ETA (h:m)</div>
+                <div className="planHeader">Leg (h:m)</div>
+                <div className="planHeader">Fuel (gal)</div>
+                <div className="planHeader">Course (°)</div>
+                {displayRows.map((row, index) => (
+                  <Fragment key={row.id}>
+                    <button
+                      key={`${row.id}:waypoint`}
 	                  type="button"
 	                  ref={(node) => {
 	                    if (row.refKey === null) {
@@ -4579,7 +4603,7 @@ function FlightPlanPage(props: {
                 >
 	                  <span className={`planStructuredLabel${row.depth > 0 ? " isIndented" : ""}`}>{row.label}</span>
                     <PlanWaypointSymbol feature={row.symbolFeature} />
-	                </button>
+                    </button>
 	                <div
 	                  className={[
 	                    "planCell",
@@ -4619,10 +4643,14 @@ function FlightPlanPage(props: {
 	                  ].filter(Boolean).join(" ")}
 	                >
                   {row.course}
-                </div>
-              </Fragment>
-            ))}
-            <div className="planEntryCell" style={{ gridColumn: "1 / -1" }}>
+                    </div>
+                  </Fragment>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="planEntryDock">
+            <div className="planEntryCell">
               <form
                 className="planEntryForm"
                 onSubmit={async (event) => {

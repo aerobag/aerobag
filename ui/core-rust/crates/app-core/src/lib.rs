@@ -1375,6 +1375,23 @@ fn resolve_procedure_materialization_legs_with_provenance(
             } else {
                 None
             };
+            let previous_leg_consumed_same_pi = resolved.last().is_some_and(|previous| {
+                previous.procedure_provenance.as_ref().is_some_and(|provenance| {
+                    provenance.leg_sequence == pair[0].sequence
+                        && matches!(
+                            &provenance.path_termination,
+                            PathTermination::Other(label) if label.trim() == "PI"
+                        )
+                })
+            });
+            let display_leg_start = if pair[0].path_termination.trim() == "PI"
+                && from != to
+                && previous_leg_consumed_same_pi
+            {
+                pair[1]
+            } else {
+                pair[0]
+            };
             let display_path = if continuing_if_to_cf_join
                 && initial_position_override
                     .zip(pair[1].nav_position)
@@ -1387,7 +1404,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
             } else {
                 display_path_for_procedure_leg(
                     leg_records,
-                    pair[0],
+                    display_leg_start,
                     pair[1],
                     hold_record,
                     initial_position_override,
@@ -5020,7 +5037,7 @@ mod tests {
     #[ignore = "manual audit for selected heading continuity records"]
     fn audit_selected_heading_continuity_records() {
         let store = load_snapshot_nav_kv_store();
-        for (airport_id, procedure_id) in [("KOFP", "L16")] {
+        for (airport_id, procedure_id) in [("KMCC", "I16")] {
             let rows = read_required_from_store::<Vec<ProcedureDistinctRow>>(
                 &store,
                 crate::NavKvQuery::ProcedureDistinctRows {
@@ -5517,7 +5534,7 @@ mod tests {
     #[test]
     #[ignore = "manual visual inspection overlay for selected heading continuity case"]
     fn writes_selected_heading_continuity_overlay_png() {
-        render_procedure_overlay_to_paths("KOFP", "L16", "COATT", "KOFP_L16_COATT", false);
+        render_procedure_overlay_to_paths("KMCC", "I16", "LIN", "KMCC_I16_LIN", false);
     }
 
     #[test]

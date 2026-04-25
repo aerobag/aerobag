@@ -436,13 +436,13 @@ fn build_procedure_leg_display_path(
             }
             "PI" => {
                 let fix = step.nav_position?;
+                let path = procedure_turn_display_path(step)?;
                 if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
                     elements.push(LegDisplayElement::Segment {
                         start: current_position,
                         end: fix,
                     });
                 }
-                let path = procedure_turn_display_path(step)?;
                 current_position = fix;
                 current_course_deg = path.elements.last().and_then(display_element_end_course_deg);
                 elements.extend(path.elements);

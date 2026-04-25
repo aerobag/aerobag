@@ -98,29 +98,11 @@ pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
     let mut archive = zip::ZipArchive::new(file)
         .unwrap_or_else(|err| panic!("parse {} as zip: {err}", zip_path.display()));
 
-    let mut root_name = None;
-    for index in 0..archive.len() {
-        let name = archive
-            .by_index(index)
-            .unwrap_or_else(|err| panic!("read zip entry {index} from {}: {err}", zip_path.display()))
-            .name()
-            .to_string();
-        if name.ends_with(".root") {
-            root_name = Some(name);
-            break;
-        }
-    }
-    let root_name = root_name.unwrap_or_else(|| {
-        panic!(
-            "nav_db package {} does not contain a *.root nav_kv entry",
-            zip_path.display()
-        )
-    });
-    let value_prefix = root_name.trim_end_matches(".root").to_string();
+    let root_name = "root";
 
     let mut root_bytes = Vec::new();
     archive
-        .by_name(&root_name)
+        .by_name(root_name)
         .unwrap_or_else(|err| panic!("open {} in {}: {err}", root_name, zip_path.display()))
         .read_to_end(&mut root_bytes)
         .unwrap_or_else(|err| panic!("read {} in {}: {err}", root_name, zip_path.display()));
@@ -130,7 +112,7 @@ pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
     let page_count = ((root.value_bytes_len() + root.page_size() - 1) / root.page_size()) as usize;
     let mut pages = Vec::with_capacity(page_count);
     for page_index in 0..page_count {
-        let entry_name = format!("{value_prefix}.values_{page_index:04}");
+        let entry_name = format!("values_{page_index:04}");
         let mut page_bytes = Vec::new();
         archive
             .by_name(&entry_name)

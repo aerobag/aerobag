@@ -38,6 +38,7 @@ fn solid_path(elements: Vec<LegDisplayElement>, debug_element_sources: Vec<Strin
     LegDisplayPath {
         style: LegDisplayPathStyle::Solid,
         elements,
+        effective_terminal_course_deg: None,
         debug_element_sources,
     }
 }
@@ -46,6 +47,7 @@ fn dashed_path(elements: Vec<LegDisplayElement>, debug_element_sources: Vec<Stri
     LegDisplayPath {
         style: LegDisplayPathStyle::Dashed,
         elements,
+        effective_terminal_course_deg: None,
         debug_element_sources,
     }
 }
@@ -156,6 +158,7 @@ pub fn display_path_for_resumed_common_cf(
     Some(LegDisplayPath {
         style: LegDisplayPathStyle::Solid,
         elements,
+        effective_terminal_course_deg: None,
         debug_element_sources: debug_sources,
     })
 }
@@ -893,7 +896,9 @@ fn build_procedure_leg_display_path(
                         .last()
                         .and_then(display_element_end_position)
                         .unwrap_or(current_position);
-                    current_course_deg = hold_path.elements.last().and_then(display_element_end_course_deg);
+                    current_course_deg = hold_path
+                        .effective_terminal_course_deg
+                        .or_else(|| hold_path.elements.last().and_then(display_element_end_course_deg));
                     extend_elements_with_sources(
                         &mut elements,
                         &mut debug_sources,
@@ -908,7 +913,13 @@ fn build_procedure_leg_display_path(
     }
     snap_nearby_display_element_boundaries(&mut elements);
     prune_degenerate_display_elements_with_sources(&mut elements, &mut debug_sources);
-    (!elements.is_empty()).then_some(solid_path(elements, debug_sources))
+    if elements.is_empty() {
+        None
+    } else {
+        let mut path = solid_path(elements, debug_sources);
+        path.effective_terminal_course_deg = current_course_deg;
+        Some(path)
+    }
 }
 
 fn display_element_end_position(element: &LegDisplayElement) -> Option<LatLon> {
@@ -2327,7 +2338,9 @@ fn build_hold_display_path(
     let mut debug_sources = vec![debug_source!(); elements.len()];
     if stop_when_established_inbound {
         if !matches!(entry_kind, Some(HoldEntryKind::Direct) | None) {
-            return solid_path(elements, debug_sources);
+            let mut path = solid_path(elements, debug_sources);
+            path.effective_terminal_course_deg = Some(inbound_course_deg);
+            return path;
         }
     }
     push_arc!(

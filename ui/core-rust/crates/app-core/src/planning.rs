@@ -221,6 +221,8 @@ pub struct LegDisplayPath {
     pub style: LegDisplayPathStyle,
     pub elements: Vec<LegDisplayElement>,
     #[serde(default)]
+    pub effective_terminal_course_deg: Option<f64>,
+    #[serde(default)]
     pub debug_element_sources: Vec<String>,
 }
 

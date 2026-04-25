@@ -1258,8 +1258,20 @@ fn resolve_procedure_materialization_legs_with_provenance(
             fix_records.reverse();
         }
         let role = procedure_segment_role(role);
-        let common_resume_target_index =
-            common_segment_resume_target_index(previous_display_path.as_ref(), &fix_records);
+        let previous_was_hold_like = resolved.last().is_some_and(|previous| {
+            previous.procedure_provenance.as_ref().is_some_and(|provenance| {
+                matches!(
+                    &provenance.path_termination,
+                    PathTermination::Other(label)
+                        if matches!(label.trim(), "HF" | "HM")
+                )
+            })
+        });
+        let common_resume_target_index = common_segment_resume_target_index(
+            previous_display_path.as_ref(),
+            previous_was_hold_like,
+            &fix_records,
+        );
         let skip_through_index = reconciliation_resume_skip_through_index(
             previous_display_path.as_ref(),
             previous_leg_to.as_ref(),
@@ -1420,6 +1432,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 Some(LegDisplayPath {
                     style: LegDisplayPathStyle::Solid,
                     elements: Vec::new(),
+                    effective_terminal_course_deg: None,
                     debug_element_sources: Vec::new(),
                 })
             } else if resume_common_cf_from_previous_path {
@@ -2106,6 +2119,9 @@ fn reconciliation_resume_skip_through_index(
 }
 
 fn final_course_of_display_path(path: &LegDisplayPath) -> Option<f64> {
+    if let Some(course_deg) = path.effective_terminal_course_deg {
+        return Some(course_deg);
+    }
     match path.elements.last()? {
         LegDisplayElement::Segment { start, end } => Some(bearing_degrees(*start, *end)),
         LegDisplayElement::Arc {
@@ -2148,6 +2164,7 @@ fn course_unit_vector(course_deg: f64) -> (f64, f64) {
 
 fn common_segment_resume_target_index(
     previous_display_path: Option<&LegDisplayPath>,
+    previous_was_hold_like: bool,
     fix_records: &[&ProcedureLegMaterializationRecord],
 ) -> Option<usize> {
     let previous_display_path = previous_display_path?;
@@ -2177,7 +2194,9 @@ fn common_segment_resume_target_index(
         if cross_track_nm > 0.5 {
             continue;
         }
-        if angular_difference_degrees(current_course_deg, course_deg) > 20.0 {
+        if !previous_was_hold_like
+            && angular_difference_degrees(current_course_deg, course_deg) > 20.0
+        {
             continue;
         }
         let bearing_to_fix = bearing_degrees(current_position, fix);
@@ -5766,7 +5785,13 @@ mod tests {
     #[test]
     #[ignore = "manual visual inspection overlay for selected heading continuity case"]
     fn writes_selected_heading_continuity_overlay_png() {
-        render_procedure_overlay_to_paths("KHLN", "I27-Y", "FALDE", "KHLN_I27-Y_FALDE_regressed", true);
+        render_procedure_overlay_to_paths("KHLN", "I27-Y", "HLN", "KHLN_I27-Y_HLN", true);
+    }
+
+    #[test]
+    #[ignore = "manual visual inspection overlay for KHLN I27-Z FALDE"]
+    fn writes_khln_i27z_falde_overlay_png() {
+        render_procedure_overlay_to_paths("KHLN", "I27-Z", "HLN", "KHLN_I27-Z_HLN", true);
     }
 
     #[test]
@@ -5868,7 +5893,7 @@ mod tests {
         let common_fix_records = common_leg_records.iter().collect::<Vec<_>>();
         eprintln!(
             "common_segment_resume_target_index={:?}",
-            common_segment_resume_target_index(previous_path.as_ref(), &common_fix_records)
+            common_segment_resume_target_index(previous_path.as_ref(), true, &common_fix_records)
         );
         let resolved = resolve_procedure_materialization_legs_with_provenance(
             "KHLN",

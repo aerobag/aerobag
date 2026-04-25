@@ -3,14 +3,12 @@ package net.jonh.aerobag.prototype.domain
 import android.content.Context
 
 object ChartPackages {
-    private val packageStore = ZipPackageStore()
-
     fun loadPackageBytes(context: Context, packageId: String, sourceAssetPath: String): ByteArray? {
         val installed = InstalledPackages.existingInstalledFile(context, InstalledPackageKind.Plates, packageId) ?: return null
         if (!installed.isFile) {
             return null
         }
-        return packageStore.loadTileBytes(installed, sourceAssetPath)
+        return PackageZipStore.readEntryBytes(installed, sourceAssetPath)
     }
 
     fun loadChartBytes(context: Context, chart: ChartAsset): ByteArray? =

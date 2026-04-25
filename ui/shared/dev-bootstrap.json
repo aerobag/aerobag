@@ -45,5 +45,9 @@
   },
   "recent_airport_ids": [],
   "selected_airport_id": null,
-  "selected_chart_id": null
+  "selected_chart_id": null,
+  "package_management_discovery_filenames": [
+    "current_artifacts_20260325T120000Z.json",
+    "current_artifacts_20260415T120000Z.json"
+  ]
 }

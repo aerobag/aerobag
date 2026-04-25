@@ -174,6 +174,7 @@ import net.jonh.aerobag.prototype.domain.OwnshipRenderState
 import net.jonh.aerobag.prototype.domain.OwnshipSourceKind
 import net.jonh.aerobag.prototype.domain.OwnshipSourceRegistration
 import net.jonh.aerobag.prototype.domain.OwnshipSourceStatusUpdate
+import net.jonh.aerobag.prototype.domain.PackageZipStore
 import net.jonh.aerobag.prototype.domain.PlaybackStatus
 import net.jonh.aerobag.prototype.domain.PlaybackUiState
 import net.jonh.aerobag.prototype.domain.PointTilePayload
@@ -219,12 +220,10 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
-import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
-import java.security.MessageDigest
 import java.net.URL
-import java.util.zip.ZipInputStream
+import java.security.MessageDigest
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.atan2
@@ -293,36 +292,32 @@ private object VectorTileAssets {
             }
             val missing = synchronized(cache) { entryNames.filter { !cache.containsKey(it) }.toSet() }
             if (missing.isNotEmpty()) {
-                val unresolved = missing.toMutableSet()
                 val vectorZip = InstalledPackages.existingInstalledFile(context, InstalledPackageKind.Data, vectorPackageId)
                     ?: error("missing installed data package $vectorPackageId")
-                ZipInputStream(BufferedInputStream(vectorZip.inputStream())).use { zipStream ->
-                    while (true) {
-                        val entry = zipStream.nextEntry ?: break
-                        if (entry.isDirectory || entry.name !in unresolved) {
-                            continue
+                missing.forEach { entryName ->
+                    val payload = runCatching {
+                        PackageZipStore.readEntryBytes(vectorZip, entryName)?.decodeToString()?.let {
+                            json.decodeFromString<PointTilePayload>(it)
                         }
-                        val payload = runCatching {
-                            json.decodeFromString<PointTilePayload>(zipStream.readBytes().decodeToString())
-                        }.getOrNull()
-                        synchronized(cache) {
-                            cache[entry.name] = payload
-                        }
-                        unresolved.remove(entry.name)
+                    }.getOrNull()
+                    synchronized(cache) {
+                        cache[entryName] = payload
                     }
                 }
                 synchronized(cache) {
-                    unresolved.forEach { entryName ->
+                    missing.filter { cache[it] == null }.forEach { entryName ->
                         val parts = entryName.removePrefix("points/").removeSuffix(".json").split("/")
-                        if (parts.size == 4) {
-                            cache[entryName] = PointTilePayload(
-                                schemaVersion = 1,
-                                layer = parts[0],
-                                z = parts[1].toIntOrNull() ?: 0,
-                                x = parts[2].toIntOrNull() ?: 0,
-                                y = parts[3].toIntOrNull() ?: 0,
-                                records = emptyList(),
-                            )
+                        synchronized(cache) {
+                            if (parts.size == 4) {
+                                cache[entryName] = PointTilePayload(
+                                    schemaVersion = 1,
+                                    layer = parts[0],
+                                    z = parts[1].toIntOrNull() ?: 0,
+                                    x = parts[2].toIntOrNull() ?: 0,
+                                    y = parts[3].toIntOrNull() ?: 0,
+                                    records = emptyList(),
+                                )
+                            }
                         }
                     }
                 }
@@ -628,6 +623,27 @@ private data class OfflinePackagesReduceResultWire(
     val effectiveNowEpochMs: Long,
     val plan: PackageManagementPlanWire,
     val bundle: BundleManifestWire,
+)
+
+private data class OfflinePackagesLibraryState(
+    val packageSourceBaseUrl: String,
+    val fetchedAtEpochMs: Long,
+    val discoveryJsons: List<String>,
+    val bundleJsonsByFilename: Map<String, String>,
+)
+
+@Serializable
+private data class CurrentArtifactsManifestWire(
+    @SerialName("as_of_utc")
+    val asOfUtc: String? = null,
+    val bundles: List<CurrentArtifactsBundleRefWire> = emptyList(),
+)
+
+@Serializable
+private data class CurrentArtifactsBundleRefWire(
+    val filename: String,
+    @SerialName("bundle_type")
+    val bundleType: String,
 )
 
 @Serializable
@@ -1308,11 +1324,15 @@ class MainActivity : ComponentActivity() {
 private fun AerobagApp() {
     val context = LocalContext.current
     val bootstrap = remember(context) { SampleData.loadBootstrap(context.applicationContext) }
-    val runtimeFixture = remember(context, bootstrap) {
+    var runtimeReloadToken by remember { mutableStateOf(0) }
+    var offlinePackagesLibraryCache by remember { mutableStateOf<OfflinePackagesLibraryState?>(null) }
+    val runtimeFixture = remember(context, bootstrap, runtimeReloadToken) {
         runCatching { SampleData.loadRuntime(context.applicationContext, bootstrap) }
     }
+    var keepOfflinePackagesVisible by remember { mutableStateOf(runtimeFixture.isFailure) }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
     if (runtimeFixture.isFailure) {
+        keepOfflinePackagesVisible = true
         CompositionLocalProvider(LocalAerobagUiTheme provides uiTheme) {
             SettingsPage(
                 page = AppPage.Settings,
@@ -1322,8 +1342,12 @@ private fun AerobagApp() {
                 navElement = null,
                 onSelectPage = {},
                 onOpenPlan = {},
+                initialOfflinePackagesOpen = true,
                 forceOfflinePackagesOpen = true,
-                bootstrapMessage = "NAV DB missing. Sync NAV DB in Offline Packages to continue.",
+                bootstrapMessage = "Refresh library, then sync NAV DB in Offline Packages to continue.",
+                offlinePackagesLibraryCache = offlinePackagesLibraryCache,
+                onOfflinePackagesLibraryCacheChange = { offlinePackagesLibraryCache = it },
+                onRuntimeMaybeAvailable = { runtimeReloadToken += 1 },
             )
         }
         return
@@ -1347,8 +1371,12 @@ private fun AerobagApp() {
     val storedSelectedChartId = remember { prefs.getString(UiPrefsSelectedChartKey, null).orEmpty() }
     var page by remember {
         mutableStateOf(
-            runCatching { AppPage.valueOf(prefs.getString(UiPrefsPageKey, AppPage.Map.name) ?: AppPage.Map.name) }
-                .getOrDefault(AppPage.Map),
+            if (keepOfflinePackagesVisible) {
+                AppPage.Settings
+            } else {
+                runCatching { AppPage.valueOf(prefs.getString(UiPrefsPageKey, AppPage.Map.name) ?: AppPage.Map.name) }
+                    .getOrDefault(AppPage.Map)
+            },
         )
     }
     var pageHistory by remember { mutableStateOf<List<AppViewSnapshot>>(emptyList()) }
@@ -1631,6 +1659,11 @@ private fun AerobagApp() {
                     navElement = navElement,
                     onSelectPage = ::navigateToPage,
                     onOpenPlan = { navigateToPage(AppPage.Plan) },
+                    initialOfflinePackagesOpen = keepOfflinePackagesVisible,
+                    offlinePackagesLibraryCache = offlinePackagesLibraryCache,
+                    onOfflinePackagesLibraryCacheChange = { offlinePackagesLibraryCache = it },
+                    onOfflinePackagesClosed = { keepOfflinePackagesVisible = false },
+                    onRuntimeMaybeAvailable = { runtimeReloadToken += 1 },
                 )
             }
         }
@@ -1647,8 +1680,13 @@ private fun SettingsPage(
     navElement: NavElementUiView?,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
+    initialOfflinePackagesOpen: Boolean = false,
+    offlinePackagesLibraryCache: OfflinePackagesLibraryState? = null,
+    onOfflinePackagesLibraryCacheChange: (OfflinePackagesLibraryState?) -> Unit = {},
     forceOfflinePackagesOpen: Boolean = false,
     bootstrapMessage: String? = null,
+    onOfflinePackagesClosed: (() -> Unit)? = null,
+    onRuntimeMaybeAvailable: (() -> Unit)? = null,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val context = LocalContext.current
@@ -1658,47 +1696,74 @@ private fun SettingsPage(
         mutableStateOf(readPackageSourceBaseUrl(context.applicationContext, prefs))
     }
     var pageTrayOpen by remember { mutableStateOf(false) }
-    var offlinePackagesOpen by remember { mutableStateOf(forceOfflinePackagesOpen) }
+    var offlinePackagesOpen by remember { mutableStateOf(forceOfflinePackagesOpen || initialOfflinePackagesOpen) }
     var debugPanelOpen by remember { mutableStateOf(false) }
     var offlinePackagesSyncInFlight by remember { mutableStateOf(false) }
+    var offlinePackagesLibraryLoading by remember { mutableStateOf(false) }
+    var offlinePackagesLibraryError by remember { mutableStateOf<String?>(null) }
     val regionOptions = remember { offlineRegionOptions() }
     val regionIds = remember(regionOptions) { regionOptions.map { it.id } }
     val productIds = remember { OfflineProductOptions.map { it.id } }
     var offlinePackagesResult by remember { mutableStateOf<OfflinePackagesReduceResultWire?>(null) }
     var offlinePackagesError by remember { mutableStateOf<String?>(null) }
     var offlinePackagesSyncMessage by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(
-        bootstrap.packageManagementDiscoveryJsons,
-        bootstrap.packageManagementBundleJsonsByFilename,
-        bootstrap.packageManagementNowEpochMsOverride,
-        regionIds,
-        productIds,
-    ) {
+    suspend fun initializeOfflinePackagesFromLibrary(library: OfflinePackagesLibraryState) {
+        val result = withContext(Dispatchers.IO) {
+            initializeOfflinePackages(
+                context = context.applicationContext,
+                prefs = prefs,
+                discoveryJsons = library.discoveryJsons,
+                bundleJsonsByFilename = library.bundleJsonsByFilename,
+                nowEpochMs = bootstrap.packageManagementNowEpochMsOverride ?: System.currentTimeMillis(),
+                regionIds = regionIds,
+                productIds = productIds,
+            )
+        }
+        offlinePackagesResult = result
+        offlinePackagesLibraryError = null
+        offlinePackagesError = null
+        offlinePackagesSyncMessage = null
+        onRuntimeMaybeAvailable?.invoke()
+    }
+    suspend fun refreshOfflinePackagesLibraryAndPlanner(forceRefresh: Boolean = false) {
+        offlinePackagesLibraryLoading = true
         runCatching {
-            withContext(Dispatchers.IO) {
-                initializeOfflinePackages(
-                    context = context.applicationContext,
-                    prefs = prefs,
-                    discoveryJsons = bootstrap.packageManagementDiscoveryJsons,
-                    bundleJsonsByFilename = bootstrap.packageManagementBundleJsonsByFilename,
-                    nowEpochMs = bootstrap.packageManagementNowEpochMsOverride ?: System.currentTimeMillis(),
-                    regionIds = regionIds,
-                    productIds = productIds,
-                )
+            val nowEpochMs = System.currentTimeMillis()
+            val refreshNeeded = forceRefresh ||
+                offlinePackagesLibraryCache == null ||
+                offlinePackagesLibraryCache.discoveryJsons.isEmpty() ||
+                offlinePackagesLibraryCache.packageSourceBaseUrl != packageSourceBaseUrl ||
+                nowEpochMs - offlinePackagesLibraryCache.fetchedAtEpochMs > 60L * 60L * 1000L
+            val library = if (refreshNeeded) {
+                withContext(Dispatchers.IO) {
+                    refreshOfflinePackageLibrary(
+                        packageSourceBaseUrl = packageSourceBaseUrl,
+                        bootstrap = bootstrap,
+                    )
+                }.also { onOfflinePackagesLibraryCacheChange(it) }
+            } else {
+                offlinePackagesLibraryCache
+                    ?: error("offline packages library cache disappeared")
+            }
+            initializeOfflinePackagesFromLibrary(library)
+        }.onSuccess {
+        }.onFailure {
+            Log.e("OfflinePackages", "library refresh failed", it)
+            offlinePackagesLibraryError = it.message ?: it::class.simpleName ?: "offline packages library refresh failed"
+            if (offlinePackagesLibraryCache == null) {
+                offlinePackagesResult = null
             }
         }
-            .onSuccess {
-                offlinePackagesResult = it
-                offlinePackagesError = null
-                offlinePackagesSyncMessage = null
-            }
-            .onFailure {
-                offlinePackagesError = it.message ?: it::class.simpleName ?: "offline packages init failed"
-            }
+        offlinePackagesLibraryLoading = false
     }
     LaunchedEffect(forceOfflinePackagesOpen) {
         if (forceOfflinePackagesOpen) {
             offlinePackagesOpen = true
+        }
+    }
+    LaunchedEffect(forceOfflinePackagesOpen, offlinePackagesOpen) {
+        if (forceOfflinePackagesOpen || offlinePackagesOpen) {
+            refreshOfflinePackagesLibraryAndPlanner()
         }
     }
 
@@ -1790,10 +1855,53 @@ private fun SettingsPage(
             if (!forceOfflinePackagesOpen) {
                 Scrim { offlinePackagesOpen = false }
             }
-            if (offlinePackagesError != null) {
+            if (offlinePackagesLibraryCache == null || offlinePackagesLibraryLoading) {
+                OfflinePackagesLibraryPanel(
+                    message = listOfNotNull(
+                        bootstrapMessage,
+                        offlinePackagesLibraryError,
+                        if (offlinePackagesLibraryLoading) "Refreshing package library..." else "Refresh package library to continue.",
+                    ).joinToString("\n\n"),
+                    packageSourceBaseUrl = packageSourceBaseUrl,
+                    onPackageSourceBaseUrlChange = { nextBaseUrl ->
+                        if (offlinePackagesSyncInFlight || offlinePackagesLibraryLoading) {
+                            return@OfflinePackagesLibraryPanel
+                        }
+                        packageSourceBaseUrl = nextBaseUrl
+                        writePackageSourceBaseUrl(prefs, nextBaseUrl)
+                        onOfflinePackagesLibraryCacheChange(null)
+                    },
+                    refreshInFlight = offlinePackagesLibraryLoading,
+                    onRefresh = {
+                        if (offlinePackagesSyncInFlight || offlinePackagesLibraryLoading) {
+                            return@OfflinePackagesLibraryPanel
+                        }
+                        coroutineScope.launch {
+                            refreshOfflinePackagesLibraryAndPlanner(forceRefresh = true)
+                        }
+                    },
+                    closeEnabled = !forceOfflinePackagesOpen,
+                    onClose = {
+                        if (!forceOfflinePackagesOpen) {
+                            offlinePackagesOpen = false
+                            onOfflinePackagesClosed?.invoke()
+                        }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(ThumbGap * 1.4f)
+                        .zIndex(1f),
+                )
+            } else if (offlinePackagesError != null) {
                 OfflinePackagesErrorPanel(
                     message = listOfNotNull(bootstrapMessage, offlinePackagesError.orEmpty()).joinToString("\n\n"),
-                    onClose = { if (!forceOfflinePackagesOpen) offlinePackagesOpen = false },
+                    closeEnabled = !forceOfflinePackagesOpen,
+                    onClose = {
+                        if (!forceOfflinePackagesOpen) {
+                            offlinePackagesOpen = false
+                            onOfflinePackagesClosed?.invoke()
+                        }
+                    },
                     modifier = Modifier
                         .align(Alignment.Center)
                         .padding(ThumbGap * 1.4f)
@@ -1802,13 +1910,20 @@ private fun SettingsPage(
             } else if (offlinePackagesResult == null) {
                 OfflinePackagesErrorPanel(
                     message = listOfNotNull(bootstrapMessage, "Loading offline package planner...").joinToString("\n\n"),
-                    onClose = { if (!forceOfflinePackagesOpen) offlinePackagesOpen = false },
+                    closeEnabled = !forceOfflinePackagesOpen,
+                    onClose = {
+                        if (!forceOfflinePackagesOpen) {
+                            offlinePackagesOpen = false
+                            onOfflinePackagesClosed?.invoke()
+                        }
+                    },
                     modifier = Modifier
                         .align(Alignment.Center)
                         .padding(ThumbGap * 1.4f)
                         .zIndex(1f),
                 )
             } else {
+                val currentOfflinePackagesLibrary = offlinePackagesLibraryCache ?: error("offline packages library disappeared")
                 val currentOfflinePackagesResult = offlinePackagesResult ?: error("offline packages state disappeared")
                 OfflinePackagesPanel(
                     regionOptions = regionOptions,
@@ -1817,12 +1932,22 @@ private fun SettingsPage(
                     syncMessage = offlinePackagesSyncMessage,
                     packageSourceBaseUrl = packageSourceBaseUrl,
                     onPackageSourceBaseUrlChange = { nextBaseUrl ->
-                        if (offlinePackagesSyncInFlight) {
+                        if (offlinePackagesSyncInFlight || offlinePackagesLibraryLoading) {
                             return@OfflinePackagesPanel
                         }
                         packageSourceBaseUrl = nextBaseUrl
                         writePackageSourceBaseUrl(prefs, nextBaseUrl)
+                        onOfflinePackagesLibraryCacheChange(null)
                     },
+                    onRefreshLibrary = {
+                        if (offlinePackagesSyncInFlight || offlinePackagesLibraryLoading) {
+                            return@OfflinePackagesPanel
+                        }
+                        coroutineScope.launch {
+                            refreshOfflinePackagesLibraryAndPlanner(forceRefresh = true)
+                        }
+                    },
+                    libraryRefreshInFlight = offlinePackagesLibraryLoading,
                     onRowClick = { event ->
                         if (offlinePackagesSyncInFlight) {
                             return@OfflinePackagesPanel
@@ -1833,8 +1958,8 @@ private fun SettingsPage(
                                 prefs = prefs,
                                 current = currentOfflinePackagesResult,
                                 event = event,
-                                discoveryJsons = bootstrap.packageManagementDiscoveryJsons,
-                                bundleJsonsByFilename = bootstrap.packageManagementBundleJsonsByFilename,
+                                discoveryJsons = currentOfflinePackagesLibrary.discoveryJsons,
+                                bundleJsonsByFilename = currentOfflinePackagesLibrary.bundleJsonsByFilename,
                                 nowEpochMs = bootstrap.packageManagementNowEpochMsOverride ?: System.currentTimeMillis(),
                                 regionIds = regionIds,
                                 productIds = productIds,
@@ -1865,8 +1990,8 @@ private fun SettingsPage(
                                         epochMs = clockId.toLong(),
                                     )
                                 },
-                                discoveryJsons = bootstrap.packageManagementDiscoveryJsons,
-                                bundleJsonsByFilename = bootstrap.packageManagementBundleJsonsByFilename,
+                                discoveryJsons = currentOfflinePackagesLibrary.discoveryJsons,
+                                bundleJsonsByFilename = currentOfflinePackagesLibrary.bundleJsonsByFilename,
                                 nowEpochMs = bootstrap.packageManagementNowEpochMsOverride ?: System.currentTimeMillis(),
                                 regionIds = regionIds,
                                 productIds = productIds,
@@ -1898,8 +2023,8 @@ private fun SettingsPage(
                                     val refreshed = initializeOfflinePackages(
                                         context = context.applicationContext,
                                         prefs = prefs,
-                                        discoveryJsons = bootstrap.packageManagementDiscoveryJsons,
-                                        bundleJsonsByFilename = bootstrap.packageManagementBundleJsonsByFilename,
+                                        discoveryJsons = currentOfflinePackagesLibrary.discoveryJsons,
+                                        bundleJsonsByFilename = currentOfflinePackagesLibrary.bundleJsonsByFilename,
                                         nowEpochMs = bootstrap.packageManagementNowEpochMsOverride ?: System.currentTimeMillis(),
                                         regionIds = regionIds,
                                         productIds = productIds,
@@ -1914,6 +2039,7 @@ private fun SettingsPage(
                                 offlinePackagesResult = refreshed
                                 offlinePackagesError = null
                                 offlinePackagesSyncMessage = formatOfflinePackagesSyncSummary(syncSummary)
+                                onRuntimeMaybeAvailable?.invoke()
                             }.onFailure {
                                 Log.e("OfflinePackages", "sync failed", it)
                                 offlinePackagesError = it.message ?: it::class.simpleName ?: "offline packages sync failed"
@@ -1923,7 +2049,13 @@ private fun SettingsPage(
                         }
                     },
                     syncInFlight = offlinePackagesSyncInFlight,
-                    onClose = { if (!forceOfflinePackagesOpen) offlinePackagesOpen = false },
+                    closeEnabled = !forceOfflinePackagesOpen,
+                    onClose = {
+                        if (!forceOfflinePackagesOpen) {
+                            offlinePackagesOpen = false
+                            onOfflinePackagesClosed?.invoke()
+                        }
+                    },
                     modifier = Modifier
                         .align(Alignment.Center)
                         .padding(ThumbGap * 1.4f)
@@ -1937,6 +2069,7 @@ private fun SettingsPage(
 @Composable
 private fun OfflinePackagesErrorPanel(
     message: String,
+    closeEnabled: Boolean,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1969,6 +2102,7 @@ private fun OfflinePackagesErrorPanel(
                 CompactSquareButton(
                     label = "X",
                     modifier = Modifier.size(ThumbSize * 0.72f),
+                    enabled = closeEnabled,
                     onClick = onClose,
                 )
             }
@@ -1982,6 +2116,97 @@ private fun OfflinePackagesErrorPanel(
 }
 
 @Composable
+private fun OfflinePackagesLibraryPanel(
+    message: String,
+    packageSourceBaseUrl: String,
+    onPackageSourceBaseUrlChange: (String) -> Unit,
+    refreshInFlight: Boolean,
+    onRefresh: () -> Unit,
+    closeEnabled: Boolean,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Surface(
+        modifier = modifier.fillMaxSize(),
+        shape = RoundedCornerShape(ThumbRadius + 4.dp),
+        color = uiTheme.controls.panelBg,
+        contentColor = uiTheme.controls.panelFg,
+        border = BorderStroke(2.dp, uiTheme.controls.panelBorder),
+        shadowElevation = 12.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(ThumbGap),
+            verticalArrangement = Arrangement.spacedBy(ThumbGap),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "OFFLINE PACKAGES",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = uiTheme.controls.panelFg,
+                )
+                CompactSquareButton(
+                    label = if (refreshInFlight) "REFRESH..." else "REFRESH",
+                    modifier = Modifier
+                        .width(ThumbSize * 1.8f)
+                        .height(ThumbSize * 0.72f),
+                    maxLines = 1,
+                    enabled = !refreshInFlight,
+                    onClick = onRefresh,
+                )
+                CompactSquareButton(
+                    label = "X",
+                    modifier = Modifier.size(ThumbSize * 0.72f),
+                    enabled = closeEnabled,
+                    onClick = onClose,
+                )
+            }
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = uiTheme.controls.panelFg,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.5f),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "SOURCE",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = uiTheme.controls.panelMuted,
+                )
+                BasicTextField(
+                    value = packageSourceBaseUrl,
+                    onValueChange = onPackageSourceBaseUrlChange,
+                    enabled = !refreshInFlight,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.labelSmall.copy(
+                        color = uiTheme.controls.panelFg,
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(ThumbSize * 0.72f)
+                        .clip(RoundedCornerShape(ThumbRadius))
+                        .background(Color.White)
+                        .border(1.dp, uiTheme.controls.panelBorder, RoundedCornerShape(ThumbRadius))
+                        .padding(horizontal = ThumbGap * 0.7f, vertical = ThumbGap * 0.55f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun OfflinePackagesPanel(
     regionOptions: List<OfflinePackageDimension>,
     productOptions: List<OfflinePackageDimension>,
@@ -1989,10 +2214,13 @@ private fun OfflinePackagesPanel(
     syncMessage: String?,
     packageSourceBaseUrl: String,
     onPackageSourceBaseUrlChange: (String) -> Unit,
+    onRefreshLibrary: () -> Unit,
+    libraryRefreshInFlight: Boolean,
     onRowClick: (OfflinePackagesEventWire) -> Unit,
     onClockClick: (String) -> Unit,
     onSync: () -> Unit,
     syncInFlight: Boolean,
+    closeEnabled: Boolean,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -2030,6 +2258,15 @@ private fun OfflinePackagesPanel(
                     )
                 }
                 CompactSquareButton(
+                    label = if (libraryRefreshInFlight) "REFRESH..." else "REFRESH",
+                    modifier = Modifier
+                        .width(ThumbSize * 1.8f)
+                        .height(ThumbSize * 0.72f),
+                    maxLines = 1,
+                    enabled = !libraryRefreshInFlight && !syncInFlight,
+                    onClick = onRefreshLibrary,
+                )
+                CompactSquareButton(
                     label = if (syncInFlight) "SYNC..." else "SYNC",
                     modifier = Modifier
                         .width(ThumbSize * 1.4f)
@@ -2041,6 +2278,7 @@ private fun OfflinePackagesPanel(
                 CompactSquareButton(
                     label = "X",
                     modifier = Modifier.size(ThumbSize * 0.72f),
+                    enabled = closeEnabled,
                     onClick = onClose,
                 )
             }
@@ -2544,6 +2782,42 @@ private fun formatOfflinePackagesSyncSummary(summary: OfflinePackagesSyncSummary
     return "$base. WARN ${summary.warnings.size}: ${parts.joinToString(" | ")}"
 }
 
+private fun refreshOfflinePackageLibrary(
+    packageSourceBaseUrl: String,
+    bootstrap: net.jonh.aerobag.prototype.domain.BootstrapFixture,
+): OfflinePackagesLibraryState {
+    check(packageSourceBaseUrl.isNotBlank()) { "package source URL is blank" }
+    val discoveryNames = buildList {
+        add("current_artifacts.json")
+        addAll(bootstrap.packageManagementDiscoveryFilenames)
+    }.distinct()
+    val discoveryJsons = discoveryNames.map { filename ->
+        URL(resolvePackageSourceUrl(filename, packageSourceBaseUrl)).openStream().buffered().use {
+            it.readBytes().decodeToString()
+        }
+    }
+    val bundleNames = discoveryJsons
+        .map { PackageManagementJson.decodeFromString<CurrentArtifactsManifestWire>(it) }
+        .flatMap { manifest ->
+            manifest.bundles
+                .filter { it.bundleType == "cycle" }
+                .map { it.filename }
+        }
+        .distinct()
+        .sorted()
+    val bundleJsonsByFilename = bundleNames.associateWith { filename ->
+        URL(resolvePackageSourceUrl(filename, packageSourceBaseUrl)).openStream().buffered().use {
+            it.readBytes().decodeToString()
+        }
+    }
+    return OfflinePackagesLibraryState(
+        packageSourceBaseUrl = packageSourceBaseUrl,
+        fetchedAtEpochMs = System.currentTimeMillis(),
+        discoveryJsons = discoveryJsons,
+        bundleJsonsByFilename = bundleJsonsByFilename,
+    )
+}
+
 private fun downloadPackageToTempFile(
     context: Context,
     kind: InstalledPackageKind,
@@ -3045,11 +3319,13 @@ private fun MapExplorerPage(
         runCatching {
             val firstPass = uiSession.queryMapOverlay(viewport, surfaceWidthUnits.toDouble(), surfaceHeightUnits.toDouble())
             val payloads = if (firstPass.neededPointTiles.isNotEmpty()) {
-                VectorTileAssets.loadPointTiles(
-                    context.applicationContext,
-                    fixture.vectorPackageId,
-                    firstPass.neededPointTiles,
-                )
+                fixture.vectorPackageId?.let { vectorPackageId ->
+                    VectorTileAssets.loadPointTiles(
+                        context.applicationContext,
+                        vectorPackageId,
+                        firstPass.neededPointTiles,
+                    )
+                } ?: emptyList()
             } else {
                 emptyList()
             }

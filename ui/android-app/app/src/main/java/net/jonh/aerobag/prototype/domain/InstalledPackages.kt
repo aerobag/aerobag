@@ -1,10 +1,8 @@
 package net.jonh.aerobag.prototype.domain
 
 import android.content.Context
-import java.io.BufferedInputStream
 import java.io.File
 import java.io.InputStream
-import java.util.zip.ZipInputStream
 
 enum class InstalledPackageKind(val directoryName: String) {
     Charts("chart-packages"),
@@ -38,6 +36,7 @@ object InstalledPackages {
     fun replaceInstalledFile(context: Context, kind: InstalledPackageKind, packageId: String, bytes: ByteArray) {
         val target = internalFile(context, kind, packageId)
         target.parentFile?.mkdirs()
+        PackageZipStore.invalidate(target)
         val temp = File(target.parentFile, "${target.name}.tmp")
         temp.outputStream().use { it.write(bytes) }
         if (!temp.renameTo(target)) {
@@ -54,6 +53,7 @@ object InstalledPackages {
     ) {
         val target = internalFile(context, kind, packageId)
         target.parentFile?.mkdirs()
+        PackageZipStore.invalidate(target)
         val temp = File(target.parentFile, "${target.name}.tmp")
         temp.outputStream().use { output ->
             source.copyTo(output)
@@ -65,11 +65,29 @@ object InstalledPackages {
     }
 
     fun deleteInstalledFile(context: Context, kind: InstalledPackageKind, packageId: String) {
-        existingInstalledFile(context, kind, packageId)?.delete()
+        existingInstalledFile(context, kind, packageId)?.let { file ->
+            PackageZipStore.invalidate(file)
+            file.delete()
+        }
     }
 
     fun isInstalled(context: Context, kind: InstalledPackageKind, packageId: String): Boolean =
         existingInstalledFile(context, kind, packageId) != null
+
+    fun listInstalledPackageIds(context: Context, kind: InstalledPackageKind): List<String> {
+        val directories = sequenceOf(
+            File(context.filesDir, kind.directoryName),
+            context.getExternalFilesDir(null)?.let { File(it, kind.directoryName) },
+        ).filterNotNull()
+        return directories
+            .filter { it.isDirectory }
+            .flatMap { dir -> dir.listFiles()?.asSequence().orEmpty() }
+            .filter { it.isFile && it.extension == "zip" }
+            .map { it.name.removeSuffix(".zip") }
+            .distinct()
+            .sorted()
+            .toList()
+    }
 
     fun readZipEntryText(context: Context, kind: InstalledPackageKind, packageId: String, entryName: String): String =
         readZipEntryBytes(context, kind, packageId, entryName).decodeToString()
@@ -81,14 +99,7 @@ object InstalledPackages {
     }
 
     fun readZipEntryBytes(zipFile: File, entryName: String): ByteArray {
-        ZipInputStream(BufferedInputStream(zipFile.inputStream())).use { zipStream ->
-            while (true) {
-                val entry = zipStream.nextEntry ?: break
-                if (!entry.isDirectory && entry.name == entryName) {
-                    return zipStream.readBytes()
-                }
-            }
-        }
-        error("missing $entryName in ${zipFile.absolutePath}")
+        return PackageZipStore.readEntryBytes(zipFile, entryName)
+            ?: error("missing $entryName in ${zipFile.absolutePath}")
     }
 }

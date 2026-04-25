@@ -1,6 +1,8 @@
 package net.jonh.aerobag.prototype.domain
 
 import android.content.Context
+import android.os.SystemClock
+import android.util.Log
 import java.time.Instant
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -10,18 +12,15 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.put
 
 data class BootstrapFixture(
-    val currentArtifactsJson: String,
-    val cycleBundleJson: String,
-    val packageManagementDiscoveryJsons: List<String>,
-    val packageManagementBundleJsonsByFilename: Map<String, String>,
     val packageManagementNowEpochMsOverride: Long?,
+    val packageManagementDiscoveryFilenames: List<String>,
     val samplePlan: FlightPlan,
 )
 
 data class ContentFixture(
     val bootstrap: BootstrapFixture,
     val vectorManifestJson: String,
-    val vectorPackageId: String,
+    val vectorPackageId: String?,
     val mapView: MapView,
     val mapViews: List<MapViewOption>,
     val chartPage: ChartPageFixture,
@@ -40,14 +39,14 @@ private data class WireDevBootstrap(
     val selected_airport_id: String? = null,
     val selected_chart_id: String? = null,
     val package_management_now_utc: String? = null,
+    val package_management_discovery_filenames: List<String> = emptyList(),
 )
 
 object SampleData {
     private const val BOOTSTRAP_ASSET_PATH = "fixtures/dev-bootstrap.json"
-    private const val CURRENT_ARTIFACTS_ASSET_PATH = "fixtures/current-artifacts.json"
-    private const val CYCLE_BUNDLE_ASSET_PATH = "fixtures/cycle-bundle.json"
-    private const val PACKAGE_MANAGEMENT_DISCOVERY_ASSET_PATH = "fixtures/package-management/discovery"
-    private const val PACKAGE_MANAGEMENT_BUNDLES_ASSET_PATH = "fixtures/package-management/bundles"
+    private const val TAG = "SampleData"
+    private const val FALLBACK_VECTOR_MANIFEST_JSON =
+        """{"airspace":{"reference_tile_min_zoom":0,"reference_tile_max_zoom":12,"label_tile_min_zoom":0,"label_tile_max_zoom":12}}"""
 
     private val json = Json {
         encodeDefaults = true
@@ -56,52 +55,50 @@ object SampleData {
 
     fun loadBootstrap(context: Context): BootstrapFixture {
         val bootstrapPayload = context.assets.open(BOOTSTRAP_ASSET_PATH).bufferedReader().use { it.readText() }
-        val currentArtifactsPayload =
-            context.assets.open(CURRENT_ARTIFACTS_ASSET_PATH).bufferedReader().use { it.readText() }
-        val cycleBundlePayload = context.assets.open(CYCLE_BUNDLE_ASSET_PATH).bufferedReader().use { it.readText() }
         val bootstrap = json.decodeFromString<WireDevBootstrap>(bootstrapPayload)
-        val cycleBundle = json.decodeFromString<WireBundleManifest>(cycleBundlePayload)
-        val packageManagementDiscoveryJsons = context.assets
-            .list(PACKAGE_MANAGEMENT_DISCOVERY_ASSET_PATH)
-            ?.sorted()
-            ?.map { filename ->
-                context.assets.open("$PACKAGE_MANAGEMENT_DISCOVERY_ASSET_PATH/$filename")
-                    .bufferedReader()
-                    .use { it.readText() }
-            }
-            .orEmpty()
-        val packageManagementBundleJsonsByFilename = context.assets
-            .list(PACKAGE_MANAGEMENT_BUNDLES_ASSET_PATH)
-            ?.sorted()
-            ?.associateWith { filename ->
-                context.assets.open("$PACKAGE_MANAGEMENT_BUNDLES_ASSET_PATH/$filename")
-                    .bufferedReader()
-                    .use { it.readText() }
-            }
-            .orEmpty()
         return BootstrapFixture(
-            currentArtifactsJson = currentArtifactsPayload,
-            cycleBundleJson = cycleBundlePayload,
-            packageManagementDiscoveryJsons = packageManagementDiscoveryJsons,
-            packageManagementBundleJsonsByFilename = packageManagementBundleJsonsByFilename,
             packageManagementNowEpochMsOverride = bootstrap.package_management_now_utc?.let {
                 Instant.parse(it).toEpochMilli()
             },
+            packageManagementDiscoveryFilenames = bootstrap.package_management_discovery_filenames,
             samplePlan = bootstrap.flight_plan.toUiFlightPlan(),
         )
     }
 
     fun loadRuntime(context: Context, bootstrapFixture: BootstrapFixture): ContentFixture {
-        val cycleBundle = json.decodeFromString<WireBundleManifest>(bootstrapFixture.cycleBundleJson)
-        val navDbPackageId = cycleBundle.singlePackageId("nav-db")
-        val vectorsPackageId = cycleBundle.singlePackageId("vectors")
+        val navKvOpenStartMs = SystemClock.elapsedRealtime()
+        val navDbPackageId = latestInstalledDataPackageId(context, "NAV_DB_")
         val navKvStore = NavKvStore.open(context, navDbPackageId)
-        val vectorManifestJson = InstalledPackages.readZipEntryText(
-            context,
-            InstalledPackageKind.Data,
-            vectorsPackageId,
-            "vectors",
+        val navKvOpenMs = SystemClock.elapsedRealtime() - navKvOpenStartMs
+        return loadRuntime(
+            context = context,
+            bootstrapFixture = bootstrapFixture,
+            navDbPackageId = navDbPackageId,
+            navKvStore = navKvStore,
+            navKvOpenMs = navKvOpenMs,
         )
+    }
+
+    fun loadRuntime(
+        context: Context,
+        bootstrapFixture: BootstrapFixture,
+        navDbPackageId: String,
+        navKvStore: NavKvStore,
+        navKvOpenMs: Long,
+    ): ContentFixture {
+        val startMs = SystemClock.elapsedRealtime()
+        val vectorsPackageId = latestInstalledDataPackageIdOrNull(context, "VECTORS_DATA_")
+        val vectorManifestStartMs = SystemClock.elapsedRealtime()
+        val vectorManifestJson = vectorsPackageId?.let {
+            InstalledPackages.readZipEntryText(
+                context,
+                InstalledPackageKind.Data,
+                it,
+                "vectors",
+            )
+        } ?: FALLBACK_VECTOR_MANIFEST_JSON
+        val vectorManifestMs = SystemClock.elapsedRealtime() - vectorManifestStartMs
+        val chartCatalogStartMs = SystemClock.elapsedRealtime()
         val mapViews =
             json.decodeFromJsonElement<List<WireMapViewOption>>(
                 navKvStore.runCoreOperationElement(
@@ -110,12 +107,14 @@ object SampleData {
                     },
                 ),
             ).map { it.toUi() }
+        val chartCatalogMs = SystemClock.elapsedRealtime() - chartCatalogStartMs
         val mapView = mapViews.first().mapView
         val samplePlan = bootstrapFixture.samplePlan
         val airportIds = buildSet {
             samplePlan.departure?.let(::add)
             samplePlan.destination?.let(::add)
         }
+        val plateAirportStartMs = SystemClock.elapsedRealtime()
         val chartPage = WireDerivedChartPage(
             airports = airportIds.mapNotNull { airportId ->
                 json.decodeFromJsonElement<WireDerivedChartAirport?>(
@@ -128,6 +127,7 @@ object SampleData {
                 )
             },
         ).toUi()
+        val plateAirportMs = SystemClock.elapsedRealtime() - plateAirportStartMs
         val defaultLevel = mapView.levels.maxBy { it.zoom }
         return ContentFixture(
             bootstrap = bootstrapFixture,
@@ -153,7 +153,13 @@ object SampleData {
             remoteOnlyInventory = ContentInventory(installedPackages = emptyList()),
             installedInventory = ContentInventory(installedPackages = emptyList()),
             navKvStore = navKvStore,
-        )
+        ).also {
+            Log.i(
+                TAG,
+                "loadRuntime completed in ${SystemClock.elapsedRealtime() - startMs}ms " +
+                    "(navKvOpen=${navKvOpenMs}ms vectorManifest=${vectorManifestMs}ms chartCatalog=${chartCatalogMs}ms plateAirport=${plateAirportMs}ms)",
+            )
+        }
     }
 }
 
@@ -168,9 +174,16 @@ private data class WireBundlePackage(
     val family_id: String,
 )
 
-private fun WireBundleManifest.singlePackageId(familyId: String): String =
-    packages.singleOrNull { it.family_id == familyId }?.id
-        ?: error("expected exactly one $familyId package in cycle bundle")
+private fun latestInstalledDataPackageId(context: Context, prefix: String): String =
+    InstalledPackages.listInstalledPackageIds(context, InstalledPackageKind.Data)
+        .filter { it.startsWith(prefix) }
+        .maxOrNull()
+        ?: error("missing installed data package with prefix $prefix")
+
+private fun latestInstalledDataPackageIdOrNull(context: Context, prefix: String): String? =
+    InstalledPackages.listInstalledPackageIds(context, InstalledPackageKind.Data)
+        .filter { it.startsWith(prefix) }
+        .maxOrNull()
 
 private fun WireMapViewOption.toUi() = MapViewOption(
     id = id,

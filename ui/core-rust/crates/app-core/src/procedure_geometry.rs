@@ -114,6 +114,52 @@ pub fn display_path_for_procedure_leg(
     )
 }
 
+pub fn display_path_for_resumed_common_cf(
+    step: &ProcedureLegMaterializationRecord,
+    initial_position_override: Option<LatLon>,
+    initial_course_override: Option<f64>,
+) -> Option<LegDisplayPath> {
+    if step.path_termination.trim() != "CF" {
+        return None;
+    }
+    let fix = step.nav_position?;
+    let course_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
+    let mut current_position = initial_position_override?;
+    let current_heading_deg = initial_course_override?;
+    let mut elements = Vec::new();
+    let mut debug_sources = Vec::new();
+
+    if angular_difference_degrees(current_heading_deg, course_deg) > 5.0 {
+        let prior_len = elements.len();
+        let turn_end = append_heading_change(
+            &mut elements,
+            current_position,
+            current_heading_deg,
+            course_deg,
+            shortest_turn_clockwise(current_heading_deg, course_deg),
+            0.0,
+            missed_approach_turn_radius_nm(),
+        );
+        extend_sources_for_new_elements(
+            &mut debug_sources,
+            prior_len,
+            &elements,
+            debug_source!(),
+        );
+        current_position = turn_end;
+    }
+
+    if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
+        push_segment!(elements, debug_sources, current_position, fix);
+    }
+
+    Some(LegDisplayPath {
+        style: LegDisplayPathStyle::Solid,
+        elements,
+        debug_element_sources: debug_sources,
+    })
+}
+
 pub fn build_trailing_course_to_intercept_display_path(
     trailing_record: &ProcedureLegMaterializationRecord,
     initial_position_override: Option<LatLon>,
@@ -411,6 +457,41 @@ fn build_procedure_leg_display_path(
                         }
                         current_course_deg = Some(direct_course_deg);
                     } else {
+                        if let (Some(current_heading_deg), Some(next_step)) =
+                            (current_course_deg, steps.get(index + 1).copied())
+                        {
+                            if next_step.path_termination.trim() == "CF" {
+                                if let Some(next_fix) = next_step.nav_position {
+                                    let direct_course_deg = bearing_from(fix, next_fix);
+                                    if angular_difference_degrees(current_heading_deg, direct_course_deg)
+                                        > 5.0
+                                    {
+                                        let prior_len = elements.len();
+                                        let turn_end = append_heading_change(
+                                            &mut elements,
+                                            current_position,
+                                            current_heading_deg,
+                                            direct_course_deg,
+                                            shortest_turn_clockwise(
+                                                current_heading_deg,
+                                                direct_course_deg,
+                                            ),
+                                            0.0,
+                                            missed_approach_turn_radius_nm(),
+                                        );
+                                        extend_sources_for_new_elements(
+                                            &mut debug_sources,
+                                            prior_len,
+                                            &elements,
+                                            debug_source!(),
+                                        );
+                                        current_position = turn_end;
+                                        current_course_deg = Some(direct_course_deg);
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
                         current_course_deg = step
                             .magnetic_course_deg
                             .map(|course| course + course_reference_variation_deg(step))

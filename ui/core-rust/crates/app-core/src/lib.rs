@@ -101,6 +101,7 @@ pub use planning::{
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use procedure_geometry::{
     build_trailing_course_to_intercept_display_path, display_path_for_procedure_leg,
+    display_path_for_resumed_common_cf,
 };
 pub use procedure_legs::{
     interpret_path_termination, leading_procedure_discontinuity, parse_airport_magnetic_variation,
@@ -1257,6 +1258,8 @@ fn resolve_procedure_materialization_legs_with_provenance(
             fix_records.reverse();
         }
         let role = procedure_segment_role(role);
+        let common_resume_target_index =
+            common_segment_resume_target_index(previous_display_path.as_ref(), &fix_records);
         let skip_through_index = reconciliation_resume_skip_through_index(
             previous_display_path.as_ref(),
             previous_leg_to.as_ref(),
@@ -1265,6 +1268,9 @@ fn resolve_procedure_materialization_legs_with_provenance(
 
         for (index, pair) in fix_records.windows(2).enumerate() {
             if skip_through_index.is_some_and(|skip_index| index <= skip_index) {
+                continue;
+            }
+            if common_resume_target_index.is_some_and(|target_index| index + 1 < target_index) {
                 continue;
             }
             let from = pair[0].nav_ref.clone().ok_or_else(|| AppError {
@@ -1362,11 +1368,15 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 .is_some_and(|(previous_end, anchor_position)| {
                     great_circle_distance_nm(previous_end, anchor_position) <= 0.05
                 });
+            let resume_common_cf_from_previous_path =
+                role == ProcedureSegmentRole::Common
+                    && common_resume_target_index.is_some_and(|target_index| index + 1 == target_index);
             let initial_position_override = if from == to
                 || continuing_if_to_cf_join
                 || continuing_same_anchor_window
                 || continuing_from_fa_window
                 || continuing_from_previous_anchor
+                || resume_common_cf_from_previous_path
             {
                 previous_terminal_position
             } else {
@@ -1377,6 +1387,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 || continuing_same_anchor_window
                 || continuing_from_fa_window
                 || continuing_from_previous_anchor
+                || resume_common_cf_from_previous_path
             {
                 previous_terminal_course
             } else {
@@ -1396,6 +1407,8 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 && previous_leg_consumed_same_pi
             {
                 pair[1]
+            } else if resume_common_cf_from_previous_path {
+                pair[1]
             } else {
                 pair[0]
             };
@@ -1409,6 +1422,12 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     elements: Vec::new(),
                     debug_element_sources: Vec::new(),
                 })
+            } else if resume_common_cf_from_previous_path {
+                display_path_for_resumed_common_cf(
+                    pair[1],
+                    initial_position_override,
+                    initial_course_override,
+                )
             } else {
                 display_path_for_procedure_leg(
                     leg_records,
@@ -1478,6 +1497,17 @@ fn resolve_procedure_materialization_legs_with_provenance(
                             next_records,
                         )
                     })
+                } else if last_fix.path_termination.trim() == "PI"
+                    && trailing_record.path_termination.trim() == "CF"
+                {
+                    display_path_for_procedure_leg(
+                        leg_records,
+                        trailing_record,
+                        trailing_record,
+                        None,
+                        initial_position_override,
+                        initial_course_override,
+                    )
                 } else {
                     display_path_for_procedure_leg(
                         leg_records,
@@ -2099,6 +2129,65 @@ fn previous_display_path_terminal_position(path: &LegDisplayPath) -> Option<LatL
         LegDisplayElement::Segment { end, .. } => Some(*end),
         LegDisplayElement::Arc { end, .. } => Some(*end),
     }
+}
+
+fn local_to_en(origin: LatLon, point: LatLon) -> (f64, f64) {
+    let lat_scale_nm = 60.0;
+    let mean_lat_rad = ((origin.lat + point.lat) * 0.5).to_radians();
+    let lon_scale_nm = 60.0 * mean_lat_rad.cos();
+    (
+        (point.lon - origin.lon) * lon_scale_nm,
+        (point.lat - origin.lat) * lat_scale_nm,
+    )
+}
+
+fn course_unit_vector(course_deg: f64) -> (f64, f64) {
+    let radians = course_deg.to_radians();
+    (radians.sin(), radians.cos())
+}
+
+fn common_segment_resume_target_index(
+    previous_display_path: Option<&LegDisplayPath>,
+    fix_records: &[&ProcedureLegMaterializationRecord],
+) -> Option<usize> {
+    let previous_display_path = previous_display_path?;
+    let current_position = previous_display_path_terminal_position(previous_display_path)?;
+    let current_course_deg = final_course_of_display_path(previous_display_path)?;
+
+    for (index, record) in fix_records.iter().enumerate().skip(1) {
+        if record.path_termination.trim() != "CF" {
+            continue;
+        }
+        let Some(fix) = record.nav_position else {
+            continue;
+        };
+        let Some(course_anchor) = record.defining_nav_position.or(record.nav_position) else {
+            continue;
+        };
+        let Some(course_deg) = record
+            .magnetic_course_deg
+            .map(|course| course + record_magnetic_variation_deg(record).unwrap_or(0.0))
+        else {
+            continue;
+        };
+        let offset = local_to_en(course_anchor, current_position);
+        let course_unit = course_unit_vector(course_deg);
+        let normal = (-course_unit.1, course_unit.0);
+        let cross_track_nm = (offset.0 * normal.0 + offset.1 * normal.1).abs();
+        if cross_track_nm > 0.5 {
+            continue;
+        }
+        if angular_difference_degrees(current_course_deg, course_deg) > 20.0 {
+            continue;
+        }
+        let bearing_to_fix = bearing_degrees(current_position, fix);
+        if angular_difference_degrees(bearing_to_fix, course_deg) > 45.0 {
+            continue;
+        }
+        return Some(index);
+    }
+
+    None
 }
 
 fn procedure_segment_role(role: &MaterializedSegmentRole) -> ProcedureSegmentRole {
@@ -5057,7 +5146,7 @@ mod tests {
     #[ignore = "manual audit for selected heading continuity records"]
     fn audit_selected_heading_continuity_records() {
         let store = load_snapshot_nav_kv_store();
-        for (airport_id, procedure_id) in [("KMCC", "I16")] {
+        for (airport_id, procedure_id) in [("KHLN", "I27-Y")] {
             let rows = read_required_from_store::<Vec<ProcedureDistinctRow>>(
                 &store,
                 crate::NavKvQuery::ProcedureDistinctRows {
@@ -5168,6 +5257,129 @@ mod tests {
         eprintln!("elements={}", path.elements.len());
         for (index, element) in path.elements.iter().enumerate() {
             eprintln!("element#{index}: {:?}", element);
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for KMCC I16 PI-to-CF continuation window"]
+    fn audit_kmcc_i16_pi_continuation_window() {
+        let store = load_snapshot_nav_kv_store();
+        let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KMCC".to_string(),
+                procedure_id: "I16".to_string(),
+            },
+            "procedure materialization rows",
+        );
+        let a_records = records
+            .iter()
+            .filter(|record| {
+                record.key.route_type.trim() == "A" && record.key.transition_id.trim() == "LIN"
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let pi_record = a_records.iter().find(|record| record.sequence == 40).unwrap();
+        let cf_record = a_records.iter().find(|record| record.sequence == 50).unwrap();
+        let pi_path = display_path_for_procedure_leg(&a_records, pi_record, pi_record, None, None, None).unwrap();
+        let initial_position_override = previous_display_path_terminal_position(&pi_path);
+        let initial_course_override = final_course_of_display_path(&pi_path);
+        eprintln!("pi terminal position={initial_position_override:?}");
+        eprintln!("pi terminal course={initial_course_override:?}");
+        let cf_path = display_path_for_procedure_leg(
+            &a_records,
+            cf_record,
+            cf_record,
+            None,
+            initial_position_override,
+            initial_course_override,
+        );
+        eprintln!("cf path present={}", cf_path.is_some());
+        if let Some(cf_path) = cf_path {
+            eprintln!("cf elements={}", cf_path.elements.len());
+            for (index, element) in cf_path.elements.iter().enumerate() {
+                eprintln!("cf element#{index}: {element:?}");
+            }
+        }
+        let manual_cf_path = display_path_for_procedure_leg(
+            &a_records,
+            cf_record,
+            cf_record,
+            None,
+            Some(LatLon {
+                lat: 38.75331944444444,
+                lon: -121.40046111111111,
+            }),
+            Some(180.1),
+        )
+        .unwrap();
+        eprintln!("manual cf elements={}", manual_cf_path.elements.len());
+        for (index, element) in manual_cf_path.elements.iter().enumerate() {
+            eprintln!("manual cf element#{index}: {element:?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "manual probe for KMCC I16 resolved leg ownership"]
+    fn audit_kmcc_i16_resolved_legs() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureDistinctRow>>(
+            &store,
+            crate::NavKvQuery::ProcedureDistinctRows {
+                airport_id: "KMCC".to_string(),
+                procedure_id: "I16".to_string(),
+            },
+            "procedure distinct rows",
+        );
+        let legs = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KMCC".to_string(),
+                procedure_id: "I16".to_string(),
+            },
+            "procedure materialization rows",
+        );
+        let mut segments = Vec::<(
+            MaterializedSegmentRole,
+            Vec<ProcedureLegMaterializationRecord>,
+            Vec<ConcretizedNavItem>,
+            bool,
+        )>::new();
+        let transition_legs = filter_procedure_records(&legs, "KMCC", "I16", "A", "LIN");
+        let transition_items = concretize_procedure_materialization_legs(&transition_legs, false);
+        segments.push((
+            MaterializedSegmentRole::EnrouteTransition,
+            transition_legs,
+            transition_items,
+            false,
+        ));
+        let common_route_type = approach_common_route_type(&rows).unwrap();
+        let common_legs = filter_procedure_records(&legs, "KMCC", "I16", &common_route_type, "");
+        let common_items = concretize_procedure_materialization_legs(&common_legs, false);
+        segments.push((MaterializedSegmentRole::Common, common_legs, common_items, false));
+        let resolved = resolve_procedure_materialization_legs_with_provenance(
+            "KMCC",
+            "I16",
+            ProcedureKind::Approach,
+            0,
+            false,
+            &segments,
+        )
+        .unwrap();
+        for leg in resolved.iter() {
+            eprintln!("leg id={} from={:?} to={:?}", leg.id, leg.from, leg.to);
+            if let Some(provenance) = leg.procedure_provenance.as_ref() {
+                eprintln!(
+                    "  seq={} pt={:?} elements={}",
+                    provenance.leg_sequence,
+                    provenance.path_termination,
+                    provenance
+                        .display_path
+                        .as_ref()
+                        .map(|path| path.elements.len())
+                        .unwrap_or(0)
+                );
+            }
         }
     }
 
@@ -5554,7 +5766,139 @@ mod tests {
     #[test]
     #[ignore = "manual visual inspection overlay for selected heading continuity case"]
     fn writes_selected_heading_continuity_overlay_png() {
-        render_procedure_overlay_to_paths("KMCC", "I16", "LIN", "KMCC_I16_LIN", false);
+        render_procedure_overlay_to_paths("KHLN", "I27-Y", "FALDE", "KHLN_I27-Y_FALDE_regressed", true);
+    }
+
+    #[test]
+    #[ignore = "manual probe for KHLN I27-Y FALDE resumed common segment"]
+    fn audit_khln_i27y_falde_resumed_common_segment() {
+        let store = load_snapshot_nav_kv_store();
+        let rows = read_required_from_store::<Vec<ProcedureDistinctRow>>(
+            &store,
+            crate::NavKvQuery::ProcedureDistinctRows {
+                airport_id: "KHLN".to_string(),
+                procedure_id: "I27-Y".to_string(),
+            },
+            "procedure distinct rows",
+        );
+        let legs = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
+            &store,
+            crate::NavKvQuery::ProcedureMaterializationRows {
+                airport_id: "KHLN".to_string(),
+                procedure_id: "I27-Y".to_string(),
+            },
+            "procedure materialization rows",
+        );
+        let mut segments = Vec::new();
+        let transition_legs = filter_procedure_records(&legs, "KHLN", "I27-Y", "A", "FALDE");
+        let transition_items = concretize_procedure_materialization_legs(&transition_legs, false);
+        segments.push((
+            MaterializedSegmentRole::EnrouteTransition,
+            transition_legs,
+            transition_items,
+            false,
+        ));
+        let common_route_type = approach_common_route_type(&rows).expect("common route type");
+        let common_legs = filter_procedure_records(&legs, "KHLN", "I27-Y", &common_route_type, "");
+        let common_items = concretize_procedure_materialization_legs(&common_legs, false);
+        segments.push((MaterializedSegmentRole::Common, common_legs, common_items, false));
+        let transition_leg_records = &segments[0].1;
+        let common_leg_records = &segments[1].1;
+        let previous_path = display_path_for_procedure_leg(
+            transition_leg_records,
+            transition_leg_records
+                .iter()
+                .find(|record| record.sequence == 30)
+                .expect("A-30 start"),
+            transition_leg_records
+                .iter()
+                .find(|record| record.sequence == 30)
+                .expect("A-30 end"),
+            None,
+            None,
+            None,
+        );
+        let previous_terminal_position =
+            previous_path.as_ref().and_then(previous_display_path_terminal_position);
+        let previous_terminal_course = previous_path.as_ref().and_then(final_course_of_display_path);
+        if let (Some(current_position), Some(current_course_deg), Some(if_fix), Some(next_fix)) = (
+            previous_terminal_position,
+            previous_terminal_course,
+            common_leg_records
+                .iter()
+                .find(|record| record.sequence == 10)
+                .and_then(|record| record.nav_position),
+            common_leg_records
+                .iter()
+                .find(|record| record.sequence == 20)
+                .and_then(|record| record.nav_position),
+        ) {
+            let common_cf = common_leg_records
+                .iter()
+                .find(|record| record.sequence == 20)
+                .expect("I-20");
+            let course_anchor = common_cf
+                .defining_nav_position
+                .or(common_cf.nav_position)
+                .expect("I-20 course anchor");
+            let course_deg = common_cf
+                .magnetic_course_deg
+                .map(|course| {
+                    course + record_magnetic_variation_deg(common_cf).unwrap_or(0.0)
+                })
+                .expect("I-20 course");
+            let offset = local_to_en(course_anchor, current_position);
+            let course_unit = course_unit_vector(course_deg);
+            let normal = (-course_unit.1, course_unit.0);
+            let cross_track_nm = (offset.0 * normal.0 + offset.1 * normal.1).abs();
+            let bearing_to_if = bearing_degrees(current_position, if_fix);
+            let bearing_to_next = bearing_degrees(current_position, next_fix);
+            eprintln!(
+                "resume debug current_pos=({:.6},{:.6}) current_course={:.1} course_deg={:.1} cross_track_nm={:.2} bearing_to_if={:.1} bearing_to_next={:.1} inbound_recip={:.1}",
+                current_position.lat,
+                current_position.lon,
+                current_course_deg,
+                course_deg,
+                cross_track_nm,
+                bearing_to_if,
+                bearing_to_next,
+                normalize_bearing_degrees(course_deg + 180.0),
+            );
+        }
+        let common_fix_records = common_leg_records.iter().collect::<Vec<_>>();
+        eprintln!(
+            "common_segment_resume_target_index={:?}",
+            common_segment_resume_target_index(previous_path.as_ref(), &common_fix_records)
+        );
+        let resolved = resolve_procedure_materialization_legs_with_provenance(
+            "KHLN",
+            "I27-Y",
+            ProcedureKind::Approach,
+            0,
+            false,
+            &segments,
+        )
+        .expect("resolve KHLN I27-Y FALDE");
+        let materialized = MaterializedProcedure {
+            procedure: ProcedureSegment {
+                airport_id: AirportId("KHLN".to_string()),
+                procedure_id: "I27-Y".to_string(),
+                kind: ProcedureKind::Approach,
+                runway_transition: None,
+                enroute_transition: Some("FALDE".to_string()),
+                terminal_discontinuity: None,
+            },
+            concretized_items: merge_concretized_segments_from_records(
+                segments
+                    .iter()
+                    .map(|(_, _, items, _)| items.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            resolved_legs: resolved,
+        };
+        for line in procedure_path_dump_lines(&store, "KHLN", &materialized) {
+            eprintln!("{line}");
+        }
     }
 
     #[test]

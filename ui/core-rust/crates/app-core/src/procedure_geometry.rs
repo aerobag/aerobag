@@ -448,6 +448,10 @@ fn build_procedure_leg_display_path(
             }
             "DF" => {
                 let fix = step.nav_position?;
+                if distance_between_points_nm(current_position, fix) <= MIN_GEOMETRY_DISTANCE_NM {
+                    current_position = fix;
+                    continue;
+                }
                 let direct_course_deg = bearing_from(current_position, fix);
                 let turn_clockwise = match step.turn_direction.as_deref().unwrap_or("").trim() {
                     "L" => false,
@@ -660,7 +664,29 @@ fn append_course_track_path(
     let track_start = if distance_between_points_nm(current_position, course_anchor)
         <= MIN_GEOMETRY_DISTANCE_NM
     {
-        current_position
+        if matches!(termination, TrackTermination::ToAltitude(_)) {
+            if let Some(current_heading_deg) = current_course_deg {
+                let heading_delta_deg = angular_difference_degrees(current_heading_deg, course_deg);
+                if heading_delta_deg > 1.0 {
+                    let turn_clockwise = shortest_turn_clockwise(current_heading_deg, course_deg);
+                    append_heading_change(
+                        elements,
+                        current_position,
+                        current_heading_deg,
+                        course_deg,
+                        turn_clockwise,
+                        0.0,
+                        missed_approach_turn_radius_nm(),
+                    )
+                } else {
+                    current_position
+                }
+            } else {
+                current_position
+            }
+        } else {
+            current_position
+        }
     } else if let Some(current_heading_deg) = current_course_deg {
         if matches!(termination, TrackTermination::ToDme { .. })
             && angular_difference_degrees(current_heading_deg, course_deg) <= 20.0

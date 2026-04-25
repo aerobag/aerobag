@@ -2805,6 +2805,37 @@ mod tests {
         }
     }
 
+    fn draw_arrowhead(
+        image: &mut RgbaImage,
+        from: (f64, f64),
+        to: (f64, f64),
+        color: Rgba<u8>,
+        radius: i32,
+    ) {
+        let dx = to.0 - from.0;
+        let dy = to.1 - from.1;
+        let length = (dx * dx + dy * dy).sqrt();
+        if length < 1.0 {
+            return;
+        }
+        let ux = dx / length;
+        let uy = dy / length;
+        let arrow_len = 14.0;
+        let arrow_angle_deg = 28.0_f64.to_radians();
+        let sin = arrow_angle_deg.sin();
+        let cos = arrow_angle_deg.cos();
+        let left = (
+            to.0 - arrow_len * (ux * cos - uy * sin),
+            to.1 - arrow_len * (uy * cos + ux * sin),
+        );
+        let right = (
+            to.0 - arrow_len * (ux * cos + uy * sin),
+            to.1 - arrow_len * (uy * cos - ux * sin),
+        );
+        draw_thick_line_segment(image, to.0, to.1, left.0, left.1, color, radius);
+        draw_thick_line_segment(image, to.0, to.1, right.0, right.1, color, radius);
+    }
+
     fn default_overlay_padding(plate: &PlateGeoRef) -> PlateCanvasPadding {
         PlateCanvasPadding {
             left_px: (plate.width * 0.45).round() as u32,
@@ -3108,11 +3139,38 @@ mod tests {
         )
         .expect("write overlay note");
         if emit_steps {
+            if let Ok(entries) = fs::read_dir(&output_dir) {
+                let step_prefix = format!("{output_stem}-step-");
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                        continue;
+                    };
+                    if name.starts_with(&step_prefix)
+                        && matches!(
+                            path.extension().and_then(|extension| extension.to_str()),
+                            Some("png" | "txt")
+                        )
+                    {
+                        let _ = fs::remove_file(path);
+                    }
+                }
+            }
+            let prior_stroke = Rgba([128, 128, 128, 220]);
+            let current_stroke = Rgba([255, 140, 0, 255]);
             for (index, (label, _, _)) in draw_steps.iter().enumerate() {
                 let mut frame = padded_canvas(&base_canvas, padding);
-                for (_, prior_points, prior_stroke) in draw_steps.iter().take(index + 1) {
-                    draw_polyline(&mut frame, prior_points, Rgba([0, 0, 0, 140]), 4);
-                    draw_polyline(&mut frame, prior_points, *prior_stroke, 2);
+                for (_, prior_points, _) in draw_steps.iter().take(index) {
+                    draw_polyline(&mut frame, prior_points, Rgba([0, 0, 0, 100]), 4);
+                    draw_polyline(&mut frame, prior_points, prior_stroke, 2);
+                }
+                let (_, current_points, _) = &draw_steps[index];
+                draw_polyline(&mut frame, current_points, Rgba([0, 0, 0, 140]), 5);
+                draw_polyline(&mut frame, current_points, current_stroke, 3);
+                if current_points.len() >= 2 {
+                    let from = current_points[current_points.len() - 2];
+                    let to = current_points[current_points.len() - 1];
+                    draw_arrowhead(&mut frame, from, to, current_stroke, 3);
                 }
                 let frame_path = format!("{output_dir}/{output_stem}-step-{index:02}.png");
                 frame.save(&frame_path).expect("write overlay frame png");

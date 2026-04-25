@@ -340,6 +340,12 @@ pub struct FlightPlanDisplayRowUiView {
     #[serde(default)]
     pub course_deg: Option<f64>,
     #[serde(default)]
+    pub eta_text: String,
+    #[serde(default)]
+    pub leg_time_text: String,
+    #[serde(default)]
+    pub fuel_gal_text: String,
+    #[serde(default)]
     pub show_plate_target_id: Option<String>,
     pub chart_airport_id: Option<String>,
     pub nav_ref: Option<NavRef>,
@@ -1067,6 +1073,9 @@ fn project_display_rows(
                 leg_index: None,
                 distance_nm: None,
                 course_deg: None,
+                eta_text: String::new(),
+                leg_time_text: String::new(),
+                fuel_gal_text: String::new(),
                 show_plate_target_id: None,
                 chart_airport_id,
                 nav_ref,
@@ -1102,6 +1111,9 @@ fn project_display_rows(
                 leg_index: None,
                 distance_nm: None,
                 course_deg: None,
+                eta_text: String::new(),
+                leg_time_text: String::new(),
+                fuel_gal_text: String::new(),
                 show_plate_target_id: None,
                 chart_airport_id,
                 nav_ref: None,
@@ -1137,6 +1149,9 @@ fn project_display_rows(
                             leg_index: None,
                             distance_nm: None,
                             course_deg: None,
+                            eta_text: String::new(),
+                            leg_time_text: String::new(),
+                            fuel_gal_text: String::new(),
                             show_plate_target_id: None,
                             chart_airport_id: airport_id_from_nav_ref(nav_ref),
                             nav_ref: Some(nav_ref.clone()),
@@ -1171,6 +1186,9 @@ fn project_display_rows(
                             leg_index: None,
                             distance_nm: None,
                             course_deg: None,
+                            eta_text: String::new(),
+                            leg_time_text: String::new(),
+                            fuel_gal_text: String::new(),
                             show_plate_target_id: None,
                             chart_airport_id: None,
                             nav_ref: None,
@@ -1211,6 +1229,22 @@ fn project_display_rows(
                     }
                 }
             }
+        }
+    }
+
+    for row in &mut rows {
+        if row.row_kind == FlightPlanDisplayRowKind::Group {
+            row.eta_text.clear();
+            row.leg_time_text.clear();
+            row.fuel_gal_text.clear();
+        } else {
+            row.eta_text = "—".to_string();
+            row.leg_time_text = if row.leg_index.is_some() {
+                "0:04".to_string()
+            } else {
+                "—".to_string()
+            };
+            row.fuel_gal_text = "—".to_string();
         }
     }
 

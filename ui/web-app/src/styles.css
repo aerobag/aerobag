@@ -1350,7 +1350,9 @@ button {
 
 .planTable {
   display: grid;
-  grid-template-columns: calc(var(--thumb) * 2.5) repeat(3, minmax(calc(var(--thumb) * 1.4), 1fr));
+  grid-template-columns:
+    calc(var(--thumb) * 2.5)
+    repeat(5, minmax(calc(var(--thumb) * 1.25), 1fr));
   gap: 1px;
   padding-top: calc(var(--thumb) * 0.15);
   background: rgba(19, 33, 41, 0.1);
@@ -1622,7 +1624,7 @@ button {
   }
 
   .planTable {
-    grid-template-columns: calc(var(--thumb) * 2) repeat(3, calc(var(--thumb) * 1));
+    grid-template-columns: calc(var(--thumb) * 2) repeat(5, calc(var(--thumb) * 1));
   }
 
   .planHeader,
@@ -1944,7 +1946,7 @@ button {
 
 @media (max-width: 720px) {
   .planTable {
-    grid-template-columns: calc(var(--thumb) * 2) repeat(3, var(--thumb));
+    grid-template-columns: calc(var(--thumb) * 2) repeat(5, var(--thumb));
   }
 
   .planHeader,

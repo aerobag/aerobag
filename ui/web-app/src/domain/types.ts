@@ -391,6 +391,9 @@ export type FlightPlanDisplayRowUiView = {
   leg_index: number | null;
   distance_nm: number | null;
   course_deg: number | null;
+  eta_text: string;
+  leg_time_text: string;
+  fuel_gal_text: string;
   show_plate_target_id: string | null;
   chart_airport_id: string | null;
   nav_ref: NavRef | null;

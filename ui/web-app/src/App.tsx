@@ -4077,7 +4077,9 @@ function FlightPlanPage(props: {
                 : `item:${row.component_index ?? "x"}:${row.label}:${index}`,
         label: row.label,
         distance: row.row_kind === "group" ? "" : formatPlanDistance(row.distance_nm),
-        ete: row.row_kind === "group" ? "" : row.leg_index !== null ? "0:04" : "—",
+        eta: row.eta_text,
+        legTime: row.leg_time_text,
+        fuel: row.fuel_gal_text,
         course: row.row_kind === "group" ? "" : formatPlanCourse(row.course_deg),
         active: row.active,
         depth: row.depth,
@@ -4172,7 +4174,7 @@ function FlightPlanPage(props: {
             if (selectedRow.componentIndex == null) {
               return;
             }
-            void props.onRemoveAllAbove(selectedRow.componentIndex)
+            void Promise.resolve(props.onRemoveAllAbove(selectedRow.componentIndex))
               .catch(() => {});
             closeTray();
             return;
@@ -4511,7 +4513,7 @@ function FlightPlanPage(props: {
       </div>
 
       <div className="planScrollSurface" ref={planScrollSurfaceRef}>
-        <div className={`planTableWrap isStructured${reorderOpen ? " isReordering" : ""}`} ref={structuredSurfaceRef}>
+          <div className={`planTableWrap isStructured${reorderOpen ? " isReordering" : ""}`} ref={structuredSurfaceRef}>
           <div className="planStructuredGroupBoxLayer" aria-hidden="true">
             {structuredGroupBoxes.map((box) => (
               <div
@@ -4530,7 +4532,9 @@ function FlightPlanPage(props: {
           <div className="planTable" ref={structuredTableRef}>
             <div className="planHeader planWaypointCell">Waypoint</div>
             <div className="planHeader">Dist (nm)</div>
-            <div className="planHeader">ETE (h:m)</div>
+            <div className="planHeader">ETA (h:m)</div>
+            <div className="planHeader">Leg (h:m)</div>
+            <div className="planHeader">Fuel (gal)</div>
             <div className="planHeader">Course (°)</div>
             {displayRows.map((row, index) => (
               <Fragment key={row.id}>
@@ -4581,7 +4585,7 @@ function FlightPlanPage(props: {
 	                    "planCell",
 	                    row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
 	                  ].filter(Boolean).join(" ")}
-	                >
+                >
                   {row.distance}
                 </div>
 	                <div
@@ -4590,7 +4594,23 @@ function FlightPlanPage(props: {
 	                    row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
 	                  ].filter(Boolean).join(" ")}
 	                >
-                  {row.ete}
+                  {row.eta}
+                </div>
+	                <div
+	                  className={[
+	                    "planCell",
+	                    row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
+	                  ].filter(Boolean).join(" ")}
+	                >
+                  {row.legTime}
+                </div>
+	                <div
+	                  className={[
+	                    "planCell",
+	                    row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
+	                  ].filter(Boolean).join(" ")}
+	                >
+                  {row.fuel}
                 </div>
 	                <div
 	                  className={[

@@ -746,6 +746,7 @@ dependencies = [
  "chrono",
  "image",
  "quick-xml",
+ "roxmltree",
  "serde",
  "serde_json",
  "sha2",

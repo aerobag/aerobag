@@ -23,7 +23,10 @@ use preprocessor_data::{
     load_matching_bundle, resolve_matching_db_path, tpp_zip_paths_from_bundle, DataBuildMode,
     DataBuildRequest,
 };
-use preprocessor_fast::{terrain_ellipsoid_height_feet_from_navd88_meters, GeoidGrid};
+use preprocessor_fast::{
+    build_notam_dataset, terrain_ellipsoid_height_feet_from_navd88_meters, BuildNotamRequest,
+    GeoidGrid,
+};
 use preprocessor_fetch::{
     hash_text, manifest_path_for_run, manifest_summary, prefetch_archives_with_provenance,
     read_download_records, read_extract_records, read_source_url_set, CacheLayout,
@@ -69,6 +72,7 @@ fn usage() -> &'static str {
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
+  preprocessor-cli normalize-swim-notams --input-jsonl <path> --output-dir <path> --version-label <label>
   preprocessor-cli build-fast-subset [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
 
 Use --long-help to show internal/debug commands."
@@ -105,6 +109,7 @@ fn long_usage() -> &'static str {
   preprocessor-cli audit-bravo-unions --class-airspace-shp <path> --output-svg <path> [--version-label <label>]
   preprocessor-cli build-obstacles [--build-root <path>] [--fetch-jobs <count>] [--snapshot-date <YYYY-MM-DD>]
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
+  preprocessor-cli normalize-swim-notams --input-jsonl <path> --output-dir <path> --version-label <label>
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<package_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>]...
   preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
@@ -433,6 +438,50 @@ fn run_analyze_obstacle_thresholds_command(args: &[String]) -> anyhow::Result<()
         );
     }
     Ok(())
+}
+
+fn run_normalize_swim_notams_command(args: &[String]) -> anyhow::Result<(PathBuf, PathBuf, PathBuf)> {
+    let mut input_jsonl = None;
+    let mut output_dir = None;
+    let mut version_label = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args.get(index).map(String::as_str) {
+            Some("--input-jsonl") => {
+                input_jsonl = Some(PathBuf::from(
+                    args.get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                ));
+                index += 2;
+            }
+            Some("--output-dir") => {
+                output_dir = Some(PathBuf::from(
+                    args.get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                ));
+                index += 2;
+            }
+            Some("--version-label") => {
+                version_label = Some(
+                    args.get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                );
+                index += 2;
+            }
+            _ => anyhow::bail!("{}", usage()),
+        }
+    }
+
+    let result = build_notam_dataset(&BuildNotamRequest {
+        input_jsonl_path: input_jsonl.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+        output_dir: output_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+        version_label: version_label.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+        generated_at_utc: Utc::now(),
+    })?;
+    Ok((result.manifest_path, result.structured_json_path, result.zip_path))
 }
 
 fn read_zip_members(path: &Path) -> anyhow::Result<Vec<String>> {
@@ -2857,6 +2906,13 @@ fn main() -> anyhow::Result<()> {
         }
         Some("analyze-obstacle-thresholds") => {
             run_analyze_obstacle_thresholds_command(&args[2..])?;
+        }
+        Some("normalize-swim-notams") => {
+            let (manifest_path, structured_json_path, zip_path) =
+                run_normalize_swim_notams_command(&args[2..])?;
+            println!("manifest {}", manifest_path.display());
+            println!("structured_json {}", structured_json_path.display());
+            println!("zip {}", zip_path.display());
         }
         Some("build-cycle") => {
             if maybe_reexec_build_cycle_under_cgroup(&args[2..])? {

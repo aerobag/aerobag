@@ -302,14 +302,16 @@ def stage_nav_kv() -> None:
     if not isinstance(nav_db_filename, str) or not nav_db_filename:
         raise RuntimeError("nav-db package missing filename")
     nav_db_root = unpacked_dir_from_relative_zip(nav_db_filename)
-    root_candidates = sorted(nav_db_root.glob("*.root"))
-    if len(root_candidates) != 1:
+    root_candidates = [nav_db_root / "root"]
+    pages = sorted(nav_db_root.glob("values_*"))
+    if len(root_candidates) != 1 or not root_candidates[0].is_file():
         raise RuntimeError(f"expected one nav-kv root under {nav_db_root}, found {len(root_candidates)}")
     ensure_hard_link(root_candidates[0], target / "root")
-    pages = sorted(nav_db_root.glob("*.values_*"))
     values_root = target / "values"
     values_root.mkdir(parents=True, exist_ok=True)
     for index, page in enumerate(pages):
+        if not page.is_file():
+            raise RuntimeError(f"missing nav-kv page {page}")
         ensure_hard_link(page, values_root / f"{index:04}")
 
 

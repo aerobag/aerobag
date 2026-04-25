@@ -4237,7 +4237,7 @@ fn build_nav_kv_artifact(
     let prepared = prepare_node_at(&build_shared_node_dir(config, "nav-db")?, "nav-db", &inputs)?;
     let output_dir = prepared.dir.join("output");
     let source_dir = output_dir.join("nav_db");
-    let root_filename = format!("nav_kv_{cycle}.root");
+    let root_filename = "root";
     let nav_db_zip_source_path = output_dir.join(format!("nav_db_{cycle}.zip"));
     let record =
         match claim_or_wait_for_node(&prepared, std::slice::from_ref(&nav_db_zip_source_path))? {
@@ -4273,13 +4273,13 @@ fn build_nav_kv_artifact(
                 pairs.extend(build_nav_kv_navref_pairs(intermediate_sqlite_db_path)?);
                 let built = build_nav_kv_sorted(pairs, 64 * 1024)
                     .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
-                let root_source_path = source_dir.join(&root_filename);
+                let root_source_path = source_dir.join(root_filename);
                 fs::write(&root_source_path, &built.root_bytes)
                     .with_context(|| format!("failed to write {}", root_source_path.display()))?;
 
                 let mut page_filenames = Vec::new();
                 for (index, page) in built.value_pages.iter().enumerate() {
-                    let page_filename = format!("nav_kv_{cycle}.values_{index:04}");
+                    let page_filename = format!("values_{index:04}");
                     let page_source_path = source_dir.join(&page_filename);
                     fs::write(&page_source_path, page).with_context(|| {
                         format!("failed to write {}", page_source_path.display())
@@ -4297,7 +4297,7 @@ fn build_nav_kv_artifact(
                     })?;
                 }
                 hardlink_dir_recursive(&source_dir, &published_source_dir)?;
-                let mut zip_entries = vec![root_filename.as_str()];
+                let mut zip_entries = vec![root_filename];
                 let page_entry_names = page_filenames
                     .iter()
                     .map(String::as_str)

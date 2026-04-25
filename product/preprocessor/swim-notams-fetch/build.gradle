@@ -1,0 +1,22 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+sourceCompatibility = 17
+targetCompatibility = 17
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'com.solacesystems:sol-jms:10.29.1'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.17.1'
+}
+
+mainClassName = 'net.jonh.aerobag.swim.SwimNotamsConsumer'
+
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+}

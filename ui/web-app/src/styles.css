@@ -99,14 +99,14 @@ button {
 .situationOverlay {
   position: absolute;
   inset: 0;
-  z-index: 1;
+  z-index: 5;
   pointer-events: none;
 }
 
 .vectorOverlay {
   position: absolute;
   inset: 0;
-  z-index: 1;
+  z-index: 4;
   pointer-events: none;
   overflow: visible;
 }
@@ -114,7 +114,7 @@ button {
 .airspaceOverlay {
   position: absolute;
   inset: 0;
-  z-index: 1;
+  z-index: 3;
   pointer-events: none;
   overflow: visible;
 }
@@ -169,7 +169,7 @@ button {
 .nexradOverlay {
   position: absolute;
   inset: 0;
-  z-index: 1;
+  z-index: 2;
   pointer-events: none;
   overflow: hidden;
 }

@@ -225,6 +225,9 @@ const emptyChartPage: ChartPageData = { airports: [] };
 const O88_POSITION = { lat: 38.19338888888888, lon: -121.70363888888889 };
 const PAGE_CHART_ICON_SRC = "/icons/icons/page-chart-icon.png?v=20260424b";
 const PAGE_PLAN_ICON_SRC = "/icons/icons/page-plan1-icon.png?v=20260424b";
+const LAYER_VECTORS_ICON_SRC = "/icons/icons/layer-vectors-icon.png?v=20260424b";
+const LAYER_NEXRAD_ICON_SRC = "/icons/icons/layer-nexrad-icon.png?v=20260424b";
+const LAYER_TERRAIN_WARNING_ICON_SRC = "/icons/icons/layer-terrain-warning-icon.png?v=20260424b";
 
 function chartFamilyIconSrc(familyId: ChartFamilyId | null | undefined): string | undefined {
   switch (familyId) {
@@ -240,6 +243,17 @@ function chartFamilyIconSrc(familyId: ChartFamilyId | null | undefined): string 
       return "/icons/icons/shaded-relief-icon.png?v=20260424b";
     default:
       return undefined;
+  }
+}
+
+function layerIconSrc(layerId: MapLayerId): string {
+  switch (layerId) {
+    case "vectors":
+      return LAYER_VECTORS_ICON_SRC;
+    case "nexrad":
+      return LAYER_NEXRAD_ICON_SRC;
+    case "terrain_warning":
+      return LAYER_TERRAIN_WARNING_ICON_SRC;
   }
 }
 
@@ -2909,6 +2923,7 @@ function MapPage(props: {
     {
       id: "vectors",
       label: "Vectors",
+      iconSrc: layerIconSrc("vectors"),
       toggleState: mapLayerState.vectors,
       disabled: !mapLayerState.vectors.enabled,
       onSelect: () => void setMapLayerVisible("vectors", !mapLayerState.vectors.visible),
@@ -2916,6 +2931,7 @@ function MapPage(props: {
     {
       id: "nexrad",
       label: "NEXRAD",
+      iconSrc: layerIconSrc("nexrad"),
       toggleState: mapLayerState.nexrad,
       disabled: !mapLayerState.nexrad.enabled,
       onSelect: () => void setMapLayerVisible("nexrad", !mapLayerState.nexrad.visible),
@@ -2923,6 +2939,7 @@ function MapPage(props: {
     {
       id: "terrain_warning",
       label: "Terrain Warning",
+      iconSrc: layerIconSrc("terrain_warning"),
       toggleState: mapLayerState.terrain_warning,
       disabled: !mapLayerState.terrain_warning.enabled,
       onSelect: () => void setMapLayerVisible("terrain_warning", !mapLayerState.terrain_warning.visible),
@@ -3339,6 +3356,10 @@ function MapPage(props: {
           />
           <TrayDock
             launcherLabel="LAYERS"
+            launcherImageSrc={layerIconSrc("vectors")}
+            launcherStyle={{
+              backgroundColor: "var(--theme-button-bg)",
+            }}
             open={trayGroup.isOpen("layers")}
             onToggle={() => trayGroup.toggle("layers")}
             ariaLabel="Layers"

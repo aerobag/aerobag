@@ -1288,7 +1288,8 @@ button {
 .planScrollSurface {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
+  overflow: auto;
+  overscroll-behavior: contain;
   padding-bottom: calc(var(--thumb) * 0.1);
   margin-bottom: calc(var(--thumb) * 0.1);
 }
@@ -1299,7 +1300,7 @@ button {
 
 .planTableWrap.isStructured {
   padding-left: calc(var(--thumb) * 0.5);
-  padding-right: calc(var(--thumb) * 0.5);
+  padding-right: var(--thumb-gap);
 }
 
 .planTableWrap.isStructured .planTable {
@@ -1307,6 +1308,8 @@ button {
   padding-top: calc(var(--thumb) * 0.22);
   background: transparent;
   box-shadow: none;
+  width: max-content;
+  min-width: 100%;
 }
 
 .planStructuredArrowLayer {
@@ -1352,7 +1355,7 @@ button {
   padding-top: calc(var(--thumb) * 0.15);
   background: rgba(19, 33, 41, 0.1);
   border-radius: calc(var(--thumb-radius) * 0.9);
-  overflow: hidden;
+  overflow: visible;
   box-shadow: var(--shadow);
   position: relative;
   z-index: 1;
@@ -1385,6 +1388,9 @@ button {
   font-size: calc(var(--thumb) * 0.2);
   font-weight: 700;
   letter-spacing: 0.05em;
+  position: sticky;
+  top: 0;
+  z-index: 3;
 }
 
 .planCell {
@@ -1393,6 +1399,7 @@ button {
 }
 
 .planWaypointButton {
+  position: relative;
   justify-content: space-between;
   gap: calc(var(--thumb) * 0.08);
   border-color: color-mix(in srgb, var(--theme-button-bg) 78%, black);
@@ -1409,6 +1416,9 @@ button {
 
 .planStructuredWaypointCell {
   position: relative;
+  position: sticky;
+  left: 0;
+  z-index: 2;
 }
 
 .planStructuredWaypointCell.isGroupHeader {
@@ -1437,6 +1447,7 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding-right: calc(var(--thumb) * 0.1);
 }
 
 .planStructuredLabel.isIndented {
@@ -1445,15 +1456,23 @@ button {
 }
 
 .planWaypointSymbol {
-  position: relative;
-  z-index: 1;
+  position: absolute;
+  z-index: 2;
+  right: calc(var(--thumb) * 0.16);
+  top: 50%;
+  transform: translateY(-50%);
   display: block;
   flex: 0 0 calc(var(--thumb) * 0.78);
   width: calc(var(--thumb) * 0.78);
   height: calc(var(--thumb) * 0.78);
-  margin-left: auto;
+  margin-left: 0;
   overflow: visible;
   pointer-events: none;
+}
+
+.planHeader.planWaypointCell {
+  left: 0;
+  z-index: 4;
 }
 
 .planWaypointSymbol .airportMarker,
@@ -1585,6 +1604,51 @@ button {
   color: var(--muted);
   font-size: calc(var(--thumb) * 0.22);
   font-weight: 700;
+}
+
+@media (max-width: 720px) and (orientation: portrait) {
+  .planPage {
+    padding-right: calc(var(--thumb-gap) * 0.5);
+  }
+
+  .planScrollSurface {
+    overflow-x: auto;
+    overflow-y: auto;
+    padding-right: 0;
+  }
+
+  .planTableWrap.isStructured .planTable {
+    min-width: max-content;
+  }
+
+  .planTable {
+    grid-template-columns: calc(var(--thumb) * 2) repeat(3, calc(var(--thumb) * 1));
+  }
+
+  .planHeader,
+  .planCell,
+  .planWaypointCell {
+    padding-left: calc(var(--thumb) * 0.12);
+    padding-right: calc(var(--thumb) * 0.12);
+  }
+
+  .planStructuredWaypointCell.isChildRow {
+    margin-left: calc(var(--thumb) * 0.24);
+  }
+
+  .planStructuredLabel {
+    overflow: visible;
+    text-overflow: clip;
+    padding-right: calc(var(--thumb) * 0.02);
+  }
+
+  .planStructuredLabel.isIndented {
+    padding-left: calc(var(--thumb) * 0.08);
+  }
+
+  .planWaypointSymbol {
+    right: calc(var(--thumb) * 0.08);
+  }
 }
 
 .waypointModal {
@@ -1879,6 +1943,29 @@ button {
 }
 
 @media (max-width: 720px) {
+  .planTable {
+    grid-template-columns: calc(var(--thumb) * 2) repeat(3, var(--thumb));
+  }
+
+  .planHeader,
+  .planCell,
+  .planWaypointCell {
+    padding: calc(var(--thumb) * 0.12);
+  }
+
+  .planStructuredWaypointCell.isChildRow {
+    margin-left: calc(var(--thumb) * 0.2);
+  }
+
+  .planStructuredLabel {
+    text-overflow: clip;
+  }
+
+  .planStructuredLabel.isIndented {
+    padding-left: calc(var(--thumb) * 0.1);
+    padding-right: calc(var(--thumb) * 0.42);
+  }
+
   .hud {
     max-width: calc(100vw - 24px);
     padding: 10px 12px;

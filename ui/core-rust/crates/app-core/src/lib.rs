@@ -1332,11 +1332,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
             ) {
                 continue;
             }
-            let previous_terminal_position = previous_display_path
-                .as_ref()
-                .and_then(previous_display_path_terminal_position);
-            let previous_terminal_course =
-                previous_display_path.as_ref().and_then(final_course_of_display_path);
+            let previous_path_state = previous_display_path_state(previous_display_path.as_ref());
             let Some(window_plan) = plan_procedure_window(
                 index,
                 [pair[0], pair[1]],
@@ -1352,12 +1348,12 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 continue;
             };
             let initial_position_override = if window_plan.continuation.inherit_previous_state {
-                previous_terminal_position
+                previous_path_state.terminal_position
             } else {
                 None
             };
             let initial_course_override = if window_plan.continuation.inherit_previous_state {
-                previous_terminal_course
+                previous_path_state.terminal_course
             } else {
                 None
             };
@@ -2310,6 +2306,12 @@ struct ResumeProjectionContext {
     terminal_anchor: Option<NavRef>,
 }
 
+#[derive(Clone, Copy)]
+struct PreviousDisplayPathState {
+    terminal_position: Option<LatLon>,
+    terminal_course: Option<f64>,
+}
+
 fn previous_window_context(
     previous_display_path: Option<&LegDisplayPath>,
     resolved_last: Option<&ResolvedLeg>,
@@ -2335,6 +2337,15 @@ fn previous_window_context(
                     )
             })
         }),
+    }
+}
+
+fn previous_display_path_state(
+    previous_display_path: Option<&LegDisplayPath>,
+) -> PreviousDisplayPathState {
+    PreviousDisplayPathState {
+        terminal_position: previous_display_path.and_then(previous_display_path_terminal_position),
+        terminal_course: previous_display_path.and_then(final_course_of_display_path),
     }
 }
 

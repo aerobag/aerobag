@@ -295,6 +295,15 @@ pub enum StartRequirement {
         #[serde(default)]
         continuation_anchor_position: Option<LatLon>,
     },
+    YieldableCourseToFix {
+        anchor: NavRef,
+        #[serde(default)]
+        anchor_position: Option<LatLon>,
+        continuation_course_deg: Option<f64>,
+        continuation_anchor: Option<NavRef>,
+        #[serde(default)]
+        continuation_anchor_position: Option<LatLon>,
+    },
     EstablishedOnCourse {
         course_deg: f64,
         anchor: Option<NavRef>,
@@ -376,6 +385,47 @@ pub fn reconcile_handoff(
             let reciprocal_course_deg = normalize_bearing_degrees(*continuation_course_deg + 180.0);
             if angular_difference_degrees(bearing_to_direct_fix, reciprocal_course_deg) <= 45.0 {
                 HandoffDecision::SkipStaleFix
+            } else {
+                HandoffDecision::ContinueAsDrawn
+            }
+        }
+        StartRequirement::YieldableCourseToFix {
+            anchor_position: Some(stale_fix),
+            continuation_course_deg: Some(continuation_course_deg),
+            continuation_anchor,
+            continuation_anchor_position,
+            ..
+        } => {
+            let Some(current_course_deg) = terminal_state
+                .logical_terminal_course_deg
+                .or(terminal_state.drawn_terminal_course_deg)
+            else {
+                return HandoffDecision::ContinueAsDrawn;
+            };
+            if angular_difference_degrees(current_course_deg, *continuation_course_deg) > 25.0 {
+                return HandoffDecision::ContinueAsDrawn;
+            }
+            let reciprocal_course_deg = normalize_bearing_degrees(*continuation_course_deg + 180.0);
+            let bearing_to_stale_fix =
+                initial_course_deg(terminal_state.terminal_position, *stale_fix);
+            if angular_difference_degrees(bearing_to_stale_fix, reciprocal_course_deg) > 45.0 {
+                return HandoffDecision::ContinueAsDrawn;
+            }
+            if continuation_anchor
+                .as_ref()
+                .zip(terminal_state.terminal_anchor.as_ref())
+                .is_some_and(|(continuation_anchor, terminal_anchor)| continuation_anchor == terminal_anchor)
+            {
+                return HandoffDecision::YieldToFollowingCourse;
+            }
+            let Some(continuation_anchor_position) = continuation_anchor_position else {
+                return HandoffDecision::ContinueAsDrawn;
+            };
+            let bearing_to_continuation =
+                initial_course_deg(terminal_state.terminal_position, *continuation_anchor_position);
+            if angular_difference_degrees(bearing_to_continuation, *continuation_course_deg) <= 45.0
+            {
+                HandoffDecision::YieldToFollowingCourse
             } else {
                 HandoffDecision::ContinueAsDrawn
             }

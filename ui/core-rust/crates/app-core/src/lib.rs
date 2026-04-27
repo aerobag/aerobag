@@ -1414,12 +1414,27 @@ fn resolve_procedure_materialization_legs_with_provenance(
                         next_records,
                         &next_fix_records,
                     );
-                    target_index.is_some_and(|target_index| {
-                        next_fix_records
-                            .get(target_index)
-                            .and_then(|record| record.nav_ref.as_ref())
-                            != pair[1].nav_ref.as_ref()
-                    })
+                    let projected_terminal_position = projected_previous_display_path
+                        .as_ref()
+                        .and_then(previous_display_path_terminal_position);
+                    let projected_terminal_course = projected_previous_display_path
+                        .as_ref()
+                        .and_then(final_course_of_display_path);
+                    let projected_terminal_anchor = projected_previous_display_path
+                        .as_ref()
+                        .and_then(|_| pair[0].nav_ref.clone());
+                    target_index
+                        .and_then(|target_index| next_fix_records.get(target_index).copied())
+                        .is_some_and(|resumed_common_record| {
+                            resumed_common_record.nav_ref.as_ref() != pair[1].nav_ref.as_ref()
+                                && should_yield_feeder_course_to_fix_to_resumed_common_segment(
+                                    projected_terminal_position,
+                                    projected_terminal_course,
+                                    projected_terminal_anchor,
+                                    pair[1],
+                                    resumed_common_record,
+                                )
+                        })
                 });
             if common_resume_yields_feeder_cf {
                 continue;
@@ -2578,6 +2593,21 @@ fn start_requirement_for_direct_to_fix_with_following_course(
     })
 }
 
+fn start_requirement_for_feeder_course_to_fix_with_common_resume(
+    feeder_course_to_fix_record: &ProcedureLegMaterializationRecord,
+    resumed_common_record: &ProcedureLegMaterializationRecord,
+) -> Option<StartRequirement> {
+    Some(StartRequirement::YieldableCourseToFix {
+        anchor: feeder_course_to_fix_record.nav_ref.clone()?,
+        anchor_position: feeder_course_to_fix_record.nav_position,
+        continuation_course_deg: resumed_common_record
+            .magnetic_course_deg
+            .map(|course| course + record_magnetic_variation_deg(resumed_common_record).unwrap_or(0.0)),
+        continuation_anchor: resumed_common_record.nav_ref.clone(),
+        continuation_anchor_position: resumed_common_record.nav_position,
+    })
+}
+
 fn local_to_en(origin: LatLon, point: LatLon) -> (f64, f64) {
     let lat_scale_nm = 60.0;
     let mean_lat_rad = ((origin.lat + point.lat) * 0.5).to_radians();
@@ -2735,6 +2765,26 @@ fn should_yield_direct_to_fix_to_following_course(
             HandoffDecision::SkipStaleFix
         )
     })
+}
+
+fn should_yield_feeder_course_to_fix_to_resumed_common_segment(
+    current_position: Option<LatLon>,
+    current_course_deg: Option<f64>,
+    current_anchor: Option<NavRef>,
+    feeder_course_to_fix_record: &ProcedureLegMaterializationRecord,
+    resumed_common_record: &ProcedureLegMaterializationRecord,
+) -> bool {
+    terminal_state_for_handoff(current_position, current_course_deg, current_anchor, false)
+        .zip(start_requirement_for_feeder_course_to_fix_with_common_resume(
+            feeder_course_to_fix_record,
+            resumed_common_record,
+        ))
+        .is_some_and(|(terminal_state, start_requirement)| {
+            matches!(
+                reconcile_handoff(&terminal_state, &start_requirement),
+                HandoffDecision::YieldToFollowingCourse
+            )
+        })
 }
 
 fn procedure_segment_role(role: &MaterializedSegmentRole) -> ProcedureSegmentRole {

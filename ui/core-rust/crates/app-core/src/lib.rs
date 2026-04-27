@@ -100,10 +100,11 @@ pub use planning::{
     ProcedureTurnTerminalState, CommonSegmentTerminalState, CodedFixSatisfaction,
     basic_terminal_state, direct_to_fix_with_course_continuation_requirement,
     yieldable_course_to_fix_requirement, reentry_to_anchor_requirement,
-    resume_probe_terminal_state, terminal_state_with_leg_characteristics,
+    terminal_state_with_leg_characteristics,
     at_fix_requirement, established_on_course_requirement,
-    intercept_course_requirement, resume_common_segment_requirement,
-    enter_hold_requirement, start_requirement_from_leg_characteristics,
+    intercept_course_requirement, enter_hold_requirement,
+    start_requirement_from_leg_characteristics,
+    common_resume_candidate_decision,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use procedure_geometry::{
@@ -2826,21 +2827,18 @@ fn resumed_common_target<'a>(
                     .then_some(prior_course_deg)
             })
             .or(Some(current_course_deg));
-        let terminal_state = resume_probe_terminal_state(
-            current_position,
-            current_course_deg,
-            incoming_course_to_anchor_deg,
-            previous_was_hold_like,
-        );
-        let start_requirement = resume_common_segment_requirement(
-            record.nav_ref.clone(),
-            Some(course_deg),
-            Some(course_anchor),
-            record.nav_ref.clone(),
-            Some(fix),
-        );
         if matches!(
-            reconcile_handoff(&terminal_state, &start_requirement),
+            common_resume_candidate_decision(
+                current_position,
+                current_course_deg,
+                incoming_course_to_anchor_deg,
+                previous_was_hold_like,
+                record.nav_ref.clone(),
+                course_deg,
+                course_anchor,
+                record.nav_ref.clone(),
+                fix,
+            ),
             HandoffDecision::ResumeAtAnchor | HandoffDecision::ResumeThroughAnchorKink
         ) {
             return Some(CommonResumeTarget {

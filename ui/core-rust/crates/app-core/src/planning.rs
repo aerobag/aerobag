@@ -613,6 +613,33 @@ pub fn start_requirement_from_leg_characteristics(
     }
 }
 
+pub fn common_resume_candidate_decision(
+    terminal_position: LatLon,
+    terminal_course_deg: f64,
+    incoming_course_to_anchor_deg: Option<f64>,
+    previous_was_hold_like: bool,
+    anchor: Option<NavRef>,
+    course_deg: f64,
+    anchor_position: LatLon,
+    target_anchor: Option<NavRef>,
+    target_anchor_position: LatLon,
+) -> HandoffDecision {
+    let terminal_state = resume_probe_terminal_state(
+        terminal_position,
+        terminal_course_deg,
+        incoming_course_to_anchor_deg,
+        previous_was_hold_like,
+    );
+    let start_requirement = resume_common_segment_requirement(
+        anchor,
+        Some(course_deg),
+        Some(anchor_position),
+        target_anchor,
+        Some(target_anchor_position),
+    );
+    reconcile_handoff(&terminal_state, &start_requirement)
+}
+
 pub fn reentry_to_anchor_requirement(
     from_anchor: NavRef,
     from_anchor_position: Option<LatLon>,

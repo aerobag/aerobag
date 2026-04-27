@@ -93,10 +93,11 @@ pub use planning::{
     unsuspend_sequencing, AirwaySegment, ConcretizedNavItem, DirectToState, DirectToUiView,
     FlightPlan, FlightPlanUiState, GuidanceState, GuidanceUiView, LegDisplayElement,
     LegDisplayPathStyle,
-    LegDisplayPath, NavRef, PathTermination, PlanLeg, ProcedureDiscontinuity, ProcedureKind,
+    reconcile_handoff, HandoffDecision, LegDisplayPath, NavRef, PathTermination, PlanLeg, ProcedureDiscontinuity, ProcedureKind,
     ProcedureLegProvenance, ProcedureSegment, ProcedureSegmentRole, ResolvedLeg, ResolvedLegSource,
     ResolvedLegUiView, RouteComponent, RouteComponentUiView, RouteComponentViewKind,
-    SequencingMode,
+    SequencingMode, StartRequirement, TerminalState, HoldTerminalState,
+    ProcedureTurnTerminalState, CommonSegmentTerminalState, CodedFixSatisfaction,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use procedure_geometry::{
@@ -1375,6 +1376,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                                 pair[1],
                                 leg_records,
                                 record,
+                                role == ProcedureSegmentRole::Common,
                             )
                     })
             } else {
@@ -2384,6 +2386,188 @@ fn previous_display_path_terminal_position(path: &LegDisplayPath) -> Option<LatL
     }
 }
 
+#[cfg(test)]
+fn drawn_final_course_of_display_path(path: &LegDisplayPath) -> Option<f64> {
+    match path.elements.last()? {
+        LegDisplayElement::Segment { start, end } => Some(bearing_degrees(*start, *end)),
+        LegDisplayElement::Arc {
+            center,
+            end,
+            clockwise,
+            ..
+        } => {
+            let radial_deg = bearing_degrees(*center, *end);
+            Some(normalize_bearing_degrees(if *clockwise {
+                radial_deg + 90.0
+            } else {
+                radial_deg - 90.0
+            }))
+        }
+    }
+}
+
+#[cfg(test)]
+fn terminal_state_for_resolved_leg(leg: &ResolvedLeg) -> Option<TerminalState> {
+    let provenance = leg.procedure_provenance.as_ref()?;
+    let path = provenance.display_path.as_ref()?;
+    let terminal_position = previous_display_path_terminal_position(path)?;
+    let drawn_terminal_course_deg = drawn_final_course_of_display_path(path);
+    let logical_terminal_course_deg = final_course_of_display_path(path);
+    let path_termination = match &provenance.path_termination {
+        PathTermination::InitialFix => "IF",
+        PathTermination::TrackToFix => "TF",
+        PathTermination::CourseToFix => "CF",
+        PathTermination::DirectToFix => "DF",
+        PathTermination::HeadingToManual => "VM",
+        PathTermination::HeadingToAltitude => "VA",
+        PathTermination::Other(code) => code.trim(),
+    };
+    Some(TerminalState {
+        terminal_position,
+        drawn_terminal_course_deg,
+        logical_terminal_course_deg,
+        terminal_anchor: Some(leg.to.clone()),
+        established_course_deg: logical_terminal_course_deg,
+        incoming_course_to_anchor_deg: drawn_terminal_course_deg,
+        outgoing_course_from_anchor_deg: logical_terminal_course_deg,
+        hold_state: if matches!(path_termination, "HF" | "HM") {
+            HoldTerminalState::HoldLeg
+        } else {
+            HoldTerminalState::None
+        },
+        procedure_turn_state: if path_termination == "PI" {
+            ProcedureTurnTerminalState::ProcedureTurnLeg
+        } else {
+            ProcedureTurnTerminalState::None
+        },
+        common_segment_state: if provenance.role == ProcedureSegmentRole::Common {
+            CommonSegmentTerminalState::CommonSegment
+        } else {
+            CommonSegmentTerminalState::NotCommon
+        },
+        coded_fix_satisfaction: CodedFixSatisfaction::AtAnchor,
+    })
+}
+
+#[cfg(test)]
+fn start_requirement_for_resolved_leg(leg: &ResolvedLeg) -> Option<StartRequirement> {
+    let provenance = leg.procedure_provenance.as_ref()?;
+    let anchor = leg.to.clone();
+    Some(match &provenance.path_termination {
+        PathTermination::InitialFix => StartRequirement::AtFix {
+            anchor,
+            anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
+        },
+        PathTermination::TrackToFix => StartRequirement::AtFix {
+            anchor,
+            anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
+        },
+        PathTermination::CourseToFix => StartRequirement::EstablishedOnCourse {
+            course_deg: provenance
+                .display_path
+                .as_ref()
+                .and_then(final_course_of_display_path)
+                .unwrap_or(0.0),
+            anchor: Some(anchor),
+            anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
+        },
+        PathTermination::DirectToFix => StartRequirement::DirectToFix {
+            anchor,
+            anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
+            continuation_course_deg: None,
+            continuation_anchor: None,
+            continuation_anchor_position: None,
+        },
+        PathTermination::HeadingToManual | PathTermination::HeadingToAltitude => {
+            StartRequirement::EstablishedOnCourse {
+                course_deg: provenance
+                    .display_path
+                    .as_ref()
+                    .and_then(final_course_of_display_path)
+                    .unwrap_or(0.0),
+                anchor: Some(anchor),
+                anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
+            }
+        }
+        PathTermination::Other(label) if matches!(label.trim(), "HF" | "HM") => {
+            StartRequirement::EnterHold {
+                anchor,
+                inbound_course_deg: provenance
+                    .display_path
+                    .as_ref()
+                    .and_then(final_course_of_display_path),
+                anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
+            }
+        }
+        PathTermination::Other(label) if label.trim() == "PI" => {
+            StartRequirement::InterceptCourse {
+                course_deg: provenance
+                    .display_path
+                    .as_ref()
+                    .and_then(final_course_of_display_path)
+                    .unwrap_or(0.0),
+                anchor: Some(anchor),
+                anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
+            }
+        }
+        PathTermination::Other(_) => StartRequirement::ResumeCommonSegment {
+            anchor: Some(anchor),
+            course_deg: provenance
+                .display_path
+                .as_ref()
+                .and_then(final_course_of_display_path),
+            anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
+        },
+    })
+}
+
+#[cfg(test)]
+fn terminal_position_for_nav_ref(
+    display_path: Option<&LegDisplayPath>,
+) -> Option<LatLon> {
+    display_path.and_then(previous_display_path_terminal_position)
+}
+
+fn terminal_state_for_handoff(
+    current_position: Option<LatLon>,
+    current_course_deg: Option<f64>,
+    terminal_anchor: Option<NavRef>,
+    common_segment: bool,
+) -> Option<TerminalState> {
+    Some(TerminalState {
+        terminal_position: current_position?,
+        drawn_terminal_course_deg: current_course_deg,
+        logical_terminal_course_deg: current_course_deg,
+        terminal_anchor,
+        established_course_deg: current_course_deg,
+        incoming_course_to_anchor_deg: current_course_deg,
+        outgoing_course_from_anchor_deg: current_course_deg,
+        hold_state: HoldTerminalState::None,
+        procedure_turn_state: ProcedureTurnTerminalState::None,
+        common_segment_state: if common_segment {
+            CommonSegmentTerminalState::CommonSegment
+        } else {
+            CommonSegmentTerminalState::NotCommon
+        },
+        coded_fix_satisfaction: CodedFixSatisfaction::Unknown,
+    })
+}
+
+fn start_requirement_for_direct_to_fix_with_following_course(
+    direct_to_fix_record: &ProcedureLegMaterializationRecord,
+    following_course_record: &ProcedureLegMaterializationRecord,
+) -> Option<StartRequirement> {
+    Some(StartRequirement::DirectToFix {
+        anchor: direct_to_fix_record.nav_ref.clone()?,
+        anchor_position: direct_to_fix_record.nav_position,
+        continuation_course_deg: following_course_record
+            .magnetic_course_deg
+            .map(|course| course + record_magnetic_variation_deg(following_course_record).unwrap_or(0.0)),
+        continuation_anchor: following_course_record.nav_ref.clone(),
+        continuation_anchor_position: following_course_record.nav_position,
+    })
+}
+
 fn local_to_en(origin: LatLon, point: LatLon) -> (f64, f64) {
     let lat_scale_nm = 60.0;
     let mean_lat_rad = ((origin.lat + point.lat) * 0.5).to_radians();
@@ -2470,24 +2654,17 @@ fn common_segment_resume_target_index(
     None
 }
 
-fn should_yield_direct_to_fix_to_following_course(
+fn project_terminal_state_through_intervening_climbs(
     current_position: Option<LatLon>,
     current_course_deg: Option<f64>,
     preceding_anchor_record: &ProcedureLegMaterializationRecord,
     direct_to_fix_record: &ProcedureLegMaterializationRecord,
     segment_records: &[ProcedureLegMaterializationRecord],
-    following_course_record: &ProcedureLegMaterializationRecord,
-) -> bool {
+ ) -> (Option<LatLon>, Option<f64>) {
     let (Some(mut current_position), Some(mut current_course_deg)) =
         (current_position, current_course_deg)
     else {
-        return false;
-    };
-    let Some(direct_fix) = direct_to_fix_record.nav_position else {
-        return false;
-    };
-    let Some(next_fix) = following_course_record.nav_position else {
-        return false;
+        return (None, None);
     };
     let mut current_altitude_ft = preceding_anchor_record.altitude_1_ft;
     for record in segment_records.iter().filter(|record| {
@@ -2513,22 +2690,41 @@ fn should_yield_direct_to_fix_to_following_course(
         current_course_deg = course_deg;
         current_altitude_ft = Some(target_alt_ft);
     }
-    let Some(course_deg) = following_course_record
-        .magnetic_course_deg
-        .map(|course| course + record_magnetic_variation_deg(following_course_record).unwrap_or(0.0))
-    else {
-        return false;
-    };
-    if angular_difference_degrees(current_course_deg, course_deg) > 25.0 {
-        return false;
-    }
-    let bearing_to_next_fix = bearing_degrees(current_position, next_fix);
-    if angular_difference_degrees(bearing_to_next_fix, course_deg) > 45.0 {
-        return false;
-    }
-    let bearing_to_direct_fix = bearing_degrees(current_position, direct_fix);
-    let reciprocal_course_deg = normalize_bearing_degrees(course_deg + 180.0);
-    angular_difference_degrees(bearing_to_direct_fix, reciprocal_course_deg) <= 45.0
+    (Some(current_position), Some(current_course_deg))
+}
+
+fn should_yield_direct_to_fix_to_following_course(
+    current_position: Option<LatLon>,
+    current_course_deg: Option<f64>,
+    preceding_anchor_record: &ProcedureLegMaterializationRecord,
+    direct_to_fix_record: &ProcedureLegMaterializationRecord,
+    segment_records: &[ProcedureLegMaterializationRecord],
+    following_course_record: &ProcedureLegMaterializationRecord,
+    common_segment: bool,
+) -> bool {
+    let (projected_position, projected_course_deg) = project_terminal_state_through_intervening_climbs(
+        current_position,
+        current_course_deg,
+        preceding_anchor_record,
+        direct_to_fix_record,
+        segment_records,
+    );
+    terminal_state_for_handoff(
+        projected_position,
+        projected_course_deg,
+        preceding_anchor_record.nav_ref.clone(),
+        common_segment,
+    )
+    .zip(start_requirement_for_direct_to_fix_with_following_course(
+        direct_to_fix_record,
+        following_course_record,
+    ))
+    .is_some_and(|(terminal_state, start_requirement)| {
+        matches!(
+            reconcile_handoff(&terminal_state, &start_requirement),
+            HandoffDecision::SkipStaleFix
+        )
+    })
 }
 
 fn procedure_segment_role(role: &MaterializedSegmentRole) -> ProcedureSegmentRole {
@@ -3704,6 +3900,8 @@ mod tests {
         Ok {
             resolved_legs: Vec<ApproachCaptureResolvedLeg>,
             heading_signatures: Vec<ApproachCaptureHeadingSignature>,
+            #[serde(default)]
+            handoffs: Vec<ApproachCaptureHandoff>,
         },
         AppError {
             message: String,
@@ -3734,6 +3932,8 @@ mod tests {
         path_termination: Option<PathTermination>,
         leg_sequence: Option<i32>,
         display_path: Option<LegDisplayPath>,
+        terminal_state: Option<TerminalState>,
+        start_requirement: Option<StartRequirement>,
     }
 
     #[derive(Serialize, Deserialize)]
@@ -3750,6 +3950,15 @@ mod tests {
         logical_end_course_deg: f64,
         element_kind: String,
         debug_source: Option<String>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct ApproachCaptureHandoff {
+        from_leg_id: String,
+        to_leg_id: String,
+        from_terminal_state: TerminalState,
+        to_start_requirement: StartRequirement,
+        decision: HandoffDecision,
     }
 
     #[derive(Serialize, Deserialize)]
@@ -3782,6 +3991,8 @@ mod tests {
                     path_termination: provenance.map(|p| p.path_termination.clone()),
                     leg_sequence: provenance.map(|p| p.leg_sequence),
                     display_path: provenance.and_then(|p| p.display_path.clone()),
+                    terminal_state: terminal_state_for_resolved_leg(leg),
+                    start_requirement: start_requirement_for_resolved_leg(leg),
                 }
             })
             .collect()
@@ -3838,6 +4049,28 @@ mod tests {
             }
         }
         signatures
+    }
+
+    fn capture_handoffs(materialized: &MaterializedProcedure) -> Vec<ApproachCaptureHandoff> {
+        let mut handoffs = Vec::new();
+        for window in materialized.resolved_legs.windows(2) {
+            let from_leg = &window[0];
+            let to_leg = &window[1];
+            let Some(from_terminal_state) = terminal_state_for_resolved_leg(from_leg) else {
+                continue;
+            };
+            let Some(to_start_requirement) = start_requirement_for_resolved_leg(to_leg) else {
+                continue;
+            };
+            handoffs.push(ApproachCaptureHandoff {
+                from_leg_id: from_leg.id.clone(),
+                to_leg_id: to_leg.id.clone(),
+                decision: reconcile_handoff(&from_terminal_state, &to_start_requirement),
+                from_terminal_state,
+                to_start_requirement,
+            });
+        }
+        handoffs
     }
 
     fn capture_case_key(record: &ApproachCaptureRecord) -> String {
@@ -6227,6 +6460,7 @@ mod tests {
                             result: ApproachCaptureResult::Ok {
                                 resolved_legs: capture_resolved_legs(&materialized),
                                 heading_signatures: capture_heading_signatures(&materialized),
+                                handoffs: capture_handoffs(&materialized),
                             },
                         },
                         Ok(Err(err)) => ApproachCaptureRecord {

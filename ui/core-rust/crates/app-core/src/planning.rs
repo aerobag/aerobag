@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::errors::{AppError, AppErrorKind, AppResult};
+use crate::geodesy::initial_course_deg;
 use crate::geometry::LatLon;
 use crate::ids::AirportId;
 use crate::map_overlay::NavSymbolFeature;
@@ -224,6 +225,163 @@ pub struct LegDisplayPath {
     pub effective_terminal_course_deg: Option<f64>,
     #[serde(default)]
     pub debug_element_sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TerminalState {
+    pub terminal_position: LatLon,
+    #[serde(default)]
+    pub drawn_terminal_course_deg: Option<f64>,
+    #[serde(default)]
+    pub logical_terminal_course_deg: Option<f64>,
+    #[serde(default)]
+    pub terminal_anchor: Option<NavRef>,
+    #[serde(default)]
+    pub established_course_deg: Option<f64>,
+    #[serde(default)]
+    pub incoming_course_to_anchor_deg: Option<f64>,
+    #[serde(default)]
+    pub outgoing_course_from_anchor_deg: Option<f64>,
+    pub hold_state: HoldTerminalState,
+    pub procedure_turn_state: ProcedureTurnTerminalState,
+    pub common_segment_state: CommonSegmentTerminalState,
+    pub coded_fix_satisfaction: CodedFixSatisfaction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldTerminalState {
+    None,
+    HoldLeg,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcedureTurnTerminalState {
+    None,
+    ProcedureTurnLeg,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommonSegmentTerminalState {
+    NotCommon,
+    CommonSegment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodedFixSatisfaction {
+    Unknown,
+    AtAnchor,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StartRequirement {
+    AtFix {
+        anchor: NavRef,
+        #[serde(default)]
+        anchor_position: Option<LatLon>,
+    },
+    DirectToFix {
+        anchor: NavRef,
+        #[serde(default)]
+        anchor_position: Option<LatLon>,
+        #[serde(default)]
+        continuation_course_deg: Option<f64>,
+        #[serde(default)]
+        continuation_anchor: Option<NavRef>,
+        #[serde(default)]
+        continuation_anchor_position: Option<LatLon>,
+    },
+    EstablishedOnCourse {
+        course_deg: f64,
+        anchor: Option<NavRef>,
+        #[serde(default)]
+        anchor_position: Option<LatLon>,
+    },
+    InterceptCourse {
+        course_deg: f64,
+        anchor: Option<NavRef>,
+        #[serde(default)]
+        anchor_position: Option<LatLon>,
+    },
+    ResumeCommonSegment {
+        anchor: Option<NavRef>,
+        course_deg: Option<f64>,
+        #[serde(default)]
+        anchor_position: Option<LatLon>,
+    },
+    EnterHold {
+        anchor: NavRef,
+        inbound_course_deg: Option<f64>,
+        #[serde(default)]
+        anchor_position: Option<LatLon>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandoffDecision {
+    ContinueAsDrawn,
+    ResumeAtAnchor,
+    ResumeThroughAnchorKink,
+    SkipStaleFix,
+    YieldToFollowingCourse,
+    BuildJoinGeometry,
+    EnterHold,
+    Invalid,
+}
+
+fn normalize_bearing_degrees(bearing_deg: f64) -> f64 {
+    bearing_deg.rem_euclid(360.0)
+}
+
+fn angular_difference_degrees(left: f64, right: f64) -> f64 {
+    let mut delta = (normalize_bearing_degrees(left) - normalize_bearing_degrees(right)).abs();
+    if delta > 180.0 {
+        delta = 360.0 - delta;
+    }
+    delta
+}
+
+pub fn reconcile_handoff(
+    terminal_state: &TerminalState,
+    start_requirement: &StartRequirement,
+) -> HandoffDecision {
+    match start_requirement {
+        StartRequirement::DirectToFix {
+            anchor_position: Some(direct_fix),
+            continuation_course_deg: Some(continuation_course_deg),
+            continuation_anchor_position: Some(continuation_anchor_position),
+            ..
+        } => {
+            let Some(current_course_deg) = terminal_state
+                .logical_terminal_course_deg
+                .or(terminal_state.drawn_terminal_course_deg)
+            else {
+                return HandoffDecision::ContinueAsDrawn;
+            };
+            if angular_difference_degrees(current_course_deg, *continuation_course_deg) > 25.0 {
+                return HandoffDecision::ContinueAsDrawn;
+            }
+            let bearing_to_continuation =
+                initial_course_deg(terminal_state.terminal_position, *continuation_anchor_position);
+            if angular_difference_degrees(bearing_to_continuation, *continuation_course_deg) > 45.0
+            {
+                return HandoffDecision::ContinueAsDrawn;
+            }
+            let bearing_to_direct_fix = initial_course_deg(terminal_state.terminal_position, *direct_fix);
+            let reciprocal_course_deg = normalize_bearing_degrees(*continuation_course_deg + 180.0);
+            if angular_difference_degrees(bearing_to_direct_fix, reciprocal_course_deg) <= 45.0 {
+                HandoffDecision::SkipStaleFix
+            } else {
+                HandoffDecision::ContinueAsDrawn
+            }
+        }
+        _ => HandoffDecision::ContinueAsDrawn,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

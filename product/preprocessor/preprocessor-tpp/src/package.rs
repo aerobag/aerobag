@@ -434,29 +434,29 @@ fn strip_rendered_hotspot_page_suffix(label: &str) -> Option<String> {
 }
 
 fn pretty_packaged_plate_label(label: &str) -> String {
-    if let Some((prefix, remainder)) = split_tpp_prefix(label) {
+    if let Some((prefix, state_code, remainder)) = split_tpp_prefix(label) {
         if prefix == "HOT" {
-            return pretty_hotspot_label(remainder);
+            return pretty_hotspot_label(state_code, remainder);
         }
     }
     label.to_string()
 }
 
-fn split_tpp_prefix(label: &str) -> Option<(&str, &str)> {
+fn split_tpp_prefix(label: &str) -> Option<(&str, &str, &str)> {
     let mut parts = label.splitn(3, '-');
     let chart_code = parts.next()?;
-    let _state_code = parts.next()?;
+    let state_code = parts.next()?;
     let remainder = parts.next()?;
-    Some((chart_code, remainder))
+    Some((chart_code, state_code, remainder))
 }
 
-fn pretty_hotspot_label(remainder: &str) -> String {
+fn pretty_hotspot_label(state_code: &str, remainder: &str) -> String {
     if remainder == "HOT SPOT" {
-        return "Hot Spot".to_string();
+        return format!("{state_code} Hot Spots");
     }
     remainder
         .strip_prefix("HOT SPOT-")
-        .map(|suffix| format!("Hot Spot {suffix}"))
+        .map(|suffix| format!("{state_code} Hot Spots {suffix}"))
         .unwrap_or_else(|| remainder.to_string())
 }
 
@@ -663,5 +663,14 @@ mod tests {
             "hotspot"
         );
         assert_eq!(infer_plate_document_type(None, "HOT-WA-HOT SPOT-1"), "hotspot");
+    }
+
+    #[test]
+    fn pretty_packaged_hotspot_label_keeps_state_and_pluralizes() {
+        assert_eq!(pretty_packaged_plate_label("HOT-WA-HOT SPOT"), "WA Hot Spots");
+        assert_eq!(
+            pretty_packaged_plate_label("HOT-WY-HOT SPOT-1"),
+            "WY Hot Spots 1"
+        );
     }
 }

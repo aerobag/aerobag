@@ -641,16 +641,21 @@ fn build_procedure_leg_display_path(
                 current_course_deg = Some(course_deg);
             }
             "AF" => {
-                let path = arc_to_fix_path_from_start(current_position, step)?;
-                current_position = step.nav_position?;
-                current_course_deg = path.elements.last().and_then(display_element_end_course_deg);
-                extend_elements_with_sources(
-                    &mut elements,
-                    &mut debug_sources,
-                    path.elements,
-                    path.debug_element_sources,
-                    debug_source!(),
-                );
+                let fix = step.nav_position?;
+                if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
+                    let path = arc_to_fix_path_from_start(current_position, step)?;
+                    current_position = fix;
+                    current_course_deg = path.elements.last().and_then(display_element_end_course_deg);
+                    extend_elements_with_sources(
+                        &mut elements,
+                        &mut debug_sources,
+                        path.elements,
+                        path.debug_element_sources,
+                        debug_source!(),
+                    );
+                } else {
+                    current_position = fix;
+                }
             }
             "RF" => {
                 let path = radius_to_fix_path_from_start(current_position, step)?;

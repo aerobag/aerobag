@@ -5930,13 +5930,13 @@ mod tests {
     #[test]
     #[ignore = "manual visual inspection overlay for selected heading continuity case"]
     fn writes_selected_heading_continuity_overlay_png() {
-        render_procedure_overlay_to_paths("KTVY", "I17", "SALTA", "KTVY_I17_SALTA", true);
+        render_procedure_overlay_to_paths("KEAT", "I12-Y", "WINIM", "KEAT_I12-Y_WINIM", true);
     }
 
     #[test]
     #[ignore = "manual visual inspection overlay for KHLN I27-Z FALDE"]
     fn writes_khln_i27z_falde_overlay_png() {
-        render_procedure_overlay_to_paths("KTVY", "L17", "SALTA", "KTVY_L17_SALTA", true);
+        render_procedure_overlay_to_paths("KHSA", "I18-Z", "CLERY", "KHSA_I18-Z_CLERY", true);
     }
 
     #[test]

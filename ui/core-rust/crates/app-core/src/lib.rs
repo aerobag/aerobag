@@ -1019,15 +1019,20 @@ pub fn materialize_procedure_from_records(
 
     if kind == ProcedureKind::Approach {
         if let Some(enroute_transition) = requested.enroute_transition.as_deref() {
-            let transition_legs =
-                filter_procedure_records(&legs, airport_id, procedure_id, "A", enroute_transition);
-            let items = concretize_procedure_materialization_legs(&transition_legs, false);
-            segments.push((
-                MaterializedSegmentRole::EnrouteTransition,
-                transition_legs,
-                items,
-                false,
-            ));
+            for transition_legs in chained_approach_transition_segments(
+                &legs,
+                airport_id,
+                procedure_id,
+                enroute_transition,
+            ) {
+                let items = concretize_procedure_materialization_legs(&transition_legs, false);
+                segments.push((
+                    MaterializedSegmentRole::EnrouteTransition,
+                    transition_legs,
+                    items,
+                    false,
+                ));
+            }
         }
 
         if let Some(common_route_type) = approach_common_route_type(&rows) {
@@ -1227,6 +1232,51 @@ fn filter_procedure_records(
     filtered
 }
 
+fn chained_approach_transition_segments(
+    legs: &[ProcedureLegMaterializationRecord],
+    airport_id: &str,
+    procedure_id: &str,
+    selected_transition: &str,
+) -> Vec<Vec<ProcedureLegMaterializationRecord>> {
+    let mut segments = Vec::new();
+    let mut current_transition = selected_transition.trim().to_string();
+    let mut seen_transitions = std::collections::HashSet::<String>::new();
+
+    loop {
+        if current_transition.is_empty() || !seen_transitions.insert(current_transition.clone()) {
+            break;
+        }
+        let transition_legs =
+            filter_procedure_records(legs, airport_id, procedure_id, "A", &current_transition);
+        if transition_legs.is_empty() {
+            break;
+        }
+
+        // Some approach procedures chain A-route fragments before reaching the
+        // common/runway segment. KRUQ R20 / JOTTA is the motivating case:
+        // A/JOTTA ends at YIDPO, then A/YIDPO continues to ZUGMY before the
+        // runway route begins. Without following that chain, we create a real
+        // gap from YIDPO to the runway segment.
+        let next_transition = transition_legs
+            .last()
+            .and_then(|record| record.nav_ref.as_ref())
+            .map(describe_nav_ref);
+
+        segments.push(transition_legs);
+
+        let Some(next_transition) = next_transition else {
+            break;
+        };
+        if filter_procedure_records(legs, airport_id, procedure_id, "A", &next_transition).is_empty()
+        {
+            break;
+        }
+        current_transition = next_transition;
+    }
+
+    segments
+}
+
 fn resolve_procedure_materialization_legs_with_provenance(
     airport_id: &str,
     procedure_id: &str,
@@ -1270,11 +1320,13 @@ fn resolve_procedure_materialization_legs_with_provenance(
         let common_resume_target_index = common_segment_resume_target_index(
             previous_display_path.as_ref(),
             previous_was_hold_like,
+            leg_records,
             &fix_records,
         );
         let skip_through_index = reconciliation_resume_skip_through_index(
             previous_display_path.as_ref(),
             previous_leg_to.as_ref(),
+            leg_records,
             &fix_records,
         );
 
@@ -1311,6 +1363,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     let target_index = common_segment_resume_target_index(
                         previous_display_path.as_ref(),
                         false,
+                        next_records,
                         &next_fix_records,
                     );
                     target_index.is_some_and(|target_index| {
@@ -1516,15 +1569,16 @@ fn resolve_procedure_materialization_legs_with_provenance(
             {
                 let common_resume_skips_trailing_cf = trailing_record.path_termination.trim() == "CF"
                     && next_segment_records.is_some_and(|next_records| {
-                        let next_fix_records = next_records
-                            .iter()
-                            .filter(|record| record.nav_ref.is_some())
-                            .collect::<Vec<_>>();
-                        let target_index = common_segment_resume_target_index(
-                            previous_display_path.as_ref(),
-                            false,
-                            &next_fix_records,
-                        );
+                    let next_fix_records = next_records
+                        .iter()
+                        .filter(|record| record.nav_ref.is_some())
+                        .collect::<Vec<_>>();
+                    let target_index = common_segment_resume_target_index(
+                        previous_display_path.as_ref(),
+                        false,
+                        next_records,
+                        &next_fix_records,
+                    );
                         target_index.is_some_and(|target_index| {
                             next_fix_records
                                 .get(target_index)
@@ -1977,6 +2031,11 @@ fn continuity_heading_tolerance_deg(
     previous: &DisplayElementHeadingSignature,
     current: &DisplayElementHeadingSignature,
 ) -> f64 {
+    if let Some(allowed_delta_deg) =
+        published_acute_turn_heading_tolerance_deg(previous, current)
+    {
+        return allowed_delta_deg;
+    }
     for hold_fix in [previous.hold_fix_position, current.hold_fix_position]
         .into_iter()
         .flatten()
@@ -1999,6 +2058,32 @@ fn continuity_heading_tolerance_deg(
         return 120.0;
     }
     continuity_path_boundary_tolerance_deg(previous, current)
+}
+
+fn published_acute_turn_heading_tolerance_deg(
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+) -> Option<f64> {
+    if allow_acute_turn_ksan_09_family_at_pgy(previous, current) {
+        return Some(150.0);
+    }
+    None
+}
+
+fn allow_acute_turn_ksan_09_family_at_pgy(
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+) -> bool {
+    if previous.airport_id != "KSAN" || current.airport_id != "KSAN" {
+        return false;
+    }
+    if previous.end_label != "PGY" || current.start_label != "PGY" {
+        return false;
+    }
+    matches!(
+        previous.procedure_id.as_str(),
+        "I09-Y" | "I09-Z" | "L09-Y" | "L09-Z"
+    ) && previous.procedure_id == current.procedure_id
 }
 
 fn continuity_path_boundary_tolerance_deg(
@@ -2125,6 +2210,7 @@ fn should_skip_reconciliation_anchor_leg(
 fn reconciliation_resume_skip_through_index(
     previous_display_path: Option<&LegDisplayPath>,
     previous_leg_to: Option<&NavRef>,
+    segment_records: &[ProcedureLegMaterializationRecord],
     fix_records: &[&ProcedureLegMaterializationRecord],
 ) -> Option<usize> {
     let Some(previous_display_path) = previous_display_path else {
@@ -2136,10 +2222,18 @@ fn reconciliation_resume_skip_through_index(
     let Some(final_heading_deg) = final_course_of_display_path(previous_display_path) else {
         return None;
     };
+    let max_reentry_sequence = segment_records
+        .iter()
+        .find(|record| record.nav_ref.is_none())
+        .map(|record| record.sequence)
+        .unwrap_or(i32::MAX);
     let Some(reentry_index) = fix_records
         .windows(2)
         .enumerate()
         .find_map(|(index, pair)| {
+            if pair[1].sequence >= max_reentry_sequence {
+                return None;
+            }
             let current_to = pair[1].nav_ref.as_ref()?;
             if current_to != previous_leg_to {
                 return None;
@@ -2207,13 +2301,22 @@ fn course_unit_vector(course_deg: f64) -> (f64, f64) {
 fn common_segment_resume_target_index(
     previous_display_path: Option<&LegDisplayPath>,
     previous_was_hold_like: bool,
+    segment_records: &[ProcedureLegMaterializationRecord],
     fix_records: &[&ProcedureLegMaterializationRecord],
 ) -> Option<usize> {
     let previous_display_path = previous_display_path?;
     let current_position = previous_display_path_terminal_position(previous_display_path)?;
     let current_course_deg = final_course_of_display_path(previous_display_path)?;
+    let max_resumable_sequence = segment_records
+        .iter()
+        .find(|record| record.nav_ref.is_none())
+        .map(|record| record.sequence)
+        .unwrap_or(i32::MAX);
 
     for (index, record) in fix_records.iter().enumerate().skip(1) {
+        if record.sequence >= max_resumable_sequence {
+            break;
+        }
         if record.path_termination.trim() != "CF" {
             continue;
         }
@@ -3170,21 +3273,21 @@ mod tests {
                 bool,
             )>::new();
             if let Some(transition) = selected_enroute_transition.as_deref() {
-                let transition_legs = filter_procedure_records(
+                for transition_legs in chained_approach_transition_segments(
                     &records,
                     airport_id,
                     procedure_id,
-                    "A",
                     transition,
-                );
-                let transition_items =
-                    concretize_procedure_materialization_legs(&transition_legs, false);
-                segments.push((
-                    MaterializedSegmentRole::EnrouteTransition,
-                    transition_legs,
-                    transition_items,
-                    false,
-                ));
+                ) {
+                    let transition_items =
+                        concretize_procedure_materialization_legs(&transition_legs, false);
+                    segments.push((
+                        MaterializedSegmentRole::EnrouteTransition,
+                        transition_legs,
+                        transition_items,
+                        false,
+                    ));
+                }
             }
             if let Some(common_route_type) = approach_common_route_type(&rows) {
                 let common_legs = filter_procedure_records(
@@ -5827,13 +5930,13 @@ mod tests {
     #[test]
     #[ignore = "manual visual inspection overlay for selected heading continuity case"]
     fn writes_selected_heading_continuity_overlay_png() {
-        render_procedure_overlay_to_paths("KMCC", "I16", "LIN", "KMCC_I16_LIN", true);
+        render_procedure_overlay_to_paths("KTVY", "I17", "SALTA", "KTVY_I17_SALTA", true);
     }
 
     #[test]
     #[ignore = "manual visual inspection overlay for KHLN I27-Z FALDE"]
     fn writes_khln_i27z_falde_overlay_png() {
-        render_procedure_overlay_to_paths("KMCC", "L16", "LIN", "KMCC_L16_LIN", true);
+        render_procedure_overlay_to_paths("KTVY", "L17", "SALTA", "KTVY_L17_SALTA", true);
     }
 
     #[test]
@@ -5935,7 +6038,12 @@ mod tests {
         let common_fix_records = common_leg_records.iter().collect::<Vec<_>>();
         eprintln!(
             "common_segment_resume_target_index={:?}",
-            common_segment_resume_target_index(previous_path.as_ref(), true, &common_fix_records)
+            common_segment_resume_target_index(
+                previous_path.as_ref(),
+                true,
+                common_leg_records,
+                &common_fix_records,
+            )
         );
         let resolved = resolve_procedure_materialization_legs_with_provenance(
             "KHLN",
@@ -6042,6 +6150,7 @@ mod tests {
             common_segment_resume_target_index(
                 previous_path.as_ref(),
                 previous_was_hold_like,
+                common_leg_records,
                 &common_fix_records,
             )
         );

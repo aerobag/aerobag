@@ -71,11 +71,15 @@ pub use ownship::{
 pub use package_management::{
     default_offline_package_preferences, BundleManifest, BundlePackageArtifact,
     CurrentArtifactsBundleRef, CurrentArtifactsManifest, InstalledArtifact,
-    OfflinePackagePreferences, OfflinePackageSelection, OfflinePackagesEvent,
-    OfflinePackagesInitInput, OfflinePackagesReduceInput, OfflinePackagesReduceResult,
-    OfflinePackagesState, OfflinePackagesUiRow, OfflinePackagesUiState, PackageManagementInput,
+    OfflinePackagePreferences, OfflinePackageSelection, OfflinePackagesControllerCommand,
+    OfflinePackagesControllerEvent, OfflinePackagesControllerInput,
+    OfflinePackagesControllerResult, OfflinePackagesControllerState,
+    OfflinePackagesControllerUiState, OfflinePackagesEvent, OfflinePackagesInitInput,
+    OfflinePackagesLibraryCache, OfflinePackagesReduceInput, OfflinePackagesReduceResult,
+    OfflinePackagesState, OfflinePackagesSyncSummary, OfflinePackagesUiRow,
+    OfflinePackagesUiState, OfflinePackagesWarning, PackageManagementInput,
     PackageManagementPlan, initialize_offline_packages, plan_offline_packages,
-    reduce_offline_packages,
+    reduce_offline_packages, reduce_offline_packages_controller,
 };
 pub use planning::{
     activate_direct_to, activate_direct_to_leg, activate_leg, activate_next_leg,

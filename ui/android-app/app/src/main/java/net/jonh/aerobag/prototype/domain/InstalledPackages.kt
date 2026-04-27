@@ -3,6 +3,10 @@ package net.jonh.aerobag.prototype.domain
 import android.content.Context
 import java.io.File
 import java.io.InputStream
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 enum class InstalledPackageKind(val directoryName: String) {
     Charts("chart-packages"),
@@ -10,31 +14,119 @@ enum class InstalledPackageKind(val directoryName: String) {
     Data("data-packages"),
 }
 
+@Serializable
+private data class InstalledArtifactMetadata(
+    val artifactId: String,
+    val filename: String,
+    val sizeBytes: Long? = null,
+    val checksumSha256: String? = null,
+)
+
+data class InstalledPackageArtifact(
+    val artifactId: String,
+    val filename: String,
+    val file: File,
+    val sizeBytes: Long? = null,
+    val checksumSha256: String? = null,
+)
+
 object InstalledPackages {
-    private fun internalFile(context: Context, kind: InstalledPackageKind, packageId: String): File =
-        File(File(context.filesDir, kind.directoryName), "$packageId.zip")
-
-    private fun externalFile(context: Context, kind: InstalledPackageKind, packageId: String): File? =
-        context.getExternalFilesDir(null)?.let { File(File(it, kind.directoryName), "$packageId.zip") }
-
-    fun existingInstalledFile(context: Context, kind: InstalledPackageKind, packageId: String): File? {
-        val external = externalFile(context, kind, packageId)
-        if (external?.isFile == true) {
-            return external
-        }
-        val internal = internalFile(context, kind, packageId)
-        if (internal.isFile) {
-            return internal
-        }
-        return null
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
     }
 
-    fun installedFile(context: Context, kind: InstalledPackageKind, packageId: String): File =
-        existingInstalledFile(context, kind, packageId)
-            ?: internalFile(context, kind, packageId)
+    private fun internalFile(context: Context, kind: InstalledPackageKind, filename: String): File =
+        File(File(context.filesDir, kind.directoryName), filename)
 
-    fun replaceInstalledFile(context: Context, kind: InstalledPackageKind, packageId: String, bytes: ByteArray) {
-        val target = internalFile(context, kind, packageId)
+    private fun externalFile(context: Context, kind: InstalledPackageKind, filename: String): File? =
+        context.getExternalFilesDir(null)?.let { File(File(it, kind.directoryName), filename) }
+
+    private fun metadataFile(zipFile: File): File =
+        File(zipFile.parentFile, "${zipFile.name}.metadata.json")
+
+    private fun writeMetadata(zipFile: File, metadata: InstalledArtifactMetadata) {
+        val target = metadataFile(zipFile)
+        target.parentFile?.mkdirs()
+        val temp = File(target.parentFile, "${target.name}.tmp")
+        temp.writeText(json.encodeToString(metadata))
+        if (!temp.renameTo(target)) {
+            temp.copyTo(target, overwrite = true)
+            temp.delete()
+        }
+    }
+
+    private fun readMetadata(zipFile: File): InstalledArtifactMetadata? =
+        metadataFile(zipFile)
+            .takeIf { it.isFile }
+            ?.let { file ->
+                runCatching { json.decodeFromString<InstalledArtifactMetadata>(file.readText()) }.getOrNull()
+            }
+
+    private fun fallbackArtifact(zipFile: File): InstalledPackageArtifact {
+        val legacyArtifactId = zipFile.name.removeSuffix(".zip")
+        return InstalledPackageArtifact(
+            artifactId = legacyArtifactId,
+            filename = zipFile.name,
+            file = zipFile,
+            sizeBytes = zipFile.length(),
+            checksumSha256 = null,
+        )
+    }
+
+    fun listInstalledArtifacts(context: Context, kind: InstalledPackageKind): List<InstalledPackageArtifact> {
+        val directories = listOfNotNull(
+            context.getExternalFilesDir(null)?.let { File(it, kind.directoryName) },
+            File(context.filesDir, kind.directoryName),
+        )
+        val artifactsByFilename = linkedMapOf<String, InstalledPackageArtifact>()
+        directories
+            .filter { it.isDirectory }
+            .flatMap { dir -> dir.listFiles()?.asList().orEmpty() }
+            .filter { it.isFile && it.extension == "zip" }
+            .sortedBy { it.name }
+            .forEach { zipFile ->
+                val metadata = readMetadata(zipFile)
+                val artifact = if (metadata != null) {
+                    InstalledPackageArtifact(
+                        artifactId = metadata.artifactId,
+                        filename = metadata.filename,
+                        file = zipFile,
+                        sizeBytes = metadata.sizeBytes ?: zipFile.length(),
+                        checksumSha256 = metadata.checksumSha256,
+                    )
+                } else {
+                    fallbackArtifact(zipFile)
+                }
+                artifactsByFilename.putIfAbsent(artifact.filename, artifact)
+            }
+        return artifactsByFilename.values.sortedBy { it.filename }
+    }
+
+    fun existingInstalledArtifacts(context: Context, kind: InstalledPackageKind, artifactId: String): List<InstalledPackageArtifact> =
+        listInstalledArtifacts(context, kind)
+            .filter { it.artifactId == artifactId }
+            .sortedWith(compareByDescending<InstalledPackageArtifact> { it.file.lastModified() }.thenByDescending { it.filename })
+
+    fun existingInstalledFile(context: Context, kind: InstalledPackageKind, artifactId: String): File? =
+        existingInstalledArtifacts(context, kind, artifactId)
+            .firstOrNull()
+            ?.file
+
+    fun installedFile(context: Context, kind: InstalledPackageKind, artifactId: String): File =
+        existingInstalledFile(context, kind, artifactId)
+            ?: error("missing installed ${kind.directoryName} package $artifactId")
+
+    fun replaceInstalledFile(
+        context: Context,
+        kind: InstalledPackageKind,
+        artifactId: String,
+        filename: String,
+        bytes: ByteArray,
+        sizeBytes: Long? = null,
+        checksumSha256: String? = null,
+    ) {
+        val target = internalFile(context, kind, filename)
         target.parentFile?.mkdirs()
         PackageZipStore.invalidate(target)
         val temp = File(target.parentFile, "${target.name}.tmp")
@@ -43,15 +135,27 @@ object InstalledPackages {
             temp.copyTo(target, overwrite = true)
             temp.delete()
         }
+        writeMetadata(
+            zipFile = target,
+            metadata = InstalledArtifactMetadata(
+                artifactId = artifactId,
+                filename = filename,
+                sizeBytes = sizeBytes ?: target.length(),
+                checksumSha256 = checksumSha256,
+            ),
+        )
     }
 
     fun replaceInstalledFileFromStream(
         context: Context,
         kind: InstalledPackageKind,
-        packageId: String,
+        artifactId: String,
+        filename: String,
         source: InputStream,
+        sizeBytes: Long? = null,
+        checksumSha256: String? = null,
     ) {
-        val target = internalFile(context, kind, packageId)
+        val target = internalFile(context, kind, filename)
         target.parentFile?.mkdirs()
         PackageZipStore.invalidate(target)
         val temp = File(target.parentFile, "${target.name}.tmp")
@@ -62,28 +166,37 @@ object InstalledPackages {
             temp.copyTo(target, overwrite = true)
             temp.delete()
         }
+        writeMetadata(
+            zipFile = target,
+            metadata = InstalledArtifactMetadata(
+                artifactId = artifactId,
+                filename = filename,
+                sizeBytes = sizeBytes ?: target.length(),
+                checksumSha256 = checksumSha256,
+            ),
+        )
     }
 
-    fun deleteInstalledFile(context: Context, kind: InstalledPackageKind, packageId: String) {
-        existingInstalledFile(context, kind, packageId)?.let { file ->
-            PackageZipStore.invalidate(file)
-            file.delete()
-        }
+    fun deleteInstalledArtifact(
+        context: Context,
+        kind: InstalledPackageKind,
+        artifactId: String,
+        filename: String,
+        keepFilename: String? = null,
+    ) {
+        existingInstalledArtifacts(context, kind, artifactId)
+            .filter { it.filename == filename }
+            .filterNot { it.filename == keepFilename }
+            .forEach { artifact ->
+                PackageZipStore.invalidate(artifact.file)
+                artifact.file.delete()
+                metadataFile(artifact.file).delete()
+            }
     }
-
-    fun isInstalled(context: Context, kind: InstalledPackageKind, packageId: String): Boolean =
-        existingInstalledFile(context, kind, packageId) != null
 
     fun listInstalledPackageIds(context: Context, kind: InstalledPackageKind): List<String> {
-        val directories = sequenceOf(
-            File(context.filesDir, kind.directoryName),
-            context.getExternalFilesDir(null)?.let { File(it, kind.directoryName) },
-        ).filterNotNull()
-        return directories
-            .filter { it.isDirectory }
-            .flatMap { dir -> dir.listFiles()?.asSequence().orEmpty() }
-            .filter { it.isFile && it.extension == "zip" }
-            .map { it.name.removeSuffix(".zip") }
+        return listInstalledArtifacts(context, kind)
+            .map { it.artifactId }
             .distinct()
             .sorted()
             .toList()

@@ -67,6 +67,7 @@ pub struct CurrentArtifactsBundleRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstalledArtifact {
     pub artifact_id: String,
+    pub filename: String,
     pub size_bytes: Option<u64>,
     pub checksum_sha256: Option<String>,
 }
@@ -77,6 +78,10 @@ pub struct PackageManagementInput {
     pub preferences: OfflinePackagePreferences,
     pub bundle: BundleManifest,
     pub installed: Vec<InstalledArtifact>,
+    #[serde(default)]
+    pub forced_gc_installed_filenames: Vec<String>,
+    #[serde(default)]
+    pub suppressed_fetch_filenames: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -137,6 +142,10 @@ pub struct OfflinePackagesInitInput {
     pub discovery_manifests: Vec<CurrentArtifactsManifest>,
     pub bundle_manifests_by_filename: BTreeMap<String, BundleManifest>,
     pub installed: Vec<InstalledArtifact>,
+    #[serde(default)]
+    pub forced_gc_installed_filenames: Vec<String>,
+    #[serde(default)]
+    pub suppressed_fetch_filenames: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +158,10 @@ pub struct OfflinePackagesReduceInput {
     pub discovery_manifests: Vec<CurrentArtifactsManifest>,
     pub bundle_manifests_by_filename: BTreeMap<String, BundleManifest>,
     pub installed: Vec<InstalledArtifact>,
+    #[serde(default)]
+    pub forced_gc_installed_filenames: Vec<String>,
+    #[serde(default)]
+    pub suppressed_fetch_filenames: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,9 +173,115 @@ pub struct OfflinePackagesReduceResult {
     pub bundle: BundleManifest,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfflinePackagesWarning {
+    pub artifact_id: String,
+    pub family_id: Option<String>,
+    pub region_id: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfflinePackagesSyncSummary {
+    pub fetched_count: usize,
+    pub gc_count: usize,
+    pub warnings: Vec<OfflinePackagesWarning>,
+    #[serde(default)]
+    pub remote_poisoned_filename_messages: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct OfflinePackagesLibraryCache {
+    pub package_source_base_url: String,
+    pub fetched_at_epoch_ms: i64,
+    pub discovery_manifests: Vec<CurrentArtifactsManifest>,
+    pub bundle_manifests_by_filename: BTreeMap<String, BundleManifest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct OfflinePackagesControllerState {
+    pub packages_state: Option<OfflinePackagesState>,
+    pub library_cache: Option<OfflinePackagesLibraryCache>,
+    pub tombstoned_installed_filename_messages: BTreeMap<String, String>,
+    pub suppressed_fetch_filename_messages: BTreeMap<String, String>,
+    pub library_loading: bool,
+    pub library_error_message: Option<String>,
+    pub sync_in_flight: bool,
+    pub sync_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OfflinePackagesControllerEvent {
+    EnsureLibrary,
+    RefreshLibraryRequested,
+    LibraryRefreshSucceeded {
+        fetched_at_epoch_ms: i64,
+        discovery_manifests: Vec<CurrentArtifactsManifest>,
+        bundle_manifests_by_filename: BTreeMap<String, BundleManifest>,
+    },
+    LibraryRefreshFailed {
+        message: String,
+    },
+    InstalledArtifactHealthObserved {
+        unreadable_installed_filename_messages: BTreeMap<String, String>,
+    },
+    PackagesEvent {
+        event: OfflinePackagesEvent,
+    },
+    SyncRequested,
+    SyncFinished {
+        summary: OfflinePackagesSyncSummary,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OfflinePackagesControllerCommand {
+    RefreshLibrary {
+        package_source_base_url: String,
+        discovery_filenames: Vec<String>,
+    },
+    Sync {
+        package_source_base_url: String,
+        plan: PackageManagementPlan,
+        bundle: BundleManifest,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct OfflinePackagesControllerUiState {
+    pub planner_ui_state: Option<OfflinePackagesUiState>,
+    pub library_loaded: bool,
+    pub library_loading: bool,
+    pub library_error_message: Option<String>,
+    pub sync_in_flight: bool,
+    pub sync_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfflinePackagesControllerInput {
+    pub state: Option<OfflinePackagesControllerState>,
+    pub package_source_base_url: String,
+    pub discovery_filenames: Vec<String>,
+    pub region_ids: Vec<String>,
+    pub product_ids: Vec<String>,
+    pub now_epoch_ms: i64,
+    pub installed: Vec<InstalledArtifact>,
+    pub event: OfflinePackagesControllerEvent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfflinePackagesControllerResult {
+    pub state: OfflinePackagesControllerState,
+    pub ui_state: OfflinePackagesControllerUiState,
+    pub command: Option<OfflinePackagesControllerCommand>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AvailablePackageArtifact {
     artifact_id: String,
+    filename: String,
     product_id: String,
     region_id: Option<String>,
     effective_at_epoch_ms: Option<i64>,
@@ -211,6 +330,8 @@ pub fn initialize_offline_packages(input: &OfflinePackagesInitInput) -> OfflineP
         preferences: state.preferences.clone(),
         bundle: bundle.clone(),
         installed: input.installed.clone(),
+        forced_gc_installed_filenames: input.forced_gc_installed_filenames.clone(),
+        suppressed_fetch_filenames: input.suppressed_fetch_filenames.clone(),
     });
     OfflinePackagesReduceResult {
         ui_state: project_offline_packages_ui_state(
@@ -221,6 +342,8 @@ pub fn initialize_offline_packages(input: &OfflinePackagesInitInput) -> OfflineP
             &input.discovery_manifests,
             &input.bundle_manifests_by_filename,
             &input.installed,
+            &input.forced_gc_installed_filenames,
+            &input.suppressed_fetch_filenames,
         ),
         effective_now_epoch_ms,
         plan,
@@ -270,6 +393,8 @@ pub fn reduce_offline_packages(input: &OfflinePackagesReduceInput) -> OfflinePac
         preferences: state.preferences.clone(),
         bundle: bundle.clone(),
         installed: input.installed.clone(),
+        forced_gc_installed_filenames: input.forced_gc_installed_filenames.clone(),
+        suppressed_fetch_filenames: input.suppressed_fetch_filenames.clone(),
     });
 
     OfflinePackagesReduceResult {
@@ -281,12 +406,331 @@ pub fn reduce_offline_packages(input: &OfflinePackagesReduceInput) -> OfflinePac
             &input.discovery_manifests,
             &input.bundle_manifests_by_filename,
             &input.installed,
+            &input.forced_gc_installed_filenames,
+            &input.suppressed_fetch_filenames,
         ),
         effective_now_epoch_ms,
         plan,
         bundle,
         state,
     }
+}
+
+pub fn reduce_offline_packages_controller(
+    input: &OfflinePackagesControllerInput,
+) -> OfflinePackagesControllerResult {
+    let mut state = input.state.clone().unwrap_or_default();
+    let package_source_base_url = input.package_source_base_url.trim().trim_end_matches('/').to_string();
+    let mut command = None;
+
+    match &input.event {
+        OfflinePackagesControllerEvent::EnsureLibrary => {
+            if library_refresh_needed(state.library_cache.as_ref(), &package_source_base_url, input.now_epoch_ms) {
+                state.library_loading = true;
+                state.library_error_message = None;
+                command = Some(OfflinePackagesControllerCommand::RefreshLibrary {
+                    package_source_base_url: package_source_base_url.clone(),
+                    discovery_filenames: input.discovery_filenames.clone(),
+                });
+            }
+        }
+        OfflinePackagesControllerEvent::RefreshLibraryRequested => {
+            state.library_loading = true;
+            state.library_error_message = None;
+            command = Some(OfflinePackagesControllerCommand::RefreshLibrary {
+                package_source_base_url: package_source_base_url.clone(),
+                discovery_filenames: input.discovery_filenames.clone(),
+            });
+        }
+        OfflinePackagesControllerEvent::LibraryRefreshSucceeded {
+            fetched_at_epoch_ms,
+            discovery_manifests,
+            bundle_manifests_by_filename,
+        } => {
+            state.library_cache = Some(OfflinePackagesLibraryCache {
+                package_source_base_url: package_source_base_url.clone(),
+                fetched_at_epoch_ms: *fetched_at_epoch_ms,
+                discovery_manifests: discovery_manifests.clone(),
+                bundle_manifests_by_filename: bundle_manifests_by_filename.clone(),
+            });
+            state.library_loading = false;
+            state.library_error_message = None;
+        }
+        OfflinePackagesControllerEvent::LibraryRefreshFailed { message } => {
+            state.library_loading = false;
+            state.library_error_message = Some(message.clone());
+        }
+        OfflinePackagesControllerEvent::InstalledArtifactHealthObserved {
+            unreadable_installed_filename_messages,
+        } => {
+            state.tombstoned_installed_filename_messages =
+                unreadable_installed_filename_messages.clone();
+        }
+        OfflinePackagesControllerEvent::PackagesEvent { event } => {
+            let Some(library_cache) = state.library_cache.as_ref() else {
+                state.library_error_message = Some("offline packages library is not loaded".to_string());
+                return OfflinePackagesControllerResult {
+                    ui_state: project_offline_packages_controller_ui_state(
+                        &state,
+                        &package_source_base_url,
+                        None,
+                    ),
+                    state,
+                    command,
+                };
+            };
+            let reduced = reduce_offline_packages(&OfflinePackagesReduceInput {
+                state: state.packages_state.clone().unwrap_or_default(),
+                event: event.clone(),
+                region_ids: input.region_ids.clone(),
+                product_ids: input.product_ids.clone(),
+                now_epoch_ms: input.now_epoch_ms,
+                discovery_manifests: library_cache.discovery_manifests.clone(),
+                bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
+                installed: effective_installed_artifacts(&state, &input.installed),
+                forced_gc_installed_filenames: forced_gc_installed_filenames(&state, &input.installed),
+                suppressed_fetch_filenames: state
+                    .suppressed_fetch_filename_messages
+                    .keys()
+                    .cloned()
+                    .collect(),
+            });
+            state.packages_state = Some(reduced.state.clone());
+            return OfflinePackagesControllerResult {
+                ui_state: project_offline_packages_controller_ui_state(
+                    &state,
+                    &package_source_base_url,
+                    Some(reduced.ui_state),
+                ),
+                state,
+                command,
+            };
+        }
+        OfflinePackagesControllerEvent::SyncRequested => {
+            let Some(library_cache) = state.library_cache.as_ref() else {
+                state.library_error_message = Some("offline packages library is not loaded".to_string());
+                return OfflinePackagesControllerResult {
+                    ui_state: project_offline_packages_controller_ui_state(
+                        &state,
+                        &package_source_base_url,
+                        None,
+                    ),
+                    state,
+                    command,
+                };
+            };
+            let current = initialize_offline_packages(&OfflinePackagesInitInput {
+                state: state.packages_state.clone(),
+                region_ids: input.region_ids.clone(),
+                product_ids: input.product_ids.clone(),
+                now_epoch_ms: input.now_epoch_ms,
+                discovery_manifests: library_cache.discovery_manifests.clone(),
+                bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
+                installed: effective_installed_artifacts(&state, &input.installed),
+                forced_gc_installed_filenames: forced_gc_installed_filenames(&state, &input.installed),
+                suppressed_fetch_filenames: state
+                    .suppressed_fetch_filename_messages
+                    .keys()
+                    .cloned()
+                    .collect(),
+            });
+            state.packages_state = Some(current.state.clone());
+            state.sync_in_flight = true;
+            command = Some(OfflinePackagesControllerCommand::Sync {
+                package_source_base_url: package_source_base_url.clone(),
+                plan: current.plan,
+                bundle: current.bundle,
+            });
+            return OfflinePackagesControllerResult {
+                ui_state: project_offline_packages_controller_ui_state(
+                    &state,
+                    &package_source_base_url,
+                    Some(current.ui_state),
+                ),
+                state,
+                command,
+            };
+        }
+        OfflinePackagesControllerEvent::SyncFinished { summary } => {
+            state.sync_in_flight = false;
+            state.sync_message = Some(format_offline_packages_sync_summary(summary));
+            state
+                .suppressed_fetch_filename_messages
+                .extend(summary.remote_poisoned_filename_messages.clone());
+            state
+                .tombstoned_installed_filename_messages
+                .extend(summary.remote_poisoned_filename_messages.clone());
+        }
+    }
+
+    let effective_installed = effective_installed_artifacts(&state, &input.installed);
+    let forced_gc_installed_filenames = forced_gc_installed_filenames(&state, &input.installed);
+    let planner_ui_state = replan_controller_ui_state(
+        &mut state,
+        &package_source_base_url,
+        &input.region_ids,
+        &input.product_ids,
+        input.now_epoch_ms,
+        &effective_installed,
+        &forced_gc_installed_filenames,
+    );
+    OfflinePackagesControllerResult {
+        ui_state: project_offline_packages_controller_ui_state(
+            &state,
+            &package_source_base_url,
+            planner_ui_state,
+        ),
+        state,
+        command,
+    }
+}
+
+fn library_refresh_needed(
+    cache: Option<&OfflinePackagesLibraryCache>,
+    package_source_base_url: &str,
+    now_epoch_ms: i64,
+) -> bool {
+    let Some(cache) = cache else {
+        return true;
+    };
+    if cache.discovery_manifests.is_empty() {
+        return true;
+    }
+    if cache.package_source_base_url != package_source_base_url {
+        return true;
+    }
+    now_epoch_ms - cache.fetched_at_epoch_ms > 60 * 60 * 1000
+}
+
+fn effective_installed_artifacts(
+    state: &OfflinePackagesControllerState,
+    installed: &[InstalledArtifact],
+) -> Vec<InstalledArtifact> {
+    installed
+        .iter()
+        .filter(|artifact| {
+            !state
+                .tombstoned_installed_filename_messages
+                .contains_key(&artifact.filename)
+        })
+        .cloned()
+        .collect()
+}
+
+fn forced_gc_installed_filenames(
+    state: &OfflinePackagesControllerState,
+    installed: &[InstalledArtifact],
+) -> Vec<String> {
+    installed
+        .iter()
+        .filter(|artifact| {
+            state
+                .tombstoned_installed_filename_messages
+                .contains_key(&artifact.filename)
+        })
+        .map(|artifact| artifact.filename.clone())
+        .collect()
+}
+
+fn replan_controller_ui_state(
+    state: &mut OfflinePackagesControllerState,
+    package_source_base_url: &str,
+    region_ids: &[String],
+    product_ids: &[String],
+    now_epoch_ms: i64,
+    installed: &[InstalledArtifact],
+    forced_gc_installed_filenames: &[String],
+) -> Option<OfflinePackagesUiState> {
+    let library_cache = state.library_cache.as_ref()?;
+    if library_cache.package_source_base_url != package_source_base_url {
+        return None;
+    }
+    let reduced = initialize_offline_packages(&OfflinePackagesInitInput {
+        state: state.packages_state.clone(),
+        region_ids: region_ids.to_vec(),
+        product_ids: product_ids.to_vec(),
+        now_epoch_ms,
+        discovery_manifests: library_cache.discovery_manifests.clone(),
+        bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
+        installed: installed.to_vec(),
+        forced_gc_installed_filenames: forced_gc_installed_filenames.to_vec(),
+        suppressed_fetch_filenames: state
+            .suppressed_fetch_filename_messages
+            .keys()
+            .cloned()
+            .collect(),
+    });
+    state.packages_state = Some(reduced.state);
+    Some(reduced.ui_state)
+}
+
+fn project_offline_packages_controller_ui_state(
+    state: &OfflinePackagesControllerState,
+    package_source_base_url: &str,
+    planner_ui_state: Option<OfflinePackagesUiState>,
+) -> OfflinePackagesControllerUiState {
+    OfflinePackagesControllerUiState {
+        planner_ui_state,
+        library_loaded: state.library_cache.as_ref().is_some_and(|cache| {
+            cache.package_source_base_url == package_source_base_url
+                && !cache.discovery_manifests.is_empty()
+        }),
+        library_loading: state.library_loading,
+        library_error_message: state.library_error_message.clone(),
+        sync_in_flight: state.sync_in_flight,
+        sync_message: state.sync_message.clone(),
+    }
+}
+
+fn format_offline_packages_sync_summary(summary: &OfflinePackagesSyncSummary) -> String {
+    let base = format!("SYNC fetched {}, GC {}", summary.fetched_count, summary.gc_count);
+    if summary.warnings.is_empty() {
+        return base;
+    }
+    let core_warnings: Vec<_> = summary
+        .warnings
+        .iter()
+        .filter(|warning| warning.region_id.is_none())
+        .collect();
+    let visible_warnings: Vec<_> = summary
+        .warnings
+        .iter()
+        .filter(|warning| warning.region_id.is_some())
+        .collect();
+    let mut parts = Vec::new();
+    if !visible_warnings.is_empty() {
+        let details = visible_warnings
+            .iter()
+            .take(2)
+            .map(|warning| format!("{}: {}", warning.artifact_id, warning.message))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let more = visible_warnings
+            .len()
+            .saturating_sub(2)
+            .checked_sub(0)
+            .filter(|count| *count > 0)
+            .map(|count| format!(" (+{} more)", count))
+            .unwrap_or_default();
+        parts.push(format!("{details}{more}"));
+    }
+    if !core_warnings.is_empty() {
+        let core_ids = core_warnings
+            .iter()
+            .take(2)
+            .map(|warning| warning.artifact_id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = core_warnings
+            .len()
+            .saturating_sub(2)
+            .checked_sub(0)
+            .filter(|count| *count > 0)
+            .map(|count| format!(" (+{} more)", count))
+            .unwrap_or_default();
+        parts.push(format!("core packages: {core_ids}{more}"));
+    }
+    format!("{base}. WARN {}: {}", summary.warnings.len(), parts.join(" | "))
 }
 
 pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagementPlan {
@@ -297,11 +741,28 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
         .filter_map(bundle_package_to_artifact)
         .collect();
 
-    let installed: BTreeSet<String> = input
+    let installed_by_filename: BTreeMap<String, &InstalledArtifact> = input
         .installed
         .iter()
-        .map(|artifact| artifact.artifact_id.clone())
+        .map(|artifact| (artifact.filename.clone(), artifact))
         .collect();
+    let forced_gc_filenames: BTreeSet<String> =
+        input.forced_gc_installed_filenames.iter().cloned().collect();
+    let effective_installed_by_filename: BTreeMap<String, &InstalledArtifact> = installed_by_filename
+        .iter()
+        .filter(|(filename, _)| !forced_gc_filenames.contains(*filename))
+        .map(|(filename, artifact)| (filename.clone(), *artifact))
+        .collect();
+    let suppressed_fetch_filenames: BTreeSet<String> =
+        input.suppressed_fetch_filenames.iter().cloned().collect();
+    let effective_installed_filenames_for_artifact_id =
+        |artifact_id: &str| -> Vec<String> {
+            effective_installed_by_filename
+                .values()
+                .filter(|installed| installed.artifact_id == artifact_id)
+                .map(|installed| installed.filename.clone())
+                .collect()
+        };
     let mut fetch = BTreeSet::new();
     let mut retain_installed = BTreeSet::new();
     let mut protected_by_pause = BTreeSet::new();
@@ -309,45 +770,58 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
     let mut stale_selected_installed = Vec::new();
 
     for artifact in &available_artifacts {
+        let matching_installed_filenames = effective_installed_filenames_for_artifact_id(&artifact.artifact_id);
+        let desired_filename_installed = matching_installed_filenames
+            .iter()
+            .any(|filename| filename == &artifact.filename);
         match artifact_policy(input, artifact) {
             ArtifactPolicy::Desired => {
-                if installed.contains(&artifact.artifact_id) {
-                    retain_installed.insert(artifact.artifact_id.clone());
+                if desired_filename_installed {
+                    retain_installed.insert(artifact.filename.clone());
                     slots_with_current_installed.insert(artifact_slot(artifact));
+                } else if suppressed_fetch_filenames.contains(&artifact.filename) {
+                    // Known-bad immutable remote artifact for this app run; do not requeue fetch.
                 } else {
                     fetch.insert(artifact.artifact_id.clone());
                 }
             }
             ArtifactPolicy::ProtectedByPause => {
-                if installed.contains(&artifact.artifact_id) {
-                    retain_installed.insert(artifact.artifact_id.clone());
-                    protected_by_pause.insert(artifact.artifact_id.clone());
+                if desired_filename_installed {
+                    retain_installed.insert(artifact.filename.clone());
+                    protected_by_pause.insert(artifact.filename.clone());
                 }
             }
             ArtifactPolicy::NotSelected => {
-                if installed.contains(&artifact.artifact_id)
+                if !matching_installed_filenames.is_empty()
                     && is_expired(input.now_epoch_ms, artifact)
                     && selected_state(input, artifact) == OfflinePackageSelection::Play
                 {
-                    stale_selected_installed.push(artifact);
+                    stale_selected_installed.extend(
+                        matching_installed_filenames
+                            .into_iter()
+                            .map(|filename| (artifact, filename)),
+                    );
                 }
             }
         }
     }
 
-    for artifact in stale_selected_installed {
+    for (artifact, filename) in stale_selected_installed {
         if !slots_with_current_installed.contains(&artifact_slot(artifact)) {
-            retain_installed.insert(artifact.artifact_id.clone());
+            retain_installed.insert(filename);
         }
     }
 
     let mut gc = BTreeSet::new();
-    for artifact_id in &installed {
-        if retain_installed.contains(artifact_id) || fetch.contains(artifact_id) {
+    for (filename, installed) in &installed_by_filename {
+        if retain_installed.contains(filename)
+            || (fetch.contains(&installed.artifact_id) && !forced_gc_filenames.contains(filename))
+        {
             continue;
         }
-        gc.insert(artifact_id.clone());
+        gc.insert(filename.clone());
     }
+    gc.extend(forced_gc_filenames);
 
     PackageManagementPlan {
         fetch: fetch.into_iter().collect(),
@@ -365,6 +839,8 @@ fn project_offline_packages_ui_state(
     discovery_manifests: &[CurrentArtifactsManifest],
     bundle_manifests_by_filename: &BTreeMap<String, BundleManifest>,
     installed: &[InstalledArtifact],
+    forced_gc_installed_filenames: &[String],
+    suppressed_fetch_filenames: &[String],
 ) -> OfflinePackagesUiState {
     let bundle = resolve_cycle_bundle_manifest(
         discovery_manifests,
@@ -376,12 +852,15 @@ fn project_offline_packages_ui_state(
         preferences: state.preferences.clone(),
         bundle,
         installed: installed.to_vec(),
+        forced_gc_installed_filenames: forced_gc_installed_filenames.to_vec(),
+        suppressed_fetch_filenames: suppressed_fetch_filenames.to_vec(),
     });
     let counts = plan_counts_by_dimension(
         &plan,
         discovery_manifests,
         bundle_manifests_by_filename,
         now_epoch_ms,
+        installed,
     );
 
     OfflinePackagesUiState {
@@ -527,6 +1006,7 @@ struct PlanCountsByDimension {
 fn plan_counts_by_dimension_from_packages(
     plan: &PackageManagementPlan,
     packages_by_id: &BTreeMap<&str, &BundlePackageArtifact>,
+    installed_by_filename: &BTreeMap<&str, &InstalledArtifact>,
 ) -> PlanCountsByDimension {
     let mut counts = PlanCountsByDimension::default();
 
@@ -550,11 +1030,17 @@ fn plan_counts_by_dimension_from_packages(
     for artifact_id in &plan.fetch {
         apply(&mut counts, &packages_by_id, artifact_id, |counts| counts.fetch_count += 1);
     }
-    for artifact_id in &plan.gc {
-        apply(&mut counts, &packages_by_id, artifact_id, |counts| counts.gc_count += 1);
+    for filename in &plan.gc {
+        let Some(installed) = installed_by_filename.get(filename.as_str()) else {
+            continue;
+        };
+        apply(&mut counts, &packages_by_id, &installed.artifact_id, |counts| counts.gc_count += 1);
     }
-    for artifact_id in &plan.protected_by_pause {
-        apply(&mut counts, &packages_by_id, artifact_id, |counts| counts.pause_count += 1);
+    for filename in &plan.protected_by_pause {
+        let Some(installed) = installed_by_filename.get(filename.as_str()) else {
+            continue;
+        };
+        apply(&mut counts, &packages_by_id, &installed.artifact_id, |counts| counts.pause_count += 1);
     }
 
     counts
@@ -565,6 +1051,7 @@ fn plan_counts_by_dimension(
     discovery_manifests: &[CurrentArtifactsManifest],
     bundle_manifests_by_filename: &BTreeMap<String, BundleManifest>,
     now_epoch_ms: i64,
+    installed: &[InstalledArtifact],
 ) -> PlanCountsByDimension {
     let _ = resolve_cycle_bundle_manifest(
         discovery_manifests,
@@ -576,7 +1063,11 @@ fn plan_counts_by_dimension(
         .flat_map(|bundle| bundle.packages.iter())
         .map(|pkg| (pkg.id.as_str(), pkg))
         .collect();
-    plan_counts_by_dimension_from_packages(plan, &packages_by_id)
+    let installed_by_filename: BTreeMap<&str, &InstalledArtifact> = installed
+        .iter()
+        .map(|artifact| (artifact.filename.as_str(), artifact))
+        .collect();
+    plan_counts_by_dimension_from_packages(plan, &packages_by_id, &installed_by_filename)
 }
 
 fn normalize_preferences(
@@ -675,6 +1166,7 @@ fn bundle_package_to_artifact(pkg: &BundlePackageArtifact) -> Option<AvailablePa
         "sec" | "tac" | "shaded-relief" | "enr-l" | "enr-h" | "tpp" | "csup" | "nav-db"
         | "vectors" | "geo" | "terrain" => Some(AvailablePackageArtifact {
             artifact_id: pkg.id.clone(),
+            filename: pkg.filename.clone(),
             product_id: pkg.family_id.clone(),
             region_id: pkg.region_id.clone(),
             effective_at_epoch_ms: pkg.effective_date.as_deref().and_then(ymd_date_to_epoch_ms),
@@ -848,6 +1340,7 @@ mod tests {
     fn installed(id: &str) -> InstalledArtifact {
         InstalledArtifact {
             artifact_id: id.to_string(),
+            filename: format!("{id}.zip"),
             size_bytes: None,
             checksum_sha256: None,
         }
@@ -865,12 +1358,14 @@ mod tests {
                 ],
             },
             installed: vec![installed("NW_SEC_2603")],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
         };
 
         let plan = plan_offline_packages(&input);
 
         assert_eq!(plan.fetch, vec!["NW_SEC_2604"]);
-        assert_eq!(plan.retain_installed, vec!["NW_SEC_2603"]);
+        assert_eq!(plan.retain_installed, vec!["NW_SEC_2603.zip"]);
         assert!(plan.gc.is_empty());
     }
 
@@ -886,13 +1381,15 @@ mod tests {
                 ],
             },
             installed: vec![installed("NW_SEC_2603"), installed("NW_SEC_2604")],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
         };
 
         let plan = plan_offline_packages(&input);
 
         assert!(plan.fetch.is_empty());
-        assert_eq!(plan.retain_installed, vec!["NW_SEC_2604"]);
-        assert_eq!(plan.gc, vec!["NW_SEC_2603"]);
+        assert_eq!(plan.retain_installed, vec!["NW_SEC_2604.zip"]);
+        assert_eq!(plan.gc, vec!["NW_SEC_2603.zip"]);
     }
 
     #[test]
@@ -910,6 +1407,8 @@ mod tests {
             preferences: preferences.clone(),
             bundle: manifest.clone(),
             installed: vec![],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
         });
 
         assert_eq!(missing_plan.fetch, vec!["NW_SEC_2603", "NW_SEC_2604"]);
@@ -921,12 +1420,14 @@ mod tests {
             preferences,
             bundle: manifest,
             installed: vec![installed("NW_SEC_2603"), installed("NW_SEC_2604")],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
         });
 
         assert!(installed_plan.fetch.is_empty());
         assert_eq!(
             installed_plan.retain_installed,
-            vec!["NW_SEC_2603", "NW_SEC_2604"]
+            vec!["NW_SEC_2603.zip", "NW_SEC_2604.zip"]
         );
         assert!(installed_plan.gc.is_empty());
     }
@@ -946,14 +1447,210 @@ mod tests {
                 ],
             },
             installed: vec![installed("NW_SEC_2603")],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
         };
 
         let plan = plan_offline_packages(&input);
 
         assert!(plan.fetch.is_empty());
-        assert_eq!(plan.retain_installed, vec!["NW_SEC_2603"]);
+        assert_eq!(plan.retain_installed, vec!["NW_SEC_2603.zip"]);
         assert!(plan.gc.is_empty());
-        assert_eq!(plan.protected_by_pause, vec!["NW_SEC_2603"]);
+        assert_eq!(plan.protected_by_pause, vec!["NW_SEC_2603.zip"]);
+    }
+
+    #[test]
+    fn forced_gc_bad_navdbs_show_fetch_and_gc_in_core_row() {
+        let discovery = CurrentArtifactsManifest {
+            schema_version: Some(1),
+            as_of_date: Some("2026-03-25".to_string()),
+            as_of_utc: Some("2026-03-25T12:00:00Z".to_string()),
+            bundles: vec![CurrentArtifactsBundleRef {
+                filename: "bundle_cycle_2603.json".to_string(),
+                relative_path: "bundle_cycle_2603.json".to_string(),
+                id: "cycle-2603".to_string(),
+                bundle_type: "cycle".to_string(),
+                cycle: Some("2603".to_string()),
+                cycle_version: Some("01".to_string()),
+                start_valid: None,
+                end_valid: None,
+                checksum_sha256: None,
+                size_bytes: None,
+            }],
+        };
+        let bundle_2603 = BundleManifest {
+            packages: vec![BundlePackageArtifact {
+                id: "NAV_DB_2603_01".to_string(),
+                family_id: "nav-db".to_string(),
+                region_id: None,
+                filename: "nav_db_2603.zip".to_string(),
+                relative_path: "nav_db_2603.zip".to_string(),
+                cycle: Some("2603".to_string()),
+                cycle_version: Some("01".to_string()),
+                checksum_sha256: None,
+                size_bytes: None,
+                effective_date: Some("2026-03-20".to_string()),
+                expiration_date: Some("2026-04-16".to_string()),
+            }],
+        };
+        let bundle_2604 = BundleManifest {
+            packages: vec![BundlePackageArtifact {
+                id: "NAV_DB_2604_01".to_string(),
+                family_id: "nav-db".to_string(),
+                region_id: None,
+                filename: "nav_db_2604.zip".to_string(),
+                relative_path: "nav_db_2604.zip".to_string(),
+                cycle: Some("2604".to_string()),
+                cycle_version: Some("01".to_string()),
+                checksum_sha256: None,
+                size_bytes: None,
+                effective_date: Some("2026-04-16".to_string()),
+                expiration_date: Some("2026-05-14".to_string()),
+            }],
+        };
+
+        let result = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
+            state: Some(OfflinePackagesControllerState {
+                packages_state: Some(OfflinePackagesState {
+                    preferences: default_offline_package_preferences([], ["nav-db"]),
+                    now_override_epoch_ms: Some(1_774_401_600_000),
+                }),
+                library_cache: Some(OfflinePackagesLibraryCache {
+                    package_source_base_url: "http://example.test".to_string(),
+                    fetched_at_epoch_ms: 1_774_401_600_000,
+                    discovery_manifests: vec![discovery],
+                    bundle_manifests_by_filename: BTreeMap::from([
+                        ("bundle_cycle_2603.json".to_string(), bundle_2603),
+                        ("bundle_cycle_2604.json".to_string(), bundle_2604),
+                    ]),
+                }),
+                tombstoned_installed_filename_messages: BTreeMap::new(),
+                suppressed_fetch_filename_messages: BTreeMap::new(),
+                library_loading: false,
+                library_error_message: None,
+                sync_in_flight: false,
+                sync_message: None,
+            }),
+            package_source_base_url: "http://example.test".to_string(),
+            discovery_filenames: vec![],
+            region_ids: vec![],
+            product_ids: vec!["nav-db".to_string()],
+            now_epoch_ms: 1_774_401_600_000,
+            installed: vec![installed("NAV_DB_2603_01"), installed("NAV_DB_2604_01")],
+            event: OfflinePackagesControllerEvent::InstalledArtifactHealthObserved {
+                unreadable_installed_filename_messages: BTreeMap::from([
+                    ("NAV_DB_2603_01.zip".to_string(), "bad".to_string()),
+                    ("NAV_DB_2604_01.zip".to_string(), "bad".to_string()),
+                ]),
+            },
+        });
+
+        let navdb = result
+            .ui_state
+            .planner_ui_state
+            .unwrap()
+            .core_products
+            .into_iter()
+            .find(|row| row.id == "nav-db")
+            .unwrap();
+        assert_eq!(navdb.fetch_count, 1);
+        assert_eq!(navdb.gc_count, 2);
+    }
+
+    #[test]
+    fn remote_poisoned_filename_is_suppressed_from_refetch() {
+        let discovery = CurrentArtifactsManifest {
+            schema_version: Some(1),
+            as_of_date: Some("2026-04-25".to_string()),
+            as_of_utc: Some("2026-04-25T12:00:00Z".to_string()),
+            bundles: vec![CurrentArtifactsBundleRef {
+                filename: "bundle_cycle_2604.json".to_string(),
+                relative_path: "bundle_cycle_2604.json".to_string(),
+                id: "cycle-2604".to_string(),
+                bundle_type: "cycle".to_string(),
+                cycle: Some("2604".to_string()),
+                cycle_version: Some("01".to_string()),
+                start_valid: None,
+                end_valid: None,
+                checksum_sha256: None,
+                size_bytes: None,
+            }],
+        };
+        let bundle_2604 = BundleManifest {
+            packages: vec![BundlePackageArtifact {
+                id: "NAV_DB_2604_01".to_string(),
+                family_id: "nav-db".to_string(),
+                region_id: None,
+                filename: "nav_db_2604_01_good.zip".to_string(),
+                relative_path: "nav_db_2604_01_good.zip".to_string(),
+                cycle: Some("2604".to_string()),
+                cycle_version: Some("01".to_string()),
+                checksum_sha256: None,
+                size_bytes: None,
+                effective_date: Some("2026-04-16".to_string()),
+                expiration_date: Some("2026-05-14".to_string()),
+            }],
+        };
+        let result = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
+            state: Some(OfflinePackagesControllerState {
+                packages_state: Some(OfflinePackagesState {
+                    preferences: default_offline_package_preferences([], ["nav-db"]),
+                    now_override_epoch_ms: Some(1_777_120_000_000),
+                }),
+                library_cache: Some(OfflinePackagesLibraryCache {
+                    package_source_base_url: "http://example.test".to_string(),
+                    fetched_at_epoch_ms: 1_777_120_000_000,
+                    discovery_manifests: vec![discovery],
+                    bundle_manifests_by_filename: BTreeMap::from([(
+                        "bundle_cycle_2604.json".to_string(),
+                        bundle_2604,
+                    )]),
+                }),
+                tombstoned_installed_filename_messages: BTreeMap::new(),
+                suppressed_fetch_filename_messages: BTreeMap::new(),
+                library_loading: false,
+                library_error_message: None,
+                sync_in_flight: true,
+                sync_message: None,
+            }),
+            package_source_base_url: "http://example.test".to_string(),
+            discovery_filenames: vec![],
+            region_ids: vec![],
+            product_ids: vec!["nav-db".to_string()],
+            now_epoch_ms: 1_777_120_000_000,
+            installed: vec![InstalledArtifact {
+                artifact_id: "NAV_DB_2604_01".to_string(),
+                filename: "nav_db_2604_01_good.zip".to_string(),
+                size_bytes: None,
+                checksum_sha256: None,
+            }],
+            event: OfflinePackagesControllerEvent::SyncFinished {
+                summary: OfflinePackagesSyncSummary {
+                    fetched_count: 1,
+                    gc_count: 0,
+                    warnings: vec![],
+                    remote_poisoned_filename_messages: BTreeMap::from([(
+                        "nav_db_2604_01_good.zip".to_string(),
+                        "bad remote artifact".to_string(),
+                    )]),
+                },
+            },
+        });
+
+        let navdb = result
+            .ui_state
+            .planner_ui_state
+            .unwrap()
+            .core_products
+            .into_iter()
+            .find(|row| row.id == "nav-db")
+            .unwrap();
+        assert_eq!(navdb.fetch_count, 0);
+        assert_eq!(navdb.gc_count, 1);
+        assert!(result
+            .state
+            .suppressed_fetch_filename_messages
+            .contains_key("nav_db_2604_01_good.zip"));
     }
 
     #[test]

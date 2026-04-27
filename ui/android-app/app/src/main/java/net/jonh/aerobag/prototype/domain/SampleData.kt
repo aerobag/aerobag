@@ -31,6 +31,17 @@ data class ContentFixture(
     val navKvStore: NavKvStore,
 )
 
+data class NavDbArtifactStatus(
+    val packageId: String,
+    val filename: String,
+    val readable: Boolean,
+    val message: String? = null,
+)
+
+data class NavDbStatus(
+    val installed: List<NavDbArtifactStatus>,
+)
+
 @Serializable
 private data class WireDevBootstrap(
     val content_policy: String,
@@ -67,13 +78,12 @@ object SampleData {
 
     fun loadRuntime(context: Context, bootstrapFixture: BootstrapFixture): ContentFixture {
         val navKvOpenStartMs = SystemClock.elapsedRealtime()
-        val navDbPackageId = latestInstalledDataPackageId(context, "NAV_DB_")
-        val navKvStore = NavKvStore.open(context, navDbPackageId)
+        val navDbArtifact = latestReadableInstalledNavDbArtifact(context)
+        val navKvStore = NavKvStore.open(navDbZip = navDbArtifact.file)
         val navKvOpenMs = SystemClock.elapsedRealtime() - navKvOpenStartMs
         return loadRuntime(
             context = context,
             bootstrapFixture = bootstrapFixture,
-            navDbPackageId = navDbPackageId,
             navKvStore = navKvStore,
             navKvOpenMs = navKvOpenMs,
         )
@@ -82,7 +92,6 @@ object SampleData {
     fun loadRuntime(
         context: Context,
         bootstrapFixture: BootstrapFixture,
-        navDbPackageId: String,
         navKvStore: NavKvStore,
         navKvOpenMs: Long,
     ): ContentFixture {
@@ -161,6 +170,35 @@ object SampleData {
             )
         }
     }
+
+    fun inspectNavDbStatus(
+        context: Context,
+        bridge: NativeBridge = NativeBindings,
+    ): NavDbStatus {
+        val appContext = context.applicationContext
+        val installed = InstalledPackages.listInstalledArtifacts(appContext, InstalledPackageKind.Data)
+            .filter { it.artifactId.startsWith("NAV_DB_") }
+            .sortedWith(compareByDescending<InstalledPackageArtifact> { it.file.lastModified() }.thenByDescending { it.filename })
+            .map { artifact ->
+                val status = runCatching {
+                    NavKvStore.open(navDbZip = artifact.file, bridge = bridge).use { }
+                    NavDbArtifactStatus(
+                        packageId = artifact.artifactId,
+                        filename = artifact.filename,
+                        readable = true,
+                    )
+                }.getOrElse { error ->
+                    NavDbArtifactStatus(
+                        packageId = artifact.artifactId,
+                        filename = artifact.filename,
+                        readable = false,
+                        message = error.message ?: error::class.simpleName,
+                    )
+                }
+                status
+            }
+        return NavDbStatus(installed = installed)
+    }
 }
 
 @Serializable
@@ -174,11 +212,14 @@ private data class WireBundlePackage(
     val family_id: String,
 )
 
-private fun latestInstalledDataPackageId(context: Context, prefix: String): String =
-    InstalledPackages.listInstalledPackageIds(context, InstalledPackageKind.Data)
-        .filter { it.startsWith(prefix) }
-        .maxOrNull()
-        ?: error("missing installed data package with prefix $prefix")
+private fun latestReadableInstalledNavDbArtifact(context: Context): InstalledPackageArtifact =
+    InstalledPackages.listInstalledArtifacts(context, InstalledPackageKind.Data)
+        .filter { it.artifactId.startsWith("NAV_DB_") }
+        .sortedWith(compareByDescending<InstalledPackageArtifact> { it.file.lastModified() }.thenByDescending { it.filename })
+        .firstOrNull { artifact ->
+            runCatching { NavKvStore.open(navDbZip = artifact.file).use { } }.isSuccess
+        }
+        ?: error("missing readable installed data package with prefix NAV_DB_")
 
 private fun latestInstalledDataPackageIdOrNull(context: Context, prefix: String): String? =
     InstalledPackages.listInstalledPackageIds(context, InstalledPackageKind.Data)

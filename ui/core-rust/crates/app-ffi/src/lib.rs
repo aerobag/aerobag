@@ -2,7 +2,7 @@ pub use app_core::*;
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::jstring;
 use jni::JNIEnv;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -699,9 +699,51 @@ pub fn destroy_session_json(handle: u64) {
 
 static NEXT_NAV_KV_HANDLE: AtomicU32 = AtomicU32::new(1);
 static NAV_KV_STORES: OnceLock<Mutex<HashMap<u32, app_core::NavKvStore>>> = OnceLock::new();
+static NEXT_OFFLINE_PACKAGES_CONTROLLER_HANDLE: AtomicU32 = AtomicU32::new(1);
+static OFFLINE_PACKAGES_CONTROLLERS: OnceLock<
+    Mutex<HashMap<u32, app_core::OfflinePackagesControllerState>>,
+> = OnceLock::new();
 
 fn nav_kv_stores() -> &'static Mutex<HashMap<u32, app_core::NavKvStore>> {
     NAV_KV_STORES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn offline_packages_controllers(
+) -> &'static Mutex<HashMap<u32, app_core::OfflinePackagesControllerState>> {
+    OFFLINE_PACKAGES_CONTROLLERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn create_offline_packages_controller_json(
+    packages_state_json: Option<&str>,
+) -> Result<u64, String> {
+    let packages_state = packages_state_json
+        .filter(|json| !json.trim().is_empty())
+        .map(|json| {
+            serde_json::from_str::<app_core::OfflinePackagesState>(json)
+                .map_err(|err| err.to_string())
+        })
+        .transpose()?;
+    let handle = NEXT_OFFLINE_PACKAGES_CONTROLLER_HANDLE.fetch_add(1, Ordering::Relaxed);
+    offline_packages_controllers()
+        .lock()
+        .map_err(|_| "offline packages controller store poisoned".to_string())?
+        .insert(
+            handle,
+            app_core::OfflinePackagesControllerState {
+                packages_state,
+                ..Default::default()
+            },
+        );
+    Ok(handle as u64)
+}
+
+pub fn destroy_offline_packages_controller_json(handle: u64) -> Result<(), String> {
+    offline_packages_controllers()
+        .lock()
+        .map_err(|_| "offline packages controller store poisoned".to_string())?
+        .remove(&(handle as u32))
+        .ok_or_else(|| format!("invalid offline packages controller handle: {handle}"))?;
+    Ok(())
 }
 
 pub fn nav_kv_open_bytes(root_bytes: &[u8]) -> Result<u64, String> {
@@ -780,6 +822,49 @@ struct OfflinePackagesReduceInputWire {
     installed: Vec<app_core::InstalledArtifact>,
 }
 
+#[derive(Deserialize)]
+struct OfflinePackagesControllerLibraryRefreshSucceededWire {
+    fetched_at_epoch_ms: i64,
+    discovery_jsons: Vec<String>,
+    bundle_jsons_by_filename: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+struct OfflinePackagesControllerInstalledArtifactHealthObservedWire {
+    unreadable_installed_filename_messages: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum OfflinePackagesControllerEventWire {
+    EnsureLibrary,
+    RefreshLibraryRequested,
+    LibraryRefreshSucceeded(OfflinePackagesControllerLibraryRefreshSucceededWire),
+    LibraryRefreshFailed { message: String },
+    InstalledArtifactHealthObserved(OfflinePackagesControllerInstalledArtifactHealthObservedWire),
+    PackagesEvent { event: app_core::OfflinePackagesEvent },
+    SyncRequested,
+    SyncFinished { summary: app_core::OfflinePackagesSyncSummary },
+}
+
+#[derive(Deserialize)]
+struct OfflinePackagesControllerInputWire {
+    package_source_base_url: String,
+    discovery_filenames: Vec<String>,
+    region_ids: Vec<String>,
+    product_ids: Vec<String>,
+    now_epoch_ms: i64,
+    installed: Vec<app_core::InstalledArtifact>,
+    event: OfflinePackagesControllerEventWire,
+}
+
+#[derive(Serialize)]
+struct OfflinePackagesControllerResultWire {
+    packages_state_json: Option<String>,
+    ui_state: app_core::OfflinePackagesControllerUiState,
+    command: Option<app_core::OfflinePackagesControllerCommand>,
+}
+
 pub fn plan_offline_packages_from_bundle_json(input_json: &str) -> Result<String, String> {
     let input: BundlePackageManagementInputWire =
         serde_json::from_str(input_json).map_err(|err| err.to_string())?;
@@ -790,6 +875,8 @@ pub fn plan_offline_packages_from_bundle_json(input_json: &str) -> Result<String
         preferences: input.preferences,
         bundle,
         installed: input.installed,
+        forced_gc_installed_filenames: Vec::new(),
+        suppressed_fetch_filenames: Vec::new(),
     });
     serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
@@ -820,6 +907,8 @@ pub fn initialize_offline_packages_json(input_json: &str) -> Result<String, Stri
         discovery_manifests,
         bundle_manifests_by_filename,
         installed: input.installed,
+        forced_gc_installed_filenames: Vec::new(),
+        suppressed_fetch_filenames: Vec::new(),
     });
     serde_json::to_string(&result).map_err(|err| err.to_string())
 }
@@ -851,8 +940,98 @@ pub fn reduce_offline_packages_json(input_json: &str) -> Result<String, String> 
         discovery_manifests,
         bundle_manifests_by_filename,
         installed: input.installed,
+        forced_gc_installed_filenames: Vec::new(),
+        suppressed_fetch_filenames: Vec::new(),
     });
     serde_json::to_string(&result).map_err(|err| err.to_string())
+}
+
+pub fn dispatch_offline_packages_controller_json(
+    handle: u64,
+    input_json: &str,
+) -> Result<String, String> {
+    let input: OfflinePackagesControllerInputWire =
+        serde_json::from_str(input_json).map_err(|err| err.to_string())?;
+    let mut controllers = offline_packages_controllers()
+        .lock()
+        .map_err(|_| "offline packages controller store poisoned".to_string())?;
+    let state = controllers
+        .get(&(handle as u32))
+        .cloned()
+        .ok_or_else(|| format!("invalid offline packages controller handle: {handle}"))?;
+    let event = match input.event {
+        OfflinePackagesControllerEventWire::EnsureLibrary => {
+            app_core::OfflinePackagesControllerEvent::EnsureLibrary
+        }
+        OfflinePackagesControllerEventWire::RefreshLibraryRequested => {
+            app_core::OfflinePackagesControllerEvent::RefreshLibraryRequested
+        }
+        OfflinePackagesControllerEventWire::LibraryRefreshSucceeded(payload) => {
+            let discovery_manifests = payload
+                .discovery_jsons
+                .into_iter()
+                .map(|json| serde_json::from_str::<app_core::CurrentArtifactsManifest>(&json))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| err.to_string())?;
+            let bundle_manifests_by_filename = payload
+                .bundle_jsons_by_filename
+                .into_iter()
+                .map(|(filename, json)| {
+                    serde_json::from_str::<app_core::BundleManifest>(&json)
+                        .map(|bundle| (filename, bundle))
+                })
+                .collect::<Result<BTreeMap<_, _>, _>>()
+                .map_err(|err| err.to_string())?;
+            app_core::OfflinePackagesControllerEvent::LibraryRefreshSucceeded {
+                fetched_at_epoch_ms: payload.fetched_at_epoch_ms,
+                discovery_manifests,
+                bundle_manifests_by_filename,
+            }
+        }
+        OfflinePackagesControllerEventWire::LibraryRefreshFailed { message } => {
+            app_core::OfflinePackagesControllerEvent::LibraryRefreshFailed { message }
+        }
+        OfflinePackagesControllerEventWire::InstalledArtifactHealthObserved(payload) => {
+            app_core::OfflinePackagesControllerEvent::InstalledArtifactHealthObserved {
+                unreadable_installed_filename_messages: payload
+                    .unreadable_installed_filename_messages,
+            }
+        }
+        OfflinePackagesControllerEventWire::PackagesEvent { event } => {
+            app_core::OfflinePackagesControllerEvent::PackagesEvent { event }
+        }
+        OfflinePackagesControllerEventWire::SyncRequested => {
+            app_core::OfflinePackagesControllerEvent::SyncRequested
+        }
+        OfflinePackagesControllerEventWire::SyncFinished { summary } => {
+            app_core::OfflinePackagesControllerEvent::SyncFinished { summary }
+        }
+    };
+    let result = app_core::reduce_offline_packages_controller(
+        &app_core::OfflinePackagesControllerInput {
+            state: Some(state),
+            package_source_base_url: input.package_source_base_url,
+            discovery_filenames: input.discovery_filenames,
+            region_ids: input.region_ids,
+            product_ids: input.product_ids,
+            now_epoch_ms: input.now_epoch_ms,
+            installed: input.installed,
+            event,
+        },
+    );
+    controllers.insert(handle as u32, result.state.clone());
+    serde_json::to_string(&OfflinePackagesControllerResultWire {
+        packages_state_json: result
+            .state
+            .packages_state
+            .as_ref()
+            .map(|state| serde_json::to_string(state))
+            .transpose()
+            .map_err(|err| err.to_string())?,
+        ui_state: result.ui_state,
+        command: result.command,
+    })
+    .map_err(|err| err.to_string())
 }
 
 fn get_java_string(env: &mut JNIEnv, value: JString) -> Result<String, String> {
@@ -927,6 +1106,50 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_red
         reduce_offline_packages_json(&input)
     })();
     return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_createOfflinePackagesController(
+    mut env: JNIEnv,
+    _class: JClass,
+    packages_state_json: JString,
+) -> i64 {
+    let result = (|| {
+        let packages_state_json = get_java_string(&mut env, packages_state_json)?;
+        create_offline_packages_controller_json(Some(&packages_state_json))
+    })();
+    match result {
+        Ok(handle) => handle as i64,
+        Err(message) => {
+            let _ = env.throw_new("java/lang/RuntimeException", message);
+            0
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_dispatchOfflinePackagesControllerJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    input_json: JString,
+) -> jstring {
+    let result = (|| {
+        let input = get_java_string(&mut env, input_json)?;
+        dispatch_offline_packages_controller_json(handle as u64, &input)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_destroyOfflinePackagesController(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) {
+    if let Err(message) = destroy_offline_packages_controller_json(handle as u64) {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
 }
 
 #[unsafe(no_mangle)]

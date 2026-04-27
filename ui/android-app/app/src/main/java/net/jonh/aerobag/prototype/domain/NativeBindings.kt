@@ -1,6 +1,12 @@
 package net.jonh.aerobag.prototype.domain
 
 interface NativeBridge {
+    fun createOfflinePackagesController(packagesStateJson: String): Long
+
+    fun dispatchOfflinePackagesControllerJson(handle: Long, inputJson: String): String
+
+    fun destroyOfflinePackagesController(handle: Long)
+
     fun initializeOfflinePackagesJson(inputJson: String): String
 
     fun reduceOfflinePackagesJson(inputJson: String): String
@@ -255,6 +261,12 @@ object NativeBindings : NativeBridge {
     init {
         System.loadLibrary("app_ffi")
     }
+
+    external override fun createOfflinePackagesController(packagesStateJson: String): Long
+
+    external override fun dispatchOfflinePackagesControllerJson(handle: Long, inputJson: String): String
+
+    external override fun destroyOfflinePackagesController(handle: Long)
 
     external override fun initializeOfflinePackagesJson(inputJson: String): String
 

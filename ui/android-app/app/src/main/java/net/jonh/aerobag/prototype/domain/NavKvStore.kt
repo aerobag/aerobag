@@ -14,11 +14,10 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.util.Locale
 
 class NavKvStore private constructor(
-    private val context: Context,
     private val bridge: NativeBridge,
     private val json: Json,
     private val handle: Long,
-    private val navDbPackageId: String,
+    private val navDbZip: java.io.File,
     private val valueEntryPrefix: String,
 ) : AutoCloseable {
     private val loadedPages = mutableSetOf<Int>()
@@ -27,6 +26,19 @@ class NavKvStore private constructor(
         private const val TAG = "NavKvStore"
         private const val ROOT_ENTRY_NAME = "root"
         private const val VALUE_ENTRY_PREFIX = "values_"
+
+        fun open(
+            navDbZip: java.io.File,
+            bridge: NativeBridge = NativeBindings,
+            json: Json = Json {
+                encodeDefaults = true
+                ignoreUnknownKeys = true
+            },
+        ): NavKvStore {
+            val rootBytes = InstalledPackages.readZipEntryBytes(navDbZip, ROOT_ENTRY_NAME)
+            val handle = bridge.navKvOpen(rootBytes)
+            return NavKvStore(bridge, json, handle, navDbZip, VALUE_ENTRY_PREFIX)
+        }
 
         fun open(
             context: Context,
@@ -39,9 +51,7 @@ class NavKvStore private constructor(
         ): NavKvStore {
             val appContext = context.applicationContext
             val navDbZip = InstalledPackages.installedFile(appContext, InstalledPackageKind.Data, navDbPackageId)
-            val rootBytes = InstalledPackages.readZipEntryBytes(navDbZip, ROOT_ENTRY_NAME)
-            val handle = bridge.navKvOpen(rootBytes)
-            return NavKvStore(appContext, bridge, json, handle, navDbPackageId, VALUE_ENTRY_PREFIX)
+            return open(navDbZip = navDbZip, bridge = bridge, json = json)
         }
     }
 
@@ -71,12 +81,7 @@ class NavKvStore private constructor(
         }
         val startMs = SystemClock.elapsedRealtime()
         val pageName = String.format(Locale.US, "%04d", pageIndex)
-        val pageBytes = InstalledPackages.readZipEntryBytes(
-            context,
-            InstalledPackageKind.Data,
-            navDbPackageId,
-            "$valueEntryPrefix$pageName",
-        )
+        val pageBytes = InstalledPackages.readZipEntryBytes(navDbZip, "$valueEntryPrefix$pageName")
         bridge.navKvInsertPage(handle, pageIndex, pageBytes)
         val elapsedMs = SystemClock.elapsedRealtime() - startMs
         if (elapsedMs >= 10) {

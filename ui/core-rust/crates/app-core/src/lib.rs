@@ -2778,6 +2778,53 @@ struct CommonResumeTarget<'a> {
     record: &'a ProcedureLegMaterializationRecord,
 }
 
+#[derive(Clone, Copy)]
+struct CommonResumeCandidate<'a> {
+    index: usize,
+    record: &'a ProcedureLegMaterializationRecord,
+    fix: LatLon,
+    course_anchor: LatLon,
+    course_deg: f64,
+    incoming_course_to_anchor_deg: Option<f64>,
+}
+
+fn common_resume_candidate<'a>(
+    fix_records: &[&'a ProcedureLegMaterializationRecord],
+    index: usize,
+    current_position: LatLon,
+    current_course_deg: f64,
+) -> Option<CommonResumeCandidate<'a>> {
+    let record = *fix_records.get(index)?;
+    if record.path_termination.trim() != "CF" {
+        return None;
+    }
+    let fix = record.nav_position?;
+    let course_anchor = record.defining_nav_position.or(record.nav_position)?;
+    let course_deg = record
+        .magnetic_course_deg
+        .map(|course| course + record_magnetic_variation_deg(record).unwrap_or(0.0))?;
+    let incoming_course_to_anchor_deg = fix_records
+        .get(index.saturating_sub(1))
+        .and_then(|prior_record| {
+            let prior_fix = prior_record.nav_position?;
+            let prior_course_deg = prior_record
+                .magnetic_course_deg
+                .map(|course| course + record_magnetic_variation_deg(prior_record).unwrap_or(0.0))?;
+            (positions_nearly_equal(current_position, prior_fix)
+                && positions_nearly_equal(current_position, course_anchor))
+                .then_some(prior_course_deg)
+        })
+        .or(Some(current_course_deg));
+    Some(CommonResumeCandidate {
+        index,
+        record,
+        fix,
+        course_anchor,
+        course_deg,
+        incoming_course_to_anchor_deg,
+    })
+}
+
 fn resumed_common_target<'a>(
     previous_display_path: Option<&LegDisplayPath>,
     previous_was_hold_like: bool,
@@ -2796,54 +2843,32 @@ fn resumed_common_target<'a>(
         .map(|record| record.sequence)
         .unwrap_or(i32::MAX);
 
-    for (index, record) in fix_records.iter().enumerate().skip(1) {
-        if record.sequence >= max_resumable_sequence {
-            break;
-        }
-        if record.path_termination.trim() != "CF" {
-            continue;
-        }
-        let Some(fix) = record.nav_position else {
-            continue;
-        };
-        let Some(course_anchor) = record.defining_nav_position.or(record.nav_position) else {
-            continue;
-        };
-        let Some(course_deg) = record
-            .magnetic_course_deg
-            .map(|course| course + record_magnetic_variation_deg(record).unwrap_or(0.0))
+    for index in 1..fix_records.len() {
+        let Some(candidate) =
+            common_resume_candidate(&fix_records, index, current_position, current_course_deg)
         else {
             continue;
         };
-        let incoming_course_to_anchor_deg = fix_records
-            .get(index.saturating_sub(1))
-            .and_then(|prior_record| {
-                let prior_fix = prior_record.nav_position?;
-                let prior_course_deg = prior_record
-                    .magnetic_course_deg
-                    .map(|course| course + record_magnetic_variation_deg(prior_record).unwrap_or(0.0))?;
-                (positions_nearly_equal(current_position, prior_fix)
-                    && positions_nearly_equal(current_position, course_anchor))
-                    .then_some(prior_course_deg)
-            })
-            .or(Some(current_course_deg));
+        if candidate.record.sequence >= max_resumable_sequence {
+            break;
+        }
         if matches!(
             common_resume_candidate_decision(
                 current_position,
                 current_course_deg,
-                incoming_course_to_anchor_deg,
+                candidate.incoming_course_to_anchor_deg,
                 previous_was_hold_like,
-                record.nav_ref.clone(),
-                course_deg,
-                course_anchor,
-                record.nav_ref.clone(),
-                fix,
+                candidate.record.nav_ref.clone(),
+                candidate.course_deg,
+                candidate.course_anchor,
+                candidate.record.nav_ref.clone(),
+                candidate.fix,
             ),
             HandoffDecision::ResumeAtAnchor | HandoffDecision::ResumeThroughAnchorKink
         ) {
             return Some(CommonResumeTarget {
-                index,
-                record,
+                index: candidate.index,
+                record: candidate.record,
             });
         }
     }

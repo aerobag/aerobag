@@ -2067,9 +2067,6 @@ fn published_acute_turn_heading_tolerance_deg(
     if allow_acute_turn_ksan_09_family_at_pgy(previous, current) {
         return Some(150.0);
     }
-    if allow_acute_turn_keat_i12y_at_eat(previous, current) {
-        return Some(170.0);
-    }
     None
 }
 
@@ -2087,19 +2084,6 @@ fn allow_acute_turn_ksan_09_family_at_pgy(
         previous.procedure_id.as_str(),
         "I09-Y" | "I09-Z" | "L09-Y" | "L09-Z"
     ) && previous.procedure_id == current.procedure_id
-}
-
-fn allow_acute_turn_keat_i12y_at_eat(
-    previous: &DisplayElementHeadingSignature,
-    current: &DisplayElementHeadingSignature,
-) -> bool {
-    if previous.airport_id != "KEAT" || current.airport_id != "KEAT" {
-        return false;
-    }
-    if previous.procedure_id != "I12-Y" || current.procedure_id != "I12-Y" {
-        return false;
-    }
-    previous.end_label == "EAT" && current.start_label == "EAT"
 }
 
 fn continuity_path_boundary_tolerance_deg(

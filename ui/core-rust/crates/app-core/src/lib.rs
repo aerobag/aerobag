@@ -1325,11 +1325,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
         );
 
         for (index, pair) in fix_records.windows(2).enumerate() {
-            if should_skip_window_before_resolution(
-                index,
-                traversal_policy.skip_through_index,
-                traversal_policy.common_resume_target,
-            ) {
+            if traversal_policy.should_skip_window(index) {
                 continue;
             }
             let previous_path_state = previous_display_path_state(previous_display_path.as_ref());
@@ -2235,15 +2231,6 @@ fn start_requirement_for_reentry_to_anchor(
     ))
 }
 
-fn should_skip_window_before_resolution(
-    current_window_index: usize,
-    skip_through_index: Option<usize>,
-    common_resume_target: Option<CommonResumeTarget<'_>>,
-) -> bool {
-    skip_through_index.is_some_and(|skip_index| current_window_index <= skip_index)
-        || common_resume_target.is_some_and(|target| current_window_index + 1 < target.index)
-}
-
 fn common_resume_yields_current_feeder_cf(
     pair: [&ProcedureLegMaterializationRecord; 2],
     leg_records: &[ProcedureLegMaterializationRecord],
@@ -2562,7 +2549,7 @@ fn determine_procedure_window_continuation<'a>(
     pair: [&'a ProcedureLegMaterializationRecord; 2],
     hold_record: Option<&'a ProcedureLegMaterializationRecord>,
     role: ProcedureSegmentRole,
-    common_resume_target: Option<CommonResumeTarget<'_>>,
+    traversal_policy: SegmentTraversalPolicy<'_>,
     previous: PreviousWindowContext,
     previous_leg_to: Option<&NavRef>,
 ) -> ProcedureWindowContinuation<'a> {
@@ -2594,8 +2581,8 @@ fn determine_procedure_window_continuation<'a>(
         .is_some_and(|(previous_end, anchor_position)| {
             great_circle_distance_nm(previous_end, anchor_position) <= 0.05
         });
-    let resume_common_cf_from_previous_path = role == ProcedureSegmentRole::Common
-        && common_resume_target.is_some_and(|target| current_window_index + 1 == target.index);
+    let resume_common_cf_from_previous_path =
+        role == ProcedureSegmentRole::Common && traversal_policy.resumes_common_on_window(current_window_index);
     let inherit_previous_state = from == to
         || continuing_if_to_cf_join
         || continuing_same_anchor_window
@@ -2703,7 +2690,10 @@ fn plan_procedure_window<'a>(
         pair,
         resolution.hold_record,
         planning.role,
-        planning.common_resume_target,
+        SegmentTraversalPolicy {
+            common_resume_target: planning.common_resume_target,
+            skip_through_index: None,
+        },
         previous_context,
         planning.previous_leg_to,
     );
@@ -2849,6 +2839,21 @@ struct CommonResumeTarget<'a> {
 struct SegmentTraversalPolicy<'a> {
     common_resume_target: Option<CommonResumeTarget<'a>>,
     skip_through_index: Option<usize>,
+}
+
+impl<'a> SegmentTraversalPolicy<'a> {
+    fn should_skip_window(self, current_window_index: usize) -> bool {
+        self.skip_through_index
+            .is_some_and(|skip_index| current_window_index <= skip_index)
+            || self
+                .common_resume_target
+                .is_some_and(|target| current_window_index + 1 < target.index)
+    }
+
+    fn resumes_common_on_window(self, current_window_index: usize) -> bool {
+        self.common_resume_target
+            .is_some_and(|target| current_window_index + 1 == target.index)
+    }
 }
 
 #[derive(Clone, Copy)]

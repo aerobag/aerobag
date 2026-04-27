@@ -351,8 +351,10 @@ private fun folderCategory(documentType: String): String = when (documentType) {
     "departure" -> "departure"
     "star" -> "star"
     "csup" -> "csup"
-    "approach", "other" -> "approach"
-    else -> "approach"
+    "hotspot" -> "hotspot"
+    "other" -> "other"
+    "approach" -> "approach"
+    else -> "other"
 }
 
 private fun chartAsset(

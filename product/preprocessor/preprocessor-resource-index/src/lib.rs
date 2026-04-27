@@ -1043,6 +1043,7 @@ fn pretty_tpp_label(raw_label: &str, document_type: &str) -> String {
         ("MIN", "takeoff_minimums") => pretty_minimums(remainder, "TAKEOFF MINIMUMS", "Takeoff Minimums"),
         ("MIN", _) => pretty_minimums(remainder, "MINIMUMS", "Minimums"),
         ("IAP", _) => pretty_approach_label(remainder),
+        ("HOT", "hotspot") => pretty_hotspot_label(remainder),
         ("DP", _) | ("ODP", _) | ("STAR", _) => remainder.to_string(),
         _ => label.to_string(),
     }
@@ -1075,6 +1076,16 @@ fn pretty_approach_label(remainder: &str) -> String {
         .replace(" RWY ", " ")
         .replace(" OR ", " or ")
         .replace(" AND ", " and ")
+}
+
+fn pretty_hotspot_label(remainder: &str) -> String {
+    if remainder == "HOT SPOT" {
+        return "Hot Spot".to_string();
+    }
+    remainder
+        .strip_prefix("HOT SPOT-")
+        .map(|suffix| format!("Hot Spot {suffix}"))
+        .unwrap_or_else(|| remainder.to_string())
 }
 
 fn procedure_code_from_asset_path(asset_path: &str) -> String {
@@ -2227,5 +2238,18 @@ mod tests {
         let csup_thumb = image::open(thumbnail_root.join("afd/BOS/CSUP-NE_0-0.png"))
             .expect("open csup thumbnail");
         assert_eq!(csup_thumb.dimensions(), (100, 150));
+    }
+
+    #[test]
+    fn pretty_tpp_label_trims_hotspot_prefix() {
+        assert_eq!(
+            pretty_tpp_label("HOT-WA-HOT SPOT-0", "hotspot"),
+            "Hot Spot 0"
+        );
+        assert_eq!(
+            pretty_tpp_label("HOT-WA-HOT SPOT-1", "hotspot"),
+            "Hot Spot 1"
+        );
+        assert_eq!(pretty_tpp_label("HOT-WA-HOT SPOT", "hotspot"), "Hot Spot");
     }
 }

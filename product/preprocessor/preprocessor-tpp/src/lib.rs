@@ -24,9 +24,9 @@ use package::{package_region, package_region_versioned};
 
 const TPP_AIRPORT_DIAGRAMS_URL: &str =
     "https://www.outerworldapps.com/WairToNowWork/avare_aptdiags.php";
-const TPP_BASIC_PIPELINE_VERSION: &str = "basic-v3-landscape-text-rotation";
+const TPP_BASIC_PIPELINE_VERSION: &str = "basic-v5-hotspot-stapled";
 const TPP_AIRPORT_DIAGRAM_PIPELINE_VERSION: &str = "airport-diagram-v1";
-const TPP_CONTINUED_PIPELINE_VERSION: &str = "continued-v5-landscape-text-rotation";
+const TPP_CONTINUED_PIPELINE_VERSION: &str = "continued-v6-hotspot-shared-path";
 const TPP_GEOTAGGED_PIPELINE_VERSION: &str = "geotagged-v2-dstalpha";
 const TPP_MINIMUM_PIPELINE_VERSION: &str = "minimum-v1";
 
@@ -290,18 +290,22 @@ fn build_plate_tasks(plates: Vec<PlateRecord>) -> Vec<PlateTask> {
     let mut grouped = BTreeMap::<String, Vec<(usize, Option<u32>, PlateRecord)>>::new();
     let mut group_order = Vec::new();
     for (original_index, plate) in plates.into_iter().enumerate() {
-        let base_chart_name =
-            strip_continued_suffix(&plate.chart_name).unwrap_or_else(|| plate.chart_name.clone());
+        let base_chart_name = grouped_plate_base_name(&plate);
+        let owner_key = if plate.chart_code == "HOT" {
+            plate.state_id.as_str()
+        } else {
+            plate.apt_id.as_str()
+        };
         let key = format!(
             "{}\u{1f}{}\u{1f}{}\u{1f}{}",
-            plate.apt_id, plate.state_id, plate.chart_code, base_chart_name
+            owner_key, plate.state_id, plate.chart_code, base_chart_name
         );
         if !grouped.contains_key(&key) {
             group_order.push(key.clone());
         }
         grouped.entry(key).or_default().push((
             original_index,
-            continuation_index(&plate.chart_name),
+            grouped_plate_index(&plate),
             plate,
         ));
     }
@@ -309,16 +313,22 @@ fn build_plate_tasks(plates: Vec<PlateRecord>) -> Vec<PlateTask> {
     let mut tasks = Vec::new();
     for key in group_order {
         let mut members = grouped.remove(&key).unwrap_or_default();
-        let has_continued = members.iter().any(|(_, continuation, _)| continuation.is_some());
+        let has_grouped_pages = members.iter().any(|(_, continuation, _)| continuation.is_some());
+        let is_hotspot = members
+            .first()
+            .map(|(_, _, plate)| plate.chart_code == "HOT")
+            .unwrap_or(false);
         members.sort_by_key(|(original_index, continuation, _)| {
             (continuation.unwrap_or(0), *original_index)
         });
-        if has_continued && members.len() > 1 {
+        if is_hotspot {
+            tasks.push(PlateTask::Single(members[0].2.clone()));
+        } else if has_grouped_pages && members.len() > 1 {
             let first = &members[0].2;
             let output_name = plate_output_name(
                 &first.chart_code,
                 &first.state_id,
-                &strip_continued_suffix(&first.chart_name).unwrap_or_else(|| first.chart_name.clone()),
+                &grouped_plate_base_name(first),
             );
             tasks.push(PlateTask::Continued(ContinuedPlateGroup {
                 apt_id: first.apt_id.clone(),
@@ -469,7 +479,7 @@ fn make_plate(
         plate.state_id,
         plate.chart_name.replace('/', " AND ")
     );
-    let folder = work_dir.join("plates").join(&plate.apt_id);
+    let folder = plate_asset_folder(work_dir, plate);
     fs::create_dir_all(&folder)
         .with_context(|| format!("failed to create {}", folder.display()))?;
     let pdf_hash = hash_file(&pdf_path)?;
@@ -485,6 +495,53 @@ fn make_plate(
 
     let png_path = folder.join(format!("{output_name}.png"));
     let marker_path = plate_marker_path(&folder, &output_name);
+
+    if plate.chart_code == "HOT" {
+        let fingerprint = basic_plate_fingerprint(&pdf_hash, &output_name)?;
+        if marker_matches(&marker_path, &fingerprint)? && png_path.is_file() {
+            return Ok(());
+        }
+        invalidate_plate_prefix_if_stale(&folder, &output_name, &marker_path, &fingerprint)?;
+
+        let temp_prefix = format!("{output_name}-page");
+        let temp_seed_path = folder.join(format!("{temp_prefix}.png"));
+        remove_if_exists(&temp_seed_path)?;
+        render_basic_png(work_dir, &pdf_path, &temp_seed_path, PlateRotation::None)?;
+
+        let mut rendered_pages = existing_pngs_for_prefix(&folder, &temp_prefix)?.collect::<Vec<_>>();
+        rendered_pages.sort();
+        if rendered_pages.is_empty() {
+            bail!("hotspot render produced no pngs for {}", pdf_path.display());
+        }
+        if rendered_pages.len() == 1 {
+            let only_page = rendered_pages.remove(0);
+            if only_page != png_path {
+                fs::rename(&only_page, &png_path).with_context(|| {
+                    format!(
+                        "failed to rename {} to {}",
+                        only_page.display(),
+                        png_path.display()
+                    )
+                })?;
+            }
+        } else {
+            for rendered_page in &rendered_pages {
+                flatten_png_onto_white(rendered_page)?;
+            }
+            append_pngs_vertical(
+                work_dir,
+                &work_dir.join(".rust-logs"),
+                &rendered_pages,
+                &png_path,
+                &format!("tpp-hotspot-{}", sanitize_label(&output_name)),
+            )?;
+            for rendered_page in rendered_pages {
+                remove_if_exists(&rendered_page)?;
+            }
+        }
+        write_plate_marker(&marker_path, &fingerprint)?;
+        return Ok(());
+    }
 
     if output_name.starts_with("APD-") {
         let fingerprint = airport_diagram_fingerprint(
@@ -547,7 +604,7 @@ fn make_continued_plate_group(
     ad_tags: &std::collections::HashMap<String, String>,
     group: &ContinuedPlateGroup,
 ) -> anyhow::Result<()> {
-    let folder = work_dir.join("plates").join(&group.apt_id);
+    let folder = group_asset_folder(work_dir, group);
     fs::create_dir_all(&folder)
         .with_context(|| format!("failed to create {}", folder.display()))?;
     let final_png_path = folder.join(format!("{}.png", group.output_name));
@@ -1174,6 +1231,72 @@ fn strip_continued_suffix(chart_name: &str) -> Option<String> {
         .map(|(base, _)| base.trim().to_string())
 }
 
+fn hotspot_page_index(chart_name: &str) -> Option<u32> {
+    chart_name.rsplit_once('-').and_then(|(base, suffix)| {
+        if base.trim_end().ends_with("HOT SPOT") {
+            suffix.trim().parse::<u32>().ok()
+        } else {
+            None
+        }
+    })
+}
+
+fn strip_hotspot_page_suffix(chart_name: &str) -> Option<String> {
+    chart_name.rsplit_once('-').and_then(|(base, suffix)| {
+        if base.trim_end().ends_with("HOT SPOT") && suffix.trim().parse::<u32>().is_ok() {
+            Some(base.trim().to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn grouped_plate_base_name(plate: &PlateRecord) -> String {
+    strip_continued_suffix(&plate.chart_name)
+        .or_else(|| {
+            if plate.chart_code == "HOT" {
+                strip_hotspot_page_suffix(&plate.chart_name)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| plate.chart_name.clone())
+}
+
+fn grouped_plate_index(plate: &PlateRecord) -> Option<u32> {
+    continuation_index(&plate.chart_name).or_else(|| {
+        if plate.chart_code == "HOT" {
+            hotspot_page_index(&plate.chart_name)
+        } else {
+            None
+        }
+    })
+}
+
+fn plate_asset_folder(work_dir: &Path, plate: &PlateRecord) -> PathBuf {
+    let owner = if plate.chart_code == "HOT" {
+        plate.state_id.as_str()
+    } else {
+        plate.apt_id.as_str()
+    };
+    work_dir.join("plates").join(owner)
+}
+
+fn group_asset_folder(work_dir: &Path, group: &ContinuedPlateGroup) -> PathBuf {
+    let owner = group
+        .members
+        .first()
+        .map(|plate| {
+            if plate.chart_code == "HOT" {
+                plate.state_id.as_str()
+            } else {
+                group.apt_id.as_str()
+            }
+        })
+        .unwrap_or(group.apt_id.as_str());
+    work_dir.join("plates").join(owner)
+}
+
 fn plate_output_name(chart_code: &str, state_id: &str, chart_name: &str) -> String {
     format!(
         "{}-{}-{}",
@@ -1465,5 +1588,63 @@ Lower Right (-8246604.366, 4994848.615) ( 74d 4'49.83\"W, 40d52'52.67\"N)
         }]);
         assert_eq!(tasks.len(), 1);
         assert!(matches!(tasks[0], PlateTask::Single(_)));
+    }
+
+    #[test]
+    fn hotspot_records_are_collapsed_into_one_render_task() {
+        let tasks = build_plate_tasks(vec![
+            PlateRecord {
+                apt_id: "PAE".to_string(),
+                state_id: "WA".to_string(),
+                chart_name: "HOT SPOT-0".to_string(),
+                chart_code: "HOT".to_string(),
+                pdf_name: "HOT0.PDF".to_string(),
+            },
+            PlateRecord {
+                apt_id: "PAE".to_string(),
+                state_id: "WA".to_string(),
+                chart_name: "HOT SPOT-1".to_string(),
+                chart_code: "HOT".to_string(),
+                pdf_name: "HOT1.PDF".to_string(),
+            },
+        ]);
+        assert_eq!(tasks.len(), 1);
+        match &tasks[0] {
+            PlateTask::Single(plate) => {
+                assert_eq!(plate.chart_code, "HOT");
+                assert_eq!(plate.state_id, "WA");
+                assert_eq!(plate.chart_name, "HOT SPOT-0");
+            }
+            other => panic!("expected collapsed hotspot task, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_hotspot_airport_rows_collapse_to_one_render_task() {
+        let tasks = build_plate_tasks(vec![
+            PlateRecord {
+                apt_id: "PAE".to_string(),
+                state_id: "WA".to_string(),
+                chart_name: "HOT SPOT".to_string(),
+                chart_code: "HOT".to_string(),
+                pdf_name: "NW1HOTSPOT.PDF".to_string(),
+            },
+            PlateRecord {
+                apt_id: "SEA".to_string(),
+                state_id: "WA".to_string(),
+                chart_name: "HOT SPOT".to_string(),
+                chart_code: "HOT".to_string(),
+                pdf_name: "NW1HOTSPOT.PDF".to_string(),
+            },
+        ]);
+        assert_eq!(tasks.len(), 1);
+        match &tasks[0] {
+            PlateTask::Single(plate) => {
+                assert_eq!(plate.chart_code, "HOT");
+                assert_eq!(plate.state_id, "WA");
+                assert_eq!(plate.chart_name, "HOT SPOT");
+            }
+            other => panic!("expected single hotspot task, got {other:?}"),
+        }
     }
 }

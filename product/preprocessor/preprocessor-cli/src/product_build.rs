@@ -6408,8 +6408,10 @@ fn folder_category_for_document_type(document_type: &str) -> &'static str {
         "departure" => "departure",
         "star" => "star",
         "csup" => "csup",
-        "approach" | "other" => "approach",
-        _ => "approach",
+        "hotspot" => "hotspot",
+        "other" => "other",
+        "approach" => "approach",
+        _ => "other",
     }
 }
 
@@ -6421,8 +6423,9 @@ fn folder_category_rank(category: &str) -> usize {
         "airport-diagram" => 3,
         "csup" => 4,
         "takeoff-mins" => 5,
-        "hotspot" => 6,
-        _ => 7,
+        "other" => 6,
+        "hotspot" => 7,
+        _ => 8,
     }
 }
 
@@ -14208,5 +14211,14 @@ mod tests {
 
         assert!(terrain_cell_intersects_region("n37w102", Region::Sc));
         assert!(terrain_cell_intersects_region("n40w107", Region::Sw));
+    }
+
+    #[test]
+    fn folder_categories_keep_other_out_of_approach_and_sort_hotspots_last() {
+        assert_eq!(folder_category_for_document_type("approach"), "approach");
+        assert_eq!(folder_category_for_document_type("other"), "other");
+        assert_eq!(folder_category_for_document_type("hotspot"), "hotspot");
+        assert!(folder_category_rank("takeoff-mins") < folder_category_rank("other"));
+        assert!(folder_category_rank("other") < folder_category_rank("hotspot"));
     }
 }

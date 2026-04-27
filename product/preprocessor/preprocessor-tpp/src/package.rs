@@ -203,49 +203,11 @@ fn write_package_asset_manifest(
     let assets = members
         .iter()
         .filter(|member| member.ends_with(".png") && !member.starts_with("thumbnails/"))
-        .map(|member| {
-            let asset_path = Path::new(member);
-            let airport_id = asset_path
-                .components()
-                .nth(1)
-                .and_then(|value| value.as_os_str().to_str())
-                .unwrap_or_default()
-                .to_string();
-            let filename = asset_path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_string();
-            let label = asset_path
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_string();
-            let metadata = tpp_metadata.get(&(airport_id.clone(), label.clone()));
-            let canonical_airport_id = metadata
-                .and_then(|value| value.icao_airport_id.clone())
-                .unwrap_or_else(|| airport_id.clone());
-            Ok::<_, anyhow::Error>(PackageAssetRecord {
-                id: format!("plate:{canonical_airport_id}:{filename}"),
-                airport_id: canonical_airport_id,
-                icao_airport_id: metadata.and_then(|value| value.icao_airport_id.clone()),
-                label: label.clone(),
-                asset_kind: "png".to_string(),
-                document_type: infer_plate_document_type(
-                    metadata.map(|value| value.chart_code.as_str()),
-                    &label,
-                )
-                .to_string(),
-                asset_path: member.clone(),
-                thumbnail_path: Path::new("thumbnails")
-                    .join(asset_path)
-                    .to_string_lossy()
-                    .replace('\\', "/"),
-                procedure_uid: metadata.and_then(|value| value.procedure_uid.clone()),
-                georef: read_plate_georef_from_png(&asset_root.join(member))?,
-            })
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .map(|member| build_package_asset_records_for_member(asset_root, member, &tpp_metadata))
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let manifest = PackageAssetManifest {
         schema_version: 2,
         family_id: "tpp".to_string(),
@@ -362,6 +324,142 @@ fn load_tpp_asset_metadata(
     Ok(metadata)
 }
 
+fn build_package_asset_records_for_member(
+    asset_root: &Path,
+    member: &str,
+    tpp_metadata: &BTreeMap<(String, String), TppAssetMetadata>,
+) -> anyhow::Result<Vec<PackageAssetRecord>> {
+    let asset_path = Path::new(member);
+    let owner_id = asset_path
+        .components()
+        .nth(1)
+        .and_then(|value| value.as_os_str().to_str())
+        .unwrap_or_default()
+        .to_string();
+    let filename = asset_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let label = asset_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let normalized_hotspot_label = strip_rendered_hotspot_page_suffix(&label).unwrap_or_else(|| label.clone());
+    let display_label = pretty_packaged_plate_label(&normalized_hotspot_label);
+    let thumbnail_path = Path::new("thumbnails")
+        .join(asset_path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let georef = read_plate_georef_from_png(&asset_root.join(member))?;
+
+    let hotspot_records = if normalized_hotspot_label.starts_with("HOT-") {
+        let hotspot_prefix = format!("{normalized_hotspot_label}-");
+        let mut deduped = BTreeMap::new();
+        for ((apt_id, asset_label), metadata) in tpp_metadata
+            .iter()
+        {
+            if metadata.chart_code != "HOT" {
+                continue;
+            }
+            if asset_label != &normalized_hotspot_label && !asset_label.starts_with(&hotspot_prefix) {
+                continue;
+            }
+            deduped.entry(apt_id.clone()).or_insert_with(|| metadata.clone());
+        }
+        deduped.into_iter().collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    if !hotspot_records.is_empty() {
+        return Ok(hotspot_records
+            .into_iter()
+            .map(|(apt_id, metadata)| {
+                let canonical_airport_id = metadata
+                    .icao_airport_id
+                    .clone()
+                    .unwrap_or_else(|| apt_id.clone());
+                PackageAssetRecord {
+                    id: format!("plate:{canonical_airport_id}:{filename}"),
+                    airport_id: canonical_airport_id,
+                    icao_airport_id: metadata.icao_airport_id.clone(),
+                    label: display_label.clone(),
+                    asset_kind: "png".to_string(),
+                    document_type: infer_plate_document_type(
+                        Some(metadata.chart_code.as_str()),
+                        &normalized_hotspot_label,
+                    )
+                    .to_string(),
+                    asset_path: member.to_string(),
+                    thumbnail_path: thumbnail_path.clone(),
+                    procedure_uid: metadata.procedure_uid.clone(),
+                    georef: georef.clone(),
+                }
+            })
+            .collect());
+    }
+
+    let metadata = tpp_metadata.get(&(owner_id.clone(), label.clone()));
+    let canonical_airport_id = metadata
+        .and_then(|value| value.icao_airport_id.clone())
+        .unwrap_or_else(|| owner_id.clone());
+    Ok(vec![PackageAssetRecord {
+        id: format!("plate:{canonical_airport_id}:{filename}"),
+        airport_id: canonical_airport_id,
+        icao_airport_id: metadata.and_then(|value| value.icao_airport_id.clone()),
+        label: display_label,
+        asset_kind: "png".to_string(),
+        document_type: infer_plate_document_type(
+            metadata.map(|value| value.chart_code.as_str()),
+            &normalized_hotspot_label,
+        )
+        .to_string(),
+        asset_path: member.to_string(),
+        thumbnail_path,
+        procedure_uid: metadata.and_then(|value| value.procedure_uid.clone()),
+        georef,
+    }])
+}
+
+fn strip_rendered_hotspot_page_suffix(label: &str) -> Option<String> {
+    label.rsplit_once('-').and_then(|(base, suffix)| {
+        if base.trim_end().ends_with("HOT SPOT") && suffix.trim().parse::<u32>().is_ok() {
+            Some(base.trim().to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn pretty_packaged_plate_label(label: &str) -> String {
+    if let Some((prefix, remainder)) = split_tpp_prefix(label) {
+        if prefix == "HOT" {
+            return pretty_hotspot_label(remainder);
+        }
+    }
+    label.to_string()
+}
+
+fn split_tpp_prefix(label: &str) -> Option<(&str, &str)> {
+    let mut parts = label.splitn(3, '-');
+    let chart_code = parts.next()?;
+    let _state_code = parts.next()?;
+    let remainder = parts.next()?;
+    Some((chart_code, remainder))
+}
+
+fn pretty_hotspot_label(remainder: &str) -> String {
+    if remainder == "HOT SPOT" {
+        return "Hot Spot".to_string();
+    }
+    remainder
+        .strip_prefix("HOT SPOT-")
+        .map(|suffix| format!("Hot Spot {suffix}"))
+        .unwrap_or_else(|| remainder.to_string())
+}
+
 fn read_plate_georef_from_png(png_path: &Path) -> anyhow::Result<Option<PlateGeoref>> {
     let output = Command::new("exiftool")
         .arg("-s3")
@@ -414,6 +512,7 @@ fn infer_plate_document_type(chart_code: Option<&str>, label: &str) -> &'static 
         Some(code) if code == "IAP" => "approach",
         Some(code) if code == "DP" || code == "ODP" => "departure",
         Some(code) if code == "STAR" => "star",
+        Some(code) if code == "HOT" => "hotspot",
         Some(code) if code == "MIN" => {
             if label.contains("TAKEOFF MINIMUMS") {
                 "takeoff_minimums"
@@ -433,6 +532,8 @@ fn infer_plate_document_type(chart_code: Option<&str>, label: &str) -> &'static 
                 "alternate_minimums"
             } else if label.starts_with("MIN-") {
                 "minimums"
+            } else if label.starts_with("HOT-") {
+                "hotspot"
             } else if label.starts_with("IAP-") {
                 "approach"
             } else if label.starts_with("DP-") || label.starts_with("ODP-") {
@@ -553,5 +654,14 @@ mod tests {
                 pixel_y_offset: 30.0,
             })
         );
+    }
+
+    #[test]
+    fn infers_hotspot_document_type() {
+        assert_eq!(
+            infer_plate_document_type(Some("HOT"), "HOT-WA-HOT SPOT-0"),
+            "hotspot"
+        );
+        assert_eq!(infer_plate_document_type(None, "HOT-WA-HOT SPOT-1"), "hotspot");
     }
 }

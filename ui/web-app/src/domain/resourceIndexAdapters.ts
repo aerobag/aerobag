@@ -151,10 +151,14 @@ function folderCategoryForRecord(
       return "star";
     case "csup":
       return "csup";
-    case "approach":
+    case "hotspot":
+      return "hotspot";
     case "other":
-    default:
+      return "other";
+    case "approach":
       return "approach";
+    default:
+      return "other";
   }
 }
 

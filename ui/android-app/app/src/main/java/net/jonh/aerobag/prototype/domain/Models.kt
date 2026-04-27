@@ -376,6 +376,7 @@ enum class FlightPlanDisplayRowKind {
 enum class FlightPlanRowActionId {
     ActivateLeg,
     Remove,
+    RemoveAllAbove,
     InsertBefore,
     InsertAfter,
     Reorder,

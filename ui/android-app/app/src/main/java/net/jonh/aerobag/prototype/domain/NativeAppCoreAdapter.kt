@@ -377,6 +377,11 @@ class NativeAppCoreAdapter(
         return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
     }
 
+    fun removeAllAboveUi(plan: FlightPlan, componentIndex: Int): FlightPlanUiMutation {
+        val nextJson = bridge.removeAllAboveUiJson(json.encodeToString(plan.toWire()), componentIndex)
+        return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
+    }
+
     fun moveComponentUi(plan: FlightPlan, componentIndex: Int, delta: Int): FlightPlanUiMutation {
         val nextJson = bridge.moveComponentUiJson(json.encodeToString(plan.toWire()), componentIndex, delta)
         return json.decodeFromString<WireFlightPlanUiMutation>(nextJson).toUi()
@@ -1809,6 +1814,7 @@ private fun WireFlightPlanRowActionUiView.toUi() = FlightPlanRowActionUiView(
 private fun WireFlightPlanRowActionId.toUi() = when (this) {
     WireFlightPlanRowActionId.ActivateLeg -> FlightPlanRowActionId.ActivateLeg
     WireFlightPlanRowActionId.Remove -> FlightPlanRowActionId.Remove
+    WireFlightPlanRowActionId.RemoveAllAbove -> FlightPlanRowActionId.RemoveAllAbove
     WireFlightPlanRowActionId.InsertBefore -> FlightPlanRowActionId.InsertBefore
     WireFlightPlanRowActionId.InsertAfter -> FlightPlanRowActionId.InsertAfter
     WireFlightPlanRowActionId.Reorder -> FlightPlanRowActionId.Reorder

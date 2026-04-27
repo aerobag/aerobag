@@ -29,6 +29,14 @@ pub fn delete_component_ui_json(plan_json: &str, component_index: usize) -> Resu
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
+pub fn remove_all_above_ui_json(plan_json: &str, component_index: usize) -> Result<String, String> {
+    let plan: app_core::FlightPlan =
+        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
+    let mutation =
+        app_core::remove_all_above_ui(&plan, component_index).map_err(|err| err.to_string())?;
+    serde_json::to_string(&mutation).map_err(|err| err.to_string())
+}
+
 pub fn move_component_ui_json(
     plan_json: &str,
     component_index: usize,
@@ -1293,6 +1301,20 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_del
     let result = (|| {
         let plan_json = get_java_string(&mut env, plan_json)?;
         delete_component_ui_json(&plan_json, component_index as usize)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_removeAllAboveUiJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    plan_json: JString,
+    component_index: i32,
+) -> jstring {
+    let result = (|| {
+        let plan_json = get_java_string(&mut env, plan_json)?;
+        remove_all_above_ui_json(&plan_json, component_index as usize)
     })();
     return_string(&mut env, result)
 }

@@ -1449,12 +1449,43 @@ private fun AerobagApp() {
     DisposableEffect(offlinePackagesControllerHandle) {
         onDispose { NativeBindings.destroyOfflinePackagesController(offlinePackagesControllerHandle) }
     }
-    val runtimeFixture = remember(context, bootstrap, runtimeReloadToken) {
-        runCatching { SampleData.loadRuntime(context.applicationContext, bootstrap) }
-    }
-    var keepOfflinePackagesVisible by remember { mutableStateOf(runtimeFixture.isFailure) }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
-    if (runtimeFixture.isFailure) {
+    val runtimeFixture by produceState<Result<net.jonh.aerobag.prototype.domain.ContentFixture>?>(initialValue = null, context, bootstrap, runtimeReloadToken) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { SampleData.loadRuntime(context.applicationContext, bootstrap) }
+        }
+    }
+    var keepOfflinePackagesVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(runtimeFixture?.isFailure) {
+        if (runtimeFixture?.isFailure == true) {
+            keepOfflinePackagesVisible = true
+        }
+    }
+    if (runtimeFixture == null) {
+        CompositionLocalProvider(LocalAerobagUiTheme provides uiTheme) {
+            SettingsPage(
+                page = AppPage.Settings,
+                pageHistory = emptyList(),
+                uptimeLabel = rememberUptimeLabel(SystemClock.elapsedRealtime()),
+                bootstrap = bootstrap,
+                navElement = null,
+                onSelectPage = {},
+                onOpenPlan = {},
+                initialOfflinePackagesOpen = keepOfflinePackagesVisible,
+                forceOfflinePackagesOpen = keepOfflinePackagesVisible,
+                bootstrapMessage =
+                    if (keepOfflinePackagesVisible) {
+                        "Opening runtime..."
+                    } else {
+                        "Loading..."
+                    },
+                offlinePackagesControllerHandle = offlinePackagesControllerHandle,
+                onRuntimeMaybeAvailable = { runtimeReloadToken += 1 },
+            )
+        }
+        return
+    }
+    if (runtimeFixture!!.isFailure) {
         keepOfflinePackagesVisible = true
         CompositionLocalProvider(LocalAerobagUiTheme provides uiTheme) {
             SettingsPage(
@@ -1474,7 +1505,7 @@ private fun AerobagApp() {
         }
         return
     }
-    val fixture = runtimeFixture.getOrThrow()
+    val fixture = runtimeFixture!!.getOrThrow()
     val appCore = remember(fixture.vectorManifestJson, fixture.navKvStore) {
         NativeAppCoreAdapter(
             fixture.vectorManifestJson,
@@ -4878,11 +4909,18 @@ private fun FlightPlanPage(
                                         closePanels()
                                     }
                                     FlightPlanRowActionId.Remove,
+                                    FlightPlanRowActionId.RemoveAllAbove,
                                     FlightPlanRowActionId.RemoveAirway,
                                     FlightPlanRowActionId.RemoveProcedure,
                                     -> {
                                         selectedRow.componentIndex?.let {
-                                            onApplyMutation(appCore.deleteComponentUi(samplePlan, it))
+                                            onApplyMutation(
+                                                if (action.id == FlightPlanRowActionId.RemoveAllAbove) {
+                                                    appCore.removeAllAboveUi(samplePlan, it)
+                                                } else {
+                                                    appCore.deleteComponentUi(samplePlan, it)
+                                                },
+                                            )
                                         }
                                         closePanels()
                                     }
@@ -6427,6 +6465,7 @@ private fun selectionKeyForDisplayRow(row: FlightPlanDisplayRowUiView, index: In
 private fun flightPlanActionLabel(actionId: FlightPlanRowActionId): String = when (actionId) {
     FlightPlanRowActionId.ActivateLeg -> "Activate Leg"
     FlightPlanRowActionId.Remove -> "Remove"
+    FlightPlanRowActionId.RemoveAllAbove -> "Remove All Above"
     FlightPlanRowActionId.InsertBefore -> "Insert Before"
     FlightPlanRowActionId.InsertAfter -> "Insert After"
     FlightPlanRowActionId.Reorder -> "Reorder"

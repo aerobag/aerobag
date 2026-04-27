@@ -98,6 +98,8 @@ pub use planning::{
     ResolvedLegUiView, RouteComponent, RouteComponentUiView, RouteComponentViewKind,
     SequencingMode, StartRequirement, TerminalState, HoldTerminalState,
     ProcedureTurnTerminalState, CommonSegmentTerminalState, CodedFixSatisfaction,
+    basic_terminal_state, direct_to_fix_with_course_continuation_requirement,
+    yieldable_course_to_fix_requirement, reentry_to_anchor_requirement,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use procedure_geometry::{
@@ -2246,53 +2248,42 @@ fn terminal_state_for_handoff(
     terminal_anchor: Option<NavRef>,
     common_segment: bool,
 ) -> Option<TerminalState> {
-    Some(TerminalState {
-        terminal_position: current_position?,
-        drawn_terminal_course_deg: current_course_deg,
-        logical_terminal_course_deg: current_course_deg,
+    Some(basic_terminal_state(
+        current_position?,
+        current_course_deg,
         terminal_anchor,
-        established_course_deg: current_course_deg,
-        incoming_course_to_anchor_deg: current_course_deg,
-        outgoing_course_from_anchor_deg: current_course_deg,
-        hold_state: HoldTerminalState::None,
-        procedure_turn_state: ProcedureTurnTerminalState::None,
-        common_segment_state: if common_segment {
-            CommonSegmentTerminalState::CommonSegment
-        } else {
-            CommonSegmentTerminalState::NotCommon
-        },
-        coded_fix_satisfaction: CodedFixSatisfaction::Unknown,
-    })
+        common_segment,
+    ))
 }
 
 fn start_requirement_for_direct_to_fix_with_following_course(
     direct_to_fix_record: &ProcedureLegMaterializationRecord,
     following_course_record: &ProcedureLegMaterializationRecord,
 ) -> Option<StartRequirement> {
-    Some(StartRequirement::DirectToFix {
-        anchor: direct_to_fix_record.nav_ref.clone()?,
-        anchor_position: direct_to_fix_record.nav_position,
-        continuation_course_deg: following_course_record
+    Some(direct_to_fix_with_course_continuation_requirement(
+        direct_to_fix_record.nav_ref.clone()?,
+        direct_to_fix_record.nav_position,
+        following_course_record
             .magnetic_course_deg
             .map(|course| course + record_magnetic_variation_deg(following_course_record).unwrap_or(0.0)),
-        continuation_anchor: following_course_record.nav_ref.clone(),
-        continuation_anchor_position: following_course_record.nav_position,
-    })
+        following_course_record.nav_ref.clone(),
+        following_course_record.nav_position,
+    ))
 }
 
 fn start_requirement_for_feeder_course_to_fix_with_common_resume(
     feeder_course_to_fix_record: &ProcedureLegMaterializationRecord,
     resumed_common_record: &ProcedureLegMaterializationRecord,
 ) -> Option<StartRequirement> {
-    Some(StartRequirement::YieldableCourseToFix {
-        anchor: feeder_course_to_fix_record.nav_ref.clone()?,
-        anchor_position: feeder_course_to_fix_record.nav_position,
-        continuation_course_deg: resumed_common_record
+    Some(yieldable_course_to_fix_requirement(
+        feeder_course_to_fix_record.nav_ref.clone()?,
+        feeder_course_to_fix_record.nav_position,
+        resumed_common_record
             .magnetic_course_deg
             .map(|course| course + record_magnetic_variation_deg(resumed_common_record).unwrap_or(0.0)),
-        continuation_anchor: resumed_common_record.nav_ref.clone(),
-        continuation_anchor_position: resumed_common_record.nav_position,
-    })
+        resumed_common_record.nav_ref.clone(),
+        resumed_common_record.nav_position,
+    ))
 }
 
 #[cfg(test)]
@@ -2317,11 +2308,11 @@ fn start_requirement_for_reentry_to_anchor(
     from_anchor: &NavRef,
     to_anchor: &NavRef,
 ) -> Option<StartRequirement> {
-    Some(StartRequirement::ReentryToAnchor {
-        from_anchor: from_anchor.clone(),
-        from_anchor_position: Some(from_record.nav_position?),
-        to_anchor: to_anchor.clone(),
-    })
+    Some(reentry_to_anchor_requirement(
+        from_anchor.clone(),
+        Some(from_record.nav_position?),
+        to_anchor.clone(),
+    ))
 }
 
 fn should_skip_window_before_resolution(

@@ -387,6 +387,75 @@ fn positions_nearly_equal(left: LatLon, right: LatLon) -> bool {
     (lat_delta_nm * lat_delta_nm + lon_delta_nm * lon_delta_nm).sqrt() <= 0.05
 }
 
+pub fn basic_terminal_state(
+    terminal_position: LatLon,
+    terminal_course_deg: Option<f64>,
+    terminal_anchor: Option<NavRef>,
+    common_segment: bool,
+) -> TerminalState {
+    TerminalState {
+        terminal_position,
+        drawn_terminal_course_deg: terminal_course_deg,
+        logical_terminal_course_deg: terminal_course_deg,
+        terminal_anchor,
+        established_course_deg: terminal_course_deg,
+        incoming_course_to_anchor_deg: terminal_course_deg,
+        outgoing_course_from_anchor_deg: terminal_course_deg,
+        hold_state: HoldTerminalState::None,
+        procedure_turn_state: ProcedureTurnTerminalState::None,
+        common_segment_state: if common_segment {
+            CommonSegmentTerminalState::CommonSegment
+        } else {
+            CommonSegmentTerminalState::NotCommon
+        },
+        coded_fix_satisfaction: CodedFixSatisfaction::Unknown,
+    }
+}
+
+pub fn direct_to_fix_with_course_continuation_requirement(
+    anchor: NavRef,
+    anchor_position: Option<LatLon>,
+    continuation_course_deg: Option<f64>,
+    continuation_anchor: Option<NavRef>,
+    continuation_anchor_position: Option<LatLon>,
+) -> StartRequirement {
+    StartRequirement::DirectToFix {
+        anchor,
+        anchor_position,
+        continuation_course_deg,
+        continuation_anchor,
+        continuation_anchor_position,
+    }
+}
+
+pub fn yieldable_course_to_fix_requirement(
+    anchor: NavRef,
+    anchor_position: Option<LatLon>,
+    continuation_course_deg: Option<f64>,
+    continuation_anchor: Option<NavRef>,
+    continuation_anchor_position: Option<LatLon>,
+) -> StartRequirement {
+    StartRequirement::YieldableCourseToFix {
+        anchor,
+        anchor_position,
+        continuation_course_deg,
+        continuation_anchor,
+        continuation_anchor_position,
+    }
+}
+
+pub fn reentry_to_anchor_requirement(
+    from_anchor: NavRef,
+    from_anchor_position: Option<LatLon>,
+    to_anchor: NavRef,
+) -> StartRequirement {
+    StartRequirement::ReentryToAnchor {
+        from_anchor,
+        from_anchor_position,
+        to_anchor,
+    }
+}
+
 pub fn reconcile_handoff(
     terminal_state: &TerminalState,
     start_requirement: &StartRequirement,

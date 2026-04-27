@@ -1,9 +1,8 @@
 use crate::planning::LegDisplayPathStyle;
 use crate::{
-    heading_signature_for_element, reconcile_handoff, CommonSegmentTerminalState,
-    CodedFixSatisfaction, HandoffDecision, HoldTerminalState, LatLon, LegDisplayElement,
-    LegDisplayPath, ProcedureLegMaterializationRecord, ProcedureTurnTerminalState,
-    StartRequirement, TerminalState,
+    heading_signature_for_element, reconcile_handoff, HandoffDecision, LatLon,
+    LegDisplayElement, LegDisplayPath, ProcedureLegMaterializationRecord,
+    basic_terminal_state, direct_to_fix_with_course_continuation_requirement,
 };
 
 macro_rules! debug_source {
@@ -977,28 +976,19 @@ fn should_skip_direct_to_fix_for_following_course(
     let Some(next_cf_step) = next_cf_step else {
         return false;
     };
-    let terminal_state = TerminalState {
-        terminal_position: current_position,
-        drawn_terminal_course_deg: current_course_deg,
-        logical_terminal_course_deg: current_course_deg,
-        terminal_anchor: None,
-        established_course_deg: current_course_deg,
-        incoming_course_to_anchor_deg: current_course_deg,
-        outgoing_course_from_anchor_deg: current_course_deg,
-        hold_state: HoldTerminalState::None,
-        procedure_turn_state: ProcedureTurnTerminalState::None,
-        common_segment_state: CommonSegmentTerminalState::NotCommon,
-        coded_fix_satisfaction: CodedFixSatisfaction::Unknown,
-    };
-    let start_requirement = StartRequirement::DirectToFix {
-        anchor: next_cf_step.nav_ref.clone().unwrap_or_else(|| crate::NavRef::LatLon(direct_fix)),
-        anchor_position: Some(direct_fix),
-        continuation_course_deg: next_cf_step
+    let terminal_state = basic_terminal_state(current_position, current_course_deg, None, false);
+    let start_requirement = direct_to_fix_with_course_continuation_requirement(
+        next_cf_step
+            .nav_ref
+            .clone()
+            .unwrap_or_else(|| crate::NavRef::LatLon(direct_fix)),
+        Some(direct_fix),
+        next_cf_step
             .magnetic_course_deg
             .map(|course| course + course_reference_variation_deg(next_cf_step)),
-        continuation_anchor: next_cf_step.nav_ref.clone(),
-        continuation_anchor_position: next_cf_step.nav_position,
-    };
+        next_cf_step.nav_ref.clone(),
+        next_cf_step.nav_position,
+    );
     matches!(
         reconcile_handoff(&terminal_state, &start_requirement),
         HandoffDecision::SkipStaleFix

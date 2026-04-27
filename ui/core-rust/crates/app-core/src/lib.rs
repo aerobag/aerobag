@@ -2542,6 +2542,76 @@ struct ProcedureWindowContinuation<'a> {
     render_as_resumed_common_cf: bool,
 }
 
+struct ProcedureWindowContinuationPolicy {
+    continuing_if_to_cf_join: bool,
+    continuing_same_anchor_window: bool,
+    continuing_from_fa_window: bool,
+    continuing_from_previous_anchor: bool,
+    resume_common_cf_from_previous_path: bool,
+}
+
+impl ProcedureWindowContinuationPolicy {
+    fn evaluate(
+        current_window_index: usize,
+        from: &NavRef,
+        to: &NavRef,
+        pair: [&ProcedureLegMaterializationRecord; 2],
+        hold_record: Option<&ProcedureLegMaterializationRecord>,
+        role: ProcedureSegmentRole,
+        traversal_policy: SegmentTraversalPolicy<'_>,
+        previous: PreviousWindowContext,
+        previous_leg_to: Option<&NavRef>,
+    ) -> Self {
+        let continuing_if_to_cf_join = (from != to)
+            && pair[0].path_termination.trim() == "IF"
+            && pair[1].path_termination.trim() == "CF"
+            && previous.terminal_position.is_some_and(|previous_end| {
+                let Some(anchor_position) = pair[0].nav_position else {
+                    return false;
+                };
+                previous.previous_was_course_to_intercept
+                    || great_circle_distance_nm(previous_end, anchor_position) > 0.25
+            });
+        let continuing_same_anchor_window = (from != to)
+            && hold_record.is_some()
+            && pair[0].path_termination.trim() == "CF"
+            && pair[1].path_termination.trim() == "TF"
+            && previous.terminal_position
+                .zip(pair[0].nav_position)
+                .is_some_and(|(previous_end, anchor_position)| {
+                    great_circle_distance_nm(previous_end, anchor_position) <= 0.05
+                });
+        let continuing_from_fa_window = (from != to)
+            && pair[0].path_termination.trim() == "FA"
+            && previous_leg_to.is_some_and(|previous_to| previous_to == from)
+            && previous.terminal_position.is_some();
+        let continuing_from_previous_anchor = previous.terminal_position
+            .zip(pair[0].nav_position)
+            .is_some_and(|(previous_end, anchor_position)| {
+                great_circle_distance_nm(previous_end, anchor_position) <= 0.05
+            });
+        let resume_common_cf_from_previous_path =
+            role == ProcedureSegmentRole::Common
+                && traversal_policy.resumes_common_on_window(current_window_index);
+        Self {
+            continuing_if_to_cf_join,
+            continuing_same_anchor_window,
+            continuing_from_fa_window,
+            continuing_from_previous_anchor,
+            resume_common_cf_from_previous_path,
+        }
+    }
+
+    fn inherits_previous_state(&self, from: &NavRef, to: &NavRef) -> bool {
+        from == to
+            || self.continuing_if_to_cf_join
+            || self.continuing_same_anchor_window
+            || self.continuing_from_fa_window
+            || self.continuing_from_previous_anchor
+            || self.resume_common_cf_from_previous_path
+    }
+}
+
 fn determine_procedure_window_continuation<'a>(
     current_window_index: usize,
     from: &NavRef,
@@ -2553,61 +2623,36 @@ fn determine_procedure_window_continuation<'a>(
     previous: PreviousWindowContext,
     previous_leg_to: Option<&NavRef>,
 ) -> ProcedureWindowContinuation<'a> {
-    let continuing_if_to_cf_join = (from != to)
-        && pair[0].path_termination.trim() == "IF"
-        && pair[1].path_termination.trim() == "CF"
-        && previous.terminal_position.is_some_and(|previous_end| {
-            let Some(anchor_position) = pair[0].nav_position else {
-                return false;
-            };
-            previous.previous_was_course_to_intercept
-                || great_circle_distance_nm(previous_end, anchor_position) > 0.25
-        });
-    let continuing_same_anchor_window = (from != to)
-        && hold_record.is_some()
-        && pair[0].path_termination.trim() == "CF"
-        && pair[1].path_termination.trim() == "TF"
-        && previous.terminal_position
-            .zip(pair[0].nav_position)
-            .is_some_and(|(previous_end, anchor_position)| {
-                great_circle_distance_nm(previous_end, anchor_position) <= 0.05
-            });
-    let continuing_from_fa_window = (from != to)
-        && pair[0].path_termination.trim() == "FA"
-        && previous_leg_to.is_some_and(|previous_to| previous_to == from)
-        && previous.terminal_position.is_some();
-    let continuing_from_previous_anchor = previous.terminal_position
-        .zip(pair[0].nav_position)
-        .is_some_and(|(previous_end, anchor_position)| {
-            great_circle_distance_nm(previous_end, anchor_position) <= 0.05
-        });
-    let resume_common_cf_from_previous_path =
-        role == ProcedureSegmentRole::Common && traversal_policy.resumes_common_on_window(current_window_index);
-    let inherit_previous_state = from == to
-        || continuing_if_to_cf_join
-        || continuing_same_anchor_window
-        || continuing_from_fa_window
-        || continuing_from_previous_anchor
-        || resume_common_cf_from_previous_path;
+    let policy = ProcedureWindowContinuationPolicy::evaluate(
+        current_window_index,
+        from,
+        to,
+        pair,
+        hold_record,
+        role,
+        traversal_policy,
+        previous,
+        previous_leg_to,
+    );
     let display_leg_start = if pair[0].path_termination.trim() == "PI"
         && from != to
         && previous.previous_leg_consumed_same_pi
     {
         pair[1]
-    } else if resume_common_cf_from_previous_path {
+    } else if policy.resume_common_cf_from_previous_path {
         pair[1]
     } else {
         pair[0]
     };
-    let render_as_empty_join = continuing_if_to_cf_join
+    let render_as_empty_join = policy.continuing_if_to_cf_join
         && previous.terminal_position
             .zip(pair[1].nav_position)
             .is_some_and(|(start, end)| great_circle_distance_nm(start, end) <= 0.05);
     ProcedureWindowContinuation {
-        inherit_previous_state,
+        inherit_previous_state: policy.inherits_previous_state(from, to),
         display_leg_start,
         render_as_empty_join,
-        render_as_resumed_common_cf: resume_common_cf_from_previous_path,
+        render_as_resumed_common_cf: policy.resume_common_cf_from_previous_path,
     }
 }
 

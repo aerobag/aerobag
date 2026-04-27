@@ -1339,103 +1339,38 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 .and_then(previous_display_path_terminal_position);
             let previous_terminal_course =
                 previous_display_path.as_ref().and_then(final_course_of_display_path);
-            let previous_context =
-                previous_window_context(previous_display_path.as_ref(), resolved.last(), pair[0]);
-            if pair[0].path_termination.trim() == "DF"
-                && pair[1].path_termination.trim() == "CF"
-                && previous_terminal_position
-                    .zip(pair[0].nav_position)
-                    .zip(pair[1].nav_position)
-                    .is_some_and(|((previous_end, direct_fix), following_fix)| {
-                        great_circle_distance_nm(previous_end, following_fix) <= 0.05
-                            && great_circle_distance_nm(previous_end, direct_fix) > 0.25
-                    })
-            {
-                continue;
-            }
-            let from = pair[0].nav_ref.clone().ok_or_else(|| AppError {
-                kind: AppErrorKind::InvalidFlightPlan,
-                message: format!(
-                    "procedure {} leg materialization encountered missing from-anchor nav_ref at sequence {}",
-                    procedure_id.trim(),
-                    pair[0].sequence
-                ),
-            })?;
-            let window_resolution = resolve_procedure_window(
+            let Some(window_plan) = plan_procedure_window(
                 index,
                 [pair[0], pair[1]],
                 &fix_records,
-                previous_context,
                 leg_records,
-                role.clone(),
-            );
-            let effective_leg_end = window_resolution.effective_leg_end;
-            let to = effective_leg_end.nav_ref.clone().ok_or_else(|| AppError {
-                kind: AppErrorKind::InvalidFlightPlan,
-                message: format!(
-                    "procedure {} leg materialization encountered missing to-anchor nav_ref at sequence {}",
-                    procedure_id.trim(),
-                    effective_leg_end.sequence
-                ),
-            })?;
-            if common_resume_yields_current_feeder_cf(
-                [pair[0], pair[1]],
-                leg_records,
-                previous_display_path.as_ref(),
-                previous_context,
-                next_segment_records,
-                role.clone(),
-            ) {
-                continue;
-            }
-            if should_skip_reconciliation_anchor_leg(
-                previous_display_path.as_ref(),
-                previous_leg_to.as_ref(),
-                pair[0],
-                &from,
-                &to,
-            ) {
-                continue;
-            }
-            if should_skip_degenerate_or_duplicate_window(
-                &from,
-                &to,
-                pair[1].path_termination.trim(),
-                resolved.last(),
-            ) {
-                continue;
-            }
-            let hold_record = window_resolution.hold_record;
-            let provenance_record = window_resolution.provenance_record;
-            let continuation = determine_procedure_window_continuation(
-                index,
-                &from,
-                &to,
-                [pair[0], pair[1]],
-                hold_record,
                 role.clone(),
                 common_resume_target,
-                previous_context,
+                previous_display_path.as_ref(),
                 previous_leg_to.as_ref(),
-            );
-            let initial_position_override = if continuation.inherit_previous_state {
+                next_segment_records,
+                resolved.last(),
+            )? else {
+                continue;
+            };
+            let initial_position_override = if window_plan.continuation.inherit_previous_state {
                 previous_terminal_position
             } else {
                 None
             };
-            let initial_course_override = if continuation.inherit_previous_state {
+            let initial_course_override = if window_plan.continuation.inherit_previous_state {
                 previous_terminal_course
             } else {
                 None
             };
-            let display_path = if continuation.render_as_empty_join {
+            let display_path = if window_plan.continuation.render_as_empty_join {
                 Some(LegDisplayPath {
                     style: LegDisplayPathStyle::Solid,
                     elements: Vec::new(),
                     effective_terminal_course_deg: None,
                     debug_element_sources: Vec::new(),
                 })
-            } else if continuation.render_as_resumed_common_cf {
+            } else if window_plan.continuation.render_as_resumed_common_cf {
                 display_path_for_resumed_common_cf(
                     pair[1],
                     initial_position_override,
@@ -1444,9 +1379,9 @@ fn resolve_procedure_materialization_legs_with_provenance(
             } else {
                 display_path_for_procedure_leg(
                     leg_records,
-                    continuation.display_leg_start,
-                    effective_leg_end,
-                    hold_record,
+                    window_plan.continuation.display_leg_start,
+                    window_plan.resolution.effective_leg_end,
+                    window_plan.resolution.hold_record,
                     initial_position_override,
                     initial_course_override,
                 )
@@ -1455,9 +1390,9 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 next_heading_step_index,
                 display_path.as_ref(),
                 pair[0],
-                effective_leg_end,
-                provenance_record.path_termination.trim(),
-                provenance_record.nav_position,
+                window_plan.resolution.effective_leg_end,
+                window_plan.resolution.provenance_record.path_termination.trim(),
+                window_plan.resolution.provenance_record.nav_position,
             );
             next_heading_step_index += signatures.len();
             heading_checks.extend(signatures);
@@ -1466,24 +1401,28 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 id: format!(
                     "procedure-{}-{}-{}",
                     procedure_id.trim(),
-                    provenance_record.key.route_type.trim(),
-                    provenance_record.sequence
+                    window_plan.resolution.provenance_record.key.route_type.trim(),
+                    window_plan.resolution.provenance_record.sequence
                 ),
-                from: from.clone(),
-                to: to.clone(),
+                from: window_plan.from.clone(),
+                to: window_plan.to.clone(),
                 source: ResolvedLegSource::RouteComponent { component_index },
                 procedure_provenance: Some(ProcedureLegProvenance {
                     airport_id: airport_id.trim().to_string(),
                     procedure_id: procedure_id.trim().to_string(),
                     kind: kind.clone(),
                     role: role.clone(),
-                    path_termination: provenance_record.path_termination_kind.clone(),
-                    leg_sequence: provenance_record.sequence,
+                    path_termination: window_plan
+                        .resolution
+                        .provenance_record
+                        .path_termination_kind
+                        .clone(),
+                    leg_sequence: window_plan.resolution.provenance_record.sequence,
                     display_path: display_path.clone(),
                 }),
             });
             previous_display_path = display_path;
-            previous_leg_to = Some(to);
+            previous_leg_to = Some(window_plan.to);
         }
 
         if let Some(last_fix) = fix_records.last().copied() {
@@ -2622,6 +2561,13 @@ struct ProcedureWindowResolution<'a> {
     provenance_record: &'a ProcedureLegMaterializationRecord,
 }
 
+struct ProcedureWindowPlan<'a> {
+    from: NavRef,
+    to: NavRef,
+    resolution: ProcedureWindowResolution<'a>,
+    continuation: ProcedureWindowContinuation<'a>,
+}
+
 fn resolve_procedure_window<'a>(
     current_window_index: usize,
     pair: [&'a ProcedureLegMaterializationRecord; 2],
@@ -2749,6 +2695,100 @@ fn determine_procedure_window_continuation<'a>(
         render_as_empty_join,
         render_as_resumed_common_cf: resume_common_cf_from_previous_path,
     }
+}
+
+fn plan_procedure_window<'a>(
+    current_window_index: usize,
+    pair: [&'a ProcedureLegMaterializationRecord; 2],
+    fix_records: &[&'a ProcedureLegMaterializationRecord],
+    leg_records: &[ProcedureLegMaterializationRecord],
+    role: ProcedureSegmentRole,
+    common_resume_target: Option<CommonResumeTarget<'a>>,
+    previous_display_path: Option<&LegDisplayPath>,
+    previous_leg_to: Option<&NavRef>,
+    next_segment_records: Option<&[ProcedureLegMaterializationRecord]>,
+    resolved_last: Option<&ResolvedLeg>,
+) -> AppResult<Option<ProcedureWindowPlan<'a>>> {
+    let previous_context = previous_window_context(previous_display_path, resolved_last, pair[0]);
+    if pair[0].path_termination.trim() == "DF"
+        && pair[1].path_termination.trim() == "CF"
+        && previous_context
+            .terminal_position
+            .zip(pair[0].nav_position)
+            .zip(pair[1].nav_position)
+            .is_some_and(|((previous_end, direct_fix), following_fix)| {
+                great_circle_distance_nm(previous_end, following_fix) <= 0.05
+                    && great_circle_distance_nm(previous_end, direct_fix) > 0.25
+            })
+    {
+        return Ok(None);
+    }
+    let from = pair[0].nav_ref.clone().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: format!(
+            "procedure leg materialization encountered missing from-anchor nav_ref at sequence {}",
+            pair[0].sequence
+        ),
+    })?;
+    let resolution = resolve_procedure_window(
+        current_window_index,
+        pair,
+        fix_records,
+        previous_context,
+        leg_records,
+        role.clone(),
+    );
+    let to = resolution.effective_leg_end.nav_ref.clone().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: format!(
+            "procedure leg materialization encountered missing to-anchor nav_ref at sequence {}",
+            resolution.effective_leg_end.sequence
+        ),
+    })?;
+    if common_resume_yields_current_feeder_cf(
+        pair,
+        leg_records,
+        previous_display_path,
+        previous_context,
+        next_segment_records,
+        role.clone(),
+    ) {
+        return Ok(None);
+    }
+    if should_skip_reconciliation_anchor_leg(
+        previous_display_path,
+        previous_leg_to,
+        pair[0],
+        &from,
+        &to,
+    ) {
+        return Ok(None);
+    }
+    if should_skip_degenerate_or_duplicate_window(
+        &from,
+        &to,
+        pair[1].path_termination.trim(),
+        resolved_last,
+    ) {
+        return Ok(None);
+    }
+    let continuation = determine_procedure_window_continuation(
+        current_window_index,
+        &from,
+        &to,
+        pair,
+        resolution.hold_record,
+        role,
+        common_resume_target,
+        previous_context,
+        previous_leg_to,
+    );
+    Ok(Some(ProcedureWindowPlan {
+        from,
+        to,
+        resolution,
+        continuation,
+    }))
 }
 
 #[derive(Clone, Copy)]

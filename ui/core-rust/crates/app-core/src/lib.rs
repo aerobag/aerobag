@@ -1409,8 +1409,8 @@ fn resolve_procedure_materialization_legs_with_provenance(
                         next_segment_records,
                     },
                 )?;
-                if let Some(trailing_plan) = trailing_plan {
-                    let previous_to = trailing_plan.nav_ref.clone();
+                if let Some(tail_link) = trailing_plan {
+                    let previous_to = tail_link.nav_ref.clone();
                     previous_display_path = append_resolved_procedure_leg(
                         &mut resolved,
                         &mut heading_checks,
@@ -1420,7 +1420,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                         &kind,
                         &role,
                         component_index,
-                        append_spec_for_trailing_plan(last_fix, trailing_plan),
+                        append_spec_for_tail_link(last_fix, tail_link),
                     );
                     previous_leg_to = Some(previous_to);
                 }
@@ -1440,10 +1440,10 @@ fn resolve_procedure_materialization_legs_with_provenance(
                             next_segment_records,
                         },
                     )?;
-                let Some(standalone_plan) = standalone_plan else {
+                let Some(tail_link) = standalone_plan else {
                     continue;
                 };
-                let previous_to = standalone_plan.nav_ref.clone();
+                let previous_to = tail_link.nav_ref.clone();
                 previous_display_path = append_resolved_procedure_leg(
                     &mut resolved,
                     &mut heading_checks,
@@ -1453,7 +1453,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     &kind,
                     &role,
                     component_index,
-                    append_spec_for_trailing_plan(standalone, standalone_plan),
+                    append_spec_for_tail_link(standalone, tail_link),
                 );
                 previous_leg_to = Some(previous_to);
             }
@@ -2423,7 +2423,7 @@ struct ProcedureWindowPlanningContext<'a> {
     resolved_last: Option<ResolvedLeg>,
 }
 
-struct TrailingProcedurePlan<'a> {
+struct ProcedureTailLink<'a> {
     nav_ref: NavRef,
     provenance_record: &'a ProcedureLegMaterializationRecord,
     display_path: Option<LegDisplayPath>,
@@ -2467,17 +2467,17 @@ fn append_spec_for_window_link<'a>(
     }
 }
 
-fn append_spec_for_trailing_plan<'a>(
+fn append_spec_for_tail_link<'a>(
     anchor_record: &'a ProcedureLegMaterializationRecord,
-    trailing_plan: TrailingProcedurePlan<'a>,
+    tail_link: ProcedureTailLink<'a>,
 ) -> ProcedureAppendSpec<'a> {
     ProcedureAppendSpec {
-        from: trailing_plan.nav_ref.clone(),
-        to: trailing_plan.nav_ref,
+        from: tail_link.nav_ref.clone(),
+        to: tail_link.nav_ref,
         heading_from_record: anchor_record,
         heading_to_record: anchor_record,
-        provenance_record: trailing_plan.provenance_record,
-        display_path: trailing_plan.display_path,
+        provenance_record: tail_link.provenance_record,
+        display_path: tail_link.display_path,
     }
 }
 
@@ -2754,7 +2754,7 @@ fn plan_trailing_procedure_window<'a>(
     last_fix: &'a ProcedureLegMaterializationRecord,
     trailing_record: &'a ProcedureLegMaterializationRecord,
     planning: TailPlanningContext<'a>,
-) -> AppResult<Option<TrailingProcedurePlan<'a>>> {
+) -> AppResult<Option<ProcedureTailLink<'a>>> {
     let tail_state = tail_planning_state(trailing_record, planning);
     let nav_ref = last_fix.nav_ref.clone().ok_or_else(|| AppError {
         kind: AppErrorKind::InvalidFlightPlan,
@@ -2795,7 +2795,7 @@ fn plan_trailing_procedure_window<'a>(
             initial_course_override,
         )
     };
-    Ok(Some(TrailingProcedurePlan {
+    Ok(Some(ProcedureTailLink {
         nav_ref,
         provenance_record: trailing_record,
         display_path,
@@ -2805,7 +2805,7 @@ fn plan_trailing_procedure_window<'a>(
 fn plan_standalone_pi_window<'a>(
     standalone: &'a ProcedureLegMaterializationRecord,
     planning: TailPlanningContext<'a>,
-) -> AppResult<Option<TrailingProcedurePlan<'a>>> {
+) -> AppResult<Option<ProcedureTailLink<'a>>> {
     let nav_ref = standalone.nav_ref.clone().ok_or_else(|| AppError {
         kind: AppErrorKind::InvalidFlightPlan,
         message: format!(
@@ -2822,7 +2822,7 @@ fn plan_standalone_pi_window<'a>(
         previous_path_state.terminal_position,
         previous_path_state.terminal_course,
     );
-    Ok(display_path.map(|display_path| TrailingProcedurePlan {
+    Ok(display_path.map(|display_path| ProcedureTailLink {
         nav_ref,
         provenance_record: standalone,
         display_path: Some(display_path),
@@ -2948,27 +2948,16 @@ fn common_resume_candidate<'a>(
     })
 }
 
-fn resumed_common_target<'a>(
-    previous_display_path: Option<&LegDisplayPath>,
+fn first_resumable_common_candidate<'a>(
+    fix_records: &[&'a ProcedureLegMaterializationRecord],
+    current_position: LatLon,
+    current_course_deg: f64,
     previous_was_hold_like: bool,
-    segment_records: &'a [ProcedureLegMaterializationRecord],
-) -> Option<CommonResumeTarget<'a>> {
-    let fix_records = segment_records
-        .iter()
-        .filter(|record| record.nav_ref.is_some())
-        .collect::<Vec<_>>();
-    let previous_display_path = previous_display_path?;
-    let current_position = previous_display_path_terminal_position(previous_display_path)?;
-    let current_course_deg = final_course_of_display_path(previous_display_path)?;
-    let max_resumable_sequence = segment_records
-        .iter()
-        .find(|record| record.nav_ref.is_none())
-        .map(|record| record.sequence)
-        .unwrap_or(i32::MAX);
-
+    max_resumable_sequence: i32,
+) -> Option<CommonResumeCandidate<'a>> {
     for index in 1..fix_records.len() {
         let Some(candidate) =
-            common_resume_candidate(&fix_records, index, current_position, current_course_deg)
+            common_resume_candidate(fix_records, index, current_position, current_course_deg)
         else {
             continue;
         };
@@ -2989,14 +2978,40 @@ fn resumed_common_target<'a>(
             ),
             HandoffDecision::ResumeAtAnchor | HandoffDecision::ResumeThroughAnchorKink
         ) {
-            return Some(CommonResumeTarget {
-                index: candidate.index,
-                record: candidate.record,
-            });
+            return Some(candidate);
         }
     }
-
     None
+}
+
+fn resumed_common_target<'a>(
+    previous_display_path: Option<&LegDisplayPath>,
+    previous_was_hold_like: bool,
+    segment_records: &'a [ProcedureLegMaterializationRecord],
+) -> Option<CommonResumeTarget<'a>> {
+    let fix_records = segment_records
+        .iter()
+        .filter(|record| record.nav_ref.is_some())
+        .collect::<Vec<_>>();
+    let previous_display_path = previous_display_path?;
+    let current_position = previous_display_path_terminal_position(previous_display_path)?;
+    let current_course_deg = final_course_of_display_path(previous_display_path)?;
+    let max_resumable_sequence = segment_records
+        .iter()
+        .find(|record| record.nav_ref.is_none())
+        .map(|record| record.sequence)
+        .unwrap_or(i32::MAX);
+    first_resumable_common_candidate(
+        &fix_records,
+        current_position,
+        current_course_deg,
+        previous_was_hold_like,
+        max_resumable_sequence,
+    )
+    .map(|candidate| CommonResumeTarget {
+        index: candidate.index,
+        record: candidate.record,
+    })
 }
 
 fn segment_traversal_policy<'a>(

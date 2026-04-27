@@ -1394,10 +1394,6 @@ fn resolve_procedure_materialization_legs_with_provenance(
             let common_resume_yields_feeder_cf = role != ProcedureSegmentRole::Common
                 && pair[1].path_termination.trim() == "CF"
                 && next_segment_records.is_some_and(|next_records| {
-                    let next_fix_records = next_records
-                        .iter()
-                        .filter(|record| record.nav_ref.is_some())
-                        .collect::<Vec<_>>();
                     let projected_previous_display_path = if pair[0].path_termination.trim() == "PI" {
                         display_path_for_single_procedure_step(
                             leg_records,
@@ -1408,12 +1404,6 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     } else {
                         previous_display_path.clone()
                     };
-                    let target_index = common_segment_resume_target_index(
-                        projected_previous_display_path.as_ref(),
-                        false,
-                        next_records,
-                        &next_fix_records,
-                    );
                     let projected_terminal_position = projected_previous_display_path
                         .as_ref()
                         .and_then(previous_display_path_terminal_position);
@@ -1423,8 +1413,11 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     let projected_terminal_anchor = projected_previous_display_path
                         .as_ref()
                         .and_then(|_| pair[0].nav_ref.clone());
-                    target_index
-                        .and_then(|target_index| next_fix_records.get(target_index).copied())
+                    resumed_common_record(
+                        projected_previous_display_path.as_ref(),
+                        false,
+                        next_records,
+                    )
                         .is_some_and(|resumed_common_record| {
                             resumed_common_record.nav_ref.as_ref() != pair[1].nav_ref.as_ref()
                                 && should_yield_feeder_course_to_fix_to_resumed_common_segment(
@@ -1632,22 +1625,22 @@ fn resolve_procedure_materialization_legs_with_provenance(
             {
                 let common_resume_skips_trailing_cf = trailing_record.path_termination.trim() == "CF"
                     && next_segment_records.is_some_and(|next_records| {
-                    let next_fix_records = next_records
-                        .iter()
-                        .filter(|record| record.nav_ref.is_some())
-                        .collect::<Vec<_>>();
-                    let target_index = common_segment_resume_target_index(
-                        previous_display_path.as_ref(),
-                        false,
-                        next_records,
-                        &next_fix_records,
-                    );
-                        target_index.is_some_and(|target_index| {
-                            next_fix_records
-                                .get(target_index)
-                                .and_then(|record| record.nav_ref.as_ref())
-                                != trailing_record.nav_ref.as_ref()
-                        })
+                        resumed_common_record(previous_display_path.as_ref(), false, next_records)
+                            .is_some_and(|resumed_common_record| {
+                                resumed_common_record.nav_ref.as_ref()
+                                    != trailing_record.nav_ref.as_ref()
+                                    && should_yield_feeder_course_to_fix_to_resumed_common_segment(
+                                        previous_display_path
+                                            .as_ref()
+                                            .and_then(previous_display_path_terminal_position),
+                                        previous_display_path
+                                            .as_ref()
+                                            .and_then(final_course_of_display_path),
+                                        previous_leg_to.clone(),
+                                        trailing_record,
+                                        resumed_common_record,
+                                    )
+                            })
                     });
                 let nav_ref = last_fix
                     .nav_ref
@@ -2651,6 +2644,24 @@ fn start_requirement_for_reentry_to_anchor(
         from_anchor_position: Some(from_record.nav_position?),
         to_anchor: to_anchor.clone(),
     })
+}
+
+fn resumed_common_record<'a>(
+    previous_display_path: Option<&LegDisplayPath>,
+    previous_was_hold_like: bool,
+    segment_records: &'a [ProcedureLegMaterializationRecord],
+) -> Option<&'a ProcedureLegMaterializationRecord> {
+    let fix_records = segment_records
+        .iter()
+        .filter(|record| record.nav_ref.is_some())
+        .collect::<Vec<_>>();
+    let target_index = common_segment_resume_target_index(
+        previous_display_path,
+        previous_was_hold_like,
+        segment_records,
+        &fix_records,
+    )?;
+    fix_records.get(target_index).copied()
 }
 
 fn common_segment_resume_target_index(

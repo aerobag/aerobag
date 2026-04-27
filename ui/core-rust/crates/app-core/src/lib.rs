@@ -1386,6 +1386,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     initial_course_override,
                 )
             };
+            let previous_to = window_plan.to.clone();
             previous_display_path = append_resolved_procedure_leg(
                 &mut resolved,
                 &mut heading_checks,
@@ -1395,16 +1396,9 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 &kind,
                 &role,
                 component_index,
-                ProcedureAppendSpec {
-                    from: window_plan.from,
-                    to: window_plan.to.clone(),
-                    heading_from_record: pair[0],
-                    heading_to_record: window_plan.resolution.effective_leg_end,
-                    provenance_record: window_plan.resolution.provenance_record,
-                    display_path,
-                },
+                append_spec_for_window_plan(pair[0], window_plan, display_path),
             );
-            previous_leg_to = Some(window_plan.to);
+            previous_leg_to = Some(previous_to);
         }
 
         if let Some(last_fix) = fix_records.last().copied() {
@@ -1422,7 +1416,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     next_segment_records,
                 )?;
                 if let Some(trailing_plan) = trailing_plan {
-                    let display_path = trailing_plan.display_path;
+                    let previous_to = trailing_plan.nav_ref.clone();
                     previous_display_path = append_resolved_procedure_leg(
                         &mut resolved,
                         &mut heading_checks,
@@ -1432,16 +1426,9 @@ fn resolve_procedure_materialization_legs_with_provenance(
                         &kind,
                         &role,
                         component_index,
-                        ProcedureAppendSpec {
-                            from: trailing_plan.nav_ref.clone(),
-                            to: trailing_plan.nav_ref.clone(),
-                            heading_from_record: last_fix,
-                            heading_to_record: last_fix,
-                            provenance_record: trailing_plan.provenance_record,
-                            display_path,
-                        },
+                        append_spec_for_trailing_plan(last_fix, trailing_plan),
                     );
-                    previous_leg_to = Some(trailing_plan.nav_ref);
+                    previous_leg_to = Some(previous_to);
                 }
             }
         }
@@ -1454,7 +1441,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 let Some(standalone_plan) = standalone_plan else {
                     continue;
                 };
-                let display_path = standalone_plan.display_path;
+                let previous_to = standalone_plan.nav_ref.clone();
                 previous_display_path = append_resolved_procedure_leg(
                     &mut resolved,
                     &mut heading_checks,
@@ -1464,16 +1451,9 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     &kind,
                     &role,
                     component_index,
-                    ProcedureAppendSpec {
-                        from: standalone_plan.nav_ref.clone(),
-                        to: standalone_plan.nav_ref.clone(),
-                        heading_from_record: standalone,
-                        heading_to_record: standalone,
-                        provenance_record: standalone_plan.provenance_record,
-                        display_path,
-                    },
+                    append_spec_for_trailing_plan(standalone, standalone_plan),
                 );
-                previous_leg_to = Some(standalone_plan.nav_ref);
+                previous_leg_to = Some(previous_to);
             }
         }
     }
@@ -2471,6 +2451,35 @@ struct ProcedureAppendSpec<'a> {
     heading_to_record: &'a ProcedureLegMaterializationRecord,
     provenance_record: &'a ProcedureLegMaterializationRecord,
     display_path: Option<LegDisplayPath>,
+}
+
+fn append_spec_for_window_plan<'a>(
+    pair_start: &'a ProcedureLegMaterializationRecord,
+    window_plan: ProcedureWindowPlan<'a>,
+    display_path: Option<LegDisplayPath>,
+) -> ProcedureAppendSpec<'a> {
+    ProcedureAppendSpec {
+        from: window_plan.from,
+        to: window_plan.to,
+        heading_from_record: pair_start,
+        heading_to_record: window_plan.resolution.effective_leg_end,
+        provenance_record: window_plan.resolution.provenance_record,
+        display_path,
+    }
+}
+
+fn append_spec_for_trailing_plan<'a>(
+    anchor_record: &'a ProcedureLegMaterializationRecord,
+    trailing_plan: TrailingProcedurePlan<'a>,
+) -> ProcedureAppendSpec<'a> {
+    ProcedureAppendSpec {
+        from: trailing_plan.nav_ref.clone(),
+        to: trailing_plan.nav_ref,
+        heading_from_record: anchor_record,
+        heading_to_record: anchor_record,
+        provenance_record: trailing_plan.provenance_record,
+        display_path: trailing_plan.display_path,
+    }
 }
 
 fn resolve_procedure_window<'a>(

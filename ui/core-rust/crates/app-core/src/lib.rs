@@ -2272,18 +2272,38 @@ fn common_resume_yields_current_feeder_cf(
             let projected_terminal_anchor = projected_previous_display_path
                 .as_ref()
                 .and_then(|_| pair[0].nav_ref.clone());
-            resumed_common_target(projected_previous_display_path.as_ref(), false, next_records)
-                .is_some_and(|resumed_common_target| {
-                    resumed_common_target.record.nav_ref.as_ref() != pair[1].nav_ref.as_ref()
-                        && should_yield_feeder_course_to_fix_to_resumed_common_segment(
-                            projected_terminal_position,
-                            projected_terminal_course,
-                            projected_terminal_anchor,
-                            pair[1],
-                            resumed_common_target.record,
-                        )
-                })
+            resumed_common_target_supersedes_feeder_cf(
+                projected_previous_display_path.as_ref(),
+                projected_terminal_position,
+                projected_terminal_course,
+                projected_terminal_anchor,
+                pair[1],
+                next_records,
+            )
         })
+}
+
+fn resumed_common_target_supersedes_feeder_cf(
+    previous_display_path: Option<&LegDisplayPath>,
+    previous_terminal_position: Option<LatLon>,
+    previous_terminal_course: Option<f64>,
+    previous_terminal_anchor: Option<NavRef>,
+    feeder_course_to_fix_record: &ProcedureLegMaterializationRecord,
+    next_segment_records: &[ProcedureLegMaterializationRecord],
+) -> bool {
+    resumed_common_target(previous_display_path, false, next_segment_records).is_some_and(
+        |resumed_common_target| {
+            resumed_common_target.record.nav_ref.as_ref()
+                != feeder_course_to_fix_record.nav_ref.as_ref()
+                && should_yield_feeder_course_to_fix_to_resumed_common_segment(
+                    previous_terminal_position,
+                    previous_terminal_course,
+                    previous_terminal_anchor,
+                    feeder_course_to_fix_record,
+                    resumed_common_target.record,
+                )
+        },
+    )
 }
 
 fn should_skip_degenerate_or_duplicate_window(
@@ -2624,17 +2644,13 @@ fn plan_trailing_procedure_window<'a>(
 ) -> AppResult<Option<TrailingProcedurePlan<'a>>> {
     let common_resume_skips_trailing_cf = trailing_record.path_termination.trim() == "CF"
         && next_segment_records.is_some_and(|next_records| {
-            resumed_common_target(previous_display_path, false, next_records).is_some_and(
-                |resumed_common_target| {
-                    resumed_common_target.record.nav_ref.as_ref() != trailing_record.nav_ref.as_ref()
-                        && should_yield_feeder_course_to_fix_to_resumed_common_segment(
-                            previous_display_path.and_then(previous_display_path_terminal_position),
-                            previous_display_path.and_then(final_course_of_display_path),
-                            previous_leg_to.cloned(),
-                            trailing_record,
-                            resumed_common_target.record,
-                        )
-                },
+            resumed_common_target_supersedes_feeder_cf(
+                previous_display_path,
+                previous_display_path.and_then(previous_display_path_terminal_position),
+                previous_display_path.and_then(final_course_of_display_path),
+                previous_leg_to.cloned(),
+                trailing_record,
+                next_records,
             )
         });
     let nav_ref = last_fix.nav_ref.clone().ok_or_else(|| AppError {

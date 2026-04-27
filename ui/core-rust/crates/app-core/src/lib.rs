@@ -1359,26 +1359,16 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     pair[0].sequence
                 ),
             })?;
-            let df_following_cf_record = if pair[1].path_termination.trim() == "DF" {
-                fix_records
-                    .get(index + 2)
-                    .copied()
-                    .filter(|record| {
-                        record.path_termination.trim() == "CF"
-                            && should_yield_direct_to_fix_to_following_course(
-                                previous_terminal_position,
-                                previous_terminal_course,
-                                pair[0],
-                                pair[1],
-                                leg_records,
-                                record,
-                                role == ProcedureSegmentRole::Common,
-                            )
-                    })
-            } else {
-                None
-            };
-            let effective_leg_end = df_following_cf_record.unwrap_or(pair[1]);
+            let window_resolution = resolve_procedure_window(
+                index,
+                [pair[0], pair[1]],
+                &fix_records,
+                previous_terminal_position,
+                previous_terminal_course,
+                leg_records,
+                role.clone(),
+            );
+            let effective_leg_end = window_resolution.effective_leg_end;
             let to = effective_leg_end.nav_ref.clone().ok_or_else(|| AppError {
                 kind: AppErrorKind::InvalidFlightPlan,
                 message: format!(
@@ -1415,25 +1405,8 @@ fn resolve_procedure_materialization_legs_with_provenance(
             ) {
                 continue;
             }
-            let hold_record = if matches!(effective_leg_end.path_termination.trim(), "HF" | "HM") {
-                Some(effective_leg_end)
-            } else {
-                let next_hold_index = if df_following_cf_record.is_some() {
-                    index + 3
-                } else {
-                    index + 2
-                };
-                fix_records.get(next_hold_index).and_then(|next| {
-                    if matches!(next.path_termination.trim(), "HF" | "HM")
-                        && next.nav_ref == effective_leg_end.nav_ref
-                    {
-                        Some(*next)
-                    } else {
-                        None
-                    }
-                })
-            };
-            let provenance_record = hold_record.unwrap_or(effective_leg_end);
+            let hold_record = window_resolution.hold_record;
+            let provenance_record = window_resolution.provenance_record;
             let previous_was_course_to_intercept = resolved.last().is_some_and(|previous| {
                 previous.procedure_provenance.as_ref().is_some_and(|provenance| {
                     matches!(
@@ -2625,6 +2598,66 @@ fn should_skip_degenerate_or_duplicate_window(
         return true;
     }
     resolved_last.is_some_and(|previous| previous.from == *from && previous.to == *to)
+}
+
+struct ProcedureWindowResolution<'a> {
+    effective_leg_end: &'a ProcedureLegMaterializationRecord,
+    hold_record: Option<&'a ProcedureLegMaterializationRecord>,
+    provenance_record: &'a ProcedureLegMaterializationRecord,
+}
+
+fn resolve_procedure_window<'a>(
+    current_window_index: usize,
+    pair: [&'a ProcedureLegMaterializationRecord; 2],
+    fix_records: &[&'a ProcedureLegMaterializationRecord],
+    previous_terminal_position: Option<LatLon>,
+    previous_terminal_course: Option<f64>,
+    leg_records: &[ProcedureLegMaterializationRecord],
+    role: ProcedureSegmentRole,
+) -> ProcedureWindowResolution<'a> {
+    let df_following_cf_record = if pair[1].path_termination.trim() == "DF" {
+        fix_records
+            .get(current_window_index + 2)
+            .copied()
+            .filter(|record| {
+                record.path_termination.trim() == "CF"
+                    && should_yield_direct_to_fix_to_following_course(
+                        previous_terminal_position,
+                        previous_terminal_course,
+                        pair[0],
+                        pair[1],
+                        leg_records,
+                        record,
+                        role == ProcedureSegmentRole::Common,
+                    )
+            })
+    } else {
+        None
+    };
+    let effective_leg_end = df_following_cf_record.unwrap_or(pair[1]);
+    let hold_record = if matches!(effective_leg_end.path_termination.trim(), "HF" | "HM") {
+        Some(effective_leg_end)
+    } else {
+        let next_hold_index = if df_following_cf_record.is_some() {
+            current_window_index + 3
+        } else {
+            current_window_index + 2
+        };
+        fix_records.get(next_hold_index).and_then(|next| {
+            if matches!(next.path_termination.trim(), "HF" | "HM")
+                && next.nav_ref == effective_leg_end.nav_ref
+            {
+                Some(*next)
+            } else {
+                None
+            }
+        })
+    };
+    ProcedureWindowResolution {
+        effective_leg_end,
+        hold_record,
+        provenance_record: hold_record.unwrap_or(effective_leg_end),
+    }
 }
 
 struct ProcedureWindowContinuation<'a> {

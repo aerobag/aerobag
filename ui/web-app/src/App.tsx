@@ -1801,6 +1801,7 @@ function MapPage(props: {
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<ReturnType<typeof createPinchSnapshot> | null>(null);
+  const gestureActiveRef = useRef(false);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
   const firstVisualReadyRef = useRef(false);
   const lastOverlayWarningKeyRef = useRef("");
@@ -2769,6 +2770,12 @@ function MapPage(props: {
     if (!uiSession || !mapFollowUiState.following || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
+    debugLog("map.follow.sync.request", {
+      zoom: nextViewport.zoom,
+      center_world_x: nextViewport.centerWorldX,
+      center_world_y: nextViewport.centerWorldY,
+      gesture_active: gestureActiveRef.current,
+    });
     void uiSession
       .syncMapFollow(nextViewport, surfaceSize.width, surfaceSize.height)
       .then(props.onPlaybackSnapshotChange)
@@ -2794,8 +2801,21 @@ function MapPage(props: {
     if (!mapFollowUiState.following || !mapFollowTargetViewport) {
       return;
     }
+    if (gestureActiveRef.current) {
+      debugLog("map.follow.target.skip_during_gesture", {
+        zoom: mapFollowTargetViewport.zoom,
+        center_lat: mapFollowTargetViewport.center.lat,
+        center_lon: mapFollowTargetViewport.center.lon,
+      });
+      return;
+    }
     const nextViewport = mapViewportFromCore(mapFollowTargetViewport);
     if (!sameMapViewport(nextViewport, viewport)) {
+      debugLog("map.follow.target.apply", {
+        zoom: nextViewport.zoom,
+        center_world_x: nextViewport.centerWorldX,
+        center_world_y: nextViewport.centerWorldY,
+      });
       updateViewport(nextViewport);
     }
   }, [mapFollowTargetViewport, mapFollowUiState.following, viewport]);
@@ -2811,6 +2831,7 @@ function MapPage(props: {
     }
     const point = { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY };
     activePointersRef.current.set(event.pointerId, point);
+    gestureActiveRef.current = activePointersRef.current.size > 0;
     event.currentTarget.setPointerCapture(event.pointerId);
     if (activePointersRef.current.size === 1) {
       dragRef.current = { id: event.pointerId, last: point };
@@ -2842,6 +2863,14 @@ function MapPage(props: {
       const dx = point.x - dragRef.current.last.x;
       const dy = point.y - dragRef.current.last.y;
       const nextViewport = dragViewport(viewportRef.current, dx, dy);
+      debugLog("map.drag.viewport", {
+        dx,
+        dy,
+        zoom: nextViewport.zoom,
+        center_world_x: nextViewport.centerWorldX,
+        center_world_y: nextViewport.centerWorldY,
+        following: mapFollowUiState.following,
+      });
       updateViewport(nextViewport);
       syncFollowStateForViewport(nextViewport);
       dragRef.current = { id: event.pointerId, last: point };
@@ -2866,6 +2895,12 @@ function MapPage(props: {
         surfaceSize.width,
         surfaceSize.height,
       );
+      debugLog("map.pinch.viewport", {
+        zoom: nextViewport.zoom,
+        center_world_x: nextViewport.centerWorldX,
+        center_world_y: nextViewport.centerWorldY,
+        following: mapFollowUiState.following,
+      });
       updateViewport(nextViewport);
       syncFollowStateForViewport(nextViewport);
     }
@@ -2873,6 +2908,7 @@ function MapPage(props: {
 
   function handlePointerRelease(event: React.PointerEvent<HTMLDivElement>) {
     activePointersRef.current.delete(event.pointerId);
+    gestureActiveRef.current = activePointersRef.current.size > 0;
     pinchRef.current = null;
     const remaining = Array.from(activePointersRef.current.entries());
     if (remaining.length === 1) {
@@ -2884,6 +2920,7 @@ function MapPage(props: {
 
   function handleLostPointerCapture(event: React.PointerEvent<HTMLDivElement>) {
     activePointersRef.current.delete(event.pointerId);
+    gestureActiveRef.current = activePointersRef.current.size > 0;
     pinchRef.current = null;
     const remaining = Array.from(activePointersRef.current.entries());
     dragRef.current = remaining.length === 1 ? { id: remaining[0][0], last: remaining[0][1] } : null;
@@ -3979,6 +4016,8 @@ function FlightPlanPage(props: {
   const pageRef = useRef<HTMLElement | null>(null);
   const planScrollSurfaceRef = useRef<HTMLDivElement | null>(null);
   const waypointModalRef = useRef<HTMLElement | null>(null);
+  const planControlsRef = useRef<HTMLDivElement | null>(null);
+  const planFooterRef = useRef<HTMLDivElement | null>(null);
   const trayOpen = trayGroup.scrimOpen;
   const planUiState = props.planUiState;
   if (!planUiState) {
@@ -4455,26 +4494,22 @@ function FlightPlanPage(props: {
       return;
     }
     const page = pageRef.current;
-    const pane = planScrollSurfaceRef.current;
     const modal = waypointModalRef.current;
-    const anchor = selectedWaypointAnchor;
-    if (!page || !pane || !modal || !anchor) {
+    if (!page || !modal) {
       return;
     }
     const pageRect = page.getBoundingClientRect();
-    const paneRect = pane.getBoundingClientRect();
-    const paneTop = paneRect.top - pageRect.top;
-    const paneBottom = paneRect.bottom - pageRect.top;
-    const topPadding = thumbPixels(0.1);
+    const top = thumbPixels(0.5);
     const bottomPadding = thumbPixels(0.1);
-    const desiredTop = anchor.top;
-    const minTop = paneTop + topPadding;
-    const maxTop = Math.max(minTop, paneBottom - modal.offsetHeight - bottomPadding);
-    const clampedTop = Math.max(minTop, Math.min(desiredTop, maxTop));
-    const maxHeight = Math.max(thumbPixels(1), paneBottom - clampedTop - bottomPadding);
-    setWaypointModalTop(clampedTop);
+    const blockers = [planControlsRef.current, planFooterRef.current]
+      .filter((element): element is HTMLElement => element instanceof HTMLElement)
+      .map((element) => element.getBoundingClientRect().top - pageRect.top);
+    const bottomLimit = blockers.length > 0 ? Math.min(...blockers) : page.clientHeight;
+    const maxHeight = Math.max(thumbPixels(1), bottomLimit - top - bottomPadding);
+
+    setWaypointModalTop(top);
     setWaypointModalMaxHeight(maxHeight);
-  }, [airwayPicker, reorderOpen, selectedWaypointAnchor, selectedWaypointIndex, rowActions.length]);
+  }, [airwayPicker, reorderOpen, selectedWaypointIndex, rowActions.length]);
 
   useEffect(() => {
     if (!airwayPicker || airwayPicker.loading) {
@@ -4720,7 +4755,7 @@ function FlightPlanPage(props: {
         </div>
       </div>
 
-      <div className="planControls">
+      <div className="planControls" ref={planControlsRef}>
         <button type="button" className="trayButton planControlButton" disabled={!guidance?.can_activate_next_leg} onClick={() => void props.onActivateNextLeg()}>
           Next Leg
         </button>
@@ -4740,7 +4775,7 @@ function FlightPlanPage(props: {
         </button>
       </div>
 
-      <div className="planFooter">
+      <div className="planFooter" ref={planFooterRef}>
         <NavElementButton
           navElement={planUiState.guidance?.nav_element}
           className="navElement navElementStatic"
@@ -5184,7 +5219,7 @@ function FlightPlanPage(props: {
               <button
                 key={action.id}
                 type="button"
-                className="trayButton"
+                className="trayButton airwayChoiceButton"
                 disabled={!action.enabled}
                 onPointerDown={stopPointer}
                 onPointerUp={stopPointer}

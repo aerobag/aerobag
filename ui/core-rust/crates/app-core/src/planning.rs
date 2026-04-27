@@ -327,6 +327,10 @@ pub enum StartRequirement {
         course_deg: Option<f64>,
         #[serde(default)]
         anchor_position: Option<LatLon>,
+        #[serde(default)]
+        target_anchor: Option<NavRef>,
+        #[serde(default)]
+        target_anchor_position: Option<LatLon>,
     },
     EnterHold {
         anchor: NavRef,
@@ -359,6 +363,28 @@ fn angular_difference_degrees(left: f64, right: f64) -> f64 {
         delta = 360.0 - delta;
     }
     delta
+}
+
+fn local_to_en(origin: LatLon, point: LatLon) -> (f64, f64) {
+    let lat_scale_nm = 60.0;
+    let mean_lat_rad = ((origin.lat + point.lat) * 0.5).to_radians();
+    let lon_scale_nm = 60.0 * mean_lat_rad.cos();
+    (
+        (point.lon - origin.lon) * lon_scale_nm,
+        (point.lat - origin.lat) * lat_scale_nm,
+    )
+}
+
+fn course_unit_vector(course_deg: f64) -> (f64, f64) {
+    let radians = course_deg.to_radians();
+    (radians.sin(), radians.cos())
+}
+
+fn positions_nearly_equal(left: LatLon, right: LatLon) -> bool {
+    let lat_delta_nm = (left.lat - right.lat).abs() * 60.0;
+    let mean_lat_rad = ((left.lat + right.lat) * 0.5).to_radians();
+    let lon_delta_nm = (left.lon - right.lon).abs() * 60.0 * mean_lat_rad.cos();
+    (lat_delta_nm * lat_delta_nm + lon_delta_nm * lon_delta_nm).sqrt() <= 0.05
 }
 
 pub fn reconcile_handoff(
@@ -456,6 +482,50 @@ pub fn reconcile_handoff(
                 HandoffDecision::SkipStaleFix
             } else {
                 HandoffDecision::ContinueAsDrawn
+            }
+        }
+        StartRequirement::ResumeCommonSegment {
+            course_deg: Some(course_deg),
+            anchor_position: Some(course_anchor_position),
+            target_anchor_position: Some(target_fix_position),
+            ..
+        } => {
+            let Some(current_course_deg) = terminal_state
+                .logical_terminal_course_deg
+                .or(terminal_state.drawn_terminal_course_deg)
+            else {
+                return HandoffDecision::ContinueAsDrawn;
+            };
+            let offset = local_to_en(*course_anchor_position, terminal_state.terminal_position);
+            let course_unit = course_unit_vector(*course_deg);
+            let normal = (-course_unit.1, course_unit.0);
+            let cross_track_nm = (offset.0 * normal.0 + offset.1 * normal.1).abs();
+            if cross_track_nm > 0.5 {
+                return HandoffDecision::ContinueAsDrawn;
+            }
+            let anchored_at_course_anchor = positions_nearly_equal(
+                terminal_state.terminal_position,
+                *course_anchor_position,
+            ) && terminal_state
+                .incoming_course_to_anchor_deg
+                .is_some_and(|incoming_course_deg| {
+                    angular_difference_degrees(current_course_deg, incoming_course_deg) <= 20.0
+                });
+            if terminal_state.hold_state != HoldTerminalState::HoldLeg
+                && !anchored_at_course_anchor
+                && angular_difference_degrees(current_course_deg, *course_deg) > 20.0
+            {
+                return HandoffDecision::ContinueAsDrawn;
+            }
+            let bearing_to_target =
+                initial_course_deg(terminal_state.terminal_position, *target_fix_position);
+            if angular_difference_degrees(bearing_to_target, *course_deg) > 45.0 {
+                return HandoffDecision::ContinueAsDrawn;
+            }
+            if anchored_at_course_anchor {
+                HandoffDecision::ResumeThroughAnchorKink
+            } else {
+                HandoffDecision::ResumeAtAnchor
             }
         }
         _ => HandoffDecision::ContinueAsDrawn,

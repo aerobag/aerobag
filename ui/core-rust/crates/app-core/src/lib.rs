@@ -2330,13 +2330,8 @@ fn should_skip_reconciliation_anchor_leg(
         Some(previous_leg_to.clone()),
         false,
     );
-    let start_requirement = current_from_record.nav_position.map(|from_anchor_position| {
-        StartRequirement::ReentryToAnchor {
-            from_anchor: current_from.clone(),
-            from_anchor_position: Some(from_anchor_position),
-            to_anchor: current_to.clone(),
-        }
-    });
+    let start_requirement =
+        start_requirement_for_reentry_to_anchor(current_from_record, current_from, current_to);
     terminal_state
         .zip(start_requirement)
         .is_some_and(|(terminal_state, start_requirement)| {
@@ -2359,14 +2354,17 @@ fn reconciliation_resume_skip_through_index(
     let Some(previous_leg_to) = previous_leg_to else {
         return None;
     };
-    let Some(final_heading_deg) = final_course_of_display_path(previous_display_path) else {
-        return None;
-    };
     let max_reentry_sequence = segment_records
         .iter()
         .find(|record| record.nav_ref.is_none())
         .map(|record| record.sequence)
         .unwrap_or(i32::MAX);
+    let terminal_state = terminal_state_for_handoff(
+        previous_display_path_terminal_position(previous_display_path),
+        final_course_of_display_path(previous_display_path),
+        Some(previous_leg_to.clone()),
+        false,
+    )?;
     let Some(reentry_index) = fix_records
         .windows(2)
         .enumerate()
@@ -2381,12 +2379,14 @@ fn reconciliation_resume_skip_through_index(
             if pair[1].path_termination.trim() == "DF" {
                 return None;
             }
-            let anchor_position = pair[0].nav_position?;
-            let fix_position = previous_display_path_terminal_position(previous_display_path)?;
-            let heading_to_anchor_deg = bearing_degrees(fix_position, anchor_position);
-            let heading_delta_deg =
-                angular_difference_degrees(final_heading_deg, heading_to_anchor_deg);
-            (heading_delta_deg > 10.0).then_some(index)
+            let current_from = pair[0].nav_ref.as_ref()?;
+            let start_requirement =
+                start_requirement_for_reentry_to_anchor(pair[0], current_from, current_to)?;
+            matches!(
+                reconcile_handoff(&terminal_state, &start_requirement),
+                HandoffDecision::SkipStaleFix
+            )
+            .then_some(index)
         })
     else {
         return None;
@@ -2554,6 +2554,10 @@ fn start_requirement_for_resolved_leg(leg: &ResolvedLeg) -> Option<StartRequirem
                 .as_ref()
                 .and_then(final_course_of_display_path),
             anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
+            target_anchor: Some(leg.to.clone()),
+            target_anchor_position: Some(terminal_position_for_nav_ref(
+                provenance.display_path.as_ref(),
+            )?),
         },
     })
 }
@@ -2620,6 +2624,7 @@ fn start_requirement_for_feeder_course_to_fix_with_common_resume(
     })
 }
 
+#[cfg(test)]
 fn local_to_en(origin: LatLon, point: LatLon) -> (f64, f64) {
     let lat_scale_nm = 60.0;
     let mean_lat_rad = ((origin.lat + point.lat) * 0.5).to_radians();
@@ -2630,9 +2635,22 @@ fn local_to_en(origin: LatLon, point: LatLon) -> (f64, f64) {
     )
 }
 
+#[cfg(test)]
 fn course_unit_vector(course_deg: f64) -> (f64, f64) {
     let radians = course_deg.to_radians();
     (radians.sin(), radians.cos())
+}
+
+fn start_requirement_for_reentry_to_anchor(
+    from_record: &ProcedureLegMaterializationRecord,
+    from_anchor: &NavRef,
+    to_anchor: &NavRef,
+) -> Option<StartRequirement> {
+    Some(StartRequirement::ReentryToAnchor {
+        from_anchor: from_anchor.clone(),
+        from_anchor_position: Some(from_record.nav_position?),
+        to_anchor: to_anchor.clone(),
+    })
 }
 
 fn common_segment_resume_target_index(
@@ -2669,38 +2687,48 @@ fn common_segment_resume_target_index(
         else {
             continue;
         };
-        let anchored_at_prior_common_fix = fix_records
+        let incoming_course_to_anchor_deg = fix_records
             .get(index.saturating_sub(1))
             .and_then(|prior_record| {
                 let prior_fix = prior_record.nav_position?;
                 let prior_course_deg = prior_record
                     .magnetic_course_deg
                     .map(|course| course + record_magnetic_variation_deg(prior_record).unwrap_or(0.0))?;
-                Some(
-                    positions_nearly_equal(current_position, prior_fix)
-                        && positions_nearly_equal(current_position, course_anchor)
-                        && angular_difference_degrees(current_course_deg, prior_course_deg) <= 20.0,
-                )
+                (positions_nearly_equal(current_position, prior_fix)
+                    && positions_nearly_equal(current_position, course_anchor))
+                    .then_some(prior_course_deg)
             })
-            .unwrap_or(false);
-        let offset = local_to_en(course_anchor, current_position);
-        let course_unit = course_unit_vector(course_deg);
-        let normal = (-course_unit.1, course_unit.0);
-        let cross_track_nm = (offset.0 * normal.0 + offset.1 * normal.1).abs();
-        if cross_track_nm > 0.5 {
-            continue;
+            .or(Some(current_course_deg));
+        let terminal_state = TerminalState {
+            terminal_position: current_position,
+            drawn_terminal_course_deg: Some(current_course_deg),
+            logical_terminal_course_deg: Some(current_course_deg),
+            terminal_anchor: None,
+            established_course_deg: Some(current_course_deg),
+            incoming_course_to_anchor_deg,
+            outgoing_course_from_anchor_deg: Some(current_course_deg),
+            hold_state: if previous_was_hold_like {
+                HoldTerminalState::HoldLeg
+            } else {
+                HoldTerminalState::None
+            },
+            procedure_turn_state: ProcedureTurnTerminalState::None,
+            common_segment_state: CommonSegmentTerminalState::NotCommon,
+            coded_fix_satisfaction: CodedFixSatisfaction::Unknown,
+        };
+        let start_requirement = StartRequirement::ResumeCommonSegment {
+            anchor: record.nav_ref.clone(),
+            course_deg: Some(course_deg),
+            anchor_position: Some(course_anchor),
+            target_anchor: record.nav_ref.clone(),
+            target_anchor_position: Some(fix),
+        };
+        if matches!(
+            reconcile_handoff(&terminal_state, &start_requirement),
+            HandoffDecision::ResumeAtAnchor | HandoffDecision::ResumeThroughAnchorKink
+        ) {
+            return Some(index);
         }
-        if !previous_was_hold_like
-            && !anchored_at_prior_common_fix
-            && angular_difference_degrees(current_course_deg, course_deg) > 20.0
-        {
-            continue;
-        }
-        let bearing_to_fix = bearing_degrees(current_position, fix);
-        if angular_difference_degrees(bearing_to_fix, course_deg) > 45.0 {
-            continue;
-        }
-        return Some(index);
     }
 
     None

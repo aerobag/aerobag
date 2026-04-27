@@ -672,6 +672,16 @@ fn build_procedure_leg_display_path(
             "PI" => {
                 let fix = step.nav_position?;
                 let mut path = procedure_turn_display_path(step)?;
+                let next_cf_course_deg = steps
+                    .iter()
+                    .skip(index + 1)
+                    .copied()
+                    .find(|candidate| candidate.path_termination.trim() == "CF")
+                    .and_then(|candidate| {
+                        candidate
+                            .magnetic_course_deg
+                            .map(|course| course + course_reference_variation_deg(candidate))
+                    });
                 if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
                     push_segment!(elements, debug_sources, current_position, fix);
                 }
@@ -703,7 +713,8 @@ fn build_procedure_leg_display_path(
                         }
                     }
                 }
-                current_course_deg = path.elements.last().and_then(display_element_end_course_deg);
+                current_course_deg = next_cf_course_deg
+                    .or_else(|| path.elements.last().and_then(display_element_end_course_deg));
                 extend_elements_with_sources(
                     &mut elements,
                     &mut debug_sources,
@@ -2349,16 +2360,38 @@ fn build_hold_display_path(
     };
 
     let inbound_end = fix;
-    let first_turn_center = offset_latlon(
+    let entry_kind = arrival_course_deg.map(|arrival_course_deg| {
+        classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise)
+    });
+    let mut elements = hold_entry_elements(
+        fix,
+        inbound_course_deg,
+        clockwise,
+        arrival_course_deg,
+        leg_length_nm,
+        turn_radius_nm,
+    );
+    let mut debug_sources = vec![debug_source!(); elements.len()];
+    let standard_first_turn_center = offset_latlon(
         inbound_end,
         lateral.0 * turn_radius_nm,
         lateral.1 * turn_radius_nm,
     );
-    let outbound_start = offset_latlon(
-        first_turn_center,
+    let standard_outbound_start = offset_latlon(
+        standard_first_turn_center,
         lateral.0 * turn_radius_nm,
         lateral.1 * turn_radius_nm,
     );
+    let direct_entry_replaces_first_turn = matches!(entry_kind, Some(HoldEntryKind::Direct))
+        && arrival_course_deg.is_some_and(|arrival_course_deg| {
+            angular_difference_degrees(arrival_course_deg, inbound_course_deg) > 5.0
+        })
+        && !elements.is_empty();
+    let outbound_start = elements
+        .last()
+        .and_then(display_element_end_position)
+        .filter(|_| direct_entry_replaces_first_turn)
+        .unwrap_or(standard_outbound_start);
     let outbound_end = offset_latlon(
         outbound_start,
         outbound.0 * leg_length_nm,
@@ -2374,19 +2407,6 @@ fn build_hold_display_path(
         -lateral.0 * turn_radius_nm,
         -lateral.1 * turn_radius_nm,
     );
-
-    let entry_kind = arrival_course_deg.map(|arrival_course_deg| {
-        classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise)
-    });
-    let mut elements = hold_entry_elements(
-        fix,
-        inbound_course_deg,
-        clockwise,
-        arrival_course_deg,
-        leg_length_nm,
-        turn_radius_nm,
-    );
-    let mut debug_sources = vec![debug_source!(); elements.len()];
     if stop_when_established_inbound {
         if !matches!(entry_kind, Some(HoldEntryKind::Direct) | None) {
             let mut path = solid_path(elements, debug_sources);
@@ -2394,16 +2414,18 @@ fn build_hold_display_path(
             return path;
         }
     }
-    push_arc!(
-        elements,
-        debug_sources,
-        first_turn_center,
-        turn_radius_nm,
-        inbound_end,
-        outbound_start,
-        clockwise,
-        180.0
-    );
+    if !direct_entry_replaces_first_turn {
+        push_arc!(
+            elements,
+            debug_sources,
+            standard_first_turn_center,
+            turn_radius_nm,
+            inbound_end,
+            standard_outbound_start,
+            clockwise,
+            180.0
+        );
+    }
     push_segment!(elements, debug_sources, outbound_start, outbound_end);
     push_arc!(
         elements,
@@ -2435,7 +2457,36 @@ fn hold_entry_elements(
         return Vec::new();
     };
     match classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise) {
-        HoldEntryKind::Direct => Vec::new(),
+        HoldEntryKind::Direct => {
+            if angular_difference_degrees(arrival_course_deg, inbound_course_deg) <= 5.0 {
+                return Vec::new();
+            }
+            let outbound_course_deg = normalize_bearing_degrees(inbound_course_deg + 180.0);
+            let turn_center = turn_center_for_heading_change(
+                fix,
+                arrival_course_deg,
+                clockwise,
+                turn_radius_nm,
+            );
+            let turn_end = point_on_turn_center(
+                turn_center,
+                outbound_course_deg,
+                clockwise,
+                turn_radius_nm,
+            );
+            vec![LegDisplayElement::Arc {
+                center: turn_center,
+                radius_nm: turn_radius_nm,
+                start: fix,
+                end: turn_end,
+                clockwise,
+                sweep_degrees: heading_sweep_degrees(
+                    arrival_course_deg,
+                    outbound_course_deg,
+                    clockwise,
+                ),
+            }]
+        }
         HoldEntryKind::Parallel => {
             let outbound_course_deg = normalize_bearing_degrees(inbound_course_deg + 180.0);
             let entry_distance_nm = nominal_hold_entry_distance_nm(leg_length_nm);

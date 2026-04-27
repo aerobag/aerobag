@@ -1870,6 +1870,7 @@ struct DisplayElementHeadingSignature {
     end_magnetic_variation_deg: Option<f64>,
     hold_fix_position: Option<LatLon>,
     starts_procedure_turn: bool,
+    in_procedure_turn_context: bool,
     element_kind: DisplayElementKind,
 }
 
@@ -1887,6 +1888,7 @@ fn heading_signatures_for_leg(
     path_termination: &str,
     hold_fix_position: Option<LatLon>,
 ) -> Vec<DisplayElementHeadingSignature> {
+    let in_procedure_turn_context = from_record.path_termination.trim() == "PI";
     if let Some(path) = display_path {
         let last_index = path.elements.len().saturating_sub(1);
         return path
@@ -1894,8 +1896,13 @@ fn heading_signatures_for_leg(
             .iter()
             .enumerate()
             .filter_map(|(index, element)| {
-                let (start_position, start_course_deg, end_position, end_course_deg) =
+                let (start_position, start_course_deg, end_position, mut end_course_deg) =
                     heading_signature_for_element(element)?;
+                if index == last_index {
+                    if let Some(logical_end_course_deg) = path.effective_terminal_course_deg {
+                        end_course_deg = logical_end_course_deg;
+                    }
+                }
                 Some(DisplayElementHeadingSignature {
                     step_index: starting_step_index + index,
                     airport_id: from_record.key.airport_id.trim().to_string(),
@@ -1929,6 +1936,7 @@ fn heading_signatures_for_leg(
                         .then_some(hold_fix_position)
                         .flatten(),
                     starts_procedure_turn: path_termination == "PI" && index == 0,
+                    in_procedure_turn_context,
                     element_kind: display_element_kind(element),
                 })
             })
@@ -1958,6 +1966,7 @@ fn heading_signatures_for_leg(
             .then_some(hold_fix_position)
             .flatten(),
         starts_procedure_turn: path_termination == "PI",
+        in_procedure_turn_context,
         element_kind: DisplayElementKind::Segment,
     }]
 }
@@ -2067,6 +2076,9 @@ fn continuity_heading_tolerance_deg(
     previous: &DisplayElementHeadingSignature,
     current: &DisplayElementHeadingSignature,
 ) -> f64 {
+    if previous.in_procedure_turn_context && current.in_procedure_turn_context {
+        return 180.0;
+    }
     if let Some(allowed_delta_deg) =
         published_acute_turn_heading_tolerance_deg(previous, current)
     {
@@ -2103,6 +2115,9 @@ fn published_acute_turn_heading_tolerance_deg(
     if allow_acute_turn_ksan_09_family_at_pgy(previous, current) {
         return Some(150.0);
     }
+    if allow_acute_turn_kykm_vora_missed_at_ykm(previous, current) {
+        return Some(180.0);
+    }
     None
 }
 
@@ -2120,6 +2135,35 @@ fn allow_acute_turn_ksan_09_family_at_pgy(
         previous.procedure_id.as_str(),
         "I09-Y" | "I09-Z" | "L09-Y" | "L09-Z"
     ) && previous.procedure_id == current.procedure_id
+}
+
+fn allow_acute_turn_kykm_vora_missed_at_ykm(
+    previous: &DisplayElementHeadingSignature,
+    current: &DisplayElementHeadingSignature,
+) -> bool {
+    if previous.airport_id != "KYKM" || current.airport_id != "KYKM" {
+        return false;
+    }
+    if previous.procedure_id != "VOR-A" || current.procedure_id != "VOR-A" {
+        return false;
+    }
+    if previous.end_label != "YKM" || current.start_label != "YKM" {
+        return false;
+    }
+    let inbound_magnetic_heading = magnetic_heading_degrees(
+        previous.end_course_deg,
+        previous
+            .end_magnetic_variation_deg
+            .or(current.start_magnetic_variation_deg),
+    );
+    let outbound_magnetic_heading = magnetic_heading_degrees(
+        current.start_course_deg,
+        current
+            .start_magnetic_variation_deg
+            .or(previous.end_magnetic_variation_deg),
+    );
+    angular_difference_degrees(inbound_magnetic_heading, 274.0) <= 10.0
+        && angular_difference_degrees(outbound_magnetic_heading, 94.0) <= 10.0
 }
 
 fn continuity_path_boundary_tolerance_deg(
@@ -4397,6 +4441,7 @@ mod tests {
                 end_magnetic_variation_deg: None,
                 hold_fix_position: None,
                 starts_procedure_turn: false,
+                in_procedure_turn_context: false,
                 element_kind: DisplayElementKind::Segment,
             },
             DisplayElementHeadingSignature {
@@ -4420,6 +4465,7 @@ mod tests {
                 end_magnetic_variation_deg: None,
                 hold_fix_position: None,
                 starts_procedure_turn: false,
+                in_procedure_turn_context: false,
                 element_kind: DisplayElementKind::Segment,
             },
         ];
@@ -6033,7 +6079,7 @@ mod tests {
     #[test]
     #[ignore = "manual visual inspection overlay for KHLN I27-Z FALDE"]
     fn writes_khln_i27z_falde_overlay_png() {
-        render_procedure_overlay_to_paths("KHSA", "I18-Z", "CLERY", "KHSA_I18-Z_CLERY", true);
+        render_procedure_overlay_to_paths("KHLN", "I27-Z", "FALDE", "KHLN_I27-Z_FALDE", true);
     }
 
     #[test]

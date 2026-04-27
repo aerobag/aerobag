@@ -1336,14 +1336,16 @@ fn resolve_procedure_materialization_legs_with_provenance(
             let Some(window_plan) = plan_procedure_window(
                 index,
                 [pair[0], pair[1]],
-                &fix_records,
-                leg_records,
-                role.clone(),
-                traversal_policy.common_resume_target,
-                previous_display_path.as_ref(),
-                previous_leg_to.as_ref(),
-                next_segment_records,
-                resolved.last(),
+                ProcedureWindowPlanningContext {
+                    fix_records: &fix_records,
+                    leg_records,
+                    role: role.clone(),
+                    common_resume_target: traversal_policy.common_resume_target,
+                    previous_display_path: previous_display_path.as_ref(),
+                    previous_leg_to: previous_leg_to.as_ref(),
+                    next_segment_records,
+                    resolved_last: resolved.last().cloned(),
+                },
             )? else {
                 continue;
             };
@@ -2391,6 +2393,18 @@ struct ProcedureWindowPlan<'a> {
     continuation: ProcedureWindowContinuation<'a>,
 }
 
+#[derive(Clone)]
+struct ProcedureWindowPlanningContext<'a> {
+    fix_records: &'a [&'a ProcedureLegMaterializationRecord],
+    leg_records: &'a [ProcedureLegMaterializationRecord],
+    role: ProcedureSegmentRole,
+    common_resume_target: Option<CommonResumeTarget<'a>>,
+    previous_display_path: Option<&'a LegDisplayPath>,
+    previous_leg_to: Option<&'a NavRef>,
+    next_segment_records: Option<&'a [ProcedureLegMaterializationRecord]>,
+    resolved_last: Option<ResolvedLeg>,
+}
+
 struct TrailingProcedurePlan<'a> {
     nav_ref: NavRef,
     provenance_record: &'a ProcedureLegMaterializationRecord,
@@ -2567,16 +2581,13 @@ fn determine_procedure_window_continuation<'a>(
 fn plan_procedure_window<'a>(
     current_window_index: usize,
     pair: [&'a ProcedureLegMaterializationRecord; 2],
-    fix_records: &[&'a ProcedureLegMaterializationRecord],
-    leg_records: &[ProcedureLegMaterializationRecord],
-    role: ProcedureSegmentRole,
-    common_resume_target: Option<CommonResumeTarget<'a>>,
-    previous_display_path: Option<&LegDisplayPath>,
-    previous_leg_to: Option<&NavRef>,
-    next_segment_records: Option<&[ProcedureLegMaterializationRecord]>,
-    resolved_last: Option<&ResolvedLeg>,
+    planning: ProcedureWindowPlanningContext<'a>,
 ) -> AppResult<Option<ProcedureWindowPlan<'a>>> {
-    let previous_context = previous_window_context(previous_display_path, resolved_last, pair[0]);
+    let previous_context = previous_window_context(
+        planning.previous_display_path,
+        planning.resolved_last.as_ref(),
+        pair[0],
+    );
     if pair[0].path_termination.trim() == "DF"
         && pair[1].path_termination.trim() == "CF"
         && previous_context
@@ -2600,10 +2611,10 @@ fn plan_procedure_window<'a>(
     let resolution = resolve_procedure_window(
         current_window_index,
         pair,
-        fix_records,
+        planning.fix_records,
         previous_context,
-        leg_records,
-        role.clone(),
+        planning.leg_records,
+        planning.role.clone(),
     );
     let to = resolution.effective_leg_end.nav_ref.clone().ok_or_else(|| AppError {
         kind: AppErrorKind::InvalidFlightPlan,
@@ -2614,17 +2625,17 @@ fn plan_procedure_window<'a>(
     })?;
     if common_resume_yields_current_feeder_cf(
         pair,
-        leg_records,
-        previous_display_path,
+        planning.leg_records,
+        planning.previous_display_path,
         previous_context,
-        next_segment_records,
-        role.clone(),
+        planning.next_segment_records,
+        planning.role.clone(),
     ) {
         return Ok(None);
     }
     if should_skip_reconciliation_anchor_leg(
-        previous_display_path,
-        previous_leg_to,
+        planning.previous_display_path,
+        planning.previous_leg_to,
         pair[0],
         &from,
         &to,
@@ -2635,7 +2646,7 @@ fn plan_procedure_window<'a>(
         &from,
         &to,
         pair[1].path_termination.trim(),
-        resolved_last,
+        planning.resolved_last.as_ref(),
     ) {
         return Ok(None);
     }
@@ -2645,10 +2656,10 @@ fn plan_procedure_window<'a>(
         &to,
         pair,
         resolution.hold_record,
-        role,
-        common_resume_target,
+        planning.role,
+        planning.common_resume_target,
         previous_context,
-        previous_leg_to,
+        planning.previous_leg_to,
     );
     Ok(Some(ProcedureWindowPlan {
         from,

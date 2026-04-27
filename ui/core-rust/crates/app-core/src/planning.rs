@@ -304,6 +304,12 @@ pub enum StartRequirement {
         #[serde(default)]
         continuation_anchor_position: Option<LatLon>,
     },
+    ReentryToAnchor {
+        from_anchor: NavRef,
+        #[serde(default)]
+        from_anchor_position: Option<LatLon>,
+        to_anchor: NavRef,
+    },
     EstablishedOnCourse {
         course_deg: f64,
         anchor: Option<NavRef>,
@@ -426,6 +432,28 @@ pub fn reconcile_handoff(
             if angular_difference_degrees(bearing_to_continuation, *continuation_course_deg) <= 45.0
             {
                 HandoffDecision::YieldToFollowingCourse
+            } else {
+                HandoffDecision::ContinueAsDrawn
+            }
+        }
+        StartRequirement::ReentryToAnchor {
+            from_anchor_position: Some(from_anchor_position),
+            to_anchor,
+            ..
+        } => {
+            let Some(current_course_deg) = terminal_state
+                .logical_terminal_course_deg
+                .or(terminal_state.drawn_terminal_course_deg)
+            else {
+                return HandoffDecision::ContinueAsDrawn;
+            };
+            if terminal_state.terminal_anchor.as_ref() != Some(to_anchor) {
+                return HandoffDecision::ContinueAsDrawn;
+            }
+            let heading_to_from_anchor =
+                initial_course_deg(terminal_state.terminal_position, *from_anchor_position);
+            if angular_difference_degrees(current_course_deg, heading_to_from_anchor) > 10.0 {
+                HandoffDecision::SkipStaleFix
             } else {
                 HandoffDecision::ContinueAsDrawn
             }

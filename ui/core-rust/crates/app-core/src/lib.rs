@@ -2321,18 +2321,30 @@ fn should_skip_reconciliation_anchor_leg(
     if previous_leg_to != current_to {
         return false;
     }
-    let Some(final_heading_deg) = final_course_of_display_path(previous_display_path) else {
+    if current_from == current_to {
         return false;
-    };
-    let Some(anchor_position) = current_from_record.nav_position else {
-        return false;
-    };
-    let Some(fix_position) = previous_display_path_terminal_position(previous_display_path) else {
-        return false;
-    };
-    let heading_to_anchor_deg = bearing_degrees(fix_position, anchor_position);
-    let heading_delta_deg = angular_difference_degrees(final_heading_deg, heading_to_anchor_deg);
-    heading_delta_deg > 10.0 && current_from != current_to
+    }
+    let terminal_state = terminal_state_for_handoff(
+        previous_display_path_terminal_position(previous_display_path),
+        final_course_of_display_path(previous_display_path),
+        Some(previous_leg_to.clone()),
+        false,
+    );
+    let start_requirement = current_from_record.nav_position.map(|from_anchor_position| {
+        StartRequirement::ReentryToAnchor {
+            from_anchor: current_from.clone(),
+            from_anchor_position: Some(from_anchor_position),
+            to_anchor: current_to.clone(),
+        }
+    });
+    terminal_state
+        .zip(start_requirement)
+        .is_some_and(|(terminal_state, start_requirement)| {
+            matches!(
+                reconcile_handoff(&terminal_state, &start_requirement),
+                HandoffDecision::SkipStaleFix
+            )
+        })
 }
 
 fn reconciliation_resume_skip_through_index(

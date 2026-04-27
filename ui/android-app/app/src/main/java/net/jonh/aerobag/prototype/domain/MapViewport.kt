@@ -44,6 +44,13 @@ data class RenderTile(
     val candidateMapViews: List<MapView> = listOf(mapView),
 )
 
+data class RenderTileKey(
+    val mapViewId: String,
+    val zoom: Int,
+    val x: Int,
+    val yTms: Int,
+)
+
 data class PinchSnapshot(
     val viewport: MapViewportState,
     val firstAnchorWorld: WorldPoint,
@@ -186,7 +193,8 @@ fun renderTiles(
         renderTilesForMapView(mapViewId, mapView, viewport, widthPx, heightPx)
     }
     return dedupeTiles(tiles).sortedWith(
-        compareBy<RenderTile> { it.zoom }
+        compareBy<RenderTile> { chartFamilyRenderPriority(it.mapView.chartFamily) }
+            .thenBy { it.zoom }
             .thenBy { it.yTms }
             .thenBy { it.x },
     )
@@ -200,9 +208,16 @@ private fun renderTilesForMapView(
     heightPx: Float,
 ): List<RenderTile> {
     val desiredLevel = pickLevel(mapView, viewport.zoom)
-    val levels = mapView.levels
-        .filter { it.zoom <= desiredLevel.zoom }
-        .sortedBy { it.zoom }
+    val levels =
+        if (mapView.chartFamily == MapChartFamily.Tac) {
+            // TAC now rides over SEC as its fallback layer, so stacking coarser TAC
+            // levels only paints a blurry halo behind the sharp tiles.
+            listOf(desiredLevel)
+        } else {
+            mapView.levels
+                .filter { it.zoom <= desiredLevel.zoom }
+                .sortedBy { it.zoom }
+        }
     val scale = scaleForZoom(viewport.zoom)
     val minWorldX = viewport.centerWorldX - widthPx / 2f / scale
     val maxWorldX = viewport.centerWorldX + widthPx / 2f / scale
@@ -245,24 +260,34 @@ private fun renderTilesForMapView(
 }
 
 private fun dedupeTiles(tiles: List<RenderTile>): List<RenderTile> {
-    val byScreenKey = linkedMapOf<String, RenderTile>()
+    val byScreenKey = linkedMapOf<RenderTileKey, RenderTile>()
     for (tile in tiles) {
-        val key = "${tile.zoom}:${tile.x}:${tile.yTms}"
+        val key = renderTileKey(tile)
         val existing = byScreenKey[key]
         if (existing == null) {
             byScreenKey[key] = tile
             continue
         }
-        val preferred = if (existing.mapView.chartFamily != MapChartFamily.Tac && tile.mapView.chartFamily == MapChartFamily.Tac) {
-            tile
-        } else {
-            existing
-        }
         val mergedCandidates = (existing.candidateMapViews + tile.candidateMapViews)
             .distinctBy { "${it.packageName}:${it.tileRoot}:${it.chartIndex}" }
-        byScreenKey[key] = preferred.copy(candidateMapViews = mergedCandidates)
+        byScreenKey[key] = existing.copy(candidateMapViews = mergedCandidates)
     }
     return byScreenKey.values.toList()
+}
+
+fun renderTileKey(tile: RenderTile): RenderTileKey =
+    RenderTileKey(
+        mapViewId = tile.mapViewId,
+        zoom = tile.zoom,
+        x = tile.x,
+        yTms = tile.yTms,
+    )
+
+private fun chartFamilyRenderPriority(chartFamily: MapChartFamily): Int = when (chartFamily) {
+    MapChartFamily.ShadedRelief -> -10
+    MapChartFamily.Sec -> 0
+    MapChartFamily.Tac -> 1
+    else -> 0
 }
 
 fun tileRelativePath(tile: RenderTile): String =

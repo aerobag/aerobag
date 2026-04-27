@@ -209,6 +209,7 @@ import net.jonh.aerobag.prototype.domain.imageDisplaySize
 import net.jonh.aerobag.prototype.domain.latLonToWorld
 import net.jonh.aerobag.prototype.domain.preserveViewportForMap
 import net.jonh.aerobag.prototype.domain.renderTiles
+import net.jonh.aerobag.prototype.domain.renderTileKey
 import net.jonh.aerobag.prototype.domain.scaleForZoom
 import net.jonh.aerobag.prototype.domain.screenToWorld
 import net.jonh.aerobag.prototype.domain.tileRelativePath
@@ -341,6 +342,7 @@ private const val UiPrefsSelectedChartKey = "selected_chart_id"
 private const val UiPrefsRecentAirportsKey = "recent_airport_ids"
 private const val UiPrefsOfflinePackagePreferencesKey = "offline_package_preferences"
 private const val UiPrefsPackageSourceBaseUrlKey = "package_source_base_url"
+private const val MapViewportLogTag = "MapViewport"
 private const val MaxViewHistoryDepth = 64
 private val PackageManagementJson = Json {
     encodeDefaults = true
@@ -365,16 +367,6 @@ private data class AppViewSnapshot(
     val recentAirportIds: List<String>,
     val chartViewport: net.jonh.aerobag.prototype.domain.ImageViewportState?,
     val chartFolderOpen: Boolean,
-)
-
-private data class HardwareZoomState(
-    val selectedMap: MapView,
-    val viewport: MapViewportState,
-    val widthUnits: Float,
-    val heightUnits: Float,
-    val pageTrayOpen: Boolean,
-    val chartTrayOpen: Boolean,
-    val updateViewport: (MapViewportState) -> Unit,
 )
 
 private data class FlightPlanDisplayRow(
@@ -3071,19 +3063,32 @@ private fun MapExplorerPage(
         fixture.mapViews.find { it.id == selectedMapId } ?: fixture.mapViews.first()
     }
     val selectedFamilyMapViews = remember(selectedMap, fixture.mapViews) {
-        fixture.mapViews.filter { it.mapView.chartFamily == selectedMap.mapView.chartFamily }
+        val chartFamilies =
+            when (selectedMap.mapView.chartFamily) {
+                MapChartFamily.Tac -> setOf(MapChartFamily.Sec, MapChartFamily.Tac)
+                else -> setOf(selectedMap.mapView.chartFamily)
+            }
+        fixture.mapViews.filter { it.mapView.chartFamily in chartFamilies }
     }
-    val viewportState = rememberUpdatedState(viewport)
-    val center = remember(viewport) { viewportCenterLatLon(viewport) }
+    val viewportState = remember(selectedMap.id) { mutableStateOf(viewport) }
+    LaunchedEffect(viewport, selectedMap.id) {
+        Log.i(
+            MapViewportLogTag,
+            "prop-sync map=${selectedMap.id} parentZoom=${"%.2f".format(viewport.zoom)} localZoom=${"%.2f".format(viewportState.value.zoom)}",
+        )
+        viewportState.value = viewport
+    }
+    val currentViewport = viewportState.value
+    val center = remember(currentViewport) { viewportCenterLatLon(currentViewport) }
     val surfaceWidthUnits = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
     val surfaceHeightUnits = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
-    val tiles = remember(viewport, surfaceSize, selectedFamilyMapViews) {
+    val tiles = remember(currentViewport, surfaceSize, selectedFamilyMapViews) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             emptyList()
         } else {
             renderTiles(
                 mapViews = selectedFamilyMapViews.map { it.id to it.mapView },
-                viewport = viewport,
+                viewport = currentViewport,
                 widthPx = surfaceWidthUnits,
                 heightPx = surfaceHeightUnits,
             )
@@ -3137,7 +3142,7 @@ private fun MapExplorerPage(
             val topPx = with(density) { tile.topPx.dp.roundToPx() }
             val rightPx = with(density) { (tile.leftPx + tile.sizePx).dp.roundToPx() }
             val bottomPx = with(density) { (tile.topPx + tile.sizePx).dp.roundToPx() }
-            Triple(tile.zoom, tile.x, tile.yTms) to TileRect(
+            renderTileKey(tile) to TileRect(
                 leftPx = leftPx,
                 topPx = topPx,
                 widthPx = rightPx - leftPx,
@@ -3145,23 +3150,23 @@ private fun MapExplorerPage(
             )
         }
     }
-    val situationOverlay = remember(ownship, viewport, surfaceWidthUnits, surfaceHeightUnits) {
+    val situationOverlay = remember(ownship, currentViewport, surfaceWidthUnits, surfaceHeightUnits) {
         resolveSituationOverlay(
             ownship = ownship,
-            viewport = viewport,
+            viewport = currentViewport,
             widthUnits = surfaceWidthUnits,
             heightUnits = surfaceHeightUnits,
             ringCandidates = situationRingCandidates,
         )
     }
-    val routeScreenSegments = remember(flightPlanRoute, viewport, surfaceWidthUnits, surfaceHeightUnits) {
+    val routeScreenSegments = remember(flightPlanRoute, currentViewport, surfaceWidthUnits, surfaceHeightUnits) {
         if (surfaceWidthUnits <= 0f || surfaceHeightUnits <= 0f) {
             emptyList()
         } else {
             flightPlanRoute.map { segment ->
                 Pair(
                     (segment.path.ifEmpty { listOf(segment.from, segment.to) }).map { point ->
-                        latLonToScreenPoint(viewport, point, surfaceWidthUnits, surfaceHeightUnits)
+                        latLonToScreenPoint(currentViewport, point, surfaceWidthUnits, surfaceHeightUnits)
                     },
                     segment,
                 )
@@ -3199,6 +3204,11 @@ private fun MapExplorerPage(
     }
 
     fun updateViewport(nextViewport: MapViewportState, syncFollow: Boolean = true) {
+        Log.i(
+            MapViewportLogTag,
+            "update map=${selectedMap.id} from=${"%.2f".format(viewportState.value.zoom)} to=${"%.2f".format(nextViewport.zoom)} syncFollow=$syncFollow",
+        )
+        viewportState.value = nextViewport
         onViewportChange(nextViewport)
         if (syncFollow) {
             syncFollowStateForViewport(nextViewport)
@@ -3244,14 +3254,24 @@ private fun MapExplorerPage(
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
         }
     }
-    val tileBitmaps = remember(tiles, selectedMap.id, installRevision) {
-        tiles.associate { tile ->
-            Triple(tile.zoom, tile.x, tile.yTms) to runCatching {
-                val bytes = SectionalPackages.loadTileBytes(context, tile) ?: return@runCatching null
-                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                bitmap?.asImageBitmap()
-            }.getOrNull()
+    val tileBitmapCache = remember(selectedMap.id, installRevision) {
+        mutableStateMapOf<net.jonh.aerobag.prototype.domain.RenderTileKey, androidx.compose.ui.graphics.ImageBitmap?>()
+    }
+    LaunchedEffect(tiles, selectedMap.id, installRevision) {
+        val missingTiles = tiles.filter { tile -> !tileBitmapCache.containsKey(renderTileKey(tile)) }
+        if (missingTiles.isEmpty()) {
+            return@LaunchedEffect
         }
+        val loaded = withContext(Dispatchers.IO) {
+            missingTiles.associate { tile ->
+                renderTileKey(tile) to runCatching {
+                    val bytes = SectionalPackages.loadTileBytes(context, tile) ?: return@runCatching null
+                    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    bitmap?.asImageBitmap()
+                }.getOrNull()
+            }
+        }
+        tileBitmapCache.putAll(loaded)
     }
     val tileLabelPaint = remember {
         Paint().apply {
@@ -3445,7 +3465,7 @@ private fun MapExplorerPage(
         committedMapOverlay,
         committedOverlayViewport,
         committedOverlaySurfaceUnits,
-        viewport,
+        currentViewport,
         surfaceWidthUnits,
         surfaceHeightUnits,
     ) {
@@ -3459,43 +3479,15 @@ private fun MapExplorerPage(
                     feature = feature,
                     fromViewport = baseViewport,
                     fromSurface = baseSurface,
-                    toViewport = viewport,
+                    toViewport = currentViewport,
                     toSurface = OverlaySurfaceUnits(surfaceWidthUnits, surfaceHeightUnits),
                 )
             }
         }
     }
-    val hardwareZoomState = rememberUpdatedState(
-        HardwareZoomState(
-            selectedMap = selectedMap.mapView,
-            viewport = viewport,
-            widthUnits = surfaceWidthUnits,
-            heightUnits = surfaceHeightUnits,
-            pageTrayOpen = pageTrayOpen,
-            chartTrayOpen = chartTrayOpen,
-            updateViewport = { nextViewport -> updateViewport(nextViewport) },
-        ),
-    )
     DisposableEffect(activity) {
         if (activity != null) {
-            activity.onHardwareZoomDelta = { delta ->
-                val state = hardwareZoomState.value
-                if (state.widthUnits == 0f || state.heightUnits == 0f || state.pageTrayOpen || state.chartTrayOpen) {
-                    false
-                } else {
-                    state.updateViewport(
-                        zoomAroundPoint(
-                            viewport = state.viewport,
-                            mapView = state.selectedMap,
-                            anchor = ScreenPoint(state.widthUnits / 2f, state.heightUnits / 2f),
-                            widthPx = state.widthUnits,
-                            heightPx = state.heightUnits,
-                            nextZoom = clampZoom(state.viewport.zoom + delta, state.selectedMap),
-                        ),
-                    )
-                    true
-                }
-            }
+            activity.onHardwareZoomDelta = null
         }
         onDispose {
             if (activity != null && activity.onHardwareZoomDelta != null) {
@@ -3527,6 +3519,10 @@ private fun MapExplorerPage(
                     -> -0.35
                     else -> return@onPreviewKeyEvent false
                 }
+                Log.i(
+                    MapViewportLogTag,
+                    "key-zoom map=${selectedMap.id} delta=${"%.2f".format(delta)} base=${"%.2f".format(viewportState.value.zoom)}",
+                )
                 updateViewport(
                     zoomAroundPoint(
                         viewport = viewportState.value,
@@ -3550,6 +3546,7 @@ private fun MapExplorerPage(
                     var pinchSnapshot: net.jonh.aerobag.prototype.domain.PinchSnapshot? = null
                     var gestureViewport = viewportState.value
                     var movedViewportDuringGesture = false
+                    var loggedGestureSeed = false
                     try {
                         while (true) {
                             val event = awaitPointerEvent()
@@ -3560,14 +3557,24 @@ private fun MapExplorerPage(
                                 continue
                             }
                             mapGestureActive = true
+                            if (!loggedGestureSeed) {
+                                Log.i(
+                                    MapViewportLogTag,
+                                    "gesture-start map=${selectedMap.id} seed=${"%.2f".format(viewportState.value.zoom)} local=${"%.2f".format(viewportState.value.zoom)}",
+                                )
+                                gestureViewport = viewportState.value
+                                loggedGestureSeed = true
+                            }
                             if (pressed.size == 1) {
                                 val change = pressed.first()
                                 if (dragPointerId != change.id || dragLastPosition == null) {
                                     dragPointerId = change.id
                                     dragLastPosition = change.position
                                     pinchSnapshot = null
+                                    gestureViewport = viewportState.value
                                 } else {
                                     val last = dragLastPosition ?: change.position
+                                    gestureViewport = viewportState.value
                                     gestureViewport = dragViewport(
                                         gestureViewport,
                                         dx = with(density) { (change.position.x - last.x).toDp().value },
@@ -3582,6 +3589,7 @@ private fun MapExplorerPage(
                                 val first = pressed[0]
                                 val second = pressed[1]
                                 if (pinchSnapshot == null) {
+                                    gestureViewport = viewportState.value
                                     pinchSnapshot = createPinchSnapshot(
                                         viewport = gestureViewport,
                                         first = ScreenPoint(with(density) { first.position.x.toDp().value }, with(density) { first.position.y.toDp().value }),
@@ -3590,6 +3598,7 @@ private fun MapExplorerPage(
                                         heightPx = surfaceHeightUnits,
                                     )
                                 }
+                                gestureViewport = viewportState.value
                                 gestureViewport =
                                     applyPinchGesture(
                                         snapshot = pinchSnapshot,
@@ -3607,7 +3616,7 @@ private fun MapExplorerPage(
                         }
                     } finally {
                         if (movedViewportDuringGesture) {
-                            syncFollowStateForViewport(gestureViewport)
+                            syncFollowStateForViewport(viewportState.value)
                         }
                         mapGestureActive = false
                     }
@@ -3638,8 +3647,8 @@ private fun MapExplorerPage(
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             tiles.forEach { tile ->
-                val tileRect = tileRects.getValue(Triple(tile.zoom, tile.x, tile.yTms))
-                val bitmap = tileBitmaps.getValue(Triple(tile.zoom, tile.x, tile.yTms))
+                val tileRect = tileRects.getValue(renderTileKey(tile))
+                val bitmap = tileBitmapCache[renderTileKey(tile)]
                 if (bitmap != null) {
                     drawImage(
                         image = bitmap,

@@ -1386,42 +1386,24 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     initial_course_override,
                 )
             };
-            let signatures = heading_signatures_for_leg(
-                next_heading_step_index,
-                display_path.as_ref(),
-                pair[0],
-                window_plan.resolution.effective_leg_end,
-                window_plan.resolution.provenance_record.path_termination.trim(),
-                window_plan.resolution.provenance_record.nav_position,
+            previous_display_path = append_resolved_procedure_leg(
+                &mut resolved,
+                &mut heading_checks,
+                &mut next_heading_step_index,
+                procedure_id,
+                airport_id,
+                &kind,
+                &role,
+                component_index,
+                ProcedureAppendSpec {
+                    from: window_plan.from,
+                    to: window_plan.to.clone(),
+                    heading_from_record: pair[0],
+                    heading_to_record: window_plan.resolution.effective_leg_end,
+                    provenance_record: window_plan.resolution.provenance_record,
+                    display_path,
+                },
             );
-            next_heading_step_index += signatures.len();
-            heading_checks.extend(signatures);
-
-            resolved.push(ResolvedLeg {
-                id: format!(
-                    "procedure-{}-{}-{}",
-                    procedure_id.trim(),
-                    window_plan.resolution.provenance_record.key.route_type.trim(),
-                    window_plan.resolution.provenance_record.sequence
-                ),
-                from: window_plan.from.clone(),
-                to: window_plan.to.clone(),
-                source: ResolvedLegSource::RouteComponent { component_index },
-                procedure_provenance: Some(ProcedureLegProvenance {
-                    airport_id: airport_id.trim().to_string(),
-                    procedure_id: procedure_id.trim().to_string(),
-                    kind: kind.clone(),
-                    role: role.clone(),
-                    path_termination: window_plan
-                        .resolution
-                        .provenance_record
-                        .path_termination_kind
-                        .clone(),
-                    leg_sequence: window_plan.resolution.provenance_record.sequence,
-                    display_path: display_path.clone(),
-                }),
-            });
-            previous_display_path = display_path;
             previous_leg_to = Some(window_plan.to);
         }
 
@@ -1441,37 +1423,24 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 )?;
                 if let Some(trailing_plan) = trailing_plan {
                     let display_path = trailing_plan.display_path;
-                    let signatures = heading_signatures_for_leg(
-                        next_heading_step_index,
-                        display_path.as_ref(),
-                        last_fix,
-                        last_fix,
-                        trailing_plan.provenance_record.path_termination.trim(),
-                        trailing_plan.provenance_record.nav_position,
+                    previous_display_path = append_resolved_procedure_leg(
+                        &mut resolved,
+                        &mut heading_checks,
+                        &mut next_heading_step_index,
+                        procedure_id,
+                        airport_id,
+                        &kind,
+                        &role,
+                        component_index,
+                        ProcedureAppendSpec {
+                            from: trailing_plan.nav_ref.clone(),
+                            to: trailing_plan.nav_ref.clone(),
+                            heading_from_record: last_fix,
+                            heading_to_record: last_fix,
+                            provenance_record: trailing_plan.provenance_record,
+                            display_path,
+                        },
                     );
-                    next_heading_step_index += signatures.len();
-                    heading_checks.extend(signatures);
-                    resolved.push(ResolvedLeg {
-                        id: format!(
-                            "procedure-{}-{}-{}",
-                            procedure_id.trim(),
-                            trailing_plan.provenance_record.key.route_type.trim(),
-                            trailing_plan.provenance_record.sequence
-                        ),
-                        from: trailing_plan.nav_ref.clone(),
-                        to: trailing_plan.nav_ref.clone(),
-                        source: ResolvedLegSource::RouteComponent { component_index },
-                        procedure_provenance: Some(ProcedureLegProvenance {
-                            airport_id: airport_id.trim().to_string(),
-                            procedure_id: procedure_id.trim().to_string(),
-                            kind: kind.clone(),
-                            role: role.clone(),
-                            path_termination: trailing_plan.provenance_record.path_termination_kind.clone(),
-                            leg_sequence: trailing_plan.provenance_record.sequence,
-                            display_path: display_path.clone(),
-                        }),
-                    });
-                    previous_display_path = display_path;
                     previous_leg_to = Some(trailing_plan.nav_ref);
                 }
             }
@@ -1486,37 +1455,24 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     continue;
                 };
                 let display_path = standalone_plan.display_path;
-                let signatures = heading_signatures_for_leg(
-                    next_heading_step_index,
-                    display_path.as_ref(),
-                    standalone,
-                    standalone,
-                    standalone_plan.provenance_record.path_termination.trim(),
-                    standalone_plan.provenance_record.nav_position,
+                previous_display_path = append_resolved_procedure_leg(
+                    &mut resolved,
+                    &mut heading_checks,
+                    &mut next_heading_step_index,
+                    procedure_id,
+                    airport_id,
+                    &kind,
+                    &role,
+                    component_index,
+                    ProcedureAppendSpec {
+                        from: standalone_plan.nav_ref.clone(),
+                        to: standalone_plan.nav_ref.clone(),
+                        heading_from_record: standalone,
+                        heading_to_record: standalone,
+                        provenance_record: standalone_plan.provenance_record,
+                        display_path,
+                    },
                 );
-                next_heading_step_index += signatures.len();
-                heading_checks.extend(signatures);
-                resolved.push(ResolvedLeg {
-                    id: format!(
-                        "procedure-{}-{}-{}",
-                        procedure_id.trim(),
-                        standalone_plan.provenance_record.key.route_type.trim(),
-                        standalone_plan.provenance_record.sequence
-                    ),
-                    from: standalone_plan.nav_ref.clone(),
-                    to: standalone_plan.nav_ref.clone(),
-                    source: ResolvedLegSource::RouteComponent { component_index },
-                    procedure_provenance: Some(ProcedureLegProvenance {
-                        airport_id: airport_id.trim().to_string(),
-                        procedure_id: procedure_id.trim().to_string(),
-                        kind: kind.clone(),
-                        role: role.clone(),
-                        path_termination: standalone_plan.provenance_record.path_termination_kind.clone(),
-                        leg_sequence: standalone_plan.provenance_record.sequence,
-                        display_path: display_path.clone(),
-                    }),
-                });
-                previous_display_path = display_path;
                 previous_leg_to = Some(standalone_plan.nav_ref);
             }
         }
@@ -2508,6 +2464,15 @@ struct TrailingProcedurePlan<'a> {
     display_path: Option<LegDisplayPath>,
 }
 
+struct ProcedureAppendSpec<'a> {
+    from: NavRef,
+    to: NavRef,
+    heading_from_record: &'a ProcedureLegMaterializationRecord,
+    heading_to_record: &'a ProcedureLegMaterializationRecord,
+    provenance_record: &'a ProcedureLegMaterializationRecord,
+    display_path: Option<LegDisplayPath>,
+}
+
 fn resolve_procedure_window<'a>(
     current_window_index: usize,
     pair: [&'a ProcedureLegMaterializationRecord; 2],
@@ -2825,6 +2790,51 @@ fn plan_standalone_pi_window<'a>(
         provenance_record: standalone,
         display_path: Some(display_path),
     }))
+}
+
+fn append_resolved_procedure_leg(
+    resolved: &mut Vec<ResolvedLeg>,
+    heading_checks: &mut Vec<DisplayElementHeadingSignature>,
+    next_heading_step_index: &mut usize,
+    procedure_id: &str,
+    airport_id: &str,
+    kind: &ProcedureKind,
+    role: &ProcedureSegmentRole,
+    component_index: usize,
+    spec: ProcedureAppendSpec<'_>,
+) -> Option<LegDisplayPath> {
+    let signatures = heading_signatures_for_leg(
+        *next_heading_step_index,
+        spec.display_path.as_ref(),
+        spec.heading_from_record,
+        spec.heading_to_record,
+        spec.provenance_record.path_termination.trim(),
+        spec.provenance_record.nav_position,
+    );
+    *next_heading_step_index += signatures.len();
+    heading_checks.extend(signatures);
+
+    resolved.push(ResolvedLeg {
+        id: format!(
+            "procedure-{}-{}-{}",
+            procedure_id.trim(),
+            spec.provenance_record.key.route_type.trim(),
+            spec.provenance_record.sequence
+        ),
+        from: spec.from,
+        to: spec.to,
+        source: ResolvedLegSource::RouteComponent { component_index },
+        procedure_provenance: Some(ProcedureLegProvenance {
+            airport_id: airport_id.trim().to_string(),
+            procedure_id: procedure_id.trim().to_string(),
+            kind: kind.clone(),
+            role: role.clone(),
+            path_termination: spec.provenance_record.path_termination_kind.clone(),
+            leg_sequence: spec.provenance_record.sequence,
+            display_path: spec.display_path.clone(),
+        }),
+    });
+    spec.display_path
 }
 
 #[derive(Clone, Copy)]

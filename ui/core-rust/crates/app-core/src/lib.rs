@@ -1329,7 +1329,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 continue;
             }
             let previous_path_state = previous_display_path_state(previous_display_path.as_ref());
-            let Some(window_plan) = plan_procedure_window(
+            let Some(window_link) = plan_procedure_window(
                 index,
                 [pair[0], pair[1]],
                 ProcedureWindowPlanningContext {
@@ -1345,24 +1345,24 @@ fn resolve_procedure_materialization_legs_with_provenance(
             )? else {
                 continue;
             };
-            let initial_position_override = if window_plan.continuation.inherit_previous_state {
+            let initial_position_override = if window_link.inherit_previous_state {
                 previous_path_state.terminal_position
             } else {
                 None
             };
-            let initial_course_override = if window_plan.continuation.inherit_previous_state {
+            let initial_course_override = if window_link.inherit_previous_state {
                 previous_path_state.terminal_course
             } else {
                 None
             };
-            let display_path = if window_plan.continuation.render_as_empty_join {
+            let display_path = if window_link.render_as_empty_join {
                 Some(LegDisplayPath {
                     style: LegDisplayPathStyle::Solid,
                     elements: Vec::new(),
                     effective_terminal_course_deg: None,
                     debug_element_sources: Vec::new(),
                 })
-            } else if window_plan.continuation.render_as_resumed_common_cf {
+            } else if window_link.render_as_resumed_common_cf {
                 display_path_for_resumed_common_cf(
                     pair[1],
                     initial_position_override,
@@ -1371,14 +1371,14 @@ fn resolve_procedure_materialization_legs_with_provenance(
             } else {
                 display_path_for_procedure_leg(
                     leg_records,
-                    window_plan.continuation.display_leg_start,
-                    window_plan.resolution.effective_leg_end,
-                    window_plan.resolution.hold_record,
+                    window_link.display_leg_start,
+                    window_link.effective_leg_end,
+                    window_link.hold_record,
                     initial_position_override,
                     initial_course_override,
                 )
             };
-            let previous_to = window_plan.to.clone();
+            let previous_to = window_link.to.clone();
             previous_display_path = append_resolved_procedure_leg(
                 &mut resolved,
                 &mut heading_checks,
@@ -1388,7 +1388,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 &kind,
                 &role,
                 component_index,
-                append_spec_for_window_plan(pair[0], window_plan, display_path),
+                append_spec_for_window_link(pair[0], window_link, display_path),
             );
             previous_leg_to = Some(previous_to);
         }
@@ -2399,17 +2399,16 @@ fn resume_projection_context(
     }
 }
 
-struct ProcedureWindowResolution<'a> {
+struct ProcedureWindowLink<'a> {
+    from: NavRef,
+    to: NavRef,
     effective_leg_end: &'a ProcedureLegMaterializationRecord,
     hold_record: Option<&'a ProcedureLegMaterializationRecord>,
     provenance_record: &'a ProcedureLegMaterializationRecord,
-}
-
-struct ProcedureWindowPlan<'a> {
-    from: NavRef,
-    to: NavRef,
-    resolution: ProcedureWindowResolution<'a>,
-    continuation: ProcedureWindowContinuation<'a>,
+    inherit_previous_state: bool,
+    display_leg_start: &'a ProcedureLegMaterializationRecord,
+    render_as_empty_join: bool,
+    render_as_resumed_common_cf: bool,
 }
 
 #[derive(Clone)]
@@ -2453,17 +2452,17 @@ struct ProcedureAppendSpec<'a> {
     display_path: Option<LegDisplayPath>,
 }
 
-fn append_spec_for_window_plan<'a>(
+fn append_spec_for_window_link<'a>(
     pair_start: &'a ProcedureLegMaterializationRecord,
-    window_plan: ProcedureWindowPlan<'a>,
+    window_link: ProcedureWindowLink<'a>,
     display_path: Option<LegDisplayPath>,
 ) -> ProcedureAppendSpec<'a> {
     ProcedureAppendSpec {
-        from: window_plan.from,
-        to: window_plan.to,
+        from: window_link.from,
+        to: window_link.to,
         heading_from_record: pair_start,
-        heading_to_record: window_plan.resolution.effective_leg_end,
-        provenance_record: window_plan.resolution.provenance_record,
+        heading_to_record: window_link.effective_leg_end,
+        provenance_record: window_link.provenance_record,
         display_path,
     }
 }
@@ -2489,7 +2488,7 @@ fn resolve_procedure_window<'a>(
     previous: PreviousWindowContext,
     leg_records: &[ProcedureLegMaterializationRecord],
     role: ProcedureSegmentRole,
-) -> ProcedureWindowResolution<'a> {
+) -> (&'a ProcedureLegMaterializationRecord, Option<&'a ProcedureLegMaterializationRecord>, &'a ProcedureLegMaterializationRecord) {
     let df_following_cf_record = if pair[1].path_termination.trim() == "DF" {
         fix_records
             .get(current_window_index + 2)
@@ -2528,18 +2527,7 @@ fn resolve_procedure_window<'a>(
             }
         })
     };
-    ProcedureWindowResolution {
-        effective_leg_end,
-        hold_record,
-        provenance_record: hold_record.unwrap_or(effective_leg_end),
-    }
-}
-
-struct ProcedureWindowContinuation<'a> {
-    inherit_previous_state: bool,
-    display_leg_start: &'a ProcedureLegMaterializationRecord,
-    render_as_empty_join: bool,
-    render_as_resumed_common_cf: bool,
+    (effective_leg_end, hold_record, hold_record.unwrap_or(effective_leg_end))
 }
 
 struct ProcedureWindowContinuationPolicy {
@@ -2612,7 +2600,14 @@ impl ProcedureWindowContinuationPolicy {
     }
 }
 
-fn determine_procedure_window_continuation<'a>(
+struct ProcedureWindowLinkBehavior<'a> {
+    display_leg_start: &'a ProcedureLegMaterializationRecord,
+    inherit_previous_state: bool,
+    render_as_empty_join: bool,
+    render_as_resumed_common_cf: bool,
+}
+
+fn determine_procedure_window_link<'a>(
     current_window_index: usize,
     from: &NavRef,
     to: &NavRef,
@@ -2622,7 +2617,7 @@ fn determine_procedure_window_continuation<'a>(
     traversal_policy: SegmentTraversalPolicy<'_>,
     previous: PreviousWindowContext,
     previous_leg_to: Option<&NavRef>,
-) -> ProcedureWindowContinuation<'a> {
+) -> ProcedureWindowLinkBehavior<'a> {
     let policy = ProcedureWindowContinuationPolicy::evaluate(
         current_window_index,
         from,
@@ -2648,9 +2643,9 @@ fn determine_procedure_window_continuation<'a>(
         && previous.terminal_position
             .zip(pair[1].nav_position)
             .is_some_and(|(start, end)| great_circle_distance_nm(start, end) <= 0.05);
-    ProcedureWindowContinuation {
-        inherit_previous_state: policy.inherits_previous_state(from, to),
+    ProcedureWindowLinkBehavior {
         display_leg_start,
+        inherit_previous_state: policy.inherits_previous_state(from, to),
         render_as_empty_join,
         render_as_resumed_common_cf: policy.resume_common_cf_from_previous_path,
     }
@@ -2660,7 +2655,7 @@ fn plan_procedure_window<'a>(
     current_window_index: usize,
     pair: [&'a ProcedureLegMaterializationRecord; 2],
     planning: ProcedureWindowPlanningContext<'a>,
-) -> AppResult<Option<ProcedureWindowPlan<'a>>> {
+) -> AppResult<Option<ProcedureWindowLink<'a>>> {
     let previous_context = previous_window_context(
         planning.previous_display_path,
         planning.resolved_last.as_ref(),
@@ -2686,7 +2681,7 @@ fn plan_procedure_window<'a>(
             pair[0].sequence
         ),
     })?;
-    let resolution = resolve_procedure_window(
+    let (effective_leg_end, hold_record, provenance_record) = resolve_procedure_window(
         current_window_index,
         pair,
         planning.fix_records,
@@ -2694,11 +2689,11 @@ fn plan_procedure_window<'a>(
         planning.leg_records,
         planning.role.clone(),
     );
-    let to = resolution.effective_leg_end.nav_ref.clone().ok_or_else(|| AppError {
+    let to = effective_leg_end.nav_ref.clone().ok_or_else(|| AppError {
         kind: AppErrorKind::InvalidFlightPlan,
         message: format!(
             "procedure leg materialization encountered missing to-anchor nav_ref at sequence {}",
-            resolution.effective_leg_end.sequence
+            effective_leg_end.sequence
         ),
     })?;
     if common_resume_yields_current_feeder_cf(
@@ -2728,12 +2723,12 @@ fn plan_procedure_window<'a>(
     ) {
         return Ok(None);
     }
-    let continuation = determine_procedure_window_continuation(
+    let behavior = determine_procedure_window_link(
         current_window_index,
         &from,
         &to,
         pair,
-        resolution.hold_record,
+        hold_record,
         planning.role,
         SegmentTraversalPolicy {
             common_resume_target: planning.common_resume_target,
@@ -2742,11 +2737,16 @@ fn plan_procedure_window<'a>(
         previous_context,
         planning.previous_leg_to,
     );
-    Ok(Some(ProcedureWindowPlan {
+    Ok(Some(ProcedureWindowLink {
         from,
         to,
-        resolution,
-        continuation,
+        effective_leg_end,
+        hold_record,
+        provenance_record,
+        inherit_previous_state: behavior.inherit_previous_state,
+        display_leg_start: behavior.display_leg_start,
+        render_as_empty_join: behavior.render_as_empty_join,
+        render_as_resumed_common_cf: behavior.render_as_resumed_common_cf,
     }))
 }
 

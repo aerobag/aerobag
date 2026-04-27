@@ -1303,6 +1303,12 @@ fn resolve_procedure_materialization_legs_with_provenance(
     let mut previous_leg_to: Option<NavRef> = None;
     let mut heading_checks = Vec::<DisplayElementHeadingSignature>::new();
     let mut next_heading_step_index = 0usize;
+    let required_procedure_turn_sequences = segments
+        .iter()
+        .flat_map(|(_, leg_records, _, _)| leg_records.iter())
+        .filter(|record| record.path_termination.trim() == "PI")
+        .map(|record| record.sequence)
+        .collect::<std::collections::BTreeSet<_>>();
 
     for (segment_index, (role, leg_records, _, reversed)) in segments.iter().enumerate() {
         let next_segment_records = segments
@@ -1461,6 +1467,11 @@ fn resolve_procedure_materialization_legs_with_provenance(
     }
 
     validate_no_zero_length_legs(&resolved, procedure_id);
+    validate_required_procedure_turns_materialized(
+        &required_procedure_turn_sequences,
+        &resolved,
+        procedure_id,
+    )?;
     validate_heading_continuity_checks(&heading_checks, validate_heading_continuity, procedure_id)?;
 
     Ok(resolved)
@@ -1552,6 +1563,46 @@ fn validate_no_zero_length_legs(resolved: &[ResolvedLeg], procedure_id: &str) {
             );
         }
     }
+}
+
+fn validate_required_procedure_turns_materialized(
+    required_sequences: &std::collections::BTreeSet<i32>,
+    resolved: &[ResolvedLeg],
+    procedure_id: &str,
+) -> AppResult<()> {
+    if required_sequences.is_empty() {
+        return Ok(());
+    }
+
+    let emitted_sequences = resolved
+        .iter()
+        .filter_map(|leg| {
+            leg.procedure_provenance.as_ref().and_then(|provenance| {
+                matches!(
+                    provenance.path_termination,
+                    PathTermination::Other(ref label) if label.trim() == "PI"
+                )
+                .then_some(provenance.leg_sequence)
+            })
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let missing_sequences = required_sequences
+        .difference(&emitted_sequences)
+        .copied()
+        .collect::<Vec<_>>();
+    if missing_sequences.is_empty() {
+        return Ok(());
+    }
+
+    Err(AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: format!(
+            "procedure turn required but not materialized for {} at sequences {:?}",
+            procedure_id.trim(),
+            missing_sequences,
+        ),
+    })
 }
 
 #[derive(Clone)]

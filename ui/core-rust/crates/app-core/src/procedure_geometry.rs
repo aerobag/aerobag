@@ -165,6 +165,21 @@ pub fn display_path_for_resumed_common_cf(
     })
 }
 
+pub fn display_path_for_single_procedure_step(
+    segment_records: &[ProcedureLegMaterializationRecord],
+    step: &ProcedureLegMaterializationRecord,
+    initial_position_override: Option<LatLon>,
+    initial_course_override: Option<f64>,
+) -> Option<LegDisplayPath> {
+    build_procedure_leg_display_path(
+        segment_records,
+        step,
+        step,
+        initial_position_override,
+        initial_course_override,
+    )
+}
+
 pub fn build_trailing_course_to_intercept_display_path(
     trailing_record: &ProcedureLegMaterializationRecord,
     initial_position_override: Option<LatLon>,

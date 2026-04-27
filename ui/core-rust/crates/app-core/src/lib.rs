@@ -102,7 +102,7 @@ pub use planning::{
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use procedure_geometry::{
     build_trailing_course_to_intercept_display_path, display_path_for_procedure_leg,
-    display_path_for_resumed_common_cf,
+    display_path_for_resumed_common_cf, display_path_for_single_procedure_step,
 };
 pub use procedure_legs::{
     interpret_path_termination, leading_procedure_discontinuity, parse_airport_magnetic_variation,
@@ -1398,8 +1398,18 @@ fn resolve_procedure_materialization_legs_with_provenance(
                         .iter()
                         .filter(|record| record.nav_ref.is_some())
                         .collect::<Vec<_>>();
+                    let projected_previous_display_path = if pair[0].path_termination.trim() == "PI" {
+                        display_path_for_single_procedure_step(
+                            leg_records,
+                            pair[0],
+                            previous_terminal_position,
+                            previous_terminal_course,
+                        )
+                    } else {
+                        previous_display_path.clone()
+                    };
                     let target_index = common_segment_resume_target_index(
-                        previous_display_path.as_ref(),
+                        projected_previous_display_path.as_ref(),
                         false,
                         next_records,
                         &next_fix_records,

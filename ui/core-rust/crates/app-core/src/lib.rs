@@ -1316,29 +1316,20 @@ fn resolve_procedure_materialization_legs_with_provenance(
             fix_records.reverse();
         }
         let role = procedure_segment_role(role);
-        let previous_was_hold_like = resolved.last().is_some_and(|previous| {
-            previous.procedure_provenance.as_ref().is_some_and(|provenance| {
-                matches!(
-                    &provenance.path_termination,
-                    PathTermination::Other(label)
-                        if matches!(label.trim(), "HF" | "HM")
-                )
-            })
-        });
-        let common_resume_target = resumed_common_target(
-            previous_display_path.as_ref(),
-            previous_was_hold_like,
-            leg_records,
-        );
-        let skip_through_index = reconciliation_resume_skip_through_index(
+        let traversal_policy = segment_traversal_policy(
             previous_display_path.as_ref(),
             previous_leg_to.as_ref(),
+            resolved.last(),
             leg_records,
             &fix_records,
         );
 
         for (index, pair) in fix_records.windows(2).enumerate() {
-            if should_skip_window_before_resolution(index, skip_through_index, common_resume_target) {
+            if should_skip_window_before_resolution(
+                index,
+                traversal_policy.skip_through_index,
+                traversal_policy.common_resume_target,
+            ) {
                 continue;
             }
             let previous_terminal_position = previous_display_path
@@ -1352,7 +1343,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 &fix_records,
                 leg_records,
                 role.clone(),
-                common_resume_target,
+                traversal_policy.common_resume_target,
                 previous_display_path.as_ref(),
                 previous_leg_to.as_ref(),
                 next_segment_records,
@@ -2800,6 +2791,12 @@ struct CommonResumeTarget<'a> {
 }
 
 #[derive(Clone, Copy)]
+struct SegmentTraversalPolicy<'a> {
+    common_resume_target: Option<CommonResumeTarget<'a>>,
+    skip_through_index: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
 struct CommonResumeCandidate<'a> {
     index: usize,
     record: &'a ProcedureLegMaterializationRecord,
@@ -2895,6 +2892,36 @@ fn resumed_common_target<'a>(
     }
 
     None
+}
+
+fn segment_traversal_policy<'a>(
+    previous_display_path: Option<&LegDisplayPath>,
+    previous_leg_to: Option<&NavRef>,
+    resolved_last: Option<&ResolvedLeg>,
+    segment_records: &'a [ProcedureLegMaterializationRecord],
+    fix_records: &[&'a ProcedureLegMaterializationRecord],
+) -> SegmentTraversalPolicy<'a> {
+    let previous_was_hold_like = resolved_last.is_some_and(|previous| {
+        previous.procedure_provenance.as_ref().is_some_and(|provenance| {
+            matches!(
+                &provenance.path_termination,
+                PathTermination::Other(label) if matches!(label.trim(), "HF" | "HM")
+            )
+        })
+    });
+    SegmentTraversalPolicy {
+        common_resume_target: resumed_common_target(
+            previous_display_path,
+            previous_was_hold_like,
+            segment_records,
+        ),
+        skip_through_index: reconciliation_resume_skip_through_index(
+            previous_display_path,
+            previous_leg_to,
+            segment_records,
+            fix_records,
+        ),
+    }
 }
 
 fn project_terminal_state_through_intervening_climbs(

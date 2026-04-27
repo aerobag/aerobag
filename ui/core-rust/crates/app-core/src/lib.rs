@@ -2254,30 +2254,13 @@ fn common_resume_yields_current_feeder_cf(
     role != ProcedureSegmentRole::Common
         && pair[1].path_termination.trim() == "CF"
         && next_segment_records.is_some_and(|next_records| {
-            let projected_previous_display_path = if pair[0].path_termination.trim() == "PI" {
-                display_path_for_single_procedure_step(
-                    leg_records,
-                    pair[0],
-                    previous.terminal_position,
-                    previous.terminal_course,
-                )
-            } else {
-                previous_display_path.cloned()
-            };
-            let projected_terminal_position = projected_previous_display_path
-                .as_ref()
-                .and_then(previous_display_path_terminal_position);
-            let projected_terminal_course = projected_previous_display_path
-                .as_ref()
-                .and_then(final_course_of_display_path);
-            let projected_terminal_anchor = projected_previous_display_path
-                .as_ref()
-                .and_then(|_| pair[0].nav_ref.clone());
+            let projection =
+                resume_projection_context(pair, leg_records, previous_display_path, previous);
             resumed_common_target_supersedes_feeder_cf(
-                projected_previous_display_path.as_ref(),
-                projected_terminal_position,
-                projected_terminal_course,
-                projected_terminal_anchor,
+                projection.display_path.as_ref(),
+                projection.terminal_position,
+                projection.terminal_course,
+                projection.terminal_anchor,
                 pair[1],
                 next_records,
             )
@@ -2327,6 +2310,13 @@ struct PreviousWindowContext {
     previous_leg_consumed_same_pi: bool,
 }
 
+struct ResumeProjectionContext {
+    display_path: Option<LegDisplayPath>,
+    terminal_position: Option<LatLon>,
+    terminal_course: Option<f64>,
+    terminal_anchor: Option<NavRef>,
+}
+
 fn previous_window_context(
     previous_display_path: Option<&LegDisplayPath>,
     resolved_last: Option<&ResolvedLeg>,
@@ -2352,6 +2342,35 @@ fn previous_window_context(
                     )
             })
         }),
+    }
+}
+
+fn resume_projection_context(
+    pair: [&ProcedureLegMaterializationRecord; 2],
+    leg_records: &[ProcedureLegMaterializationRecord],
+    previous_display_path: Option<&LegDisplayPath>,
+    previous: PreviousWindowContext,
+) -> ResumeProjectionContext {
+    let display_path = if pair[0].path_termination.trim() == "PI" {
+        display_path_for_single_procedure_step(
+            leg_records,
+            pair[0],
+            previous.terminal_position,
+            previous.terminal_course,
+        )
+    } else {
+        previous_display_path.cloned()
+    };
+    let terminal_position = display_path
+        .as_ref()
+        .and_then(previous_display_path_terminal_position);
+    let terminal_course = display_path.as_ref().and_then(final_course_of_display_path);
+    let terminal_anchor = display_path.as_ref().and_then(|_| pair[0].nav_ref.clone());
+    ResumeProjectionContext {
+        display_path,
+        terminal_position,
+        terminal_course,
+        terminal_anchor,
     }
 }
 

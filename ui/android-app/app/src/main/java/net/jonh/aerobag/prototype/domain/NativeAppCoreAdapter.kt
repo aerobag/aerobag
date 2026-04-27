@@ -1807,25 +1807,10 @@ private fun WireFlightPlanDisplayRowKind.toUi() = when (this) {
 }
 
 private fun WireFlightPlanRowActionUiView.toUi() = FlightPlanRowActionUiView(
-    id = id.toUi(),
+    id = id,
+    label = label,
     enabled = enabled,
 )
-
-private fun WireFlightPlanRowActionId.toUi() = when (this) {
-    WireFlightPlanRowActionId.ActivateLeg -> FlightPlanRowActionId.ActivateLeg
-    WireFlightPlanRowActionId.Remove -> FlightPlanRowActionId.Remove
-    WireFlightPlanRowActionId.RemoveAllAbove -> FlightPlanRowActionId.RemoveAllAbove
-    WireFlightPlanRowActionId.InsertBefore -> FlightPlanRowActionId.InsertBefore
-    WireFlightPlanRowActionId.InsertAfter -> FlightPlanRowActionId.InsertAfter
-    WireFlightPlanRowActionId.Reorder -> FlightPlanRowActionId.Reorder
-    WireFlightPlanRowActionId.WaypointInfo -> FlightPlanRowActionId.WaypointInfo
-    WireFlightPlanRowActionId.AddAirway -> FlightPlanRowActionId.AddAirway
-    WireFlightPlanRowActionId.SelectProcedure -> FlightPlanRowActionId.SelectProcedure
-    WireFlightPlanRowActionId.Plates -> FlightPlanRowActionId.Plates
-    WireFlightPlanRowActionId.ChangeAirway -> FlightPlanRowActionId.ChangeAirway
-    WireFlightPlanRowActionId.RemoveAirway -> FlightPlanRowActionId.RemoveAirway
-    WireFlightPlanRowActionId.RemoveProcedure -> FlightPlanRowActionId.RemoveProcedure
-}
 
 private fun WireFlightPlanUiMutation.toUi() = FlightPlanUiMutation(
     plan = plan.toUiFlightPlan(),

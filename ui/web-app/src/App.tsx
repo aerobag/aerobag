@@ -4154,10 +4154,10 @@ function FlightPlanPage(props: {
       setAirportInsert(null);
     };
 
-    return (selectedRow.actions as Array<{ id: string; enabled: boolean }>).map((action) => {
+    return (selectedRow.actions as Array<{ id: string; label: string; enabled: boolean }>).map((action) => {
       return {
         id: action.id,
-        label: flightPlanActionLabel(action.id),
+        label: action.label,
         enabled: action.enabled,
         onSelect: () => {
           if (!action.enabled) {
@@ -6066,42 +6066,6 @@ function resolveAirportId(
 
 function plateFolderColor(category: PlateFolderCategory) {
   return plateFolderTheme.label_colors[category as keyof typeof plateFolderTheme.label_colors] ?? plateFolderTheme.label_colors.other ?? "#52656d";
-}
-
-function flightPlanActionLabel(actionId: string): string {
-  switch (actionId) {
-    case "activate_leg":
-      return "Activate Leg";
-    case "remove":
-      return "Remove";
-    case "remove_all_above":
-      return "Remove to Here";
-    case "insert_before":
-      return "Insert Before";
-    case "insert_after":
-      return "Insert After";
-    case "reorder":
-      return "Reorder";
-    case "waypoint_info":
-      return "Waypoint Info";
-    case "add_airway":
-      return "Add Airway";
-    case "select_procedure":
-      return "Select Procedure";
-    case "charts":
-    case "plates":
-      return "Plates";
-    case "show_plate":
-      return "Show Plate";
-    case "change_airway":
-      return "Change Airway";
-    case "remove_airway":
-      return "Remove Airway";
-    case "remove_procedure":
-      return "Remove Procedure";
-    default:
-      return actionId;
-  }
 }
 
 function resolveChartId(

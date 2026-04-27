@@ -149,7 +149,6 @@ import net.jonh.aerobag.prototype.domain.DerivedChartPageState
 import net.jonh.aerobag.prototype.domain.FlightPlanUiMutation
 import net.jonh.aerobag.prototype.domain.FlightPlanDisplayRowKind
 import net.jonh.aerobag.prototype.domain.FlightPlanDisplayRowUiView
-import net.jonh.aerobag.prototype.domain.FlightPlanRowActionId
 import net.jonh.aerobag.prototype.domain.FlightPlanRowActionUiView
 import net.jonh.aerobag.prototype.domain.FlightPlanRouteSegment
 import net.jonh.aerobag.prototype.domain.FlightPlanUiState
@@ -4894,7 +4893,7 @@ private fun FlightPlanPage(
                 ) {
                     selectedRow.actions.forEach { action ->
                         MenuPanelRow(
-                            label = flightPlanActionLabel(action.id),
+                            label = action.label,
                             active = false,
                             enabled = action.enabled,
                             onSelect = {
@@ -4902,20 +4901,20 @@ private fun FlightPlanPage(
                                     return@MenuPanelRow
                                 }
                                 when (action.id) {
-                                    FlightPlanRowActionId.ActivateLeg -> {
+                                    "activate_leg" -> {
                                         selectedRow.legIndex?.let {
                                             onApplyMutation(appCore.activateLegUi(samplePlan, it))
                                         }
                                         closePanels()
                                     }
-                                    FlightPlanRowActionId.Remove,
-                                    FlightPlanRowActionId.RemoveAllAbove,
-                                    FlightPlanRowActionId.RemoveAirway,
-                                    FlightPlanRowActionId.RemoveProcedure,
+                                    "remove",
+                                    "remove_all_above",
+                                    "remove_airway",
+                                    "remove_procedure",
                                     -> {
                                         selectedRow.componentIndex?.let {
                                             onApplyMutation(
-                                                if (action.id == FlightPlanRowActionId.RemoveAllAbove) {
+                                                if (action.id == "remove_all_above") {
                                                     appCore.removeAllAboveUi(samplePlan, it)
                                                 } else {
                                                     appCore.deleteComponentUi(samplePlan, it)
@@ -4924,24 +4923,24 @@ private fun FlightPlanPage(
                                         }
                                         closePanels()
                                     }
-                                    FlightPlanRowActionId.Reorder -> {
+                                    "reorder" -> {
                                         reorderOpen = true
                                     }
-                                    FlightPlanRowActionId.InsertBefore,
-                                    FlightPlanRowActionId.InsertAfter,
+                                    "insert_before",
+                                    "insert_after",
                                     -> {
                                         val componentIndex = selectedRow.componentIndex ?: return@MenuPanelRow
                                         airportInsert =
                                             AndroidAirportInsertState(
                                                 componentIndex = componentIndex,
-                                                before = action.id == FlightPlanRowActionId.InsertBefore,
+                                                before = action.id == "insert_before",
                                                 airportId = "",
                                                 error = null,
                                                 loading = false,
                                                 suggestions = emptyList(),
                                             )
                                     }
-                                    FlightPlanRowActionId.AddAirway -> {
+                                    "add_airway" -> {
                                         airwayPicker =
                                             AndroidAirwayPickerState(
                                                 loading = true,
@@ -4965,7 +4964,7 @@ private fun FlightPlanPage(
                                             airwayPicker = airwayPicker?.copy(loading = false, error = error.message ?: error.toString())
                                         }
                                     }
-                                    FlightPlanRowActionId.ChangeAirway -> {
+                                    "change_airway" -> {
                                         val componentIndex = selectedRow.componentIndex ?: return@MenuPanelRow
                                         airwayPicker =
                                             AndroidAirwayPickerState(
@@ -4990,7 +4989,7 @@ private fun FlightPlanPage(
                                             airwayPicker = airwayPicker?.copy(loading = false, error = error.message ?: error.toString())
                                         }
                                     }
-                                    FlightPlanRowActionId.SelectProcedure -> {
+                                    "select_procedure" -> {
                                         val airportId = selectedRow.chartAirportId ?: return@MenuPanelRow
                                         val componentIndex = selectedRow.componentIndex ?: return@MenuPanelRow
                                         procedurePicker =
@@ -5013,12 +5012,12 @@ private fun FlightPlanPage(
                                             procedurePicker = procedurePicker?.copy(loading = false, error = error.message ?: error.toString())
                                         }
                                     }
-                                    FlightPlanRowActionId.Plates -> {
+                                    "plates" -> {
                                         onOpenCharts(selectedRow.chartAirportId)
                                         closePanels()
                                     }
-                                    FlightPlanRowActionId.WaypointInfo,
-                                    -> {}
+                                    "waypoint_info" -> {}
+                                    else -> Unit
                                 }
                             }
                         )
@@ -6461,22 +6460,6 @@ private fun selectionKeyForDisplayRow(row: FlightPlanDisplayRowUiView, index: In
         FlightPlanDisplayRowKind.Discontinuity ->
             "disc:${row.componentKind?.name ?: "row"}:$index"
     }
-
-private fun flightPlanActionLabel(actionId: FlightPlanRowActionId): String = when (actionId) {
-    FlightPlanRowActionId.ActivateLeg -> "Activate Leg"
-    FlightPlanRowActionId.Remove -> "Remove"
-    FlightPlanRowActionId.RemoveAllAbove -> "Remove All Above"
-    FlightPlanRowActionId.InsertBefore -> "Insert Before"
-    FlightPlanRowActionId.InsertAfter -> "Insert After"
-    FlightPlanRowActionId.Reorder -> "Reorder"
-    FlightPlanRowActionId.WaypointInfo -> "Waypoint Info"
-    FlightPlanRowActionId.AddAirway -> "Add Airway"
-    FlightPlanRowActionId.SelectProcedure -> "Select Procedure"
-    FlightPlanRowActionId.Plates -> "Plates"
-    FlightPlanRowActionId.ChangeAirway -> "Change Airway"
-    FlightPlanRowActionId.RemoveAirway -> "Remove Airway"
-    FlightPlanRowActionId.RemoveProcedure -> "Remove Procedure"
-}
 
 private fun buildFlightPlanDisplayBlocks(rows: List<FlightPlanDisplayRow>): List<FlightPlanDisplayBlock> {
     val blocks = mutableListOf<FlightPlanDisplayBlock>()

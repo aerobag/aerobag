@@ -323,6 +323,7 @@ pub enum FlightPlanRowActionId {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlightPlanRowActionUiView {
     pub id: FlightPlanRowActionId,
+    pub label: String,
     pub enabled: bool,
 }
 
@@ -1359,7 +1360,30 @@ fn waypoint_or_discontinuity_actions(
 }
 
 fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView {
-    FlightPlanRowActionUiView { id, enabled }
+    FlightPlanRowActionUiView {
+        label: action_label(&id).to_string(),
+        id,
+        enabled,
+    }
+}
+
+fn action_label(id: &FlightPlanRowActionId) -> &'static str {
+    match id {
+        FlightPlanRowActionId::ActivateLeg => "Activate Leg",
+        FlightPlanRowActionId::Remove => "Remove",
+        FlightPlanRowActionId::RemoveAllAbove => "Remove All Above",
+        FlightPlanRowActionId::InsertBefore => "Insert Before",
+        FlightPlanRowActionId::InsertAfter => "Insert After",
+        FlightPlanRowActionId::Reorder => "Reorder",
+        FlightPlanRowActionId::WaypointInfo => "Waypoint Info",
+        FlightPlanRowActionId::AddAirway => "Add Airway",
+        FlightPlanRowActionId::SelectProcedure => "Select Procedure",
+        FlightPlanRowActionId::Plates => "Plates",
+        FlightPlanRowActionId::ShowPlate => "Show Plate",
+        FlightPlanRowActionId::ChangeAirway => "Change Airway",
+        FlightPlanRowActionId::RemoveAirway => "Remove Airway",
+        FlightPlanRowActionId::RemoveProcedure => "Remove Procedure",
+    }
 }
 
 fn component_waypoint_nav_ref(component: &RouteComponentUiView) -> Option<NavRef> {

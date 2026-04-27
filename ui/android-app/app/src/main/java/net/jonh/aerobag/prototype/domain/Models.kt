@@ -373,24 +373,9 @@ enum class FlightPlanDisplayRowKind {
     Discontinuity,
 }
 
-enum class FlightPlanRowActionId {
-    ActivateLeg,
-    Remove,
-    RemoveAllAbove,
-    InsertBefore,
-    InsertAfter,
-    Reorder,
-    WaypointInfo,
-    AddAirway,
-    SelectProcedure,
-    Plates,
-    ChangeAirway,
-    RemoveAirway,
-    RemoveProcedure,
-}
-
 data class FlightPlanRowActionUiView(
-    val id: FlightPlanRowActionId,
+    val id: String,
+    val label: String,
     val enabled: Boolean,
 )
 

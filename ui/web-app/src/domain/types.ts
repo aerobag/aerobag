@@ -360,24 +360,9 @@ export type FlightPlanUiState = {
 
 export type FlightPlanDisplayRowKind = "waypoint" | "group" | "discontinuity";
 
-export type FlightPlanRowActionId =
-  | "activate_leg"
-  | "remove"
-  | "remove_all_above"
-  | "insert_before"
-  | "insert_after"
-  | "reorder"
-  | "waypoint_info"
-  | "add_airway"
-  | "select_procedure"
-  | "plates"
-  | "show_plate"
-  | "change_airway"
-  | "remove_airway"
-  | "remove_procedure";
-
 export type FlightPlanRowActionUiView = {
-  id: FlightPlanRowActionId;
+  id: string;
+  label: string;
   enabled: boolean;
 };
 

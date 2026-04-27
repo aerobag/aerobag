@@ -1057,50 +1057,9 @@ enum class WireFlightPlanDisplayRowKind {
 }
 
 @Serializable
-enum class WireFlightPlanRowActionId {
-    @SerialName("activate_leg")
-    ActivateLeg,
-
-    @SerialName("remove")
-    Remove,
-
-    @SerialName("remove_all_above")
-    RemoveAllAbove,
-
-    @SerialName("insert_before")
-    InsertBefore,
-
-    @SerialName("insert_after")
-    InsertAfter,
-
-    @SerialName("reorder")
-    Reorder,
-
-    @SerialName("waypoint_info")
-    WaypointInfo,
-
-    @SerialName("add_airway")
-    AddAirway,
-
-    @SerialName("select_procedure")
-    SelectProcedure,
-
-    @SerialName("plates")
-    Plates,
-
-    @SerialName("change_airway")
-    ChangeAirway,
-
-    @SerialName("remove_airway")
-    RemoveAirway,
-
-    @SerialName("remove_procedure")
-    RemoveProcedure,
-}
-
-@Serializable
 data class WireFlightPlanRowActionUiView(
-    val id: WireFlightPlanRowActionId,
+    val id: String,
+    val label: String,
     val enabled: Boolean,
 )
 

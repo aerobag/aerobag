@@ -100,6 +100,10 @@ pub use planning::{
     ProcedureTurnTerminalState, CommonSegmentTerminalState, CodedFixSatisfaction,
     basic_terminal_state, direct_to_fix_with_course_continuation_requirement,
     yieldable_course_to_fix_requirement, reentry_to_anchor_requirement,
+    resume_probe_terminal_state, terminal_state_with_leg_characteristics,
+    at_fix_requirement, established_on_course_requirement,
+    intercept_course_requirement, resume_common_segment_requirement,
+    enter_hold_requirement, start_requirement_from_leg_characteristics,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use procedure_geometry::{
@@ -2123,116 +2127,30 @@ fn terminal_state_for_resolved_leg(leg: &ResolvedLeg) -> Option<TerminalState> {
     let terminal_position = previous_display_path_terminal_position(path)?;
     let drawn_terminal_course_deg = drawn_final_course_of_display_path(path);
     let logical_terminal_course_deg = final_course_of_display_path(path);
-    let path_termination = match &provenance.path_termination {
-        PathTermination::InitialFix => "IF",
-        PathTermination::TrackToFix => "TF",
-        PathTermination::CourseToFix => "CF",
-        PathTermination::DirectToFix => "DF",
-        PathTermination::HeadingToManual => "VM",
-        PathTermination::HeadingToAltitude => "VA",
-        PathTermination::Other(code) => code.trim(),
-    };
-    Some(TerminalState {
+    Some(terminal_state_with_leg_characteristics(
         terminal_position,
         drawn_terminal_course_deg,
         logical_terminal_course_deg,
-        terminal_anchor: Some(leg.to.clone()),
-        established_course_deg: logical_terminal_course_deg,
-        incoming_course_to_anchor_deg: drawn_terminal_course_deg,
-        outgoing_course_from_anchor_deg: logical_terminal_course_deg,
-        hold_state: if matches!(path_termination, "HF" | "HM") {
-            HoldTerminalState::HoldLeg
-        } else {
-            HoldTerminalState::None
-        },
-        procedure_turn_state: if path_termination == "PI" {
-            ProcedureTurnTerminalState::ProcedureTurnLeg
-        } else {
-            ProcedureTurnTerminalState::None
-        },
-        common_segment_state: if provenance.role == ProcedureSegmentRole::Common {
-            CommonSegmentTerminalState::CommonSegment
-        } else {
-            CommonSegmentTerminalState::NotCommon
-        },
-        coded_fix_satisfaction: CodedFixSatisfaction::AtAnchor,
-    })
+        Some(leg.to.clone()),
+        provenance.role.clone(),
+        &provenance.path_termination,
+    ))
 }
 
 #[cfg(test)]
 fn start_requirement_for_resolved_leg(leg: &ResolvedLeg) -> Option<StartRequirement> {
     let provenance = leg.procedure_provenance.as_ref()?;
-    let anchor = leg.to.clone();
-    Some(match &provenance.path_termination {
-        PathTermination::InitialFix => StartRequirement::AtFix {
-            anchor,
-            anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
-        },
-        PathTermination::TrackToFix => StartRequirement::AtFix {
-            anchor,
-            anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
-        },
-        PathTermination::CourseToFix => StartRequirement::EstablishedOnCourse {
-            course_deg: provenance
-                .display_path
-                .as_ref()
-                .and_then(final_course_of_display_path)
-                .unwrap_or(0.0),
-            anchor: Some(anchor),
-            anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
-        },
-        PathTermination::DirectToFix => StartRequirement::DirectToFix {
-            anchor,
-            anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
-            continuation_course_deg: None,
-            continuation_anchor: None,
-            continuation_anchor_position: None,
-        },
-        PathTermination::HeadingToManual | PathTermination::HeadingToAltitude => {
-            StartRequirement::EstablishedOnCourse {
-                course_deg: provenance
-                    .display_path
-                    .as_ref()
-                    .and_then(final_course_of_display_path)
-                    .unwrap_or(0.0),
-                anchor: Some(anchor),
-                anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
-            }
-        }
-        PathTermination::Other(label) if matches!(label.trim(), "HF" | "HM") => {
-            StartRequirement::EnterHold {
-                anchor,
-                inbound_course_deg: provenance
-                    .display_path
-                    .as_ref()
-                    .and_then(final_course_of_display_path),
-                anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
-            }
-        }
-        PathTermination::Other(label) if label.trim() == "PI" => {
-            StartRequirement::InterceptCourse {
-                course_deg: provenance
-                    .display_path
-                    .as_ref()
-                    .and_then(final_course_of_display_path)
-                    .unwrap_or(0.0),
-                anchor: Some(anchor),
-                anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
-            }
-        }
-        PathTermination::Other(_) => StartRequirement::ResumeCommonSegment {
-            anchor: Some(anchor),
-            course_deg: provenance
-                .display_path
-                .as_ref()
-                .and_then(final_course_of_display_path),
-            anchor_position: Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?),
-            target_anchor: Some(leg.to.clone()),
-            target_anchor_position: Some(terminal_position_for_nav_ref(
-                provenance.display_path.as_ref(),
-            )?),
-        },
-    })
+    let anchor_position = Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?);
+    let terminal_course_deg = provenance
+        .display_path
+        .as_ref()
+        .and_then(final_course_of_display_path);
+    Some(start_requirement_from_leg_characteristics(
+        &provenance.path_termination,
+        leg.to.clone(),
+        anchor_position,
+        terminal_course_deg,
+    ))
 }
 
 #[cfg(test)]
@@ -2892,30 +2810,19 @@ fn resumed_common_target<'a>(
                     .then_some(prior_course_deg)
             })
             .or(Some(current_course_deg));
-        let terminal_state = TerminalState {
-            terminal_position: current_position,
-            drawn_terminal_course_deg: Some(current_course_deg),
-            logical_terminal_course_deg: Some(current_course_deg),
-            terminal_anchor: None,
-            established_course_deg: Some(current_course_deg),
+        let terminal_state = resume_probe_terminal_state(
+            current_position,
+            current_course_deg,
             incoming_course_to_anchor_deg,
-            outgoing_course_from_anchor_deg: Some(current_course_deg),
-            hold_state: if previous_was_hold_like {
-                HoldTerminalState::HoldLeg
-            } else {
-                HoldTerminalState::None
-            },
-            procedure_turn_state: ProcedureTurnTerminalState::None,
-            common_segment_state: CommonSegmentTerminalState::NotCommon,
-            coded_fix_satisfaction: CodedFixSatisfaction::Unknown,
-        };
-        let start_requirement = StartRequirement::ResumeCommonSegment {
-            anchor: record.nav_ref.clone(),
-            course_deg: Some(course_deg),
-            anchor_position: Some(course_anchor),
-            target_anchor: record.nav_ref.clone(),
-            target_anchor_position: Some(fix),
-        };
+            previous_was_hold_like,
+        );
+        let start_requirement = resume_common_segment_requirement(
+            record.nav_ref.clone(),
+            Some(course_deg),
+            Some(course_anchor),
+            record.nav_ref.clone(),
+            Some(fix),
+        );
         if matches!(
             reconcile_handoff(&terminal_state, &start_requirement),
             HandoffDecision::ResumeAtAnchor | HandoffDecision::ResumeThroughAnchorKink

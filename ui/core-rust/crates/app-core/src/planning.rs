@@ -412,6 +412,100 @@ pub fn basic_terminal_state(
     }
 }
 
+pub fn resume_probe_terminal_state(
+    terminal_position: LatLon,
+    terminal_course_deg: f64,
+    incoming_course_to_anchor_deg: Option<f64>,
+    hold_like: bool,
+) -> TerminalState {
+    TerminalState {
+        terminal_position,
+        drawn_terminal_course_deg: Some(terminal_course_deg),
+        logical_terminal_course_deg: Some(terminal_course_deg),
+        terminal_anchor: None,
+        established_course_deg: Some(terminal_course_deg),
+        incoming_course_to_anchor_deg,
+        outgoing_course_from_anchor_deg: Some(terminal_course_deg),
+        hold_state: if hold_like {
+            HoldTerminalState::HoldLeg
+        } else {
+            HoldTerminalState::None
+        },
+        procedure_turn_state: ProcedureTurnTerminalState::None,
+        common_segment_state: CommonSegmentTerminalState::NotCommon,
+        coded_fix_satisfaction: CodedFixSatisfaction::Unknown,
+    }
+}
+
+pub fn terminal_state_with_leg_characteristics(
+    terminal_position: LatLon,
+    drawn_terminal_course_deg: Option<f64>,
+    logical_terminal_course_deg: Option<f64>,
+    terminal_anchor: Option<NavRef>,
+    role: ProcedureSegmentRole,
+    path_termination: &PathTermination,
+) -> TerminalState {
+    TerminalState {
+        terminal_position,
+        drawn_terminal_course_deg,
+        logical_terminal_course_deg,
+        terminal_anchor,
+        established_course_deg: logical_terminal_course_deg,
+        incoming_course_to_anchor_deg: drawn_terminal_course_deg,
+        outgoing_course_from_anchor_deg: logical_terminal_course_deg,
+        hold_state: if matches!(path_termination, PathTermination::Other(code) if matches!(code.trim(), "HF" | "HM")) {
+            HoldTerminalState::HoldLeg
+        } else {
+            HoldTerminalState::None
+        },
+        procedure_turn_state: if matches!(path_termination, PathTermination::Other(code) if code.trim() == "PI") {
+            ProcedureTurnTerminalState::ProcedureTurnLeg
+        } else {
+            ProcedureTurnTerminalState::None
+        },
+        common_segment_state: if role == ProcedureSegmentRole::Common {
+            CommonSegmentTerminalState::CommonSegment
+        } else {
+            CommonSegmentTerminalState::NotCommon
+        },
+        coded_fix_satisfaction: CodedFixSatisfaction::AtAnchor,
+    }
+}
+
+pub fn at_fix_requirement(
+    anchor: NavRef,
+    anchor_position: Option<LatLon>,
+) -> StartRequirement {
+    StartRequirement::AtFix {
+        anchor,
+        anchor_position,
+    }
+}
+
+pub fn established_on_course_requirement(
+    course_deg: f64,
+    anchor: Option<NavRef>,
+    anchor_position: Option<LatLon>,
+) -> StartRequirement {
+    StartRequirement::EstablishedOnCourse {
+        course_deg,
+        anchor,
+        anchor_position,
+    }
+}
+
+pub fn intercept_course_requirement(
+    course_deg: f64,
+    anchor: Option<NavRef>,
+    anchor_position: Option<LatLon>,
+) -> StartRequirement {
+    StartRequirement::InterceptCourse {
+        course_deg,
+        anchor,
+        anchor_position,
+    }
+}
+
 pub fn direct_to_fix_with_course_continuation_requirement(
     anchor: NavRef,
     anchor_position: Option<LatLon>,
@@ -428,6 +522,22 @@ pub fn direct_to_fix_with_course_continuation_requirement(
     }
 }
 
+pub fn resume_common_segment_requirement(
+    anchor: Option<NavRef>,
+    course_deg: Option<f64>,
+    anchor_position: Option<LatLon>,
+    target_anchor: Option<NavRef>,
+    target_anchor_position: Option<LatLon>,
+) -> StartRequirement {
+    StartRequirement::ResumeCommonSegment {
+        anchor,
+        course_deg,
+        anchor_position,
+        target_anchor,
+        target_anchor_position,
+    }
+}
+
 pub fn yieldable_course_to_fix_requirement(
     anchor: NavRef,
     anchor_position: Option<LatLon>,
@@ -441,6 +551,65 @@ pub fn yieldable_course_to_fix_requirement(
         continuation_course_deg,
         continuation_anchor,
         continuation_anchor_position,
+    }
+}
+
+pub fn enter_hold_requirement(
+    anchor: NavRef,
+    inbound_course_deg: Option<f64>,
+    anchor_position: Option<LatLon>,
+) -> StartRequirement {
+    StartRequirement::EnterHold {
+        anchor,
+        inbound_course_deg,
+        anchor_position,
+    }
+}
+
+pub fn start_requirement_from_leg_characteristics(
+    path_termination: &PathTermination,
+    anchor: NavRef,
+    anchor_position: Option<LatLon>,
+    terminal_course_deg: Option<f64>,
+) -> StartRequirement {
+    match path_termination {
+        PathTermination::InitialFix | PathTermination::TrackToFix => {
+            at_fix_requirement(anchor, anchor_position)
+        }
+        PathTermination::CourseToFix => established_on_course_requirement(
+            terminal_course_deg.unwrap_or(0.0),
+            Some(anchor),
+            anchor_position,
+        ),
+        PathTermination::DirectToFix => direct_to_fix_with_course_continuation_requirement(
+            anchor,
+            anchor_position,
+            None,
+            None,
+            None,
+        ),
+        PathTermination::HeadingToManual | PathTermination::HeadingToAltitude => {
+            established_on_course_requirement(
+                terminal_course_deg.unwrap_or(0.0),
+                Some(anchor),
+                anchor_position,
+            )
+        }
+        PathTermination::Other(label) if matches!(label.trim(), "HF" | "HM") => {
+            enter_hold_requirement(anchor, terminal_course_deg, anchor_position)
+        }
+        PathTermination::Other(label) if label.trim() == "PI" => intercept_course_requirement(
+            terminal_course_deg.unwrap_or(0.0),
+            Some(anchor),
+            anchor_position,
+        ),
+        PathTermination::Other(_) => resume_common_segment_requirement(
+            Some(anchor.clone()),
+            terminal_course_deg,
+            anchor_position,
+            Some(anchor),
+            anchor_position,
+        ),
     }
 }
 

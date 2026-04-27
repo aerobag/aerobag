@@ -1406,10 +1406,12 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 let trailing_plan = plan_trailing_procedure_window(
                     last_fix,
                     trailing_record,
-                    leg_records,
-                    previous_display_path.as_ref(),
-                    previous_leg_to.as_ref(),
-                    next_segment_records,
+                    TailPlanningContext {
+                        leg_records,
+                        previous_display_path: previous_display_path.as_ref(),
+                        previous_leg_to: previous_leg_to.as_ref(),
+                        next_segment_records,
+                    },
                 )?;
                 if let Some(trailing_plan) = trailing_plan {
                     let previous_to = trailing_plan.nav_ref.clone();
@@ -1433,7 +1435,15 @@ fn resolve_procedure_materialization_legs_with_provenance(
             let standalone = fix_records[0];
             if standalone.path_termination.trim() == "PI" {
                 let standalone_plan =
-                    plan_standalone_pi_window(standalone, leg_records, previous_display_path.as_ref())?;
+                    plan_standalone_pi_window(
+                        standalone,
+                        TailPlanningContext {
+                            leg_records,
+                            previous_display_path: previous_display_path.as_ref(),
+                            previous_leg_to: previous_leg_to.as_ref(),
+                            next_segment_records,
+                        },
+                    )?;
                 let Some(standalone_plan) = standalone_plan else {
                     continue;
                 };
@@ -2411,6 +2421,14 @@ struct TrailingProcedurePlan<'a> {
     display_path: Option<LegDisplayPath>,
 }
 
+#[derive(Clone, Copy)]
+struct TailPlanningContext<'a> {
+    leg_records: &'a [ProcedureLegMaterializationRecord],
+    previous_display_path: Option<&'a LegDisplayPath>,
+    previous_leg_to: Option<&'a NavRef>,
+    next_segment_records: Option<&'a [ProcedureLegMaterializationRecord]>,
+}
+
 struct ProcedureAppendSpec<'a> {
     from: NavRef,
     to: NavRef,
@@ -2672,18 +2690,19 @@ fn plan_procedure_window<'a>(
 fn plan_trailing_procedure_window<'a>(
     last_fix: &'a ProcedureLegMaterializationRecord,
     trailing_record: &'a ProcedureLegMaterializationRecord,
-    leg_records: &[ProcedureLegMaterializationRecord],
-    previous_display_path: Option<&LegDisplayPath>,
-    previous_leg_to: Option<&NavRef>,
-    next_segment_records: Option<&[ProcedureLegMaterializationRecord]>,
+    planning: TailPlanningContext<'a>,
 ) -> AppResult<Option<TrailingProcedurePlan<'a>>> {
     let common_resume_skips_trailing_cf = trailing_record.path_termination.trim() == "CF"
-        && next_segment_records.is_some_and(|next_records| {
+        && planning.next_segment_records.is_some_and(|next_records| {
             resumed_common_target_supersedes_feeder_cf(
-                previous_display_path,
-                previous_display_path.and_then(previous_display_path_terminal_position),
-                previous_display_path.and_then(final_course_of_display_path),
-                previous_leg_to.cloned(),
+                planning.previous_display_path,
+                planning
+                    .previous_display_path
+                    .and_then(previous_display_path_terminal_position),
+                planning
+                    .previous_display_path
+                    .and_then(final_course_of_display_path),
+                planning.previous_leg_to.cloned(),
                 trailing_record,
                 next_records,
             )
@@ -2695,10 +2714,12 @@ fn plan_trailing_procedure_window<'a>(
             last_fix.sequence
         ),
     })?;
-    let initial_position_override = previous_display_path.and_then(previous_display_path_terminal_position);
-    let initial_course_override = previous_display_path.and_then(final_course_of_display_path);
+    let initial_position_override = planning
+        .previous_display_path
+        .and_then(previous_display_path_terminal_position);
+    let initial_course_override = planning.previous_display_path.and_then(final_course_of_display_path);
     let display_path = if trailing_record.path_termination.trim() == "CI" {
-        next_segment_records.and_then(|next_records| {
+        planning.next_segment_records.and_then(|next_records| {
             build_trailing_course_to_intercept_display_path(
                 trailing_record,
                 initial_position_override,
@@ -2710,7 +2731,7 @@ fn plan_trailing_procedure_window<'a>(
         None
     } else if last_fix.path_termination.trim() == "PI" && trailing_record.path_termination.trim() == "CF" {
         display_path_for_procedure_leg(
-            leg_records,
+            planning.leg_records,
             trailing_record,
             trailing_record,
             None,
@@ -2719,7 +2740,7 @@ fn plan_trailing_procedure_window<'a>(
         )
     } else {
         display_path_for_procedure_leg(
-            leg_records,
+            planning.leg_records,
             last_fix,
             last_fix,
             None,
@@ -2736,8 +2757,7 @@ fn plan_trailing_procedure_window<'a>(
 
 fn plan_standalone_pi_window<'a>(
     standalone: &'a ProcedureLegMaterializationRecord,
-    leg_records: &[ProcedureLegMaterializationRecord],
-    previous_display_path: Option<&LegDisplayPath>,
+    planning: TailPlanningContext<'a>,
 ) -> AppResult<Option<TrailingProcedurePlan<'a>>> {
     let nav_ref = standalone.nav_ref.clone().ok_or_else(|| AppError {
         kind: AppErrorKind::InvalidFlightPlan,
@@ -2747,12 +2767,14 @@ fn plan_standalone_pi_window<'a>(
         ),
     })?;
     let display_path = display_path_for_procedure_leg(
-        leg_records,
+        planning.leg_records,
         standalone,
         standalone,
         None,
-        previous_display_path.and_then(previous_display_path_terminal_position),
-        previous_display_path.and_then(final_course_of_display_path),
+        planning
+            .previous_display_path
+            .and_then(previous_display_path_terminal_position),
+        planning.previous_display_path.and_then(final_course_of_display_path),
     );
     Ok(display_path.map(|display_path| TrailingProcedurePlan {
         nav_ref,

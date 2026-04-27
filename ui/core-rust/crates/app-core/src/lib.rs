@@ -1431,74 +1431,23 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 .filter(|record| record.sequence > last_fix.sequence)
                 .max_by_key(|record| record.sequence)
             {
-                let common_resume_skips_trailing_cf = trailing_record.path_termination.trim() == "CF"
-                    && next_segment_records.is_some_and(|next_records| {
-                        resumed_common_target(previous_display_path.as_ref(), false, next_records)
-                            .is_some_and(|resumed_common_target| {
-                                resumed_common_target.record.nav_ref.as_ref()
-                                    != trailing_record.nav_ref.as_ref()
-                                    && should_yield_feeder_course_to_fix_to_resumed_common_segment(
-                                        previous_display_path
-                                            .as_ref()
-                                            .and_then(previous_display_path_terminal_position),
-                                        previous_display_path
-                                            .as_ref()
-                                            .and_then(final_course_of_display_path),
-                                        previous_leg_to.clone(),
-                                        trailing_record,
-                                        resumed_common_target.record,
-                                    )
-                            })
-                    });
-                let nav_ref = last_fix
-                    .nav_ref
-                    .clone()
-                    .expect("filtered non-waypoint trailing procedure leg");
-                let initial_position_override = previous_display_path
-                    .as_ref()
-                    .and_then(previous_display_path_terminal_position);
-                let initial_course_override =
-                    previous_display_path.as_ref().and_then(final_course_of_display_path);
-                let display_path = if trailing_record.path_termination.trim() == "CI" {
-                    next_segment_records.and_then(|next_records| {
-                        build_trailing_course_to_intercept_display_path(
-                            trailing_record,
-                            initial_position_override,
-                            initial_course_override,
-                            next_records,
-                        )
-                    })
-                } else if common_resume_skips_trailing_cf {
-                    None
-                } else if last_fix.path_termination.trim() == "PI"
-                    && trailing_record.path_termination.trim() == "CF"
-                {
-                    display_path_for_procedure_leg(
-                        leg_records,
-                        trailing_record,
-                        trailing_record,
-                        None,
-                        initial_position_override,
-                        initial_course_override,
-                    )
-                } else {
-                    display_path_for_procedure_leg(
-                        leg_records,
-                        last_fix,
-                        last_fix,
-                        None,
-                        initial_position_override,
-                        initial_course_override,
-                    )
-                };
-                if display_path.is_some() {
+                let trailing_plan = plan_trailing_procedure_window(
+                    last_fix,
+                    trailing_record,
+                    leg_records,
+                    previous_display_path.as_ref(),
+                    previous_leg_to.as_ref(),
+                    next_segment_records,
+                )?;
+                if let Some(trailing_plan) = trailing_plan {
+                    let display_path = trailing_plan.display_path;
                     let signatures = heading_signatures_for_leg(
                         next_heading_step_index,
                         display_path.as_ref(),
                         last_fix,
                         last_fix,
-                        trailing_record.path_termination.trim(),
-                        trailing_record.nav_position,
+                        trailing_plan.provenance_record.path_termination.trim(),
+                        trailing_plan.provenance_record.nav_position,
                     );
                     next_heading_step_index += signatures.len();
                     heading_checks.extend(signatures);
@@ -1506,24 +1455,24 @@ fn resolve_procedure_materialization_legs_with_provenance(
                         id: format!(
                             "procedure-{}-{}-{}",
                             procedure_id.trim(),
-                            trailing_record.key.route_type.trim(),
-                            trailing_record.sequence
+                            trailing_plan.provenance_record.key.route_type.trim(),
+                            trailing_plan.provenance_record.sequence
                         ),
-                        from: nav_ref.clone(),
-                        to: nav_ref.clone(),
+                        from: trailing_plan.nav_ref.clone(),
+                        to: trailing_plan.nav_ref.clone(),
                         source: ResolvedLegSource::RouteComponent { component_index },
                         procedure_provenance: Some(ProcedureLegProvenance {
                             airport_id: airport_id.trim().to_string(),
                             procedure_id: procedure_id.trim().to_string(),
                             kind: kind.clone(),
                             role: role.clone(),
-                            path_termination: trailing_record.path_termination_kind.clone(),
-                            leg_sequence: trailing_record.sequence,
+                            path_termination: trailing_plan.provenance_record.path_termination_kind.clone(),
+                            leg_sequence: trailing_plan.provenance_record.sequence,
                             display_path: display_path.clone(),
                         }),
                     });
                     previous_display_path = display_path;
-                    previous_leg_to = Some(nav_ref);
+                    previous_leg_to = Some(trailing_plan.nav_ref);
                 }
             }
         }
@@ -1531,34 +1480,19 @@ fn resolve_procedure_materialization_legs_with_provenance(
         if fix_records.len() == 1 {
             let standalone = fix_records[0];
             if standalone.path_termination.trim() == "PI" {
-                let nav_ref = standalone.nav_ref.clone().ok_or_else(|| AppError {
-                    kind: AppErrorKind::InvalidFlightPlan,
-                    message: format!(
-                        "procedure {} standalone PI leg materialization encountered missing nav_ref at sequence {}",
-                        procedure_id.trim(),
-                        standalone.sequence
-                    ),
-                })?;
-                let display_path = display_path_for_procedure_leg(
-                    leg_records,
-                    standalone,
-                    standalone,
-                    None,
-                    previous_display_path
-                        .as_ref()
-                        .and_then(previous_display_path_terminal_position),
-                    previous_display_path.as_ref().and_then(final_course_of_display_path),
-                );
-                if display_path.is_none() {
+                let standalone_plan =
+                    plan_standalone_pi_window(standalone, leg_records, previous_display_path.as_ref())?;
+                let Some(standalone_plan) = standalone_plan else {
                     continue;
-                }
+                };
+                let display_path = standalone_plan.display_path;
                 let signatures = heading_signatures_for_leg(
                     next_heading_step_index,
                     display_path.as_ref(),
                     standalone,
                     standalone,
-                    standalone.path_termination.trim(),
-                    standalone.nav_position,
+                    standalone_plan.provenance_record.path_termination.trim(),
+                    standalone_plan.provenance_record.nav_position,
                 );
                 next_heading_step_index += signatures.len();
                 heading_checks.extend(signatures);
@@ -1566,24 +1500,24 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     id: format!(
                         "procedure-{}-{}-{}",
                         procedure_id.trim(),
-                        standalone.key.route_type.trim(),
-                        standalone.sequence
+                        standalone_plan.provenance_record.key.route_type.trim(),
+                        standalone_plan.provenance_record.sequence
                     ),
-                    from: nav_ref.clone(),
-                    to: nav_ref.clone(),
+                    from: standalone_plan.nav_ref.clone(),
+                    to: standalone_plan.nav_ref.clone(),
                     source: ResolvedLegSource::RouteComponent { component_index },
                     procedure_provenance: Some(ProcedureLegProvenance {
                         airport_id: airport_id.trim().to_string(),
                         procedure_id: procedure_id.trim().to_string(),
                         kind: kind.clone(),
                         role: role.clone(),
-                        path_termination: standalone.path_termination_kind.clone(),
-                        leg_sequence: standalone.sequence,
+                        path_termination: standalone_plan.provenance_record.path_termination_kind.clone(),
+                        leg_sequence: standalone_plan.provenance_record.sequence,
                         display_path: display_path.clone(),
                     }),
                 });
                 previous_display_path = display_path;
-                previous_leg_to = Some(nav_ref);
+                previous_leg_to = Some(standalone_plan.nav_ref);
             }
         }
     }
@@ -2568,6 +2502,12 @@ struct ProcedureWindowPlan<'a> {
     continuation: ProcedureWindowContinuation<'a>,
 }
 
+struct TrailingProcedurePlan<'a> {
+    nav_ref: NavRef,
+    provenance_record: &'a ProcedureLegMaterializationRecord,
+    display_path: Option<LegDisplayPath>,
+}
+
 fn resolve_procedure_window<'a>(
     current_window_index: usize,
     pair: [&'a ProcedureLegMaterializationRecord; 2],
@@ -2788,6 +2728,102 @@ fn plan_procedure_window<'a>(
         to,
         resolution,
         continuation,
+    }))
+}
+
+fn plan_trailing_procedure_window<'a>(
+    last_fix: &'a ProcedureLegMaterializationRecord,
+    trailing_record: &'a ProcedureLegMaterializationRecord,
+    leg_records: &[ProcedureLegMaterializationRecord],
+    previous_display_path: Option<&LegDisplayPath>,
+    previous_leg_to: Option<&NavRef>,
+    next_segment_records: Option<&[ProcedureLegMaterializationRecord]>,
+) -> AppResult<Option<TrailingProcedurePlan<'a>>> {
+    let common_resume_skips_trailing_cf = trailing_record.path_termination.trim() == "CF"
+        && next_segment_records.is_some_and(|next_records| {
+            resumed_common_target(previous_display_path, false, next_records).is_some_and(
+                |resumed_common_target| {
+                    resumed_common_target.record.nav_ref.as_ref() != trailing_record.nav_ref.as_ref()
+                        && should_yield_feeder_course_to_fix_to_resumed_common_segment(
+                            previous_display_path.and_then(previous_display_path_terminal_position),
+                            previous_display_path.and_then(final_course_of_display_path),
+                            previous_leg_to.cloned(),
+                            trailing_record,
+                            resumed_common_target.record,
+                        )
+                },
+            )
+        });
+    let nav_ref = last_fix.nav_ref.clone().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: format!(
+            "trailing procedure leg materialization encountered missing nav_ref at sequence {}",
+            last_fix.sequence
+        ),
+    })?;
+    let initial_position_override = previous_display_path.and_then(previous_display_path_terminal_position);
+    let initial_course_override = previous_display_path.and_then(final_course_of_display_path);
+    let display_path = if trailing_record.path_termination.trim() == "CI" {
+        next_segment_records.and_then(|next_records| {
+            build_trailing_course_to_intercept_display_path(
+                trailing_record,
+                initial_position_override,
+                initial_course_override,
+                next_records,
+            )
+        })
+    } else if common_resume_skips_trailing_cf {
+        None
+    } else if last_fix.path_termination.trim() == "PI" && trailing_record.path_termination.trim() == "CF" {
+        display_path_for_procedure_leg(
+            leg_records,
+            trailing_record,
+            trailing_record,
+            None,
+            initial_position_override,
+            initial_course_override,
+        )
+    } else {
+        display_path_for_procedure_leg(
+            leg_records,
+            last_fix,
+            last_fix,
+            None,
+            initial_position_override,
+            initial_course_override,
+        )
+    };
+    Ok(Some(TrailingProcedurePlan {
+        nav_ref,
+        provenance_record: trailing_record,
+        display_path,
+    }))
+}
+
+fn plan_standalone_pi_window<'a>(
+    standalone: &'a ProcedureLegMaterializationRecord,
+    leg_records: &[ProcedureLegMaterializationRecord],
+    previous_display_path: Option<&LegDisplayPath>,
+) -> AppResult<Option<TrailingProcedurePlan<'a>>> {
+    let nav_ref = standalone.nav_ref.clone().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: format!(
+            "standalone PI leg materialization encountered missing nav_ref at sequence {}",
+            standalone.sequence
+        ),
+    })?;
+    let display_path = display_path_for_procedure_leg(
+        leg_records,
+        standalone,
+        standalone,
+        None,
+        previous_display_path.and_then(previous_display_path_terminal_position),
+        previous_display_path.and_then(final_course_of_display_path),
+    );
+    Ok(display_path.map(|display_path| TrailingProcedurePlan {
+        nav_ref,
+        provenance_record: standalone,
+        display_path: Some(display_path),
     }))
 }
 

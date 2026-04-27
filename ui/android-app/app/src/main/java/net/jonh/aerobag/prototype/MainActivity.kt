@@ -9,6 +9,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
+import androidx.annotation.DrawableRes
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -21,6 +22,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
@@ -86,10 +88,12 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.toArgb
@@ -116,6 +120,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -482,6 +488,7 @@ private data class PageTrayOption(
     val page: AppPage,
     val label: String,
     val launcherLabel: String,
+    @DrawableRes val iconResId: Int? = null,
 )
 
 private data class OfflinePackageDimension(
@@ -809,6 +816,7 @@ private data class MenuDockOption(
     val active: Boolean = false,
     val enabled: Boolean = true,
     val accentColor: Color? = null,
+    @DrawableRes val iconResId: Int? = null,
     val onSelect: () -> Unit,
 )
 
@@ -819,8 +827,8 @@ private enum class MenuDockStyle(
 ) {
     Compact(
         buttonWidth = ThumbSize,
-        trayWidth = ThumbSize * 2.4f,
-        launcherMaxLines = 1,
+        trayWidth = ThumbSize * 2.9f,
+        launcherMaxLines = 2,
     ),
     PlateAirport(
         buttonWidth = ThumbSize,
@@ -835,10 +843,10 @@ private enum class MenuDockStyle(
 }
 
 private val PageOptions = listOf(
-    PageTrayOption(AppPage.Map, "CHART", "CHT"),
-    PageTrayOption(AppPage.Charts, "PLATE", "PLT"),
-    PageTrayOption(AppPage.Plan, "PLAN", "PLN"),
-    PageTrayOption(AppPage.Settings, "SETTINGS", "SET"),
+    PageTrayOption(AppPage.Map, "CHART", "CHART", R.drawable.page_chart_icon),
+    PageTrayOption(AppPage.Charts, "PLATE", "PLATE", R.drawable.page_plate_icon),
+    PageTrayOption(AppPage.Plan, "PLAN", "PLAN", R.drawable.page_plan1_icon),
+    PageTrayOption(AppPage.Settings, "SETTINGS", "STGS"),
 )
 
 private val OfflineProductOptions = listOf(
@@ -868,6 +876,7 @@ private data class ChartTrayOption(
     val label: String,
     val launcherLabel: String,
     val available: Boolean,
+    @DrawableRes val iconResId: Int? = null,
     val select: (() -> Unit)?,
 )
 
@@ -903,6 +912,15 @@ private fun mergeRecentAirportIds(
         }
     }
     return orderedIds
+}
+
+@DrawableRes
+private fun chartFamilyIconResId(chartFamily: MapChartFamily): Int = when (chartFamily) {
+    MapChartFamily.Sec -> R.drawable.sectional_icon
+    MapChartFamily.Tac -> R.drawable.tac_icon
+    MapChartFamily.EnrL -> R.drawable.ifr_l_icon
+    MapChartFamily.EnrH -> R.drawable.ifr_h_icon
+    MapChartFamily.ShadedRelief -> R.drawable.shaded_relief_icon
 }
 
 private fun moveAirportToFront(
@@ -1929,11 +1947,12 @@ private fun SettingsPage(
         ) {
             MenuDock(
                 launcherLabel = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: "STGS",
+                launcherIconResId = PageOptions.firstOrNull { it.page == page }?.iconResId,
                 open = pageTrayOpen,
                 onToggle = { pageTrayOpen = !pageTrayOpen },
                 style = MenuDockStyle.Compact,
                 options = PageOptions.map { option ->
-                    MenuDockOption(option.page.name, option.label, active = option.page == page) {
+                    MenuDockOption(option.page.name, option.label, active = option.page == page, iconResId = option.iconResId) {
                         onSelectPage(option.page)
                         pageTrayOpen = false
                     }
@@ -3120,11 +3139,13 @@ private fun MapExplorerPage(
         val tacTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.Tac }
         val enrLTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.EnrL }
         val enrHTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.EnrH }
+        val shadedReliefTarget = fixture.mapViews.firstOrNull { it.mapView.chartFamily == MapChartFamily.ShadedRelief }
         listOf(
-            ChartTrayOption("sec", "SECTIONAL", "SEC", secTarget != null) { secTarget?.let { onSelectMapId(it.id) } },
-            ChartTrayOption("tac", "TAC", "TAC", tacTarget != null) { tacTarget?.let { onSelectMapId(it.id) } },
-            ChartTrayOption("enr-l", "IFR-LOW", "IFR L", enrLTarget != null) { enrLTarget?.let { onSelectMapId(it.id) } },
-            ChartTrayOption("enr-h", "IFR-HIGH", "IFR H", enrHTarget != null) { enrHTarget?.let { onSelectMapId(it.id) } },
+            ChartTrayOption("sec", "SECTIONAL", "SEC", secTarget != null, R.drawable.sectional_icon) { secTarget?.let { onSelectMapId(it.id) } },
+            ChartTrayOption("tac", "TAC", "TAC", tacTarget != null, R.drawable.tac_icon) { tacTarget?.let { onSelectMapId(it.id) } },
+            ChartTrayOption("enr-l", "IFR LOW", "IFR LOW", enrLTarget != null, R.drawable.ifr_l_icon) { enrLTarget?.let { onSelectMapId(it.id) } },
+            ChartTrayOption("enr-h", "IFR HIGH", "IFR HIGH", enrHTarget != null, R.drawable.ifr_h_icon) { enrHTarget?.let { onSelectMapId(it.id) } },
+            ChartTrayOption("shaded-relief", "SHADED RELIEF", "RELIEF", shadedReliefTarget != null, R.drawable.shaded_relief_icon) { shadedReliefTarget?.let { onSelectMapId(it.id) } },
         )
     }
     val selectedLauncher = trayOptions.firstOrNull { option ->
@@ -3133,6 +3154,7 @@ private fun MapExplorerPage(
             "tac" -> selectedMap.mapView.chartFamily == MapChartFamily.Tac
             "enr-l" -> selectedMap.mapView.chartFamily == MapChartFamily.EnrL
             "enr-h" -> selectedMap.mapView.chartFamily == MapChartFamily.EnrH
+            "shaded-relief" -> selectedMap.mapView.chartFamily == MapChartFamily.ShadedRelief
             else -> false
         }
     } ?: trayOptions.first()
@@ -4355,12 +4377,13 @@ private fun FlightPlanPage(
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(ThumbGap),
-            launcherLabel = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: "PLN",
+                launcherLabel = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: "PLAN",
+            launcherIconResId = PageOptions.firstOrNull { it.page == page }?.iconResId,
             open = pageTrayOpen,
             onToggle = { pageTrayOpen = !pageTrayOpen },
             style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
-                MenuDockOption(option.page.name, option.label, active = option.page == page) {
+                MenuDockOption(option.page.name, option.label, active = option.page == page, iconResId = option.iconResId) {
                     onSelectPage(option.page)
                     pageTrayOpen = false
                 }
@@ -5394,21 +5417,23 @@ private fun MapTopLeftControls(
         verticalAlignment = Alignment.Top,
     ) {
         MenuDock(
-            launcherLabel = PageOptions.firstOrNull { it.page == currentPage }?.launcherLabel ?: "CHT",
+            launcherLabel = PageOptions.firstOrNull { it.page == currentPage }?.launcherLabel ?: "CHART",
+            launcherIconResId = PageOptions.firstOrNull { it.page == currentPage }?.iconResId,
             open = pageTrayOpen,
             onToggle = onTogglePageTray,
             style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
-                MenuDockOption(option.page.name, option.label, active = option.page == currentPage) { onSelectPage(option.page) }
+                MenuDockOption(option.page.name, option.label, active = option.page == currentPage, iconResId = option.iconResId) { onSelectPage(option.page) }
             },
         )
         MenuDock(
             launcherLabel = selectedLabel,
+            launcherIconResId = trayOptions.firstOrNull { it.launcherLabel == selectedLabel }?.iconResId,
             open = trayOpen,
             onToggle = onToggle,
             style = MenuDockStyle.Compact,
             options = trayOptions.map { option ->
-                MenuDockOption(option.id, option.label, active = option.launcherLabel == selectedLabel, enabled = option.available) { option.select?.invoke() }
+                MenuDockOption(option.id, option.label, active = option.launcherLabel == selectedLabel, enabled = option.available, iconResId = option.iconResId) { option.select?.invoke() }
             },
         )
     }
@@ -5441,12 +5466,13 @@ private fun ChartViewerSelectors(
         verticalAlignment = Alignment.Top,
     ) {
         MenuDock(
-            launcherLabel = PageOptions.firstOrNull { it.page == currentPage }?.launcherLabel ?: "PLT",
+            launcherLabel = PageOptions.firstOrNull { it.page == currentPage }?.launcherLabel ?: "PLATE",
+            launcherIconResId = PageOptions.firstOrNull { it.page == currentPage }?.iconResId,
             open = pageTrayOpen,
             onToggle = onTogglePageTray,
             style = MenuDockStyle.Compact,
             options = PageOptions.map { option ->
-                MenuDockOption(option.page.name, option.label, active = option.page == currentPage) { onSelectPage(option.page) }
+                MenuDockOption(option.page.name, option.label, active = option.page == currentPage, iconResId = option.iconResId) { onSelectPage(option.page) }
             },
         )
 
@@ -5557,6 +5583,7 @@ private fun PlateFolderGrid(
 private fun MenuDock(
     modifier: Modifier = Modifier,
     launcherLabel: String,
+    @DrawableRes launcherIconResId: Int? = null,
     open: Boolean,
     onToggle: () -> Unit,
     style: MenuDockStyle,
@@ -5580,6 +5607,7 @@ private fun MenuDock(
     ) {
         CompactSquareButton(
             label = launcherLabel,
+            iconResId = launcherIconResId,
             maxLines = style.launcherMaxLines,
             enabled = true,
             accentColor = launcherAccentColor,
@@ -5608,6 +5636,7 @@ private fun MenuDock(
                                 active = option.active,
                                 enabled = option.enabled,
                                 accentColor = option.accentColor,
+                                iconResId = option.iconResId,
                                 width = style.trayWidth,
                                 onSelect = option.onSelect,
                             )
@@ -5649,6 +5678,7 @@ private fun MenuPanelRow(
     active: Boolean,
     enabled: Boolean,
     accentColor: Color? = null,
+    @DrawableRes iconResId: Int? = null,
     width: Dp = Dp.Unspecified,
     onSelect: () -> Unit,
 ) {
@@ -5687,14 +5717,37 @@ private fun MenuPanelRow(
                     .background(accentColor.copy(alpha = if (enabled) 1f else 0.45f)),
             )
         }
-        Text(
-            text = label,
-            modifier = Modifier.padding(horizontal = 12.dp),
-            style = MaterialTheme.typography.labelLarge,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            color = rowTextColor,
-        )
+        if (iconResId != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconFrame(
+                    iconResId = iconResId,
+                    modifier = Modifier.size(ThumbSize * 0.72f),
+                )
+                Text(
+                    text = label,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    color = rowTextColor,
+                )
+            }
+        } else {
+            Text(
+                text = label,
+                modifier = Modifier.padding(horizontal = 12.dp),
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                color = rowTextColor,
+            )
+        }
     }
 }
 
@@ -6894,6 +6947,74 @@ private fun ToolbarButton(label: String, modifier: Modifier = Modifier, onClick:
 }
 
 @Composable
+private fun IconFrame(
+    @DrawableRes iconResId: Int,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier.clip(RoundedCornerShape(ThumbRadius * 0.72f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(
+            painter = painterResource(iconResId),
+            contentDescription = null,
+            contentScale = ContentScale.FillBounds,
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
+}
+
+@Composable
+private fun OutlinedButtonLabel(
+    text: String,
+    modifier: Modifier = Modifier,
+    style: TextStyle,
+    color: Color,
+    maxLines: Int,
+    textAlign: TextAlign = TextAlign.Center,
+) {
+    val offsets = listOf(
+        IntOffset(-2, -2),
+        IntOffset(0, -2),
+        IntOffset(2, -2),
+        IntOffset(-2, 0),
+        IntOffset(2, 0),
+        IntOffset(-2, 2),
+        IntOffset(0, 2),
+        IntOffset(2, 2),
+        IntOffset(-1, -2),
+        IntOffset(1, -2),
+        IntOffset(-2, -1),
+        IntOffset(2, -1),
+        IntOffset(-2, 1),
+        IntOffset(2, 1),
+        IntOffset(-1, 2),
+        IntOffset(1, 2),
+    )
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        offsets.forEach { offset ->
+            Text(
+                text = text,
+                modifier = Modifier.offset { offset },
+                style = style,
+                maxLines = maxLines,
+                overflow = TextOverflow.Clip,
+                textAlign = textAlign,
+                color = Color.Black,
+            )
+        }
+        Text(
+            text = text,
+            style = style,
+            maxLines = maxLines,
+            overflow = TextOverflow.Clip,
+            textAlign = textAlign,
+            color = color,
+        )
+    }
+}
+
+@Composable
 private fun CompactSquareButton(
     label: String,
     modifier: Modifier = Modifier,
@@ -6903,6 +7024,7 @@ private fun CompactSquareButton(
     backgroundColor: Color? = null,
     selectedColor: Color? = null,
     accentColor: Color? = null,
+    @DrawableRes iconResId: Int? = null,
     centered: Boolean = true,
     textStartPadding: Dp = 0.dp,
     textModifier: Modifier = Modifier,
@@ -6910,68 +7032,70 @@ private fun CompactSquareButton(
     onClick: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
+    val iconShape = RoundedCornerShape(ThumbRadius)
     Surface(
-        modifier = modifier.then(
-            if (enabled) {
-                Modifier.pointerInput(onClick) {
-                    awaitEachGesture {
-                        var activePointer: PointerId? = null
-                        var moved = false
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            if (activePointer == null) {
-                                val downChange = event.changes.firstOrNull { it.pressed } ?: continue
-                                activePointer = downChange.id
-                                downChange.consume()
-                                continue
-                            }
-                            val change = event.changes.firstOrNull { it.id == activePointer } ?: break
-                            if (change.positionChanged()) {
-                                moved = true
-                            }
-                            change.consume()
-                            if (!change.pressed) {
-                                if (!moved) {
-                                    onClick()
+        modifier = modifier
+            .then(
+                if (enabled) {
+                    Modifier.pointerInput(onClick) {
+                        awaitEachGesture {
+                            var activePointer: PointerId? = null
+                            var moved = false
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (activePointer == null) {
+                                    val downChange = event.changes.firstOrNull { it.pressed } ?: continue
+                                    activePointer = downChange.id
+                                    downChange.consume()
+                                    continue
                                 }
-                                break
+                                val change = event.changes.firstOrNull { it.id == activePointer } ?: break
+                                if (change.positionChanged()) {
+                                    moved = true
+                                }
+                                change.consume()
+                                if (!change.pressed) {
+                                    if (!moved) {
+                                        onClick()
+                                    }
+                                    break
+                                }
                             }
                         }
                     }
-                }
-            } else {
-                Modifier.pointerInput(onDisabledClick) {
-                    if (onDisabledClick == null) {
-                        return@pointerInput
-                    }
-                    awaitEachGesture {
-                        var activePointer: PointerId? = null
-                        var moved = false
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            if (activePointer == null) {
-                                val downChange = event.changes.firstOrNull { it.pressed } ?: continue
-                                activePointer = downChange.id
-                                downChange.consume()
-                                continue
-                            }
-                            val change = event.changes.firstOrNull { it.id == activePointer } ?: break
-                            if (change.positionChanged()) {
-                                moved = true
-                            }
-                            change.consume()
-                            if (!change.pressed) {
-                                if (!moved) {
-                                    onDisabledClick()
+                } else {
+                    Modifier.pointerInput(onDisabledClick) {
+                        if (onDisabledClick == null) {
+                            return@pointerInput
+                        }
+                        awaitEachGesture {
+                            var activePointer: PointerId? = null
+                            var moved = false
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (activePointer == null) {
+                                    val downChange = event.changes.firstOrNull { it.pressed } ?: continue
+                                    activePointer = downChange.id
+                                    downChange.consume()
+                                    continue
                                 }
-                                break
+                                val change = event.changes.firstOrNull { it.id == activePointer } ?: break
+                                if (change.positionChanged()) {
+                                    moved = true
+                                }
+                                change.consume()
+                                if (!change.pressed) {
+                                    if (!moved) {
+                                        onDisabledClick()
+                                    }
+                                    break
+                                }
                             }
                         }
                     }
-                }
-            }
-        ),
-        shape = RoundedCornerShape(ThumbRadius),
+                },
+            ),
+        shape = iconShape,
         color = if (selected) selectedColor ?: uiTheme.controls.buttonBg.copy(alpha = 0.9f) else backgroundColor ?: uiTheme.controls.buttonBg,
         contentColor = uiTheme.controls.buttonFg,
         shadowElevation = 2.dp,
@@ -6980,6 +7104,16 @@ private fun CompactSquareButton(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = if (centered) Alignment.Center else Alignment.CenterStart,
         ) {
+            val heavyFrameThickness = if (iconResId != null) with(LocalDensity.current) { 8f.toDp() } else 0.dp
+            if (iconResId != null) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .padding(4.dp)
+                        .clip(RoundedCornerShape(ThumbRadius * 0.92f))
+                        .background(uiTheme.controls.buttonBg),
+                )
+            }
             if (accentColor != null) {
                 Box(
                     modifier = Modifier
@@ -6989,13 +7123,33 @@ private fun CompactSquareButton(
                         .background(accentColor.copy(alpha = if (enabled) 1f else 0.45f)),
                 )
             }
-            Text(
-                text = label,
-                modifier = (if (centered) Modifier else Modifier.padding(start = textStartPadding, end = 8.dp)).then(textModifier),
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = maxLines,
-                overflow = TextOverflow.Clip,
-            )
+            if (iconResId != null) {
+                IconFrame(
+                    iconResId = iconResId,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(4.dp + heavyFrameThickness),
+                )
+                OutlinedButtonLabel(
+                    text = label,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 1.dp, vertical = 2.dp)
+                        .then(textModifier),
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 13.sp),
+                    maxLines = maxLines,
+                    color = LocalAerobagUiTheme.current.controls.buttonFg,
+                )
+            } else {
+                Text(
+                    text = label,
+                    modifier = (if (centered) Modifier else Modifier.padding(start = textStartPadding, end = 8.dp)).then(textModifier),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = maxLines,
+                    overflow = TextOverflow.Clip,
+                )
+            }
             if (!enabled) {
                 Box(
                     modifier = Modifier

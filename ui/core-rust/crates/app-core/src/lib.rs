@@ -1337,6 +1337,23 @@ fn resolve_procedure_materialization_legs_with_provenance(
             if common_resume_target_index.is_some_and(|target_index| index + 1 < target_index) {
                 continue;
             }
+            let previous_terminal_position = previous_display_path
+                .as_ref()
+                .and_then(previous_display_path_terminal_position);
+            let previous_terminal_course =
+                previous_display_path.as_ref().and_then(final_course_of_display_path);
+            if pair[0].path_termination.trim() == "DF"
+                && pair[1].path_termination.trim() == "CF"
+                && previous_terminal_position
+                    .zip(pair[0].nav_position)
+                    .zip(pair[1].nav_position)
+                    .is_some_and(|((previous_end, direct_fix), following_fix)| {
+                        great_circle_distance_nm(previous_end, following_fix) <= 0.05
+                            && great_circle_distance_nm(previous_end, direct_fix) > 0.25
+                    })
+            {
+                continue;
+            }
             let from = pair[0].nav_ref.clone().ok_or_else(|| AppError {
                 kind: AppErrorKind::InvalidFlightPlan,
                 message: format!(
@@ -1345,12 +1362,31 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     pair[0].sequence
                 ),
             })?;
-            let to = pair[1].nav_ref.clone().ok_or_else(|| AppError {
+            let df_following_cf_record = if pair[1].path_termination.trim() == "DF" {
+                fix_records
+                    .get(index + 2)
+                    .copied()
+                    .filter(|record| {
+                        record.path_termination.trim() == "CF"
+                            && should_yield_direct_to_fix_to_following_course(
+                                previous_terminal_position,
+                                previous_terminal_course,
+                                pair[0],
+                                pair[1],
+                                leg_records,
+                                record,
+                            )
+                    })
+            } else {
+                None
+            };
+            let effective_leg_end = df_following_cf_record.unwrap_or(pair[1]);
+            let to = effective_leg_end.nav_ref.clone().ok_or_else(|| AppError {
                 kind: AppErrorKind::InvalidFlightPlan,
                 message: format!(
                     "procedure {} leg materialization encountered missing to-anchor nav_ref at sequence {}",
                     procedure_id.trim(),
-                    pair[1].sequence
+                    effective_leg_end.sequence
                 ),
             })?;
             let common_resume_yields_feeder_cf = role != ProcedureSegmentRole::Common
@@ -1400,12 +1436,17 @@ fn resolve_procedure_materialization_legs_with_provenance(
             if duplicate_of_previous {
                 continue;
             }
-            let hold_record = if matches!(pair[1].path_termination.trim(), "HF" | "HM") {
-                Some(pair[1])
+            let hold_record = if matches!(effective_leg_end.path_termination.trim(), "HF" | "HM") {
+                Some(effective_leg_end)
             } else {
-                fix_records.get(index + 2).and_then(|next| {
+                let next_hold_index = if df_following_cf_record.is_some() {
+                    index + 3
+                } else {
+                    index + 2
+                };
+                fix_records.get(next_hold_index).and_then(|next| {
                     if matches!(next.path_termination.trim(), "HF" | "HM")
-                        && next.nav_ref == pair[1].nav_ref
+                        && next.nav_ref == effective_leg_end.nav_ref
                     {
                         Some(*next)
                     } else {
@@ -1413,12 +1454,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     }
                 })
             };
-            let provenance_record = hold_record.unwrap_or(pair[1]);
-            let previous_terminal_position = previous_display_path
-                .as_ref()
-                .and_then(previous_display_path_terminal_position);
-            let previous_terminal_course =
-                previous_display_path.as_ref().and_then(final_course_of_display_path);
+            let provenance_record = hold_record.unwrap_or(effective_leg_end);
             let previous_was_course_to_intercept = resolved.last().is_some_and(|previous| {
                 previous.procedure_provenance.as_ref().is_some_and(|provenance| {
                     matches!(
@@ -1520,7 +1556,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 display_path_for_procedure_leg(
                     leg_records,
                     display_leg_start,
-                    pair[1],
+                    effective_leg_end,
                     hold_record,
                     initial_position_override,
                     initial_course_override,
@@ -1530,7 +1566,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 next_heading_step_index,
                 display_path.as_ref(),
                 pair[0],
-                pair[1],
+                effective_leg_end,
                 provenance_record.path_termination.trim(),
                 provenance_record.nav_position,
             );
@@ -2352,6 +2388,67 @@ fn common_segment_resume_target_index(
     }
 
     None
+}
+
+fn should_yield_direct_to_fix_to_following_course(
+    current_position: Option<LatLon>,
+    current_course_deg: Option<f64>,
+    preceding_anchor_record: &ProcedureLegMaterializationRecord,
+    direct_to_fix_record: &ProcedureLegMaterializationRecord,
+    segment_records: &[ProcedureLegMaterializationRecord],
+    following_course_record: &ProcedureLegMaterializationRecord,
+) -> bool {
+    let (Some(mut current_position), Some(mut current_course_deg)) =
+        (current_position, current_course_deg)
+    else {
+        return false;
+    };
+    let Some(direct_fix) = direct_to_fix_record.nav_position else {
+        return false;
+    };
+    let Some(next_fix) = following_course_record.nav_position else {
+        return false;
+    };
+    let mut current_altitude_ft = preceding_anchor_record.altitude_1_ft;
+    for record in segment_records.iter().filter(|record| {
+        record.sequence > preceding_anchor_record.sequence && record.sequence < direct_to_fix_record.sequence
+    }) {
+        if record.path_termination.trim() != "CA" {
+            continue;
+        }
+        let Some(course_deg) = record
+            .magnetic_course_deg
+            .map(|course| course + record_magnetic_variation_deg(record).unwrap_or(0.0))
+            .or(Some(current_course_deg))
+        else {
+            continue;
+        };
+        let (Some(start_alt_ft), Some(target_alt_ft)) = (current_altitude_ft, record.altitude_1_ft) else {
+            current_course_deg = course_deg;
+            continue;
+        };
+        let climb_minutes = ((target_alt_ft - start_alt_ft).max(0.0)) / 500.0;
+        let climb_distance_nm = (90.0 / 60.0) * climb_minutes;
+        current_position = route_destination_point(current_position, course_deg, climb_distance_nm);
+        current_course_deg = course_deg;
+        current_altitude_ft = Some(target_alt_ft);
+    }
+    let Some(course_deg) = following_course_record
+        .magnetic_course_deg
+        .map(|course| course + record_magnetic_variation_deg(following_course_record).unwrap_or(0.0))
+    else {
+        return false;
+    };
+    if angular_difference_degrees(current_course_deg, course_deg) > 25.0 {
+        return false;
+    }
+    let bearing_to_next_fix = bearing_degrees(current_position, next_fix);
+    if angular_difference_degrees(bearing_to_next_fix, course_deg) > 45.0 {
+        return false;
+    }
+    let bearing_to_direct_fix = bearing_degrees(current_position, direct_fix);
+    let reciprocal_course_deg = normalize_bearing_degrees(course_deg + 180.0);
+    angular_difference_degrees(bearing_to_direct_fix, reciprocal_course_deg) <= 45.0
 }
 
 fn procedure_segment_role(role: &MaterializedSegmentRole) -> ProcedureSegmentRole {

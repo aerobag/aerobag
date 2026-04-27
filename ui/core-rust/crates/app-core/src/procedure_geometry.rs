@@ -714,6 +714,19 @@ fn build_procedure_leg_display_path(
             }
             "DF" => {
                 let fix = step.nav_position?;
+                let next_cf_step = steps
+                    .iter()
+                    .skip(index + 1)
+                    .copied()
+                    .find(|candidate| candidate.path_termination.trim() == "CF");
+                if should_skip_direct_to_fix_for_following_course(
+                    current_position,
+                    current_course_deg,
+                    fix,
+                    next_cf_step,
+                ) {
+                    continue;
+                }
                 if distance_between_points_nm(current_position, fix) <= MIN_GEOMETRY_DISTANCE_NM {
                     current_position = fix;
                     continue;
@@ -925,6 +938,39 @@ fn build_procedure_leg_display_path(
         path.effective_terminal_course_deg = current_course_deg;
         Some(path)
     }
+}
+
+fn should_skip_direct_to_fix_for_following_course(
+    current_position: LatLon,
+    current_course_deg: Option<f64>,
+    direct_fix: LatLon,
+    next_cf_step: Option<&ProcedureLegMaterializationRecord>,
+) -> bool {
+    let Some(current_course_deg) = current_course_deg else {
+        return false;
+    };
+    let Some(next_cf_step) = next_cf_step else {
+        return false;
+    };
+    let Some(next_fix) = next_cf_step.nav_position else {
+        return false;
+    };
+    let Some(course_deg) = next_cf_step
+        .magnetic_course_deg
+        .map(|course| course + course_reference_variation_deg(next_cf_step))
+    else {
+        return false;
+    };
+    if angular_difference_degrees(current_course_deg, course_deg) > 25.0 {
+        return false;
+    }
+    let bearing_to_next_fix = bearing_from(current_position, next_fix);
+    if angular_difference_degrees(bearing_to_next_fix, course_deg) > 45.0 {
+        return false;
+    }
+    let bearing_to_direct_fix = bearing_from(current_position, direct_fix);
+    let reciprocal_course_deg = normalize_bearing_degrees(course_deg + 180.0);
+    angular_difference_degrees(bearing_to_direct_fix, reciprocal_course_deg) <= 45.0
 }
 
 fn display_element_end_position(element: &LegDisplayElement) -> Option<LatLon> {

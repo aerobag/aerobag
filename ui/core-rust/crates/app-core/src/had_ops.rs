@@ -48,6 +48,7 @@ pub enum HadOperation {
     },
     FlightPlanUiState {
         plan: FlightPlan,
+        current_ui_state: FlightPlanUiState,
     },
     FlightPlanUiMutation {
         mutation: FlightPlanUiMutation,
@@ -184,12 +185,13 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
             store,
             NavKvQuery::PlateById { plate_id },
         )?)?,
-        HadOperation::FlightPlanUiState { plan } => {
-            serde_json::to_value(flight_plan_ui_state(store, plan)?)?
-        }
+        HadOperation::FlightPlanUiState {
+            plan,
+            current_ui_state,
+        } => serde_json::to_value(flight_plan_ui_state(store, plan, current_ui_state)?)?,
         HadOperation::FlightPlanUiMutation { mutation } => {
             serde_json::to_value(FlightPlanUiMutation {
-                ui_state: flight_plan_ui_state(store, mutation.plan.clone())?,
+                ui_state: flight_plan_ui_state(store, mutation.plan.clone(), mutation.ui_state)?,
                 ..mutation
             })?
         }
@@ -484,9 +486,10 @@ fn nav_symbol_feature(
 fn flight_plan_ui_state(
     store: &NavKvStore,
     plan: FlightPlan,
+    current_ui_state: FlightPlanUiState,
 ) -> Result<FlightPlanUiState, HadReadError> {
     let plan = crate::build_flight_plan(plan)?;
-    let mut ui_state = crate::project_ui_state(&plan);
+    let mut ui_state = current_ui_state;
     let route = project_flight_plan_route(store, &plan)?;
     for row in &mut ui_state.display_rows {
         row.symbol_feature = match &row.nav_ref {
@@ -1310,7 +1313,7 @@ fn append_flight_plan_entry(
     }
     let appended = append_flight_plan_tokens(plan, &evaluated)?;
     Ok(FlightPlanUiMutation {
-        ui_state: flight_plan_ui_state(store, appended.clone())?,
+        ui_state: flight_plan_ui_state(store, appended.clone(), crate::project_ui_state(&appended))?,
         plan: appended,
     })
 }
@@ -1700,7 +1703,7 @@ impl From<serde_json::Error> for HadReadError {
 mod tests {
     use super::*;
     use app_fixtures::load_fixture_nav_kv_pages;
-    use crate::{AirportId, NavKvRoot, ProcedureKind, SequencingMode};
+    use crate::{planning::NavElementUiView, AirportId, NavKvRoot, ProcedureKind, SequencingMode};
     use std::{fs, path::{Path, PathBuf}};
 
     #[test]
@@ -1880,6 +1883,7 @@ mod tests {
             &store,
             HadOperation::FlightPlanUiState {
                 plan: mutation.mutation.plan.clone(),
+                current_ui_state: mutation.ui_state.clone(),
             },
         )
         .expect("project flight plan ui state");
@@ -1895,6 +1899,76 @@ mod tests {
                         .any(|component| component.procedure_id.as_deref() == Some("VOR-A")),
                     "expected inserted procedure component in ui state"
                 );
+            }
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete outcome, got missing pages: {pages:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn flight_plan_ui_state_enrichment_preserves_live_guidance_nav_element() {
+        let store = load_generated_nav_kv_store();
+        let plan = FlightPlan {
+            id: "kpao-vpdub-vcb-wlw".to_string(),
+            name: "KPAO VPDUB KVCB KWLW".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAO".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("VPDUB".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KVCB".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KWLW".to_string()),
+                },
+            ],
+            resolved_legs: Vec::new(),
+            guidance: Some(crate::GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(0),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: Some(AirportId("KPAO".to_string())),
+            destination: Some(AirportId("KWLW".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let mut current_ui_state =
+            crate::project_ui_state(&crate::build_flight_plan(plan.clone()).expect("build plan"));
+        current_ui_state.guidance.as_mut().expect("guidance").nav_element = NavElementUiView {
+            active_leg_summary: "LIVE".to_string(),
+            cdi_indicator_dots: Some(2.5),
+            cdi_offscale_readout: Some("R".to_string()),
+        };
+
+        let outcome = run_had_operation(
+            &store,
+            HadOperation::FlightPlanUiState {
+                plan,
+                current_ui_state,
+            },
+        )
+        .expect("project enriched flight plan ui state");
+
+        match outcome {
+            HadOperationOutcome::Complete { result } => {
+                let ui_state: FlightPlanUiState =
+                    serde_json::from_value(result).expect("decode ui state");
+                let nav_element = &ui_state.guidance.as_ref().expect("guidance").nav_element;
+                assert_eq!(nav_element.active_leg_summary, "LIVE");
+                assert_eq!(nav_element.cdi_indicator_dots, Some(2.5));
+                assert_eq!(nav_element.cdi_offscale_readout.as_deref(), Some("R"));
             }
             HadOperationOutcome::NeedPages { pages } => {
                 panic!("expected complete outcome, got missing pages: {pages:?}");

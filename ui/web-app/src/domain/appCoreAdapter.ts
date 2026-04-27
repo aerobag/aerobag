@@ -17,7 +17,6 @@ import type {
   FlightPlanUiState,
   ChartFamilyId,
   ContentAvailability,
-  GuidanceLegGeometry,
   GuidanceState,
   LatLon,
   MapFollowUiState,
@@ -328,7 +327,6 @@ export interface UiSession {
   replaceFlightPlan(plan: FlightPlan): Promise<UiSessionSnapshot>;
   removeLeg(index: number): Promise<UiSessionSnapshot>;
   moveWaypoint(index: number, delta: number): Promise<UiSessionSnapshot>;
-  setGuidanceLegGeometry(geometries: GuidanceLegGeometry[]): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
   loadPlaybackTrace(sourcePath: string, traceJson: string): Promise<UiSessionSnapshot>;
   playPlayback(nowEpochMs: number): Promise<UiSessionSnapshot>;
@@ -593,8 +591,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     return JSON.parse(candidatesJson) as SituationRingCandidate[];
   }
 
-  private async enrichFlightPlanUiState(plan: FlightPlan, _uiState: FlightPlanUiState): Promise<FlightPlanUiState> {
-    return runCoreHadOperation<FlightPlanUiState>({ kind: "flight_plan_ui_state", plan });
+  private async enrichFlightPlanUiState(plan: FlightPlan, uiState: FlightPlanUiState): Promise<FlightPlanUiState> {
+    return runCoreHadOperation<FlightPlanUiState>({
+      kind: "flight_plan_ui_state",
+      plan,
+      current_ui_state: uiState,
+    });
   }
 
   private async enrichUiSessionSnapshot(snapshot: UiSessionSnapshot): Promise<UiSessionSnapshot> {
@@ -655,6 +657,25 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     let snapshot = init.snapshot;
     const parseSessionSnapshot = async (json: Promise<string> | string) =>
       this.enrichUiSessionSnapshot(JSON.parse(await json) as UiSessionSnapshot);
+    const syncGuidanceGeometry = async (nextPlan: FlightPlan | null) => {
+      try {
+        const geometries =
+          nextPlan && (nextPlan.resolved_legs ?? []).length > 0
+            ? (await this.projectFlightPlanRoute(nextPlan, null)).map((segment) => ({
+                leg_id: segment.id,
+                from: segment.from,
+                to: segment.to,
+                path: segment.path,
+              }))
+            : [];
+        snapshot = await parseSessionSnapshot(
+          this.module.set_guidance_leg_geometry_in_session(handle, JSON.stringify(geometries)),
+        );
+      } catch (error) {
+        console.error("failed to sync session guidance geometry", error);
+      }
+      return snapshot;
+    };
     const isInvalidSessionHandleError = (error: unknown) =>
       error instanceof Error && error.message.includes("invalid ui session handle");
     const ensureSession = async () => {
@@ -670,6 +691,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       );
       handle = restored.handle;
       snapshot = restored.snapshot;
+      await syncGuidanceGeometry(snapshot.app_state.active_plan);
     };
     const withSessionRetry = async <T>(operation: () => Promise<T>) => {
       try {
@@ -682,6 +704,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return operation();
       }
     };
+    await syncGuidanceGeometry(snapshot.app_state.active_plan);
     return {
       snapshot: async () => {
         snapshot = await withSessionRetry(async () =>
@@ -693,24 +716,21 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.replace_flight_plan_in_session(handle, JSON.stringify(plan))),
         );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
       },
       removeLeg: async (index) => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.remove_leg_in_session(handle, index)),
         );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
       },
       moveWaypoint: async (index, delta) => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.move_waypoint_in_session(handle, index, delta)),
         );
-        return snapshot;
-      },
-      setGuidanceLegGeometry: async (geometries) => {
-        snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.set_guidance_leg_geometry_in_session(handle, JSON.stringify(geometries))),
-        );
+        await syncGuidanceGeometry(snapshot.app_state.active_plan);
         return snapshot;
       },
       setSituation: async (situation) => {

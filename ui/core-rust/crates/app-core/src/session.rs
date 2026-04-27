@@ -1263,6 +1263,72 @@ fn derive_compact_chart_page_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        AirportId, FlightPlan, GuidanceState, NavRef, OwnshipSourceId, OwnshipSourceKind,
+        ResolvedLeg, ResolvedLegSource, RouteComponent, SequencingMode, SituationSample,
+    };
+
+    fn minimal_vector_manifest_json() -> &'static str {
+        r#"{
+            "point_layers": {},
+            "airspace": {
+                "reference_tile_min_zoom": 0,
+                "reference_tile_max_zoom": 0,
+                "label_tile_min_zoom": 0,
+                "label_tile_max_zoom": 0
+            }
+        }"#
+    }
+
+    fn sample_guided_plan() -> FlightPlan {
+        FlightPlan {
+            id: "plan-1".to_string(),
+            name: "KPAO VPDUB KVCB".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAO".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("VPDUB".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KVCB".to_string()),
+                },
+            ],
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "component-0-1".to_string(),
+                    from: NavRef::Airport("KPAO".to_string()),
+                    to: NavRef::Fix("VPDUB".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "component-1-2".to_string(),
+                    from: NavRef::Fix("VPDUB".to_string()),
+                    to: NavRef::Airport("KVCB".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+            ],
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(0),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: Some(AirportId("KPAO".to_string())),
+            destination: Some(AirportId("KVCB".to_string())),
+            alternate: None,
+            cruise_altitude_ft: Some(3000),
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        }
+    }
 
     #[test]
     fn straight_leg_cdi_is_signed_against_course_direction() {
@@ -1304,6 +1370,78 @@ mod tests {
         );
         assert_eq!(cdi_offscale_readout(10.0), Some("10nm\u{2192}".to_string()));
         assert_eq!(cdi_offscale_readout(11.4), Some("11nm\u{2192}".to_string()));
+    }
+
+    #[test]
+    fn session_projects_cdi_from_injected_guidance_geometry() {
+        let init = create_ui_session(
+            minimal_vector_manifest_json(),
+            sample_guided_plan(),
+            &[],
+            None,
+            None,
+        )
+        .expect("create session");
+        let after_geometry = set_guidance_leg_geometry_in_session(
+            init.handle,
+            vec![GuidanceLegGeometry {
+                leg_id: "component-0-1#0".to_string(),
+                from: LatLon {
+                    lat: 37.461_111,
+                    lon: -122.115_056,
+                },
+                to: LatLon {
+                    lat: 38.377_625,
+                    lon: -121.958_806,
+                },
+                path: vec![
+                    LatLon {
+                        lat: 37.461_111,
+                        lon: -122.115_056,
+                    },
+                    LatLon {
+                        lat: 38.377_625,
+                        lon: -121.958_806,
+                    },
+                ],
+            }],
+        )
+        .expect("set geometry");
+        assert_eq!(
+            after_geometry
+                .app_ui_state
+                .active_plan
+                .as_ref()
+                .and_then(|plan| plan.guidance.as_ref())
+                .and_then(|guidance| guidance.nav_element.cdi_indicator_dots),
+            None
+        );
+        let after_position = push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 37.6,
+                    lon: -122.05,
+                }),
+                track_deg_true: Some(45.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+            },
+        )
+        .expect("push sample");
+        let dots = after_position
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .and_then(|guidance| guidance.nav_element.cdi_indicator_dots);
+        assert!(dots.is_some(), "expected CDI dots after ownship update");
     }
 
     #[test]

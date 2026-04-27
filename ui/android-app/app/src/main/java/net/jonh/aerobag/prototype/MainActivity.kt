@@ -158,7 +158,6 @@ import net.jonh.aerobag.prototype.domain.FlightPlanDisplayRowUiView
 import net.jonh.aerobag.prototype.domain.FlightPlanRowActionUiView
 import net.jonh.aerobag.prototype.domain.FlightPlanRouteSegment
 import net.jonh.aerobag.prototype.domain.FlightPlanUiState
-import net.jonh.aerobag.prototype.domain.GuidanceLegGeometry
 import net.jonh.aerobag.prototype.domain.GuidanceState
 import net.jonh.aerobag.prototype.domain.InstalledPackageKind
 import net.jonh.aerobag.prototype.domain.InstalledPackages
@@ -1621,7 +1620,9 @@ private fun AerobagApp() {
         while (sessionSnapshot.playbackUiState.status == PlaybackStatus.Playing) {
             delay(250)
             runCatching { uiSession.tickPlayback(System.currentTimeMillis().toDouble()) }
-                .onSuccess { sessionSnapshot = it }
+                .onSuccess {
+                    sessionSnapshot = it
+                }
                 .onFailure { Log.e("AerobagPlayback", "tick failed", it) }
         }
     }
@@ -3074,7 +3075,6 @@ private fun MapExplorerPage(
     var committedOverlaySurfaceUnits by remember(uiSession) { mutableStateOf<OverlaySurfaceUnits?>(null) }
     var mapOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
     var flightPlanRoute by remember(plan.id, plan.version) { mutableStateOf<List<FlightPlanRouteSegment>>(emptyList()) }
-    var guidanceGeometryKey by remember(uiSession) { mutableStateOf<String?>(null) }
     var mapGestureActive by remember { mutableStateOf(false) }
     var installingPackage by remember { mutableStateOf<String?>(null) }
     var installRevision by remember { mutableStateOf(0) }
@@ -3385,38 +3385,12 @@ private fun MapExplorerPage(
     LaunchedEffect(appCore, uiSession, plan.id, plan.version, plan.guidance, plan.resolvedLegs) {
         if (plan.resolvedLegs.isEmpty()) {
             flightPlanRoute = emptyList()
-            if (guidanceGeometryKey != "") {
-                guidanceGeometryKey = ""
-                runCatching { uiSession.setGuidanceLegGeometry(emptyList()) }
-                    .onSuccess(onSessionSnapshotChange)
-                    .onFailure { Log.e("AerobagGuidance", "failed to clear guidance geometry", it) }
-            }
             return@LaunchedEffect
         }
         runCatching {
             appCore.projectFlightPlanRoute(plan)
         }.onSuccess {
             flightPlanRoute = it
-            val nextKey =
-                it.joinToString("|") { segment ->
-                    "${segment.id}:${segment.from.lat},${segment.from.lon}:${segment.to.lat},${segment.to.lon}:${segment.path.size}"
-                }
-            if (nextKey != guidanceGeometryKey) {
-                guidanceGeometryKey = nextKey
-                runCatching {
-                    uiSession.setGuidanceLegGeometry(
-                        it.map { segment ->
-                            GuidanceLegGeometry(
-                                legId = segment.id,
-                                from = segment.from,
-                                to = segment.to,
-                                path = segment.path,
-                            )
-                        },
-                    )
-                }.onSuccess(onSessionSnapshotChange)
-                    .onFailure { error -> Log.e("AerobagGuidance", "failed to set guidance geometry", error) }
-            }
         }.onFailure {
             flightPlanRoute = emptyList()
             Log.e("AerobagGuidance", "failed to project flight plan route", it)

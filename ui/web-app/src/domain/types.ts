@@ -262,13 +262,6 @@ export type FlightPlanRouteSegment = {
   status: "completed" | "active" | "remaining";
 };
 
-export type GuidanceLegGeometry = {
-  leg_id: string;
-  from: LatLon;
-  to: LatLon;
-  path?: LatLon[];
-};
-
 export type SequencingMode = "follow_plan" | "suspended" | "direct_to";
 
 export type DirectToState = {

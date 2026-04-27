@@ -2,41 +2,52 @@
   "content_policy": "PreferLocal",
   "flight_plan": {
     "id": "plan-1",
-    "name": "KRNT KUAO KRDD",
+    "name": "KPAO VPDUB KVCB KWLW",
     "legs": [],
     "route_components": [
       {
         "kind": "waypoint",
-        "waypoint": { "Airport": "KRNT" }
+        "waypoint": { "Airport": "KPAO" }
       },
       {
         "kind": "waypoint",
-        "waypoint": { "Airport": "KUAO" }
+        "waypoint": { "Fix": "VPDUB" }
       },
       {
         "kind": "waypoint",
-        "waypoint": { "Airport": "KRDD" }
+        "waypoint": { "Airport": "KVCB" }
+      },
+      {
+        "kind": "waypoint",
+        "waypoint": { "Airport": "KWLW" }
       }
     ],
     "resolved_legs": [
       {
         "id": "component-0-1",
-        "from": { "Airport": "KRNT" },
-        "to": { "Airport": "KUAO" },
+        "from": { "Airport": "KPAO" },
+        "to": { "Fix": "VPDUB" },
         "source": { "kind": "route_component", "component_index": 0 },
         "procedure_provenance": null
       },
       {
         "id": "component-1-2",
-        "from": { "Airport": "KUAO" },
-        "to": { "Airport": "KRDD" },
+        "from": { "Fix": "VPDUB" },
+        "to": { "Airport": "KVCB" },
         "source": { "kind": "route_component", "component_index": 1 },
+        "procedure_provenance": null
+      },
+      {
+        "id": "component-2-3",
+        "from": { "Airport": "KVCB" },
+        "to": { "Airport": "KWLW" },
+        "source": { "kind": "route_component", "component_index": 2 },
         "procedure_provenance": null
       }
     ],
     "guidance": null,
-    "departure": "KRNT",
-    "destination": "KRDD",
+    "departure": "KPAO",
+    "destination": "KWLW",
     "alternate": null,
     "cruise_altitude_ft": 3000,
     "notes": "Prototype bootstrap state",

@@ -1512,7 +1512,7 @@ mod tests {
         let result = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
             state: Some(OfflinePackagesControllerState {
                 packages_state: Some(OfflinePackagesState {
-                    preferences: default_offline_package_preferences([], ["nav-db"]),
+                    preferences: default_offline_package_preferences(Vec::<String>::new(), ["nav-db"]),
                     now_override_epoch_ms: Some(1_774_401_600_000),
                 }),
                 library_cache: Some(OfflinePackagesLibraryCache {
@@ -1594,7 +1594,7 @@ mod tests {
         let result = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
             state: Some(OfflinePackagesControllerState {
                 packages_state: Some(OfflinePackagesState {
-                    preferences: default_offline_package_preferences([], ["nav-db"]),
+                    preferences: default_offline_package_preferences(Vec::<String>::new(), ["nav-db"]),
                     now_override_epoch_ms: Some(1_777_120_000_000),
                 }),
                 library_cache: Some(OfflinePackagesLibraryCache {
@@ -1686,6 +1686,8 @@ mod tests {
             discovery_manifests: vec![discovery.clone()],
             bundle_manifests_by_filename: bundles.clone(),
             installed: vec![],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
         });
 
         assert_eq!(init.ui_state.regions[0].selection, OfflinePackageSelection::Play);
@@ -1700,6 +1702,8 @@ mod tests {
             discovery_manifests: vec![discovery],
             bundle_manifests_by_filename: bundles,
             installed: vec![],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
         });
 
         assert_eq!(paused.ui_state.regions[0].selection, OfflinePackageSelection::Pause);

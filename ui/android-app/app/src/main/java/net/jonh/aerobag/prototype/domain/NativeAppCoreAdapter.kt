@@ -1,5 +1,7 @@
 package net.jonh.aerobag.prototype.domain
 
+import android.util.Log
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -7,7 +9,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
-import android.util.Log
 
 data class VectorTileRequest(
     val layer: String,
@@ -123,7 +124,9 @@ class NativeAppCoreAdapter(
             json = json,
             navKvStore = navKvStore,
             initialSnapshot = enrichUiSessionSnapshot(result.snapshot.toUi()),
-        )
+        ).apply {
+            syncGuidanceGeometryFromPlan()
+        }
     }
 
     fun deriveChartPageState(
@@ -344,6 +347,7 @@ class NativeAppCoreAdapter(
             buildJsonObject {
                 put("kind", "flight_plan_ui_state")
                 put("plan", json.encodeToJsonElement(plan.toWire()))
+                put("current_ui_state", json.encodeToJsonElement<WireFlightPlanUiState>(uiState.toWire()))
             },
         )
         return json.decodeFromJsonElement<WireFlightPlanUiState>(result).toUi()
@@ -355,9 +359,10 @@ class NativeAppCoreAdapter(
 
     private fun enrichUiSessionSnapshot(snapshot: UiSessionSnapshot): UiSessionSnapshot {
         val plan = snapshot.appState.activePlan ?: return snapshot
+        val currentUiState = snapshot.appUiState.activePlan ?: return snapshot
         return snapshot.copy(
             appUiState = snapshot.appUiState.copy(
-                activePlan = snapshot.appUiState.activePlan?.let { enrichFlightPlanUiState(it, plan) },
+                activePlan = enrichFlightPlanUiState(currentUiState, plan),
             ),
         )
     }
@@ -525,14 +530,45 @@ class NativeUiSession internal constructor(
     var snapshot: UiSessionSnapshot = initialSnapshot
         private set
 
+    fun syncGuidanceGeometryFromPlan(): UiSessionSnapshot {
+        val plan = snapshot.appState.activePlan ?: return syncGuidanceGeometry(emptyList())
+        if (plan.resolvedLegs.isEmpty()) {
+            return syncGuidanceGeometry(emptyList())
+        }
+        val store = navKvStore ?: return snapshot
+        return runCatching {
+            val segments =
+                store.runCoreOperation(
+                    buildJsonObject {
+                        put("kind", "project_flight_plan_route")
+                        put("plan", json.encodeToJsonElement(plan.toWire()))
+                    },
+                    ListSerializer(WireFlightPlanRouteSegment.serializer()),
+                ).map { it.toUi() }
+            syncGuidanceGeometry(
+                segments.map { segment ->
+                    SessionGuidanceGeometry(
+                        legId = segment.id,
+                        from = segment.from,
+                        to = segment.to,
+                        path = segment.path,
+                    )
+                },
+            )
+        }.getOrElse { error ->
+            Log.e("AerobagGuidance", "failed to sync session guidance geometry", error)
+            snapshot
+        }
+    }
+
     fun removeLeg(index: Int): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.removeLegInSessionJson(handle, index))
-        return snapshot
+        return syncGuidanceGeometryFromPlan()
     }
 
     fun moveWaypoint(index: Int, delta: Int): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.moveWaypointInSessionJson(handle, index, delta))
-        return snapshot
+        return syncGuidanceGeometryFromPlan()
     }
 
     fun registerOwnshipSource(registration: OwnshipSourceRegistration): UiSessionSnapshot {
@@ -627,15 +663,15 @@ class NativeUiSession internal constructor(
 
     fun refreshSnapshot(): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.getSessionSnapshotJson(handle))
-        return snapshot
+        return syncGuidanceGeometryFromPlan()
     }
 
     fun replaceFlightPlan(plan: FlightPlan): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.replaceFlightPlanInSessionJson(handle, json.encodeToString(plan.toWire())))
-        return snapshot
+        return syncGuidanceGeometryFromPlan()
     }
 
-    fun setGuidanceLegGeometry(geometries: List<GuidanceLegGeometry>): UiSessionSnapshot {
+    private fun syncGuidanceGeometry(geometries: List<SessionGuidanceGeometry>): UiSessionSnapshot {
         snapshot =
             decodeSnapshot(
                 bridge.setGuidanceLegGeometryInSessionJson(
@@ -689,12 +725,14 @@ class NativeUiSession internal constructor(
     private fun enrichSnapshot(snapshot: UiSessionSnapshot): UiSessionSnapshot {
         val store = navKvStore ?: return snapshot
         val plan = snapshot.appState.activePlan ?: return snapshot
+        val currentUiState = snapshot.appUiState.activePlan ?: return snapshot
         val uiState =
             json.decodeFromJsonElement<WireFlightPlanUiState>(
                 store.runCoreOperationElement(
                     buildJsonObject {
                         put("kind", "flight_plan_ui_state")
                         put("plan", json.encodeToJsonElement(plan.toWire()))
+                        put("current_ui_state", json.encodeToJsonElement<WireFlightPlanUiState>(currentUiState.toWire()))
                     },
                 ),
             ).toUi()
@@ -733,6 +771,12 @@ private fun FlightPlan.toWire() = WireFlightPlan(
 )
 
 private fun FlightPlanLeg.toWire() = WirePlanLeg(
+    from = from.toWire(),
+    to = to.toWire(),
+    airway = airway,
+)
+
+private fun PlanLeg.toWire() = WirePlanLeg(
     from = from.toWire(),
     to = to.toWire(),
     airway = airway,
@@ -1316,6 +1360,19 @@ private fun WireNavSymbolFeature.toUi() = NavSymbolFeature(
     longestRunwayHeadingTrueDeg = longest_runway_heading_true_deg,
 )
 
+private fun NavSymbolFeature.toWire() = WireNavSymbolFeature(
+    kind = kind,
+    label = label,
+    style_class = styleClass,
+    towered = towered,
+    fuel_available = fuelAvailable,
+    has_paved_runway = hasPavedRunway,
+    heliport = heliport,
+    has_water_runway = hasWaterRunway,
+    runway_length_ratio = runwayLengthRatio,
+    longest_runway_heading_true_deg = longestRunwayHeadingTrueDeg,
+)
+
 private fun WireMapOverlayWarning.toUi() = MapOverlayWarning(
     code = code,
     message = message,
@@ -1487,11 +1544,27 @@ private fun LatLonPoint.toWire() = WireLatLon(lat = lat, lon = lon)
 
 private fun WireLatLon.toUi() = LatLonPoint(lat = lat, lon = lon)
 
-private fun GuidanceLegGeometry.toWire() = WireGuidanceLegGeometry(
+private data class SessionGuidanceGeometry(
+    val legId: String,
+    val from: LatLonPoint,
+    val to: LatLonPoint,
+    val path: List<LatLonPoint>,
+)
+
+private fun SessionGuidanceGeometry.toWire() = SessionWireGuidanceLegGeometry(
     legId = legId,
     from = from.toWire(),
     to = to.toWire(),
     path = path.map { it.toWire() },
+)
+
+@kotlinx.serialization.Serializable
+private data class SessionWireGuidanceLegGeometry(
+    @kotlinx.serialization.SerialName("leg_id")
+    val legId: String,
+    val from: WireLatLon,
+    val to: WireLatLon,
+    val path: List<WireLatLon> = emptyList(),
 )
 
 private fun ProcedureKind.toWire() = when (this) {
@@ -1658,10 +1731,33 @@ private fun WireRouteComponentUiView.toUi() = RouteComponentUiView(
     followingWaypoint = following_waypoint?.toUi(),
 )
 
+private fun RouteComponentUiView.toWire() = WireRouteComponentUiView(
+    component_index = componentIndex,
+    kind = kind.toWire(),
+    summary = summary,
+    items = items.map { it.toWire() },
+    active = active,
+    can_add_airway_after = canAddAirwayAfter,
+    can_add_procedure_before = canAddProcedureBefore,
+    can_change_airway = canChangeAirway,
+    can_remove = canRemove,
+    can_reorder = canReorder,
+    can_reorder_up = canReorderUp,
+    can_reorder_down = canReorderDown,
+    preceding_waypoint = precedingWaypoint?.toWire(),
+    following_waypoint = followingWaypoint?.toWire(),
+)
+
 private fun WireRouteComponentViewKind.toUi() = when (this) {
     WireRouteComponentViewKind.Waypoint -> RouteComponentViewKind.Waypoint
     WireRouteComponentViewKind.Airway -> RouteComponentViewKind.Airway
     WireRouteComponentViewKind.Procedure -> RouteComponentViewKind.Procedure
+}
+
+private fun RouteComponentViewKind.toWire() = when (this) {
+    RouteComponentViewKind.Waypoint -> WireRouteComponentViewKind.Waypoint
+    RouteComponentViewKind.Airway -> WireRouteComponentViewKind.Airway
+    RouteComponentViewKind.Procedure -> WireRouteComponentViewKind.Procedure
 }
 
 private fun WireConcretizedNavItem.toUi(): ConcretizedNavItem = when (this) {
@@ -1690,12 +1786,30 @@ private fun WireResolvedLegUiView.toUi() = ResolvedLegUiView(
     suspendBoundaryAfter = suspend_boundary_after,
 )
 
+private fun ResolvedLegUiView.toWire() = WireResolvedLegUiView(
+    leg_index = legIndex,
+    leg_id = legId,
+    component_index = componentIndex,
+    from = from.toWire(),
+    to = to.toWire(),
+    active = active,
+    suspend_boundary_after = suspendBoundaryAfter,
+)
+
 private fun WireDirectToUiView.toUi() = DirectToUiView(
     start = start.toUi(),
     target = target.toUi(),
     targetLegId = target_leg_id,
     resumeLegId = resume_leg_id,
     onPlanTarget = on_plan_target,
+)
+
+private fun DirectToUiView.toWire() = WireDirectToUiView(
+    start = start.toWire(),
+    target = target.toWire(),
+    target_leg_id = targetLegId,
+    resume_leg_id = resumeLegId,
+    on_plan_target = onPlanTarget,
 )
 
 private fun WireGuidanceUiView.toUi() = GuidanceUiView(
@@ -1713,10 +1827,31 @@ private fun WireGuidanceUiView.toUi() = GuidanceUiView(
     suspendBoundaryAfterActiveLeg = suspend_boundary_after_active_leg,
 )
 
+private fun GuidanceUiView.toWire() = WireGuidanceUiView(
+    sequencing_mode = sequencingMode.toWire(),
+    active_leg_index = activeLegIndex,
+    display_split_leg_index = displaySplitLegIndex,
+    active_component_index = activeComponentIndex,
+    active_leg = activeLeg?.toWire(),
+    nav_element = navElement.toWire(),
+    direct_to = directTo?.toWire(),
+    can_sequence_active_leg = canSequenceActiveLeg,
+    can_activate_next_leg = canActivateNextLeg,
+    can_suspend = canSuspend,
+    can_unsuspend = canUnsuspend,
+    suspend_boundary_after_active_leg = suspendBoundaryAfterActiveLeg,
+)
+
 private fun WireNavElementUiView.toUi() = NavElementUiView(
     activeLegSummary = active_leg_summary,
     cdiIndicatorDots = cdi_indicator_dots,
     cdiOffscaleReadout = cdi_offscale_readout,
+)
+
+private fun NavElementUiView.toWire() = WireNavElementUiView(
+    active_leg_summary = activeLegSummary,
+    cdi_indicator_dots = cdiIndicatorDots,
+    cdi_offscale_readout = cdiOffscaleReadout,
 )
 
 private fun WireSequencingMode.toUi() = when (this) {
@@ -1770,6 +1905,13 @@ private fun WireFlightPlanUiState.toUi() = FlightPlanUiState(
     guidance = guidance?.toUi(),
 )
 
+private fun FlightPlanUiState.toWire() = WireFlightPlanUiState(
+    components = components.map { it.toWire() },
+    resolved_legs = resolvedLegs.map { it.toWire() },
+    display_rows = displayRows.map { it.toWire() },
+    guidance = guidance?.toWire(),
+)
+
 private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
     label = label,
     rowKind = row_kind.toUi(),
@@ -1800,13 +1942,55 @@ private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
     actions = actions.map { it.toUi() },
 )
 
+private fun FlightPlanDisplayRowUiView.toWire() = WireFlightPlanDisplayRowUiView(
+    label = label,
+    row_kind = rowKind.toWire(),
+    component_kind = componentKind?.toWire(),
+    component_index = componentIndex,
+    leg_index = legIndex,
+    distance_nm = distanceNm,
+    course_deg = courseDeg,
+    chart_airport_id = chartAirportId,
+    nav_ref = navRef?.toWire(),
+    symbol_feature = symbolFeature?.toWire(),
+    depth = depth,
+    active = active,
+    can_add_airway_after = canAddAirwayAfter,
+    can_add_procedure_before = canAddProcedureBefore,
+    can_change_airway = canChangeAirway,
+    can_remove_component = canRemoveComponent,
+    can_reorder_component = canReorderComponent,
+    can_reorder_up = canReorderUp,
+    can_reorder_down = canReorderDown,
+    replace_procedure_component_index = replaceProcedureComponentIndex,
+    start_component_index = startComponentIndex,
+    end_component_index = endComponentIndex,
+    origin_anchor = originAnchor?.toWire(),
+    destination_anchor = destinationAnchor?.toWire(),
+    preceding_waypoint = precedingWaypoint?.toWire(),
+    following_waypoint = followingWaypoint?.toWire(),
+    actions = actions.map { it.toWire() },
+)
+
 private fun WireFlightPlanDisplayRowKind.toUi() = when (this) {
     WireFlightPlanDisplayRowKind.Waypoint -> FlightPlanDisplayRowKind.Waypoint
     WireFlightPlanDisplayRowKind.Group -> FlightPlanDisplayRowKind.Group
     WireFlightPlanDisplayRowKind.Discontinuity -> FlightPlanDisplayRowKind.Discontinuity
 }
 
+private fun FlightPlanDisplayRowKind.toWire() = when (this) {
+    FlightPlanDisplayRowKind.Waypoint -> WireFlightPlanDisplayRowKind.Waypoint
+    FlightPlanDisplayRowKind.Group -> WireFlightPlanDisplayRowKind.Group
+    FlightPlanDisplayRowKind.Discontinuity -> WireFlightPlanDisplayRowKind.Discontinuity
+}
+
 private fun WireFlightPlanRowActionUiView.toUi() = FlightPlanRowActionUiView(
+    id = id,
+    label = label,
+    enabled = enabled,
+)
+
+private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
     id = id,
     label = label,
     enabled = enabled,

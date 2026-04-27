@@ -1805,9 +1805,6 @@ function MapPage(props: {
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
   const firstVisualReadyRef = useRef(false);
   const lastOverlayWarningKeyRef = useRef("");
-  const lastGuidanceGeometryKeyRef = useRef<string | null>(null);
-  const lastGuidanceGeometrySessionRef = useRef<UiSession | null>(null);
-  const lastGuidanceGeometryPlanKeyRef = useRef<string | null>(null);
 
   function pumpTerrainRenderQueue() {
     if (terrainRenderPumpActiveRef.current) {
@@ -2292,75 +2289,9 @@ function MapPage(props: {
   useEffect(() => {
     let cancelled = false;
 
-    function guidanceGeometryKey(segments: FlightPlanRouteSegment[]) {
-      return segments
-        .map((segment) => `${segment.id}:${segment.from.lat.toFixed(7)},${segment.from.lon.toFixed(7)}>${segment.to.lat.toFixed(7)},${segment.to.lon.toFixed(7)}:${segment.path.length}`)
-        .join("|");
-    }
-
-    function guidancePlanKey() {
-      const guidance = plan.guidance;
-      return [
-        plan.id,
-        plan.version,
-        guidance?.sequencing_mode ?? "none",
-        guidance?.active_leg_index ?? "none",
-        guidance?.active_detail_index ?? "none",
-        guidance?.direct_to?.target_leg_id ?? "none",
-        guidance?.direct_to?.resume_leg_id ?? "none",
-        (plan.resolved_legs ?? []).map((leg) => leg.id).join(","),
-      ].join(":");
-    }
-
-    async function updateGuidanceGeometry(segments: FlightPlanRouteSegment[], phase: string) {
-      if (!uiSession || cancelled) {
-        return;
-      }
-      if (lastGuidanceGeometrySessionRef.current !== uiSession) {
-        lastGuidanceGeometrySessionRef.current = uiSession;
-        lastGuidanceGeometryKeyRef.current = null;
-      }
-      const planKey = guidancePlanKey();
-      if (lastGuidanceGeometryPlanKeyRef.current !== planKey) {
-        lastGuidanceGeometryPlanKeyRef.current = planKey;
-        lastGuidanceGeometryKeyRef.current = null;
-      }
-      const key = guidanceGeometryKey(segments);
-      if (key === lastGuidanceGeometryKeyRef.current) {
-        return;
-      }
-      lastGuidanceGeometryKeyRef.current = key;
-      const startedAt = performance.now();
-      const snapshot = await uiSession.setGuidanceLegGeometry(
-        segments.map((segment) => ({
-          leg_id: segment.id,
-          from: segment.from,
-          to: segment.to,
-          path: segment.path,
-        })),
-      );
-      const elapsedMs = Math.round(performance.now() - startedAt);
-      debugLog("map.route.guidance_geometry.set", {
-        phase,
-        count: segments.length,
-        elapsed_ms: elapsedMs,
-      });
-      if (elapsedMs > 250) {
-        onHighLatencyWarning("map.route.guidance_geometry.slow", {
-          phase,
-          count: segments.length,
-          elapsed_ms: elapsedMs,
-        });
-      }
-      if (!cancelled) {
-        onPlaybackSnapshotChange(snapshot);
-      }
-    }
-
     async function resolveFlightPlanRoute() {
       if ((plan.resolved_legs ?? []).length === 0 || (planUiState?.resolved_legs ?? []).length === 0) {
         setFlightPlanRoute([]);
-        await updateGuidanceGeometry([], "empty");
         return;
       }
       const startedAt = performance.now();
@@ -2384,7 +2315,6 @@ function MapPage(props: {
       }
       if (!cancelled) {
         setFlightPlanRoute(segments);
-        await updateGuidanceGeometry(segments, "resolved");
       }
     }
 
@@ -2398,7 +2328,7 @@ function MapPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [appCoreAdapter, onHighLatencyWarning, onPlaybackSnapshotChange, plan, planUiState, uiSession]);
+  }, [appCoreAdapter, onHighLatencyWarning, plan, planUiState]);
 
   useEffect(() => {
     if (!mapIsVisible) {
@@ -6488,9 +6418,10 @@ async function buildSeededDevPlan(): Promise<{
   recentAirportIds?: string[];
 }> {
   const waypoints: Array<{ Airport: string } | { Navaid: string } | { Fix: string }> = [
-    { Airport: "KRNT" },
-    { Navaid: "SEA" },
-    { Airport: "KPAE" },
+    { Airport: "KPAO" },
+    { Fix: "VPDUB" },
+    { Airport: "KVCB" },
+    { Airport: "KWLW" },
   ];
   const routeComponents = waypoints.map((waypoint) => ({ kind: "waypoint" as const, waypoint }));
   const resolvedLegs = waypoints.slice(0, -1).map((from, index) => ({
@@ -6501,21 +6432,21 @@ async function buildSeededDevPlan(): Promise<{
   }));
   const plan = {
     ...samplePlan,
-    id: "dev-krnt-sea-kpae",
-    name: "KRNT SEA KPAE",
+    id: "dev-kpao-vpdub-kvcb-kwlw",
+    name: "KPAO VPDUB KVCB KWLW",
     legs: resolvedLegs.map((leg) => ({ from: leg.from, to: leg.to, airway: null })),
     route_components: routeComponents,
     resolved_legs: resolvedLegs,
     guidance: { active_leg_index: 0, active_detail_index: 0, sequencing_mode: "follow_plan" as const, direct_to: null },
-    departure: "KRNT",
-    destination: "KPAE",
+    departure: "KPAO",
+    destination: "KWLW",
     updated_at_epoch_ms: Date.now(),
     version: samplePlan.version + 1,
   };
   return {
     plan,
-    selectedAirportId: "KPAE",
-    recentAirportIds: ["KPAE", "KRNT"],
+    selectedAirportId: "KWLW",
+    recentAirportIds: ["KWLW", "KVCB", "KPAO"],
   };
 }
 

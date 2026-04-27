@@ -2564,6 +2564,81 @@ mod tests {
         }
     }
 
+    #[test]
+    fn projects_seeded_kpao_vpdub_kvcb_kwlw_route_from_snapshot_navdb() {
+        let store = load_snapshot_nav_kv_store();
+        let plan = build_flight_plan(FlightPlan {
+            id: "dev-kpao-vpdub-kvcb-kwlw".to_string(),
+            name: "KPAO VPDUB KVCB KWLW".to_string(),
+            legs: vec![],
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAO".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("VPDUB".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KVCB".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KWLW".to_string()),
+                },
+            ],
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "component-0-1".to_string(),
+                    from: NavRef::Airport("KPAO".to_string()),
+                    to: NavRef::Fix("VPDUB".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "component-1-2".to_string(),
+                    from: NavRef::Fix("VPDUB".to_string()),
+                    to: NavRef::Airport("KVCB".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "component-2-3".to_string(),
+                    from: NavRef::Airport("KVCB".to_string()),
+                    to: NavRef::Airport("KWLW".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 2 },
+                    procedure_provenance: None,
+                },
+            ],
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(0),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: Some(AirportId("KPAO".to_string())),
+            destination: Some(AirportId("KWLW".to_string())),
+            alternate: None,
+            cruise_altitude_ft: Some(3000),
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        })
+        .expect("seeded plan");
+
+        let route = project_flight_plan_route_with_resolver(&plan, |nav_ref, procedure_airport_id| {
+            let airport_id = procedure_airport_id.unwrap_or("");
+            nav_ref_position_from_store(&store, airport_id, nav_ref)
+                .ok_or_else(|| format!("missing position for {nav_ref:?} airport={airport_id}"))
+        })
+        .expect("project seeded route");
+
+        assert_eq!(route.len(), 3);
+        assert_eq!(route[0].leg_id, "component-0-1");
+        assert_eq!(route[1].leg_id, "component-1-2");
+        assert_eq!(route[2].leg_id, "component-2-3");
+    }
+
     fn generic_plate_pixel(plate: &PlateGeoRef, position: LatLon) -> (f64, f64) {
         (
             (position.lon - plate.top_left_lon) * plate.pixels_per_longitude,

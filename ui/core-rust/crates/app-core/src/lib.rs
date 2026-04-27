@@ -1875,7 +1875,7 @@ struct DisplayElementHeadingSignature {
     element_kind: DisplayElementKind,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DisplayElementKind {
     Segment,
     Arc,
@@ -3696,6 +3696,169 @@ mod tests {
         enroute_transition: Option<String>,
         failure_kind: String,
         message: String,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    enum ApproachCaptureResult {
+        Ok {
+            resolved_legs: Vec<ApproachCaptureResolvedLeg>,
+            heading_signatures: Vec<ApproachCaptureHeadingSignature>,
+        },
+        AppError {
+            message: String,
+        },
+        Panic {
+            message: String,
+        },
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct ApproachCaptureRecord {
+        airport_id: String,
+        procedure_id: String,
+        enroute_transition: Option<String>,
+        result: ApproachCaptureResult,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct ApproachCaptureResolvedLeg {
+        id: String,
+        from_label: String,
+        to_label: String,
+        source: ResolvedLegSource,
+        procedure_airport_id: Option<String>,
+        procedure_id: Option<String>,
+        procedure_kind: Option<ProcedureKind>,
+        procedure_role: Option<ProcedureSegmentRole>,
+        path_termination: Option<PathTermination>,
+        leg_sequence: Option<i32>,
+        display_path: Option<LegDisplayPath>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct ApproachCaptureHeadingSignature {
+        step_index: usize,
+        leg_id: String,
+        path_termination: String,
+        start_label: String,
+        start_position: LatLon,
+        start_course_deg: f64,
+        end_label: String,
+        end_position: LatLon,
+        drawn_end_course_deg: f64,
+        logical_end_course_deg: f64,
+        element_kind: String,
+        debug_source: Option<String>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct ApproachCaptureDiffSummary {
+        baseline_path: String,
+        current_path: String,
+        baseline_cases: usize,
+        current_cases: usize,
+        same_cases: usize,
+        changed_cases: usize,
+        missing_from_current: usize,
+        new_in_current: usize,
+    }
+
+    fn capture_resolved_legs(materialized: &MaterializedProcedure) -> Vec<ApproachCaptureResolvedLeg> {
+        materialized
+            .resolved_legs
+            .iter()
+            .map(|leg| {
+                let provenance = leg.procedure_provenance.as_ref();
+                ApproachCaptureResolvedLeg {
+                    id: leg.id.clone(),
+                    from_label: describe_nav_ref(&leg.from),
+                    to_label: describe_nav_ref(&leg.to),
+                    source: leg.source.clone(),
+                    procedure_airport_id: provenance.map(|p| p.airport_id.clone()),
+                    procedure_id: provenance.map(|p| p.procedure_id.clone()),
+                    procedure_kind: provenance.map(|p| p.kind.clone()),
+                    procedure_role: provenance.map(|p| p.role.clone()),
+                    path_termination: provenance.map(|p| p.path_termination.clone()),
+                    leg_sequence: provenance.map(|p| p.leg_sequence),
+                    display_path: provenance.and_then(|p| p.display_path.clone()),
+                }
+            })
+            .collect()
+    }
+
+    fn capture_heading_signatures(
+        materialized: &MaterializedProcedure,
+    ) -> Vec<ApproachCaptureHeadingSignature> {
+        let mut signatures = Vec::new();
+        let mut next_step_index = 0usize;
+        for leg in &materialized.resolved_legs {
+            let Some(provenance) = leg.procedure_provenance.as_ref() else {
+                continue;
+            };
+            let Some(path) = provenance.display_path.as_ref() else {
+                continue;
+            };
+            let last_index = path.elements.len().saturating_sub(1);
+            for (element_index, element) in path.elements.iter().enumerate() {
+                let Some((start_position, start_course_deg, end_position, mut end_course_deg)) =
+                    heading_signature_for_element(element)
+                else {
+                    continue;
+                };
+                let drawn_end_course_deg = end_course_deg;
+                if element_index == last_index {
+                    if let Some(logical_end_course_deg) = path.effective_terminal_course_deg {
+                        end_course_deg = logical_end_course_deg;
+                    }
+                }
+                signatures.push(ApproachCaptureHeadingSignature {
+                    step_index: next_step_index,
+                    leg_id: leg.id.clone(),
+                    path_termination: format!("{:?}", provenance.path_termination),
+                    start_label: if element_index == 0 {
+                        describe_nav_ref(&leg.from)
+                    } else {
+                        "synthesized-path".to_string()
+                    },
+                    start_position,
+                    start_course_deg,
+                    end_label: if element_index == last_index {
+                        describe_nav_ref(&leg.to)
+                    } else {
+                        "synthesized-path".to_string()
+                    },
+                    end_position,
+                    drawn_end_course_deg,
+                    logical_end_course_deg: end_course_deg,
+                    element_kind: format!("{:?}", display_element_kind(element)),
+                    debug_source: path.debug_element_sources.get(element_index).cloned(),
+                });
+                next_step_index += 1;
+            }
+        }
+        signatures
+    }
+
+    fn capture_case_key(record: &ApproachCaptureRecord) -> String {
+        format!(
+            "{}\u{1f}{}\u{1f}{}",
+            record.airport_id,
+            record.procedure_id,
+            record.enroute_transition.clone().unwrap_or_default()
+        )
+    }
+
+    fn read_capture_jsonl(path: &Path) -> HashMap<String, String> {
+        let text = fs::read_to_string(path)
+            .unwrap_or_else(|err| panic!("read capture jsonl {}: {err}", path.display()));
+        let mut rows = HashMap::new();
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let record: ApproachCaptureRecord = serde_json::from_str(line)
+                .unwrap_or_else(|err| panic!("decode capture json line from {}: {err}", path.display()));
+            rows.insert(capture_case_key(&record), line.to_string());
+        }
+        rows
     }
 
     fn enumerate_snapshot_approach_cases(store: &crate::NavKvStore) -> Vec<ApproachAuditCase> {
@@ -5983,6 +6146,264 @@ mod tests {
                 total, failures_total, elapsed_secs
             ),
         );
+    }
+
+    #[test]
+    #[ignore = "manual full snapshot approach capture with progress logging"]
+    fn capture_all_snapshot_approaches_with_progress_logging() {
+        let store = Arc::new(load_snapshot_nav_kv_store());
+        let cases = enumerate_snapshot_approach_cases(&store);
+        let total = cases.len();
+        assert!(total > 0, "expected at least one approach case to capture");
+
+        let progress_log_path = PathBuf::from("/tmp/aerobag-approach-capture-progress.log");
+        let captures_jsonl_path = PathBuf::from("/tmp/aerobag-approach-captures.jsonl");
+        let status_path = PathBuf::from("/tmp/aerobag-approach-capture-status.txt");
+        let summary_path = PathBuf::from("/tmp/aerobag-approach-capture-summary.json");
+
+        let _ = fs::remove_file(&progress_log_path);
+        let _ = fs::remove_file(&captures_jsonl_path);
+
+        let progress_log = Mutex::new(
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&progress_log_path)
+                .expect("open capture progress log"),
+        );
+        let captures_log = Mutex::new(
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&captures_jsonl_path)
+                .expect("open captures log"),
+        );
+
+        append_progress_log_line(
+            &progress_log,
+            &format!("starting full approach capture total_cases={total}"),
+        );
+        rewrite_audit_status_file(&status_path, total, 0, 0, 0.0);
+
+        let queue = Arc::new(Mutex::new(VecDeque::from(cases)));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let failure_count = Arc::new(AtomicUsize::new(0));
+        let start = Instant::now();
+        let worker_count = std::thread::available_parallelism()
+            .map(|count| usize::min(count.get(), 8))
+            .unwrap_or(4)
+            .max(1);
+
+        std::thread::scope(|scope| {
+            for worker_index in 0..worker_count {
+                let queue = Arc::clone(&queue);
+                let store = Arc::clone(&store);
+                let completed = Arc::clone(&completed);
+                let failure_count = Arc::clone(&failure_count);
+                let progress_log = &progress_log;
+                let captures_log = &captures_log;
+                let status_path = status_path.clone();
+                scope.spawn(move || loop {
+                    let case = {
+                        let mut queue = queue.lock().expect("lock capture queue");
+                        queue.pop_front()
+                    };
+                    let Some(case) = case else {
+                        break;
+                    };
+
+                    let capture = match std::panic::catch_unwind(|| {
+                        materialize_snapshot_procedure(
+                            &store,
+                            &case.airport_id,
+                            &case.procedure_id,
+                            case.enroute_transition.clone(),
+                        )
+                    }) {
+                        Ok(Ok(materialized)) => ApproachCaptureRecord {
+                            airport_id: case.airport_id.clone(),
+                            procedure_id: case.procedure_id.clone(),
+                            enroute_transition: case.enroute_transition.clone(),
+                            result: ApproachCaptureResult::Ok {
+                                resolved_legs: capture_resolved_legs(&materialized),
+                                heading_signatures: capture_heading_signatures(&materialized),
+                            },
+                        },
+                        Ok(Err(err)) => ApproachCaptureRecord {
+                            airport_id: case.airport_id.clone(),
+                            procedure_id: case.procedure_id.clone(),
+                            enroute_transition: case.enroute_transition.clone(),
+                            result: ApproachCaptureResult::AppError {
+                                message: err.message,
+                            },
+                        },
+                        Err(payload) => {
+                            let message = if let Some(text) = payload.downcast_ref::<&str>() {
+                                (*text).to_string()
+                            } else if let Some(text) = payload.downcast_ref::<String>() {
+                                text.clone()
+                            } else {
+                                "panic without string payload".to_string()
+                            };
+                            ApproachCaptureRecord {
+                                airport_id: case.airport_id.clone(),
+                                procedure_id: case.procedure_id.clone(),
+                                enroute_transition: case.enroute_transition.clone(),
+                                result: ApproachCaptureResult::Panic { message },
+                            }
+                        }
+                    };
+
+                    {
+                        let mut file = captures_log.lock().expect("lock captures log");
+                        serde_json::to_writer(&mut *file, &capture).expect("write capture json");
+                        writeln!(file).expect("newline after capture json");
+                        file.flush().expect("flush captures log");
+                    }
+
+                    let completed_now = completed.fetch_add(1, Ordering::SeqCst) + 1;
+                    let elapsed_secs = start.elapsed().as_secs_f64();
+                    let is_failure = !matches!(&capture.result, ApproachCaptureResult::Ok { .. });
+                    if is_failure {
+                        let failures_now = failure_count.fetch_add(1, Ordering::SeqCst) + 1;
+                        append_progress_log_line(
+                            progress_log,
+                            &format!(
+                                "[worker {worker_index}] {completed_now}/{total} CAPTURED-FAIL {} {} enroute={:?}",
+                                capture.airport_id,
+                                capture.procedure_id,
+                                capture.enroute_transition,
+                            ),
+                        );
+                        rewrite_audit_status_file(
+                            &status_path,
+                            total,
+                            completed_now,
+                            failures_now,
+                            elapsed_secs,
+                        );
+                    } else {
+                        if completed_now == 1 || completed_now % 50 == 0 || completed_now == total {
+                            append_progress_log_line(
+                                progress_log,
+                                &format!(
+                                    "[worker {worker_index}] {completed_now}/{total} CAPTURED {} {} enroute={:?}",
+                                    capture.airport_id,
+                                    capture.procedure_id,
+                                    capture.enroute_transition,
+                                ),
+                            );
+                        }
+                        rewrite_audit_status_file(
+                            &status_path,
+                            total,
+                            completed_now,
+                            failure_count.load(Ordering::SeqCst),
+                            elapsed_secs,
+                        );
+                    }
+                });
+            }
+        });
+
+        let failures_total = failure_count.load(Ordering::SeqCst);
+        let elapsed_secs = start.elapsed().as_secs_f64();
+        fs::write(
+            &summary_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "total_cases": total,
+                "failures": failures_total,
+                "elapsed_secs": elapsed_secs,
+                "progress_log_path": progress_log_path,
+                "captures_jsonl_path": captures_jsonl_path,
+                "status_path": status_path,
+            }))
+            .expect("serialize capture summary"),
+        )
+        .expect("write capture summary");
+        append_progress_log_line(
+            &progress_log,
+            &format!(
+                "completed full approach capture total_cases={} failures={} elapsed_secs={:.1}",
+                total, failures_total, elapsed_secs
+            ),
+        );
+    }
+
+    #[test]
+    #[ignore = "manual compare current capture against baseline capture jsonl"]
+    fn compare_current_approach_capture_against_baseline() {
+        let baseline_path = std::env::var("AEROBAG_APPROACH_CAPTURE_BASELINE")
+            .expect("AEROBAG_APPROACH_CAPTURE_BASELINE");
+        let current_path = std::env::var("AEROBAG_APPROACH_CAPTURE_CURRENT")
+            .unwrap_or_else(|_| "/tmp/aerobag-approach-captures.jsonl".to_string());
+        let diff_summary_path = std::env::var("AEROBAG_APPROACH_CAPTURE_DIFF_SUMMARY")
+            .unwrap_or_else(|_| "/tmp/aerobag-approach-capture-diff-summary.json".to_string());
+        let changed_jsonl_path = std::env::var("AEROBAG_APPROACH_CAPTURE_CHANGED_JSONL")
+            .unwrap_or_else(|_| "/tmp/aerobag-approach-capture-changed.jsonl".to_string());
+
+        let baseline = read_capture_jsonl(Path::new(&baseline_path));
+        let current = read_capture_jsonl(Path::new(&current_path));
+
+        let mut same_cases = 0usize;
+        let mut changed_cases = 0usize;
+        let mut missing_from_current = 0usize;
+        let mut new_in_current = 0usize;
+        let mut changed_lines = Vec::new();
+
+        for (key, baseline_line) in &baseline {
+            match current.get(key) {
+                Some(current_line) if current_line == baseline_line => {
+                    same_cases += 1;
+                }
+                Some(current_line) => {
+                    changed_cases += 1;
+                    changed_lines.push(serde_json::json!({
+                        "case_key": key,
+                        "baseline": serde_json::from_str::<serde_json::Value>(baseline_line).expect("baseline json"),
+                        "current": serde_json::from_str::<serde_json::Value>(current_line).expect("current json"),
+                    }));
+                }
+                None => {
+                    missing_from_current += 1;
+                }
+            }
+        }
+
+        for key in current.keys() {
+            if !baseline.contains_key(key) {
+                new_in_current += 1;
+            }
+        }
+
+        let summary = ApproachCaptureDiffSummary {
+            baseline_path,
+            current_path,
+            baseline_cases: baseline.len(),
+            current_cases: current.len(),
+            same_cases,
+            changed_cases,
+            missing_from_current,
+            new_in_current,
+        };
+
+        fs::write(
+            &diff_summary_path,
+            serde_json::to_vec_pretty(&summary).expect("serialize capture diff summary"),
+        )
+        .expect("write capture diff summary");
+
+        let mut changed_output = String::new();
+        for line in changed_lines {
+            changed_output.push_str(
+                &serde_json::to_string(&line).expect("serialize changed capture line"),
+            );
+            changed_output.push('\n');
+        }
+        fs::write(&changed_jsonl_path, changed_output).expect("write changed captures jsonl");
+
+        assert_eq!(summary.missing_from_current, 0, "missing cases from current capture");
+        assert_eq!(summary.new_in_current, 0, "new cases in current capture");
     }
 
     fn assert_first_display_element_course_near(

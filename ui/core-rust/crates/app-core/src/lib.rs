@@ -1331,10 +1331,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
         );
 
         for (index, pair) in fix_records.windows(2).enumerate() {
-            if skip_through_index.is_some_and(|skip_index| index <= skip_index) {
-                continue;
-            }
-            if common_resume_target.is_some_and(|target| index + 1 < target.index) {
+            if should_skip_window_before_resolution(index, skip_through_index, common_resume_target) {
                 continue;
             }
             let previous_terminal_position = previous_display_path
@@ -1390,45 +1387,15 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     effective_leg_end.sequence
                 ),
             })?;
-            let common_resume_yields_feeder_cf = role != ProcedureSegmentRole::Common
-                && pair[1].path_termination.trim() == "CF"
-                && next_segment_records.is_some_and(|next_records| {
-                    let projected_previous_display_path = if pair[0].path_termination.trim() == "PI" {
-                        display_path_for_single_procedure_step(
-                            leg_records,
-                            pair[0],
-                            previous_terminal_position,
-                            previous_terminal_course,
-                        )
-                    } else {
-                        previous_display_path.clone()
-                    };
-                    let projected_terminal_position = projected_previous_display_path
-                        .as_ref()
-                        .and_then(previous_display_path_terminal_position);
-                    let projected_terminal_course = projected_previous_display_path
-                        .as_ref()
-                        .and_then(final_course_of_display_path);
-                    let projected_terminal_anchor = projected_previous_display_path
-                        .as_ref()
-                        .and_then(|_| pair[0].nav_ref.clone());
-                    resumed_common_target(
-                        projected_previous_display_path.as_ref(),
-                        false,
-                        next_records,
-                    )
-                        .is_some_and(|resumed_common_target| {
-                            resumed_common_target.record.nav_ref.as_ref() != pair[1].nav_ref.as_ref()
-                                && should_yield_feeder_course_to_fix_to_resumed_common_segment(
-                                    projected_terminal_position,
-                                    projected_terminal_course,
-                                    projected_terminal_anchor,
-                                    pair[1],
-                                    resumed_common_target.record,
-                                )
-                        })
-                });
-            if common_resume_yields_feeder_cf {
+            if common_resume_yields_current_feeder_cf(
+                [pair[0], pair[1]],
+                leg_records,
+                previous_display_path.as_ref(),
+                previous_terminal_position,
+                previous_terminal_course,
+                next_segment_records,
+                role.clone(),
+            ) {
                 continue;
             }
             if should_skip_reconciliation_anchor_leg(
@@ -1440,19 +1407,12 @@ fn resolve_procedure_materialization_legs_with_provenance(
             ) {
                 continue;
             }
-            if from == to && matches!(pair[1].path_termination.trim(), "HF" | "HM") {
-                continue;
-            }
-            if from == to && pair[1].path_termination.trim() == "FC" {
-                continue;
-            }
-            if from == to && pair[1].path_termination.trim() == "TF" {
-                continue;
-            }
-            let duplicate_of_previous = resolved
-                .last()
-                .is_some_and(|previous| previous.from == from && previous.to == to);
-            if duplicate_of_previous {
+            if should_skip_degenerate_or_duplicate_window(
+                &from,
+                &to,
+                pair[1].path_termination.trim(),
+                resolved.last(),
+            ) {
                 continue;
             }
             let hold_record = if matches!(effective_leg_end.path_termination.trim(), "HF" | "HM") {
@@ -2599,6 +2559,72 @@ fn start_requirement_for_reentry_to_anchor(
         from_anchor_position: Some(from_record.nav_position?),
         to_anchor: to_anchor.clone(),
     })
+}
+
+fn should_skip_window_before_resolution(
+    current_window_index: usize,
+    skip_through_index: Option<usize>,
+    common_resume_target: Option<CommonResumeTarget<'_>>,
+) -> bool {
+    skip_through_index.is_some_and(|skip_index| current_window_index <= skip_index)
+        || common_resume_target.is_some_and(|target| current_window_index + 1 < target.index)
+}
+
+fn common_resume_yields_current_feeder_cf(
+    pair: [&ProcedureLegMaterializationRecord; 2],
+    leg_records: &[ProcedureLegMaterializationRecord],
+    previous_display_path: Option<&LegDisplayPath>,
+    previous_terminal_position: Option<LatLon>,
+    previous_terminal_course: Option<f64>,
+    next_segment_records: Option<&[ProcedureLegMaterializationRecord]>,
+    role: ProcedureSegmentRole,
+) -> bool {
+    role != ProcedureSegmentRole::Common
+        && pair[1].path_termination.trim() == "CF"
+        && next_segment_records.is_some_and(|next_records| {
+            let projected_previous_display_path = if pair[0].path_termination.trim() == "PI" {
+                display_path_for_single_procedure_step(
+                    leg_records,
+                    pair[0],
+                    previous_terminal_position,
+                    previous_terminal_course,
+                )
+            } else {
+                previous_display_path.cloned()
+            };
+            let projected_terminal_position = projected_previous_display_path
+                .as_ref()
+                .and_then(previous_display_path_terminal_position);
+            let projected_terminal_course = projected_previous_display_path
+                .as_ref()
+                .and_then(final_course_of_display_path);
+            let projected_terminal_anchor = projected_previous_display_path
+                .as_ref()
+                .and_then(|_| pair[0].nav_ref.clone());
+            resumed_common_target(projected_previous_display_path.as_ref(), false, next_records)
+                .is_some_and(|resumed_common_target| {
+                    resumed_common_target.record.nav_ref.as_ref() != pair[1].nav_ref.as_ref()
+                        && should_yield_feeder_course_to_fix_to_resumed_common_segment(
+                            projected_terminal_position,
+                            projected_terminal_course,
+                            projected_terminal_anchor,
+                            pair[1],
+                            resumed_common_target.record,
+                        )
+                })
+        })
+}
+
+fn should_skip_degenerate_or_duplicate_window(
+    from: &NavRef,
+    to: &NavRef,
+    path_termination: &str,
+    resolved_last: Option<&ResolvedLeg>,
+) -> bool {
+    if from == to && matches!(path_termination, "HF" | "HM" | "FC" | "TF") {
+        return true;
+    }
+    resolved_last.is_some_and(|previous| previous.from == *from && previous.to == *to)
 }
 
 struct ProcedureWindowContinuation<'a> {

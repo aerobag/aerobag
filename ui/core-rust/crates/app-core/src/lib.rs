@@ -1339,6 +1339,8 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 .and_then(previous_display_path_terminal_position);
             let previous_terminal_course =
                 previous_display_path.as_ref().and_then(final_course_of_display_path);
+            let previous_context =
+                previous_window_context(previous_display_path.as_ref(), resolved.last(), pair[0]);
             if pair[0].path_termination.trim() == "DF"
                 && pair[1].path_termination.trim() == "CF"
                 && previous_terminal_position
@@ -1363,8 +1365,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 index,
                 [pair[0], pair[1]],
                 &fix_records,
-                previous_terminal_position,
-                previous_terminal_course,
+                previous_context,
                 leg_records,
                 role.clone(),
             );
@@ -1381,8 +1382,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 [pair[0], pair[1]],
                 leg_records,
                 previous_display_path.as_ref(),
-                previous_terminal_position,
-                previous_terminal_course,
+                previous_context,
                 next_segment_records,
                 role.clone(),
             ) {
@@ -1407,23 +1407,6 @@ fn resolve_procedure_materialization_legs_with_provenance(
             }
             let hold_record = window_resolution.hold_record;
             let provenance_record = window_resolution.provenance_record;
-            let previous_was_course_to_intercept = resolved.last().is_some_and(|previous| {
-                previous.procedure_provenance.as_ref().is_some_and(|provenance| {
-                    matches!(
-                        &provenance.path_termination,
-                        PathTermination::Other(label) if label.trim() == "CI"
-                    )
-                })
-            });
-            let previous_leg_consumed_same_pi = resolved.last().is_some_and(|previous| {
-                previous.procedure_provenance.as_ref().is_some_and(|provenance| {
-                    provenance.leg_sequence == pair[0].sequence
-                        && matches!(
-                            &provenance.path_termination,
-                            PathTermination::Other(label) if label.trim() == "PI"
-                        )
-                })
-            });
             let continuation = determine_procedure_window_continuation(
                 index,
                 &from,
@@ -1432,10 +1415,8 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 hold_record,
                 role.clone(),
                 common_resume_target,
-                previous_terminal_position,
+                previous_context,
                 previous_leg_to.as_ref(),
-                previous_was_course_to_intercept,
-                previous_leg_consumed_same_pi,
             );
             let initial_position_override = if continuation.inherit_previous_state {
                 previous_terminal_position
@@ -2547,8 +2528,7 @@ fn common_resume_yields_current_feeder_cf(
     pair: [&ProcedureLegMaterializationRecord; 2],
     leg_records: &[ProcedureLegMaterializationRecord],
     previous_display_path: Option<&LegDisplayPath>,
-    previous_terminal_position: Option<LatLon>,
-    previous_terminal_course: Option<f64>,
+    previous: PreviousWindowContext,
     next_segment_records: Option<&[ProcedureLegMaterializationRecord]>,
     role: ProcedureSegmentRole,
 ) -> bool {
@@ -2559,8 +2539,8 @@ fn common_resume_yields_current_feeder_cf(
                 display_path_for_single_procedure_step(
                     leg_records,
                     pair[0],
-                    previous_terminal_position,
-                    previous_terminal_course,
+                    previous.terminal_position,
+                    previous.terminal_course,
                 )
             } else {
                 previous_display_path.cloned()
@@ -2600,6 +2580,42 @@ fn should_skip_degenerate_or_duplicate_window(
     resolved_last.is_some_and(|previous| previous.from == *from && previous.to == *to)
 }
 
+#[derive(Clone, Copy)]
+struct PreviousWindowContext {
+    terminal_position: Option<LatLon>,
+    terminal_course: Option<f64>,
+    previous_was_course_to_intercept: bool,
+    previous_leg_consumed_same_pi: bool,
+}
+
+fn previous_window_context(
+    previous_display_path: Option<&LegDisplayPath>,
+    resolved_last: Option<&ResolvedLeg>,
+    current_pair_start: &ProcedureLegMaterializationRecord,
+) -> PreviousWindowContext {
+    PreviousWindowContext {
+        terminal_position: previous_display_path.and_then(previous_display_path_terminal_position),
+        terminal_course: previous_display_path.and_then(final_course_of_display_path),
+        previous_was_course_to_intercept: resolved_last.is_some_and(|previous| {
+            previous.procedure_provenance.as_ref().is_some_and(|provenance| {
+                matches!(
+                    &provenance.path_termination,
+                    PathTermination::Other(label) if label.trim() == "CI"
+                )
+            })
+        }),
+        previous_leg_consumed_same_pi: resolved_last.is_some_and(|previous| {
+            previous.procedure_provenance.as_ref().is_some_and(|provenance| {
+                provenance.leg_sequence == current_pair_start.sequence
+                    && matches!(
+                        &provenance.path_termination,
+                        PathTermination::Other(label) if label.trim() == "PI"
+                    )
+            })
+        }),
+    }
+}
+
 struct ProcedureWindowResolution<'a> {
     effective_leg_end: &'a ProcedureLegMaterializationRecord,
     hold_record: Option<&'a ProcedureLegMaterializationRecord>,
@@ -2610,8 +2626,7 @@ fn resolve_procedure_window<'a>(
     current_window_index: usize,
     pair: [&'a ProcedureLegMaterializationRecord; 2],
     fix_records: &[&'a ProcedureLegMaterializationRecord],
-    previous_terminal_position: Option<LatLon>,
-    previous_terminal_course: Option<f64>,
+    previous: PreviousWindowContext,
     leg_records: &[ProcedureLegMaterializationRecord],
     role: ProcedureSegmentRole,
 ) -> ProcedureWindowResolution<'a> {
@@ -2622,8 +2637,8 @@ fn resolve_procedure_window<'a>(
             .filter(|record| {
                 record.path_termination.trim() == "CF"
                     && should_yield_direct_to_fix_to_following_course(
-                        previous_terminal_position,
-                        previous_terminal_course,
+                        previous.terminal_position,
+                        previous.terminal_course,
                         pair[0],
                         pair[1],
                         leg_records,
@@ -2675,26 +2690,24 @@ fn determine_procedure_window_continuation<'a>(
     hold_record: Option<&'a ProcedureLegMaterializationRecord>,
     role: ProcedureSegmentRole,
     common_resume_target: Option<CommonResumeTarget<'_>>,
-    previous_terminal_position: Option<LatLon>,
+    previous: PreviousWindowContext,
     previous_leg_to: Option<&NavRef>,
-    previous_was_course_to_intercept: bool,
-    previous_leg_consumed_same_pi: bool,
 ) -> ProcedureWindowContinuation<'a> {
     let continuing_if_to_cf_join = (from != to)
         && pair[0].path_termination.trim() == "IF"
         && pair[1].path_termination.trim() == "CF"
-        && previous_terminal_position.is_some_and(|previous_end| {
+        && previous.terminal_position.is_some_and(|previous_end| {
             let Some(anchor_position) = pair[0].nav_position else {
                 return false;
             };
-            previous_was_course_to_intercept
+            previous.previous_was_course_to_intercept
                 || great_circle_distance_nm(previous_end, anchor_position) > 0.25
         });
     let continuing_same_anchor_window = (from != to)
         && hold_record.is_some()
         && pair[0].path_termination.trim() == "CF"
         && pair[1].path_termination.trim() == "TF"
-        && previous_terminal_position
+        && previous.terminal_position
             .zip(pair[0].nav_position)
             .is_some_and(|(previous_end, anchor_position)| {
                 great_circle_distance_nm(previous_end, anchor_position) <= 0.05
@@ -2702,8 +2715,8 @@ fn determine_procedure_window_continuation<'a>(
     let continuing_from_fa_window = (from != to)
         && pair[0].path_termination.trim() == "FA"
         && previous_leg_to.is_some_and(|previous_to| previous_to == from)
-        && previous_terminal_position.is_some();
-    let continuing_from_previous_anchor = previous_terminal_position
+        && previous.terminal_position.is_some();
+    let continuing_from_previous_anchor = previous.terminal_position
         .zip(pair[0].nav_position)
         .is_some_and(|(previous_end, anchor_position)| {
             great_circle_distance_nm(previous_end, anchor_position) <= 0.05
@@ -2718,7 +2731,7 @@ fn determine_procedure_window_continuation<'a>(
         || resume_common_cf_from_previous_path;
     let display_leg_start = if pair[0].path_termination.trim() == "PI"
         && from != to
-        && previous_leg_consumed_same_pi
+        && previous.previous_leg_consumed_same_pi
     {
         pair[1]
     } else if resume_common_cf_from_previous_path {
@@ -2727,7 +2740,7 @@ fn determine_procedure_window_continuation<'a>(
         pair[0]
     };
     let render_as_empty_join = continuing_if_to_cf_join
-        && previous_terminal_position
+        && previous.terminal_position
             .zip(pair[1].nav_position)
             .is_some_and(|(start, end)| great_circle_distance_nm(start, end) <= 0.05);
     ProcedureWindowContinuation {

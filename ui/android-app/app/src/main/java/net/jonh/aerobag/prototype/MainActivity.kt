@@ -15,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
@@ -59,6 +60,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as lazyGridItems
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -163,6 +165,7 @@ import net.jonh.aerobag.prototype.domain.InstalledPackageKind
 import net.jonh.aerobag.prototype.domain.InstalledPackages
 import net.jonh.aerobag.prototype.domain.LatLonPoint
 import net.jonh.aerobag.prototype.domain.MapChartFamily
+import net.jonh.aerobag.prototype.domain.MapLayerId
 import net.jonh.aerobag.prototype.domain.MapFollowUiState
 import net.jonh.aerobag.prototype.domain.MapOverlayQueryResult
 import net.jonh.aerobag.prototype.domain.MapView
@@ -200,6 +203,7 @@ import net.jonh.aerobag.prototype.domain.SituationRingCandidate
 import net.jonh.aerobag.prototype.domain.SituationSample
 import net.jonh.aerobag.prototype.domain.SourceConnectionState
 import net.jonh.aerobag.prototype.domain.TileStorageKind
+import net.jonh.aerobag.prototype.domain.UiMapLayerToggleState
 import net.jonh.aerobag.prototype.domain.UiTheme
 import net.jonh.aerobag.prototype.domain.UiThemeLoader
 import net.jonh.aerobag.prototype.domain.UiSessionSnapshot
@@ -228,6 +232,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import java.io.BufferedOutputStream
 import java.io.File
+import java.nio.ByteBuffer
 import java.net.URL
 import java.security.MessageDigest
 import kotlin.math.abs
@@ -235,6 +240,7 @@ import kotlin.math.roundToInt
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.pow
 import kotlin.math.sin
 
 private val LocalAerobagUiTheme = staticCompositionLocalOf<UiTheme> {
@@ -247,9 +253,60 @@ private val PlanGridGap = 2.dp
 private const val DefaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json"
 private const val DefaultAndroidDevServerBaseUrl = "http://10.0.2.2:8080"
 private const val DefaultAndroidPackageSourceBaseUrl = "http://10.0.2.2:8092"
+private const val WebMercatorWorldSize = 256.0
+private const val WebMercatorHalfWorldM = 20037508.342789244
+private const val NexradFrameIntervalMs = 900L
+private const val TerrainAltitudeBucketFt = 200
+private const val MapLayerLogTag = "MapLayers"
 private val VampsPosition = LatLon(47.3648944444444, -121.980275)
 
 private data class LatLon(val lat: Double, val lon: Double)
+
+@Serializable
+private data class NexradManifest(
+    @SerialName("schema_version")
+    val schemaVersion: Int,
+    @SerialName("version_label")
+    val versionLabel: String,
+    @SerialName("frame_count")
+    val frameCount: Int,
+    val projection: String,
+    val frames: List<NexradFrame>,
+)
+
+@Serializable
+private data class NexradFrame(
+    val filename: String,
+    @SerialName("observed_at_utc")
+    val observedAtUtc: String,
+    val width: Int,
+    val height: Int,
+    val bounds: NexradBounds,
+)
+
+@Serializable
+private data class NexradBounds(
+    val west: Double,
+    val south: Double,
+    val east: Double,
+    val north: Double,
+)
+
+private data class NexradOverlayFrame(
+    val frame: NexradFrame,
+    val bitmap: androidx.compose.ui.graphics.ImageBitmap,
+)
+
+private data class TerrainOverlayImage(
+    val key: String,
+    val z: Int,
+    val x: Int,
+    val yTms: Int,
+    val left: Double,
+    val top: Double,
+    val size: Double,
+    val bitmap: androidx.compose.ui.graphics.ImageBitmap,
+)
 
 private data class SituationOverlay(
     val pointUnits: Offset,
@@ -815,6 +872,7 @@ private data class MenuDockOption(
     val active: Boolean = false,
     val enabled: Boolean = true,
     val accentColor: Color? = null,
+    val toggleState: UiMapLayerToggleState? = null,
     @DrawableRes val iconResId: Int? = null,
     val onSelect: () -> Unit,
 )
@@ -837,6 +895,11 @@ private enum class MenuDockStyle(
     PlateWide(
         buttonWidth = ThumbSize * 3f,
         trayWidth = PlatePageTrayWidth,
+        launcherMaxLines = 2,
+    ),
+    Layers(
+        buttonWidth = ThumbSize,
+        trayWidth = ThumbSize * 4f,
         launcherMaxLines = 2,
     ),
 }
@@ -920,6 +983,13 @@ private fun chartFamilyIconResId(chartFamily: MapChartFamily): Int = when (chart
     MapChartFamily.EnrL -> R.drawable.ifr_l_icon
     MapChartFamily.EnrH -> R.drawable.ifr_h_icon
     MapChartFamily.ShadedRelief -> R.drawable.shaded_relief_icon
+}
+
+@DrawableRes
+private fun mapLayerIconResId(layerId: MapLayerId): Int = when (layerId) {
+    MapLayerId.Vectors -> R.drawable.layer_vectors_icon
+    MapLayerId.Nexrad -> R.drawable.layer_nexrad_icon
+    MapLayerId.TerrainWarning -> R.drawable.layer_terrain_warning_icon
 }
 
 private fun moveAirportToFront(
@@ -1143,6 +1213,73 @@ private fun latLonToScreen(
         y = (((world.y - viewport.centerWorldY) * scale) + heightUnits / 2f).toFloat(),
     )
 }
+
+private fun mercatorMetersToWorld(xMeters: Double, yMeters: Double): Offset {
+    val worldSpanMeters = WebMercatorHalfWorldM * 2.0
+    return Offset(
+        x = (((xMeters + WebMercatorHalfWorldM) / worldSpanMeters) * WebMercatorWorldSize).toFloat(),
+        y = (((WebMercatorHalfWorldM - yMeters) / worldSpanMeters) * WebMercatorWorldSize).toFloat(),
+    )
+}
+
+private fun worldToScreen(
+    viewport: MapViewportState,
+    world: Offset,
+    widthUnits: Float,
+    heightUnits: Float,
+): Offset {
+    val scale = scaleForZoom(viewport.zoom)
+    return Offset(
+        x = ((world.x - viewport.centerWorldX) * scale + widthUnits / 2f).toFloat(),
+        y = ((world.y - viewport.centerWorldY) * scale + heightUnits / 2f).toFloat(),
+    )
+}
+
+private fun screenToWorldOffset(
+    viewport: MapViewportState,
+    screenX: Float,
+    screenY: Float,
+    widthUnits: Float,
+    heightUnits: Float,
+): Offset {
+    val scale = scaleForZoom(viewport.zoom)
+    return Offset(
+        x = (((screenX - widthUnits / 2f) / scale) + viewport.centerWorldX).toFloat(),
+        y = (((screenY - heightUnits / 2f) / scale) + viewport.centerWorldY).toFloat(),
+    )
+}
+
+private fun terrainAltitudeBucketForOwnship(ownship: OwnshipRenderState): Double? = null
+
+private fun packTerrainTileBytes(tileBytesList: List<ByteArray>): ByteArray {
+    val totalBytes = 4 + tileBytesList.sumOf { 4 + it.size }
+    val buffer = ByteBuffer.allocate(totalBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+    buffer.putInt(tileBytesList.size)
+    tileBytesList.forEach { bytes ->
+        buffer.putInt(bytes.size)
+        buffer.put(bytes)
+    }
+    return buffer.array()
+}
+
+private fun parseTerrainRawRgba(bytes: ByteArray): androidx.compose.ui.graphics.ImageBitmap {
+    require(bytes.size >= 4) { "terrain raw RGBA payload missing header" }
+    val header = ByteBuffer.wrap(bytes, 0, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+    val width = header.short.toInt() and 0xFFFF
+    val height = header.short.toInt() and 0xFFFF
+    val expectedBytes = 4 + width * height * 4
+    require(bytes.size >= expectedBytes) {
+        "terrain raw RGBA payload truncated: expected $expectedBytes, got ${bytes.size}"
+    }
+    val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
+    bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(bytes, 4, width * height * 4))
+    return bitmap.asImageBitmap()
+}
+
+private fun formatNexradObservedTime(value: String): String =
+    runCatching {
+        java.time.Instant.parse(value).toString().substring(11, 16)
+    }.getOrElse { value }
 
 private fun projectAhead(lat: Double, lon: Double, bearingDeg: Double, distanceNm: Double): LatLon {
     val angularDistance = distanceNm / 3440.065
@@ -1705,6 +1842,7 @@ private fun AerobagApp() {
                     uptimeLabel = uptimeLabel,
                     fixture = fixture,
                     uiSession = uiSession,
+                    sessionSnapshot = sessionSnapshot,
                     uiTheme = uiTheme,
                     ownship = appUiState.ownship.render,
                     playbackUiState = sessionSnapshot.playbackUiState,
@@ -3034,6 +3172,7 @@ private fun MapExplorerPage(
     uptimeLabel: String,
     fixture: net.jonh.aerobag.prototype.domain.ContentFixture,
     uiSession: NativeUiSession,
+    sessionSnapshot: UiSessionSnapshot,
     uiTheme: UiTheme,
     ownship: OwnshipRenderState,
     playbackUiState: PlaybackUiState,
@@ -3056,9 +3195,14 @@ private fun MapExplorerPage(
     val context = LocalContext.current
     val activity = context as? MainActivity
     val density = LocalDensity.current
+    val json = remember { Json { ignoreUnknownKeys = true } }
+    val devServerBaseUrl = remember(context) {
+        loadAndroidDevServerBaseUrl(context.applicationContext)
+    }
     val focusRequester = remember { FocusRequester() }
     var pageTrayOpen by remember { mutableStateOf(false) }
     var chartTrayOpen by remember { mutableStateOf(false) }
+    var layerTrayOpen by remember { mutableStateOf(false) }
     var debugPanelOpen by remember { mutableStateOf(false) }
     var debugTileLabels by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
@@ -3074,6 +3218,10 @@ private fun MapExplorerPage(
     var committedOverlayViewport by remember(uiSession) { mutableStateOf<MapViewportState?>(null) }
     var committedOverlaySurfaceUnits by remember(uiSession) { mutableStateOf<OverlaySurfaceUnits?>(null) }
     var mapOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
+    var nexradFrames by remember(uiSession) { mutableStateOf<List<NexradOverlayFrame>>(emptyList()) }
+    var nexradFrameIndex by remember(uiSession) { mutableStateOf(0) }
+    var terrainOverlay by remember(uiSession) { mutableStateOf<List<TerrainOverlayImage>>(emptyList()) }
+    var terrainOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
     var flightPlanRoute by remember(plan.id, plan.version) { mutableStateOf<List<FlightPlanRouteSegment>>(emptyList()) }
     var mapGestureActive by remember { mutableStateOf(false) }
     var installingPackage by remember { mutableStateOf<String?>(null) }
@@ -3090,17 +3238,34 @@ private fun MapExplorerPage(
         fixture.mapViews.filter { it.mapView.chartFamily in chartFamilies }
     }
     val viewportState = remember(selectedMap.id) { mutableStateOf(viewport) }
+    var viewportSyncPending by remember(selectedMap.id) { mutableStateOf(false) }
     LaunchedEffect(viewport, selectedMap.id) {
+        val parentMatchesLocal = sameMapViewport(viewport, viewportState.value)
         Log.i(
             MapViewportLogTag,
-            "prop-sync map=${selectedMap.id} parentZoom=${"%.2f".format(viewport.zoom)} localZoom=${"%.2f".format(viewportState.value.zoom)}",
+            "prop-sync map=${selectedMap.id} parentZoom=${"%.2f".format(viewport.zoom)} localZoom=${"%.2f".format(viewportState.value.zoom)} parentCenter=${"%.3f".format(viewport.centerWorldX)},${"%.3f".format(viewport.centerWorldY)} localCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)} pending=$viewportSyncPending matches=$parentMatchesLocal",
         )
-        viewportState.value = viewport
+        when {
+            !viewportSyncPending -> {
+                viewportState.value = viewport
+            }
+            parentMatchesLocal -> {
+                viewportSyncPending = false
+            }
+            else -> {
+                Log.i(
+                    MapViewportLogTag,
+                    "prop-sync ignored stale parent map=${selectedMap.id} parentCenter=${"%.3f".format(viewport.centerWorldX)},${"%.3f".format(viewport.centerWorldY)} localCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)}",
+                )
+            }
+        }
     }
     val currentViewport = viewportState.value
     val center = remember(currentViewport) { viewportCenterLatLon(currentViewport) }
-    val surfaceWidthUnits = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
-    val surfaceHeightUnits = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
+    val surfaceWidthPx = surfaceSize.width.toFloat()
+    val surfaceHeightPx = surfaceSize.height.toFloat()
+    val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
+    val surfaceHeightDp = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
     val tiles = remember(currentViewport, surfaceSize, selectedFamilyMapViews) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             emptyList()
@@ -3108,13 +3273,14 @@ private fun MapExplorerPage(
             renderTiles(
                 mapViews = selectedFamilyMapViews.map { it.id to it.mapView },
                 viewport = currentViewport,
-                widthPx = surfaceWidthUnits,
-                heightPx = surfaceHeightUnits,
+                widthPx = surfaceWidthPx,
+                heightPx = surfaceHeightPx,
             )
         }
     }
     val selectedPackageName = selectedMap.mapView.packageName
-    val topLeftTrayOpen = pageTrayOpen || chartTrayOpen
+    val mapLayerState = sessionSnapshot.mapLayerState
+    val topLeftTrayOpen = pageTrayOpen || chartTrayOpen || layerTrayOpen
     val selectedPackageInstalled = remember(selectedPackageName, installRevision) {
         selectedPackageName?.let { SectionalPackages.isInstalled(context, it) } ?: true
     }
@@ -3148,6 +3314,37 @@ private fun MapExplorerPage(
             ChartTrayOption("shaded-relief", "SHADED RELIEF", "RELIEF", shadedReliefTarget != null, R.drawable.shaded_relief_icon) { shadedReliefTarget?.let { onSelectMapId(it.id) } },
         )
     }
+    val layerTrayOptions = remember(mapLayerState) {
+        listOf(
+            MenuDockOption(
+                key = "vectors",
+                label = "Vectors",
+                enabled = mapLayerState.vectors.enabled,
+                toggleState = mapLayerState.vectors,
+                iconResId = mapLayerIconResId(MapLayerId.Vectors),
+            ) {
+                onSessionSnapshotChange(uiSession.setMapLayerVisibility(MapLayerId.Vectors, !mapLayerState.vectors.visible))
+            },
+            MenuDockOption(
+                key = "nexrad",
+                label = "NEXRAD",
+                enabled = mapLayerState.nexrad.enabled,
+                toggleState = mapLayerState.nexrad,
+                iconResId = mapLayerIconResId(MapLayerId.Nexrad),
+            ) {
+                onSessionSnapshotChange(uiSession.setMapLayerVisibility(MapLayerId.Nexrad, !mapLayerState.nexrad.visible))
+            },
+            MenuDockOption(
+                key = "terrain_warning",
+                label = "Terrain Warning",
+                enabled = mapLayerState.terrainWarning.enabled,
+                toggleState = mapLayerState.terrainWarning,
+                iconResId = mapLayerIconResId(MapLayerId.TerrainWarning),
+            ) {
+                onSessionSnapshotChange(uiSession.setMapLayerVisibility(MapLayerId.TerrainWarning, !mapLayerState.terrainWarning.visible))
+            },
+        )
+    }
     val selectedLauncher = trayOptions.firstOrNull { option ->
         when (option.id) {
             "sec" -> selectedMap.mapView.chartFamily == MapChartFamily.Sec
@@ -3158,12 +3355,12 @@ private fun MapExplorerPage(
             else -> false
         }
     } ?: trayOptions.first()
-    val tileRects = remember(tiles, density) {
+    val tileRects = remember(tiles) {
         tiles.associate { tile ->
-            val leftPx = with(density) { tile.leftPx.dp.roundToPx() }
-            val topPx = with(density) { tile.topPx.dp.roundToPx() }
-            val rightPx = with(density) { (tile.leftPx + tile.sizePx).dp.roundToPx() }
-            val bottomPx = with(density) { (tile.topPx + tile.sizePx).dp.roundToPx() }
+            val leftPx = tile.leftPx.roundToInt()
+            val topPx = tile.topPx.roundToInt()
+            val rightPx = (tile.leftPx + tile.sizePx).roundToInt()
+            val bottomPx = (tile.topPx + tile.sizePx).roundToInt()
             renderTileKey(tile) to TileRect(
                 leftPx = leftPx,
                 topPx = topPx,
@@ -3172,23 +3369,23 @@ private fun MapExplorerPage(
             )
         }
     }
-    val situationOverlay = remember(ownship, currentViewport, surfaceWidthUnits, surfaceHeightUnits) {
+    val situationOverlay = remember(ownship, currentViewport, surfaceWidthPx, surfaceHeightPx) {
         resolveSituationOverlay(
             ownship = ownship,
             viewport = currentViewport,
-            widthUnits = surfaceWidthUnits,
-            heightUnits = surfaceHeightUnits,
+            widthUnits = surfaceWidthPx,
+            heightUnits = surfaceHeightPx,
             ringCandidates = situationRingCandidates,
         )
     }
-    val routeScreenSegments = remember(flightPlanRoute, currentViewport, surfaceWidthUnits, surfaceHeightUnits) {
-        if (surfaceWidthUnits <= 0f || surfaceHeightUnits <= 0f) {
+    val routeScreenSegments = remember(flightPlanRoute, currentViewport, surfaceWidthPx, surfaceHeightPx) {
+        if (surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
             emptyList()
         } else {
             flightPlanRoute.map { segment ->
                 Pair(
                     (segment.path.ifEmpty { listOf(segment.from, segment.to) }).map { point ->
-                        latLonToScreenPoint(currentViewport, point, surfaceWidthUnits, surfaceHeightUnits)
+                        latLonToScreenPoint(currentViewport, point, surfaceWidthPx, surfaceHeightPx)
                     },
                     segment,
                 )
@@ -3197,14 +3394,14 @@ private fun MapExplorerPage(
     }
 
     fun syncFollowStateForViewport(nextViewport: MapViewportState) {
-        if (!mapFollowUiState.following || surfaceWidthUnits <= 0f || surfaceHeightUnits <= 0f) {
+        if (!mapFollowUiState.following || surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
             return
         }
         val overlay = resolveSituationOverlay(
             ownship = ownship,
             viewport = nextViewport,
-            widthUnits = surfaceWidthUnits,
-            heightUnits = surfaceHeightUnits,
+            widthUnits = surfaceWidthPx,
+            heightUnits = surfaceHeightPx,
             ringCandidates = situationRingCandidates,
         )
         if (overlay == null) {
@@ -3212,15 +3409,15 @@ private fun MapExplorerPage(
             return
         }
         val point = overlay.pointUnits
-        if (point.x < 0f || point.x > surfaceWidthUnits || point.y < 0f || point.y > surfaceHeightUnits) {
+        if (point.x < 0f || point.x > surfaceWidthPx || point.y < 0f || point.y > surfaceHeightPx) {
             runCatching { uiSession.disengageMapFollow(nextViewport) }.onSuccess(onSessionSnapshotChange)
             return
         }
         runCatching {
             uiSession.setMapFollowOffset(
                 nextViewport,
-                (point.x - surfaceWidthUnits / 2f).toDouble(),
-                (point.y - surfaceHeightUnits / 2f).toDouble(),
+                (point.x - surfaceWidthPx / 2f).toDouble(),
+                (point.y - surfaceHeightPx / 2f).toDouble(),
             )
         }.onSuccess(onSessionSnapshotChange)
     }
@@ -3228,9 +3425,10 @@ private fun MapExplorerPage(
     fun updateViewport(nextViewport: MapViewportState, syncFollow: Boolean = true) {
         Log.i(
             MapViewportLogTag,
-            "update map=${selectedMap.id} from=${"%.2f".format(viewportState.value.zoom)} to=${"%.2f".format(nextViewport.zoom)} syncFollow=$syncFollow",
+            "update map=${selectedMap.id} from=${"%.2f".format(viewportState.value.zoom)} to=${"%.2f".format(nextViewport.zoom)} fromCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)} toCenter=${"%.3f".format(nextViewport.centerWorldX)},${"%.3f".format(nextViewport.centerWorldY)} syncFollow=$syncFollow",
         )
         viewportState.value = nextViewport
+        viewportSyncPending = true
         onViewportChange(nextViewport)
         if (syncFollow) {
             syncFollowStateForViewport(nextViewport)
@@ -3381,7 +3579,10 @@ private fun MapExplorerPage(
         }
     }
 
-    LaunchedEffect(selectedMap.id) { chartTrayOpen = false }
+    LaunchedEffect(selectedMap.id) {
+        chartTrayOpen = false
+        layerTrayOpen = false
+    }
     LaunchedEffect(appCore, uiSession, plan.id, plan.version, plan.guidance, plan.resolvedLegs) {
         if (plan.resolvedLegs.isEmpty()) {
             flightPlanRoute = emptyList()
@@ -3396,8 +3597,8 @@ private fun MapExplorerPage(
             Log.e("AerobagGuidance", "failed to project flight plan route", it)
         }
     }
-    LaunchedEffect(selectedMap.id, pageTrayOpen, chartTrayOpen) {
-        if (!pageTrayOpen && !chartTrayOpen) {
+    LaunchedEffect(selectedMap.id, pageTrayOpen, chartTrayOpen, layerTrayOpen) {
+        if (!pageTrayOpen && !chartTrayOpen && !layerTrayOpen) {
             withFrameNanos { }
             focusRequester.requestFocus()
         }
@@ -3420,13 +3621,24 @@ private fun MapExplorerPage(
             onViewportChange(nextViewport)
         }
     }
-    LaunchedEffect(uiSession, viewport, surfaceSize) {
+    LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.vectors.visible) {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             mapOverlayError = null
             return@LaunchedEffect
         }
+        if (!mapLayerState.vectors.visible) {
+            committedMapOverlay = MapOverlayQueryResult(
+                neededPointTiles = emptyList(),
+                visibleFeatures = emptyList(),
+                warnings = emptyList(),
+            )
+            committedOverlayViewport = viewport
+            committedOverlaySurfaceUnits = OverlaySurfaceUnits(surfaceWidthPx, surfaceHeightPx)
+            mapOverlayError = null
+            return@LaunchedEffect
+        }
         runCatching {
-            val firstPass = uiSession.queryMapOverlay(viewport, surfaceWidthUnits.toDouble(), surfaceHeightUnits.toDouble())
+            val firstPass = uiSession.queryMapOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
             val payloads = if (firstPass.neededPointTiles.isNotEmpty()) {
                 fixture.vectorPackageId?.let { vectorPackageId ->
                     VectorTileAssets.loadPointTiles(
@@ -3440,14 +3652,14 @@ private fun MapExplorerPage(
             }
             if (payloads.isNotEmpty()) {
                 uiSession.ingestPointTiles(payloads)
-                uiSession.queryMapOverlay(viewport, surfaceWidthUnits.toDouble(), surfaceHeightUnits.toDouble())
+                uiSession.queryMapOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
             } else {
                 firstPass
             }
         }.onSuccess { overlay ->
             committedMapOverlay = overlay
             committedOverlayViewport = viewport
-            committedOverlaySurfaceUnits = OverlaySurfaceUnits(surfaceWidthUnits, surfaceHeightUnits)
+            committedOverlaySurfaceUnits = OverlaySurfaceUnits(surfaceWidthPx, surfaceHeightPx)
             mapOverlayError = null
         }.onFailure { error ->
             if (error is CancellationException) {
@@ -3457,17 +3669,117 @@ private fun MapExplorerPage(
             }
         }
     }
+    LaunchedEffect(uiSession, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled, devServerBaseUrl) {
+        if (!mapLayerState.nexrad.visible || !mapLayerState.nexrad.enabled) {
+            nexradFrames = emptyList()
+            nexradFrameIndex = 0
+            return@LaunchedEffect
+        }
+        runCatching {
+            val manifestJson = withContext(Dispatchers.IO) {
+                URL(resolvePlaybackTraceUrl("/fast-products/nexrad/nexrad.json", devServerBaseUrl)).readText()
+            }
+            val manifest = json.decodeFromString<NexradManifest>(manifestJson)
+            require(manifest.projection == "EPSG:3857") { "unsupported nexrad projection ${manifest.projection}" }
+            withContext(Dispatchers.IO) {
+                manifest.frames.reversed().map { frame ->
+                    val bytes = URL(resolvePlaybackTraceUrl("/fast-products/nexrad/${frame.filename}", devServerBaseUrl)).openStream().buffered().use { it.readBytes() }
+                    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        ?: error("failed to decode nexrad frame ${frame.filename}")
+                    NexradOverlayFrame(frame = frame, bitmap = bitmap.asImageBitmap())
+                }
+            }
+        }.onSuccess { frames ->
+            nexradFrames = frames
+            nexradFrameIndex = 0
+        }.onFailure { error ->
+            nexradFrames = emptyList()
+            nexradFrameIndex = 0
+            Log.w("AerobagLayers", "nexrad unavailable", error)
+        }
+    }
+    LaunchedEffect(nexradFrames) {
+        if (nexradFrames.size <= 1) {
+            nexradFrameIndex = 0
+            return@LaunchedEffect
+        }
+        while (true) {
+            delay(NexradFrameIntervalMs)
+            nexradFrameIndex = (nexradFrameIndex + 1) % nexradFrames.size
+        }
+    }
+    LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.terrainWarning.visible, devServerBaseUrl) {
+        if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+            terrainOverlay = emptyList()
+            terrainOverlayError = null
+            return@LaunchedEffect
+        }
+        if (!mapLayerState.terrainWarning.visible) {
+            terrainOverlay = emptyList()
+            terrainOverlayError = null
+            return@LaunchedEffect
+        }
+        runCatching {
+            val query = uiSession.queryTerrainOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
+            if (query.status !is net.jonh.aerobag.prototype.domain.TerrainOverlayStatus.Ready) {
+                emptyList()
+            } else {
+                withContext(Dispatchers.IO) {
+                    query.tileRequests.map { request ->
+                        val sourceTiles =
+                            if (request.sourceTiles.isNotEmpty()) request.sourceTiles
+                            else listOf(net.jonh.aerobag.prototype.domain.TerrainOverlaySourceTile(request.productId, request.path))
+                        val sourceBytes =
+                            sourceTiles.mapNotNull { sourceTile ->
+                                runCatching {
+                                    URL(resolvePlaybackTraceUrl("/terrain-products/${sourceTile.productId}/${sourceTile.path}", devServerBaseUrl))
+                                        .openStream()
+                                        .buffered()
+                                        .use { it.readBytes() }
+                                }.getOrNull()
+                            }
+                        if (sourceBytes.isEmpty()) {
+                            return@map null
+                        }
+                        val rawBytes =
+                            if (sourceBytes.size == 1) {
+                                uiSession.renderTerrainOverlayTile(sourceBytes.first(), Double.NaN)
+                            } else {
+                                uiSession.renderTerrainOverlayTiles(packTerrainTileBytes(sourceBytes), Double.NaN)
+                            }
+                        TerrainOverlayImage(
+                            key = request.key,
+                            z = request.z,
+                            x = request.x,
+                            yTms = request.yTms,
+                            left = request.left,
+                            top = request.top,
+                            size = request.size,
+                            bitmap = parseTerrainRawRgba(rawBytes),
+                        )
+                    }.filterNotNull()
+                }
+            }
+        }.onSuccess { images ->
+            terrainOverlay = images
+            terrainOverlayError = null
+        }.onFailure { error ->
+            terrainOverlay = emptyList()
+            terrainOverlayError = error.message ?: error::class.java.simpleName
+            Log.w("AerobagLayers", "terrain overlay unavailable", error)
+        }
+    }
     val displayedOverlayFeatures = remember(
         committedMapOverlay,
         committedOverlayViewport,
         committedOverlaySurfaceUnits,
         currentViewport,
-        surfaceWidthUnits,
-        surfaceHeightUnits,
+        surfaceWidthPx,
+        surfaceHeightPx,
     ) {
         val baseViewport = committedOverlayViewport
         val baseSurface = committedOverlaySurfaceUnits
-        if (baseViewport == null || baseSurface == null || baseSurface.width <= 0f || baseSurface.height <= 0f || surfaceWidthUnits <= 0f || surfaceHeightUnits <= 0f) {
+        if (baseViewport == null || baseSurface == null || baseSurface.width <= 0f || baseSurface.height <= 0f || surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
             committedMapOverlay.visibleFeatures
         } else {
             committedMapOverlay.visibleFeatures.map { feature ->
@@ -3476,10 +3788,51 @@ private fun MapExplorerPage(
                     fromViewport = baseViewport,
                     fromSurface = baseSurface,
                     toViewport = currentViewport,
-                    toSurface = OverlaySurfaceUnits(surfaceWidthUnits, surfaceHeightUnits),
+                    toSurface = OverlaySurfaceUnits(surfaceWidthPx, surfaceHeightPx),
                 )
             }
         }
+    }
+    LaunchedEffect(currentViewport, surfaceWidthPx, surfaceHeightPx, tiles, nexradFrames, nexradFrameIndex, terrainOverlay) {
+        if (surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) return@LaunchedEffect
+        val topLeftWorld = screenToWorldOffset(currentViewport, 0f, 0f, surfaceWidthPx, surfaceHeightPx)
+        val bottomRightWorld = screenToWorldOffset(currentViewport, surfaceWidthPx, surfaceHeightPx, surfaceWidthPx, surfaceHeightPx)
+        val sampleTile = tiles.firstOrNull()
+        val sampleTerrain = terrainOverlay.firstOrNull()
+        val sampleNexrad = nexradFrames.getOrNull(nexradFrameIndex)
+        val nexradMessage =
+            if (sampleNexrad == null) {
+                "nexrad=none"
+            } else {
+                val nwWorld = mercatorMetersToWorld(sampleNexrad.frame.bounds.west, sampleNexrad.frame.bounds.north)
+                val seWorld = mercatorMetersToWorld(sampleNexrad.frame.bounds.east, sampleNexrad.frame.bounds.south)
+                val nwScreen = worldToScreen(currentViewport, nwWorld, surfaceWidthPx, surfaceHeightPx)
+                val seScreen = worldToScreen(currentViewport, seWorld, surfaceWidthPx, surfaceHeightPx)
+                "nexrad=nwWorld=${"%.3f".format(nwWorld.x)},${"%.3f".format(nwWorld.y)} seWorld=${"%.3f".format(seWorld.x)},${"%.3f".format(seWorld.y)} nwScreen=${"%.1f".format(nwScreen.x)},${"%.1f".format(nwScreen.y)} seScreen=${"%.1f".format(seScreen.x)},${"%.1f".format(seScreen.y)}"
+            }
+        val terrainMessage =
+            if (sampleTerrain == null) {
+                "terrain=none"
+            } else {
+                val tilesAtZoom = 2.0.pow(sampleTerrain.z.toDouble())
+                val tileWorldSize = WebMercatorWorldSize / tilesAtZoom
+                val yXyz = (tilesAtZoom - 1.0) - sampleTerrain.yTms.toDouble()
+                val nwWorld = Offset((sampleTerrain.x * tileWorldSize).toFloat(), (yXyz * tileWorldSize).toFloat())
+                val seWorld = Offset(((sampleTerrain.x + 1.0) * tileWorldSize).toFloat(), ((yXyz + 1.0) * tileWorldSize).toFloat())
+                val nwScreen = worldToScreen(currentViewport, nwWorld, surfaceWidthPx, surfaceHeightPx)
+                val seScreen = worldToScreen(currentViewport, seWorld, surfaceWidthPx, surfaceHeightPx)
+                "terrain=z${sampleTerrain.z}/${sampleTerrain.x}/${sampleTerrain.yTms} nwWorld=${"%.3f".format(nwWorld.x)},${"%.3f".format(nwWorld.y)} seWorld=${"%.3f".format(seWorld.x)},${"%.3f".format(seWorld.y)} nwScreen=${"%.1f".format(nwScreen.x)},${"%.1f".format(nwScreen.y)} seScreen=${"%.1f".format(seScreen.x)},${"%.1f".format(seScreen.y)}"
+            }
+        val chartMessage =
+            if (sampleTile == null) {
+                "chart=none"
+            } else {
+                "chart=${sampleTile.mapViewId} z${sampleTile.zoom}/${sampleTile.x}/${sampleTile.yTms} screen=${"%.1f".format(sampleTile.leftPx)},${"%.1f".format(sampleTile.topPx)} size=${"%.1f".format(sampleTile.sizePx)}"
+            }
+        Log.i(
+            MapLayerLogTag,
+            "viewport zoom=${"%.2f".format(currentViewport.zoom)} center=${"%.3f".format(currentViewport.centerWorldX)},${"%.3f".format(currentViewport.centerWorldY)} worldTL=${"%.3f".format(topLeftWorld.x)},${"%.3f".format(topLeftWorld.y)} worldBR=${"%.3f".format(bottomRightWorld.x)},${"%.3f".format(bottomRightWorld.y)} $chartMessage $terrainMessage $nexradMessage",
+        )
     }
     DisposableEffect(activity) {
         if (activity != null) {
@@ -3500,8 +3853,8 @@ private fun MapExplorerPage(
             .focusRequester(focusRequester)
             .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.nativeKeyEvent.action != AndroidKeyEvent.ACTION_DOWN ||
-                    surfaceWidthUnits == 0f ||
-                    surfaceHeightUnits == 0f
+                    surfaceWidthPx == 0f ||
+                    surfaceHeightPx == 0f
                 ) {
                     return@onPreviewKeyEvent false
                 }
@@ -3523,9 +3876,9 @@ private fun MapExplorerPage(
                     zoomAroundPoint(
                         viewport = viewportState.value,
                         mapView = selectedMap.mapView,
-                        anchor = ScreenPoint(surfaceWidthUnits / 2f, surfaceHeightUnits / 2f),
-                        widthPx = surfaceWidthUnits,
-                        heightPx = surfaceHeightUnits,
+                        anchor = ScreenPoint(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
+                        widthPx = surfaceWidthPx,
+                        heightPx = surfaceHeightPx,
                         nextZoom = clampZoom(viewportState.value.zoom + delta, selectedMap.mapView),
                     ),
                 )
@@ -3533,7 +3886,7 @@ private fun MapExplorerPage(
             }
             .focusable()
             .pointerInput(selectedMap.mapView, surfaceSize) {
-                if (surfaceWidthUnits == 0f || surfaceHeightUnits == 0f) {
+                if (surfaceWidthPx == 0f || surfaceHeightPx == 0f) {
                     return@pointerInput
                 }
                 awaitEachGesture {
@@ -3556,7 +3909,7 @@ private fun MapExplorerPage(
                             if (!loggedGestureSeed) {
                                 Log.i(
                                     MapViewportLogTag,
-                                    "gesture-start map=${selectedMap.id} seed=${"%.2f".format(viewportState.value.zoom)} local=${"%.2f".format(viewportState.value.zoom)}",
+                                    "gesture-start map=${selectedMap.id} seed=${"%.2f".format(viewportState.value.zoom)} local=${"%.2f".format(viewportState.value.zoom)} center=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)}",
                                 )
                                 gestureViewport = viewportState.value
                                 loggedGestureSeed = true
@@ -3573,8 +3926,8 @@ private fun MapExplorerPage(
                                     gestureViewport = viewportState.value
                                     gestureViewport = dragViewport(
                                         gestureViewport,
-                                        dx = with(density) { (change.position.x - last.x).toDp().value },
-                                        dy = with(density) { (change.position.y - last.y).toDp().value },
+                                        dx = change.position.x - last.x,
+                                        dy = change.position.y - last.y,
                                     )
                                     movedViewportDuringGesture = true
                                     updateViewport(gestureViewport)
@@ -3588,21 +3941,21 @@ private fun MapExplorerPage(
                                     gestureViewport = viewportState.value
                                     pinchSnapshot = createPinchSnapshot(
                                         viewport = gestureViewport,
-                                        first = ScreenPoint(with(density) { first.position.x.toDp().value }, with(density) { first.position.y.toDp().value }),
-                                        second = ScreenPoint(with(density) { second.position.x.toDp().value }, with(density) { second.position.y.toDp().value }),
-                                        widthPx = surfaceWidthUnits,
-                                        heightPx = surfaceHeightUnits,
+                                        first = ScreenPoint(first.position.x, first.position.y),
+                                        second = ScreenPoint(second.position.x, second.position.y),
+                                        widthPx = surfaceWidthPx,
+                                        heightPx = surfaceHeightPx,
                                     )
                                 }
                                 gestureViewport = viewportState.value
                                 gestureViewport =
                                     applyPinchGesture(
                                         snapshot = pinchSnapshot,
-                                        currentFirst = ScreenPoint(with(density) { first.position.x.toDp().value }, with(density) { first.position.y.toDp().value }),
-                                        currentSecond = ScreenPoint(with(density) { second.position.x.toDp().value }, with(density) { second.position.y.toDp().value }),
+                                        currentFirst = ScreenPoint(first.position.x, first.position.y),
+                                        currentSecond = ScreenPoint(second.position.x, second.position.y),
                                         mapView = selectedMap.mapView,
-                                        widthPx = surfaceWidthUnits,
-                                        heightPx = surfaceHeightUnits,
+                                        widthPx = surfaceWidthPx,
+                                        heightPx = surfaceHeightPx,
                                     )
                                 movedViewportDuringGesture = true
                                 updateViewport(gestureViewport)
@@ -3619,7 +3972,7 @@ private fun MapExplorerPage(
                 }
             }
             .pointerInteropFilter { event ->
-                if (surfaceWidthUnits == 0f || surfaceHeightUnits == 0f) {
+                if (surfaceWidthPx == 0f || surfaceHeightPx == 0f) {
                     return@pointerInteropFilter false
                 }
                 if (event.action == MotionEvent.ACTION_SCROLL) {
@@ -3629,9 +3982,9 @@ private fun MapExplorerPage(
                         zoomAroundPoint(
                             viewport = viewportState.value,
                             mapView = selectedMap.mapView,
-                            anchor = ScreenPoint(surfaceWidthUnits / 2f, surfaceHeightUnits / 2f),
-                            widthPx = surfaceWidthUnits,
-                            heightPx = surfaceHeightUnits,
+                            anchor = ScreenPoint(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
+                            widthPx = surfaceWidthPx,
+                            heightPx = surfaceHeightPx,
                             nextZoom = clampZoom(viewportState.value.zoom - wheelDelta * 0.28, selectedMap.mapView),
                         ),
                     )
@@ -3671,6 +4024,36 @@ private fun MapExplorerPage(
                     }
                 }
             }
+            val currentNexradFrame = nexradFrames.getOrNull(nexradFrameIndex)
+            if (currentNexradFrame != null && surfaceWidthPx > 0f && surfaceHeightPx > 0f) {
+                val northwestWorld = mercatorMetersToWorld(currentNexradFrame.frame.bounds.west, currentNexradFrame.frame.bounds.north)
+                val southeastWorld = mercatorMetersToWorld(currentNexradFrame.frame.bounds.east, currentNexradFrame.frame.bounds.south)
+                val northwest = worldToScreen(currentViewport, northwestWorld, surfaceWidthPx, surfaceHeightPx)
+                val southeast = worldToScreen(currentViewport, southeastWorld, surfaceWidthPx, surfaceHeightPx)
+                val widthPx = (southeast.x - northwest.x).roundToInt().coerceAtLeast(1)
+                val heightPx = (southeast.y - northwest.y).roundToInt().coerceAtLeast(1)
+                drawImage(
+                    image = currentNexradFrame.bitmap,
+                    dstOffset = IntOffset(northwest.x.roundToInt(), northwest.y.roundToInt()),
+                    dstSize = IntSize(widthPx, heightPx),
+                    alpha = 0.82f,
+                )
+            }
+            terrainOverlay.forEach { image ->
+                val tilesAtZoom = 2.0.pow(image.z.toDouble())
+                val tileWorldSize = WebMercatorWorldSize / tilesAtZoom
+                val yXyz = (tilesAtZoom - 1.0) - image.yTms.toDouble()
+                val scale = scaleForZoom(currentViewport.zoom)
+                val leftPx = ((image.x * tileWorldSize - currentViewport.centerWorldX) * scale + surfaceWidthPx / 2f).roundToInt()
+                val topPx = ((yXyz * tileWorldSize - currentViewport.centerWorldY) * scale + surfaceHeightPx / 2f).roundToInt()
+                val sizePx = (tileWorldSize * scale).roundToInt().coerceAtLeast(1)
+                drawImage(
+                    image = image.bitmap,
+                    dstOffset = IntOffset(leftPx, topPx),
+                    dstSize = IntSize(sizePx, sizePx),
+                    alpha = 0.68f,
+                )
+            }
         }
         if (routeScreenSegments.isNotEmpty()) {
             Canvas(modifier = Modifier.fillMaxSize()) {
@@ -3679,15 +4062,15 @@ private fun MapExplorerPage(
                     path.zipWithNext().forEach { (from, to) ->
                         drawLine(
                             color = Color(0x8C000000),
-                            start = Offset(from.x * densityScale, from.y * densityScale),
-                            end = Offset(to.x * densityScale, to.y * densityScale),
+                            start = from,
+                            end = to,
                             strokeWidth = 7f * densityScale,
                             cap = StrokeCap.Round,
                         )
                         drawLine(
                             color = routeSegmentColor(segment.status),
-                            start = Offset(from.x * densityScale, from.y * densityScale),
-                            end = Offset(to.x * densityScale, to.y * densityScale),
+                            start = from,
+                            end = to,
                             strokeWidth = 3.5f * densityScale,
                             cap = StrokeCap.Round,
                         )
@@ -3707,7 +4090,7 @@ private fun MapExplorerPage(
                 airportUntoweredLabelFillPaint.textSize = 14f * densityScale
                 vorLabelFillPaint.textSize = 14f * densityScale
                 displayedOverlayFeatures.forEach { feature ->
-                    val center = Offset(feature.screenX.toFloat() * densityScale, feature.screenY.toFloat() * densityScale)
+                    val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
                     val isAirport = feature.styleClass == "airport" || feature.kind.equals("airport", ignoreCase = true)
                     val isVor = feature.styleClass == "nav" || feature.kind.lowercase().contains("vor")
                     if (isAirport) {
@@ -3776,8 +4159,8 @@ private fun MapExplorerPage(
         if (situationOverlay != null) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val densityScale = density.density
-                val center = Offset(situationOverlay.pointUnits.x * densityScale, situationOverlay.pointUnits.y * densityScale)
-                val ringRadius = situationOverlay.ring.radiusUnits * densityScale
+                val center = situationOverlay.pointUnits
+                val ringRadius = situationOverlay.ring.radiusUnits
                 drawCircle(
                     color = Color(0x66000000),
                     radius = ringRadius,
@@ -3791,8 +4174,8 @@ private fun MapExplorerPage(
                     style = Stroke(width = 6f),
                 )
                 situationOverlay.ring.tickMarks.forEach { tick ->
-                    val inner = Offset(tick.innerUnits.x * densityScale, tick.innerUnits.y * densityScale)
-                    val outer = Offset(tick.outerUnits.x * densityScale, tick.outerUnits.y * densityScale)
+                    val inner = tick.innerUnits
+                    val outer = tick.outerUnits
                     drawLine(Color(0x66000000), inner, outer, strokeWidth = 8f)
                     drawLine(Color.White, inner, outer, strokeWidth = 6f)
                 }
@@ -3800,7 +4183,7 @@ private fun MapExplorerPage(
                     labelStrokePaint.textSize = 16f * densityScale
                     labelFillPaint.textSize = 16f * densityScale
                     situationOverlay.ring.cardinalLabels.forEach { label ->
-                        val point = Offset(label.pointUnits.x * densityScale, label.pointUnits.y * densityScale)
+                        val point = label.pointUnits
                         save()
                         rotate(label.rotationDeg, point.x, point.y)
                         drawText(label.text, point.x, point.y + labelFillPaint.textSize * 0.33f, labelStrokePaint)
@@ -3815,10 +4198,7 @@ private fun MapExplorerPage(
                     style = Stroke(width = 6f),
                 )
                 if (situationOverlay.predictorUnits != null) {
-                    val predictor = Offset(
-                        situationOverlay.predictorUnits.x * densityScale,
-                        situationOverlay.predictorUnits.y * densityScale,
-                    )
+                    val predictor = situationOverlay.predictorUnits
                     val shaftEnd = arrowShaftEndPoint(center, predictor)
                     drawLine(Color(0x66000000), center, shaftEnd, strokeWidth = 8f)
                     drawLine(Color.White, center, shaftEnd, strokeWidth = 6f)
@@ -3827,10 +4207,7 @@ private fun MapExplorerPage(
                     drawPath(arrow, Color(0x66000000), style = Stroke(width = 1.5f))
                 }
                 drawContext.canvas.nativeCanvas.apply {
-                    val labelPoint = Offset(
-                        situationOverlay.ring.labelPointUnits.x * densityScale,
-                        situationOverlay.ring.labelPointUnits.y * densityScale,
-                    )
+                    val labelPoint = situationOverlay.ring.labelPointUnits
                     save()
                     rotate(situationOverlay.ring.labelRotationDeg, labelPoint.x, labelPoint.y)
                     labelStrokePaint.textSize = 16f * densityScale
@@ -3866,11 +4243,13 @@ private fun MapExplorerPage(
             onTogglePageTray = {
                 pageTrayOpen = !pageTrayOpen
                 chartTrayOpen = false
+                layerTrayOpen = false
             },
             onSelectPage = {
                 onSelectPage(it)
                 pageTrayOpen = false
                 chartTrayOpen = false
+                layerTrayOpen = false
             },
             selectedLabel = selectedLauncher.launcherLabel,
             trayOptions = trayOptions,
@@ -3878,10 +4257,18 @@ private fun MapExplorerPage(
             onToggle = {
                 chartTrayOpen = !chartTrayOpen
                 pageTrayOpen = false
+                layerTrayOpen = false
             },
+            layerTrayOpen = layerTrayOpen,
+            onToggleLayerTray = {
+                layerTrayOpen = !layerTrayOpen
+                pageTrayOpen = false
+                chartTrayOpen = false
+            },
+            layerOptions = layerTrayOptions,
         )
 
-        val playbackLeftRoomUnits = surfaceWidthUnits / 2f - (ThumbSize.value * 1.5f) - (ThumbGap.value * 2f)
+        val playbackLeftRoomUnits = surfaceWidthDp / 2f - (ThumbSize.value * 1.5f) - (ThumbGap.value * 2f)
         val playbackBottomPadding =
             if (playbackLeftRoomUnits < ThumbSize.value * 2.8f) {
                 ThumbGap + (ThumbSize * 0.67f) + ThumbGap
@@ -3917,6 +4304,7 @@ private fun MapExplorerPage(
             Scrim {
                 pageTrayOpen = false
                 chartTrayOpen = false
+                layerTrayOpen = false
             }
         }
 
@@ -5384,6 +5772,9 @@ private fun MapTopLeftControls(
     trayOptions: List<ChartTrayOption>,
     trayOpen: Boolean,
     onToggle: () -> Unit,
+    layerTrayOpen: Boolean,
+    onToggleLayerTray: () -> Unit,
+    layerOptions: List<MenuDockOption>,
 ) {
     Row(
         modifier = modifier.padding(ThumbGap),
@@ -5409,6 +5800,14 @@ private fun MapTopLeftControls(
             options = trayOptions.map { option ->
                 MenuDockOption(option.id, option.label, active = option.launcherLabel == selectedLabel, enabled = option.available, iconResId = option.iconResId) { option.select?.invoke() }
             },
+        )
+        MenuDock(
+            launcherLabel = "LAYERS",
+            launcherIconResId = mapLayerIconResId(MapLayerId.Vectors),
+            open = layerTrayOpen,
+            onToggle = onToggleLayerTray,
+            style = MenuDockStyle.Layers,
+            options = layerOptions,
         )
     }
 }
@@ -5585,6 +5984,7 @@ private fun MenuDock(
             maxLines = style.launcherMaxLines,
             enabled = true,
             accentColor = launcherAccentColor,
+            wide = style != MenuDockStyle.Compact,
             modifier = Modifier
                 .width(style.buttonWidth)
                 .height(ThumbSize)
@@ -5610,6 +6010,7 @@ private fun MenuDock(
                                 active = option.active,
                                 enabled = option.enabled,
                                 accentColor = option.accentColor,
+                                toggleState = option.toggleState,
                                 iconResId = option.iconResId,
                                 width = style.trayWidth,
                                 onSelect = option.onSelect,
@@ -5652,14 +6053,19 @@ private fun MenuPanelRow(
     active: Boolean,
     enabled: Boolean,
     accentColor: Color? = null,
+    toggleState: UiMapLayerToggleState? = null,
     @DrawableRes iconResId: Int? = null,
     width: Dp = Dp.Unspecified,
     onSelect: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val rowShape = RoundedCornerShape(ThumbRadius)
+    val isOn = toggleState?.enabled == true && toggleState.visible
+    val isOff = toggleState?.enabled == true && !toggleState.visible
     val rowBackground = when {
         !enabled -> uiTheme.controls.panelBg
+        isOn -> lerp(uiTheme.controls.buttonBg, Color.White, 0.16f)
+        isOff -> lerp(uiTheme.controls.buttonBg, Color.Black, 0.12f)
         active -> lerp(uiTheme.controls.buttonBg, Color.White, 0.18f)
         else -> uiTheme.controls.buttonBg
     }
@@ -5691,7 +6097,7 @@ private fun MenuPanelRow(
                     .background(accentColor.copy(alpha = if (enabled) 1f else 0.45f)),
             )
         }
-        if (iconResId != null) {
+        if (iconResId != null || toggleState != null) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -5699,10 +6105,12 @@ private fun MenuPanelRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconFrame(
-                    iconResId = iconResId,
-                    modifier = Modifier.size(ThumbSize * 0.72f),
-                )
+                if (iconResId != null) {
+                    IconFrame(
+                        iconResId = iconResId,
+                        modifier = Modifier.size(ThumbSize * 0.72f),
+                    )
+                }
                 Text(
                     text = label,
                     modifier = Modifier.weight(1f),
@@ -5711,6 +6119,13 @@ private fun MenuPanelRow(
                     overflow = TextOverflow.Ellipsis,
                     color = rowTextColor,
                 )
+                if (toggleState != null) {
+                    LayerToggle(
+                        visible = toggleState.visible,
+                        enabled = toggleState.enabled,
+                        modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
             }
         } else {
             Text(
@@ -6939,6 +7354,41 @@ private fun IconFrame(
 }
 
 @Composable
+private fun LayerToggle(
+    visible: Boolean,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val knobOffset by animateDpAsState(
+        targetValue = if (visible) ThumbSize * 0.34f else 0.dp,
+        label = "layerToggleOffset",
+    )
+    val trackColor by animateColorAsState(
+        targetValue = if (visible) lerp(uiTheme.controls.buttonBg, Color.White, 0.84f) else lerp(uiTheme.controls.buttonBg, Color.White, 0.48f),
+        label = "layerToggleTrack",
+    )
+    Box(
+        modifier = modifier
+            .width(ThumbSize * 0.78f)
+            .height(ThumbSize * 0.42f)
+            .clip(RoundedCornerShape(999.dp))
+            .background(trackColor.copy(alpha = if (enabled) 1f else 0.45f))
+            .border(2.dp, lerp(uiTheme.controls.buttonBg, Color.Black, 0.22f), RoundedCornerShape(999.dp)),
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(start = 2.dp)
+                .offset(x = knobOffset)
+                .align(Alignment.CenterStart)
+                .size(ThumbSize * 0.30f)
+                .clip(CircleShape)
+                .background(Color(0xFFFFFDF9)),
+        )
+    }
+}
+
+@Composable
 private fun OutlinedButtonLabel(
     text: String,
     modifier: Modifier = Modifier,
@@ -6999,6 +7449,7 @@ private fun CompactSquareButton(
     selectedColor: Color? = null,
     accentColor: Color? = null,
     @DrawableRes iconResId: Int? = null,
+    wide: Boolean = false,
     centered: Boolean = true,
     textStartPadding: Dp = 0.dp,
     textModifier: Modifier = Modifier,
@@ -7109,7 +7560,7 @@ private fun CompactSquareButton(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(horizontal = 1.dp, vertical = 2.dp)
+                        .padding(horizontal = if (wide) 0.dp else 1.dp, vertical = 2.dp)
                         .then(textModifier),
                     style = MaterialTheme.typography.labelSmall.copy(fontSize = 13.sp),
                     maxLines = maxLines,

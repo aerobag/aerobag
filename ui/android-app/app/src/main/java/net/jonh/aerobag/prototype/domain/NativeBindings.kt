@@ -197,6 +197,18 @@ interface NativeBridge {
         chartIdJson: String,
     ): String
 
+    fun setMapLayerVisibilityInSessionJson(
+        handle: Long,
+        layerIdJson: String,
+        visible: Boolean,
+    ): String
+
+    fun setMapLayerEnabledInSessionJson(
+        handle: Long,
+        layerIdJson: String,
+        enabled: Boolean,
+    ): String
+
     fun getSessionSnapshotJson(handle: Long): String
 
     fun replaceFlightPlanInSessionJson(
@@ -227,6 +239,25 @@ interface NativeBridge {
         widthPx: Double,
         heightPx: Double,
     ): String
+
+    fun getTerrainOverlayInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+    ): String
+
+    fun renderTerrainOverlayTileInSession(
+        handle: Long,
+        tileBytes: ByteArray,
+        aircraftAltitudeFt: Double,
+    ): ByteArray
+
+    fun renderTerrainOverlayTilesInSession(
+        handle: Long,
+        packedTileBytes: ByteArray,
+        aircraftAltitudeFt: Double,
+    ): ByteArray
 
     fun syncMapFollowInSessionJson(
         handle: Long,
@@ -460,6 +491,18 @@ object NativeBindings : NativeBridge {
         chartIdJson: String,
     ): String
 
+    external override fun setMapLayerVisibilityInSessionJson(
+        handle: Long,
+        layerIdJson: String,
+        visible: Boolean,
+    ): String
+
+    external override fun setMapLayerEnabledInSessionJson(
+        handle: Long,
+        layerIdJson: String,
+        enabled: Boolean,
+    ): String
+
     external override fun getSessionSnapshotJson(handle: Long): String
 
     external override fun replaceFlightPlanInSessionJson(
@@ -490,6 +533,25 @@ object NativeBindings : NativeBridge {
         widthPx: Double,
         heightPx: Double,
     ): String
+
+    external override fun getTerrainOverlayInSessionJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+    ): String
+
+    external override fun renderTerrainOverlayTileInSession(
+        handle: Long,
+        tileBytes: ByteArray,
+        aircraftAltitudeFt: Double,
+    ): ByteArray
+
+    external override fun renderTerrainOverlayTilesInSession(
+        handle: Long,
+        packedTileBytes: ByteArray,
+        aircraftAltitudeFt: Double,
+    ): ByteArray
 
     external override fun syncMapFollowInSessionJson(
         handle: Long,

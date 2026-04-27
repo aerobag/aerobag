@@ -10,11 +10,13 @@ import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonEncoder
+import kotlinx.serialization.json.JsonContentPolymorphicSerializer
 import kotlinx.serialization.json.JsonNames
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
@@ -535,6 +537,83 @@ data class WireMapOverlayQueryResult(
     val visible_features: List<WireVisibleMapFeature>,
     val warnings: List<WireMapOverlayWarning>,
 )
+
+@Serializable
+sealed interface WireTerrainOverlayStatus {
+    val state: String
+}
+
+@Serializable
+@SerialName("hidden")
+data class WireTerrainOverlayStatusHidden(
+    override val state: String = "hidden",
+) : WireTerrainOverlayStatus
+
+@Serializable
+@SerialName("no_position")
+data class WireTerrainOverlayStatusNoPosition(
+    override val state: String = "no_position",
+) : WireTerrainOverlayStatus
+
+@Serializable
+@SerialName("no_altitude")
+data class WireTerrainOverlayStatusNoAltitude(
+    override val state: String = "no_altitude",
+) : WireTerrainOverlayStatus
+
+@Serializable
+@SerialName("too_many_tiles")
+data class WireTerrainOverlayStatusTooManyTiles(
+    override val state: String = "too_many_tiles",
+    val count: Int,
+) : WireTerrainOverlayStatus
+
+@Serializable
+@SerialName("ready")
+data class WireTerrainOverlayStatusReady(
+    override val state: String = "ready",
+    val count: Int,
+) : WireTerrainOverlayStatus
+
+@Serializable
+data class WireTerrainOverlaySourceTile(
+    val product_id: String,
+    val path: String,
+)
+
+@Serializable
+data class WireTerrainOverlayTileRequest(
+    val key: String,
+    val product_id: String,
+    val path: String,
+    val source_tiles: List<WireTerrainOverlaySourceTile>,
+    val z: Int,
+    val x: Int,
+    val y_tms: Int,
+    val left: Double,
+    val top: Double,
+    val size: Double,
+)
+
+@Serializable
+data class WireTerrainOverlayQueryResult(
+    val status: @Serializable(with = WireTerrainOverlayStatusSerializer::class) WireTerrainOverlayStatus,
+    val tile_requests: List<WireTerrainOverlayTileRequest>,
+)
+
+object WireTerrainOverlayStatusSerializer : JsonContentPolymorphicSerializer<WireTerrainOverlayStatus>(WireTerrainOverlayStatus::class) {
+    override fun selectDeserializer(element: kotlinx.serialization.json.JsonElement): kotlinx.serialization.DeserializationStrategy<out WireTerrainOverlayStatus> {
+        val state = element.jsonObject["state"]?.jsonPrimitive?.content
+        return when (state) {
+            "hidden" -> WireTerrainOverlayStatusHidden.serializer()
+            "no_position" -> WireTerrainOverlayStatusNoPosition.serializer()
+            "no_altitude" -> WireTerrainOverlayStatusNoAltitude.serializer()
+            "too_many_tiles" -> WireTerrainOverlayStatusTooManyTiles.serializer()
+            "ready" -> WireTerrainOverlayStatusReady.serializer()
+            else -> WireTerrainOverlayStatusHidden.serializer()
+        }
+    }
+}
 
 @Serializable
 data class WireAirwaySuggestion(

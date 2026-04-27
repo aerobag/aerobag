@@ -85,10 +85,58 @@ data class MapOverlayWarning(
     val message: String,
 )
 
+enum class MapLayerId {
+    Vectors,
+    Nexrad,
+    TerrainWarning,
+}
+
+data class UiMapLayerToggleState(
+    val visible: Boolean,
+    val enabled: Boolean,
+)
+
+data class UiMapLayerState(
+    val vectors: UiMapLayerToggleState,
+    val nexrad: UiMapLayerToggleState,
+    val terrainWarning: UiMapLayerToggleState,
+)
+
 data class MapOverlayQueryResult(
     val neededPointTiles: List<VectorTileRequest>,
     val visibleFeatures: List<VisibleMapFeature>,
     val warnings: List<MapOverlayWarning>,
+)
+
+data class TerrainOverlaySourceTile(
+    val productId: String,
+    val path: String,
+)
+
+sealed interface TerrainOverlayStatus {
+    data object Hidden : TerrainOverlayStatus
+    data object NoPosition : TerrainOverlayStatus
+    data object NoAltitude : TerrainOverlayStatus
+    data class TooManyTiles(val count: Int) : TerrainOverlayStatus
+    data class Ready(val count: Int) : TerrainOverlayStatus
+}
+
+data class TerrainOverlayTileRequest(
+    val key: String,
+    val productId: String,
+    val path: String,
+    val sourceTiles: List<TerrainOverlaySourceTile>,
+    val z: Int,
+    val x: Int,
+    val yTms: Int,
+    val left: Double,
+    val top: Double,
+    val size: Double,
+)
+
+data class TerrainOverlayQueryResult(
+    val status: TerrainOverlayStatus,
+    val tileRequests: List<TerrainOverlayTileRequest>,
 )
 
 class NativeAppCoreAdapter(
@@ -661,6 +709,16 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun setMapLayerVisibility(layerId: MapLayerId, visible: Boolean): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.setMapLayerVisibilityInSessionJson(handle, json.encodeToString(layerId.toWire()), visible))
+        return snapshot
+    }
+
+    fun setMapLayerEnabled(layerId: MapLayerId, enabled: Boolean): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.setMapLayerEnabledInSessionJson(handle, json.encodeToString(layerId.toWire()), enabled))
+        return snapshot
+    }
+
     fun refreshSnapshot(): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.getSessionSnapshotJson(handle))
         return syncGuidanceGeometryFromPlan()
@@ -708,6 +766,18 @@ class NativeUiSession internal constructor(
         val resultJson = bridge.getMapOverlayInSessionJson(handle, viewportJson, widthPx, heightPx)
         return json.decodeFromString<WireMapOverlayQueryResult>(resultJson).toUi()
     }
+
+    fun queryTerrainOverlay(viewport: MapViewportState, widthPx: Double, heightPx: Double): TerrainOverlayQueryResult {
+        val viewportJson = json.encodeToString(viewport.toWire())
+        val resultJson = bridge.getTerrainOverlayInSessionJson(handle, viewportJson, widthPx, heightPx)
+        return json.decodeFromString<WireTerrainOverlayQueryResult>(resultJson).toUi()
+    }
+
+    fun renderTerrainOverlayTile(tileBytes: ByteArray, aircraftAltitudeFt: Double): ByteArray =
+        bridge.renderTerrainOverlayTileInSession(handle, tileBytes, aircraftAltitudeFt)
+
+    fun renderTerrainOverlayTiles(packedTileBytes: ByteArray, aircraftAltitudeFt: Double): ByteArray =
+        bridge.renderTerrainOverlayTilesInSession(handle, packedTileBytes, aircraftAltitudeFt)
 
     fun syncMapFollow(viewport: MapViewportState, widthPx: Double, heightPx: Double): UiSessionSnapshot {
         val viewportJson = json.encodeToString(viewport.toWire())
@@ -1156,6 +1226,19 @@ private data class WireUiChartPageState(
 )
 
 @kotlinx.serialization.Serializable
+private data class WireUiMapLayerToggleState(
+    val visible: Boolean = false,
+    val enabled: Boolean = false,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireUiMapLayerState(
+    val vectors: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
+    val nexrad: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
+    val terrain_warning: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
+)
+
+@kotlinx.serialization.Serializable
 private data class WireUiSessionSnapshot(
     val app_state: WireUiSnapshotAppState,
     val app_ui_state: WireAppUiState = WireAppUiState(),
@@ -1163,6 +1246,7 @@ private data class WireUiSessionSnapshot(
     val map_follow_ui_state: WireMapFollowUiState = WireMapFollowUiState(),
     val map_follow_target_viewport: WireMapViewport? = null,
     val chart_page_state: WireUiChartPageState,
+    val map_layer_state: WireUiMapLayerState = WireUiMapLayerState(),
 )
 
 @kotlinx.serialization.Serializable
@@ -1212,6 +1296,7 @@ data class UiSessionSnapshot(
     val mapFollowUiState: MapFollowUiState,
     val mapFollowTargetViewport: CoreMapViewport?,
     val chartPageState: UiChartPageState,
+    val mapLayerState: UiMapLayerState,
 )
 
 data class UiChartPageState(
@@ -1235,6 +1320,17 @@ private fun WireUiChartPageState.toUi() = UiChartPageState(
     selectedChartId = selected_chart_id,
 )
 
+private fun WireUiMapLayerToggleState.toUi() = UiMapLayerToggleState(
+    visible = visible,
+    enabled = enabled,
+)
+
+private fun WireUiMapLayerState.toUi() = UiMapLayerState(
+    vectors = vectors.toUi(),
+    nexrad = nexrad.toUi(),
+    terrainWarning = terrain_warning.toUi(),
+)
+
 private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     appState = app_state.toUi(),
     appUiState = app_ui_state.toUi(),
@@ -1242,6 +1338,7 @@ private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     mapFollowUiState = map_follow_ui_state.toUi(),
     mapFollowTargetViewport = map_follow_target_viewport?.toUi(),
     chartPageState = chart_page_state.toUi(),
+    mapLayerState = map_layer_state.toUi(),
 )
 
 internal fun WireDerivedChartAirport.toUi() = ChartAirport(
@@ -1322,6 +1419,37 @@ private fun WireMapOverlayQueryResult.toUi() = MapOverlayQueryResult(
     neededPointTiles = needed_point_tiles.map { it.toUi() },
     visibleFeatures = visible_features.map { it.toUi() },
     warnings = warnings.map { it.toUi() },
+)
+
+private fun WireTerrainOverlayQueryResult.toUi() = TerrainOverlayQueryResult(
+    status = status.toUi(),
+    tileRequests = tile_requests.map { it.toUi() },
+)
+
+private fun WireTerrainOverlayStatus.toUi(): TerrainOverlayStatus = when (this) {
+    is WireTerrainOverlayStatusHidden -> TerrainOverlayStatus.Hidden
+    is WireTerrainOverlayStatusNoPosition -> TerrainOverlayStatus.NoPosition
+    is WireTerrainOverlayStatusNoAltitude -> TerrainOverlayStatus.NoAltitude
+    is WireTerrainOverlayStatusTooManyTiles -> TerrainOverlayStatus.TooManyTiles(count)
+    is WireTerrainOverlayStatusReady -> TerrainOverlayStatus.Ready(count)
+}
+
+private fun WireTerrainOverlayTileRequest.toUi() = TerrainOverlayTileRequest(
+    key = key,
+    productId = product_id,
+    path = path,
+    sourceTiles = source_tiles.map { it.toUi() },
+    z = z,
+    x = x,
+    yTms = y_tms,
+    left = left,
+    top = top,
+    size = size,
+)
+
+private fun WireTerrainOverlaySourceTile.toUi() = TerrainOverlaySourceTile(
+    productId = product_id,
+    path = path,
 )
 
 private fun WireVectorTileRequest.toUi() = VectorTileRequest(
@@ -1878,6 +2006,12 @@ private fun SuspendReason.toWire() = when (this) {
     SuspendReason.Boundary -> WireSuspendReason.Boundary
     SuspendReason.RouteEnd -> WireSuspendReason.RouteEnd
     SuspendReason.DirectToComplete -> WireSuspendReason.DirectToComplete
+}
+
+private fun MapLayerId.toWire() = when (this) {
+    MapLayerId.Vectors -> "vectors"
+    MapLayerId.Nexrad -> "nexrad"
+    MapLayerId.TerrainWarning -> "terrain_warning"
 }
 
 private fun WireFlightPlanRouteSegment.toUi() = FlightPlanRouteSegment(

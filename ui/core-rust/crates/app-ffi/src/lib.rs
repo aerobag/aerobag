@@ -1,5 +1,6 @@
 pub use app_core::*;
 use jni::objects::{JByteArray, JClass, JString};
+use jni::sys::jbyteArray;
 use jni::sys::jstring;
 use jni::JNIEnv;
 use serde::{Deserialize, Serialize};
@@ -605,6 +606,28 @@ pub fn select_chart_in_session_json(handle: u64, chart_id_json: &str) -> Result<
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn set_map_layer_visibility_in_session_json(
+    handle: u64,
+    layer_id_json: &str,
+    visible: bool,
+) -> Result<String, String> {
+    let layer_id: String = serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::set_map_layer_visibility_in_session(handle as u32, &layer_id, visible)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn set_map_layer_enabled_in_session_json(
+    handle: u64,
+    layer_id_json: &str,
+    enabled: bool,
+) -> Result<String, String> {
+    let layer_id: String = serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::set_map_layer_enabled_in_session(handle as u32, &layer_id, enabled)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn get_session_snapshot_json(handle: u64) -> Result<String, String> {
     let snapshot = app_core::get_session_snapshot(handle as u32).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
@@ -685,6 +708,42 @@ pub fn get_map_overlay_in_session_json(
         app_core::get_map_overlay_in_session(handle as u32, viewport, width_px, height_px)
             .map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
+}
+
+pub fn get_terrain_overlay_in_session_json(
+    handle: u64,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let overlay =
+        app_core::get_terrain_overlay_in_session(handle as u32, viewport, width_px, height_px)
+            .map_err(|err| err.to_string())?;
+    serde_json::to_string(&overlay).map_err(|err| err.to_string())
+}
+
+pub fn render_terrain_overlay_tile_in_session_bytes(
+    handle: u64,
+    tile_bytes: &[u8],
+    aircraft_altitude_ft: Option<f64>,
+) -> Result<Vec<u8>, String> {
+    app_core::render_terrain_overlay_tile_in_session(handle as u32, tile_bytes, aircraft_altitude_ft)
+        .map_err(|err| err.to_string())
+}
+
+pub fn render_terrain_overlay_tiles_in_session_bytes(
+    handle: u64,
+    packed_tile_bytes: &[u8],
+    aircraft_altitude_ft: Option<f64>,
+) -> Result<Vec<u8>, String> {
+    app_core::render_terrain_overlay_tiles_in_session(
+        handle as u32,
+        packed_tile_bytes,
+        aircraft_altitude_ft,
+    )
+    .map_err(|err| err.to_string())
 }
 
 pub fn sync_map_follow_in_session_json(
@@ -1057,6 +1116,19 @@ fn return_string(env: &mut JNIEnv, value: Result<String, String>) -> jstring {
         Ok(text) => env
             .new_string(text)
             .map(|s| s.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(message) => {
+            let _ = env.throw_new("java/lang/RuntimeException", message);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+fn return_byte_array(env: &mut JNIEnv, value: Result<Vec<u8>, String>) -> jbyteArray {
+    match value {
+        Ok(bytes) => env
+            .byte_array_from_slice(&bytes)
+            .map(|array| array.into_raw())
             .unwrap_or(std::ptr::null_mut()),
         Err(message) => {
             let _ = env.throw_new("java/lang/RuntimeException", message);
@@ -1878,6 +1950,36 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_sel
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setMapLayerVisibilityInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    layer_id_json: JString,
+    visible: bool,
+) -> jstring {
+    let result = (|| {
+        let layer_id = get_java_string(&mut env, layer_id_json)?;
+        set_map_layer_visibility_in_session_json(handle as u64, &layer_id, visible)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setMapLayerEnabledInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    layer_id_json: JString,
+    enabled: bool,
+) -> jstring {
+    let result = (|| {
+        let layer_id = get_java_string(&mut env, layer_id_json)?;
+        set_map_layer_enabled_in_session_json(handle as u64, &layer_id, enabled)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getSessionSnapshotJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -1937,6 +2039,68 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
         get_map_overlay_in_session_json(handle as u64, &viewport, width_px, height_px)
     })();
     return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getTerrainOverlayInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    viewport_json: JString,
+    width_px: f64,
+    height_px: f64,
+) -> jstring {
+    let result = (|| {
+        let viewport = get_java_string(&mut env, viewport_json)?;
+        get_terrain_overlay_in_session_json(handle as u64, &viewport, width_px, height_px)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_renderTerrainOverlayTileInSession(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    tile_bytes: JByteArray,
+    aircraft_altitude_ft: f64,
+) -> jbyteArray {
+    let result = (|| {
+        let tile_bytes = get_java_byte_array(&mut env, tile_bytes)?;
+        render_terrain_overlay_tile_in_session_bytes(
+            handle as u64,
+            &tile_bytes,
+            if aircraft_altitude_ft.is_finite() {
+                Some(aircraft_altitude_ft)
+            } else {
+                None
+            },
+        )
+    })();
+    return_byte_array(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_renderTerrainOverlayTilesInSession(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    packed_tile_bytes: JByteArray,
+    aircraft_altitude_ft: f64,
+) -> jbyteArray {
+    let result = (|| {
+        let packed_tile_bytes = get_java_byte_array(&mut env, packed_tile_bytes)?;
+        render_terrain_overlay_tiles_in_session_bytes(
+            handle as u64,
+            &packed_tile_bytes,
+            if aircraft_altitude_ft.is_finite() {
+                Some(aircraft_altitude_ft)
+            } else {
+                None
+            },
+        )
+    })();
+    return_byte_array(&mut env, result)
 }
 
 #[unsafe(no_mangle)]

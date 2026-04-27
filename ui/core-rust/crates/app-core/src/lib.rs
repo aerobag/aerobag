@@ -1318,11 +1318,10 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 )
             })
         });
-        let common_resume_target_index = common_segment_resume_target_index(
+        let common_resume_target = resumed_common_target(
             previous_display_path.as_ref(),
             previous_was_hold_like,
             leg_records,
-            &fix_records,
         );
         let skip_through_index = reconciliation_resume_skip_through_index(
             previous_display_path.as_ref(),
@@ -1335,7 +1334,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
             if skip_through_index.is_some_and(|skip_index| index <= skip_index) {
                 continue;
             }
-            if common_resume_target_index.is_some_and(|target_index| index + 1 < target_index) {
+            if common_resume_target.is_some_and(|target| index + 1 < target.index) {
                 continue;
             }
             let previous_terminal_position = previous_display_path
@@ -1413,19 +1412,19 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     let projected_terminal_anchor = projected_previous_display_path
                         .as_ref()
                         .and_then(|_| pair[0].nav_ref.clone());
-                    resumed_common_record(
+                    resumed_common_target(
                         projected_previous_display_path.as_ref(),
                         false,
                         next_records,
                     )
-                        .is_some_and(|resumed_common_record| {
-                            resumed_common_record.nav_ref.as_ref() != pair[1].nav_ref.as_ref()
+                        .is_some_and(|resumed_common_target| {
+                            resumed_common_target.record.nav_ref.as_ref() != pair[1].nav_ref.as_ref()
                                 && should_yield_feeder_course_to_fix_to_resumed_common_segment(
                                     projected_terminal_position,
                                     projected_terminal_course,
                                     projected_terminal_anchor,
                                     pair[1],
-                                    resumed_common_record,
+                                    resumed_common_target.record,
                                 )
                         })
                 });
@@ -1513,7 +1512,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 });
             let resume_common_cf_from_previous_path =
                 role == ProcedureSegmentRole::Common
-                    && common_resume_target_index.is_some_and(|target_index| index + 1 == target_index);
+                    && common_resume_target.is_some_and(|target| index + 1 == target.index);
             let initial_position_override = if from == to
                 || continuing_if_to_cf_join
                 || continuing_same_anchor_window
@@ -1625,9 +1624,9 @@ fn resolve_procedure_materialization_legs_with_provenance(
             {
                 let common_resume_skips_trailing_cf = trailing_record.path_termination.trim() == "CF"
                     && next_segment_records.is_some_and(|next_records| {
-                        resumed_common_record(previous_display_path.as_ref(), false, next_records)
-                            .is_some_and(|resumed_common_record| {
-                                resumed_common_record.nav_ref.as_ref()
+                        resumed_common_target(previous_display_path.as_ref(), false, next_records)
+                            .is_some_and(|resumed_common_target| {
+                                resumed_common_target.record.nav_ref.as_ref()
                                     != trailing_record.nav_ref.as_ref()
                                     && should_yield_feeder_course_to_fix_to_resumed_common_segment(
                                         previous_display_path
@@ -1638,7 +1637,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
                                             .and_then(final_course_of_display_path),
                                         previous_leg_to.clone(),
                                         trailing_record,
-                                        resumed_common_record,
+                                        resumed_common_target.record,
                                     )
                             })
                     });
@@ -2646,30 +2645,21 @@ fn start_requirement_for_reentry_to_anchor(
     })
 }
 
-fn resumed_common_record<'a>(
+#[derive(Clone, Copy)]
+struct CommonResumeTarget<'a> {
+    index: usize,
+    record: &'a ProcedureLegMaterializationRecord,
+}
+
+fn resumed_common_target<'a>(
     previous_display_path: Option<&LegDisplayPath>,
     previous_was_hold_like: bool,
     segment_records: &'a [ProcedureLegMaterializationRecord],
-) -> Option<&'a ProcedureLegMaterializationRecord> {
+) -> Option<CommonResumeTarget<'a>> {
     let fix_records = segment_records
         .iter()
         .filter(|record| record.nav_ref.is_some())
         .collect::<Vec<_>>();
-    let target_index = common_segment_resume_target_index(
-        previous_display_path,
-        previous_was_hold_like,
-        segment_records,
-        &fix_records,
-    )?;
-    fix_records.get(target_index).copied()
-}
-
-fn common_segment_resume_target_index(
-    previous_display_path: Option<&LegDisplayPath>,
-    previous_was_hold_like: bool,
-    segment_records: &[ProcedureLegMaterializationRecord],
-    fix_records: &[&ProcedureLegMaterializationRecord],
-) -> Option<usize> {
     let previous_display_path = previous_display_path?;
     let current_position = previous_display_path_terminal_position(previous_display_path)?;
     let current_course_deg = final_course_of_display_path(previous_display_path)?;
@@ -2738,7 +2728,10 @@ fn common_segment_resume_target_index(
             reconcile_handoff(&terminal_state, &start_requirement),
             HandoffDecision::ResumeAtAnchor | HandoffDecision::ResumeThroughAnchorKink
         ) {
-            return Some(index);
+            return Some(CommonResumeTarget {
+                index,
+                record,
+            });
         }
     }
 
@@ -6982,15 +6975,14 @@ mod tests {
                 normalize_bearing_degrees(course_deg + 180.0),
             );
         }
-        let common_fix_records = common_leg_records.iter().collect::<Vec<_>>();
         eprintln!(
             "common_segment_resume_target_index={:?}",
-            common_segment_resume_target_index(
+            resumed_common_target(
                 previous_path.as_ref(),
                 true,
                 common_leg_records,
-                &common_fix_records,
             )
+            .map(|target| target.index)
         );
         let resolved = resolve_procedure_materialization_legs_with_provenance(
             "KHLN",
@@ -7091,15 +7083,14 @@ mod tests {
             );
         }
         let previous_was_hold_like = true;
-        let common_fix_records = common_leg_records.iter().collect::<Vec<_>>();
         eprintln!(
             "common_segment_resume_target_index={:?}",
-            common_segment_resume_target_index(
+            resumed_common_target(
                 previous_path.as_ref(),
                 previous_was_hold_like,
                 common_leg_records,
-                &common_fix_records,
             )
+            .map(|target| target.index)
         );
         if let (Some(current_position), Some(current_course_deg)) =
             (previous_terminal_position, previous_terminal_course)

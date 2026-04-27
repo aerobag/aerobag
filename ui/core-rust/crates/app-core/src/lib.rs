@@ -1990,9 +1990,6 @@ fn should_skip_reconciliation_anchor_leg(
     current_from: &NavRef,
     current_to: &NavRef,
 ) -> bool {
-    let Some(previous_display_path) = previous_display_path else {
-        return false;
-    };
     let Some(previous_leg_to) = previous_leg_to else {
         return false;
     };
@@ -2002,22 +1999,9 @@ fn should_skip_reconciliation_anchor_leg(
     if current_from == current_to {
         return false;
     }
-    let terminal_state = terminal_state_for_handoff(
-        previous_display_path_terminal_position(previous_display_path),
-        final_course_of_display_path(previous_display_path),
-        Some(previous_leg_to.clone()),
-        false,
-    );
-    let start_requirement =
-        start_requirement_for_reentry_to_anchor(current_from_record, current_from, current_to);
-    terminal_state
-        .zip(start_requirement)
-        .is_some_and(|(terminal_state, start_requirement)| {
-            matches!(
-                reconcile_handoff(&terminal_state, &start_requirement),
-                HandoffDecision::SkipStaleFix
-            )
-        })
+    reentry_terminal_state(previous_display_path, previous_leg_to).is_some_and(|terminal_state| {
+        reentry_candidate_skips(terminal_state, current_from_record, current_from, current_to)
+    })
 }
 
 fn reconciliation_resume_skip_through_index(
@@ -2037,12 +2021,7 @@ fn reconciliation_resume_skip_through_index(
         .find(|record| record.nav_ref.is_none())
         .map(|record| record.sequence)
         .unwrap_or(i32::MAX);
-    let terminal_state = terminal_state_for_handoff(
-        previous_display_path_terminal_position(previous_display_path),
-        final_course_of_display_path(previous_display_path),
-        Some(previous_leg_to.clone()),
-        false,
-    )?;
+    let terminal_state = reentry_terminal_state(Some(previous_display_path), previous_leg_to)?;
     let Some(reentry_index) = fix_records
         .windows(2)
         .enumerate()
@@ -2058,18 +2037,41 @@ fn reconciliation_resume_skip_through_index(
                 return None;
             }
             let current_from = pair[0].nav_ref.as_ref()?;
-            let start_requirement =
-                start_requirement_for_reentry_to_anchor(pair[0], current_from, current_to)?;
-            matches!(
-                reconcile_handoff(&terminal_state, &start_requirement),
-                HandoffDecision::SkipStaleFix
-            )
-            .then_some(index)
+            reentry_candidate_skips(terminal_state.clone(), pair[0], current_from, current_to)
+                .then_some(index)
         })
     else {
         return None;
     };
     Some(reentry_index)
+}
+
+fn reentry_terminal_state(
+    previous_display_path: Option<&LegDisplayPath>,
+    previous_leg_to: &NavRef,
+) -> Option<TerminalState> {
+    terminal_state_for_handoff(
+        previous_display_path.and_then(previous_display_path_terminal_position),
+        previous_display_path.and_then(final_course_of_display_path),
+        Some(previous_leg_to.clone()),
+        false,
+    )
+}
+
+fn reentry_candidate_skips(
+    terminal_state: TerminalState,
+    from_record: &ProcedureLegMaterializationRecord,
+    from_anchor: &NavRef,
+    to_anchor: &NavRef,
+) -> bool {
+    start_requirement_for_reentry_to_anchor(from_record, from_anchor, to_anchor).is_some_and(
+        |start_requirement| {
+            matches!(
+                reconcile_handoff(&terminal_state, &start_requirement),
+                HandoffDecision::SkipStaleFix
+            )
+        },
+    )
 }
 
 fn final_course_of_display_path(path: &LegDisplayPath) -> Option<f64> {

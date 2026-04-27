@@ -1482,59 +1482,6 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     )
                 })
             });
-            let continuing_if_to_cf_join = (from != to)
-                && pair[0].path_termination.trim() == "IF"
-                && pair[1].path_termination.trim() == "CF"
-                && previous_terminal_position.is_some_and(|previous_end| {
-                    let Some(anchor_position) = pair[0].nav_position else {
-                        return false;
-                    };
-                    previous_was_course_to_intercept
-                        || great_circle_distance_nm(previous_end, anchor_position) > 0.25
-                });
-            let continuing_same_anchor_window = (from != to)
-                && hold_record.is_some()
-                && pair[0].path_termination.trim() == "CF"
-                && pair[1].path_termination.trim() == "TF"
-                && previous_terminal_position
-                    .zip(pair[0].nav_position)
-                    .is_some_and(|(previous_end, anchor_position)| {
-                        great_circle_distance_nm(previous_end, anchor_position) <= 0.05
-                    });
-            let continuing_from_fa_window = (from != to)
-                && pair[0].path_termination.trim() == "FA"
-                && previous_leg_to.as_ref().is_some_and(|previous_to| previous_to == &from)
-                && previous_terminal_position.is_some();
-            let continuing_from_previous_anchor = previous_terminal_position
-                .zip(pair[0].nav_position)
-                .is_some_and(|(previous_end, anchor_position)| {
-                    great_circle_distance_nm(previous_end, anchor_position) <= 0.05
-                });
-            let resume_common_cf_from_previous_path =
-                role == ProcedureSegmentRole::Common
-                    && common_resume_target.is_some_and(|target| index + 1 == target.index);
-            let initial_position_override = if from == to
-                || continuing_if_to_cf_join
-                || continuing_same_anchor_window
-                || continuing_from_fa_window
-                || continuing_from_previous_anchor
-                || resume_common_cf_from_previous_path
-            {
-                previous_terminal_position
-            } else {
-                None
-            };
-            let initial_course_override = if from == to
-                || continuing_if_to_cf_join
-                || continuing_same_anchor_window
-                || continuing_from_fa_window
-                || continuing_from_previous_anchor
-                || resume_common_cf_from_previous_path
-            {
-                previous_terminal_course
-            } else {
-                None
-            };
             let previous_leg_consumed_same_pi = resolved.last().is_some_and(|previous| {
                 previous.procedure_provenance.as_ref().is_some_and(|provenance| {
                     provenance.leg_sequence == pair[0].sequence
@@ -1544,28 +1491,37 @@ fn resolve_procedure_materialization_legs_with_provenance(
                         )
                 })
             });
-            let display_leg_start = if pair[0].path_termination.trim() == "PI"
-                && from != to
-                && previous_leg_consumed_same_pi
-            {
-                pair[1]
-            } else if resume_common_cf_from_previous_path {
-                pair[1]
+            let continuation = determine_procedure_window_continuation(
+                index,
+                &from,
+                &to,
+                [pair[0], pair[1]],
+                hold_record,
+                role.clone(),
+                common_resume_target,
+                previous_terminal_position,
+                previous_leg_to.as_ref(),
+                previous_was_course_to_intercept,
+                previous_leg_consumed_same_pi,
+            );
+            let initial_position_override = if continuation.inherit_previous_state {
+                previous_terminal_position
             } else {
-                pair[0]
+                None
             };
-            let display_path = if continuing_if_to_cf_join
-                && initial_position_override
-                    .zip(pair[1].nav_position)
-                    .is_some_and(|(start, end)| great_circle_distance_nm(start, end) <= 0.05)
-            {
+            let initial_course_override = if continuation.inherit_previous_state {
+                previous_terminal_course
+            } else {
+                None
+            };
+            let display_path = if continuation.render_as_empty_join {
                 Some(LegDisplayPath {
                     style: LegDisplayPathStyle::Solid,
                     elements: Vec::new(),
                     effective_terminal_course_deg: None,
                     debug_element_sources: Vec::new(),
                 })
-            } else if resume_common_cf_from_previous_path {
+            } else if continuation.render_as_resumed_common_cf {
                 display_path_for_resumed_common_cf(
                     pair[1],
                     initial_position_override,
@@ -1574,7 +1530,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
             } else {
                 display_path_for_procedure_leg(
                     leg_records,
-                    display_leg_start,
+                    continuation.display_leg_start,
                     effective_leg_end,
                     hold_record,
                     initial_position_override,
@@ -2643,6 +2599,84 @@ fn start_requirement_for_reentry_to_anchor(
         from_anchor_position: Some(from_record.nav_position?),
         to_anchor: to_anchor.clone(),
     })
+}
+
+struct ProcedureWindowContinuation<'a> {
+    inherit_previous_state: bool,
+    display_leg_start: &'a ProcedureLegMaterializationRecord,
+    render_as_empty_join: bool,
+    render_as_resumed_common_cf: bool,
+}
+
+fn determine_procedure_window_continuation<'a>(
+    current_window_index: usize,
+    from: &NavRef,
+    to: &NavRef,
+    pair: [&'a ProcedureLegMaterializationRecord; 2],
+    hold_record: Option<&'a ProcedureLegMaterializationRecord>,
+    role: ProcedureSegmentRole,
+    common_resume_target: Option<CommonResumeTarget<'_>>,
+    previous_terminal_position: Option<LatLon>,
+    previous_leg_to: Option<&NavRef>,
+    previous_was_course_to_intercept: bool,
+    previous_leg_consumed_same_pi: bool,
+) -> ProcedureWindowContinuation<'a> {
+    let continuing_if_to_cf_join = (from != to)
+        && pair[0].path_termination.trim() == "IF"
+        && pair[1].path_termination.trim() == "CF"
+        && previous_terminal_position.is_some_and(|previous_end| {
+            let Some(anchor_position) = pair[0].nav_position else {
+                return false;
+            };
+            previous_was_course_to_intercept
+                || great_circle_distance_nm(previous_end, anchor_position) > 0.25
+        });
+    let continuing_same_anchor_window = (from != to)
+        && hold_record.is_some()
+        && pair[0].path_termination.trim() == "CF"
+        && pair[1].path_termination.trim() == "TF"
+        && previous_terminal_position
+            .zip(pair[0].nav_position)
+            .is_some_and(|(previous_end, anchor_position)| {
+                great_circle_distance_nm(previous_end, anchor_position) <= 0.05
+            });
+    let continuing_from_fa_window = (from != to)
+        && pair[0].path_termination.trim() == "FA"
+        && previous_leg_to.is_some_and(|previous_to| previous_to == from)
+        && previous_terminal_position.is_some();
+    let continuing_from_previous_anchor = previous_terminal_position
+        .zip(pair[0].nav_position)
+        .is_some_and(|(previous_end, anchor_position)| {
+            great_circle_distance_nm(previous_end, anchor_position) <= 0.05
+        });
+    let resume_common_cf_from_previous_path = role == ProcedureSegmentRole::Common
+        && common_resume_target.is_some_and(|target| current_window_index + 1 == target.index);
+    let inherit_previous_state = from == to
+        || continuing_if_to_cf_join
+        || continuing_same_anchor_window
+        || continuing_from_fa_window
+        || continuing_from_previous_anchor
+        || resume_common_cf_from_previous_path;
+    let display_leg_start = if pair[0].path_termination.trim() == "PI"
+        && from != to
+        && previous_leg_consumed_same_pi
+    {
+        pair[1]
+    } else if resume_common_cf_from_previous_path {
+        pair[1]
+    } else {
+        pair[0]
+    };
+    let render_as_empty_join = continuing_if_to_cf_join
+        && previous_terminal_position
+            .zip(pair[1].nav_position)
+            .is_some_and(|(start, end)| great_circle_distance_nm(start, end) <= 0.05);
+    ProcedureWindowContinuation {
+        inherit_previous_state,
+        display_leg_start,
+        render_as_empty_join,
+        render_as_resumed_common_cf: resume_common_cf_from_previous_path,
+    }
 }
 
 #[derive(Clone, Copy)]

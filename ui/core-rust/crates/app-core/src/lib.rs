@@ -1866,6 +1866,7 @@ struct DisplayElementHeadingSignature {
     start_magnetic_variation_deg: Option<f64>,
     end_position: LatLon,
     end_course_deg: f64,
+    drawn_end_course_deg: f64,
     end_label: String,
     end_magnetic_variation_deg: Option<f64>,
     hold_fix_position: Option<LatLon>,
@@ -1898,6 +1899,7 @@ fn heading_signatures_for_leg(
             .filter_map(|(index, element)| {
                 let (start_position, start_course_deg, end_position, mut end_course_deg) =
                     heading_signature_for_element(element)?;
+                let drawn_end_course_deg = end_course_deg;
                 if index == last_index {
                     if let Some(logical_end_course_deg) = path.effective_terminal_course_deg {
                         end_course_deg = logical_end_course_deg;
@@ -1922,6 +1924,7 @@ fn heading_signatures_for_leg(
                     },
                     end_position,
                     end_course_deg,
+                    drawn_end_course_deg,
                     end_label: if index == last_index {
                         describe_record_anchor(to_record)
                     } else {
@@ -1960,6 +1963,7 @@ fn heading_signatures_for_leg(
         start_magnetic_variation_deg: record_magnetic_variation_deg(from_record),
         end_position: end,
         end_course_deg: course,
+        drawn_end_course_deg: course,
         end_label: describe_record_anchor(to_record),
         end_magnetic_variation_deg: record_magnetic_variation_deg(to_record),
         hold_fix_position: matches!(path_termination, "HF" | "HM")
@@ -1984,6 +1988,7 @@ fn validate_heading_continuity_checks(
     let mut worst_violation: Option<(
         f64,
         f64,
+        &'static str,
         &DisplayElementHeadingSignature,
         &DisplayElementHeadingSignature,
     )> = None;
@@ -2001,13 +2006,23 @@ fn validate_heading_continuity_checks(
             continue;
         }
         let allowed_delta_deg = continuity_heading_tolerance_deg(previous, current);
-        let delta = angular_difference_degrees(previous.end_course_deg, current.start_course_deg);
-        if delta > allowed_delta_deg
-            && worst_violation
-                .as_ref()
-                .is_none_or(|(worst_delta, ..)| delta > *worst_delta)
-        {
-            worst_violation = Some((delta, allowed_delta_deg, previous, current));
+        for (delta, heading_mode) in [
+            (
+                angular_difference_degrees(previous.end_course_deg, current.start_course_deg),
+                "logical",
+            ),
+            (
+                angular_difference_degrees(previous.drawn_end_course_deg, current.start_course_deg),
+                "drawn",
+            ),
+        ] {
+            if delta > allowed_delta_deg
+                && worst_violation
+                    .as_ref()
+                    .is_none_or(|(worst_delta, ..)| delta > *worst_delta)
+            {
+                worst_violation = Some((delta, allowed_delta_deg, heading_mode, previous, current));
+            }
         }
     }
     if let Some((gap_nm, previous, current)) = worst_gap {
@@ -2029,14 +2044,19 @@ fn validate_heading_continuity_checks(
             current.start_position.lon,
         );
     }
-    if let Some((delta, allowed_delta_deg, previous, current)) = worst_violation {
+    if let Some((delta, allowed_delta_deg, heading_mode, previous, current)) = worst_violation {
         let fix_description = if previous.end_label == current.start_label {
             previous.end_label.clone()
         } else {
             format!("{} -> {}", previous.end_label, current.start_label)
         };
+        let inbound_course_deg = if heading_mode == "drawn" {
+            previous.drawn_end_course_deg
+        } else {
+            previous.end_course_deg
+        };
         let inbound_magnetic_heading = magnetic_heading_degrees(
-            previous.end_course_deg,
+            inbound_course_deg,
             previous
                 .end_magnetic_variation_deg
                 .or(current.start_magnetic_variation_deg),
@@ -2050,7 +2070,8 @@ fn validate_heading_continuity_checks(
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: format!(
-                "procedure heading continuity violated for {}: {:.1} deg (allowed {:.1}) at {} ({:.6},{:.6}) inbound_mh={:.1} outbound_mh={:.1} steps={:02}->{:02}",
+                "procedure {} heading continuity violated for {}: {:.1} deg (allowed {:.1}) at {} ({:.6},{:.6}) inbound_mh={:.1} outbound_mh={:.1} steps={:02}->{:02}",
+                heading_mode,
                 procedure_id.trim(),
                 delta,
                 allowed_delta_deg,
@@ -2412,6 +2433,20 @@ fn common_segment_resume_target_index(
         else {
             continue;
         };
+        let anchored_at_prior_common_fix = fix_records
+            .get(index.saturating_sub(1))
+            .and_then(|prior_record| {
+                let prior_fix = prior_record.nav_position?;
+                let prior_course_deg = prior_record
+                    .magnetic_course_deg
+                    .map(|course| course + record_magnetic_variation_deg(prior_record).unwrap_or(0.0))?;
+                Some(
+                    positions_nearly_equal(current_position, prior_fix)
+                        && positions_nearly_equal(current_position, course_anchor)
+                        && angular_difference_degrees(current_course_deg, prior_course_deg) <= 20.0,
+                )
+            })
+            .unwrap_or(false);
         let offset = local_to_en(course_anchor, current_position);
         let course_unit = course_unit_vector(course_deg);
         let normal = (-course_unit.1, course_unit.0);
@@ -2420,6 +2455,7 @@ fn common_segment_resume_target_index(
             continue;
         }
         if !previous_was_hold_like
+            && !anchored_at_prior_common_fix
             && angular_difference_degrees(current_course_deg, course_deg) > 20.0
         {
             continue;
@@ -4441,6 +4477,7 @@ mod tests {
                 end_magnetic_variation_deg: None,
                 hold_fix_position: None,
                 starts_procedure_turn: false,
+                drawn_end_course_deg: 90.0,
                 in_procedure_turn_context: false,
                 element_kind: DisplayElementKind::Segment,
             },
@@ -4465,6 +4502,7 @@ mod tests {
                 end_magnetic_variation_deg: None,
                 hold_fix_position: None,
                 starts_procedure_turn: false,
+                drawn_end_course_deg: 90.0,
                 in_procedure_turn_context: false,
                 element_kind: DisplayElementKind::Segment,
             },

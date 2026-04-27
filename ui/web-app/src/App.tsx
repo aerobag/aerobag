@@ -3325,12 +3325,13 @@ function MapPage(props: {
                   })()}
                 </g>
               ) : null}
+              <SituationAircraftSvg
+                iconSrc={planViewIcon}
+                point={situationOverlay.point}
+                headingDeg={situationOverlay.headingDeg}
+                sizePx={thumbPixels(1.44)}
+              />
             </svg>
-            <SituationAircraft
-              iconSrc={planViewIcon}
-              point={situationOverlay.point}
-              headingDeg={situationOverlay.headingDeg}
-            />
           </>
         ) : null}
 
@@ -6155,6 +6156,32 @@ function SituationStatusBadge(props: { ownship: OwnshipRenderState }) {
   return <div className={`situationStatus situationStatus-${tone}`}>{label}</div>;
 }
 
+function SituationAircraftSvg(props: {
+  iconSrc: string;
+  point: { x: number; y: number };
+  headingDeg: number;
+  sizePx: number;
+}) {
+  const half = props.sizePx / 2;
+  return (
+    <g transform={`translate(${props.point.x} ${props.point.y}) rotate(${props.headingDeg})`}>
+      <image
+        href={props.iconSrc}
+        x={-half}
+        y={-half}
+        width={props.sizePx}
+        height={props.sizePx}
+        preserveAspectRatio="xMidYMid meet"
+        style={{
+          pointerEvents: "none",
+          userSelect: "none",
+          filter: "drop-shadow(0 1px 1px rgba(18, 26, 33, 0.45))",
+        }}
+      />
+    </g>
+  );
+}
+
 function SituationAircraft(props: {
   iconSrc: string;
   point: { x: number; y: number };
@@ -6162,11 +6189,17 @@ function SituationAircraft(props: {
 }) {
   return (
     <img
-      className="situationAircraft"
       src={props.iconSrc}
       alt=""
       draggable={false}
       style={{
+        position: "absolute",
+        zIndex: 2,
+        width: `calc(var(--thumb) * 1.44)`,
+        height: "auto",
+        pointerEvents: "none",
+        userSelect: "none",
+        filter: "drop-shadow(0 1px 1px rgba(18, 26, 33, 0.45))",
         left: `${props.point.x}px`,
         top: `${props.point.y}px`,
         transform: `translate(-50%, -50%) rotate(${props.headingDeg}deg)`,

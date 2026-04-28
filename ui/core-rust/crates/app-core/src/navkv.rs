@@ -40,6 +40,9 @@ pub struct NavKvStore {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NavKvQuery {
     ChartCatalog,
+    PackageById {
+        package_id: String,
+    },
     PolygonSet {
         polygon_set_id: String,
     },
@@ -263,6 +266,9 @@ impl NavKvStore {
 pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
     match query {
         NavKvQuery::ChartCatalog => Some("chart/catalog".to_string()),
+        NavKvQuery::PackageById { package_id } => {
+            Some(format!("package/by-id/{}", upper_component(package_id)))
+        }
         NavKvQuery::PolygonSet { polygon_set_id } => Some(format!(
             "geometry/polygon-set/{}",
             component(polygon_set_id)

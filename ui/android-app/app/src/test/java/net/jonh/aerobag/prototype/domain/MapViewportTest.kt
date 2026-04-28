@@ -16,6 +16,7 @@ class MapViewportTest {
         maxZoom = 10.8,
         storageKind = TileStorageKind.AssetTree,
         packageName = null,
+        fullCoverageZoom = null,
         initialViewport = MapViewportSeed(
             lat = 42.24,
             lon = -70.949202,
@@ -114,6 +115,49 @@ class MapViewportTest {
 
         assertTrue(tiles.any { it.mapView.packageName == "NW_SEC" })
         assertTrue(tiles.any { it.mapView.packageName == "SW_SEC" })
+    }
+
+    @Test
+    fun lowFallbackZoomsCollapseToOneRegionalPackagePerFamily() {
+        val northwest = mapView.copy(
+            chartFamily = MapChartFamily.Sec,
+            packageName = "NW_SEC",
+            fullCoverageZoom = 7.0,
+            minZoom = 4.2,
+            maxZoom = 10.8,
+            initialViewport = MapViewportSeed(44.7, -113.9, 8.0),
+            levels = listOf(
+                TileLevelAvailability(6, 10, 15, 37, 41),
+                TileLevelAvailability(10, 156, 219, 600, 640),
+            ),
+        )
+        val southwest = mapView.copy(
+            chartFamily = MapChartFamily.Sec,
+            packageName = "SW_SEC",
+            fullCoverageZoom = 7.0,
+            minZoom = 4.2,
+            maxZoom = 10.8,
+            initialViewport = MapViewportSeed(32.4, -113.9, 8.0),
+            levels = listOf(
+                TileLevelAvailability(6, 10, 15, 37, 41),
+                TileLevelAvailability(10, 156, 219, 600, 640),
+            ),
+        )
+        val viewport = createInitialViewport(
+            northwest.copy(initialViewport = MapViewportSeed(40.1, -113.9, 8.2)),
+        )
+
+        val tiles = renderTiles(
+            listOf("sec:nw" to northwest, "sec:sw" to southwest),
+            viewport,
+            1200f,
+            900f,
+        )
+
+        assertTrue(tiles.any { it.mapView.packageName == "NW_SEC" && it.zoom <= 7 })
+        assertTrue(tiles.none { it.mapView.packageName == "SW_SEC" && it.zoom <= 7 })
+        assertTrue(tiles.any { it.mapView.packageName == "NW_SEC" && it.zoom > 7 })
+        assertTrue(tiles.any { it.mapView.packageName == "SW_SEC" && it.zoom > 7 })
     }
 
     @Test

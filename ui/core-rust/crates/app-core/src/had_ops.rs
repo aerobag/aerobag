@@ -159,9 +159,7 @@ pub fn run_had_operation(store: &NavKvStore, op: HadOperation) -> AppResult<HadO
 
 fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value, HadReadError> {
     let value = match op {
-        HadOperation::ChartCatalog => {
-            serde_json::to_value(read_optional::<Value>(store, NavKvQuery::ChartCatalog)?)?
-        }
+        HadOperation::ChartCatalog => serde_json::to_value(chart_catalog(store)?)?,
         HadOperation::MapSelectorState { selected_map_id } => serde_json::to_value(
             map_selector_state(store, selected_map_id.as_deref())?,
         )?,
@@ -406,8 +404,23 @@ struct MapViewRecord {
     max_zoom: f64,
     storage_kind: String,
     package_name: Option<String>,
+    full_coverage_zoom: Option<f64>,
     initial_viewport: MapInitialViewportRecord,
     levels: Vec<MapViewLevelRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct PackageRecord {
+    id: String,
+    family_id: String,
+    region_id: Option<String>,
+    #[serde(default)]
+    metadata: Option<PackageMetadataRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct PackageMetadataRecord {
+    full_coverage_zoom: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -419,7 +432,7 @@ struct MapInitialViewportRecord {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct MapViewLevelRecord {
-    zoom: f64,
+    zoom: i64,
     x_min: i64,
     x_max: i64,
     y_tms_min: i64,
@@ -571,11 +584,7 @@ fn map_selector_state(
     store: &NavKvStore,
     selected_map_id: Option<&str>,
 ) -> Result<MapSelectorState, HadReadError> {
-    let map_views = read_required::<Vec<MapViewOptionRecord>>(
-        store,
-        NavKvQuery::ChartCatalog,
-        "chart catalog",
-    )?;
+    let map_views = chart_catalog(store)?;
     let selected_map = map_views
         .iter()
         .find(|view| Some(view.id.as_str()) == selected_map_id)
@@ -616,6 +625,37 @@ fn map_selector_state(
         geometry,
         family_options,
     })
+}
+
+fn chart_catalog(store: &NavKvStore) -> Result<Vec<MapViewOptionRecord>, HadReadError> {
+    let mut map_views = read_required::<Vec<MapViewOptionRecord>>(
+        store,
+        NavKvQuery::ChartCatalog,
+        "chart catalog",
+    )?;
+    enrich_map_views_with_package_metadata(store, &mut map_views)?;
+    Ok(map_views)
+}
+
+fn enrich_map_views_with_package_metadata(
+    store: &NavKvStore,
+    map_views: &mut [MapViewOptionRecord],
+) -> Result<(), HadReadError> {
+    for view in map_views {
+        let Some(package_id) = view.map_view.package_name.as_ref() else {
+            continue;
+        };
+        let package = read_optional::<PackageRecord>(
+            store,
+            NavKvQuery::PackageById {
+                package_id: package_id.clone(),
+            },
+        )?;
+        view.map_view.full_coverage_zoom = package
+            .and_then(|record| record.metadata)
+            .and_then(|metadata| metadata.full_coverage_zoom);
+    }
+    Ok(())
 }
 
 fn displayed_geometry(
@@ -1735,6 +1775,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn map_selector_state_enriches_full_coverage_zoom_from_package_metadata() {
+        let chart_catalog = br#"[{
+          "id":"sec:nw",
+          "label":"Northwest Sectional",
+          "region_id":"nw",
+          "coverage":null,
+          "map_view":{
+            "chart_family":"sec",
+            "chart_name":"Northwest Sectional",
+            "chart_index":0,
+            "tile_root":"tiles",
+            "tile_url_root":"/sectional-packages/NW_SEC_2604/tiles",
+            "tile_path_template":"0/{z}/{x}/{y}.webp",
+            "tile_size":512,
+            "min_zoom":4.2,
+            "max_zoom":12.5,
+            "storage_kind":"sectional_package",
+            "package_name":"NW_SEC_2604",
+            "initial_viewport":{"lat":45.0,"lon":-122.0,"zoom":8.0},
+            "levels":[{"zoom":10,"x_min":1,"x_max":2,"y_tms_min":3,"y_tms_max":4}]
+          }
+        }]"#;
+        let package_by_id = br#"{
+          "id":"NW_SEC_2604",
+          "family_id":"sec",
+          "region_id":"nw",
+          "metadata":{"full_coverage_zoom":7}
+        }"#;
+        let (root, pages) = fixture(
+            &[
+                ("chart/catalog", chart_catalog.as_slice()),
+                ("package/by-id/NW_SEC_2604", package_by_id.as_slice()),
+            ],
+            64,
+        );
+        let mut store = NavKvStore::new(root);
+        for (index, page) in pages.into_iter().enumerate() {
+            store.insert_page(index as u32, page);
+        }
+
+        let state = map_selector_state(&store, Some("sec:nw")).expect("map selector state");
+        assert_eq!(
+            state
+                .selected_map
+                .as_ref()
+                .and_then(|view| view.map_view.full_coverage_zoom),
+            Some(7.0)
+        );
+        assert_eq!(
+            state.displayed_maps[0].map_view.full_coverage_zoom,
+            Some(7.0)
+        );
+    }
+
     fn fixture(entries: &[(&str, &[u8])], page_size: u32) -> (NavKvRoot, Vec<Vec<u8>>) {
         let root = build_root(entries, page_size);
         let values = entries
@@ -2205,9 +2300,9 @@ mod tests {
                 .map_view
                 .levels
                 .iter()
-                .find(|level| (level.zoom - 10.0).abs() < f64::EPSILON)
+                .find(|level| level.zoom == 10)
                 .unwrap_or_else(|| panic!("missing zoom-10 level for {map_id}: {:?}", view.map_view.levels));
-            let (x, y_tms) = lat_lon_to_tile_tms(kmsy_lat, kmsy_lon, level.zoom);
+            let (x, y_tms) = lat_lon_to_tile_tms(kmsy_lat, kmsy_lon, level.zoom as f64);
             println!(
                 "{map_id} zoom {} tile x={} y_tms={} bounds x={}..={} y={}..={}",
                 level.zoom,

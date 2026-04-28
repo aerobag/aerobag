@@ -1966,12 +1966,16 @@ function MapPage(props: {
   }, []);
 
   const center = useMemo(() => viewportCenterLatLon(viewport), [viewport]);
+  const renderableFamilyMapViews = useMemo(
+    () => filterRenderableFamilyMapViews(selectedMap, selectedFamilyMapViews, viewport),
+    [selectedFamilyMapViews, selectedMap, viewport],
+  );
   const tiles = useMemo(() => {
     if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return [];
     }
     return renderTiles(
-      selectedFamilyMapViews.map((view) => ({
+      renderableFamilyMapViews.map((view) => ({
         ...view.map_view,
         id: view.id,
         coverage: view.coverage,
@@ -1981,7 +1985,7 @@ function MapPage(props: {
       surfaceSize.width,
       surfaceSize.height,
     );
-  }, [geometry, selectedFamilyMapViews, surfaceSize, viewport]);
+  }, [geometry, renderableFamilyMapViews, surfaceSize, viewport]);
   const mapIsVisible = page === "map";
   useEffect(() => {
     if (!selectedFamily) {
@@ -6071,6 +6075,41 @@ function formatSnapshot(snapshot: Pick<AppViewSnapshot, "page" | "selectedMapId"
 
 function formatPageStack(pageHistory: AppViewSnapshot[], currentSnapshot: Pick<AppViewSnapshot, "page" | "selectedMapId" | "selectedChartId" | "selectedChartLabel" | "chartFolderOpen">) {
   return [currentSnapshot, ...pageHistory.slice().reverse()].map(formatSnapshot).join(" > ");
+}
+
+function filterRenderableFamilyMapViews(
+  selectedMap: MapViewOptionJson,
+  familyMapViews: MapViewOptionJson[],
+  viewport: MapViewportState,
+): MapViewOptionJson[] {
+  const grouped = new Map<string, MapViewOptionJson[]>();
+  for (const view of familyMapViews) {
+    const key = view.map_view.chart_family;
+    const group = grouped.get(key);
+    if (group) {
+      group.push(view);
+    } else {
+      grouped.set(key, [view]);
+    }
+  }
+  return [...grouped.values()]
+    .flatMap((views) => {
+      const fullCoverageZooms = views
+        .map((view) => view.map_view.full_coverage_zoom)
+        .filter((zoom): zoom is number => zoom != null);
+      const collapseBelowZoom = fullCoverageZooms.length > 0 ? Math.min(...fullCoverageZooms) : null;
+      if (collapseBelowZoom == null || viewport.zoom > collapseBelowZoom || views.length <= 1) {
+        return views;
+      }
+      return [views.find((view) => view.region_id === selectedMap.region_id) ?? views[0]];
+    })
+    .sort((left, right) => {
+      const familyDelta = left.map_view.chart_family.localeCompare(right.map_view.chart_family);
+      if (familyDelta !== 0) {
+        return familyDelta;
+      }
+      return left.id.localeCompare(right.id);
+    });
 }
 
 function SituationStatusBadge(props: { ownship: OwnshipRenderState }) {

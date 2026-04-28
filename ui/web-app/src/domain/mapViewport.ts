@@ -336,8 +336,17 @@ export function renderTiles(
 ): RenderTile[] {
   const polygonSets = buildPolygonSetLookup(geometry);
   const tiles: RenderTile[] = [];
+  const mapViewsByFamily = new Map<MapView["chart_family"], Array<MapView & { id?: string }>>();
   for (const mapView of mapViews) {
-    tiles.push(...renderTilesForMapView(mapView, polygonSets, viewport, width, height));
+    const group = mapViewsByFamily.get(mapView.chart_family);
+    if (group) {
+      group.push(mapView);
+    } else {
+      mapViewsByFamily.set(mapView.chart_family, [mapView]);
+    }
+  }
+  for (const familyMapViews of mapViewsByFamily.values()) {
+    tiles.push(...renderTilesForFamily(familyMapViews, polygonSets, viewport, width, height));
   }
   return dedupeTiles(tiles).sort((left, right) => {
     const zoomDelta = left.zoom - right.zoom;
@@ -348,53 +357,67 @@ export function renderTiles(
   });
 }
 
-function renderTilesForMapView(
-  mapView: MapView & { id?: string },
+function renderTilesForFamily(
+  familyMapViews: Array<MapView & { id?: string }>,
   polygonSets: PolygonSetLookup,
   viewport: MapViewportState,
   width: number,
   height: number,
 ): RenderTile[] {
   const tiles: RenderTile[] = [];
-  const levels = levelsForMapView(mapView, viewport.zoom);
+  const familyFullCoverageZoom = familyMapViews
+    .map((mapView) => mapView.full_coverage_zoom)
+    .filter((zoom): zoom is number => zoom != null)
+    .reduce<number | null>((best, zoom) => (best == null ? zoom : Math.min(best, zoom)), null);
+  const lowZoomRepresentativeId = familyMapViews[0]?.id ?? familyMapViews[0]?.chart_name ?? null;
   const scale = scaleForZoom(viewport.zoom);
   const minWorldX = viewport.centerWorldX - width / 2 / scale;
   const maxWorldX = viewport.centerWorldX + width / 2 / scale;
   const minWorldY = viewport.centerWorldY - height / 2 / scale;
   const maxWorldY = viewport.centerWorldY + height / 2 / scale;
 
-  for (const level of levels) {
-    const tileWorldSize = WORLD_SIZE / (2 ** level.zoom);
-    const tileScreenSize = tileWorldSize * scale;
-    const xStart = Math.floor(minWorldX / tileWorldSize);
-    const xEnd = Math.floor(maxWorldX / tileWorldSize);
-    const yStart = Math.floor(minWorldY / tileWorldSize);
-    const yEnd = Math.floor(maxWorldY / tileWorldSize);
-    const levelScale = 2 ** level.zoom;
+  for (const mapView of familyMapViews) {
+    const levels = levelsForMapView(mapView, viewport.zoom);
+    for (const level of levels) {
+      if (
+        familyFullCoverageZoom != null &&
+        level.zoom <= familyFullCoverageZoom &&
+        (mapView.id ?? mapView.chart_name) !== lowZoomRepresentativeId
+      ) {
+        continue;
+      }
+      const tileWorldSize = WORLD_SIZE / (2 ** level.zoom);
+      const tileScreenSize = tileWorldSize * scale;
+      const xStart = Math.floor(minWorldX / tileWorldSize);
+      const xEnd = Math.floor(maxWorldX / tileWorldSize);
+      const yStart = Math.floor(minWorldY / tileWorldSize);
+      const yEnd = Math.floor(maxWorldY / tileWorldSize);
+      const levelScale = 2 ** level.zoom;
 
-    for (let yXyz = yStart; yXyz <= yEnd; yXyz += 1) {
-      for (let x = xStart; x <= xEnd; x += 1) {
-        const yTms = (levelScale - 1) - yXyz;
-        if (x < level.x_min || x > level.x_max || yTms < level.y_tms_min || yTms > level.y_tms_max) {
-          continue;
+      for (let yXyz = yStart; yXyz <= yEnd; yXyz += 1) {
+        for (let x = xStart; x <= xEnd; x += 1) {
+          const yTms = (levelScale - 1) - yXyz;
+          if (x < level.x_min || x > level.x_max || yTms < level.y_tms_min || yTms > level.y_tms_max) {
+            continue;
+          }
+          if (!tileIntersectsCoverage(mapView, polygonSets, level.zoom, x, yTms)) {
+            continue;
+          }
+          const left = ((x * tileWorldSize - viewport.centerWorldX) * scale) + width / 2;
+          const top = ((yXyz * tileWorldSize - viewport.centerWorldY) * scale) + height / 2;
+          tiles.push({
+            x,
+            yTms,
+            left,
+            top,
+            size: tileScreenSize,
+            zoom: level.zoom,
+            src: tileSrcForMapView(mapView, level.zoom, x, yTms),
+            mapViewId: mapView.id ?? mapView.chart_name,
+            packageName: mapView.package_name,
+            chartFamily: mapView.chart_family,
+          });
         }
-        if (!tileIntersectsCoverage(mapView, polygonSets, level.zoom, x, yTms)) {
-          continue;
-        }
-        const left = ((x * tileWorldSize - viewport.centerWorldX) * scale) + width / 2;
-        const top = ((yXyz * tileWorldSize - viewport.centerWorldY) * scale) + height / 2;
-        tiles.push({
-          x,
-          yTms,
-          left,
-          top,
-          size: tileScreenSize,
-          zoom: level.zoom,
-          src: tileSrcForMapView(mapView, level.zoom, x, yTms),
-          mapViewId: mapView.id ?? mapView.chart_name,
-          packageName: mapView.package_name,
-          chartFamily: mapView.chart_family,
-        });
       }
     }
   }

@@ -35,6 +35,12 @@ pub struct BundlePackageArtifact {
     pub size_bytes: Option<u64>,
     pub effective_date: Option<String>,
     pub expiration_date: Option<String>,
+    pub metadata: Option<BundlePackageMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundlePackageMetadata {
+    pub full_coverage_zoom: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1334,6 +1340,7 @@ mod tests {
             size_bytes: None,
             effective_date: effective.map(str::to_string),
             expiration_date: expires.map(str::to_string),
+            metadata: None,
         }
     }
 
@@ -1491,6 +1498,7 @@ mod tests {
                 size_bytes: None,
                 effective_date: Some("2026-03-20".to_string()),
                 expiration_date: Some("2026-04-16".to_string()),
+                metadata: None,
             }],
         };
         let bundle_2604 = BundleManifest {
@@ -1506,6 +1514,7 @@ mod tests {
                 size_bytes: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                metadata: None,
             }],
         };
 
@@ -1589,6 +1598,7 @@ mod tests {
                 size_bytes: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                metadata: None,
             }],
         };
         let result = reduce_offline_packages_controller(&OfflinePackagesControllerInput {

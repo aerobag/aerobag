@@ -1370,6 +1370,7 @@ data class WireMapView(
     val max_zoom: Double,
     val storage_kind: WireTileStorageKind,
     val package_name: String? = null,
+    val full_coverage_zoom: Double? = null,
     val initial_viewport: WireMapViewportSeed,
     val levels: List<WireTileLevelAvailability>,
 )

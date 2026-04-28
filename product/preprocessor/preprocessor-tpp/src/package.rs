@@ -99,6 +99,7 @@ pub(crate) fn package_region_versioned(
             manifest_sha256: hash_file(&manifest_path)?,
             zip: zip_name,
             zip_sha256: hash_file(&zip_path)?,
+            metadata: None,
         }],
     )?;
 

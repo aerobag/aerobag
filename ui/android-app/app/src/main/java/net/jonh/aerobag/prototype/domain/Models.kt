@@ -452,6 +452,7 @@ data class MapView(
     val maxZoom: Double,
     val storageKind: TileStorageKind,
     val packageName: String?,
+    val fullCoverageZoom: Double?,
     val initialViewport: MapViewportSeed,
     val levels: List<TileLevelAvailability>,
 )

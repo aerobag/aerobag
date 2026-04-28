@@ -35,7 +35,7 @@ use preprocessor_fast::{
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
     read_source_urls_jsonl, write_package_outputs_jsonl, CacheLayout, FetchCacheConfig,
-    FetchCacheMode, PackageOutputRecord,
+    FetchCacheMode, PackageOutputMetadata, PackageOutputRecord,
 };
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, ResourceIndex,
@@ -349,6 +349,8 @@ struct BundlePackageArtifact {
     source_fetched_at_utc: Option<String>,
     effective_date: Option<String>,
     expiration_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<PackageOutputMetadata>,
 }
 
 #[derive(Debug, Clone)]
@@ -434,6 +436,7 @@ fn build_fast_bundle_manifest(
                 source_fetched_at_utc: None,
                 effective_date: Some(product.source_generated_at_utc.clone()),
                 expiration_date: None,
+                metadata: None,
             })
             .collect(),
     })
@@ -512,6 +515,7 @@ fn build_stable_bundle_package_artifact(
         source_fetched_at_utc,
         effective_date: Some(effective_date),
         expiration_date: None,
+        metadata: None,
     })
 }
 
@@ -1941,6 +1945,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 source_fetched_at_utc: None,
                                 effective_date: Some(start_valid),
                                 expiration_date: Some(end_valid),
+                                metadata: None,
                             };
                             let built = build_nav_kv_artifact(
                                 &cycle_config,
@@ -3990,6 +3995,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             source_fetched_at_utc: None,
             effective_date: Some(start_valid),
             expiration_date: Some(end_valid),
+            metadata: None,
         };
         let nav_db = build_nav_kv_artifact(
             config,
@@ -4137,6 +4143,7 @@ fn build_bundle_manifest(
                 source_fetched_at_utc: None,
                 effective_date: package.effective_date.clone(),
                 expiration_date: package.expiration_date.clone(),
+                metadata: package.metadata.clone(),
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -4159,6 +4166,7 @@ fn build_bundle_manifest(
         source_fetched_at_utc: None,
         effective_date: Some(start_valid.clone()),
         expiration_date: Some(end_valid.clone()),
+        metadata: None,
     });
     package_artifacts.extend(stable_packages.iter().cloned());
     package_artifacts.push(nav_db_package.clone());
@@ -4361,6 +4369,7 @@ fn build_nav_kv_artifact(
                         .first()
                         .cloned()
                 }),
+            metadata: None,
         },
     })
 }
@@ -4868,11 +4877,13 @@ fn build_nav_kv_package_pairs(
             "cycle_version": package.cycle_version,
             "effective_date": package.effective_date,
             "expiration_date": package.expiration_date,
+            "metadata": &package.metadata,
         });
         package_index.push(serde_json::json!({
             "id": package.id,
             "family_id": package.family_id,
             "region_id": package.region_id,
+            "metadata": &package.metadata,
         }));
         pairs.push(json_pair(
             format!("package/by-id/{}", had_key_component(&package.id)),
@@ -11649,6 +11660,9 @@ fn build_chart_package_nodes(
                                 version_label
                             ),
                             zip_sha256: hash_file(&zip_path)?,
+                            metadata: Some(PackageOutputMetadata {
+                                full_coverage_zoom: Some(7),
+                            }),
                         });
                     }
                     continue;
@@ -11708,6 +11722,9 @@ fn build_chart_package_nodes(
                     version_label
                 ),
                 zip_sha256: hash_file(&zip_path)?,
+                metadata: Some(PackageOutputMetadata {
+                    full_coverage_zoom: Some(7),
+                }),
             });
         }
     }
@@ -11931,6 +11948,7 @@ fn build_csup_package_nodes(
                             manifest_sha256: hash_file(&manifest_path)?,
                             zip: format!("{}_CSUP_{}.zip", region.code(), version_label),
                             zip_sha256: hash_file(&zip_path)?,
+                            metadata: None,
                         });
                     }
                     continue;
@@ -11975,6 +11993,7 @@ fn build_csup_package_nodes(
                 manifest_sha256: hash_file(&manifest_path)?,
                 zip: format!("{}_CSUP_{}.zip", region.code(), version_label),
                 zip_sha256: hash_file(&zip_path)?,
+                metadata: None,
             });
         }
     }
@@ -12861,6 +12880,12 @@ fn read_package_outputs_by_region(
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string(),
+            metadata: value
+                .get("metadata")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .context("failed to parse package output metadata")?,
         };
         records.insert(record.region.clone(), record);
     }
@@ -13746,6 +13771,7 @@ mod tests {
                 version_label: None,
                 effective_date: None,
                 expiration_date: None,
+                metadata: None,
             }],
             chart_collections: vec![ChartCollectionRecord {
                 id: "sec:nw".to_string(),
@@ -13930,6 +13956,9 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                metadata: Some(PackageOutputMetadata {
+                    full_coverage_zoom: Some(7),
+                }),
             },
             BundlePackageArtifact {
                 id: "VECTORS_DATA_2604_01".to_string(),
@@ -13947,6 +13976,7 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
+                metadata: None,
             },
         ])
         .unwrap();
@@ -13962,7 +13992,11 @@ mod tests {
         let index = pair_value("package/index");
         assert_eq!(index.as_array().unwrap().len(), 2);
         assert_eq!(index[0]["id"], "NW_SEC_2604_01");
+        assert_eq!(index[0]["metadata"]["full_coverage_zoom"], 7);
         assert_eq!(index[1]["id"], "VECTORS_DATA_2604_01");
+
+        let sectional = pair_value("package/by-id/NW_SEC_2604_01");
+        assert_eq!(sectional["metadata"]["full_coverage_zoom"], 7);
 
         let vectors = pair_value("package/by-id/VECTORS_DATA_2604_01");
         assert_eq!(vectors["family_id"], "vectors");

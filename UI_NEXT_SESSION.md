@@ -407,18 +407,20 @@ Resume from the current 3-page shell and continue removing fixture glue. Keep th
 
 ## 2026-04-07 Resource-Index / Family Mosaic Checkpoint
 
-- The UI bridge now consumes a generated `resource-index.json` alongside the legacy-ish fixture bundle.
-- Web derives:
-  - `mapViews` from `resource-index.chart_collections`
-  - `chartPage` from `resource-index.plates` and `resource-index.csups`
-  - via [ui/web-app/src/domain/resourceIndexAdapters.ts](/root/aerobag/ui/web-app/src/domain/resourceIndexAdapters.ts)
-- Android mirrors that logic in:
-  - [ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/ResourceIndexAdapters.kt](/root/aerobag/ui/android-app/app/src/main/java/net/jonh/aerobag/prototype/domain/ResourceIndexAdapters.kt)
+- The old UI-side `resource-index` adapter path is gone.
+- Live chart/map state now comes from core/HAD on both platforms.
+- Web test fixtures now define their sample `mapViews` and `chartPage` directly in [ui/web-app/src/domain/sampleData.ts](/root/aerobag-three/aerobag/ui/web-app/src/domain/sampleData.ts) instead of deriving them through adapter glue.
 
 - Map rendering is no longer single-package-per-family.
   - Both web and Android render a family mosaic from all visible `MapView`s in the selected family.
   - That fixed the earlier `SECTIONAL` bug where panning south from `NW` hit gray instead of drawing `SW`.
   - Tests were added on both platforms to pin the “neighboring packages can appear in one viewport” behavior.
+
+- Regional chart package metadata now publishes `metadata.full_coverage_zoom`.
+  - Core enriches `map_selector_state.displayed_maps[*].map_view.full_coverage_zoom` from `package/by-id/<package_id>`.
+  - Web and Android both collapse low-zoom regional duplication using that shared field:
+    - `zoom <= full_coverage_zoom`: render one representative region per family
+    - `zoom > full_coverage_zoom`: render the stitched regional family mosaic
 
 - Current Android packaging note:
   - Android still installs chart packages from APK assets under `sectional-packages`.

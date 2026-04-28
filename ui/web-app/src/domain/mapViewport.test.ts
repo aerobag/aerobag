@@ -89,6 +89,48 @@ describe("mapViewport", () => {
     expect(tiles.some((tile) => tile.packageName === "SW_SEC")).toBe(true);
   });
 
+  it("collapses low fallback zooms to one regional package per family", () => {
+    const northwest = {
+      ...mapView,
+      id: "sec:nw",
+      chart_family: "sec" as const,
+      package_name: "NW_SEC",
+      full_coverage_zoom: 7,
+      min_zoom: 4.2,
+      max_zoom: 12.5,
+      initial_viewport: { lat: 44.7, lon: -113.9, zoom: 8 },
+      levels: [
+        { zoom: 6, x_min: 10, x_max: 15, y_tms_min: 37, y_tms_max: 41 },
+        { zoom: 10, x_min: 156, x_max: 219, y_tms_min: 600, y_tms_max: 640 },
+      ],
+    };
+    const southwest = {
+      ...mapView,
+      id: "sec:sw",
+      chart_family: "sec" as const,
+      package_name: "SW_SEC",
+      full_coverage_zoom: 7,
+      min_zoom: 4.2,
+      max_zoom: 12.5,
+      initial_viewport: { lat: 32.4, lon: -113.9, zoom: 8 },
+      levels: [
+        { zoom: 6, x_min: 10, x_max: 15, y_tms_min: 37, y_tms_max: 41 },
+        { zoom: 10, x_min: 156, x_max: 219, y_tms_min: 600, y_tms_max: 640 },
+      ],
+    };
+    const viewport = createInitialViewport({
+      ...northwest,
+      initial_viewport: { lat: 40.1, lon: -113.9, zoom: 8.2 },
+    });
+
+    const tiles = renderTiles([northwest, southwest], sampleGeometry, viewport, 1200, 900);
+
+    expect(tiles.some((tile) => tile.packageName === "NW_SEC" && tile.zoom <= 7)).toBe(true);
+    expect(tiles.some((tile) => tile.packageName === "SW_SEC" && tile.zoom <= 7)).toBe(false);
+    expect(tiles.some((tile) => tile.packageName === "NW_SEC" && tile.zoom > 7)).toBe(true);
+    expect(tiles.some((tile) => tile.packageName === "SW_SEC" && tile.zoom > 7)).toBe(true);
+  });
+
   it("renders static product tiles without inserting a chart index", () => {
     const shadedRelief = {
       ...mapView,

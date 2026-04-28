@@ -258,7 +258,29 @@ private const val WebMercatorHalfWorldM = 20037508.342789244
 private const val NexradFrameIntervalMs = 900L
 private const val TerrainAltitudeBucketFt = 200
 private const val MapLayerLogTag = "MapLayers"
+private const val TileBudgetLogTag = "AerobagTileBudget"
 private val VampsPosition = LatLon(47.3648944444444, -121.980275)
+
+private fun filterRenderableFamilyMapViews(
+    selectedMap: MapViewOption,
+    familyMapViews: List<MapViewOption>,
+    viewport: MapViewportState,
+): List<MapViewOption> =
+    familyMapViews
+        .groupBy { it.mapView.chartFamily }
+        .values
+        .flatMap { views ->
+            val collapseBelowZoom = views.mapNotNull { it.mapView.fullCoverageZoom }.minOrNull()
+            if (collapseBelowZoom == null || viewport.zoom > collapseBelowZoom || views.size <= 1) {
+                views
+            } else {
+                listOf(
+                    views.firstOrNull { it.regionId == selectedMap.regionId }
+                        ?: views.first(),
+                )
+            }
+        }
+        .sortedWith(compareBy<MapViewOption> { it.mapView.chartFamily.name }.thenBy { it.id })
 
 private data class LatLon(val lat: Double, val lon: Double)
 
@@ -1281,6 +1303,20 @@ private fun formatNexradObservedTime(value: String): String =
         java.time.Instant.parse(value).toString().substring(11, 16)
     }.getOrElse { value }
 
+private fun formatTileBudgetSummary(
+    tiles: List<net.jonh.aerobag.prototype.domain.RenderTile>,
+): String {
+    val counts = linkedMapOf<String, Int>()
+    tiles.forEach { tile ->
+        val packageLabel = tile.mapView.packageName ?: tile.mapViewId
+        val key = "$packageLabel@z${tile.zoom}"
+        counts[key] = (counts[key] ?: 0) + 1
+    }
+    return counts.entries
+        .sortedBy { it.key }
+        .joinToString(", ") { entry -> "${entry.key}=${entry.value}" }
+}
+
 private fun projectAhead(lat: Double, lon: Double, bearingDeg: Double, distanceNm: Double): LatLon {
     val angularDistance = distanceNm / 3440.065
     val bearing = Math.toRadians(bearingDeg)
@@ -1549,6 +1585,25 @@ private fun writeUiPrefs(
         .apply()
 }
 
+private fun summarizeRuntimeBootstrapFailure(error: Throwable): String {
+    val chain = generateSequence(error) { it.cause }
+        .mapNotNull { throwable ->
+            val detail = throwable.message?.trim().orEmpty()
+            if (detail.isEmpty()) {
+                throwable::class.simpleName
+            } else {
+                "${throwable::class.simpleName}: $detail"
+            }
+        }
+        .distinct()
+        .toList()
+    return if (chain.isEmpty()) {
+        "Runtime bootstrap failed."
+    } else {
+        "Runtime bootstrap failed: ${chain.joinToString(" <- ")}"
+    }
+}
+
 class MainActivity : ComponentActivity() {
     var onHardwareZoomDelta: ((Double) -> Boolean)? = null
 
@@ -1601,9 +1656,19 @@ private fun AerobagApp() {
         }
     }
     var keepOfflinePackagesVisible by remember { mutableStateOf(false) }
-    LaunchedEffect(runtimeFixture?.isFailure) {
-        if (runtimeFixture?.isFailure == true) {
-            keepOfflinePackagesVisible = true
+    var runtimeFailureMessage by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(runtimeFixture) {
+        when {
+            runtimeFixture?.isFailure == true -> {
+                keepOfflinePackagesVisible = true
+                val error = runtimeFixture?.exceptionOrNull() ?: return@LaunchedEffect
+                val message = summarizeRuntimeBootstrapFailure(error)
+                runtimeFailureMessage = message
+                Log.e("AerobagRuntime", message, error)
+            }
+            runtimeFixture?.isSuccess == true -> {
+                runtimeFailureMessage = null
+            }
         }
     }
     if (runtimeFixture == null) {
@@ -1618,8 +1683,8 @@ private fun AerobagApp() {
                 onOpenPlan = {},
                 initialOfflinePackagesOpen = keepOfflinePackagesVisible,
                 forceOfflinePackagesOpen = keepOfflinePackagesVisible,
-                bootstrapMessage =
-                    if (keepOfflinePackagesVisible) {
+                bootstrapMessage = runtimeFailureMessage
+                    ?: if (keepOfflinePackagesVisible) {
                         "Opening runtime..."
                     } else {
                         "Loading..."
@@ -1643,7 +1708,8 @@ private fun AerobagApp() {
                 onOpenPlan = {},
                 initialOfflinePackagesOpen = true,
                 forceOfflinePackagesOpen = true,
-                bootstrapMessage = "Refresh library, then sync NAV DB in Offline Packages to continue.",
+                bootstrapMessage = runtimeFailureMessage
+                    ?: "Runtime bootstrap failed. Refresh library, then sync required packages in Offline Packages to continue.",
                 offlinePackagesControllerHandle = offlinePackagesControllerHandle,
                 onRuntimeMaybeAvailable = { runtimeReloadToken += 1 },
             )
@@ -3261,17 +3327,24 @@ private fun MapExplorerPage(
         }
     }
     val currentViewport = viewportState.value
+    val renderableFamilyMapViews = remember(selectedMap, selectedFamilyMapViews, currentViewport) {
+        filterRenderableFamilyMapViews(
+            selectedMap = selectedMap,
+            familyMapViews = selectedFamilyMapViews,
+            viewport = currentViewport,
+        )
+    }
     val center = remember(currentViewport) { viewportCenterLatLon(currentViewport) }
     val surfaceWidthPx = surfaceSize.width.toFloat()
     val surfaceHeightPx = surfaceSize.height.toFloat()
     val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
     val surfaceHeightDp = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
-    val tiles = remember(currentViewport, surfaceSize, selectedFamilyMapViews) {
+    val tiles = remember(currentViewport, surfaceSize, renderableFamilyMapViews) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             emptyList()
         } else {
             renderTiles(
-                mapViews = selectedFamilyMapViews.map { it.id to it.mapView },
+                mapViews = renderableFamilyMapViews.map { it.id to it.mapView },
                 viewport = currentViewport,
                 widthPx = surfaceWidthPx,
                 heightPx = surfaceHeightPx,
@@ -3479,6 +3552,10 @@ private fun MapExplorerPage(
     }
     LaunchedEffect(tiles, selectedMap.id, installRevision) {
         val missingTiles = tiles.filter { tile -> !tileBitmapCache.containsKey(renderTileKey(tile)) }
+        Log.i(
+            TileBudgetLogTag,
+            "visible map=${selectedMap.id} total=${tiles.size} missing=${missingTiles.size} cache=${tileBitmapCache.size} groups=[${formatTileBudgetSummary(tiles)}]",
+        )
         if (missingTiles.isEmpty()) {
             return@LaunchedEffect
         }
@@ -3492,6 +3569,23 @@ private fun MapExplorerPage(
             }
         }
         tileBitmapCache.putAll(loaded)
+        val cacheLoadedCount = tileBitmapCache.values.count { it != null }
+        val cacheMissCount = tileBitmapCache.size - cacheLoadedCount
+        val visibleTileByKey = tiles.associateBy { renderTileKey(it) }
+        val cacheCounts = linkedMapOf<String, Int>()
+        tileBitmapCache.forEach { (key, bitmap) ->
+            val tile = visibleTileByKey[key] ?: return@forEach
+            val packageLabel = tile.mapView.packageName ?: tile.mapViewId
+            val summaryKey = "$packageLabel@z${tile.zoom}:${if (bitmap != null) "loaded" else "empty"}"
+            cacheCounts[summaryKey] = (cacheCounts[summaryKey] ?: 0) + 1
+        }
+        val cacheSummary = cacheCounts.entries
+            .sortedBy { it.key }
+            .joinToString(", ") { entry -> "${entry.key}=${entry.value}" }
+        Log.i(
+            TileBudgetLogTag,
+            "cache map=${selectedMap.id} entries=${tileBitmapCache.size} loaded=$cacheLoadedCount empty=$cacheMissCount groups=[$cacheSummary]",
+        )
     }
     val tileLabelPaint = remember {
         Paint().apply {

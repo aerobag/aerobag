@@ -1,12 +1,14 @@
 import bootstrapJson from "@shared-bootstrap";
-import { sampleCatalogFixture, sampleResourceIndexFixture } from "./sampleFixtures";
-import { deriveChartPage, deriveMapViews } from "./resourceIndexAdapters";
+import { sampleCatalogFixture } from "./sampleFixtures";
 import type {
   AppState,
   CatalogJson,
+  ChartPageData,
   ContentInventory,
   DevBootstrapJson,
   GeometryJson,
+  MapViewJson,
+  MapViewOptionJson,
   MapTileViewJson,
 } from "./types";
 
@@ -19,7 +21,36 @@ export const sampleGeometry: GeometryJson = {
   polygon_sets: [],
 };
 
-export const mapViews = deriveMapViews(sampleResourceIndexFixture, []);
+export const mapViews: MapViewOptionJson[] = [
+  {
+    id: "sec:nw",
+    label: "Northwest Sectional",
+    region_id: "nw",
+    map_view: {
+      chart_family: "sec",
+      chart_name: "Northwest Sectional",
+      chart_index: 0,
+      tile_root: "tiles",
+      tile_url_root: "/sectional-packages/SEC_NW_2604_01/tiles",
+      tile_path_template: "{z}/{x}/{y}.webp",
+      tile_size: 512,
+      min_zoom: 5.2,
+      max_zoom: 12.5,
+      storage_kind: "sectional_package",
+      package_name: "SEC_NW_2604_01",
+      full_coverage_zoom: 7,
+      initial_viewport: {
+        lat: 46.0,
+        lon: -122.0,
+        zoom: 8.2,
+      },
+      levels: [
+        { zoom: 8, x_min: 0, x_max: 255, y_tms_min: 0, y_tms_max: 255 },
+        { zoom: 10, x_min: 0, x_max: 1023, y_tms_min: 0, y_tms_max: 1023 },
+      ],
+    },
+  },
+];
 export const mapView = mapViews[0].map_view;
 const defaultLevel = mapView.levels.reduce((best, current) => (current.zoom > best.zoom ? current : best));
 export const mapTileView: MapTileViewJson = {
@@ -37,7 +68,9 @@ export const mapTileView: MapTileViewJson = {
 };
 
 export const samplePlan = bootstrap.flight_plan;
-export const chartPage = deriveChartPage(sampleResourceIndexFixture, samplePlan);
+export const chartPage: ChartPageData = {
+  airports: [],
+};
 
 export const remoteOnlyInventory: ContentInventory = {
   installed_packages: [],

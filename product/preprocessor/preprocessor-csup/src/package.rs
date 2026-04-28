@@ -117,6 +117,7 @@ fn package_csup_region_records(
                 manifest_sha256: hash_file(&manifest_path)?,
                 zip: zip_name,
                 zip_sha256: hash_file(&zip_path)?,
+                metadata: None,
             });
         }
     }

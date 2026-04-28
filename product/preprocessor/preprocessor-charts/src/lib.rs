@@ -15,9 +15,12 @@ use preprocessor_core::{
 };
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives, prefetch_archives_with_provenance,
-    read_source_urls_jsonl, write_package_outputs_jsonl, FetchCacheConfig, PackageOutputRecord,
+    read_source_urls_jsonl, write_package_outputs_jsonl, FetchCacheConfig, PackageOutputMetadata,
+    PackageOutputRecord,
 };
 use preprocessor_tools::{ToolInvocation, ToolOutcome};
+
+const FULL_COVERAGE_ZOOM: u32 = 7;
 
 #[derive(Debug, Clone)]
 pub struct ChartRunRequest {
@@ -937,6 +940,9 @@ fn package_region_records_from_spec(
                 manifest_sha256: hash_file(&manifest_path)?,
                 zip: zip_name,
                 zip_sha256: hash_file(&zip_path)?,
+                metadata: Some(PackageOutputMetadata {
+                    full_coverage_zoom: Some(FULL_COVERAGE_ZOOM),
+                }),
             });
         }
     }

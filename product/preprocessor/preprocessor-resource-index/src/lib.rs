@@ -4,7 +4,7 @@ use preprocessor_data::INTERMEDIATE_SQLITE_BASENAME;
 use preprocessor_core::{
     PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region, PACKAGE_ASSET_MANIFEST_NAME,
 };
-use preprocessor_fetch::PackageOutputRecord;
+use preprocessor_fetch::{PackageOutputMetadata, PackageOutputRecord};
 use rayon::prelude::*;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -206,6 +206,8 @@ pub struct ResourcePackage {
     pub version_label: Option<String>,
     pub effective_date: Option<String>,
     pub expiration_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<PackageOutputMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -962,6 +964,7 @@ fn package_from_record(
         version_label: package_version_label(temporal),
         effective_date: temporal.and_then(|value| value.effective_date.clone()),
         expiration_date: temporal.and_then(|value| value.expiration_date.clone()),
+        metadata: record.metadata.clone(),
     })
 }
 
@@ -1361,6 +1364,12 @@ fn read_package_outputs(path: &Path) -> anyhow::Result<Vec<PackageOutputRecord>>
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string(),
+                metadata: value
+                    .get("metadata")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .context("failed to parse package output metadata")?,
             })
         })
         .collect()

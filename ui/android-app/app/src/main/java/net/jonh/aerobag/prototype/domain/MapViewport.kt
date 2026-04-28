@@ -189,9 +189,11 @@ fun renderTiles(
     widthPx: Float,
     heightPx: Float,
 ): List<RenderTile> {
-    val tiles = mapViews.flatMap { (mapViewId, mapView) ->
-        renderTilesForMapView(mapViewId, mapView, viewport, widthPx, heightPx)
-    }
+    val tiles = mapViews
+        .groupBy { it.second.chartFamily }
+        .flatMap { (_, familyMapViews) ->
+            renderTilesForFamily(familyMapViews, viewport, widthPx, heightPx)
+        }
     return dedupeTiles(tiles).sortedWith(
         compareBy<RenderTile> { chartFamilyRenderPriority(it.mapView.chartFamily) }
             .thenBy { it.zoom }
@@ -200,24 +202,14 @@ fun renderTiles(
     )
 }
 
-private fun renderTilesForMapView(
-    mapViewId: String,
-    mapView: MapView,
+private fun renderTilesForFamily(
+    familyMapViews: List<Pair<String, MapView>>,
     viewport: MapViewportState,
     widthPx: Float,
     heightPx: Float,
 ): List<RenderTile> {
-    val desiredLevel = pickLevel(mapView, viewport.zoom)
-    val levels =
-        if (mapView.chartFamily == MapChartFamily.Tac) {
-            // TAC now rides over SEC as its fallback layer, so stacking coarser TAC
-            // levels only paints a blurry halo behind the sharp tiles.
-            listOf(desiredLevel)
-        } else {
-            mapView.levels
-                .filter { it.zoom <= desiredLevel.zoom }
-                .sortedBy { it.zoom }
-        }
+    val familyFullCoverageZoom = familyMapViews.mapNotNull { it.second.fullCoverageZoom }.minOrNull()
+    val lowZoomRepresentativeId = familyMapViews.firstOrNull()?.first
     val scale = scaleForZoom(viewport.zoom)
     val minWorldX = viewport.centerWorldX - widthPx / 2f / scale
     val maxWorldX = viewport.centerWorldX + widthPx / 2f / scale
@@ -225,33 +217,50 @@ private fun renderTilesForMapView(
     val maxWorldY = viewport.centerWorldY + heightPx / 2f / scale
     val tiles = mutableListOf<RenderTile>()
 
-    for (level in levels) {
-        val tileWorldSize = WORLD_SIZE / 2.0.pow(level.zoom)
-        val tileScreenSize = tileWorldSize * scale
-        val xStart = kotlin.math.floor(minWorldX / tileWorldSize).toInt()
-        val xEnd = kotlin.math.floor(maxWorldX / tileWorldSize).toInt()
-        val yStart = kotlin.math.floor(minWorldY / tileWorldSize).toInt()
-        val yEnd = kotlin.math.floor(maxWorldY / tileWorldSize).toInt()
-        val levelScale = 2.0.pow(level.zoom).toInt()
+    for ((mapViewId, mapView) in familyMapViews) {
+        val desiredLevel = pickLevel(mapView, viewport.zoom)
+        val levels =
+            if (mapView.chartFamily == MapChartFamily.Tac) {
+                // TAC now rides over SEC as its fallback layer, so stacking coarser TAC
+                // levels only paints a blurry halo behind the sharp tiles.
+                listOf(desiredLevel)
+            } else {
+                mapView.levels
+                    .filter { it.zoom <= desiredLevel.zoom }
+                    .sortedBy { it.zoom }
+            }
 
-        for (yXyz in yStart..yEnd) {
-            for (x in xStart..xEnd) {
-                val yTms = (levelScale - 1) - yXyz
-                if (x < level.xMin || x > level.xMax || yTms < level.yTmsMin || yTms > level.yTmsMax) {
-                    continue
+        for (level in levels) {
+            if (familyFullCoverageZoom != null && level.zoom <= familyFullCoverageZoom && mapViewId != lowZoomRepresentativeId) {
+                continue
+            }
+            val tileWorldSize = WORLD_SIZE / 2.0.pow(level.zoom)
+            val tileScreenSize = tileWorldSize * scale
+            val xStart = kotlin.math.floor(minWorldX / tileWorldSize).toInt()
+            val xEnd = kotlin.math.floor(maxWorldX / tileWorldSize).toInt()
+            val yStart = kotlin.math.floor(minWorldY / tileWorldSize).toInt()
+            val yEnd = kotlin.math.floor(maxWorldY / tileWorldSize).toInt()
+            val levelScale = 2.0.pow(level.zoom).toInt()
+
+            for (yXyz in yStart..yEnd) {
+                for (x in xStart..xEnd) {
+                    val yTms = (levelScale - 1) - yXyz
+                    if (x < level.xMin || x > level.xMax || yTms < level.yTmsMin || yTms > level.yTmsMax) {
+                        continue
+                    }
+                    val left = (((x * tileWorldSize - viewport.centerWorldX) * scale) + widthPx / 2f).toFloat()
+                    val top = (((yXyz * tileWorldSize - viewport.centerWorldY) * scale) + heightPx / 2f).toFloat()
+                    tiles += RenderTile(
+                        x = x,
+                        yTms = yTms,
+                        leftPx = left,
+                        topPx = top,
+                        sizePx = tileScreenSize.toFloat(),
+                        zoom = level.zoom,
+                        mapViewId = mapViewId,
+                        mapView = mapView,
+                    )
                 }
-                val left = (((x * tileWorldSize - viewport.centerWorldX) * scale) + widthPx / 2f).toFloat()
-                val top = (((yXyz * tileWorldSize - viewport.centerWorldY) * scale) + heightPx / 2f).toFloat()
-                tiles += RenderTile(
-                    x = x,
-                    yTms = yTms,
-                    leftPx = left,
-                    topPx = top,
-                    sizePx = tileScreenSize.toFloat(),
-                    zoom = level.zoom,
-                    mapViewId = mapViewId,
-                    mapView = mapView,
-                )
             }
         }
     }

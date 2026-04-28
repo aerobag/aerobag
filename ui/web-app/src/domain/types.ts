@@ -726,6 +726,7 @@ export type MapViewJson = {
   max_zoom: number;
   storage_kind: TileStorageKind;
   package_name: string | null;
+  full_coverage_zoom?: number | null;
   initial_viewport: {
     lat: number;
     lon: number;

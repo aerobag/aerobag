@@ -116,6 +116,8 @@ object SampleData {
                     },
                 ),
             ).map { it.toUi() }
+        val fullCoverageCount = mapViews.count { it.mapView.fullCoverageZoom != null }
+        Log.i(TAG, "chartCatalog mapViews=${mapViews.size} fullCoverageZoom=$fullCoverageCount")
         val chartCatalogMs = SystemClock.elapsedRealtime() - chartCatalogStartMs
         val mapView = mapViews.first().mapView
         val samplePlan = bootstrapFixture.samplePlan
@@ -244,6 +246,7 @@ private fun WireMapView.toUi() = MapView(
     maxZoom = max_zoom,
     storageKind = storage_kind.toUi(),
     packageName = package_name,
+    fullCoverageZoom = full_coverage_zoom,
     initialViewport = MapViewportSeed(
         lat = initial_viewport.lat,
         lon = initial_viewport.lon,

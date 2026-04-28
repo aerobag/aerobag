@@ -1425,7 +1425,10 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     initial_course_override,
                 )
             } else if window_link.display_leg_start.sequence == window_link.effective_leg_end.sequence
-                && window_link.display_leg_start.path_termination.trim() == "PI"
+                && matches!(
+                    window_link.display_leg_start.path_termination.trim(),
+                    "PI" | "RF"
+                )
             {
                 display_path_for_single_procedure_step(
                     leg_records,
@@ -3172,6 +3175,7 @@ fn append_resolved_procedure_leg(
     component_index: usize,
     spec: ProcedureAppendSpec<'_>,
 ) -> Option<LegDisplayPath> {
+    validate_display_path_terminal_matches_leg_to(procedure_id, &spec);
     let signatures = heading_signatures_for_leg(
         *next_heading_step_index,
         spec.display_path.as_ref(),
@@ -3204,6 +3208,48 @@ fn append_resolved_procedure_leg(
         }),
     });
     spec.display_path
+}
+
+fn validate_display_path_terminal_matches_leg_to(
+    procedure_id: &str,
+    spec: &ProcedureAppendSpec<'_>,
+) {
+    if spec.from == spec.to {
+        return;
+    }
+    if !display_path_should_end_at_leg_to(spec.provenance_record.path_termination.trim()) {
+        return;
+    }
+    let Some(expected_end) = spec.heading_to_record.nav_position else {
+        return;
+    };
+    let Some(actual_end) = spec
+        .display_path
+        .as_ref()
+        .and_then(previous_display_path_terminal_position)
+    else {
+        return;
+    };
+    if great_circle_distance_nm(actual_end, expected_end) > MIN_GEOMETRY_DISTANCE_NM {
+        panic!(
+            "procedure display path terminal mismatch for {}: {} -> {} id=procedure-{}-{}-{} gap_nm={:.2} expected=({:.6},{:.6}) actual=({:.6},{:.6})",
+            procedure_id.trim(),
+            describe_nav_ref(&spec.from),
+            describe_nav_ref(&spec.to),
+            procedure_id.trim(),
+            spec.provenance_record.key.route_type.trim(),
+            spec.provenance_record.sequence,
+            great_circle_distance_nm(actual_end, expected_end),
+            expected_end.lat,
+            expected_end.lon,
+            actual_end.lat,
+            actual_end.lon,
+        );
+    }
+}
+
+fn display_path_should_end_at_leg_to(path_termination: &str) -> bool {
+    matches!(path_termination, "AF" | "CF" | "DF" | "RF" | "TF")
 }
 
 #[derive(Clone, Copy)]

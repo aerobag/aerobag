@@ -625,7 +625,7 @@ fn build_one_vfr_vrt(
     family: ChartFamily,
     worker_index: usize,
 ) -> anyhow::Result<()> {
-    let tif_name = format!("{base_name}.tif");
+    let tif_name = resolve_chart_input_filename(work_dir, base_name, "tif")?;
     let rgb_vrt_name = format!("{base_name}rgb.vrt");
     let vrt_name = format!("{base_name}.vrt");
     let cutline = format!("{chart_dir_name}/{base_name}.geojson");
@@ -700,7 +700,7 @@ fn build_one_ifr_vrt(
     family: ChartFamily,
     worker_index: usize,
 ) -> anyhow::Result<()> {
-    let tif_name = format!("{base_name}.tif");
+    let tif_name = resolve_chart_input_filename(work_dir, base_name, "tif")?;
     let vrt_name = format!("{base_name}.vrt");
     let cutline = format!("{chart_dir_name}/{base_name}.geojson");
     let logs_dir = work_dir.join(".rust-logs");
@@ -747,6 +747,34 @@ fn remove_if_exists(path: PathBuf) -> anyhow::Result<()> {
             .with_context(|| format!("failed to remove stale {}", path.display()))?;
     }
     Ok(())
+}
+
+fn resolve_chart_input_filename(
+    work_dir: &Path,
+    base_name: &str,
+    extension: &str,
+) -> anyhow::Result<String> {
+    let expected = format!("{base_name}.{extension}");
+    if work_dir.join(&expected).is_file() {
+        return Ok(expected);
+    }
+    let expected_lower = expected.to_ascii_lowercase();
+    for entry in fs::read_dir(work_dir)
+        .with_context(|| format!("failed to read chart work dir {}", work_dir.display()))?
+    {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if name.to_ascii_lowercase() == expected_lower && entry.path().is_file() {
+            return Ok(name.to_string());
+        }
+    }
+    bail!(
+        "missing chart input {expected} under {}",
+        work_dir.display()
+    )
 }
 
 fn build_main_vrt(work_dir: &Path, chart_name: &str, vrts: &[PathBuf]) -> anyhow::Result<()> {
@@ -1211,7 +1239,7 @@ fn count_files_recursive(path: &Path, count: &mut u64) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::copy_dir_recursive;
+    use super::{copy_dir_recursive, resolve_chart_input_filename};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -1242,6 +1270,18 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn chart_input_lookup_tolerates_source_filename_case_drift() {
+        let temp = TempDir::new("charts-case-lookup");
+        fs::write(temp.path().join("Washington Sec.tif"), b"chart")
+            .expect("failed to write chart artifact");
+
+        let resolved = resolve_chart_input_filename(temp.path(), "Washington SEC", "tif")
+            .expect("case-insensitive source lookup should succeed");
+
+        assert_eq!(resolved, "Washington Sec.tif");
     }
 
     #[test]

@@ -158,6 +158,9 @@ class MapViewportTest {
         assertTrue(tiles.none { it.mapView.packageName == "SW_SEC" && it.zoom <= 7 })
         assertTrue(tiles.any { it.mapView.packageName == "NW_SEC" && it.zoom > 7 })
         assertTrue(tiles.any { it.mapView.packageName == "SW_SEC" && it.zoom > 7 })
+        val lowZoomTile = tiles.first { it.mapView.packageName == "NW_SEC" && it.zoom <= 7 }
+        assertTrue(lowZoomTile.candidateMapViews.any { it.packageName == "NW_SEC" })
+        assertTrue(lowZoomTile.candidateMapViews.any { it.packageName == "SW_SEC" })
     }
 
     @Test

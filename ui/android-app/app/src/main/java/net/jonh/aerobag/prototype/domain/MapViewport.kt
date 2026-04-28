@@ -231,7 +231,8 @@ private fun renderTilesForFamily(
             }
 
         for (level in levels) {
-            if (familyFullCoverageZoom != null && level.zoom <= familyFullCoverageZoom && mapViewId != lowZoomRepresentativeId) {
+            val isFullCoverageLevel = familyFullCoverageZoom != null && level.zoom <= familyFullCoverageZoom
+            if (isFullCoverageLevel && mapViewId != lowZoomRepresentativeId) {
                 continue
             }
             val tileWorldSize = WORLD_SIZE / 2.0.pow(level.zoom)
@@ -259,6 +260,11 @@ private fun renderTilesForFamily(
                         zoom = level.zoom,
                         mapViewId = mapViewId,
                         mapView = mapView,
+                        candidateMapViews = if (isFullCoverageLevel) {
+                            fullCoverageCandidates(familyMapViews, level.zoom, x, yTms, mapView)
+                        } else {
+                            listOf(mapView)
+                        },
                     )
                 }
             }
@@ -266,6 +272,30 @@ private fun renderTilesForFamily(
     }
 
     return tiles
+}
+
+private fun fullCoverageCandidates(
+    familyMapViews: List<Pair<String, MapView>>,
+    zoom: Int,
+    x: Int,
+    yTms: Int,
+    primary: MapView,
+): List<MapView> {
+    val candidates = familyMapViews
+        .map { it.second }
+        .filter { mapView ->
+            val fullCoverageZoom = mapView.fullCoverageZoom
+            fullCoverageZoom != null &&
+                zoom <= fullCoverageZoom &&
+                mapView.levels.any { level ->
+                    level.zoom == zoom &&
+                        x >= level.xMin &&
+                        x <= level.xMax &&
+                        yTms >= level.yTmsMin &&
+                        yTms <= level.yTmsMax
+                }
+        }
+    return (listOf(primary) + candidates).distinctBy { "${it.packageName}:${it.tileRoot}:${it.chartIndex}" }
 }
 
 private fun dedupeTiles(tiles: List<RenderTile>): List<RenderTile> {

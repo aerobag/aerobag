@@ -1424,6 +1424,15 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     initial_position_override,
                     initial_course_override,
                 )
+            } else if window_link.display_leg_start.sequence == window_link.effective_leg_end.sequence
+                && window_link.display_leg_start.path_termination.trim() == "PI"
+            {
+                display_path_for_single_procedure_step(
+                    leg_records,
+                    window_link.display_leg_start,
+                    initial_position_override,
+                    initial_course_override,
+                )
             } else {
                 display_path_for_procedure_leg(
                     leg_records,
@@ -2389,8 +2398,7 @@ fn common_resume_yields_current_feeder_cf(
     next_segment_records: Option<&[ProcedureLegMaterializationRecord]>,
     role: ProcedureSegmentRole,
 ) -> bool {
-    pair[0].path_termination.trim() != "PI"
-        && role != ProcedureSegmentRole::Common
+    role != ProcedureSegmentRole::Common
         && pair[1].path_termination.trim() == "CF"
         && next_segment_records.is_some_and(|next_records| {
             let projection =
@@ -2892,21 +2900,6 @@ fn plan_procedure_window<'a>(
             pair[0].sequence
         ),
     })?;
-    let (effective_leg_end, hold_record, provenance_record) = resolve_procedure_window(
-        current_window_index,
-        pair,
-        planning.fix_records,
-        previous_context,
-        planning.leg_records,
-        planning.role.clone(),
-    );
-    let to = effective_leg_end.nav_ref.clone().ok_or_else(|| AppError {
-        kind: AppErrorKind::InvalidFlightPlan,
-        message: format!(
-            "procedure leg materialization encountered missing to-anchor nav_ref at sequence {}",
-            effective_leg_end.sequence
-        ),
-    })?;
     let common_resume_skips_current_feeder_cf = common_resume_yields_current_feeder_cf(
         pair,
         planning.leg_records,
@@ -2915,7 +2908,30 @@ fn plan_procedure_window<'a>(
         planning.next_segment_records,
         planning.role.clone(),
     );
-    if common_resume_skips_current_feeder_cf {
+    let (effective_leg_end, hold_record, provenance_record) =
+        if common_resume_skips_current_feeder_cf
+            && pair[0].path_termination.trim() == "PI"
+            && !previous_context.previous_leg_consumed_same_pi
+        {
+            (pair[0], None, pair[0])
+        } else {
+            resolve_procedure_window(
+                current_window_index,
+                pair,
+                planning.fix_records,
+                previous_context,
+                planning.leg_records,
+                planning.role.clone(),
+            )
+        };
+    let to = effective_leg_end.nav_ref.clone().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: format!(
+            "procedure leg materialization encountered missing to-anchor nav_ref at sequence {}",
+            effective_leg_end.sequence
+        ),
+    })?;
+    if common_resume_skips_current_feeder_cf && effective_leg_end.sequence != pair[0].sequence {
         return Ok(None);
     }
     if should_skip_reconciliation_anchor_leg(

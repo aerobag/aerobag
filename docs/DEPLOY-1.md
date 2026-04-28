@@ -29,6 +29,8 @@ commands below, so they're in env context when we need them.
 cd "$SOURCE_ROOT/product/preprocessor"
 cargo build -p preprocessor-cli
 
+Run the build-product step below once before installing the timed (cron-y) executions; we want build-product to happen before build-fast-subset.
+
 # Schedule the product builds
 
 ## Every 2 hours, run build-product

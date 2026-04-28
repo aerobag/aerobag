@@ -3578,6 +3578,12 @@ private fun MapExplorerPage(
                     val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                     decodeElapsedMs += SystemClock.elapsedRealtime() - decodeStartMs
                     bitmap?.asImageBitmap()
+                }.onFailure { error ->
+                    Log.w(
+                        TileBudgetLogTag,
+                        "tile load failed map=${selectedMap.id} package=${tile.mapView.packageName ?: tile.mapViewId} storage=${tile.mapView.storageKind} z=${tile.zoom} x=${tile.x} y=${tile.yTms}",
+                        error,
+                    )
                 }.getOrNull()
             }
         }

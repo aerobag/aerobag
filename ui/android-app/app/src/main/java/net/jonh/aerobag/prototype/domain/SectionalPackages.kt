@@ -17,9 +17,7 @@ object SectionalPackages {
             TileStorageKind.AssetTree ->
                 error("asset-tree tile loading is no longer supported on Android")
 
-            TileStorageKind.StaticProduct ->
-                error("static-product tile loading is no longer supported on Android")
-
+            TileStorageKind.StaticProduct,
             TileStorageKind.SectionalPackage -> {
                 val candidates = tile.candidateMapViews
                     .distinctBy { "${it.packageName}:${it.tileRoot}:${it.chartIndex}" }

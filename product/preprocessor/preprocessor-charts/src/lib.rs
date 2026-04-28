@@ -920,7 +920,7 @@ fn package_region_records_from_spec(
 
         let invocation = ToolInvocation {
             program: "zip".to_string(),
-            args: vec!["-q".to_string(), zip_name.clone(), "-@".to_string()],
+            args: vec!["-0".to_string(), "-q".to_string(), zip_name.clone(), "-@".to_string()],
             cwd: work_dir.to_path_buf(),
             label: format!("{}-package-{}", spec.family.capture_label(), region.code()),
             env: Vec::new(),

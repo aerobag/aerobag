@@ -9,14 +9,33 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
-val rustTarget = "x86_64-linux-android"
 val ndkVersion = "26.3.11579264"
 val ndkRoot = "/usr/lib/android-sdk/ndk/$ndkVersion"
-val rustLinker = "$ndkRoot/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang"
+val ndkToolchainBin = "$ndkRoot/toolchains/llvm/prebuilt/linux-x86_64/bin"
 val rustArchiver = "$ndkRoot/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 val rustToolchainBin = "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin"
 val cargoBinary = "$rustToolchainBin/cargo"
 val rustcBinary = "$rustToolchainBin/rustc"
+data class RustAndroidTarget(
+    val rustTriple: String,
+    val abi: String,
+    val linkerPrefix: String,
+    val envPrefix: String,
+)
+val rustAndroidTargets = listOf(
+    RustAndroidTarget(
+        rustTriple = "x86_64-linux-android",
+        abi = "x86_64",
+        linkerPrefix = "x86_64-linux-android",
+        envPrefix = "X86_64_LINUX_ANDROID",
+    ),
+    RustAndroidTarget(
+        rustTriple = "aarch64-linux-android",
+        abi = "arm64-v8a",
+        linkerPrefix = "aarch64-linux-android",
+        envPrefix = "AARCH64_LINUX_ANDROID",
+    ),
+)
 val targetRootFile = file("../../target-root.txt")
 val uiTargetRoot = File(
     System.getenv("AEROBAG_UI_TARGET_ROOT")
@@ -26,7 +45,6 @@ val rustTargetDir = uiTargetRoot.resolve("shared/rust-target")
 val rustProjectDir = file("../../core-rust")
 layout.buildDirectory.set(uiTargetRoot.resolve("android/build/app"))
 val rustJniLibsDir = layout.buildDirectory.dir("generated/rustJniLibs")
-val rustOutputAbiDir = layout.buildDirectory.dir("generated/rustJniLibs/x86_64")
 val generatedPrototypeAssetsDir = project.objects.directoryProperty().convention(layout.dir(project.provider { uiTargetRoot.resolve("android/assets") }))
 val repoRoot = file("../../..")
 val instanceConfigFile = repoRoot.parentFile.resolve("INSTANCE_CONFIG")
@@ -48,6 +66,12 @@ val webPort = System.getenv("WEB_PORT")
     ?: readInstanceConfigValue("WEB_PORT")
     ?: "8080"
 val androidDevServerBaseUrl = "http://10.0.2.2:$webPort"
+val packageSourcePort = System.getenv("PACKAGE_SOURCE_PORT")
+    ?: readInstanceConfigValue("PACKAGE_SOURCE_PORT")
+    ?: "8092"
+val androidPackageSourceBaseUrl = System.getenv("ANDROID_PACKAGE_SOURCE_BASE_URL")
+    ?: readInstanceConfigValue("ANDROID_PACKAGE_SOURCE_BASE_URL")
+    ?: "http://10.0.2.2:$packageSourcePort"
 val artifactReadPathConfigFile = repoRoot.resolve(".aerobag-artifact-read-path")
 val configuredArtifactRoot = artifactReadPathConfigFile.readText().trim()
 val defaultArtifactRoot =
@@ -74,27 +98,29 @@ fun linkOrCopy(source: File, target: File) {
     }
 }
 
-val buildRustX86_64Android by tasks.registering(Exec::class) {
-    workingDir = rustProjectDir
-    environment("CARGO_HOME", "/root/.cargo")
-    environment("RUSTUP_HOME", "/root/.rustup")
-    environment("RUSTC", rustcBinary)
-    environment("CARGO_TARGET_DIR", rustTargetDir.absolutePath)
-    environment("CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER", rustLinker)
-    environment("CC_x86_64_linux_android", rustLinker)
-    environment("CC_x86_64-linux-android", rustLinker)
-    environment("CXX_x86_64_linux_android", rustLinker.replace("clang", "clang++"))
-    environment("AR_x86_64_linux_android", rustArchiver)
-    environment("ANDROID_NDK_ROOT", ndkRoot)
-    environment("NDK_HOME", ndkRoot)
-    commandLine(cargoBinary, "build", "-p", "app-ffi", "--target", rustTarget)
-}
-
-val copyRustX86_64Library by tasks.registering(Copy::class) {
-    dependsOn(buildRustX86_64Android)
-    from(File(rustTargetDir, "$rustTarget/debug/libapp_ffi.so"))
-    into(rustOutputAbiDir)
-    rename { "libapp_ffi.so" }
+val copyRustLibraries = rustAndroidTargets.map { target ->
+    val linker = "$ndkToolchainBin/${target.linkerPrefix}21-clang"
+    val buildTask = tasks.register<Exec>("buildRust${target.abi.replace("-", "").replace("_", "")}Android") {
+        workingDir = rustProjectDir
+        environment("CARGO_HOME", "/root/.cargo")
+        environment("RUSTUP_HOME", "/root/.rustup")
+        environment("RUSTC", rustcBinary)
+        environment("CARGO_TARGET_DIR", rustTargetDir.absolutePath)
+        environment("CARGO_TARGET_${target.envPrefix}_LINKER", linker)
+        environment("CC_${target.rustTriple.replace("-", "_")}", linker)
+        environment("CC_${target.rustTriple}", linker)
+        environment("CXX_${target.rustTriple.replace("-", "_")}", linker.replace("clang", "clang++"))
+        environment("AR_${target.rustTriple.replace("-", "_")}", rustArchiver)
+        environment("ANDROID_NDK_ROOT", ndkRoot)
+        environment("NDK_HOME", ndkRoot)
+        commandLine(cargoBinary, "build", "-p", "app-ffi", "--target", target.rustTriple)
+    }
+    tasks.register<Copy>("copyRust${target.abi.replace("-", "").replace("_", "")}Library") {
+        dependsOn(buildTask)
+        from(File(rustTargetDir, "${target.rustTriple}/debug/libapp_ffi.so"))
+        into(rustJniLibsDir.map { it.dir(target.abi) })
+        rename { "libapp_ffi.so" }
+    }
 }
 
 val stageCanonicalAndroidAssets by tasks.registering {
@@ -110,6 +136,7 @@ val stageCanonicalAndroidAssets by tasks.registering {
         linkOrCopy(uiThemeFile, fixturesDir.resolve("ui-theme.json"))
         linkOrCopy(devBootstrapFile, fixturesDir.resolve("dev-bootstrap.json"))
         fixturesDir.resolve("android-dev-server-base-url.txt").writeText(androidDevServerBaseUrl)
+        fixturesDir.resolve("android-package-source-base-url.txt").writeText(androidPackageSourceBaseUrl)
     }
 }
 
@@ -163,7 +190,7 @@ android {
 }
 
 tasks.named("preBuild") {
-    dependsOn(copyRustX86_64Library)
+    dependsOn(copyRustLibraries)
     dependsOn(stageCanonicalAndroidAssets)
 }
 

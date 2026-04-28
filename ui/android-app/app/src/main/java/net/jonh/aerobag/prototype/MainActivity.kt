@@ -3559,16 +3559,31 @@ private fun MapExplorerPage(
         if (missingTiles.isEmpty()) {
             return@LaunchedEffect
         }
+        val loadStartMs = SystemClock.elapsedRealtime()
+        var readElapsedMs = 0L
+        var decodeElapsedMs = 0L
+        var loadedBytes = 0L
         val loaded = withContext(Dispatchers.IO) {
             missingTiles.associate { tile ->
-                renderTileKey(tile) to runCatching {
-                    val bytes = SectionalPackages.loadTileBytes(context, tile) ?: return@runCatching null
+                val key = renderTileKey(tile)
+                key to runCatching {
+                    val readStartMs = SystemClock.elapsedRealtime()
+                    val bytes = SectionalPackages.loadTileBytes(context, tile)
+                    readElapsedMs += SystemClock.elapsedRealtime() - readStartMs
+                    if (bytes == null) {
+                        return@runCatching null
+                    }
+                    loadedBytes += bytes.size.toLong()
+                    val decodeStartMs = SystemClock.elapsedRealtime()
                     val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    decodeElapsedMs += SystemClock.elapsedRealtime() - decodeStartMs
                     bitmap?.asImageBitmap()
                 }.getOrNull()
             }
         }
+        val loadElapsedMs = SystemClock.elapsedRealtime() - loadStartMs
         tileBitmapCache.putAll(loaded)
+        val loadedThisPassCount = loaded.values.count { it != null }
         val cacheLoadedCount = tileBitmapCache.values.count { it != null }
         val cacheMissCount = tileBitmapCache.size - cacheLoadedCount
         val visibleTileByKey = tiles.associateBy { renderTileKey(it) }
@@ -3584,7 +3599,7 @@ private fun MapExplorerPage(
             .joinToString(", ") { entry -> "${entry.key}=${entry.value}" }
         Log.i(
             TileBudgetLogTag,
-            "cache map=${selectedMap.id} entries=${tileBitmapCache.size} loaded=$cacheLoadedCount empty=$cacheMissCount groups=[$cacheSummary]",
+            "cache map=${selectedMap.id} entries=${tileBitmapCache.size} loaded=$cacheLoadedCount empty=$cacheMissCount fetched=$loadedThisPassCount bytes=$loadedBytes loadMs=$loadElapsedMs readMs=$readElapsedMs decodeMs=$decodeElapsedMs groups=[$cacheSummary]",
         )
     }
     val tileLabelPaint = remember {

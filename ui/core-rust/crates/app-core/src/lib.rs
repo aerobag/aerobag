@@ -1358,12 +1358,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
     let mut previous_leg_to: Option<NavRef> = None;
     let mut heading_checks = Vec::<DisplayElementHeadingSignature>::new();
     let mut next_heading_step_index = 0usize;
-    let required_procedure_turn_sequences = segments
-        .iter()
-        .flat_map(|(_, leg_records, _, _)| leg_records.iter())
-        .filter(|record| record.path_termination.trim() == "PI")
-        .map(|record| record.sequence)
-        .collect::<std::collections::BTreeSet<_>>();
+    let required_procedure_turn_sequences = required_procedure_turn_sequences_for_segments(segments);
 
     for (segment_index, (role, leg_records, _, reversed)) in segments.iter().enumerate() {
         let next_segment_records = segments
@@ -1532,6 +1527,53 @@ fn resolve_procedure_materialization_legs_with_provenance(
     validate_heading_continuity_checks(&heading_checks, validate_heading_continuity, procedure_id)?;
 
     Ok(resolved)
+}
+
+fn required_procedure_turn_sequences_for_segments(
+    segments: &[(
+        MaterializedSegmentRole,
+        Vec<ProcedureLegMaterializationRecord>,
+        Vec<ConcretizedNavItem>,
+        bool,
+    )],
+) -> std::collections::BTreeSet<i32> {
+    let mut required = std::collections::BTreeSet::<i32>::new();
+
+    for (segment_index, (role, leg_records, _, _)) in segments.iter().enumerate() {
+        let chained_leading_pi_is_redundant = matches!(role, MaterializedSegmentRole::EnrouteTransition)
+            && segment_index > 0
+            && matches!(
+                segments.get(segment_index - 1).map(|(prev_role, _, _, _)| prev_role),
+                Some(MaterializedSegmentRole::EnrouteTransition)
+            )
+            && leg_records
+                .first()
+                .filter(|record| record.path_termination.trim() == "PI")
+                .zip(
+                    segments
+                        .get(segment_index - 1)
+                        .and_then(|(_, previous_records, _, _)| previous_records.last()),
+                )
+                .is_some_and(|(first_record, previous_record)| {
+                    first_record.nav_ref.is_some() && first_record.nav_ref == previous_record.nav_ref
+                });
+
+        for record in leg_records {
+            if record.path_termination.trim() != "PI" {
+                continue;
+            }
+            if chained_leading_pi_is_redundant
+                && leg_records
+                    .first()
+                    .is_some_and(|first_record| first_record.sequence == record.sequence)
+            {
+                continue;
+            }
+            required.insert(record.sequence);
+        }
+    }
+
+    required
 }
 
 fn validate_no_zero_length_legs(resolved: &[ResolvedLeg], procedure_id: &str) {

@@ -345,7 +345,13 @@ fn radius_to_fix_path_from_start(
     leg_end: &ProcedureLegMaterializationRecord,
 ) -> Option<LegDisplayPath> {
     let end = leg_end.nav_position?;
-    let center = leg_end.arc_center_fix_position?;
+    let published_radius_nm = leg_end
+        .arc_radius_nm
+        .filter(|radius| *radius > MIN_GEOMETRY_DISTANCE_NM)
+        .or_else(|| parse_distance_tenths_nm(leg_end.route_distance_or_time.as_deref()));
+    let center = leg_end
+        .arc_center_fix_position
+        .or_else(|| radius_to_fix_center_from_radius(start, end, leg_end, published_radius_nm?))?;
     let clockwise = match leg_end.turn_direction.as_deref().unwrap_or("").trim() {
         "L" => false,
         "R" => true,
@@ -356,10 +362,7 @@ fn radius_to_fix_path_from_start(
     if start_radius_nm <= MIN_GEOMETRY_DISTANCE_NM || end_radius_nm <= MIN_GEOMETRY_DISTANCE_NM {
         return None;
     }
-    let radius_nm = leg_end
-        .arc_radius_nm
-        .filter(|radius| *radius > MIN_GEOMETRY_DISTANCE_NM)
-        .unwrap_or(start_radius_nm);
+    let radius_nm = published_radius_nm.unwrap_or(start_radius_nm);
     let start_on_arc = start;
     let end_on_arc = end;
     let sweep_degrees = heading_sweep_degrees(
@@ -383,6 +386,38 @@ fn radius_to_fix_path_from_start(
         sweep_degrees
     );
     Some(solid_path(elements, sources))
+}
+
+fn radius_to_fix_center_from_radius(
+    start: LatLon,
+    end: LatLon,
+    leg_end: &ProcedureLegMaterializationRecord,
+    radius_nm: f64,
+) -> Option<LatLon> {
+    let clockwise = match leg_end.turn_direction.as_deref().unwrap_or("").trim() {
+        "L" => false,
+        "R" => true,
+        _ => return None,
+    };
+    let chord_nm = distance_between_points_nm(start, end);
+    if chord_nm <= MIN_GEOMETRY_DISTANCE_NM || radius_nm <= chord_nm / 2.0 {
+        return None;
+    }
+    let chord_bearing = bearing_from(start, end);
+    let (chord_east_unit, chord_north_unit) = bearing_unit_vector(chord_bearing);
+    let midpoint_east_nm = chord_east_unit * chord_nm / 2.0;
+    let midpoint_north_nm = chord_north_unit * chord_nm / 2.0;
+    let offset_nm = (radius_nm.powi(2) - (chord_nm / 2.0).powi(2)).sqrt();
+    let (normal_east_unit, normal_north_unit) = if clockwise {
+        right_normal((chord_east_unit, chord_north_unit))
+    } else {
+        left_normal((chord_east_unit, chord_north_unit))
+    };
+    Some(offset_latlon(
+        start,
+        midpoint_east_nm + normal_east_unit * offset_nm,
+        midpoint_north_nm + normal_north_unit * offset_nm,
+    ))
 }
 
 fn nominal_procedure_turn_barb_distance_nm() -> f64 {
@@ -538,6 +573,10 @@ fn build_procedure_leg_display_path(
                 current_course_deg = Some(course_deg);
             }
             "FA" => {
+                let termination = step
+                    .altitude_1_ft
+                    .map(|altitude_ft| TrackTermination::ToAltitude(Some(altitude_ft)))
+                    .or_else(|| step.nav_position.map(TrackTermination::ToFix))?;
                 let (new_position, course_deg) = append_course_track_path(
                     &mut elements,
                     &mut debug_sources,
@@ -545,7 +584,7 @@ fn build_procedure_leg_display_path(
                     current_course_deg,
                     &mut current_altitude_ft,
                     step,
-                    TrackTermination::ToAltitude(step.altitude_1_ft),
+                    termination,
                 )?;
                 current_position = new_position;
                 current_course_deg = Some(course_deg);
@@ -608,21 +647,27 @@ fn build_procedure_leg_display_path(
                     .skip(index + 1)
                     .copied()
                     .find(|candidate| candidate.path_termination.trim() == "CF");
-                let (ci_elements, end, course_deg) = course_to_intercept_path(
+                if let Some((ci_elements, end, course_deg)) = course_to_intercept_path(
                     step,
                     current_position,
                     current_course_deg,
                     next_cf_step,
-                )?;
-                extend_elements_with_sources(
-                    &mut elements,
-                    &mut debug_sources,
-                    ci_elements,
-                    Vec::new(),
-                    debug_source!(),
-                );
-                current_position = end;
-                current_course_deg = Some(course_deg);
+                ) {
+                    extend_elements_with_sources(
+                        &mut elements,
+                        &mut debug_sources,
+                        ci_elements,
+                        Vec::new(),
+                        debug_source!(),
+                    );
+                    current_position = end;
+                    current_course_deg = Some(course_deg);
+                } else if steps.get(index + 1).is_some() {
+                    current_course_deg =
+                        Some(step.magnetic_course_deg? + course_reference_variation_deg(step));
+                } else {
+                    return None;
+                }
             }
             "VD" => {
                 let (vd_elements, end, course_deg) = heading_to_dme_distance_path(
@@ -1405,7 +1450,6 @@ fn append_heading_leg_path(
     current_altitude_ft: &mut Option<f64>,
     next_step: Option<&ProcedureLegMaterializationRecord>,
 ) -> Option<LatLon> {
-    let initial_course_deg = current_course_deg?;
     let mut target_heading_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
     let raw_turn_direction = step.turn_direction.as_deref().unwrap_or("").trim();
     let nominal_turn_clockwise = match raw_turn_direction {
@@ -1431,56 +1475,58 @@ fn append_heading_leg_path(
             }
         }
     }
-    let heading_delta_deg = angular_difference_degrees(initial_course_deg, target_heading_deg);
-    let turn_clockwise = match raw_turn_direction {
-        "L" => false,
-        "R" => true,
-        _ => shortest_turn_clockwise(initial_course_deg, target_heading_deg),
-    };
     let turn_radius_nm = missed_approach_turn_radius_nm();
     let mut path_position = current_position;
-    if heading_delta_deg > 1.0 {
-        let mut extra_straight_nm = 0.0;
-        if let Some(next_step) = next_step {
-            if next_step.path_termination.trim() == "CF" && next_step.defining_nav_position.is_some()
-            {
-                let next_fix = next_step.nav_position?;
-                let next_course_deg =
-                    next_step.magnetic_course_deg? + course_reference_variation_deg(next_step);
-                let next_defining_nav = next_step.defining_nav_position?;
-                if let Some(candidate_extra_straight_nm) = delayed_turn_start_for_track_capture(
-                    current_position,
-                    initial_course_deg,
-                    target_heading_deg,
-                    turn_clockwise,
-                    turn_radius_nm,
-                    next_defining_nav,
-                    next_course_deg,
-                    Some(next_fix),
-                ) {
-                    if candidate_extra_straight_nm > MAX_EXTRA_STRAIGHT_BEFORE_VI_TURN_NM {
-                        panic!(
-                            "needed {:.2}nm extra straight before {} turn for {} {} seq {}",
-                            candidate_extra_straight_nm,
-                            step.path_termination.trim(),
-                            step.key.airport_id.trim(),
-                            step.key.procedure_id.trim(),
-                            step.sequence
-                        );
+    if let Some(initial_course_deg) = current_course_deg {
+        let heading_delta_deg = angular_difference_degrees(initial_course_deg, target_heading_deg);
+        let turn_clockwise = match raw_turn_direction {
+            "L" => false,
+            "R" => true,
+            _ => shortest_turn_clockwise(initial_course_deg, target_heading_deg),
+        };
+        if heading_delta_deg > 1.0 {
+            let mut extra_straight_nm = 0.0;
+            if let Some(next_step) = next_step {
+                if next_step.path_termination.trim() == "CF" && next_step.defining_nav_position.is_some()
+                {
+                    let next_fix = next_step.nav_position?;
+                    let next_course_deg =
+                        next_step.magnetic_course_deg? + course_reference_variation_deg(next_step);
+                    let next_defining_nav = next_step.defining_nav_position?;
+                    if let Some(candidate_extra_straight_nm) = delayed_turn_start_for_track_capture(
+                        current_position,
+                        initial_course_deg,
+                        target_heading_deg,
+                        turn_clockwise,
+                        turn_radius_nm,
+                        next_defining_nav,
+                        next_course_deg,
+                        Some(next_fix),
+                    ) {
+                        if candidate_extra_straight_nm > MAX_EXTRA_STRAIGHT_BEFORE_VI_TURN_NM {
+                            panic!(
+                                "needed {:.2}nm extra straight before {} turn for {} {} seq {}",
+                                candidate_extra_straight_nm,
+                                step.path_termination.trim(),
+                                step.key.airport_id.trim(),
+                                step.key.procedure_id.trim(),
+                                step.sequence
+                            );
+                        }
+                        extra_straight_nm = candidate_extra_straight_nm;
                     }
-                    extra_straight_nm = candidate_extra_straight_nm;
                 }
             }
+            path_position = append_heading_change(
+                elements,
+                current_position,
+                initial_course_deg,
+                target_heading_deg,
+                turn_clockwise,
+                extra_straight_nm,
+                turn_radius_nm,
+            );
         }
-        path_position = append_heading_change(
-            elements,
-            current_position,
-            initial_course_deg,
-            target_heading_deg,
-            turn_clockwise,
-            extra_straight_nm,
-            turn_radius_nm,
-        );
     }
 
     if step.path_termination.trim() == "VA" {

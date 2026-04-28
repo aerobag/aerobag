@@ -1526,6 +1526,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
     }
 
     validate_no_zero_length_legs(&resolved, procedure_id);
+    validate_display_path_geometry_stitches(&resolved, procedure_id);
     if validate_heading_continuity {
         validate_required_procedure_turns_materialized(
             &required_procedure_turn_sequences,
@@ -1536,6 +1537,18 @@ fn resolve_procedure_materialization_legs_with_provenance(
     validate_heading_continuity_checks(&heading_checks, validate_heading_continuity, procedure_id)?;
 
     Ok(resolved)
+}
+
+fn display_element_start_position_for_validation(element: &LegDisplayElement) -> LatLon {
+    match element {
+        LegDisplayElement::Segment { start, .. } | LegDisplayElement::Arc { start, .. } => *start,
+    }
+}
+
+fn display_element_end_position_for_validation(element: &LegDisplayElement) -> LatLon {
+    match element {
+        LegDisplayElement::Segment { end, .. } | LegDisplayElement::Arc { end, .. } => *end,
+    }
 }
 
 fn required_procedure_turn_sequences_for_segments(
@@ -1607,8 +1620,32 @@ fn validate_no_zero_length_legs(resolved: &[ResolvedLeg], procedure_id: &str) {
         }
 
         let Some(path) = path else {
-            continue;
+            panic!(
+                "procedure leg without display path for {}: {} -> {} id={} seq={:?} pt={:?}",
+                procedure_id.trim(),
+                describe_nav_ref(&leg.from),
+                describe_nav_ref(&leg.to),
+                leg.id,
+                leg.procedure_provenance.as_ref().map(|p| p.leg_sequence),
+                leg.procedure_provenance
+                    .as_ref()
+                    .map(|p| &p.path_termination),
+            );
         };
+
+        if path.elements.is_empty() {
+            panic!(
+                "procedure leg with empty display path for {}: {} -> {} id={} seq={:?} pt={:?}",
+                procedure_id.trim(),
+                describe_nav_ref(&leg.from),
+                describe_nav_ref(&leg.to),
+                leg.id,
+                leg.procedure_provenance.as_ref().map(|p| p.leg_sequence),
+                leg.procedure_provenance
+                    .as_ref()
+                    .map(|p| &p.path_termination),
+            );
+        }
 
         let mut has_nonzero_geometry = false;
         for (index, element) in path.elements.iter().enumerate() {
@@ -1669,6 +1706,65 @@ fn validate_no_zero_length_legs(resolved: &[ResolvedLeg], procedure_id: &str) {
                 procedure_id.trim(),
                 leg.id,
             );
+        }
+    }
+}
+
+fn validate_display_path_geometry_stitches(resolved: &[ResolvedLeg], procedure_id: &str) {
+    let mut previous_leg_end: Option<(&str, LatLon)> = None;
+
+    for leg in resolved {
+        let Some(path) = leg
+            .procedure_provenance
+            .as_ref()
+            .and_then(|provenance| provenance.display_path.as_ref())
+        else {
+            continue;
+        };
+
+        for (index, window) in path.elements.windows(2).enumerate() {
+            let previous_end = display_element_end_position_for_validation(&window[0]);
+            let current_start = display_element_start_position_for_validation(&window[1]);
+            if !positions_nearly_equal(previous_end, current_start) {
+                panic!(
+                    "procedure display path internal gap for {} leg={} elements={}->{} gap_nm={:.2} end=({:.6},{:.6}) start=({:.6},{:.6})",
+                    procedure_id.trim(),
+                    leg.id,
+                    index,
+                    index + 1,
+                    great_circle_distance_nm(previous_end, current_start),
+                    previous_end.lat,
+                    previous_end.lon,
+                    current_start.lat,
+                    current_start.lon,
+                );
+            }
+        }
+
+        if let Some(first_element) = path.elements.first() {
+            let leg_start = display_element_start_position_for_validation(first_element);
+            if let Some((previous_leg_id, previous_end)) = previous_leg_end {
+                if !positions_nearly_equal(previous_end, leg_start) {
+                    panic!(
+                        "procedure display path gap for {} between legs {} -> {} gap_nm={:.2} end=({:.6},{:.6}) start=({:.6},{:.6})",
+                        procedure_id.trim(),
+                        previous_leg_id,
+                        leg.id,
+                        great_circle_distance_nm(previous_end, leg_start),
+                        previous_end.lat,
+                        previous_end.lon,
+                        leg_start.lat,
+                        leg_start.lon,
+                    );
+                }
+            }
+        }
+
+        if let Some(last_element) = path.elements.last() {
+            previous_leg_end = Some((
+                leg.id.as_str(),
+                display_element_end_position_for_validation(last_element),
+            ));
         }
     }
 }
@@ -2851,6 +2947,10 @@ fn determine_procedure_window_link<'a>(
     let display_leg_start = if pair[0].path_termination.trim() == "PI"
         && from != to
         && previous.previous_leg_consumed_same_pi
+    {
+        pair[1]
+    } else if pair[0].path_termination.trim() == "RF"
+        && policy.continuing_from_previous_anchor
     {
         pair[1]
     } else if policy.resume_common_cf_from_previous_path {
@@ -5560,6 +5660,21 @@ mod tests {
                 id: "bad-self-leg".to_string(),
                 from: NavRef::Fix("HOMLY".to_string()),
                 to: NavRef::Fix("HOMLY".to_string()),
+                source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                procedure_provenance: None,
+            }],
+            "TEST-PROC",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "procedure leg without display path")]
+    fn rejects_non_empty_leg_without_display_path() {
+        validate_no_zero_length_legs(
+            &[ResolvedLeg {
+                id: "bad-empty-leg".to_string(),
+                from: NavRef::Fix("START".to_string()),
+                to: NavRef::Fix("END".to_string()),
                 source: ResolvedLegSource::RouteComponent { component_index: 0 },
                 procedure_provenance: None,
             }],

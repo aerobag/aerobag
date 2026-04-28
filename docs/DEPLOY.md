@@ -17,6 +17,8 @@ sudo apt-get install -y \
   python3 \
   gdal-bin \
   python3-gdal \
+  python3-numpy \
+  python3-pil \
   imagemagick \
   ghostscript \
   libimage-exiftool-perl \

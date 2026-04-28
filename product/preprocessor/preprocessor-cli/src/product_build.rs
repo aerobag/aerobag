@@ -894,7 +894,7 @@ const TPP_RENDER_JOBS_PER_RUN: usize = 8;
 const TPP_RENDER_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
 const TERRAIN_PIPELINE_VERSION: &str = "v4";
-const SHADED_RELIEF_PIPELINE_VERSION: &str = "v5";
+const SHADED_RELIEF_PIPELINE_VERSION: &str = "v6-chart-index-path";
 const WATER_MASK_PIPELINE_VERSION: &str = "v2";
 const TERRAIN_TILE_WORKERS: u32 = 16;
 const SHADED_RELIEF_TILE_WORKERS: u32 = 16;
@@ -4555,7 +4555,7 @@ fn build_nav_kv_shaded_relief_catalog_entries(
                     "chart_index": 0,
                     "tile_root": "tiles",
                     "tile_url_root": format!("/shaded-relief-products/{product_id}/tiles"),
-                    "tile_path_template": "{z}/{x}/{y}.webp",
+                    "tile_path_template": "0/{z}/{x}/{y}.webp",
                     "tile_size": TERRAIN_TILE_SIZE,
                     "min_zoom": TERRAIN_MIN_ZOOM,
                     "max_zoom": RASTER_BASEMAP_MAX_DISPLAY_ZOOM,
@@ -8160,6 +8160,7 @@ fn build_shaded_relief_product(
         &dem_selection,
         water_mask_tiles_dir,
     )?;
+    move_static_tile_tree_under_chart_index(&output_dir, 0)?;
     let tile_levels = read_static_tile_manifest_levels(&output_dir.join("manifest.json"))?;
     zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
     let outputs = BTreeMap::from([
@@ -8262,6 +8263,46 @@ fn read_static_tile_manifest_levels(manifest_path: &Path) -> anyhow::Result<Vec<
         );
     }
     Ok(levels)
+}
+
+fn move_static_tile_tree_under_chart_index(output_dir: &Path, chart_index: u32) -> anyhow::Result<()> {
+    let tiles_dir = output_dir.join("tiles");
+    let chart_index_dir = tiles_dir.join(chart_index.to_string());
+    if chart_index_dir.exists() {
+        fs::remove_dir_all(&chart_index_dir)
+            .with_context(|| format!("failed to remove {}", chart_index_dir.display()))?;
+    }
+    let tmp_dir = output_dir.join(format!(".tiles-chart-index-{chart_index}"));
+    if tmp_dir.exists() {
+        fs::remove_dir_all(&tmp_dir)
+            .with_context(|| format!("failed to remove {}", tmp_dir.display()))?;
+    }
+    fs::create_dir_all(&tmp_dir)
+        .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
+    for entry in fs::read_dir(&tiles_dir)
+        .with_context(|| format!("failed to read {}", tiles_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if name.starts_with('.') || name == chart_index.to_string() {
+            continue;
+        }
+        fs::rename(&path, tmp_dir.join(&file_name)).with_context(|| {
+            format!(
+                "failed to move {} under chart-index staging",
+                path.display()
+            )
+        })?;
+    }
+    fs::rename(&tmp_dir, &chart_index_dir).with_context(|| {
+        format!(
+            "failed to install chart-index tile tree at {}",
+            chart_index_dir.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn static_geo_source_path() -> PathBuf {
@@ -13974,7 +14015,7 @@ mod tests {
             shaded["map_view"]["tile_url_root"],
             "/shaded-relief-products/shaded-relief-nw/tiles"
         );
-        assert_eq!(shaded["map_view"]["tile_path_template"], "{z}/{x}/{y}.webp");
+        assert_eq!(shaded["map_view"]["tile_path_template"], "0/{z}/{x}/{y}.webp");
         assert_eq!(shaded["map_view"]["storage_kind"], "static_product");
         assert_eq!(
             shaded["map_view"]["max_zoom"],
@@ -14160,9 +14201,10 @@ mod tests {
         resource_index.packages[0].checksum_sha256 = "deadbeef".to_string();
         resource_index.packages[0].cycle_code = Some("2604".to_string());
         resource_index.packages[0].version_label = Some("01".to_string());
-        resource_index.packages[0].metadata = Some(PackageOutputMetadata {
-            full_coverage_zoom: Some(7),
-        });
+        resource_index.packages[0].metadata = BTreeMap::from([(
+            "full_coverage_zoom".to_string(),
+            serde_json::Value::from(7_u32),
+        )]);
 
         let artifacts = bundle_package_artifacts_from_resource_index(&resource_index)
             .expect("resource index packages should convert");

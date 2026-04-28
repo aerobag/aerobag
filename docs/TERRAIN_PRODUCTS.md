@@ -96,8 +96,12 @@ Its first-cut package layout is:
 ```text
 shaded-relief-<region>_<sha256>.zip
   manifest.json
-  tiles/<z>/<x>/<y>.webp
+  tiles/0/<z>/<x>/<y>.webp
 ```
+
+The `0` path component is the chart index. Shaded relief is exposed through
+`chart/catalog` with `chart_index: 0`, matching the region-packaged chart tile
+path convention.
 
 The first-cut shaded-relief renderer derives directly from the same USGS 3DEP
 DEM inputs as numeric terrain. It does not derive from the published `.terrain`

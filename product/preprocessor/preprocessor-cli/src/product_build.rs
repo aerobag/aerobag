@@ -4203,7 +4203,8 @@ fn build_nav_kv_artifact(
             .with_context(|| format!("failed to read {}", resource_index_path.display()))?,
     )
     .with_context(|| format!("failed to parse {}", resource_index_path.display()))?;
-    let mut package_artifacts = vec![vectors_package.clone()];
+    let mut package_artifacts = bundle_package_artifacts_from_resource_index(&resource_index)?;
+    package_artifacts.push(vectors_package.clone());
     package_artifacts.extend(stable_packages.iter().cloned());
     let package_index_json = serde_json::to_string(&package_artifacts)
         .context("failed to encode nav-db package inputs")?;
@@ -4371,6 +4372,53 @@ fn build_nav_kv_artifact(
                 }),
             metadata: None,
         },
+    })
+}
+
+fn bundle_package_artifacts_from_resource_index(
+    resource_index: &ResourceIndex,
+) -> anyhow::Result<Vec<BundlePackageArtifact>> {
+    resource_index
+        .packages
+        .iter()
+        .map(bundle_package_artifact_from_resource_package)
+        .collect()
+}
+
+fn bundle_package_artifact_from_resource_package(
+    package: &preprocessor_resource_index::ResourcePackage,
+) -> anyhow::Result<BundlePackageArtifact> {
+    let artifact_path = package
+        .artifact_path
+        .as_deref()
+        .with_context(|| format!("package {} missing artifact_path", package.id))?;
+    let source_filename = Path::new(artifact_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("package {} artifact_path has no filename", package.id))?;
+    let filename = canonical_package_filename_hashed(
+        &package.family_id,
+        &package.region_id,
+        source_filename,
+        &package.checksum_sha256,
+    )?;
+    Ok(BundlePackageArtifact {
+        id: package.id.clone(),
+        family_id: package.family_id.clone(),
+        region_id: Some(package.region_id.clone()),
+        filename: filename.clone(),
+        relative_path: filename,
+        cycle: package_version_from_filename(source_filename).ok(),
+        cycle_version: Some(PACKAGE_CYCLE_VERSION.to_string()),
+        checksum_sha256: package.checksum_sha256.clone(),
+        size_bytes: package.size_bytes,
+        published_at_utc: None,
+        source_generated_at_utc: None,
+        source_version: None,
+        source_fetched_at_utc: None,
+        effective_date: package.effective_date.clone(),
+        expiration_date: package.expiration_date.clone(),
+        metadata: package.metadata.clone(),
     })
 }
 
@@ -14009,6 +14057,34 @@ mod tests {
         assert_eq!(vectors["checksum_sha256"], "cafebabe");
         assert_eq!(vectors["cycle"], "2604");
         assert_eq!(vectors["cycle_version"], "01");
+    }
+
+    #[test]
+    fn nav_kv_package_inputs_include_resource_index_chart_metadata() {
+        let mut resource_index = minimal_resource_index();
+        resource_index.packages[0].id = "NW_SEC_2604_01".to_string();
+        resource_index.packages[0].artifact_path = Some("products/sec_nw_2604.zip".to_string());
+        resource_index.packages[0].size_bytes = 123;
+        resource_index.packages[0].checksum_sha256 = "deadbeef".to_string();
+        resource_index.packages[0].cycle_code = Some("2604".to_string());
+        resource_index.packages[0].version_label = Some("01".to_string());
+        resource_index.packages[0].metadata = Some(PackageOutputMetadata {
+            full_coverage_zoom: Some(7),
+        });
+
+        let artifacts = bundle_package_artifacts_from_resource_index(&resource_index)
+            .expect("resource index packages should convert");
+        let pairs = build_nav_kv_package_pairs(&artifacts).expect("package pairs");
+        let pair = pairs
+            .iter()
+            .find(|pair| pair.key == "package/by-id/NW_SEC_2604_01")
+            .expect("sectional package by-id row");
+        let value: serde_json::Value = serde_json::from_slice(&pair.value).unwrap();
+
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(value["metadata"]["full_coverage_zoom"], 7);
+        assert_eq!(value["relative_path"], "sec_nw_2604_01_deadbeef.zip");
+        assert_eq!(value["size_bytes"], 123);
     }
 
     #[test]

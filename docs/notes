@@ -706,21 +706,21 @@ x 	With fuel? It gets little square protrusions on the four cardinal edges.
 x 	Draw the a white bar in the orientation of the biggest runway.
 x 	I have updated the vectors tiles to include fuel & long-runway info.
 
-Let's draw airspace boundaries.
-
-  On FAA boundary sources: I found official FAA indications that boundary-ish data is available as services, but not yet a clean
-  static polygon product I’d build against.
-
-  - FAA’s aeronautical data/products page explicitly lists Special Use Airspace and Temporary Flight Restrictions (TFR) under Servi
-    ces: https://www.faa.gov/data/aero_data (https://www.faa.gov/data/aero_data)
-  - FAA’s aeronautical data page points to the AIS data ecosystem generally:
-    https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data (https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data)
-  - The AIM/AIP material confirms SUA is authoritative FAA airspace content, but that’s descriptive text, not a geometry download:
-      - https://www.faa.gov/air_traffic/publications/atpubs/aip_html/part2_enr_section_5.1.html
-        (https://www.faa.gov/air_traffic/publications/atpubs/aip_html/part2_enr_section_5.1.html)
-      - https://www.faa.gov/air_traffic/publications/atpubs/aim_html/chap3_section_4.html
-        (https://www.faa.gov/air_traffic/publications/atpubs/aim_html/chap3_section_4.html)
-
+x Let's draw airspace boundaries.
+x 
+x   On FAA boundary sources: I found official FAA indications that boundary-ish data is available as services, but not yet a clean
+x   static polygon product I’d build against.
+x 
+x   - FAA’s aeronautical data/products page explicitly lists Special Use Airspace and Temporary Flight Restrictions (TFR) under Servi
+x     ces: https://www.faa.gov/data/aero_data (https://www.faa.gov/data/aero_data)
+x   - FAA’s aeronautical data page points to the AIS data ecosystem generally:
+x     https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data (https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data)
+x   - The AIM/AIP material confirms SUA is authoritative FAA airspace content, but that’s descriptive text, not a geometry download:
+x       - https://www.faa.gov/air_traffic/publications/atpubs/aip_html/part2_enr_section_5.1.html
+x         (https://www.faa.gov/air_traffic/publications/atpubs/aip_html/part2_enr_section_5.1.html)
+x       - https://www.faa.gov/air_traffic/publications/atpubs/aim_html/chap3_section_4.html
+x         (https://www.faa.gov/air_traffic/publications/atpubs/aim_html/chap3_section_4.html)
+x 
 
 
 
@@ -875,6 +875,13 @@ x   2. move procedurePlanner.ts logic into core/FFI
 x   3. delete browser-side nav DB querying from the UI layer
 x   4. keep webNavDb.ts only if it remains necessary as a transport/bootstrap layer for WASM SQLite access
 
+  Longer-term, an even cleaner shape would be:
+
+  - Android provides a generic byte reader / zip entry adapter
+  - core owns the higher-level “open nav-db artifact” workflow
+  - then core could be the one concluding “this artifact is unreadable”
+
+
 ------------------------------------------------------------------------------
 Bugs/Incomplete
 
@@ -897,12 +904,57 @@ Approach data
 
 /!\ cautions for untrustworthy procedure turns.
 
+Let's have a caution signal. It's a clickable vector. And it propagates
+up through status pills to a top-level status pill. When we click on it,
+it opens a page with the active warnings.
+
+Warnings include:
+- Procedure contains procedure turn; confirm it stays within plate limits
+- {ADSB, NEXRAD, METAR} data is old
+
+SIDs and STARs
+
 Validate approach plates by drawing the approaches over them from db with crosshairs at the intersections
 (Special attention to the rotated arrivals like GLASR-THREE).
 
-aerobag-four:
-Long flight plan lines are straight on web mercator. We're not doing great circles,
-are we? Does this mean our distance computations are wrong, too?
+Missing full_coverage_zoom behavior for shaded relief and terrain.
+Those require some re-architecting at the preproc level to assemble results
+from various regions.
+
+x aerobag-four:
+x Long flight plan lines are straight on web mercator. We're not doing great circles,
+x are we? Does this mean our distance computations are wrong, too?
+
+x We've had a few winding-error bugs. You just fixed the arc-union one.
+x On the client side, we had trouble with the nested paths that mean holes in A-381,
+x and fixed that with a containment heuristic. (I said "heuristic", you know where
+x this is going.) Now I look at HOG B MOA, and it has inside/outside bugs -- ui
+x draws the feathers on the wrong side -- because that containment heuristic fired
+x even though the components are nested, not holes.
+x 
+x I have this feeling that the data is telling us how to draw these paths and we're
+x ignoring it. The most obvious way it might be telling us is that it might always
+x present paths with a right- (or left-) hand winding rule: the inside is always
+x a certain way. That would clearly identify holes (because they'd wind the other
+x way) but enable nesting (because they'd agree).
+x Can you please:
+x (a) spot-check these two cases to see if the winding rule works
+x (b) read the reference docs for the data source to see if the winding rule is
+x declared
+x (c) consider writing a test that checks *every* SAA object against the heuristics
+x we're using right now to see how often the winding rule agrees?
+
+x Performance at z6 is pretty clunky because we're parsing and
+x rendering too many vectors (including feathers).  Can you do a count of SAA vector
+x features at z6 and z7 and confirm/refute this hypothesis? I think we want to tweak the
+x when-to-render rule; I'll make a concrete suggestion after we see the counts.
+x 
+x Okay, I think we should have small features (<6 miles or so) disappear sooner
+x than 3 pixels. How big is a class D at z6? I bet 25-50 pixels would be a good
+x threshhold.
+x And even the class B stuff is way too detailed out there. Could we keep only
+x the outer perimeter (the union of all the paths) at high zooms, and then let the
+x shelves materialize as the user zooms in?
 
 ------------------------------------------------------------------------------
 Refactoring & Cleanups
@@ -931,6 +983,17 @@ valuable / guard it with a flag we can turn back on.
 Control any upstream backchannel path so when we deploy this, end-users don't
 find themselves streaming log data back to my server.
 
+
+› The detour: We changed the nav_db contract and re-ran production and took a
+  snapshot. But our publish dirs still have the historical
+  current_artifacts_DATE files (GC roots) that reference nav_dbs with the old
+  contract, which is confusing the app (which we rolled forward to the new
+  contract). Can we (a) re-run those historical builds to get new manifests,
+  (b) delete the old manifests so they're not discoverable by the app (in
+  history-debugging mode), and then (c) run GC to clean up the bogus nav_dbs
+  they point at?
+
+
 ------------------------------------------------------------------------------
 Major missing features
 
@@ -940,12 +1003,93 @@ Ownship from real GPS!
 
 Download manager
 
-obstacles -- what do we do with them? Draw them!
+Long-press to select vector features:
+- Selects items in a reasonable radius of your click (based on zoom level)
+- Brings up a menu, scrollable in both dims
+	- closest airports, left to right (sorted by runway length)
+	- closest intersections
+	- closest VOR
+	- identify airspaces (left to right, sorted by altitude)
+	- identify obstacle
+	- identify ADSB target
+		(selects & highlights target, brings up a movable tile with
+		target info, dismissing panel unselects. Panel stays live even
+		if depiction times out; holds vector on screen in a 50% translucent ghost
+		rendering.  Click-through links to photos of plane!)
+	- point-in-space: brings up a tray showing:
+		- lat/lon, ground elevation from terrain
+		- distance/bearing from ownship
+		- add to FP / direct-to
 
-Airspace boundaries
+Direct-to buttons
 
-Let's draw TFRs!
+pills on (visually long enough) flight plan legs showing distances
+
+x obstacles -- what do we do with them? Draw them!
+x 
+x The obstacle layer wants an improvement. Right now we only have
+x obstacles at z12. Can we add a progressive filter so that lower
+x zooms have manageable obstacle counts? That is, for zoom z=6,
+x let's select an AGL altitude that keeps the max obstacles/tile
+x below, say, 100. Let's choose threshholds that are multiples of
+x 50' AGL. Can you write a script to find those threshholds for every
+x zoom level and print it out here as a table to see if it looks sane?
+
+x RNT VAMP V298 Ibeam KLGd
+
+Eventually, all the packages (and also this one) will
+report data sizes, so the user has an idea how much damage their SIM card will
+suffer.
+
+Let's design the settings/library page better.
+Each row should be divided up like this:
+First, a pair of buttons:
+[trashcan] [pause/play]
+	Clicking trashcan tells core state is OFF.
+	Clicking pause/play when it's showing "pause" tells core state is PLAY
+	Clicking pause/play when it's showing "play" tells core state is PAUSE
+	Core responding state is OFF sets trashcan to highlighted, pause/play to normal, and shows pause.
+	Core responding state is PLAY sets trashcan to normal, pause/play to highlighted, and shows play.
+	Core responding state is PAUSE sets trashcan to normal, pause/play to highlighted, and shows pause.
+The next field is the product/region name.
+The last field is the available cycles (or prod date for non-cycle products).
+	For a given row, say NW, we accumulate all the products * cycles we know
+	about (from the active root manifest(s)).
+	For each (Product,Cycle) pair, we create a (Cycle,State) pair. States are:
+	Fetching: not installed and scheduled to install
+	Uninstalled: not installed
+	Removing: installed and scheduled to uninstall
+	Active: installed and the cycle's validity includes the current clock
+	Standby: installed and not presently valid (a future cycle waiting to be ready)
+	All the (Cycle,State) pairs are counted up. We display in the last field
+	a sequence of "CYCLE (N)" labels, such as "2603 (4)". Each label is
+	rendered as follows:
+	
+	Top row, sorted by state first then cycle number:
+		Active: Magenta text, top row
+		Standby: White text, top row
+	Bottom row, sorted by state first then cycle number:
+		Fetching: Yellow text with a "+" prefix, bottom row
+		Removing: Gray text with a strikethrough, bottom row
+		Uninstalled: Gray text, bottom row
+
+
+wx cams (eg SAC 150 13nm)
+
+
+x Airspace boundaries
+
+x Let's draw TFRs!
 Live SAA activation schedules from sua.faa.gov
+https://sua.faa.gov/datafeed/suagw/n24sua?user=
+  - n24sua: all non-Military Training Route reservations scheduled in the next
+    24 hours
+  - https://sua.faa.gov/ops/docs/suagwDataFmt.html
+For how to actually get access, I did not find a self-service signup page. The
+public SUA site points you to FAA support:
+  - customer support: 866-466-1336                                              
+  - email: 7-AWA-NAIMES@faa.gov
+
 
 Ownship-driven Sequencing (see test description)
 Sequence and suspend aren't working right.
@@ -975,6 +1119,10 @@ NOTAMs
 
 fly2lunch integration
 
+Version migration story:
+	- make rust parsing robust to unused fields to enable schema evolution
+	without breaking old clients.
+
 ------------------------------------------------------------------------------
 Fit & Finish
 
@@ -984,11 +1132,14 @@ x VORs don't need frequency
 
 x Match label layout to Garmin
 
-Match ring radii to Garmin
-	Available ring radii:
-	{1 1.5 2 3 5 8} x {1, 10, 100} nm
-	500 800 1000 1500 2000 3000 5000 ft
-	(800 is north-up)
+x Match ring radii to Garmin
+x 	Available ring radii:
+x 	{1 1.5 2 3 5 8} x {1, 10, 100} nm
+x 	500 800 1000 1500 2000 3000 5000 ft
+x 	(800 is north-up)
+x Label the ticks on the ring N,E,S,W with letters the size of the ring radius
+x label, baselines tangent to the circle, letters on the inside anchored centered
+on their ticks.
 
 Do a nationwide scan of density for each vector object and decide if we should
 change the thresholds. Show me the densest areas (by pointing the map there) for
@@ -1046,12 +1197,10 @@ airport name and symbol in the procedure heading.
 ------------------------------------------------------------------------------
 Android parity gaps
 
-TACs over sectionals
-
-CDI
-
 Shaded relief menu.
 
 Terrain
+
+free text flight plan input
 
 ------------------------------------------------------------------------------

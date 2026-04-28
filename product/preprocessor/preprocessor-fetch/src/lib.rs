@@ -1,9 +1,8 @@
 use anyhow::{bail, Context};
 use chrono::Utc;
 use preprocessor_core::CaptureManifest;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::{
     collections::VecDeque,
     fs,
@@ -162,12 +161,6 @@ pub struct ExtractRecord {
     pub members: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct PackageOutputMetadata {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub full_coverage_zoom: Option<u32>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageOutputRecord {
     pub label: String,
@@ -177,7 +170,7 @@ pub struct PackageOutputRecord {
     pub manifest_sha256: String,
     pub zip: String,
     pub zip_sha256: String,
-    pub metadata: Option<PackageOutputMetadata>,
+    pub metadata: BTreeMap<String, serde_json::Value>,
 }
 
 pub fn read_source_url_set(path: impl AsRef<Path>) -> anyhow::Result<BTreeSet<String>> {
@@ -325,10 +318,10 @@ pub fn write_package_outputs_jsonl(
         if let Some(chart) = &record.chart {
             value["chart"] = serde_json::Value::String(chart.clone());
         }
-        if let Some(metadata) = &record.metadata {
-            value["metadata"] = serde_json::json!({
-                "full_coverage_zoom": metadata.full_coverage_zoom,
-            });
+        if !record.metadata.is_empty() {
+            value["metadata"] = serde_json::Value::Object(
+                record.metadata.clone().into_iter().collect()
+            );
         }
         serde_json::to_writer(&mut file, &value)
             .context("failed to encode package output jsonl")?;

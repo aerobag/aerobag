@@ -4,7 +4,7 @@ use preprocessor_data::INTERMEDIATE_SQLITE_BASENAME;
 use preprocessor_core::{
     PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region, PACKAGE_ASSET_MANIFEST_NAME,
 };
-use preprocessor_fetch::{PackageOutputMetadata, PackageOutputRecord};
+use preprocessor_fetch::PackageOutputRecord;
 use rayon::prelude::*;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -193,7 +193,7 @@ pub struct ResourceRegion {
     pub sort_order: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResourcePackage {
     pub id: String,
     pub family_id: String,
@@ -206,8 +206,8 @@ pub struct ResourcePackage {
     pub version_label: Option<String>,
     pub effective_date: Option<String>,
     pub expiration_date: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<PackageOutputMetadata>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -848,7 +848,32 @@ fn collect_packages(
         .chain(csup_packages)
         .flatten()
         .collect::<Vec<_>>();
-    packages.sort();
+    packages.sort_by(|left, right| {
+        (
+            &left.family_id,
+            &left.region_id,
+            &left.id,
+            &left.artifact_path,
+            left.size_bytes,
+            &left.checksum_sha256,
+            &left.cycle_code,
+            &left.version_label,
+            &left.effective_date,
+            &left.expiration_date,
+        )
+            .cmp(&(
+                &right.family_id,
+                &right.region_id,
+                &right.id,
+                &right.artifact_path,
+                right.size_bytes,
+                &right.checksum_sha256,
+                &right.cycle_code,
+                &right.version_label,
+                &right.effective_date,
+                &right.expiration_date,
+            ))
+    });
     Ok(packages)
 }
 
@@ -1366,10 +1391,9 @@ fn read_package_outputs(path: &Path) -> anyhow::Result<Vec<PackageOutputRecord>>
                     .to_string(),
                 metadata: value
                     .get("metadata")
-                    .cloned()
-                    .map(serde_json::from_value)
-                    .transpose()
-                    .context("failed to parse package output metadata")?,
+                    .and_then(|v| v.as_object())
+                    .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                    .unwrap_or_default(),
             })
         })
         .collect()

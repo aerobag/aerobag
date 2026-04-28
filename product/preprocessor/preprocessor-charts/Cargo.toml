@@ -12,3 +12,4 @@ chrono.workspace = true
 preprocessor-core = { path = "../preprocessor-core" }
 preprocessor-fetch = { path = "../preprocessor-fetch" }
 preprocessor-tools = { path = "../preprocessor-tools" }
+serde_json.workspace = true

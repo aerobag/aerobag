@@ -16,6 +16,7 @@ use chrono::{DateTime, Datelike, NaiveDate, SecondsFormat, Timelike, Utc};
 use crossbeam_channel::{self, RecvTimeoutError};
 use preprocessor_charts::{
     build_family_tiles, build_family_vrts, package_family_region_versioned, stage_work_dir,
+    FULL_COVERAGE_ZOOM,
 };
 use preprocessor_core::nav_kv::{build_nav_kv_sorted, NavKvPair};
 use preprocessor_core::{ChartFamily, Region};
@@ -35,7 +36,7 @@ use preprocessor_fast::{
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
     read_source_urls_jsonl, write_package_outputs_jsonl, CacheLayout, FetchCacheConfig,
-    FetchCacheMode, PackageOutputMetadata, PackageOutputRecord,
+    FetchCacheMode, PackageOutputRecord,
 };
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, ResourceIndex,
@@ -349,8 +350,8 @@ struct BundlePackageArtifact {
     source_fetched_at_utc: Option<String>,
     effective_date: Option<String>,
     expiration_date: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    metadata: Option<PackageOutputMetadata>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    metadata: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -436,7 +437,7 @@ fn build_fast_bundle_manifest(
                 source_fetched_at_utc: None,
                 effective_date: Some(product.source_generated_at_utc.clone()),
                 expiration_date: None,
-                metadata: None,
+                metadata: BTreeMap::new(),
             })
             .collect(),
     })
@@ -515,7 +516,7 @@ fn build_stable_bundle_package_artifact(
         source_fetched_at_utc,
         effective_date: Some(effective_date),
         expiration_date: None,
-        metadata: None,
+        metadata: BTreeMap::new(),
     })
 }
 
@@ -1945,7 +1946,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 source_fetched_at_utc: None,
                                 effective_date: Some(start_valid),
                                 expiration_date: Some(end_valid),
-                                metadata: None,
+                                metadata: BTreeMap::new(),
                             };
                             let built = build_nav_kv_artifact(
                                 &cycle_config,
@@ -3995,7 +3996,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             source_fetched_at_utc: None,
             effective_date: Some(start_valid),
             expiration_date: Some(end_valid),
-            metadata: None,
+            metadata: BTreeMap::new(),
         };
         let nav_db = build_nav_kv_artifact(
             config,
@@ -4166,7 +4167,7 @@ fn build_bundle_manifest(
         source_fetched_at_utc: None,
         effective_date: Some(start_valid.clone()),
         expiration_date: Some(end_valid.clone()),
-        metadata: None,
+        metadata: BTreeMap::new(),
     });
     package_artifacts.extend(stable_packages.iter().cloned());
     package_artifacts.push(nav_db_package.clone());
@@ -4370,7 +4371,7 @@ fn build_nav_kv_artifact(
                         .first()
                         .cloned()
                 }),
-            metadata: None,
+            metadata: BTreeMap::new(),
         },
     })
 }
@@ -4925,7 +4926,7 @@ fn build_nav_kv_package_pairs(
             "cycle_version": package.cycle_version,
             "effective_date": package.effective_date,
             "expiration_date": package.expiration_date,
-            "metadata": &package.metadata,
+            "metadata": package.metadata,
         });
         package_index.push(serde_json::json!({
             "id": package.id,
@@ -11658,6 +11659,15 @@ fn build_chart_package_nodes(
             ),
             ("region".to_string(), region.code().to_string()),
             ("version_label".to_string(), version_label.to_string()),
+            (
+                "chart_package_lib".to_string(),
+                hash_file(
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .parent()
+                        .expect("preprocessor-cli should live under workspace root")
+                        .join("preprocessor-charts/src/lib.rs"),
+                )?,
+            ),
         ]);
         let prepared = prepare_node_at(
             &build_shared_node_dir(config, &node_name)?,
@@ -11708,9 +11718,10 @@ fn build_chart_package_nodes(
                                 version_label
                             ),
                             zip_sha256: hash_file(&zip_path)?,
-                            metadata: Some(PackageOutputMetadata {
-                                full_coverage_zoom: Some(7),
-                            }),
+                            metadata: BTreeMap::from([(
+                                "full_coverage_zoom".to_string(),
+                                serde_json::Value::from(FULL_COVERAGE_ZOOM),
+                            )]),
                         });
                     }
                     continue;
@@ -11770,9 +11781,10 @@ fn build_chart_package_nodes(
                     version_label
                 ),
                 zip_sha256: hash_file(&zip_path)?,
-                metadata: Some(PackageOutputMetadata {
-                    full_coverage_zoom: Some(7),
-                }),
+                metadata: BTreeMap::from([(
+                    "full_coverage_zoom".to_string(),
+                    serde_json::Value::from(FULL_COVERAGE_ZOOM),
+                )]),
             });
         }
     }
@@ -11996,7 +12008,7 @@ fn build_csup_package_nodes(
                             manifest_sha256: hash_file(&manifest_path)?,
                             zip: format!("{}_CSUP_{}.zip", region.code(), version_label),
                             zip_sha256: hash_file(&zip_path)?,
-                            metadata: None,
+                            metadata: BTreeMap::new(),
                         });
                     }
                     continue;
@@ -12041,7 +12053,7 @@ fn build_csup_package_nodes(
                 manifest_sha256: hash_file(&manifest_path)?,
                 zip: format!("{}_CSUP_{}.zip", region.code(), version_label),
                 zip_sha256: hash_file(&zip_path)?,
-                metadata: None,
+                metadata: BTreeMap::new(),
             });
         }
     }
@@ -12738,26 +12750,28 @@ fn build_resource_index_node(
     let chart_json = chart_sources
         .iter()
         .map(|source| {
-            format!(
-                "{}:{}:{}:{}",
+            Ok(format!(
+                "{}:{}:{}:{}:{}",
                 source.family_id,
                 source.package_outputs_path.display(),
+                hash_file(&source.package_outputs_path)?,
                 source.package_root.display(),
                 source
                     .source_urls_path
                     .as_ref()
                     .map(|path| path.display().to_string())
                     .unwrap_or_default()
-            )
+            ))
         })
-        .collect::<Vec<_>>()
+        .collect::<anyhow::Result<Vec<_>>>()?
         .join("\n");
     let tpp_json = tpp_sources
         .iter()
         .map(|source| {
-            format!(
-                "{}:{}:{}:{}",
+            Ok(format!(
+                "{}:{}:{}:{}:{}",
                 source.package_outputs_path.display(),
+                hash_file(&source.package_outputs_path)?,
                 source.asset_root.display(),
                 source.package_root.display(),
                 source
@@ -12765,16 +12779,17 @@ fn build_resource_index_node(
                     .as_ref()
                     .map(|path| path.display().to_string())
                     .unwrap_or_default()
-            )
+            ))
         })
-        .collect::<Vec<_>>()
+        .collect::<anyhow::Result<Vec<_>>>()?
         .join("\n");
     let csup_json = csup_sources
         .iter()
         .map(|source| {
-            format!(
-                "{}:{}:{}:{}",
+            Ok(format!(
+                "{}:{}:{}:{}:{}",
                 source.package_outputs_path.display(),
+                hash_file(&source.package_outputs_path)?,
                 source.asset_root.display(),
                 source.package_root.display(),
                 source
@@ -12782,9 +12797,9 @@ fn build_resource_index_node(
                     .as_ref()
                     .map(|path| path.display().to_string())
                     .unwrap_or_default()
-            )
+            ))
         })
-        .collect::<Vec<_>>()
+        .collect::<anyhow::Result<Vec<_>>>()?
         .join("\n");
     let inputs = BTreeMap::from([
         ("nav_db_zip".to_string(), hash_file(nav_db_zip)?),
@@ -12930,10 +12945,9 @@ fn read_package_outputs_by_region(
                 .to_string(),
             metadata: value
                 .get("metadata")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .context("failed to parse package output metadata")?,
+                .and_then(|v| v.as_object())
+                .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default(),
         };
         records.insert(record.region.clone(), record);
     }
@@ -13819,7 +13833,10 @@ mod tests {
                 version_label: None,
                 effective_date: None,
                 expiration_date: None,
-                metadata: None,
+                metadata: BTreeMap::from([(
+                    "full_coverage_zoom".to_string(),
+                    serde_json::Value::from(7_u32),
+                )]),
             }],
             chart_collections: vec![ChartCollectionRecord {
                 id: "sec:nw".to_string(),
@@ -14004,9 +14021,10 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
-                metadata: Some(PackageOutputMetadata {
-                    full_coverage_zoom: Some(7),
-                }),
+                metadata: BTreeMap::from([(
+                    "full_coverage_zoom".to_string(),
+                    serde_json::Value::from(7_u32),
+                )]),
             },
             BundlePackageArtifact {
                 id: "VECTORS_DATA_2604_01".to_string(),
@@ -14024,7 +14042,7 @@ mod tests {
                 source_fetched_at_utc: None,
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
-                metadata: None,
+                metadata: BTreeMap::new(),
             },
         ])
         .unwrap();
@@ -14057,6 +14075,8 @@ mod tests {
         assert_eq!(vectors["checksum_sha256"], "cafebabe");
         assert_eq!(vectors["cycle"], "2604");
         assert_eq!(vectors["cycle_version"], "01");
+        let sec = pair_value("package/by-id/NW_SEC_2604_01");
+        assert_eq!(sec["metadata"]["full_coverage_zoom"], 7);
     }
 
     #[test]

@@ -673,6 +673,7 @@ dependencies = [
  "preprocessor-core",
  "preprocessor-fetch",
  "preprocessor-tools",
+ "serde_json",
 ]
 
 [[package]]

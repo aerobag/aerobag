@@ -8,8 +8,9 @@ use crate::{
     chart_page::{airport_ids_from_plan, derive_chart_page_state_from_airports},
     describe_plate_procedure_load_options, describe_procedure_options_from_rows,
     describe_show_plate_for_procedure, flight_leg_distance_nm,
-    insert_airway_after_waypoint, insert_waypoint, materialize_procedure_from_records,
-    prepare_airway_presentation, project_flight_plan_route_with_resolver, AirwayAutoSelection,
+    enrich_procedure_materialization_records_from_store, insert_airway_after_waypoint,
+    insert_waypoint, materialize_procedure_from_records, prepare_airway_presentation,
+    project_flight_plan_route_with_resolver, AirwayAutoSelection,
     AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate, AirwayPresentationPlan, AirwaySegment,
     AirwaySpatialPoint, AirwaySuggestion, AppError, AppErrorKind, AppResult, CifpTppMatchRow,
     FlightPlan, FlightPlanRouteSegment, FlightPlanUiMutation, FlightPlanUiState, LatLon,
@@ -1300,7 +1301,7 @@ fn materialize_procedure(
         enroute_transition.map(str::to_string),
         component_index,
         rows,
-        legs,
+        enrich_procedure_materialization_records_from_store(store, airport_id, legs),
     )
     .map_err(Into::into)
 }

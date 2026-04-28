@@ -98,6 +98,24 @@ pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
     let mut archive = zip::ZipArchive::new(file)
         .unwrap_or_else(|err| panic!("parse {} as zip: {err}", zip_path.display()));
 
+    let mut has_root = false;
+    for index in 0..archive.len() {
+        let name = archive
+            .by_index(index)
+            .unwrap_or_else(|err| panic!("read zip entry {index} from {}: {err}", zip_path.display()))
+            .name()
+            .to_string();
+        if name == "root" {
+            has_root = true;
+            break;
+        }
+    }
+    if !has_root {
+        panic!(
+            "nav_db package {} does not contain a root nav_kv entry",
+            zip_path.display()
+        );
+    }
     let root_name = "root";
 
     let mut root_bytes = Vec::new();

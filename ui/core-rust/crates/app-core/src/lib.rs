@@ -1240,6 +1240,61 @@ fn filter_procedure_records(
     filtered
 }
 
+pub(crate) fn nav_ref_position_from_store(
+    store: &crate::NavKvStore,
+    airport_id: &str,
+    nav_ref: &NavRef,
+) -> Option<LatLon> {
+    for procedure_airport_id in [Some(airport_id.to_string()), None] {
+        let Some(key) = crate::nav_kv_key_for_query(&crate::NavKvQuery::NavRefPosition {
+            nav_ref: nav_ref.clone(),
+            procedure_airport_id,
+        }) else {
+            continue;
+        };
+        match store.get_bytes(&key).ok()? {
+            crate::NavKvLookup::Hit(bytes) => {
+                if let Some(position) = serde_json::from_slice(&bytes).ok().flatten() {
+                    return Some(position);
+                }
+            }
+            crate::NavKvLookup::MissingKey | crate::NavKvLookup::MissingPages(_) => {}
+        }
+    }
+    None
+}
+
+pub(crate) fn enrich_procedure_materialization_records_from_store(
+    store: &crate::NavKvStore,
+    airport_id: &str,
+    records: Vec<ProcedureLegMaterializationRecord>,
+) -> Vec<ProcedureLegMaterializationRecord> {
+    records
+        .into_iter()
+        .map(|mut record| {
+            if record.nav_position.is_none() {
+                record.nav_position = record
+                    .nav_ref
+                    .as_ref()
+                    .and_then(|nav_ref| nav_ref_position_from_store(store, airport_id, nav_ref));
+            }
+            if record.defining_nav_position.is_none() {
+                record.defining_nav_position = record
+                    .defining_nav_ref
+                    .as_ref()
+                    .and_then(|nav_ref| nav_ref_position_from_store(store, airport_id, nav_ref));
+            }
+            if record.arc_center_fix_position.is_none() {
+                record.arc_center_fix_position = record
+                    .arc_center_fix_ref
+                    .as_ref()
+                    .and_then(|nav_ref| nav_ref_position_from_store(store, airport_id, nav_ref));
+            }
+            record
+        })
+        .collect()
+}
+
 fn chained_approach_transition_segments(
     legs: &[ProcedureLegMaterializationRecord],
     airport_id: &str,
@@ -1467,11 +1522,13 @@ fn resolve_procedure_materialization_legs_with_provenance(
     }
 
     validate_no_zero_length_legs(&resolved, procedure_id);
-    validate_required_procedure_turns_materialized(
-        &required_procedure_turn_sequences,
-        &resolved,
-        procedure_id,
-    )?;
+    if validate_heading_continuity {
+        validate_required_procedure_turns_materialized(
+            &required_procedure_turn_sequences,
+            &resolved,
+            procedure_id,
+        )?;
+    }
     validate_heading_continuity_checks(&heading_checks, validate_heading_continuity, procedure_id)?;
 
     Ok(resolved)
@@ -2290,7 +2347,8 @@ fn common_resume_yields_current_feeder_cf(
     next_segment_records: Option<&[ProcedureLegMaterializationRecord]>,
     role: ProcedureSegmentRole,
 ) -> bool {
-    role != ProcedureSegmentRole::Common
+    pair[0].path_termination.trim() != "PI"
+        && role != ProcedureSegmentRole::Common
         && pair[1].path_termination.trim() == "CF"
         && next_segment_records.is_some_and(|next_records| {
             let projection =
@@ -2400,11 +2458,13 @@ fn previous_display_path_state(
 }
 
 fn tail_planning_state(
+    last_fix: &ProcedureLegMaterializationRecord,
     trailing_record: &ProcedureLegMaterializationRecord,
     planning: TailPlanningContext<'_>,
 ) -> TailPlanningState {
     let previous_path_state = previous_display_path_state(planning.previous_display_path);
-    let common_resume_skips_trailing_cf = trailing_record.path_termination.trim() == "CF"
+    let common_resume_skips_trailing_cf = last_fix.path_termination.trim() != "PI"
+        && trailing_record.path_termination.trim() == "CF"
         && planning.next_segment_records.is_some_and(|next_records| {
             resumed_common_target_supersedes_feeder_cf(
                 planning.previous_display_path,
@@ -2428,9 +2488,11 @@ fn resume_projection_context(
     previous: PreviousWindowContext,
 ) -> ResumeProjectionContext {
     let display_path = if pair[0].path_termination.trim() == "PI" {
+        let inferred_start = record_with_inferred_anchor_position(pair[0], leg_records, None);
+        let enriched_leg_records = leg_records_with_replaced_record(leg_records, &inferred_start);
         display_path_for_single_procedure_step(
-            leg_records,
-            pair[0],
+            &enriched_leg_records,
+            &inferred_start,
             previous.terminal_position,
             previous.terminal_course,
         )
@@ -2492,6 +2554,55 @@ struct TailPlanningContext<'a> {
 struct TailPlanningState {
     previous_path_state: PreviousDisplayPathState,
     common_resume_skips_trailing_cf: bool,
+}
+
+fn leg_records_with_replaced_record(
+    leg_records: &[ProcedureLegMaterializationRecord],
+    replacement: &ProcedureLegMaterializationRecord,
+) -> Vec<ProcedureLegMaterializationRecord> {
+    leg_records
+        .iter()
+        .map(|record| {
+            if record.sequence == replacement.sequence {
+                replacement.clone()
+            } else {
+                record.clone()
+            }
+        })
+        .collect()
+}
+
+fn record_with_inferred_anchor_position(
+    record: &ProcedureLegMaterializationRecord,
+    leg_records: &[ProcedureLegMaterializationRecord],
+    next_segment_records: Option<&[ProcedureLegMaterializationRecord]>,
+) -> ProcedureLegMaterializationRecord {
+    if record.nav_position.is_some() && record.defining_nav_position.is_some() {
+        return record.clone();
+    }
+
+    let mut inferred = record.clone();
+    let sources = leg_records
+        .iter()
+        .chain(next_segment_records.into_iter().flat_map(|records| records.iter()));
+
+    if inferred.nav_position.is_none() {
+        inferred.nav_position = sources
+            .clone()
+            .find(|candidate| candidate.nav_ref == record.nav_ref && candidate.nav_position.is_some())
+            .and_then(|candidate| candidate.nav_position);
+    }
+    if inferred.defining_nav_position.is_none() {
+        inferred.defining_nav_position = leg_records
+            .iter()
+            .chain(next_segment_records.into_iter().flat_map(|records| records.iter()))
+            .find(|candidate| {
+                candidate.defining_nav_ref == record.defining_nav_ref
+                    && candidate.defining_nav_position.is_some()
+            })
+            .and_then(|candidate| candidate.defining_nav_position);
+    }
+    inferred
 }
 
 struct ProcedureAppendSpec<'a> {
@@ -2578,7 +2689,14 @@ fn resolve_procedure_window<'a>(
             }
         })
     };
-    (effective_leg_end, hold_record, hold_record.unwrap_or(effective_leg_end))
+    let provenance_record = if pair[0].path_termination.trim() == "PI" {
+        // A PI-started window may carry the following CF geometry, but the emitted
+        // leg still needs to credit the required procedure-turn row itself.
+        pair[0]
+    } else {
+        hold_record.unwrap_or(effective_leg_end)
+    };
+    (effective_leg_end, hold_record, provenance_record)
 }
 
 struct ProcedureWindowContinuationPolicy {
@@ -2747,14 +2865,15 @@ fn plan_procedure_window<'a>(
             effective_leg_end.sequence
         ),
     })?;
-    if common_resume_yields_current_feeder_cf(
+    let common_resume_skips_current_feeder_cf = common_resume_yields_current_feeder_cf(
         pair,
         planning.leg_records,
         planning.previous_display_path,
         previous_context,
         planning.next_segment_records,
         planning.role.clone(),
-    ) {
+    );
+    if common_resume_skips_current_feeder_cf {
         return Ok(None);
     }
     if should_skip_reconciliation_anchor_leg(
@@ -2806,7 +2925,7 @@ fn plan_trailing_procedure_window<'a>(
     trailing_record: &'a ProcedureLegMaterializationRecord,
     planning: TailPlanningContext<'a>,
 ) -> AppResult<Option<ProcedureTailLink<'a>>> {
-    let tail_state = tail_planning_state(trailing_record, planning);
+    let tail_state = tail_planning_state(last_fix, trailing_record, planning);
     let nav_ref = last_fix.nav_ref.clone().ok_or_else(|| AppError {
         kind: AppErrorKind::InvalidFlightPlan,
         message: format!(
@@ -2857,7 +2976,11 @@ fn plan_standalone_pi_window<'a>(
     standalone: &'a ProcedureLegMaterializationRecord,
     planning: TailPlanningContext<'a>,
 ) -> AppResult<Option<ProcedureTailLink<'a>>> {
-    let nav_ref = standalone.nav_ref.clone().ok_or_else(|| AppError {
+    let standalone_with_position =
+        record_with_inferred_anchor_position(standalone, planning.leg_records, planning.next_segment_records);
+    let enriched_leg_records =
+        leg_records_with_replaced_record(planning.leg_records, &standalone_with_position);
+    let nav_ref = standalone_with_position.nav_ref.clone().ok_or_else(|| AppError {
         kind: AppErrorKind::InvalidFlightPlan,
         message: format!(
             "standalone PI leg materialization encountered missing nav_ref at sequence {}",
@@ -2866,9 +2989,9 @@ fn plan_standalone_pi_window<'a>(
     })?;
     let previous_path_state = previous_display_path_state(planning.previous_display_path);
     let display_path = display_path_for_procedure_leg(
-        planning.leg_records,
-        standalone,
-        standalone,
+        &enriched_leg_records,
+        &standalone_with_position,
+        &standalone_with_position,
         None,
         previous_path_state.terminal_position,
         previous_path_state.terminal_course,
@@ -4335,7 +4458,7 @@ mod tests {
             enroute_transition,
             0,
             rows,
-            records,
+            enrich_procedure_materialization_records_from_store(store, airport_id, records),
         )
     }
 
@@ -6583,45 +6706,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    #[ignore = "manual probe for KRWF VOR-A standalone PI path"]
-    fn audit_krwf_vora_standalone_pi() {
-        let store = load_snapshot_nav_kv_store();
-        let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
-            &store,
-            crate::NavKvQuery::ProcedureMaterializationRows {
-                airport_id: "KRWF".to_string(),
-                procedure_id: "VOR-A".to_string(),
-            },
-            "procedure materialization rows",
-        );
-        let a_records = records
-            .iter()
-            .filter(|record| record.key.route_type.trim() == "A" && record.key.transition_id.trim() == "RWF")
-            .cloned()
-            .collect::<Vec<_>>();
-        let standalone = a_records.iter().find(|record| record.sequence == 10).unwrap();
-        eprintln!(
-            "nav_ref={:?} nav_pos={:?} def_nav={:?} def_nav_pos={:?} turn={:?} course={:?} dist={:?}",
-            standalone.nav_ref,
-            standalone.nav_position,
-            standalone.defining_nav_ref,
-            standalone.defining_nav_position,
-            standalone.turn_direction,
-            standalone.magnetic_course_deg,
-            standalone.route_distance_or_time,
-        );
-        let path = display_path_for_procedure_leg(
-            &a_records,
-            standalone,
-            standalone,
-            None,
-            None,
-            None,
-        );
-        eprintln!("path={path:?}");
     }
 
     #[test]

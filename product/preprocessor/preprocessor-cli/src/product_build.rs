@@ -5338,7 +5338,7 @@ fn build_nav_kv_waypoint_lookup_pairs(
 
     let mut pairs = Vec::new();
     for (identifier, (exists_as_airport, exists_as_navaid, exists_as_fix)) in exists_by_identifier {
-        let nav_ref = if identifier.starts_with("RW") {
+        let nav_ref = if is_runway_identifier(&identifier) {
             Some(serde_json::json!({ "Fix": identifier }))
         } else if exists_as_navaid {
             Some(serde_json::json!({ "Navaid": identifier }))
@@ -5704,7 +5704,11 @@ fn load_nav_kv_procedure_rows(
           trim(transition_identifier),
           CAST(sequence_number AS INTEGER),
           trim(fix_identifier),
+          trim(section_code_2),
+          trim(subsection_code_2),
           trim(recommended_navaid),
+          trim(recd_nav_section),
+          trim(recd_nav_subsection),
           trim(altitude_1),
           trim(altitude_2),
           trim(path_and_termination),
@@ -5734,6 +5738,10 @@ fn load_nav_kv_procedure_rows(
             row.get::<_, String>(11)?,
             row.get::<_, String>(12)?,
             row.get::<_, String>(13)?,
+            row.get::<_, String>(14)?,
+            row.get::<_, String>(15)?,
+            row.get::<_, String>(16)?,
+            row.get::<_, String>(17)?,
         ))
     })?;
     for row in rows {
@@ -5744,7 +5752,11 @@ fn load_nav_kv_procedure_rows(
             transition_id,
             sequence,
             fix_identifier,
+            fix_section_code,
+            fix_subsection_code,
             recommended_navaid,
+            recommended_nav_section,
+            recommended_nav_subsection,
             altitude_1,
             altitude_2,
             path_termination,
@@ -5785,8 +5797,13 @@ fn load_nav_kv_procedure_rows(
         if path_termination.trim().is_empty() {
             continue;
         }
-        let nav_ref = nav_context.classify_json(&fix_identifier);
-        let defining_nav_ref = nav_context.classify_json(&recommended_navaid);
+        let nav_ref =
+            nav_context.classify_cifp_reference_json(&fix_identifier, &fix_section_code, &fix_subsection_code);
+        let defining_nav_ref = nav_context.classify_cifp_reference_json(
+            &recommended_navaid,
+            &recommended_nav_section,
+            &recommended_nav_subsection,
+        );
         let nav_position = nav_context.resolve_position_json(&nav_ref, Some(&airport_id));
         let defining_nav_position =
             nav_context.resolve_position_json(&defining_nav_ref, Some(&airport_id));
@@ -5840,6 +5857,22 @@ struct NavLookupContext {
     airport_variation: BTreeMap<String, Option<f64>>,
 }
 
+fn is_runway_identifier(identifier: &str) -> bool {
+    let trimmed = identifier.trim().to_ascii_uppercase();
+    let suffix = match trimmed.strip_prefix("RW") {
+        Some(suffix) => suffix,
+        None => return false,
+    };
+    if suffix.is_empty() {
+        return false;
+    }
+    let mut chars = suffix.chars();
+    if !chars.next().is_some_and(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric())
+}
+
 impl NavLookupContext {
     fn load(connection: &rusqlite::Connection) -> anyhow::Result<Self> {
         let airport_positions =
@@ -5871,7 +5904,7 @@ impl NavLookupContext {
         if trimmed.is_empty() {
             return serde_json::Value::Null;
         }
-        if trimmed.starts_with("RW") {
+        if is_runway_identifier(&trimmed) {
             return serde_json::json!({ "Fix": trimmed });
         }
         if self.navaid_positions.contains_key(&trimmed) {
@@ -5884,6 +5917,45 @@ impl NavLookupContext {
             return serde_json::json!({ "Fix": trimmed });
         }
         serde_json::Value::Null
+    }
+
+    fn classify_cifp_reference_json(
+        &self,
+        identifier: &str,
+        section_code: &str,
+        subsection_code: &str,
+    ) -> serde_json::Value {
+        let trimmed = identifier.trim().to_ascii_uppercase();
+        if trimmed.is_empty() {
+            return serde_json::Value::Null;
+        }
+        if is_runway_identifier(&trimmed) {
+            return serde_json::json!({ "Fix": trimmed });
+        }
+
+        match section_code.trim().to_ascii_uppercase().as_str() {
+            "D" => {
+                if self.navaid_positions.contains_key(&trimmed) {
+                    return serde_json::json!({ "Navaid": trimmed });
+                }
+            }
+            "A" => {
+                if self.airport_positions.contains_key(&trimmed) {
+                    return serde_json::json!({ "Airport": trimmed });
+                }
+            }
+            "P" => {
+                let subsection = subsection_code.trim().to_ascii_uppercase();
+                if subsection == "C" || subsection.is_empty() {
+                    if self.fix_positions.contains_key(&trimmed) {
+                        return serde_json::json!({ "Fix": trimmed });
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        self.classify_json(&trimmed)
     }
 
     fn classify_airway_point_json(
@@ -5940,7 +6012,7 @@ impl NavLookupContext {
         if let Some(code) = nav_ref.get("Fix").and_then(|value| value.as_str()) {
             let code = code.trim().to_ascii_uppercase();
             if let Some(airport_id) = procedure_airport_id {
-                if code.starts_with("RW") {
+                if is_runway_identifier(&code) {
                     if let Some(position) = self
                         .runway_positions
                         .get(&(airport_id.trim().to_ascii_uppercase(), code.clone()))
@@ -14350,5 +14422,36 @@ mod tests {
         assert_eq!(folder_category_for_document_type("hotspot"), "hotspot");
         assert!(folder_category_rank("takeoff-mins") < folder_category_rank("other"));
         assert!(folder_category_rank("other") < folder_category_rank("hotspot"));
+    }
+
+    #[test]
+    fn cifp_declared_navaid_section_overrides_fix_like_procedure_identifier() {
+        let context = NavLookupContext {
+            airport_positions: BTreeMap::new(),
+            navaid_positions: BTreeMap::from([(
+                "RWF".to_string(),
+                serde_json::json!({ "lat": 44.46727361111111, "lon": -95.12823 }),
+            )]),
+            fix_positions: BTreeMap::new(),
+            airport_positions_by_coord: BTreeMap::new(),
+            navaid_positions_by_coord: BTreeMap::new(),
+            fix_positions_by_coord: BTreeMap::new(),
+            runway_positions: BTreeMap::new(),
+            navaid_variation: BTreeMap::new(),
+            airport_variation: BTreeMap::new(),
+        };
+
+        assert_eq!(
+            context.classify_cifp_reference_json("RWF", "D", ""),
+            serde_json::json!({ "Navaid": "RWF" })
+        );
+        assert_eq!(
+            context.classify_json("RWF"),
+            serde_json::json!({ "Navaid": "RWF" })
+        );
+        assert_eq!(
+            context.classify_json("RW17"),
+            serde_json::json!({ "Fix": "RW17" })
+        );
     }
 }

@@ -4432,8 +4432,7 @@ function FlightPlanPage(props: {
     const top = thumbPixels(0.5);
     const bottomPadding = thumbPixels(0.1);
     const blockers = [planControlsRef.current, planFooterRef.current]
-      .filter((element): element is HTMLElement => element instanceof HTMLElement)
-      .map((element) => element.getBoundingClientRect().top - pageRect.top);
+      .flatMap((element) => (element ? [element.getBoundingClientRect().top - pageRect.top] : []));
     const bottomLimit = blockers.length > 0 ? Math.min(...blockers) : page.clientHeight;
     const maxHeight = Math.max(thumbPixels(1), bottomLimit - top - bottomPadding);
 

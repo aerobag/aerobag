@@ -6,12 +6,15 @@
   "scripts": {
     "prepare:dev-assets": "./scripts/stage-dev-assets.sh",
     "build:wasm": "./scripts/build-wasm.sh",
+    "build:wasm:release": "./scripts/build-wasm.sh release",
     "inner:dev": "npm run prepare:dev-assets && npm run build:wasm && vite",
     "inner:dev:fast": "npm run build:wasm && vite",
     "inner:build": "npm run prepare:dev-assets && npm run build:wasm && tsc --noEmit && vite build",
+    "inner:build:release": "npm run prepare:dev-assets && npm run build:wasm:release && tsc --noEmit && vite build",
     "inner:test": "vitest run",
     "dev": "./scripts/run-target-workspace.sh inner:dev",
     "build": "./scripts/run-target-workspace.sh inner:build",
+    "build:release": "./scripts/run-target-workspace.sh inner:build:release",
     "test": "./scripts/run-target-workspace.sh inner:test"
   },
   "dependencies": {

@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PROFILE="${1:-debug}"
+case "$PROFILE" in
+  debug|release)
+    ;;
+  *)
+    echo "usage: $0 [debug|release]" >&2
+    exit 1
+    ;;
+esac
+
 ROOT_DIR="${AEROBAG_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 CORE_DIR="$ROOT_DIR/ui/core-rust"
 TARGET_ROOT_FILE="$ROOT_DIR/ui/target-root.txt"
@@ -30,11 +40,17 @@ mkdir -p "$RUST_TARGET_DIR"
 
 (
   cd "$CORE_DIR"
-  CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build -p app-wasm --target wasm32-unknown-unknown
+  if [ "$PROFILE" = "release" ]; then
+    CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build --release -p app-wasm --target wasm32-unknown-unknown
+  else
+    CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build -p app-wasm --target wasm32-unknown-unknown
+  fi
 )
 
+WASM_INPUT="$RUST_TARGET_DIR/wasm32-unknown-unknown/$PROFILE/app_wasm.wasm"
+
 "$WASM_BINDGEN_BIN" \
-  "$RUST_TARGET_DIR/wasm32-unknown-unknown/debug/app_wasm.wasm" \
+  "$WASM_INPUT" \
   --target web \
   --out-dir "$OUT_DIR" \
   --out-name app_wasm

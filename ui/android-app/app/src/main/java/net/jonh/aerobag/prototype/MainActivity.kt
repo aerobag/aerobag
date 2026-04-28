@@ -141,6 +141,7 @@ import androidx.compose.ui.window.Popup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -969,6 +970,14 @@ private data class TileRect(
     val topPx: Int,
     val widthPx: Int,
     val heightPx: Int,
+)
+
+private data class LoadedTileBitmap(
+    val key: net.jonh.aerobag.prototype.domain.RenderTileKey,
+    val bitmap: androidx.compose.ui.graphics.ImageBitmap?,
+    val bytes: Int,
+    val readMs: Long,
+    val decodeMs: Long,
 )
 
 private data class OverlaySurfaceUnits(
@@ -3285,6 +3294,7 @@ private fun MapExplorerPage(
     var committedOverlaySurfaceUnits by remember(uiSession) { mutableStateOf<OverlaySurfaceUnits?>(null) }
     var mapOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
     var nexradFrames by remember(uiSession) { mutableStateOf<List<NexradOverlayFrame>>(emptyList()) }
+    var nexradFrameSourceUrl by remember(uiSession) { mutableStateOf<String?>(null) }
     var nexradFrameIndex by remember(uiSession) { mutableStateOf(0) }
     var terrainOverlay by remember(uiSession) { mutableStateOf<List<TerrainOverlayImage>>(emptyList()) }
     var terrainOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
@@ -3396,7 +3406,11 @@ private fun MapExplorerPage(
                 toggleState = mapLayerState.vectors,
                 iconResId = mapLayerIconResId(MapLayerId.Vectors),
             ) {
-                onSessionSnapshotChange(uiSession.setMapLayerVisibility(MapLayerId.Vectors, !mapLayerState.vectors.visible))
+                val visible = !mapLayerState.vectors.visible
+                val startMs = SystemClock.elapsedRealtime()
+                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Vectors, visible)
+                Log.i(MapLayerLogTag, "toggle layer=vectors visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
                 key = "nexrad",
@@ -3405,7 +3419,11 @@ private fun MapExplorerPage(
                 toggleState = mapLayerState.nexrad,
                 iconResId = mapLayerIconResId(MapLayerId.Nexrad),
             ) {
-                onSessionSnapshotChange(uiSession.setMapLayerVisibility(MapLayerId.Nexrad, !mapLayerState.nexrad.visible))
+                val visible = !mapLayerState.nexrad.visible
+                val startMs = SystemClock.elapsedRealtime()
+                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Nexrad, visible)
+                Log.i(MapLayerLogTag, "toggle layer=nexrad visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
                 key = "terrain_warning",
@@ -3414,7 +3432,11 @@ private fun MapExplorerPage(
                 toggleState = mapLayerState.terrainWarning,
                 iconResId = mapLayerIconResId(MapLayerId.TerrainWarning),
             ) {
-                onSessionSnapshotChange(uiSession.setMapLayerVisibility(MapLayerId.TerrainWarning, !mapLayerState.terrainWarning.visible))
+                val visible = !mapLayerState.terrainWarning.visible
+                val startMs = SystemClock.elapsedRealtime()
+                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.TerrainWarning, visible)
+                Log.i(MapLayerLogTag, "toggle layer=terrain_warning visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}")
+                onSessionSnapshotChange(snapshot)
             },
         )
     }
@@ -3563,33 +3585,49 @@ private fun MapExplorerPage(
         var readElapsedMs = 0L
         var decodeElapsedMs = 0L
         var loadedBytes = 0L
-        val loaded = withContext(Dispatchers.IO) {
-            missingTiles.associate { tile ->
-                val key = renderTileKey(tile)
-                key to runCatching {
-                    val readStartMs = SystemClock.elapsedRealtime()
-                    val bytes = SectionalPackages.loadTileBytes(context, tile)
-                    readElapsedMs += SystemClock.elapsedRealtime() - readStartMs
-                    if (bytes == null) {
-                        return@runCatching null
+        var loadedThisPassCount = 0
+        var firstChunkMs: Long? = null
+        missingTiles.chunked(8).forEachIndexed { chunkIndex, chunk ->
+            val chunkResults = withContext(Dispatchers.IO) {
+                chunk.map { tile ->
+                    async {
+                        val key = renderTileKey(tile)
+                        runCatching {
+                            val readStartMs = SystemClock.elapsedRealtime()
+                            val bytes = SectionalPackages.loadTileBytes(context, tile)
+                            val readMs = SystemClock.elapsedRealtime() - readStartMs
+                            if (bytes == null) {
+                                return@runCatching LoadedTileBitmap(key, null, 0, readMs, 0L)
+                            }
+                            val decodeStartMs = SystemClock.elapsedRealtime()
+                            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            val decodeMs = SystemClock.elapsedRealtime() - decodeStartMs
+                            LoadedTileBitmap(key, bitmap?.asImageBitmap(), bytes.size, readMs, decodeMs)
+                        }.onFailure { error ->
+                            Log.w(
+                                TileBudgetLogTag,
+                                "tile load failed map=${selectedMap.id} package=${tile.mapView.packageName ?: tile.mapViewId} storage=${tile.mapView.storageKind} z=${tile.zoom} x=${tile.x} y=${tile.yTms}",
+                                error,
+                            )
+                        }.getOrNull() ?: LoadedTileBitmap(key, null, 0, 0L, 0L)
                     }
-                    loadedBytes += bytes.size.toLong()
-                    val decodeStartMs = SystemClock.elapsedRealtime()
-                    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    decodeElapsedMs += SystemClock.elapsedRealtime() - decodeStartMs
-                    bitmap?.asImageBitmap()
-                }.onFailure { error ->
-                    Log.w(
-                        TileBudgetLogTag,
-                        "tile load failed map=${selectedMap.id} package=${tile.mapView.packageName ?: tile.mapViewId} storage=${tile.mapView.storageKind} z=${tile.zoom} x=${tile.x} y=${tile.yTms}",
-                        error,
-                    )
-                }.getOrNull()
+                }.map { it.await() }
+            }
+            val chunkLoaded = chunkResults.associate { it.key to it.bitmap }
+            tileBitmapCache.putAll(chunkLoaded)
+            readElapsedMs += chunkResults.sumOf { it.readMs }
+            decodeElapsedMs += chunkResults.sumOf { it.decodeMs }
+            loadedBytes += chunkResults.sumOf { it.bytes.toLong() }
+            loadedThisPassCount += chunkResults.count { it.bitmap != null }
+            if (firstChunkMs == null) {
+                firstChunkMs = SystemClock.elapsedRealtime() - loadStartMs
+                Log.i(
+                    TileBudgetLogTag,
+                    "first-chunk map=${selectedMap.id} chunk=${chunkIndex + 1}/${(missingTiles.size + 7) / 8} loaded=${chunkResults.count { it.bitmap != null }} bytes=${chunkResults.sumOf { it.bytes.toLong() }} elapsedMs=$firstChunkMs",
+                )
             }
         }
         val loadElapsedMs = SystemClock.elapsedRealtime() - loadStartMs
-        tileBitmapCache.putAll(loaded)
-        val loadedThisPassCount = loaded.values.count { it != null }
         val cacheLoadedCount = tileBitmapCache.values.count { it != null }
         val cacheMissCount = tileBitmapCache.size - cacheLoadedCount
         val visibleTileByKey = tiles.associateBy { renderTileKey(it) }
@@ -3785,30 +3823,56 @@ private fun MapExplorerPage(
         }
     }
     LaunchedEffect(uiSession, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled, devServerBaseUrl) {
+        val effectStartMs = SystemClock.elapsedRealtime()
         if (!mapLayerState.nexrad.visible || !mapLayerState.nexrad.enabled) {
-            nexradFrames = emptyList()
             nexradFrameIndex = 0
+            Log.i(MapLayerLogTag, "nexrad hidden cachedFrames=${nexradFrames.size} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}")
+            return@LaunchedEffect
+        }
+        if (nexradFrameSourceUrl == devServerBaseUrl && nexradFrames.isNotEmpty()) {
+            Log.i(MapLayerLogTag, "nexrad cached frames=${nexradFrames.size} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}")
             return@LaunchedEffect
         }
         runCatching {
+            var manifestBytes = 0
+            var imageBytes = 0L
+            var fetchMs = 0L
+            var decodeMs = 0L
             val manifestJson = withContext(Dispatchers.IO) {
+                val fetchStartMs = SystemClock.elapsedRealtime()
                 URL(resolvePlaybackTraceUrl("/fast-products/nexrad/nexrad.json", devServerBaseUrl)).readText()
+                    .also {
+                        fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                        manifestBytes = it.length
+                    }
             }
             val manifest = json.decodeFromString<NexradManifest>(manifestJson)
             require(manifest.projection == "EPSG:3857") { "unsupported nexrad projection ${manifest.projection}" }
-            withContext(Dispatchers.IO) {
+            val frames = withContext(Dispatchers.IO) {
                 manifest.frames.reversed().map { frame ->
+                    val fetchStartMs = SystemClock.elapsedRealtime()
                     val bytes = URL(resolvePlaybackTraceUrl("/fast-products/nexrad/${frame.filename}", devServerBaseUrl)).openStream().buffered().use { it.readBytes() }
+                    fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                    imageBytes += bytes.size
+                    val decodeStartMs = SystemClock.elapsedRealtime()
                     val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                         ?: error("failed to decode nexrad frame ${frame.filename}")
+                    decodeMs += SystemClock.elapsedRealtime() - decodeStartMs
                     NexradOverlayFrame(frame = frame, bitmap = bitmap.asImageBitmap())
                 }
             }
+            Log.i(
+                MapLayerLogTag,
+                "nexrad loaded frames=${frames.size} manifestBytes=$manifestBytes imageBytes=$imageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
+            )
+            frames
         }.onSuccess { frames ->
             nexradFrames = frames
+            nexradFrameSourceUrl = devServerBaseUrl
             nexradFrameIndex = 0
         }.onFailure { error ->
             nexradFrames = emptyList()
+            nexradFrameSourceUrl = null
             nexradFrameIndex = 0
             Log.w("AerobagLayers", "nexrad unavailable", error)
         }
@@ -3824,22 +3888,38 @@ private fun MapExplorerPage(
         }
     }
     LaunchedEffect(uiSession, viewport, surfaceSize, mapLayerState.terrainWarning.visible, devServerBaseUrl) {
+        val effectStartMs = SystemClock.elapsedRealtime()
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             terrainOverlay = emptyList()
             terrainOverlayError = null
+            Log.i(MapLayerLogTag, "terrain skipped reason=empty-surface elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}")
             return@LaunchedEffect
         }
         if (!mapLayerState.terrainWarning.visible) {
             terrainOverlay = emptyList()
             terrainOverlayError = null
+            Log.i(MapLayerLogTag, "terrain disabled elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}")
             return@LaunchedEffect
         }
         runCatching {
+            var queryMs = 0L
+            var fetchMs = 0L
+            var renderMs = 0L
+            var parseMs = 0L
+            var sourceBytesTotal = 0L
+            var rawBytesTotal = 0L
+            var requestCount = 0
             val query = uiSession.queryTerrainOverlay(viewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble())
+                .also { queryMs = SystemClock.elapsedRealtime() - effectStartMs }
             if (query.status !is net.jonh.aerobag.prototype.domain.TerrainOverlayStatus.Ready) {
+                Log.i(
+                    MapLayerLogTag,
+                    "terrain not-ready status=${query.status::class.java.simpleName} queryMs=$queryMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
+                )
                 emptyList()
             } else {
-                withContext(Dispatchers.IO) {
+                requestCount = query.tileRequests.size
+                val images = withContext(Dispatchers.IO) {
                     query.tileRequests.map { request ->
                         val sourceTiles =
                             if (request.sourceTiles.isNotEmpty()) request.sourceTiles
@@ -3847,21 +3927,32 @@ private fun MapExplorerPage(
                         val sourceBytes =
                             sourceTiles.mapNotNull { sourceTile ->
                                 runCatching {
+                                    val fetchStartMs = SystemClock.elapsedRealtime()
                                     URL(resolvePlaybackTraceUrl("/terrain-products/${sourceTile.productId}/${sourceTile.path}", devServerBaseUrl))
                                         .openStream()
                                         .buffered()
                                         .use { it.readBytes() }
+                                        .also {
+                                            fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                                            sourceBytesTotal += it.size
+                                        }
                                 }.getOrNull()
                             }
                         if (sourceBytes.isEmpty()) {
                             return@map null
                         }
+                        val renderStartMs = SystemClock.elapsedRealtime()
                         val rawBytes =
                             if (sourceBytes.size == 1) {
                                 uiSession.renderTerrainOverlayTile(sourceBytes.first(), Double.NaN)
                             } else {
                                 uiSession.renderTerrainOverlayTiles(packTerrainTileBytes(sourceBytes), Double.NaN)
                             }
+                        renderMs += SystemClock.elapsedRealtime() - renderStartMs
+                        rawBytesTotal += rawBytes.size
+                        val parseStartMs = SystemClock.elapsedRealtime()
+                        val bitmap = parseTerrainRawRgba(rawBytes)
+                        parseMs += SystemClock.elapsedRealtime() - parseStartMs
                         TerrainOverlayImage(
                             key = request.key,
                             z = request.z,
@@ -3870,10 +3961,15 @@ private fun MapExplorerPage(
                             left = request.left,
                             top = request.top,
                             size = request.size,
-                            bitmap = parseTerrainRawRgba(rawBytes),
+                            bitmap = bitmap,
                         )
                     }.filterNotNull()
                 }
+                Log.i(
+                    MapLayerLogTag,
+                    "terrain loaded requests=$requestCount images=${images.size} sourceBytes=$sourceBytesTotal rawBytes=$rawBytesTotal queryMs=$queryMs fetchMs=$fetchMs renderMs=$renderMs parseMs=$parseMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}",
+                )
+                images
             }
         }.onSuccess { images ->
             terrainOverlay = images
@@ -4139,7 +4235,8 @@ private fun MapExplorerPage(
                     }
                 }
             }
-            val currentNexradFrame = nexradFrames.getOrNull(nexradFrameIndex)
+            val currentNexradFrame =
+                if (mapLayerState.nexrad.visible) nexradFrames.getOrNull(nexradFrameIndex) else null
             if (currentNexradFrame != null && surfaceWidthPx > 0f && surfaceHeightPx > 0f) {
                 val northwestWorld = mercatorMetersToWorld(currentNexradFrame.frame.bounds.west, currentNexradFrame.frame.bounds.north)
                 val southeastWorld = mercatorMetersToWorld(currentNexradFrame.frame.bounds.east, currentNexradFrame.frame.bounds.south)

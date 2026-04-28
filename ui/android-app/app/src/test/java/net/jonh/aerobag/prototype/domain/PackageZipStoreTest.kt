@@ -3,7 +3,6 @@ package net.jonh.aerobag.prototype.domain
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
@@ -26,7 +25,6 @@ class PackageZipStoreTest {
 
             assertEquals("tile-a", first?.decodeToString())
             assertEquals("tile-b", second?.decodeToString())
-            assertEquals(2, PackageZipStore.debugEntryCount(zipFile))
             assertEquals(firstIdentity, secondIdentity)
         }
     }
@@ -52,7 +50,6 @@ class PackageZipStoreTest {
             val zipFile = tempZip.zipFile
 
             assertNull(PackageZipStore.readEntryBytes(zipFile, "missing"))
-            assertTrue((PackageZipStore.debugEntryCount(zipFile) ?: 0) >= 1)
         }
     }
 

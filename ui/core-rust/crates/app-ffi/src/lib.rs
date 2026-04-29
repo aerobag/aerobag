@@ -628,6 +628,25 @@ pub fn set_map_layer_enabled_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn set_raster_map_catalog_in_session_json(
+    handle: u64,
+    catalog_json: &str,
+) -> Result<String, String> {
+    let catalog: app_core::RasterMapCatalog =
+        serde_json::from_str(catalog_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::set_raster_map_catalog_in_session(handle as u32, catalog)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn select_map_in_session_json(handle: u64, selected_map_id_json: &str) -> Result<String, String> {
+    let selected_map_id: String =
+        serde_json::from_str(selected_map_id_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::select_map_in_session(handle as u32, &selected_map_id)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn get_session_snapshot_json(handle: u64) -> Result<String, String> {
     let snapshot = app_core::get_session_snapshot(handle as u32).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
@@ -722,6 +741,19 @@ pub fn get_terrain_overlay_in_session_json(
         app_core::get_terrain_overlay_in_session(handle as u32, viewport, width_px, height_px)
             .map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
+}
+
+pub fn get_raster_tile_plan_in_session_json(
+    handle: u64,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let plan = app_core::get_raster_tile_plan_in_session(handle as u32, viewport, width_px, height_px)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
 
 pub fn render_terrain_overlay_tile_in_session_bytes(
@@ -1980,6 +2012,34 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_set
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_setRasterMapCatalogInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    catalog_json: JString,
+) -> jstring {
+    let result = (|| {
+        let catalog = get_java_string(&mut env, catalog_json)?;
+        set_raster_map_catalog_in_session_json(handle as u64, &catalog)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_selectMapInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    selected_map_id_json: JString,
+) -> jstring {
+    let result = (|| {
+        let selected_map_id = get_java_string(&mut env, selected_map_id_json)?;
+        select_map_in_session_json(handle as u64, &selected_map_id)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getSessionSnapshotJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -2053,6 +2113,22 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
     let result = (|| {
         let viewport = get_java_string(&mut env, viewport_json)?;
         get_terrain_overlay_in_session_json(handle as u64, &viewport, width_px, height_px)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getRasterTilePlanInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    viewport_json: JString,
+    width_px: f64,
+    height_px: f64,
+) -> jstring {
+    let result = (|| {
+        let viewport = get_java_string(&mut env, viewport_json)?;
+        get_raster_tile_plan_in_session_json(handle as u64, &viewport, width_px, height_px)
     })();
     return_string(&mut env, result)
 }

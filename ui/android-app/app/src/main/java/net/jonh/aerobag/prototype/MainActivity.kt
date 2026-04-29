@@ -192,6 +192,7 @@ import net.jonh.aerobag.prototype.domain.ProcedureOptions
 import net.jonh.aerobag.prototype.domain.ProcedureSummary
 import net.jonh.aerobag.prototype.domain.ResolvedLeg
 import net.jonh.aerobag.prototype.domain.ResolvedLegSource
+import net.jonh.aerobag.prototype.domain.RenderTile
 import net.jonh.aerobag.prototype.domain.RouteSegmentStatus
 import net.jonh.aerobag.prototype.domain.RouteComponentUiView
 import net.jonh.aerobag.prototype.domain.RouteComponentViewKind
@@ -218,7 +219,6 @@ import net.jonh.aerobag.prototype.domain.dragViewport
 import net.jonh.aerobag.prototype.domain.imageDisplaySize
 import net.jonh.aerobag.prototype.domain.latLonToWorld
 import net.jonh.aerobag.prototype.domain.preserveViewportForMap
-import net.jonh.aerobag.prototype.domain.renderTiles
 import net.jonh.aerobag.prototype.domain.renderTileKey
 import net.jonh.aerobag.prototype.domain.scaleForZoom
 import net.jonh.aerobag.prototype.domain.screenToWorld
@@ -261,6 +261,28 @@ private const val TerrainAltitudeBucketFt = 200
 private const val MapLayerLogTag = "MapLayers"
 private const val TileBudgetLogTag = "AerobagTileBudget"
 private val VampsPosition = LatLon(47.3648944444444, -121.980275)
+
+@kotlinx.serialization.Serializable
+private data class WireRasterTilePlan(
+    val tiles: List<WireRasterTileDraw> = emptyList(),
+)
+
+@kotlinx.serialization.Serializable
+private data class WireRasterTileDraw(
+    val source_zoom: Int,
+    val x: Int,
+    val y_tms: Int,
+    val left_px: Double,
+    val top_px: Double,
+    val size_px: Double,
+    val primary: WireRasterTileSource,
+    val fallbacks: List<WireRasterTileSource> = emptyList(),
+)
+
+@kotlinx.serialization.Serializable
+private data class WireRasterTileSource(
+    val map_view_id: String,
+)
 
 private fun filterRenderableFamilyMapViews(
     selectedMap: MapViewOption,
@@ -1870,6 +1892,10 @@ private fun AerobagApp() {
         }
         pageHistory = history
         page = snapshot.page
+        runCatching {
+            uiSession.installRasterMapCatalogForSelection(snapshot.selectedMapId)
+            uiSession.selectMap(snapshot.selectedMapId)
+        }
         selectedMapId = snapshot.selectedMapId
         mapViewport = snapshot.mapViewport
         chartViewport = snapshot.chartViewport
@@ -3337,28 +3363,36 @@ private fun MapExplorerPage(
         }
     }
     val currentViewport = viewportState.value
-    val renderableFamilyMapViews = remember(selectedMap, selectedFamilyMapViews, currentViewport) {
-        filterRenderableFamilyMapViews(
-            selectedMap = selectedMap,
-            familyMapViews = selectedFamilyMapViews,
-            viewport = currentViewport,
-        )
-    }
     val center = remember(currentViewport) { viewportCenterLatLon(currentViewport) }
     val surfaceWidthPx = surfaceSize.width.toFloat()
     val surfaceHeightPx = surfaceSize.height.toFloat()
     val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
     val surfaceHeightDp = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
-    val tiles = remember(currentViewport, surfaceSize, renderableFamilyMapViews) {
+    val tiles = remember(currentViewport, surfaceSize, fixture.mapViews, uiSession) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             emptyList()
         } else {
-            renderTiles(
-                mapViews = renderableFamilyMapViews.map { it.id to it.mapView },
-                viewport = currentViewport,
-                widthPx = surfaceWidthPx,
-                heightPx = surfaceHeightPx,
+            val mapViewsById = fixture.mapViews.associateBy { it.id }
+            val plan = json.decodeFromString<WireRasterTilePlan>(
+                uiSession.queryRasterTilePlanJson(currentViewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble()),
             )
+            plan.tiles.mapNotNull { tile ->
+                val primaryOption = mapViewsById[tile.primary.map_view_id] ?: return@mapNotNull null
+                val candidateMapViews = (listOf(tile.primary) + tile.fallbacks)
+                    .mapNotNull { source -> mapViewsById[source.map_view_id]?.mapView }
+                    .ifEmpty { listOf(primaryOption.mapView) }
+                RenderTile(
+                    x = tile.x,
+                    yTms = tile.y_tms,
+                    leftPx = tile.left_px.toFloat(),
+                    topPx = tile.top_px.toFloat(),
+                    sizePx = tile.size_px.toFloat(),
+                    zoom = tile.source_zoom,
+                    mapViewId = primaryOption.id,
+                    mapView = primaryOption.mapView,
+                    candidateMapViews = candidateMapViews,
+                )
+            }
         }
     }
     val selectedPackageName = selectedMap.mapView.packageName

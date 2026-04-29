@@ -493,6 +493,20 @@ pub fn set_map_layer_enabled_in_session(
 }
 
 #[wasm_bindgen]
+pub fn set_raster_map_catalog_in_session(
+    handle: u32,
+    catalog_json: &str,
+) -> Result<String, JsValue> {
+    set_raster_map_catalog_in_session_json(handle, catalog_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn select_map_in_session(handle: u32, selected_map_id_json: &str) -> Result<String, JsValue> {
+    select_map_in_session_json(handle, selected_map_id_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn get_session_snapshot(handle: u32) -> Result<String, JsValue> {
     get_session_snapshot_json(handle).map_err(|err| JsValue::from_str(&err))
 }
@@ -550,6 +564,17 @@ pub fn get_terrain_overlay_in_session(
     height_px: f64,
 ) -> Result<String, JsValue> {
     get_terrain_overlay_in_session_json(handle, viewport_json, width_px, height_px)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn get_raster_tile_plan_in_session(
+    handle: u32,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+) -> Result<String, JsValue> {
+    get_raster_tile_plan_in_session_json(handle, viewport_json, width_px, height_px)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -1140,6 +1165,25 @@ fn set_map_layer_enabled_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+fn set_raster_map_catalog_in_session_json(
+    handle: u32,
+    catalog_json: &str,
+) -> Result<String, String> {
+    let catalog: app_core::RasterMapCatalog =
+        serde_json::from_str(catalog_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::set_raster_map_catalog_in_session(handle, catalog)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn select_map_in_session_json(handle: u32, selected_map_id_json: &str) -> Result<String, String> {
+    let selected_map_id: String =
+        serde_json::from_str(selected_map_id_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::select_map_in_session(handle, &selected_map_id)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 fn get_session_snapshot_json(handle: u32) -> Result<String, String> {
     let snapshot = app_core::get_session_snapshot(handle).map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
@@ -1205,6 +1249,19 @@ fn get_terrain_overlay_in_session_json(
     let overlay = app_core::get_terrain_overlay_in_session(handle, viewport, width_px, height_px)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
+}
+
+fn get_raster_tile_plan_in_session_json(
+    handle: u32,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let plan = app_core::get_raster_tile_plan_in_session(handle, viewport, width_px, height_px)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
 
 fn restore_chart_page_state_in_session_json(

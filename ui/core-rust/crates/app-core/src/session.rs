@@ -21,6 +21,7 @@ use crate::{
     LatLon, MapOverlayConfig, MapOverlayQueryResult, MapViewport, NavRef, PlanLeg,
     PlaybackUiState, PointTilePayload, SequencingMode, TerrainOverlayQueryResult,
     TfrProductPayload,
+    RasterMapCatalog, RasterTilePlan,
     UiSnapshotAppState, guidance_detail_id_for_index,
 };
 
@@ -83,6 +84,7 @@ struct UiSession {
     chart_page_state: UiChartPageState,
     map_layer_state: UiMapLayerState,
     caution_state: UiCautionState,
+    raster_map_catalog: Option<RasterMapCatalog>,
     point_tile_cache: HashMap<String, PointTilePayload>,
     airspace_ref_tile_cache: HashMap<String, AirspaceReferenceTilePayload>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
@@ -223,6 +225,7 @@ fn create_ui_session_inner(
             chart_page_state,
             map_layer_state,
             caution_state: default_caution_state(),
+            raster_map_catalog: None,
             point_tile_cache: HashMap::new(),
             airspace_ref_tile_cache: HashMap::new(),
             airspace_feature_cache: HashMap::new(),
@@ -268,6 +271,46 @@ pub fn set_map_layer_visibility_in_session(
     let layer = parse_map_layer_id(layer_id)?;
     map_layer_toggle_mut(&mut session.map_layer_state, layer).visible = visible;
     Ok(snapshot_for_session(session))
+}
+
+pub fn set_raster_map_catalog_in_session(
+    handle: u32,
+    catalog: RasterMapCatalog,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    session.raster_map_catalog = Some(catalog);
+    Ok(snapshot_for_session(session))
+}
+
+pub fn select_map_in_session(handle: u32, selected_map_id: &str) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = sessions().lock().expect("session store poisoned");
+    let session = session_mut(&mut sessions, handle)?;
+    let Some(catalog) = session.raster_map_catalog.as_mut() else {
+        return Err(AppError {
+            kind: AppErrorKind::Internal,
+            message: "session missing raster map catalog".to_string(),
+        });
+    };
+    crate::select_map_in_catalog(catalog, selected_map_id);
+    Ok(snapshot_for_session(session))
+}
+
+pub fn get_raster_tile_plan_in_session(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+) -> AppResult<RasterTilePlan> {
+    let sessions = sessions().lock().expect("session store poisoned");
+    let session = session_ref(&sessions, handle)?;
+    let Some(catalog) = session.raster_map_catalog.as_ref() else {
+        return Err(AppError {
+            kind: AppErrorKind::Internal,
+            message: "session missing raster map catalog".to_string(),
+        });
+    };
+    Ok(crate::raster_tile_plan(catalog, &viewport, width_px, height_px))
 }
 
 pub fn set_map_layer_enabled_in_session(

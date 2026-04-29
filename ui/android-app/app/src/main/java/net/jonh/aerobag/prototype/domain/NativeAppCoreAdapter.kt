@@ -5,6 +5,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
@@ -166,13 +167,25 @@ class NativeAppCoreAdapter(
             json.encodeToString(selectedChartId),
         )
         val result = json.decodeFromString<WireUiSessionInitResult>(resultJson)
-        return NativeUiSession(
+        val session = NativeUiSession(
             handle = result.handle,
             bridge = bridge,
             json = json,
             navKvStore = navKvStore,
             initialSnapshot = enrichUiSessionSnapshot(result.snapshot.toUi()),
-        ).apply {
+        )
+        runCatching {
+            val catalog = runHadOperationElement(
+                buildJsonObject {
+                    put("kind", "map_selector_state")
+                    put("selected_map_id", JsonNull)
+                },
+            )
+            session.installRasterMapCatalogJson(catalog.toString())
+        }.onFailure { error ->
+            Log.e("AerobagTiles", "failed to install raster map catalog in core session", error)
+        }
+        return session.apply {
             syncGuidanceGeometryFromPlan()
         }
     }
@@ -719,6 +732,27 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun installRasterMapCatalogJson(catalogJson: String): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.setRasterMapCatalogInSessionJson(handle, catalogJson))
+        return snapshot
+    }
+
+    fun installRasterMapCatalogForSelection(mapId: String?): UiSessionSnapshot {
+        val store = navKvStore ?: return snapshot
+        val catalog = store.runCoreOperationElement(
+            buildJsonObject {
+                put("kind", "map_selector_state")
+                put("selected_map_id", json.encodeToJsonElement(mapId))
+            },
+        )
+        return installRasterMapCatalogJson(catalog.toString())
+    }
+
+    fun selectMap(mapId: String): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.selectMapInSessionJson(handle, json.encodeToString(mapId)))
+        return snapshot
+    }
+
     fun refreshSnapshot(): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.getSessionSnapshotJson(handle))
         return syncGuidanceGeometryFromPlan()
@@ -771,6 +805,11 @@ class NativeUiSession internal constructor(
         val viewportJson = json.encodeToString(viewport.toWire())
         val resultJson = bridge.getTerrainOverlayInSessionJson(handle, viewportJson, widthPx, heightPx)
         return json.decodeFromString<WireTerrainOverlayQueryResult>(resultJson).toUi()
+    }
+
+    fun queryRasterTilePlanJson(viewport: MapViewportState, widthPx: Double, heightPx: Double): String {
+        val viewportJson = json.encodeToString(viewport.toWire())
+        return bridge.getRasterTilePlanInSessionJson(handle, viewportJson, widthPx, heightPx)
     }
 
     fun renderTerrainOverlayTile(tileBytes: ByteArray, aircraftAltitudeFt: Double): ByteArray =

@@ -17,6 +17,7 @@ pub mod planning;
 pub mod playback;
 pub mod procedure_geometry;
 pub mod procedure_legs;
+pub mod raster_tiles;
 pub mod session;
 pub mod situation;
 pub mod state;
@@ -107,6 +108,12 @@ pub use planning::{
     common_resume_candidate_decision,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
+pub use raster_tiles::{
+    raster_tile_plan, select_map_in_catalog, RasterChartCoverage, RasterDisplayGeometry,
+    RasterDisplayPolygonSet, RasterInitialViewport, RasterMapCatalog, RasterMapFamilyOption,
+    RasterMapView, RasterMapViewOption, RasterPolygon, RasterPolygonSetRef, RasterTileDraw,
+    RasterTileLevel, RasterTilePlan, RasterTileSource,
+};
 pub use procedure_geometry::{
     build_trailing_course_to_intercept_display_path, display_path_for_procedure_leg,
     display_path_for_resumed_common_cf, display_path_for_single_procedure_step,
@@ -119,7 +126,7 @@ pub use procedure_legs::{
 pub use session::{
     create_ui_session, create_ui_session_profiled, destroy_session,
     disengage_map_follow_in_session, engage_map_follow_in_session, get_map_overlay_in_session,
-    get_session_snapshot, get_terrain_overlay_in_session, ingest_airspace_features_in_session,
+    get_raster_tile_plan_in_session, get_session_snapshot, get_terrain_overlay_in_session, ingest_airspace_features_in_session,
     ingest_airspace_label_tiles_in_session, ingest_airspace_ref_tiles_in_session,
     ingest_point_tiles_in_session, ingest_tfrs_in_session, load_playback_trace_in_session,
     move_waypoint_in_session,
@@ -127,6 +134,7 @@ pub use session::{
     register_ownship_source_in_session, remove_leg_in_session,
     render_terrain_overlay_tile_in_session, render_terrain_overlay_tiles_in_session,
     replace_flight_plan_in_session, restore_chart_page_state_in_session, seek_playback_in_session,
+    select_map_in_session, set_raster_map_catalog_in_session,
     set_map_layer_enabled_in_session, set_map_layer_visibility_in_session,
     select_airport_in_session, select_chart_in_session, select_ownship_source_in_session,
     set_guidance_leg_geometry_in_session, set_map_follow_offset_in_session,

@@ -39,6 +39,7 @@ import {
   type DerivedChartPageState,
   type DerivedMapSelectorState,
   type MapLayerId,
+  type RasterTileDraw,
   type UiMapLayerState,
   type UiMapLayerToggleState,
   type UiSession,
@@ -51,7 +52,6 @@ import {
   dragViewport,
   latLonToWorld,
   preserveViewportForMap,
-  renderTiles,
   scaleForZoom,
   viewportCenterLatLon,
   worldToScreen,
@@ -528,10 +528,6 @@ const plateFolderTheme = loadedUiTheme.plate_folder;
 const VAMPS_POSITION = { lat: 47.3648944444444, lon: -121.980275 };
 const defaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json";
 const startupHighLatencyWarningGraceMs = 10_000;
-const rasterTileDebugTargets = [
-  { zoom: 8, x: 42, yTms: 166 },
-  { zoom: 8, x: 41, yTms: 166 },
-] as const;
 const vorOuterHexPoints = [
   { x: -8, y: 0 },
   { x: -4, y: -7 },
@@ -541,10 +537,6 @@ const vorOuterHexPoints = [
   { x: -4, y: 7 },
 ] as const;
 const vorEdgeInsetDistances = [3.8, 1.9, 3.8, 1.9, 3.8, 1.9] as const;
-
-function isRasterTileDebugTarget(tile: { zoom: number; x: number; yTms: number }): boolean {
-  return rasterTileDebugTargets.some((target) => target.zoom === tile.zoom && target.x === tile.x && target.yTms === tile.yTms);
-}
 
 type PersistedWebUiState = {
   page?: AppPage;
@@ -570,6 +562,38 @@ type WebHistoryState = {
   current?: AppViewSnapshot;
   stack?: AppViewSnapshot[];
 };
+
+type RasterRenderTile = {
+  x: number;
+  yTms: number;
+  left: number;
+  top: number;
+  size: number;
+  zoom: number;
+  zIndex: number;
+  src: string;
+  mapViewId: string;
+  packageName?: string | null;
+  chartFamily: ChartFamilyId;
+  fallbacks: RasterTileDraw["fallbacks"];
+};
+
+function renderTileFromCore(tile: RasterTileDraw): RasterRenderTile {
+  return {
+    x: tile.x,
+    yTms: tile.y_tms,
+    left: tile.left_px,
+    top: tile.top_px,
+    size: tile.size_px,
+    zoom: tile.source_zoom,
+    zIndex: tile.z_order,
+    src: tile.primary.url,
+    mapViewId: tile.primary.map_view_id,
+    packageName: tile.primary.package_name,
+    chartFamily: tile.family,
+    fallbacks: tile.fallbacks,
+  };
+}
 
 type VorPoint = {
   x: number;
@@ -1157,6 +1181,9 @@ export default function App() {
       }
       setMapSelectorState(state);
       setSelectedMapId(state.selected_map_id);
+      void uiSession?.installRasterMapCatalog(state).catch((error) => {
+        console.error("failed to install raster map catalog in core session", error);
+      });
       setMapSelectorLoadError(null);
     }).catch((error) => {
       if (!cancelled) {
@@ -1166,7 +1193,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [appCoreAdapter, selectedMapId]);
+  }, [appCoreAdapter, selectedMapId, uiSession]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1248,6 +1275,7 @@ export default function App() {
     setChartViewport(snapshot.chartViewport);
     setChartFolderOpen(snapshot.chartFolderOpen);
     if (uiSession) {
+      void uiSession.selectMap(snapshot.selectedMapId).catch(() => {});
       void uiSession.restoreChartPageState(
         snapshot.recentAirportIds,
         snapshot.selectedAirportId || undefined,
@@ -1966,48 +1994,30 @@ function MapPage(props: {
   }, []);
 
   const center = useMemo(() => viewportCenterLatLon(viewport), [viewport]);
-  const renderableFamilyMapViews = useMemo(
-    () => filterRenderableFamilyMapViews(selectedMap, selectedFamilyMapViews, viewport),
-    [selectedFamilyMapViews, selectedMap, viewport],
-  );
-  const tiles = useMemo(() => {
-    if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
-      return [];
-    }
-    return renderTiles(
-      renderableFamilyMapViews.map((view) => ({
-        ...view.map_view,
-        id: view.id,
-        coverage: view.coverage,
-      })),
-      geometry,
-      viewport,
-      surfaceSize.width,
-      surfaceSize.height,
-    );
-  }, [geometry, renderableFamilyMapViews, surfaceSize, viewport]);
-  const mapIsVisible = page === "map";
+  const [tiles, setTiles] = useState<RasterRenderTile[]>([]);
   useEffect(() => {
-    if (!selectedFamily) {
+    let cancelled = false;
+    if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      setTiles([]);
       return;
     }
-    const matchingTiles = tiles
-      .filter((tile) => isRasterTileDebugTarget(tile))
-      .map((tile) => ({
-        zoom: tile.zoom,
-        x: tile.x,
-        y_tms: tile.yTms,
-        family: tile.chartFamily,
-        map_view_id: tile.mapViewId,
-        package_name: tile.packageName,
-        src: tile.src,
-      }));
-    debugLog("map.raster.debug_tiles.selected", {
-      selected_map_id: selectedMap.id,
-      selected_family_id: selectedFamily.id,
-      matching_tiles: matchingTiles,
-    });
-  }, [selectedFamily, selectedMap.id, tiles]);
+    uiSession.queryRasterTilePlan(viewport, surfaceSize.width, surfaceSize.height)
+      .then((plan) => {
+        if (!cancelled) {
+          setTiles(plan.tiles.map(renderTileFromCore));
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error("failed to query raster tile plan", error);
+          setTiles([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+  const mapIsVisible = page === "map";
   const situationRingCandidates = useMemo(() => appCoreAdapter.situationRingCandidates(), [appCoreAdapter]);
   const situationOverlay = useMemo(
     () => resolveSituationOverlay(ownship, viewport, surfaceSize.width, surfaceSize.height, situationRingCandidates),
@@ -2902,6 +2912,21 @@ function MapPage(props: {
     onFirstVisualReady();
   }
 
+  function reportRasterTileError(tile: RasterRenderTile) {
+    debugLog("map.raster.tile.error", {
+      selected_map_id: selectedMap.id,
+      selected_family_id: selectedFamily?.id ?? null,
+      viewport_zoom: viewportRef.current.zoom,
+      zoom: tile.zoom,
+      x: tile.x,
+      y_tms: tile.yTms,
+      family: tile.chartFamily,
+      map_view_id: tile.mapViewId,
+      package_name: tile.packageName,
+      src: tile.src,
+    });
+  }
+
   const visibleTerrainImages = terrainOverlay.query
     ? terrainOverlay.images
       .filter((image) => terrainOverlay.query?.tile_requests.some((request) => request.key === image.key))
@@ -2964,7 +2989,14 @@ function MapPage(props: {
                 zIndex: tile.zIndex,
               }}
             >
-              <img className="mapTileImage" src={tile.src} alt="" draggable={false} onLoad={reportFirstVisualReady} />
+              <img
+                className="mapTileImage"
+                src={tile.src}
+                alt=""
+                draggable={false}
+                onLoad={reportFirstVisualReady}
+                onError={() => reportRasterTileError(tile)}
+              />
               {debugTileLabels ? (
                 <div className="tileLabel">
                   z{tile.zoom} x{tile.x} y{tile.yTms}

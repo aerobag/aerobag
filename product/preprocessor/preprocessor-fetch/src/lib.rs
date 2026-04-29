@@ -659,6 +659,9 @@ fn curl_download_with_status(
 ) -> anyhow::Result<CurlDownloadResult> {
     let mut command = Command::new("curl");
     command
+        // Force HTTP/1.1: akamai's WAF on some FAA hosts (e.g. tfr.faa.gov)
+        // rejects curl's HTTP/2 with 403 while HTTP/1.1 is fine.
+        .arg("--http1.1")
         .arg("-L")
         .arg("--silent")
         .arg("--show-error")
@@ -751,6 +754,8 @@ fn fetch_network_once(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Re
     let temp_path = temporary_download_path(&archive_path);
     let cookies_path = temp_path.with_extension("cookies");
     let status = Command::new("curl")
+        // Force HTTP/1.1 — see fetch_network_once_with_metadata above.
+        .arg("--http1.1")
         .arg("-L")
         .arg("--fail")
         .arg("--silent")

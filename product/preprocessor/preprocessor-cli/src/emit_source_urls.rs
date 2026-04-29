@@ -341,6 +341,9 @@ fn fetch_url_bytes(url: &str, fetch_cache: Option<&FetchCacheConfig>) -> anyhow:
             bail!("cache miss in offline mode for crawl {url}");
         }
         let output = Command::new("curl")
+            // Force HTTP/1.1: akamai's WAF on some FAA hosts (e.g.
+            // tfr.faa.gov) returns 403 for HTTP/2 but accepts HTTP/1.1.
+            .arg("--http1.1")
             .arg("-L")
             .arg("--fail")
             .arg("--silent")
@@ -355,6 +358,8 @@ fn fetch_url_bytes(url: &str, fetch_cache: Option<&FetchCacheConfig>) -> anyhow:
         return Ok(output.stdout);
     }
     let output = Command::new("curl")
+        // Force HTTP/1.1 — see comment above.
+        .arg("--http1.1")
         .arg("-L")
         .arg("--fail")
         .arg("--silent")

@@ -2208,7 +2208,7 @@ private fun HomePage(
                     label = button.label,
                     modifier = Modifier
                         .width(ThumbSize * 2f)
-                        .height(ThumbSize),
+                        .height(ThumbSize * 2f),
                     maxLines = 2,
                     enabled = button.enabled,
                     iconResId = button.iconResId,

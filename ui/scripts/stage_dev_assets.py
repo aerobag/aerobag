@@ -321,14 +321,20 @@ def stage_bundle_manifests() -> None:
 
 
 def stage_icons() -> None:
+    """Mirror ui/icons/ into the staging dir, preserving subdir structure.
+
+    Web code references icons as /icons/icons/<file>.png (one level for the
+    mount, one for the inner subdir of the source tree), so we mirror the
+    whole ui/icons/ directory rather than flattening its contents.
+    """
     target = WEB_STATIC_ROOT / "icons"
     reset_dir(target)
-    source_dir = ROOT / "ui" / "icons" / "icons"
-    if not source_dir.is_dir():
-        raise RuntimeError(f"missing icons source dir {source_dir}")
-    for source in sorted(source_dir.iterdir()):
+    source_root = ROOT / "ui" / "icons"
+    if not source_root.is_dir():
+        raise RuntimeError(f"missing icons source dir {source_root}")
+    for source in sorted(source_root.rglob("*")):
         if source.is_file():
-            ensure_hard_link(source, target / source.name)
+            ensure_hard_link(source, target / source.relative_to(source_root))
 
 
 def current_stage_stamp() -> dict:

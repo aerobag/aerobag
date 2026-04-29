@@ -25,6 +25,7 @@ const navDbRoot = path.join(staticRoot, "nav-db");
 const vectorRoot = path.join(staticRoot, "vectors");
 const fastProductRoot = path.join(staticRoot, "fast-products");
 const navKvRoot = path.join(staticRoot, "nav-kv");
+const iconsRoot = path.join(staticRoot, "icons");
 const adsbTraceRoot = path.resolve(repoRoot, "..", "adsb-traces");
 const sharedRoot = path.join(repoRoot, "ui", "shared");
 const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
@@ -377,6 +378,7 @@ function aerobagStaticPlugin(): Plugin {
     server.middlewares.use("/fast-products", mountFastProducts());
     server.middlewares.use("/terrain-products", mountTerrainProducts());
     server.middlewares.use("/shaded-relief-products", mountShadedReliefProducts());
+    server.middlewares.use("/icons", mountStaticTree(iconsRoot));
     server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot));
   }
 
@@ -402,6 +404,7 @@ function aerobagStaticPlugin(): Plugin {
         [navKvRoot, "nav-kv"],
         [vectorRoot, "vectors"],
         [fastProductRoot, "fast-products"],
+        [iconsRoot, "icons"],
         [adsbTraceRoot, "adsb-traces"],
       ] as const) {
         if (!fs.existsSync(sourceRoot)) {

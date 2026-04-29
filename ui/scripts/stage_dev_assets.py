@@ -320,6 +320,17 @@ def stage_bundle_manifests() -> None:
     ensure_hard_link(PRODUCT_BUILD_FILE, WEB_STATIC_ROOT / "cycle-bundle.json")
 
 
+def stage_icons() -> None:
+    target = WEB_STATIC_ROOT / "icons"
+    reset_dir(target)
+    source_dir = ROOT / "ui" / "icons" / "icons"
+    if not source_dir.is_dir():
+        raise RuntimeError(f"missing icons source dir {source_dir}")
+    for source in sorted(source_dir.iterdir()):
+        if source.is_file():
+            ensure_hard_link(source, target / source.name)
+
+
 def current_stage_stamp() -> dict:
     def file_stamp(path: Path) -> dict:
         stat = path.stat()
@@ -370,6 +381,9 @@ def write_stage_stamp() -> None:
 
 def main() -> None:
     WEB_STATIC_ROOT.mkdir(parents=True, exist_ok=True)
+    # Icons are not part of the artifact bundle stamp, so stage them before
+    # the cache check. Cheap (handful of hard links).
+    stage_icons()
     if stage_is_current():
         return
     stage_bundle_manifests()

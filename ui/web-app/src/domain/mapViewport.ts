@@ -467,7 +467,7 @@ function chartFamilyRenderPriority(chartFamily: MapView["chart_family"]): number
 }
 
 function rasterTileZIndex(zoom: number, chartFamily: MapView["chart_family"]): number {
-  return zoom * 10 + chartFamilyRenderPriority(chartFamily);
+  return zoom * 0.01 + chartFamilyRenderPriority(chartFamily) * 0.001;
 }
 
 function pickLevel(mapView: MapView, zoom: number): MapView["levels"][number] {

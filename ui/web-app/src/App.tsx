@@ -1995,22 +1995,26 @@ function MapPage(props: {
 
   const center = useMemo(() => viewportCenterLatLon(viewport), [viewport]);
   const [tiles, setTiles] = useState<RasterRenderTile[]>([]);
+  const [rasterTileViewport, setRasterTileViewport] = useState<MapViewportState | null>(null);
   useEffect(() => {
     let cancelled = false;
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       setTiles([]);
+      setRasterTileViewport(null);
       return;
     }
     uiSession.queryRasterTilePlan(viewport, surfaceSize.width, surfaceSize.height)
       .then((plan) => {
         if (!cancelled) {
           setTiles(plan.tiles.map(renderTileFromCore));
+          setRasterTileViewport(viewport);
         }
       })
       .catch((error) => {
         if (!cancelled) {
           console.error("failed to query raster tile plan", error);
           setTiles([]);
+          setRasterTileViewport(null);
         }
       });
     return () => {
@@ -2704,6 +2708,17 @@ function MapPage(props: {
     const dy = (mapOverlayViewport.centerWorldY - viewport.centerWorldY) * currentScale;
     return `translate(${dx}px, ${dy}px) scale(${scaleRatio})`;
   }, [mapOverlayViewport, viewport]);
+  const rasterTileTransform = useMemo(() => {
+    if (!rasterTileViewport) {
+      return undefined;
+    }
+    const currentScale = scaleForZoom(viewport.zoom);
+    const tileScale = scaleForZoom(rasterTileViewport.zoom);
+    const scaleRatio = currentScale / tileScale;
+    const dx = (rasterTileViewport.centerWorldX - viewport.centerWorldX) * currentScale;
+    const dy = (rasterTileViewport.centerWorldY - viewport.centerWorldY) * currentScale;
+    return `translate(${dx}px, ${dy}px) scale(${scaleRatio})`;
+  }, [rasterTileViewport, viewport]);
 
   function updateViewport(next: MapViewportState) {
     viewportRef.current = next;
@@ -2975,7 +2990,11 @@ function MapPage(props: {
       >
         <div className="mapBackdrop" />
         {trayGroup.scrimOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
-        <div className="rasterTileLayer" aria-hidden="true">
+        <div
+          className="rasterTileLayer"
+          aria-hidden="true"
+          style={rasterTileTransform ? { transform: rasterTileTransform, transformOrigin: "center center" } : undefined}
+        >
           {tiles.map((tile) => (
             <div
               key={`${tile.chartFamily}-${tile.packageName ?? tile.mapViewId}-${tile.zoom}-${tile.x}-${tile.yTms}`}

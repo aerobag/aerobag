@@ -1,6 +1,7 @@
 package net.jonh.aerobag.prototype
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.graphics.Typeface
@@ -461,7 +462,7 @@ private enum class AppPage {
     Map,
     Plan,
     Charts,
-    Settings,
+    Home,
 }
 
 private data class AppViewSnapshot(
@@ -905,10 +906,12 @@ private data class OfflinePackagesStateWire(
     val nowOverrideEpochMs: Long? = null,
 )
 
-private data class SettingsGridButton(
+private data class HomeGridButton(
     val key: String,
     val label: String,
+    val targetPage: AppPage? = null,
     val enabled: Boolean = false,
+    @DrawableRes val iconResId: Int? = null,
 )
 
 private data class MenuDockOption(
@@ -952,8 +955,8 @@ private enum class MenuDockStyle(
 private val PageOptions = listOf(
     PageTrayOption(AppPage.Map, "CHART", "CHART", R.drawable.page_chart_icon),
     PageTrayOption(AppPage.Charts, "PLATE", "PLATE", R.drawable.page_plate_icon),
-    PageTrayOption(AppPage.Plan, "PLAN", "PLAN", R.drawable.page_plan1_icon),
-    PageTrayOption(AppPage.Settings, "SETTINGS", "STGS"),
+    PageTrayOption(AppPage.Plan, "FLIGHT PLAN", "PLAN", R.drawable.page_plan1_icon),
+    PageTrayOption(AppPage.Home, "HOME", "HOME"),
 )
 
 private val OfflineProductOptions = listOf(
@@ -966,16 +969,16 @@ private val OfflineProductOptions = listOf(
     OfflinePackageDimension("csup", "CSUP"),
 )
 
-private val SettingsGridButtons = listOf(
-    SettingsGridButton("offline-packages", "OFFLINE\nPKGS", enabled = true),
-    SettingsGridButton("s2", "S2"),
-    SettingsGridButton("s3", "S3"),
-    SettingsGridButton("s4", "S4"),
-    SettingsGridButton("s5", "S5"),
-    SettingsGridButton("s6", "S6"),
-    SettingsGridButton("s7", "S7"),
-    SettingsGridButton("s8", "S8"),
-    SettingsGridButton("s9", "S9"),
+private val HomeGridButtons = listOf(
+    HomeGridButton("chart", "CHART", targetPage = AppPage.Map, enabled = true, iconResId = R.drawable.page_chart_icon),
+    HomeGridButton("plate", "PLATE", targetPage = AppPage.Charts, enabled = true, iconResId = R.drawable.page_plate_icon),
+    HomeGridButton("flight-plan", "FLIGHT\nPLAN", targetPage = AppPage.Plan, enabled = true),
+    HomeGridButton("offline-packages", "OFFLINE\nPACKAGES", enabled = true),
+    HomeGridButton("s5", "S5"),
+    HomeGridButton("s6", "S6"),
+    HomeGridButton("s7", "S7"),
+    HomeGridButton("s8", "S8"),
+    HomeGridButton("s9", "S9"),
 )
 
 private data class ChartTrayOption(
@@ -1616,6 +1619,15 @@ private fun writeUiPrefs(
         .apply()
 }
 
+private fun readStoredPage(prefs: SharedPreferences): AppPage {
+    val stored = prefs.getString(UiPrefsPageKey, AppPage.Map.name) ?: AppPage.Map.name
+    return if (stored == "Settings") {
+        AppPage.Home
+    } else {
+        runCatching { AppPage.valueOf(stored) }.getOrDefault(AppPage.Map)
+    }
+}
+
 private fun summarizeRuntimeBootstrapFailure(error: Throwable): String {
     val chain = generateSequence(error) { it.cause }
         .mapNotNull { throwable ->
@@ -1704,8 +1716,8 @@ private fun AerobagApp() {
     }
     if (runtimeFixture == null) {
         CompositionLocalProvider(LocalAerobagUiTheme provides uiTheme) {
-            SettingsPage(
-                page = AppPage.Settings,
+            HomePage(
+                page = AppPage.Home,
                 pageHistory = emptyList(),
                 uptimeLabel = rememberUptimeLabel(SystemClock.elapsedRealtime()),
                 bootstrap = bootstrap,
@@ -1729,8 +1741,8 @@ private fun AerobagApp() {
     if (runtimeFixture!!.isFailure) {
         keepOfflinePackagesVisible = true
         CompositionLocalProvider(LocalAerobagUiTheme provides uiTheme) {
-            SettingsPage(
-                page = AppPage.Settings,
+            HomePage(
+                page = AppPage.Home,
                 pageHistory = emptyList(),
                 uptimeLabel = rememberUptimeLabel(SystemClock.elapsedRealtime()),
                 bootstrap = bootstrap,
@@ -1766,10 +1778,9 @@ private fun AerobagApp() {
     var page by remember {
         mutableStateOf(
             if (keepOfflinePackagesVisible) {
-                AppPage.Settings
+                AppPage.Home
             } else {
-                runCatching { AppPage.valueOf(prefs.getString(UiPrefsPageKey, AppPage.Map.name) ?: AppPage.Map.name) }
-                    .getOrDefault(AppPage.Map)
+                readStoredPage(prefs)
             },
         )
     }
@@ -2051,8 +2062,8 @@ private fun AerobagApp() {
                     },
                 )
             }
-            AppPage.Settings -> {
-                SettingsPage(
+            AppPage.Home -> {
+                HomePage(
                     page = page,
                     pageHistory = pageHistory,
                     uptimeLabel = uptimeLabel,
@@ -2072,7 +2083,7 @@ private fun AerobagApp() {
 }
 
 @Composable
-private fun SettingsPage(
+private fun HomePage(
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
@@ -2094,7 +2105,6 @@ private fun SettingsPage(
     var packageSourceBaseUrl by remember(context, prefs) {
         mutableStateOf(readPackageSourceBaseUrl(context.applicationContext, prefs))
     }
-    var pageTrayOpen by remember { mutableStateOf(false) }
     var offlinePackagesOpen by remember { mutableStateOf(forceOfflinePackagesOpen || initialOfflinePackagesOpen) }
     var debugPanelOpen by remember { mutableStateOf(false) }
     val regionOptions = remember { offlineRegionOptions() }
@@ -2180,40 +2190,20 @@ private fun SettingsPage(
             .fillMaxSize()
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(ThumbGap),
-        ) {
-            MenuDock(
-                launcherLabel = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: "STGS",
-                launcherIconResId = PageOptions.firstOrNull { it.page == page }?.iconResId,
-                open = pageTrayOpen,
-                onToggle = { pageTrayOpen = !pageTrayOpen },
-                style = MenuDockStyle.Compact,
-                options = PageOptions.map { option ->
-                    MenuDockOption(option.page.name, option.label, active = option.page == page, iconResId = option.iconResId) {
-                        onSelectPage(option.page)
-                        pageTrayOpen = false
-                    }
-                },
-            )
-        }
-
         LazyVerticalGrid(
             columns = GridCells.Fixed(3),
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(
                     start = ThumbGap + (ThumbSize * 0.5f),
-                    top = ThumbGap + ThumbSize + (ThumbSize * 0.5f),
+                    top = ThumbGap + (ThumbSize * 0.5f),
                 )
                 .width((ThumbSize * 6f) + (ThumbGap * 2f)),
             horizontalArrangement = Arrangement.spacedBy(ThumbGap),
             verticalArrangement = Arrangement.spacedBy(ThumbGap),
             userScrollEnabled = false,
         ) {
-            lazyGridItems(SettingsGridButtons, key = { it.key }) { button ->
+            lazyGridItems(HomeGridButtons, key = { it.key }) { button ->
                 CompactSquareButton(
                     label = button.label,
                     modifier = Modifier
@@ -2221,9 +2211,12 @@ private fun SettingsPage(
                         .height(ThumbSize),
                     maxLines = 2,
                     enabled = button.enabled,
+                    iconResId = button.iconResId,
+                    wide = true,
                     onClick = {
-                        if (button.key == "offline-packages") {
-                            pageTrayOpen = false
+                        if (button.targetPage != null) {
+                            onSelectPage(button.targetPage)
+                        } else if (button.key == "offline-packages") {
                             offlinePackagesOpen = true
                         }
                     },
@@ -2254,10 +2247,6 @@ private fun SettingsPage(
                 style = MaterialTheme.typography.labelSmall,
                 color = Color(0xFF52656D),
             )
-        }
-
-        if (pageTrayOpen && !forceOfflinePackagesOpen) {
-            Scrim { pageTrayOpen = false }
         }
 
         if (offlinePackagesOpen || forceOfflinePackagesOpen) {
@@ -3301,7 +3290,6 @@ private fun MapExplorerPage(
         loadAndroidDevServerBaseUrl(context.applicationContext)
     }
     val focusRequester = remember { FocusRequester() }
-    var pageTrayOpen by remember { mutableStateOf(false) }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var layerTrayOpen by remember { mutableStateOf(false) }
     var debugPanelOpen by remember { mutableStateOf(false) }
@@ -3397,7 +3385,7 @@ private fun MapExplorerPage(
     }
     val selectedPackageName = selectedMap.mapView.packageName
     val mapLayerState = sessionSnapshot.mapLayerState
-    val topLeftTrayOpen = pageTrayOpen || chartTrayOpen || layerTrayOpen
+    val topLeftTrayOpen = chartTrayOpen || layerTrayOpen
     val selectedPackageInstalled = remember(selectedPackageName, installRevision) {
         selectedPackageName?.let { SectionalPackages.isInstalled(context, it) } ?: true
     }
@@ -3784,8 +3772,8 @@ private fun MapExplorerPage(
             Log.e("AerobagGuidance", "failed to project flight plan route", it)
         }
     }
-    LaunchedEffect(selectedMap.id, pageTrayOpen, chartTrayOpen, layerTrayOpen) {
-        if (!pageTrayOpen && !chartTrayOpen && !layerTrayOpen) {
+    LaunchedEffect(selectedMap.id, chartTrayOpen, layerTrayOpen) {
+        if (!chartTrayOpen && !layerTrayOpen) {
             withFrameNanos { }
             focusRequester.requestFocus()
         }
@@ -4485,15 +4473,8 @@ private fun MapExplorerPage(
         MapTopLeftControls(
             modifier = Modifier.align(Alignment.TopStart),
             currentPage = page,
-            pageTrayOpen = pageTrayOpen,
-            onTogglePageTray = {
-                pageTrayOpen = !pageTrayOpen
-                chartTrayOpen = false
-                layerTrayOpen = false
-            },
             onSelectPage = {
                 onSelectPage(it)
-                pageTrayOpen = false
                 chartTrayOpen = false
                 layerTrayOpen = false
             },
@@ -4502,13 +4483,11 @@ private fun MapExplorerPage(
             trayOpen = chartTrayOpen,
             onToggle = {
                 chartTrayOpen = !chartTrayOpen
-                pageTrayOpen = false
                 layerTrayOpen = false
             },
             layerTrayOpen = layerTrayOpen,
             onToggleLayerTray = {
                 layerTrayOpen = !layerTrayOpen
-                pageTrayOpen = false
                 chartTrayOpen = false
             },
             layerOptions = layerTrayOptions,
@@ -4548,7 +4527,6 @@ private fun MapExplorerPage(
 
         if (topLeftTrayOpen) {
             Scrim {
-                pageTrayOpen = false
                 chartTrayOpen = false
                 layerTrayOpen = false
             }
@@ -4717,7 +4695,6 @@ private fun FlightPlanPage(
     var selectedWaypointTrayAnchor by remember { mutableStateOf<Dp?>(null) }
     var pendingSelectedRowKey by remember { mutableStateOf<String?>(null) }
     var reorderOpen by remember { mutableStateOf(false) }
-    var pageTrayOpen by remember { mutableStateOf(false) }
     var debugPanelOpen by remember { mutableStateOf(false) }
     var airwayPicker by remember { mutableStateOf<AndroidAirwayPickerState?>(null) }
     var procedurePicker by remember { mutableStateOf<AndroidProcedurePickerState?>(null) }
@@ -4981,21 +4958,14 @@ private fun FlightPlanPage(
             .fillMaxSize()
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
-        MenuDock(
+        CompactSquareButton(
+            label = "HOME",
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .padding(ThumbGap),
-                launcherLabel = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: "PLAN",
-            launcherIconResId = PageOptions.firstOrNull { it.page == page }?.iconResId,
-            open = pageTrayOpen,
-            onToggle = { pageTrayOpen = !pageTrayOpen },
-            style = MenuDockStyle.Compact,
-            options = PageOptions.map { option ->
-                MenuDockOption(option.page.name, option.label, active = option.page == page, iconResId = option.iconResId) {
-                    onSelectPage(option.page)
-                    pageTrayOpen = false
-                }
-            },
+                .padding(ThumbGap)
+                .size(ThumbSize),
+            selected = page == AppPage.Home,
+            onClick = { onSelectPage(AppPage.Home) },
         )
 
         Column(
@@ -5197,10 +5167,6 @@ private fun FlightPlanPage(
             modifier = Modifier.align(Alignment.BottomStart),
         ) {
             Text("up: $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-        }
-
-        if (pageTrayOpen) {
-            Scrim { pageTrayOpen = false }
         }
 
         if (selectedWaypointIndex != null && selectedRow != null) {
@@ -5696,7 +5662,6 @@ private fun ChartsPage(
     val chartLabelsById = remember(airports) {
         airports.flatMap { airport -> airport.charts }.associate { chart -> chart.id to chart.label }
     }
-    var pageTrayOpen by remember { mutableStateOf(false) }
     var airportTrayOpen by remember { mutableStateOf(false) }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var debugPanelOpen by remember { mutableStateOf(false) }
@@ -5729,7 +5694,7 @@ private fun ChartsPage(
     val viewportState = rememberUpdatedState(viewport)
     val imageWidthPx = bitmap?.width?.toFloat() ?: 0f
     val imageHeightPx = bitmap?.height?.toFloat() ?: 0f
-    val trayOpen = pageTrayOpen || airportTrayOpen || chartTrayOpen
+    val trayOpen = airportTrayOpen || chartTrayOpen
 
     LaunchedEffect(bitmap, surfaceSize) {
         val currentBitmap = bitmap
@@ -5939,33 +5904,23 @@ private fun ChartsPage(
             selectedAirport = selectedAirport,
             selectedChart = selectedChart,
             folderOpen = folderOpen,
-            pageTrayOpen = pageTrayOpen,
             airportTrayOpen = airportTrayOpen,
             chartTrayOpen = chartTrayOpen,
-            onTogglePageTray = {
-                pageTrayOpen = !pageTrayOpen
-                airportTrayOpen = false
-                chartTrayOpen = false
-            },
             onSelectPage = {
                 onSelectPage(it)
-                pageTrayOpen = false
                 airportTrayOpen = false
                 chartTrayOpen = false
             },
             onToggleAirportTray = {
                 airportTrayOpen = !airportTrayOpen
-                pageTrayOpen = false
                 chartTrayOpen = false
             },
             onToggleChartTray = {
                 chartTrayOpen = !chartTrayOpen
-                pageTrayOpen = false
                 airportTrayOpen = false
             },
             onToggleFolder = {
                 onFolderOpenChange(!folderOpen)
-                pageTrayOpen = false
                 airportTrayOpen = false
                 chartTrayOpen = false
             },
@@ -5981,7 +5936,6 @@ private fun ChartsPage(
 
         if (trayOpen) {
             Scrim {
-                pageTrayOpen = false
                 airportTrayOpen = false
                 chartTrayOpen = false
             }
@@ -6008,11 +5962,62 @@ private fun ChartsPage(
 }
 
 @Composable
+private fun ChartPlateToggleButton(
+    currentPage: AppPage,
+    onSelectPage: (AppPage) -> Unit,
+) {
+    val targetPage = if (currentPage == AppPage.Map) AppPage.Charts else AppPage.Map
+    val option = PageOptions.firstOrNull { it.page == currentPage }
+        ?: PageOptions.first { it.page == AppPage.Map }
+    Box(modifier = Modifier.size(ThumbSize)) {
+        CompactSquareButton(
+            label = option.launcherLabel,
+            modifier = Modifier.matchParentSize(),
+            iconResId = option.iconResId,
+            onClick = { onSelectPage(targetPage) },
+        )
+        PageToggleIndicator(
+            chartSelected = currentPage == AppPage.Map,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 3.dp),
+        )
+    }
+}
+
+@Composable
+private fun PageToggleIndicator(
+    chartSelected: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val knobOffset by animateDpAsState(
+        targetValue = if (chartSelected) 0.dp else ThumbSize * 0.30f,
+        label = "pageToggleOffset",
+    )
+    Box(
+        modifier = modifier
+            .width(ThumbSize * 0.48f)
+            .height(ThumbSize * 0.18f)
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color.Black.copy(alpha = 0.55f))
+            .border(1.dp, Color.White.copy(alpha = 0.62f), RoundedCornerShape(999.dp)),
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(1.dp)
+                .offset(x = knobOffset)
+                .align(Alignment.CenterStart)
+                .size(ThumbSize * 0.14f)
+                .clip(CircleShape)
+                .background(Color.White),
+        )
+    }
+}
+
+@Composable
 private fun MapTopLeftControls(
     modifier: Modifier = Modifier,
     currentPage: AppPage,
-    pageTrayOpen: Boolean,
-    onTogglePageTray: () -> Unit,
     onSelectPage: (AppPage) -> Unit,
     selectedLabel: String,
     trayOptions: List<ChartTrayOption>,
@@ -6027,15 +6032,15 @@ private fun MapTopLeftControls(
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
         verticalAlignment = Alignment.Top,
     ) {
-        MenuDock(
-            launcherLabel = PageOptions.firstOrNull { it.page == currentPage }?.launcherLabel ?: "CHART",
-            launcherIconResId = PageOptions.firstOrNull { it.page == currentPage }?.iconResId,
-            open = pageTrayOpen,
-            onToggle = onTogglePageTray,
-            style = MenuDockStyle.Compact,
-            options = PageOptions.map { option ->
-                MenuDockOption(option.page.name, option.label, active = option.page == currentPage, iconResId = option.iconResId) { onSelectPage(option.page) }
-            },
+        CompactSquareButton(
+            label = "HOME",
+            modifier = Modifier.size(ThumbSize),
+            selected = currentPage == AppPage.Home,
+            onClick = { onSelectPage(AppPage.Home) },
+        )
+        ChartPlateToggleButton(
+            currentPage = currentPage,
+            onSelectPage = onSelectPage,
         )
         MenuDock(
             launcherLabel = selectedLabel,
@@ -6066,10 +6071,8 @@ private fun ChartViewerSelectors(
     selectedAirport: ChartAirport?,
     selectedChart: ChartAsset?,
     folderOpen: Boolean,
-    pageTrayOpen: Boolean,
     airportTrayOpen: Boolean,
     chartTrayOpen: Boolean,
-    onTogglePageTray: () -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onToggleAirportTray: () -> Unit,
     onToggleChartTray: () -> Unit,
@@ -6078,21 +6081,22 @@ private fun ChartViewerSelectors(
     onSelectChart: (String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
-    val trayOpen = pageTrayOpen || airportTrayOpen || chartTrayOpen
+    val trayOpen = airportTrayOpen || chartTrayOpen
     Row(
         modifier = modifier.padding(ThumbGap),
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
         verticalAlignment = Alignment.Top,
     ) {
-        MenuDock(
-            launcherLabel = PageOptions.firstOrNull { it.page == currentPage }?.launcherLabel ?: "PLATE",
-            launcherIconResId = PageOptions.firstOrNull { it.page == currentPage }?.iconResId,
-            open = pageTrayOpen,
-            onToggle = onTogglePageTray,
-            style = MenuDockStyle.Compact,
-            options = PageOptions.map { option ->
-                MenuDockOption(option.page.name, option.label, active = option.page == currentPage, iconResId = option.iconResId) { onSelectPage(option.page) }
-            },
+        CompactSquareButton(
+            label = "HOME",
+            modifier = Modifier.size(ThumbSize),
+            selected = currentPage == AppPage.Home,
+            onClick = { onSelectPage(AppPage.Home) },
+        )
+
+        ChartPlateToggleButton(
+            currentPage = currentPage,
+            onSelectPage = onSelectPage,
         )
 
         MenuDock(

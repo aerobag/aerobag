@@ -154,7 +154,7 @@ function aviationThemeColor(colorKey: string): string {
   return loadedUiTheme.aviation[colorKey as AviationThemeColorKey] ?? loadedUiTheme.aviation.dark_gray;
 }
 
-type AppPage = "map" | "plan" | "charts" | "settings";
+type AppPage = "map" | "plan" | "charts" | "home";
 
 type ChartAsset = NonNullable<ChartPageData["airports"][number]>["charts"][number];
 type TrayOption = {
@@ -226,6 +226,7 @@ const emptyChartPage: ChartPageData = { airports: [] };
 const O88_POSITION = { lat: 38.19338888888888, lon: -121.70363888888889 };
 const PAGE_CHART_ICON_SRC = "/icons/icons/page-chart-icon.png?v=20260424b";
 const PAGE_PLAN_ICON_SRC = "/icons/icons/page-plan1-icon.png?v=20260424b";
+const PAGE_PLATE_ICON_SRC = "/icons/icons/page-plate-icon.png?v=20260424b";
 const LAYER_VECTORS_ICON_SRC = "/icons/icons/layer-vectors-icon.png?v=20260424b";
 const LAYER_NEXRAD_ICON_SRC = "/icons/icons/layer-nexrad-icon.png?v=20260424b";
 const LAYER_TERRAIN_WARNING_ICON_SRC = "/icons/icons/layer-terrain-warning-icon.png?v=20260424b";
@@ -502,23 +503,10 @@ function TerrainOverlayCanvasTile({ tile }: { tile: TerrainOverlayImage }) {
 
 const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string; iconSrc?: string }> = [
   { id: "map", label: "CHART", launcherLabel: "CHART", iconSrc: PAGE_CHART_ICON_SRC },
-  { id: "charts", label: "PLATE", launcherLabel: "PLATE", iconSrc: "/icons/icons/page-plate-icon.png?v=20260424b" },
-  { id: "plan", label: "PLAN", launcherLabel: "PLAN", iconSrc: PAGE_PLAN_ICON_SRC },
-  { id: "settings", label: "SETTINGS", launcherLabel: "STGS" },
+  { id: "charts", label: "PLATE", launcherLabel: "PLATE", iconSrc: PAGE_PLATE_ICON_SRC },
+  { id: "plan", label: "FLIGHT PLAN", launcherLabel: "PLAN", iconSrc: PAGE_PLAN_ICON_SRC },
+  { id: "home", label: "HOME", launcherLabel: "HOME" },
 ];
-
-function buildPageTrayOptions(currentPage: AppPage, onSelectPage: (page: AppPage) => void, onClose: () => void): TrayOption[] {
-  return pageOptions.map((option) => ({
-    id: option.id,
-    label: option.label,
-    iconSrc: option.iconSrc,
-    active: option.id === currentPage,
-    onSelect: () => {
-      onSelectPage(option.id);
-      onClose();
-    },
-  }));
-}
 
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
 const maxViewHistoryDepth = 64;
@@ -1711,8 +1699,8 @@ export default function App() {
         />
       </div>
 
-      <div className={`pageLayer${page === "settings" ? " isActive" : ""}`} aria-hidden={page !== "settings"}>
-        <SettingsPage
+      <div className={`pageLayer${page === "home" ? " isActive" : ""}`} aria-hidden={page !== "home"}>
+        <HomePage
           page={page}
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
@@ -1793,7 +1781,7 @@ function MapPage(props: {
     onFirstVisualReady,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const trayGroup = useModalTrayGroup(["page", "family", "layers"] as const);
+  const trayGroup = useModalTrayGroup(["family", "layers"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
   const [layerToggleBusyId, setLayerToggleBusyId] = useState<MapLayerId | null>(null);
   const [mapOverlay, setMapOverlay] = useState<MapOverlayQueryResult>({
@@ -3361,17 +3349,8 @@ function MapPage(props: {
         ) : null}
 
         <div className="chartDock">
-          <TrayDock
-            launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "CHT"}
-            launcherImageSrc={PAGE_CHART_ICON_SRC}
-            launcherStyle={{
-              backgroundColor: "var(--theme-button-bg)",
-            }}
-            open={trayGroup.isOpen("page")}
-            onToggle={() => trayGroup.toggle("page")}
-            ariaLabel="Page"
-            options={buildPageTrayOptions(page, onSelectPage, () => trayGroup.close("page"))}
-          />
+          <HomeNavButton active={page === "home"} onClick={() => onSelectPage("home")} />
+          <ChartPlateToggleButton page={page} onSelectPage={onSelectPage} />
           <TrayDock
             launcherLabel={selectedFamily?.launcher_label ?? "---"}
             launcherImageSrc={chartFamilyIconSrc(selectedFamily?.id)}
@@ -3999,14 +3978,13 @@ function FlightPlanPage(props: {
   const [routeEntryLoading, setRouteEntryLoading] = useState(false);
   const [routeEntryError, setRouteEntryError] = useState<string | null>(null);
   const [routeEntrySubmitting, setRouteEntrySubmitting] = useState(false);
-  const trayGroup = useModalTrayGroup(["page"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
   const pageRef = useRef<HTMLElement | null>(null);
   const planScrollSurfaceRef = useRef<HTMLDivElement | null>(null);
   const waypointModalRef = useRef<HTMLElement | null>(null);
   const planControlsRef = useRef<HTMLDivElement | null>(null);
   const planFooterRef = useRef<HTMLDivElement | null>(null);
-  const trayOpen = trayGroup.scrimOpen;
+  const trayOpen = false;
   const planUiState = props.planUiState;
   if (!planUiState) {
     throw new Error("FlightPlanPage requires core-projected FlightPlanUiState");
@@ -4541,20 +4519,8 @@ function FlightPlanPage(props: {
 
   return (
     <section className="appPage planPage" ref={pageRef}>
-      {trayOpen ? <TrayScrim ariaLabel="Close page tray" onClose={trayGroup.closeAll} /> : null}
-
       <div className="chartDock">
-        <TrayDock
-          launcherLabel={pageOptions.find((option) => option.id === props.page)?.launcherLabel ?? "PLN"}
-          launcherImageSrc={PAGE_PLAN_ICON_SRC}
-          launcherStyle={{
-            backgroundColor: "var(--theme-button-bg)",
-          }}
-          open={trayGroup.isOpen("page")}
-          onToggle={() => trayGroup.toggle("page")}
-          ariaLabel="Page"
-          options={buildPageTrayOptions(props.page, props.onSelectPage, () => trayGroup.close("page"))}
-        />
+        <HomeNavButton active={props.page === "home"} onClick={() => props.onSelectPage("home")} />
       </div>
 
       <div className="planScrollViewport" ref={planScrollViewportRef}>
@@ -5223,6 +5189,53 @@ function FlightPlanPage(props: {
   );
 }
 
+function ChartPlateToggleButton(props: {
+  page: AppPage;
+  onSelectPage: (page: AppPage) => void;
+}) {
+  const chartSelected = props.page === "map";
+  const option = chartSelected
+    ? pageOptions.find((entry) => entry.id === "map")
+    : pageOptions.find((entry) => entry.id === "charts");
+  const targetPage: AppPage = chartSelected ? "charts" : "map";
+  return (
+    <button
+      type="button"
+      className="chartButton pageToggleButton"
+      onPointerDown={stopPointer}
+      onPointerUp={stopPointer}
+      onDoubleClick={stopDoubleClick}
+      onClick={() => props.onSelectPage(targetPage)}
+      aria-label={chartSelected ? "Open plate page" : "Open chart page"}
+    >
+      {option?.iconSrc ? <img className="chartButtonIcon" src={option.iconSrc} alt="" aria-hidden="true" /> : null}
+      <span className={`pageToggleTrack${chartSelected ? " isChart" : " isPlate"}`} aria-hidden="true">
+        <span className="pageToggleKnob" />
+      </span>
+      <span className="chartButtonLabel">{option?.launcherLabel ?? (chartSelected ? "CHART" : "PLATE")}</span>
+    </button>
+  );
+}
+
+function HomeNavButton(props: {
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`chartButton${props.active ? " isOpen" : ""}`}
+      onPointerDown={stopPointer}
+      onPointerUp={stopPointer}
+      onDoubleClick={stopDoubleClick}
+      onClick={props.onClick}
+      aria-label="Open home page"
+    >
+      <span className="chartButtonLabel">HOME</span>
+    </button>
+  );
+}
+
 function TrayDock(props: {
   launcherLabel: string;
   launcherImageSrc?: string;
@@ -5396,7 +5409,7 @@ function ChartsPage(props: {
   const pinchRef = useRef<{ zoom: number; distance: number; midpoint: ScreenPoint } | null>(null);
   const lastChartLayoutKeyRef = useRef("");
   const firstVisualReadyRef = useRef(false);
-  const trayGroup = useModalTrayGroup(["page", "airport", "chart", "load"] as const);
+  const trayGroup = useModalTrayGroup(["airport", "chart", "load"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
   const [plateProcedureLoads, setPlateProcedureLoads] = useState<ProcedureLoadOption[]>([]);
   const trayOpen = trayGroup.scrimOpen;
@@ -5827,17 +5840,8 @@ function ChartsPage(props: {
         ) : null}
 
         <div className="chartDock chartDockDouble">
-          <TrayDock
-            launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "PLT"}
-            launcherImageSrc="/icons/icons/page-plate-icon.png?v=20260424b"
-            launcherStyle={{
-              backgroundColor: "var(--theme-button-bg)",
-            }}
-            open={trayGroup.isOpen("page")}
-            onToggle={() => trayGroup.toggle("page")}
-            ariaLabel="Page"
-            options={buildPageTrayOptions(page, onSelectPage, () => trayGroup.close("page"))}
-          />
+          <HomeNavButton active={page === "home"} onClick={() => onSelectPage("home")} />
+          <ChartPlateToggleButton page={page} onSelectPage={onSelectPage} />
           <TrayDock
             launcherLabel={selectedAirport?.id ?? "---"}
             open={trayGroup.isOpen("airport")}
@@ -5926,7 +5930,7 @@ function ChartsPage(props: {
   );
 }
 
-function SettingsPage(props: {
+function HomePage(props: {
   page: AppPage;
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
@@ -5936,27 +5940,34 @@ function SettingsPage(props: {
   debugWarningActive: boolean;
 }) {
   const { page, pageHistory, uptimeLabel, planUiState, onSelectPage, onOpenPlan, debugWarningActive } = props;
-  const trayGroup = useModalTrayGroup(["page"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
+  const homeButtons: Array<{ id: string; label: string; page: AppPage; iconSrc?: string }> = [
+    { id: "chart", label: "CHART", page: "map", iconSrc: PAGE_CHART_ICON_SRC },
+    { id: "plate", label: "PLATE", page: "charts", iconSrc: PAGE_PLATE_ICON_SRC },
+    { id: "flight-plan", label: "FLIGHT\nPLAN", page: "plan" },
+  ];
+  const placeholderLabels = ["S4", "S5", "S6", "S7", "S8", "S9"];
 
   return (
     <section className="appPage planPage">
-      {trayGroup.scrimOpen ? <TrayScrim ariaLabel="Close page tray" onClose={trayGroup.closeAll} /> : null}
-
-      <div className="chartDock">
-        <TrayDock
-          launcherLabel={pageOptions.find((option) => option.id === page)?.launcherLabel ?? "STGS"}
-          open={trayGroup.isOpen("page")}
-          onToggle={() => trayGroup.toggle("page")}
-          ariaLabel="Page"
-          options={buildPageTrayOptions(page, onSelectPage, () => trayGroup.close("page"))}
-        />
-      </div>
-
-      <div className="settingsGrid" aria-label="Settings placeholders">
-        {Array.from({ length: 9 }, (_, index) => (
-          <button key={index} type="button" className="chartButton chartButtonDouble settingsButton" disabled>
-            <span className="chartButtonLabel chartButtonLabelDouble">{`S${index + 1}`}</span>
+      <div className="homeGrid" aria-label="Home navigation">
+        {homeButtons.map((button) => (
+          <button
+            key={button.id}
+            type="button"
+            className={`chartButton chartButtonDouble homeButton${button.page === page ? " isOpen" : ""}`}
+            onPointerDown={stopPointer}
+            onPointerUp={stopPointer}
+            onDoubleClick={stopDoubleClick}
+            onClick={() => onSelectPage(button.page)}
+          >
+            {button.iconSrc ? <img className="chartButtonIcon" src={button.iconSrc} alt="" aria-hidden="true" /> : null}
+            <span className="chartButtonLabel chartButtonLabelDouble">{button.label}</span>
+          </button>
+        ))}
+        {placeholderLabels.map((label) => (
+          <button key={label} type="button" className="chartButton chartButtonDouble homeButton" disabled>
+            <span className="chartButtonLabel chartButtonLabelDouble">{label}</span>
           </button>
         ))}
       </div>
@@ -6015,8 +6026,10 @@ function readPersistedWebUiState(): PersistedWebUiState {
       return {};
     }
     const parsed = JSON.parse(raw) as PersistedWebUiState;
+    const rawPage = (parsed as { page?: string }).page;
+    const page = rawPage === "settings" ? "home" : rawPage;
     return {
-      page: parsed.page,
+      page: page === "map" || page === "plan" || page === "charts" || page === "home" ? page : undefined,
       selectedAirportId: parsed.selectedAirportId,
       selectedChartId: parsed.selectedChartId,
       recentAirportIds: Array.isArray(parsed.recentAirportIds) ? parsed.recentAirportIds.filter((value): value is string => typeof value === "string") : [],

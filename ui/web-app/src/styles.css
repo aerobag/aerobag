@@ -496,9 +496,9 @@ button {
   pointer-events: none;
 }
 
-.settingsGrid {
+.homeGrid {
   position: absolute;
-  top: calc(var(--thumb-gap) + var(--thumb) + (var(--thumb) * 0.5));
+  top: calc(var(--thumb-gap) + (var(--thumb) * 0.5));
   left: calc(var(--thumb-gap) + (var(--thumb) * 0.5));
   z-index: 3;
   display: grid;
@@ -506,7 +506,7 @@ button {
   gap: var(--thumb-gap);
 }
 
-.settingsButton:disabled {
+.homeButton:disabled {
   cursor: default;
 }
 
@@ -646,6 +646,35 @@ button {
 
 .chartButtonLabelDouble {
   max-width: calc(var(--thumb) * 1.6);
+}
+
+.pageToggleTrack {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  z-index: 2;
+  width: calc(var(--thumb) * 0.48);
+  height: calc(var(--thumb) * 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.pageToggleKnob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: calc(var(--thumb) * 0.14);
+  height: calc(var(--thumb) * 0.14);
+  border-radius: 999px;
+  background: #fff;
+  transition: transform 160ms ease;
+}
+
+.pageToggleTrack.isPlate .pageToggleKnob {
+  transform: translateX(calc(var(--thumb) * 0.30));
 }
 
 .chartTray {

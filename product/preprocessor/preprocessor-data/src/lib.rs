@@ -259,6 +259,7 @@ CREATE TABLE airport_aliases(alias_id Text, airport_id Text, UNIQUE(alias_id));
 CREATE TABLE airportfreq(LocationID Text,Type Text, Freq Text);
 CREATE TABLE airportrunways(LocationID Text,Length Text,Width Text,Surface Text,LEIdent Text,HEIdent Text,LELatitude Text,HELatitude Text,LELongitude Text,HELongitude Text,LEElevation Text,HEElevation Text,LEHeadingT Text,HEHeading Text,LEDT Text,HEDT Text,LELights Text,HELights Text,LEILS Text,HEILS Text,LEVGSI Text,HEVGSI Text,LEPattern Text, HEPattern Text);
 CREATE TABLE nav(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text,Variation TinyInt,Class Text,Hiwas Text,Elevation Text);
+CREATE TABLE arinc_navaids(identifier Text,icao_code Text,section_code Text,subsection_code Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text,Variation float,Elevation Text,UNIQUE(identifier,icao_code,section_code,subsection_code));
 CREATE TABLE fix(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text);
 CREATE TABLE awos(LocationID Text, Type Text, Status Text, Latitude float,Longitude float, Elevation Text, Frequency1 Text, Frequency2 Text, Telephone1 Text, Telephone2 Text, Remark Text);
 CREATE TABLE saa(designator TEXT,name TEXT,upperlimit TEXT,lowerlimit TEXT,begintime TEXT,endtime TEXT,timeref TEXT,beginday TEXT,endday TEXT,day TEXT,FreqTx TEXT,FreqRx TEXT,lat FLOAT,lon FLOAT);
@@ -1204,6 +1205,64 @@ struct CifpProcedureNavaid {
     elevation: String,
 }
 
+#[derive(Debug, Clone)]
+struct CifpArincNavaid {
+    id: String,
+    icao_code: String,
+    section_code: String,
+    subsection_code: String,
+    lat: f64,
+    lon: f64,
+    kind: String,
+    name: String,
+    variation: f64,
+    elevation: String,
+}
+
+fn parse_cifp_arinc_navaid(line: &str) -> Option<CifpArincNavaid> {
+    if line.len() < 132 {
+        return None;
+    }
+    let section = field(line, 4, 1);
+    if section != "D" {
+        return None;
+    }
+    let subsection = field(line, 5, 1);
+    let id = trim(field(line, 13, 6)).to_ascii_uppercase();
+    let icao_code = trim(field(line, 19, 2)).to_ascii_uppercase();
+    if id.is_empty() || icao_code.is_empty() {
+        return None;
+    }
+
+    // FAA public CIFP is ARINC 424-format data. Section D records carry their
+    // own ICAO/section/subsection identity; procedure rows refer back to that
+    // tuple, so keep it instead of collapsing duplicate navaid identifiers
+    // like JN/K5 and JN/K7 into a single LocationID.
+    let (lat, lon) = cifp_compact_coord_lat(field(line, 32, 9))
+        .zip(cifp_compact_coord_lon(field(line, 41, 10)))
+        .or_else(|| {
+            cifp_compact_coord_lat(field(line, 55, 9))
+                .zip(cifp_compact_coord_lon(field(line, 64, 10)))
+        })?;
+    let variation = cifp_signed_tenths_value(field(line, 74, 5)).unwrap_or_default();
+    let name = trim(field(line, 93, 30)).to_string();
+    Some(CifpArincNavaid {
+        id,
+        icao_code,
+        section_code: section.to_string(),
+        subsection_code: subsection.to_string(),
+        lat,
+        lon,
+        kind: match subsection {
+            "B" => "NDB".to_string(),
+            _ => "NAVAID".to_string(),
+        },
+        name,
+        variation,
+        elevation: trim(field(line, 79, 5)).to_string(),
+    })
+}
+
 fn parse_cifp_procedure_navaid(line: &str) -> Option<CifpProcedureNavaid> {
     if line.len() < 132 {
         return None;
@@ -1249,6 +1308,33 @@ fn parse_cifp_procedure_navaid(line: &str) -> Option<CifpProcedureNavaid> {
     }
 
     None
+}
+
+fn insert_cifp_arinc_navaids(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
+    let path = input_dir.join("FAACIFP18");
+    let text = read_text_lossy(&path)?;
+    let mut stmt = conn.prepare(
+        "INSERT OR IGNORE INTO arinc_navaids VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )?;
+    let mut count = 0;
+    for line in text.lines() {
+        let Some(record) = parse_cifp_arinc_navaid(line) else {
+            continue;
+        };
+        count += stmt.execute(params![
+            record.id,
+            record.icao_code,
+            record.section_code,
+            record.subsection_code,
+            record.lat,
+            record.lon,
+            record.kind,
+            record.name,
+            record.variation,
+            record.elevation,
+        ])?;
+    }
+    Ok(count)
 }
 
 fn insert_cifp_procedure_navaids(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
@@ -1380,6 +1466,10 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
     row_counts.insert(
         "cifp_sid_star_app".to_string(),
         insert_cifp_with_ids(&tx, &request.input_dir, &airport_ids)?,
+    );
+    row_counts.insert(
+        "arinc_navaids".to_string(),
+        insert_cifp_arinc_navaids(&tx, &request.input_dir)?,
     );
     row_counts.insert(
         "cifp_procedure_navaids".to_string(),
@@ -1600,6 +1690,21 @@ mod tests {
         String::from_utf8(line).unwrap()
     }
 
+    fn build_cifp_arinc_ndb_record(id: &str, icao_code: &str, name: &str) -> String {
+        let mut line = vec![b' '; 132];
+        put_field(&mut line, 0, 4, "SUSA");
+        put_field(&mut line, 4, 1, "D");
+        put_field(&mut line, 5, 1, "B");
+        put_field(&mut line, 13, 6, id);
+        put_field(&mut line, 19, 2, icao_code);
+        put_field(&mut line, 32, 9, "N35283000");
+        put_field(&mut line, 41, 10, "W078253103");
+        put_field(&mut line, 74, 5, "W0090");
+        put_field(&mut line, 93, 30, name);
+        put_field(&mut line, 123, 9, "269612208");
+        String::from_utf8(line).unwrap()
+    }
+
     fn write_empty(path: &Path) {
         fs::write(path, "").unwrap();
     }
@@ -1789,6 +1894,68 @@ mod tests {
         assert!((iadq.0 - 57.7516888889).abs() < 1e-6);
         assert!((iadq.1 - -152.5211444444).abs() < 1e-6);
         assert!((iadq.3 - 14.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn build_data_package_preserves_arinc_scoped_navaids() {
+        let dir = tempdir().unwrap();
+        let input_dir = dir.path().join("input");
+        let output_dir = dir.path().join("output");
+        fs::create_dir_all(&input_dir).unwrap();
+
+        write_empty(&input_dir.join("APT.txt"));
+        write_empty(&input_dir.join("TWR.txt"));
+        write_empty(&input_dir.join("AWOS.txt"));
+        fs::write(
+            input_dir.join("FAACIFP18"),
+            format!("{}\n", build_cifp_arinc_ndb_record("JN", "K7", "JURLY")),
+        )
+        .unwrap();
+        for name in ["NAV.txt", "FIX.txt", "DOF.DAT", "AWY.txt"] {
+            write_empty(&input_dir.join(name));
+        }
+        let request = DataBuildRequest {
+            input_dir,
+            output_dir,
+            manifest_version: "2604".to_string(),
+            mode: DataBuildMode::Production,
+            artifact_stem: None,
+        };
+        let result = build_data_package(&request).unwrap();
+        let conn = Connection::open(result.main_db).unwrap();
+
+        let scoped = conn
+            .query_row(
+                "SELECT trim(identifier), trim(icao_code), trim(section_code), trim(subsection_code),
+                        CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL), trim(Type), trim(FacilityName),
+                        CAST(Variation AS REAL)
+                 FROM arinc_navaids
+                 WHERE trim(identifier)='JN' AND trim(icao_code)='K7'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, f64>(4)?,
+                        row.get::<_, f64>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, f64>(8)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(scoped.0, "JN");
+        assert_eq!(scoped.1, "K7");
+        assert_eq!(scoped.2, "D");
+        assert_eq!(scoped.3, "B");
+        assert!((scoped.4 - 35.475).abs() < 1e-6);
+        assert!((scoped.5 - -78.4252869444).abs() < 1e-6);
+        assert_eq!(scoped.6, "NDB");
+        assert_eq!(scoped.7, "JURLY");
+        assert!((scoped.8 - -9.0).abs() < 1e-6);
     }
 
     #[test]

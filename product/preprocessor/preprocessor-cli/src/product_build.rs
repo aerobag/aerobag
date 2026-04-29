@@ -5083,6 +5083,7 @@ fn build_nav_kv_navref_pairs(main_db_path: &Path) -> anyhow::Result<Vec<NavKvPai
     let mut pairs = Vec::new();
     pairs.extend(build_nav_kv_airport_navref_pairs(&connection)?);
     pairs.extend(build_nav_kv_navaid_navref_pairs(&connection)?);
+    pairs.extend(build_nav_kv_arinc_navaid_navref_pairs(&connection)?);
     pairs.extend(build_nav_kv_fix_navref_pairs(&connection)?);
     pairs.extend(build_nav_kv_runway_position_pairs(&connection)?);
     pairs.extend(build_nav_kv_waypoint_lookup_pairs(&connection)?);
@@ -5145,6 +5146,26 @@ fn validate_airway_nav_ref_resolves(
             "navref/position/airport/{}",
             id.trim().to_ascii_uppercase()
         ))
+    } else if let Some(arinc) = nav_ref
+        .get("ArincNavaid")
+        .and_then(|value| value.as_object())
+    {
+        match (
+            arinc.get("identifier").and_then(|value| value.as_str()),
+            arinc.get("icao_code").and_then(|value| value.as_str()),
+            arinc.get("section_code").and_then(|value| value.as_str()),
+            arinc
+                .get("subsection_code")
+                .and_then(|value| value.as_str()),
+        ) {
+            (Some(identifier), Some(icao_code), Some(section_code), Some(subsection_code)) => {
+                Some(format!(
+                    "navref/position/arinc-navaid/{}",
+                    arinc_navaid_had_key(identifier, icao_code, section_code, subsection_code)
+                ))
+            }
+            _ => None,
+        }
     } else if let Some(id) = nav_ref.get("Navaid").and_then(|value| value.as_str()) {
         Some(format!(
             "navref/position/navaid/{}",
@@ -5270,6 +5291,45 @@ fn build_nav_kv_navaid_navref_pairs(
                 "navref navaid symbol",
             )?);
         }
+    }
+    Ok(pairs)
+}
+
+fn build_nav_kv_arinc_navaid_navref_pairs(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(identifier), trim(icao_code), trim(section_code), trim(subsection_code),
+               CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL)
+        FROM arinc_navaids
+        WHERE trim(identifier) <> ''
+          AND trim(icao_code) <> ''
+          AND trim(section_code) <> ''
+          AND trim(subsection_code) <> ''
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, f64>(4)?,
+            row.get::<_, f64>(5)?,
+        ))
+    })?;
+    let mut pairs = Vec::new();
+    for row in rows {
+        let (identifier, icao_code, section_code, subsection_code, lat, lon) = row?;
+        pairs.push(json_pair(
+            format!(
+                "navref/position/arinc-navaid/{}",
+                arinc_navaid_had_key(&identifier, &icao_code, &section_code, &subsection_code)
+            ),
+            &serde_json::json!({ "lat": lat, "lon": lon }),
+            "navref ARINC navaid position",
+        )?);
     }
     Ok(pairs)
 }
@@ -5759,9 +5819,11 @@ fn load_nav_kv_procedure_rows(
           trim(transition_identifier),
           CAST(sequence_number AS INTEGER),
           trim(fix_identifier),
+          trim(icao_code_2),
           trim(section_code_2),
           trim(subsection_code_2),
           trim(recommended_navaid),
+          trim(icao_code_3),
           trim(recd_nav_section),
           trim(recd_nav_subsection),
           trim(altitude_1),
@@ -5797,6 +5859,8 @@ fn load_nav_kv_procedure_rows(
             row.get::<_, String>(15)?,
             row.get::<_, String>(16)?,
             row.get::<_, String>(17)?,
+            row.get::<_, String>(18)?,
+            row.get::<_, String>(19)?,
         ))
     })?;
     for row in rows {
@@ -5807,9 +5871,11 @@ fn load_nav_kv_procedure_rows(
             transition_id,
             sequence,
             fix_identifier,
+            fix_icao_code,
             fix_section_code,
             fix_subsection_code,
             recommended_navaid,
+            recommended_nav_icao_code,
             recommended_nav_section,
             recommended_nav_subsection,
             altitude_1,
@@ -5852,10 +5918,15 @@ fn load_nav_kv_procedure_rows(
         if path_termination.trim().is_empty() {
             continue;
         }
-        let nav_ref =
-            nav_context.classify_cifp_reference_json(&fix_identifier, &fix_section_code, &fix_subsection_code);
+        let nav_ref = nav_context.classify_cifp_reference_json(
+            &fix_identifier,
+            &fix_icao_code,
+            &fix_section_code,
+            &fix_subsection_code,
+        );
         let defining_nav_ref = nav_context.classify_cifp_reference_json(
             &recommended_navaid,
+            &recommended_nav_icao_code,
             &recommended_nav_section,
             &recommended_nav_subsection,
         );
@@ -5903,13 +5974,41 @@ fn infer_nav_kv_procedure_kind(route_type: &str) -> &'static str {
 struct NavLookupContext {
     airport_positions: BTreeMap<String, serde_json::Value>,
     navaid_positions: BTreeMap<String, serde_json::Value>,
+    arinc_navaid_positions: BTreeMap<ArincNavaidKey, serde_json::Value>,
     fix_positions: BTreeMap<String, serde_json::Value>,
     airport_positions_by_coord: BTreeMap<(i64, i64), String>,
     navaid_positions_by_coord: BTreeMap<(i64, i64), String>,
     fix_positions_by_coord: BTreeMap<(i64, i64), String>,
     runway_positions: BTreeMap<(String, String), serde_json::Value>,
     navaid_variation: BTreeMap<String, Option<f64>>,
+    arinc_navaid_variation: BTreeMap<ArincNavaidKey, Option<f64>>,
     airport_variation: BTreeMap<String, Option<f64>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ArincNavaidKey {
+    identifier: String,
+    icao_code: String,
+    section_code: String,
+    subsection_code: String,
+}
+
+impl ArincNavaidKey {
+    fn new(identifier: &str, icao_code: &str, section_code: &str, subsection_code: &str) -> Self {
+        Self {
+            identifier: identifier.trim().to_ascii_uppercase(),
+            icao_code: icao_code.trim().to_ascii_uppercase(),
+            section_code: section_code.trim().to_ascii_uppercase(),
+            subsection_code: subsection_code.trim().to_ascii_uppercase(),
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        !self.identifier.is_empty()
+            && !self.icao_code.is_empty()
+            && !self.section_code.is_empty()
+            && !self.subsection_code.is_empty()
+    }
 }
 
 fn is_runway_identifier(identifier: &str) -> bool {
@@ -5934,6 +6033,8 @@ impl NavLookupContext {
             load_nav_position_map(connection, "airports", "ARPLatitude", "ARPLongitude")?;
         let navaid_positions =
             load_nav_position_map(connection, "nav", "ARPLatitude", "ARPLongitude")?;
+        let arinc_navaid_positions = load_arinc_navaid_position_map(connection)?;
+        let arinc_navaid_variation = load_arinc_navaid_variation_map(connection)?;
         let fix_positions =
             load_nav_position_map(connection, "fix", "ARPLatitude", "ARPLongitude")?;
         Ok(Self {
@@ -5942,9 +6043,11 @@ impl NavLookupContext {
             fix_positions_by_coord: build_position_lookup(&fix_positions),
             airport_positions,
             navaid_positions,
+            arinc_navaid_positions,
             fix_positions,
             runway_positions: load_runway_position_map(connection)?,
             navaid_variation: load_variation_map(connection, "nav", "Variation", false)?,
+            arinc_navaid_variation,
             airport_variation: load_variation_map(
                 connection,
                 "airports",
@@ -5977,6 +6080,7 @@ impl NavLookupContext {
     fn classify_cifp_reference_json(
         &self,
         identifier: &str,
+        icao_code: &str,
         section_code: &str,
         subsection_code: &str,
     ) -> serde_json::Value {
@@ -5990,6 +6094,17 @@ impl NavLookupContext {
 
         match section_code.trim().to_ascii_uppercase().as_str() {
             "D" => {
+                let key = ArincNavaidKey::new(&trimmed, icao_code, section_code, subsection_code);
+                if key.is_complete() && self.arinc_navaid_positions.contains_key(&key) {
+                    return serde_json::json!({
+                        "ArincNavaid": {
+                            "identifier": key.identifier,
+                            "icao_code": key.icao_code,
+                            "section_code": key.section_code,
+                            "subsection_code": key.subsection_code,
+                        }
+                    });
+                }
                 if self.navaid_positions.contains_key(&trimmed) {
                     return serde_json::json!({ "Navaid": trimmed });
                 }
@@ -6050,6 +6165,13 @@ impl NavLookupContext {
         nav_ref: &serde_json::Value,
         procedure_airport_id: Option<&str>,
     ) -> serde_json::Value {
+        if let Some(key) = arinc_navaid_key_from_nav_ref(nav_ref) {
+            return self
+                .arinc_navaid_positions
+                .get(&key)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+        }
         if let Some(code) = nav_ref.get("Airport").and_then(|value| value.as_str()) {
             return self
                 .airport_positions
@@ -6086,6 +6208,15 @@ impl NavLookupContext {
     }
 
     fn variation_for_nav_ref(&self, nav_ref: &serde_json::Value) -> serde_json::Value {
+        if let Some(key) = arinc_navaid_key_from_nav_ref(nav_ref) {
+            return self
+                .arinc_navaid_variation
+                .get(&key)
+                .copied()
+                .flatten()
+                .map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null);
+        }
         if let Some(code) = nav_ref.get("Navaid").and_then(|value| value.as_str()) {
             return self
                 .navaid_variation
@@ -6097,6 +6228,17 @@ impl NavLookupContext {
         }
         serde_json::Value::Null
     }
+}
+
+fn arinc_navaid_key_from_nav_ref(nav_ref: &serde_json::Value) -> Option<ArincNavaidKey> {
+    let arinc = nav_ref.get("ArincNavaid")?.as_object()?;
+    let key = ArincNavaidKey::new(
+        arinc.get("identifier")?.as_str()?,
+        arinc.get("icao_code")?.as_str()?,
+        arinc.get("section_code")?.as_str()?,
+        arinc.get("subsection_code")?.as_str()?,
+    );
+    key.is_complete().then_some(key)
 }
 
 fn load_nav_position_map(
@@ -6124,6 +6266,74 @@ fn load_nav_position_map(
         let (id, lat, lon) = row?;
         map.entry(id)
             .or_insert_with(|| serde_json::json!({ "lat": lat, "lon": lon }));
+    }
+    Ok(map)
+}
+
+fn load_arinc_navaid_position_map(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<BTreeMap<ArincNavaidKey, serde_json::Value>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(identifier), trim(icao_code), trim(section_code), trim(subsection_code),
+               CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL)
+        FROM arinc_navaids
+        WHERE trim(identifier) <> ''
+          AND trim(icao_code) <> ''
+          AND trim(section_code) <> ''
+          AND trim(subsection_code) <> ''
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            ArincNavaidKey::new(
+                &row.get::<_, String>(0)?,
+                &row.get::<_, String>(1)?,
+                &row.get::<_, String>(2)?,
+                &row.get::<_, String>(3)?,
+            ),
+            row.get::<_, f64>(4)?,
+            row.get::<_, f64>(5)?,
+        ))
+    })?;
+    let mut map = BTreeMap::new();
+    for row in rows {
+        let (key, lat, lon) = row?;
+        map.entry(key)
+            .or_insert_with(|| serde_json::json!({ "lat": lat, "lon": lon }));
+    }
+    Ok(map)
+}
+
+fn load_arinc_navaid_variation_map(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<BTreeMap<ArincNavaidKey, Option<f64>>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(identifier), trim(icao_code), trim(section_code), trim(subsection_code),
+               CAST(Variation AS REAL)
+        FROM arinc_navaids
+        WHERE trim(identifier) <> ''
+          AND trim(icao_code) <> ''
+          AND trim(section_code) <> ''
+          AND trim(subsection_code) <> ''
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            ArincNavaidKey::new(
+                &row.get::<_, String>(0)?,
+                &row.get::<_, String>(1)?,
+                &row.get::<_, String>(2)?,
+                &row.get::<_, String>(3)?,
+            ),
+            row.get::<_, Option<f64>>(4)?,
+        ))
+    })?;
+    let mut map = BTreeMap::new();
+    for row in rows {
+        let (key, variation) = row?;
+        map.entry(key).or_insert(variation);
     }
     Ok(map)
 }
@@ -6509,6 +6719,21 @@ fn had_key_component(value: &str) -> String {
         }
     }
     out
+}
+
+fn arinc_navaid_had_key(
+    identifier: &str,
+    icao_code: &str,
+    section_code: &str,
+    subsection_code: &str,
+) -> String {
+    [
+        had_upper_key_component(section_code),
+        had_upper_key_component(subsection_code),
+        had_upper_key_component(icao_code),
+        had_upper_key_component(identifier),
+    ]
+    .join("/")
 }
 
 fn airport_display_label(id: &str) -> String {
@@ -14381,6 +14606,15 @@ mod tests {
                     ARPLongitude REAL,
                     Variation TEXT
                 );
+                CREATE TABLE arinc_navaids (
+                    identifier TEXT,
+                    icao_code TEXT,
+                    section_code TEXT,
+                    subsection_code TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL,
+                    Variation TEXT
+                );
                 CREATE TABLE fix (
                     LocationID TEXT,
                     ARPLatitude REAL,
@@ -14590,17 +14824,19 @@ mod tests {
                 "RWF".to_string(),
                 serde_json::json!({ "lat": 44.46727361111111, "lon": -95.12823 }),
             )]),
+            arinc_navaid_positions: BTreeMap::new(),
             fix_positions: BTreeMap::new(),
             airport_positions_by_coord: BTreeMap::new(),
             navaid_positions_by_coord: BTreeMap::new(),
             fix_positions_by_coord: BTreeMap::new(),
             runway_positions: BTreeMap::new(),
             navaid_variation: BTreeMap::new(),
+            arinc_navaid_variation: BTreeMap::new(),
             airport_variation: BTreeMap::new(),
         };
 
         assert_eq!(
-            context.classify_cifp_reference_json("RWF", "D", ""),
+            context.classify_cifp_reference_json("RWF", "", "D", ""),
             serde_json::json!({ "Navaid": "RWF" })
         );
         assert_eq!(
@@ -14610,6 +14846,51 @@ mod tests {
         assert_eq!(
             context.classify_json("RW17"),
             serde_json::json!({ "Fix": "RW17" })
+        );
+    }
+
+    #[test]
+    fn cifp_qualified_navaid_reference_uses_arinc_scope() {
+        let key = ArincNavaidKey::new("JN", "K7", "D", "B");
+        let context = NavLookupContext {
+            airport_positions: BTreeMap::new(),
+            navaid_positions: BTreeMap::from([(
+                "JN".to_string(),
+                serde_json::json!({ "lat": 40.1809228, "lon": -85.3209822 }),
+            )]),
+            arinc_navaid_positions: BTreeMap::from([(
+                key.clone(),
+                serde_json::json!({ "lat": 35.4749992, "lon": -78.4252856 }),
+            )]),
+            fix_positions: BTreeMap::new(),
+            airport_positions_by_coord: BTreeMap::new(),
+            navaid_positions_by_coord: BTreeMap::new(),
+            fix_positions_by_coord: BTreeMap::new(),
+            runway_positions: BTreeMap::new(),
+            navaid_variation: BTreeMap::new(),
+            arinc_navaid_variation: BTreeMap::from([(key, Some(-9.0))]),
+            airport_variation: BTreeMap::new(),
+        };
+
+        let nav_ref = context.classify_cifp_reference_json("JN", "K7", "D", "B");
+        assert_eq!(
+            nav_ref,
+            serde_json::json!({
+                "ArincNavaid": {
+                    "identifier": "JN",
+                    "icao_code": "K7",
+                    "section_code": "D",
+                    "subsection_code": "B",
+                }
+            })
+        );
+        assert_eq!(
+            context.resolve_position_json(&nav_ref, Some("KJNX")),
+            serde_json::json!({ "lat": 35.4749992, "lon": -78.4252856 })
+        );
+        assert_eq!(
+            context.variation_for_nav_ref(&nav_ref),
+            serde_json::json!(-9.0)
         );
     }
 }

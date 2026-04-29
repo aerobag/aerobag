@@ -390,7 +390,7 @@ pub struct FastSubsetBuildResult {
     pub fast_products: Vec<PublishedFastProductResult>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PublishedFastProductResult {
     pub id: String,
     pub source_zip_path: PathBuf,
@@ -2582,24 +2582,47 @@ pub fn build_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<FastSubs
         Some(path) => load_fast_bundle_products(&path)?,
         None => Vec::new(),
     };
+    let previous_fast_products_by_id = previous_fast_products
+        .iter()
+        .map(|product| (product.id.clone(), product.clone()))
+        .collect::<BTreeMap<_, _>>();
 
-    let built_obstacles = build_obstacles_product(config)?;
-    let built_tfrs = build_tfrs_product(config)?;
-    let built_metars = build_metars_product(config)?;
-    let built_nexrad = build_nexrad_product(config)?;
     let mut gc_records = BTreeMap::new();
-    gc_records.insert(
-        "fast:obstacles".to_string(),
-        vec![built_obstacles.2.clone()],
-    );
-    gc_records.insert("fast:tfrs".to_string(), vec![built_tfrs.2.clone()]);
-    gc_records.insert("fast:metars".to_string(), vec![built_metars.2.clone()]);
-    gc_records.insert("fast:nexrad".to_string(), vec![built_nexrad.2.clone()]);
-    let obstacles = publish_built_fast_product(config, "obstacles", built_obstacles)?;
-    let tfrs = publish_built_fast_product(config, "tfrs", built_tfrs)?;
-    let metars = publish_built_fast_product(config, "metars", built_metars)?;
-    let nexrad = publish_built_fast_product(config, "nexrad", built_nexrad)?;
-    let fast_products = vec![obstacles, tfrs, metars, nexrad];
+    let mut fast_products = Vec::new();
+    for product in [
+        build_or_reuse_fast_product(
+            config,
+            "obstacles",
+            &previous_fast_products_by_id,
+            &mut gc_records,
+            build_obstacles_product,
+        )?,
+        build_or_reuse_fast_product(
+            config,
+            "tfrs",
+            &previous_fast_products_by_id,
+            &mut gc_records,
+            build_tfrs_product,
+        )?,
+        build_or_reuse_fast_product(
+            config,
+            "metars",
+            &previous_fast_products_by_id,
+            &mut gc_records,
+            build_metars_product,
+        )?,
+        build_or_reuse_fast_product(
+            config,
+            "nexrad",
+            &previous_fast_products_by_id,
+            &mut gc_records,
+            build_nexrad_product,
+        )?,
+    ] {
+        if let Some(product) = product {
+            fast_products.push(product);
+        }
+    }
     let fast_bundle_products = fast_products.clone();
     let published_at_utc = utc_now_string();
     let fast_bundle_manifest_path =
@@ -2818,6 +2841,38 @@ fn publish_built_fast_product(
         size_bytes,
         source_generated_at_utc,
     })
+}
+
+fn build_or_reuse_fast_product<F>(
+    config: &ProductBuildConfig,
+    id: &str,
+    previous_fast_products_by_id: &BTreeMap<String, PublishedFastProductResult>,
+    gc_records: &mut BTreeMap<String, Vec<NodeRecord>>,
+    build_product: F,
+) -> anyhow::Result<Option<PublishedFastProductResult>>
+where
+    F: FnOnce(&ProductBuildConfig) -> anyhow::Result<(PathBuf, String, NodeRecord)>,
+{
+    match build_product(config).and_then(|built| {
+        gc_records.insert(format!("fast:{id}"), vec![built.2.clone()]);
+        publish_built_fast_product(config, id, built)
+    }) {
+        Ok(product) => Ok(Some(product)),
+        Err(error) => {
+            if let Some(previous) = previous_fast_products_by_id.get(id) {
+                eprintln!(
+                    "WARNING fast product {id} failed; reusing previous package {}: {error:#}",
+                    previous.published_zip.display()
+                );
+                Ok(Some(previous.clone()))
+            } else {
+                eprintln!(
+                    "WARNING fast product {id} failed and no previous package exists; omitting it from fast bundle: {error:#}"
+                );
+                Ok(None)
+            }
+        }
+    }
 }
 
 fn current_artifacts_path_for_fast_subset(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
@@ -13982,6 +14037,67 @@ mod tests {
             plates: Vec::<PlateRecord>::new(),
             csups: Vec::<CsupRecord>::new(),
         }
+    }
+
+    fn test_product_build_config(root: &Path) -> ProductBuildConfig {
+        ProductBuildConfig {
+            chart_cutline_root: root.join("cutlines"),
+            build_root: root.join("published"),
+            profile: ProductBuildProfile::Validation,
+            target_cycle: None,
+            fetch_jobs: 1,
+            cpu_jobs: 1,
+            max_heavy_jobs: 1,
+            fetch_cache_root: root.join("fetch-cache"),
+            fetch_cache_mode: "cache-first".to_string(),
+        }
+    }
+
+    #[test]
+    fn fast_subset_reuses_previous_product_when_rebuild_fails() {
+        let temp = tempdir().expect("tempdir");
+        let config = test_product_build_config(temp.path());
+        let previous = PublishedFastProductResult {
+            id: "tfrs".to_string(),
+            source_zip_path: temp.path().join("tfrs_old.zip"),
+            published_zip: temp.path().join("published").join("tfrs_old.zip"),
+            checksum_sha256: "oldsha".to_string(),
+            size_bytes: 42,
+            source_generated_at_utc: "2026-04-29T00:00:00Z".to_string(),
+        };
+        let previous_by_id = BTreeMap::from([("tfrs".to_string(), previous.clone())]);
+        let mut gc_records = BTreeMap::new();
+
+        let product = build_or_reuse_fast_product(
+            &config,
+            "tfrs",
+            &previous_by_id,
+            &mut gc_records,
+            |_config| anyhow::bail!("HTTP 403"),
+        )
+        .expect("fallback should not fail");
+
+        assert_eq!(product, Some(previous));
+        assert!(gc_records.is_empty());
+    }
+
+    #[test]
+    fn fast_subset_omits_failed_product_when_no_previous_exists() {
+        let temp = tempdir().expect("tempdir");
+        let config = test_product_build_config(temp.path());
+        let mut gc_records = BTreeMap::new();
+
+        let product = build_or_reuse_fast_product(
+            &config,
+            "tfrs",
+            &BTreeMap::new(),
+            &mut gc_records,
+            |_config| anyhow::bail!("HTTP 403"),
+        )
+        .expect("missing fallback should not fail");
+
+        assert_eq!(product, None);
+        assert!(gc_records.is_empty());
     }
 
     #[test]

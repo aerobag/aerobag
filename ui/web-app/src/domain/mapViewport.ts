@@ -22,6 +22,7 @@ export type RenderTile = {
   top: number;
   size: number;
   zoom: number;
+  zIndex: number;
   src: string;
   mapViewId: string;
   packageName: string | null;
@@ -412,6 +413,7 @@ function renderTilesForFamily(
             top,
             size: tileScreenSize,
             zoom: level.zoom,
+            zIndex: rasterTileZIndex(level.zoom, mapView.chart_family),
             src: tileSrcForMapView(mapView, level.zoom, x, yTms),
             mapViewId: mapView.id ?? mapView.chart_name,
             packageName: mapView.package_name,
@@ -433,8 +435,8 @@ function levelsForMapView(mapView: MapView, zoom: number): MapView["levels"] {
   // Keep coarser levels as a fallback under chart-package desired levels.
   // Do not collapse chart packages to "desired level only": that regresses real
   // missing-tile gaps, notably IFR-L in SE Alaska, where lower-zoom tiles are
-  // needed to avoid holes. Static visual products publish full pyramids, so
-  // stacking their lower levels only paints stale coarse seams over the target.
+  // needed to avoid holes. Tile z-index keeps coarse fallback rasters underneath
+  // more detailed levels when multiple fallback layers are present.
   return mapView.levels
     .filter((level) => level.zoom <= desiredLevel.zoom)
     .sort((left, right) => left.zoom - right.zoom);
@@ -462,6 +464,10 @@ function chartFamilyRenderPriority(chartFamily: MapView["chart_family"]): number
     default:
       return 0;
   }
+}
+
+function rasterTileZIndex(zoom: number, chartFamily: MapView["chart_family"]): number {
+  return zoom * 10 + chartFamilyRenderPriority(chartFamily);
 }
 
 function pickLevel(mapView: MapView, zoom: number): MapView["levels"][number] {

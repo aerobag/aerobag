@@ -2960,6 +2960,7 @@ function MapPage(props: {
               // Fractional overzoomed tile sizes can expose subpixel seams between rasters.
               width: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
               height: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
+              zIndex: tile.zIndex,
             }}
           >
             <img className="mapTileImage" src={tile.src} alt="" draggable={false} onLoad={reportFirstVisualReady} />

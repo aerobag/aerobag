@@ -131,6 +131,61 @@ describe("mapViewport", () => {
     expect(tiles.some((tile) => tile.packageName === "SW_SEC" && tile.zoom > 7)).toBe(true);
   });
 
+  it("renders the full chart fallback pyramid with deterministic stack order", () => {
+    const tacView = {
+      ...mapView,
+      id: "tac:nw",
+      chart_family: "tac" as const,
+      package_name: "NW_TAC",
+      min_zoom: 4.2,
+      max_zoom: 12.5,
+      initial_viewport: { lat: 45, lon: -122, zoom: 6.17 },
+      levels: [
+        { zoom: 0, x_min: 0, x_max: 0, y_tms_min: 0, y_tms_max: 0 },
+        { zoom: 1, x_min: 0, x_max: 1, y_tms_min: 0, y_tms_max: 1 },
+        { zoom: 2, x_min: 0, x_max: 3, y_tms_min: 0, y_tms_max: 3 },
+        { zoom: 3, x_min: 0, x_max: 7, y_tms_min: 0, y_tms_max: 7 },
+        { zoom: 4, x_min: 0, x_max: 15, y_tms_min: 0, y_tms_max: 15 },
+        { zoom: 5, x_min: 0, x_max: 31, y_tms_min: 0, y_tms_max: 31 },
+        { zoom: 6, x_min: 0, x_max: 63, y_tms_min: 0, y_tms_max: 63 },
+      ],
+    };
+    const viewport = createInitialViewport(tacView);
+
+    const tiles = renderTiles([tacView], sampleGeometry, viewport, 1200, 900);
+    const zooms = new Set(tiles.map((tile) => tile.zoom));
+
+    expect(zooms).toEqual(new Set([0, 1, 2, 3, 4, 5, 6]));
+    expect(Math.min(...tiles.filter((tile) => tile.zoom === 6).map((tile) => tile.zIndex)))
+      .toBeGreaterThan(Math.max(...tiles.filter((tile) => tile.zoom === 5).map((tile) => tile.zIndex)));
+  });
+
+  it("stacks TAC raster tiles above sectionals at the same source zoom", () => {
+    const secView = {
+      ...mapView,
+      id: "sec:nw",
+      chart_family: "sec" as const,
+      package_name: "NW_SEC",
+      initial_viewport: { lat: 45, lon: -122, zoom: 6 },
+      levels: [{ zoom: 6, x_min: 0, x_max: 63, y_tms_min: 0, y_tms_max: 63 }],
+    };
+    const tacView = {
+      ...secView,
+      id: "tac:nw",
+      chart_family: "tac" as const,
+      package_name: "NW_TAC",
+    };
+    const viewport = createInitialViewport(tacView);
+
+    const tiles = renderTiles([secView, tacView], sampleGeometry, viewport, 1200, 900);
+    const secZIndex = tiles.find((tile) => tile.chartFamily === "sec")?.zIndex;
+    const tacZIndex = tiles.find((tile) => tile.chartFamily === "tac")?.zIndex;
+
+    expect(secZIndex).toBeDefined();
+    expect(tacZIndex).toBeDefined();
+    expect(tacZIndex!).toBeGreaterThan(secZIndex!);
+  });
+
   it("renders static product tiles without inserting a chart index", () => {
     const shadedRelief = {
       ...mapView,

@@ -2950,27 +2950,29 @@ function MapPage(props: {
       >
         <div className="mapBackdrop" />
         {trayGroup.scrimOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
-        {tiles.map((tile) => (
-          <div
-            key={`${tile.chartFamily}-${tile.packageName ?? tile.mapViewId}-${tile.zoom}-${tile.x}-${tile.yTms}`}
-            className="mapTile"
-            style={{
-              left: `${tile.left}px`,
-              top: `${tile.top}px`,
-              // Fractional overzoomed tile sizes can expose subpixel seams between rasters.
-              width: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
-              height: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
-              zIndex: tile.zIndex,
-            }}
-          >
-            <img className="mapTileImage" src={tile.src} alt="" draggable={false} onLoad={reportFirstVisualReady} />
-            {debugTileLabels ? (
-              <div className="tileLabel">
-                z{tile.zoom} x{tile.x} y{tile.yTms}
-              </div>
-            ) : null}
-          </div>
-        ))}
+        <div className="rasterTileLayer" aria-hidden="true">
+          {tiles.map((tile) => (
+            <div
+              key={`${tile.chartFamily}-${tile.packageName ?? tile.mapViewId}-${tile.zoom}-${tile.x}-${tile.yTms}`}
+              className="mapTile"
+              style={{
+                left: `${tile.left}px`,
+                top: `${tile.top}px`,
+                // Fractional overzoomed tile sizes can expose subpixel seams between rasters.
+                width: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
+                height: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
+                zIndex: tile.zIndex,
+              }}
+            >
+              <img className="mapTileImage" src={tile.src} alt="" draggable={false} onLoad={reportFirstVisualReady} />
+              {debugTileLabels ? (
+                <div className="tileLabel">
+                  z{tile.zoom} x{tile.x} y{tile.yTms}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
         {nexradOverlay ? (
           <div className="nexradOverlay" aria-hidden="true">
             <img

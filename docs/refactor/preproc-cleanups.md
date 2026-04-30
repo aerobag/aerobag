@@ -6,12 +6,12 @@ Reduce copy/paste in the preprocessor build pipeline without changing published 
 
 ## Cleanup Candidates
 
-1. Factor cached node execution in `preprocessor-cli/src/product_build.rs`.
+1. Done: Factor cached node execution in `preprocessor-cli/src/product_build.rs`.
    - Repeated pattern: build inputs, prepare node, claim/wait, start timer, run body, assemble outputs, write `NodeRecord`.
    - Desired helper: a local `run_cached_node` style wrapper that centralizes timing, cache-hit return, output recording, and claim/wait behavior.
    - Scope guard: keep node-specific inputs/outputs explicit at call sites.
 
-2. Factor regional package-node loops.
+2. Done: Factor regional package-node loops.
    - Charts and CSUP both loop `Region::ALL`, derive package paths, handle cached package records, synthesize fallback `PackageOutputRecord`s, and write aggregate `package_outputs.jsonl`.
    - Desired helper: generic regional package orchestration with product-specific naming/build closures.
    - Risk: package manifests and cache roots are contract-sensitive, so refactor only after step 1 is stable.
@@ -34,4 +34,3 @@ Reduce copy/paste in the preprocessor build pipeline without changing published 
 - Add or keep tests around any deleted branchy code.
 - Prefer small internal helpers before moving code across crate boundaries.
 - Re-run targeted tests plus `cargo build -p preprocessor-cli` after each cleanup step.
-

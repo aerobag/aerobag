@@ -2916,6 +2916,22 @@ function MapPage(props: {
     syncFollowStateForViewport(nextViewport);
   }
 
+  function setViewportZoom(nextZoom: number) {
+    if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+      return;
+    }
+    const nextViewport = zoomAroundPoint(
+      viewportRef.current,
+      selectedMap.map_view,
+      { x: surfaceSize.width / 2, y: surfaceSize.height / 2 },
+      surfaceSize.width,
+      surfaceSize.height,
+      nextZoom,
+    );
+    updateViewport(nextViewport);
+    syncFollowStateForViewport(nextViewport);
+  }
+
   function reportFirstVisualReady() {
     if (firstVisualReadyRef.current) {
       return;
@@ -3417,6 +3433,13 @@ function MapPage(props: {
             dock="left"
           />
         ) : null}
+
+        <ZoomControl
+          zoom={viewport.zoom}
+          minZoom={selectedMap.map_view.min_zoom}
+          maxZoom={selectedMap.map_view.max_zoom}
+          onZoomChange={setViewportZoom}
+        />
 
         <button
           type="button"
@@ -6044,6 +6067,48 @@ function DebugDock(props: { open: boolean; warn?: boolean; onToggle: () => void;
         {props.children}
       </section>
     </>
+  );
+}
+
+function ZoomControl(props: { zoom: number; minZoom: number; maxZoom: number; onZoomChange: (zoom: number) => void }) {
+  const step = 0.05;
+  const buttonStep = 0.5;
+  const zoom = Math.min(props.maxZoom, Math.max(props.minZoom, props.zoom));
+
+  return (
+    <div
+      className="zoomControl"
+      onPointerDown={stopPointer}
+      onPointerUp={stopPointer}
+      onDoubleClick={stopDoubleClick}
+    >
+      <button
+        type="button"
+        className="zoomControlButton"
+        aria-label="Zoom out"
+        onClick={() => props.onZoomChange(zoom - buttonStep)}
+      >
+        −
+      </button>
+      <input
+        className="zoomControlSlider"
+        type="range"
+        aria-label="Map zoom"
+        min={props.minZoom}
+        max={props.maxZoom}
+        step={step}
+        value={zoom}
+        onChange={(event) => props.onZoomChange(Number(event.currentTarget.value))}
+      />
+      <button
+        type="button"
+        className="zoomControlButton"
+        aria-label="Zoom in"
+        onClick={() => props.onZoomChange(zoom + buttonStep)}
+      >
+        ＋
+      </button>
+    </div>
   );
 }
 

@@ -1278,6 +1278,42 @@ button {
   color: var(--theme-button-fg);
 }
 
+.zoomControl {
+  position: absolute;
+  left: var(--thumb-gap);
+  bottom: calc(var(--thumb-gap) + var(--safe-bottom));
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--thumb-gap) * 0.55);
+  width: min(calc(var(--thumb) * 3), max(calc(var(--thumb) * 1.45), calc(50vw - (var(--thumb) * 1.5) - (var(--thumb-gap) * 2))));
+  height: calc(var(--thumb) * 0.67);
+  padding: calc(var(--thumb) * 0.08);
+  border: 1px solid rgba(19, 33, 41, 0.18);
+  border-radius: calc(var(--thumb-radius) * 0.9);
+  background: rgba(252, 248, 241, 0.93);
+  box-shadow: var(--shadow);
+}
+
+.zoomControlButton {
+  flex: 0 0 calc(var(--thumb) * 0.42);
+  width: calc(var(--thumb) * 0.42);
+  height: calc(var(--thumb) * 0.42);
+  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
+  border-radius: calc(var(--thumb-radius) * 0.46);
+  background: var(--theme-button-bg);
+  color: var(--theme-button-fg);
+  font-size: calc(var(--thumb) * 0.22);
+  font-weight: 800;
+  line-height: 1;
+}
+
+.zoomControlSlider {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: var(--theme-button-bg);
+}
+
 .pageChrome {
   position: absolute;
   top: var(--thumb-gap);

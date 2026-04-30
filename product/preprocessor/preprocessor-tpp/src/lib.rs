@@ -31,6 +31,7 @@ const TPP_AIRPORT_DIAGRAM_PIPELINE_VERSION: &str = "airport-diagram-v1";
 const TPP_CONTINUED_PIPELINE_VERSION: &str = "continued-v6-hotspot-shared-path";
 const TPP_GEOTAGGED_PIPELINE_VERSION: &str = "geotagged-v2-dstalpha";
 const TPP_MINIMUM_PIPELINE_VERSION: &str = "minimum-v1";
+const TPP_RENDER_DPI: &str = "225";
 
 #[derive(Debug, Clone)]
 pub struct NativeTppRunRequest {
@@ -752,7 +753,7 @@ fn render_minimum_plate(
                 "-dQUIET".to_string(),
                 "-dNOPROMPT".to_string(),
                 "-sDEVICE=pnggray".to_string(),
-                "-r150".to_string(),
+                format!("-r{TPP_RENDER_DPI}"),
                 format!("-dFirstPage={}", page + 1),
                 format!("-dLastPage={}", page + 1),
                 "-o".to_string(),
@@ -852,7 +853,7 @@ fn render_basic_png(
             "-colors".to_string(),
             "15".to_string(),
             "-density".to_string(),
-            "150".to_string(),
+            TPP_RENDER_DPI.to_string(),
             "-format".to_string(),
             "png".to_string(),
             "-write".to_string(),
@@ -971,7 +972,7 @@ fn render_png_preserve_alpha(
             "-colors".to_string(),
             "15".to_string(),
             "-density".to_string(),
-            "150".to_string(),
+            TPP_RENDER_DPI.to_string(),
             "-format".to_string(),
             "png".to_string(),
             "-write".to_string(),

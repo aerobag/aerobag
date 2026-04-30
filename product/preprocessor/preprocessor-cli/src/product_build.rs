@@ -30,13 +30,13 @@ use preprocessor_data::{
 };
 use preprocessor_fast::{
     build_geo_dataset, build_metar_dataset, build_nexrad_dataset, build_tfr_dataset,
-    load_tfr_notam_ids, metar_content_fingerprint, sanitize_notam_id, BuildGeoRequest,
-    BuildMetarRequest, BuildNexradRequest, BuildTfrRequest,
+    metar_content_fingerprint, BuildGeoRequest, BuildMetarRequest, BuildNexradRequest,
+    BuildTfrRequest,
 };
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
-    read_source_urls_jsonl, write_package_outputs_jsonl, CacheLayout, FetchCacheConfig,
-    FetchCacheMode, PackageOutputRecord,
+    prefetch_requests_with_provenance, read_source_urls_jsonl, write_package_outputs_jsonl,
+    CacheLayout, FetchCacheConfig, FetchCacheMode, PackageOutputRecord, PrefetchRequest,
 };
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, ResourceIndex,
@@ -7343,7 +7343,11 @@ fn resolve_cycle_bundle_package_root_from_build_manifest(
         "vectors" => "vectors".to_string(),
         _ => return Ok(None),
     };
-    let record = match build_manifest.nodes.iter().find(|node| node.name == node_name) {
+    let record = match build_manifest
+        .nodes
+        .iter()
+        .find(|node| node.name == node_name)
+    {
         Some(record) => record,
         None => return Ok(None),
     };
@@ -7527,14 +7531,13 @@ fn build_tfrs_product(
         .join("tfrs")
         .join(&version_label);
     let input_dir = build_root.join("input");
-    let details_dir = input_dir.join("details");
 
     if build_root.exists() {
         fs::remove_dir_all(&build_root)
             .with_context(|| format!("failed to clear {}", build_root.display()))?;
     }
-    fs::create_dir_all(&details_dir)
-        .with_context(|| format!("failed to create {}", details_dir.display()))?;
+    fs::create_dir_all(&input_dir)
+        .with_context(|| format!("failed to create {}", input_dir.display()))?;
 
     let fetch_cache = FetchCacheConfig {
         root: config.fetch_cache_root.clone(),
@@ -7544,46 +7547,25 @@ fn build_tfrs_product(
     fs::create_dir_all(&provenance_dir)
         .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
 
-    let list_url = "https://tfr.faa.gov/tfrapi/getTfrList#logical_name=list.json".to_string();
-    fs::write(
-        provenance_dir.join("source_urls.jsonl"),
-        format!(
-            "{{\"event\":\"source_url\",\"label\":\"tfrs\",\"url\":\"{}\"}}\n",
-            list_url
-        ),
-    )
-    .with_context(|| {
-        format!(
-            "failed to write {}",
-            provenance_dir.join("source_urls.jsonl").display()
-        )
-    })?;
-    prefetch_archives_with_provenance(
-        std::slice::from_ref(&list_url),
-        &input_dir,
-        config.fetch_jobs,
-        Some(&fetch_cache),
-        &provenance_dir,
-        "tfrs-list",
-    )?;
-
-    let notam_ids = load_tfr_notam_ids(&input_dir)?;
-    let detail_urls = notam_ids
-        .iter()
-        .map(|notam_id| {
-            let sanitized = sanitize_notam_id(notam_id);
-            format!(
-                "https://tfr.faa.gov/download/detail_{}.xml#logical_name={}.xml",
-                sanitized, sanitized
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut source_urls_jsonl =
-        String::from("{\"event\":\"source_url\",\"label\":\"tfrs-list\",\"url\":\"https://tfr.faa.gov/tfrapi/getTfrList#logical_name=list.json\"}\n");
-    for url in &detail_urls {
+    let list_url = "https://tfr.faa.gov/tfrapi/exportTfrList";
+    let graphics_url = concat!(
+        "https://tfr.faa.gov/geoserver/TFR/ows?",
+        "service=WFS&version=1.1.0&request=GetFeature&typeName=TFR:V_TFR_LOC&",
+        "maxFeatures=300&outputFormat=application/json&srsname=EPSG:4326"
+    );
+    let source_requests = vec![
+        PrefetchRequest::new(list_url)
+            .with_logical_file_name("list.json")
+            .with_http1(),
+        PrefetchRequest::new(graphics_url)
+            .with_logical_file_name("graphics.geojson")
+            .with_http1(),
+    ];
+    let mut source_urls_jsonl = String::new();
+    for request in &source_requests {
         source_urls_jsonl.push_str(&format!(
-            "{{\"event\":\"source_url\",\"label\":\"tfrs-detail\",\"url\":\"{}\"}}\n",
-            url
+            "{{\"event\":\"source_url\",\"http_version\":\"1.1\",\"label\":\"tfrs\",\"url\":\"{}\"}}\n",
+            request.url
         ));
     }
     fs::write(provenance_dir.join("source_urls.jsonl"), source_urls_jsonl).with_context(|| {
@@ -7592,13 +7574,13 @@ fn build_tfrs_product(
             provenance_dir.join("source_urls.jsonl").display()
         )
     })?;
-    prefetch_archives_with_provenance(
-        &detail_urls,
-        &details_dir,
+    prefetch_requests_with_provenance(
+        &source_requests,
+        &input_dir,
         config.fetch_jobs,
         Some(&fetch_cache),
         &provenance_dir,
-        "tfrs-detail",
+        "tfrs",
     )?;
 
     let source_fingerprint = hash_tree(&input_dir)?;
@@ -8545,7 +8527,10 @@ fn read_static_tile_manifest_levels(manifest_path: &Path) -> anyhow::Result<Vec<
     Ok(levels)
 }
 
-fn move_static_tile_tree_under_chart_index(output_dir: &Path, chart_index: u32) -> anyhow::Result<()> {
+fn move_static_tile_tree_under_chart_index(
+    output_dir: &Path,
+    chart_index: u32,
+) -> anyhow::Result<()> {
     let tiles_dir = output_dir.join("tiles");
     let chart_index_dir = tiles_dir.join(chart_index.to_string());
     if chart_index_dir.exists() {
@@ -10191,9 +10176,7 @@ fn build_current_bundle_entries(
         let filename = entry.filename.clone();
         if filename.starts_with("bundle_cycle_") {
             let end_valid_date = NaiveDate::parse_from_str(&entry.end_valid, "%Y-%m-%d")
-                .with_context(|| {
-                    format!("failed to parse bundle end_valid {}", entry.end_valid)
-                })?;
+                .with_context(|| format!("failed to parse bundle end_valid {}", entry.end_valid))?;
             if end_valid_date < as_of_date {
                 continue;
             }
@@ -10423,10 +10406,14 @@ fn current_artifacts_latest_alias_filename() -> &'static str {
     "current_artifacts.json"
 }
 
-fn write_current_artifacts_json(path: &Path, manifest: &CurrentArtifactsManifest) -> anyhow::Result<()> {
+fn write_current_artifacts_json(
+    path: &Path,
+    manifest: &CurrentArtifactsManifest,
+) -> anyhow::Result<()> {
     fs::write(
         path,
-        serde_json::to_vec_pretty(manifest).context("failed to encode current artifacts manifest")?,
+        serde_json::to_vec_pretty(manifest)
+            .context("failed to encode current artifacts manifest")?,
     )
     .with_context(|| format!("failed to write {}", path.display()))
 }
@@ -10613,7 +10600,10 @@ fn collect_reachable_unpacked_entries(
     Ok(keep)
 }
 
-fn discovery_manifest_paths(root: &Path, current_artifacts_path: &Path) -> anyhow::Result<Vec<PathBuf>> {
+fn discovery_manifest_paths(
+    root: &Path,
+    current_artifacts_path: &Path,
+) -> anyhow::Result<Vec<PathBuf>> {
     let mut paths = vec![current_artifacts_path.to_path_buf()];
     let mut seen = BTreeSet::from([current_artifacts_path.to_path_buf()]);
     for entry in fs::read_dir(root)
@@ -14322,7 +14312,10 @@ mod tests {
             shaded["map_view"]["tile_url_root"],
             "/shaded-relief-products/shaded-relief-nw/tiles"
         );
-        assert_eq!(shaded["map_view"]["tile_path_template"], "0/{z}/{x}/{y}.webp");
+        assert_eq!(
+            shaded["map_view"]["tile_path_template"],
+            "0/{z}/{x}/{y}.webp"
+        );
         assert_eq!(shaded["map_view"]["storage_kind"], "static_product");
         assert_eq!(
             shaded["map_view"]["max_zoom"],

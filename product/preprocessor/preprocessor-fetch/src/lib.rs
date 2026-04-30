@@ -245,7 +245,51 @@ pub fn prefetch_archives(
     fetch_jobs: usize,
     fetch_cache: Option<&FetchCacheConfig>,
 ) -> anyhow::Result<()> {
-    prefetch_archives_inner(urls, dest_dir.as_ref(), fetch_jobs, fetch_cache, None)
+    let requests = urls
+        .iter()
+        .map(|url| PrefetchRequest::from_legacy_url(url))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    prefetch_archives_inner(&requests, dest_dir.as_ref(), fetch_jobs, fetch_cache, None)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrefetchRequest {
+    pub url: String,
+    pub cache_key: String,
+    pub logical_file_name: Option<String>,
+    pub force_http1: bool,
+}
+
+impl PrefetchRequest {
+    pub fn new(url: impl Into<String>) -> Self {
+        let url = url.into();
+        Self {
+            cache_key: url.clone(),
+            url,
+            logical_file_name: None,
+            force_http1: false,
+        }
+    }
+
+    pub fn with_logical_file_name(mut self, logical_file_name: impl Into<String>) -> Self {
+        self.logical_file_name = Some(logical_file_name.into());
+        self
+    }
+
+    pub fn with_http1(mut self) -> Self {
+        self.force_http1 = true;
+        self
+    }
+
+    fn from_legacy_url(url: &str) -> anyhow::Result<Self> {
+        let parsed = parse_logical_download(url)?;
+        Ok(Self {
+            cache_key: url.to_string(),
+            url: parsed.network_url,
+            logical_file_name: parsed.logical_file_name,
+            force_http1: false,
+        })
+    }
 }
 
 pub fn copy_source_urls_provenance(
@@ -274,6 +318,28 @@ pub fn prefetch_archives_with_provenance(
     provenance_dir: impl AsRef<Path>,
     label: &str,
 ) -> anyhow::Result<()> {
+    let requests = urls
+        .iter()
+        .map(|url| PrefetchRequest::from_legacy_url(url))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    prefetch_requests_with_provenance(
+        &requests,
+        dest_dir,
+        fetch_jobs,
+        fetch_cache,
+        provenance_dir,
+        label,
+    )
+}
+
+pub fn prefetch_requests_with_provenance(
+    requests: &[PrefetchRequest],
+    dest_dir: impl AsRef<Path>,
+    fetch_jobs: usize,
+    fetch_cache: Option<&FetchCacheConfig>,
+    provenance_dir: impl AsRef<Path>,
+    label: &str,
+) -> anyhow::Result<()> {
     fs::create_dir_all(provenance_dir.as_ref())
         .with_context(|| format!("failed to create {}", provenance_dir.as_ref().display()))?;
     let downloads_path = provenance_dir.as_ref().join("downloads.jsonl");
@@ -287,7 +353,7 @@ pub fn prefetch_archives_with_provenance(
         file: Arc::new(Mutex::new(file)),
     };
     prefetch_archives_inner(
-        urls,
+        requests,
         dest_dir.as_ref(),
         fetch_jobs,
         fetch_cache,
@@ -319,9 +385,8 @@ pub fn write_package_outputs_jsonl(
             value["chart"] = serde_json::Value::String(chart.clone());
         }
         if !record.metadata.is_empty() {
-            value["metadata"] = serde_json::Value::Object(
-                record.metadata.clone().into_iter().collect()
-            );
+            value["metadata"] =
+                serde_json::Value::Object(record.metadata.clone().into_iter().collect());
         }
         serde_json::to_writer(&mut file, &value)
             .context("failed to encode package output jsonl")?;
@@ -332,7 +397,7 @@ pub fn write_package_outputs_jsonl(
 }
 
 fn prefetch_archives_inner(
-    urls: &[String],
+    requests: &[PrefetchRequest],
     dest_dir: &Path,
     fetch_jobs: usize,
     fetch_cache: Option<&FetchCacheConfig>,
@@ -342,7 +407,7 @@ fn prefetch_archives_inner(
     fs::create_dir_all(&dest_dir)
         .with_context(|| format!("failed to create {}", dest_dir.display()))?;
 
-    let queue = Arc::new(Mutex::new(VecDeque::from(urls.to_vec())));
+    let queue = Arc::new(Mutex::new(VecDeque::from(requests.to_vec())));
     let fetch_cache = fetch_cache.cloned();
     let job_count = fetch_jobs.max(1);
     let mut handles = Vec::with_capacity(job_count);
@@ -354,16 +419,16 @@ fn prefetch_archives_inner(
         let recorder = recorder.clone();
         handles.push(thread::spawn(move || -> anyhow::Result<()> {
             loop {
-                let url = {
+                let request = {
                     let mut guard = queue
                         .lock()
                         .map_err(|_| anyhow::anyhow!("queue poisoned"))?;
                     guard.pop_front()
                 };
-                let Some(url) = url else {
+                let Some(request) = request else {
                     break;
                 };
-                prefetch_one(&url, &dest_dir, fetch_cache.as_ref(), recorder.as_ref())?;
+                prefetch_one(&request, &dest_dir, fetch_cache.as_ref(), recorder.as_ref())?;
             }
             Ok(())
         }));
@@ -430,15 +495,14 @@ impl PrefetchProvenanceRecorder {
 }
 
 fn prefetch_one(
-    url: &str,
+    request: &PrefetchRequest,
     dest_dir: &Path,
     fetch_cache: Option<&FetchCacheConfig>,
     recorder: Option<&PrefetchProvenanceRecorder>,
 ) -> anyhow::Result<()> {
-    let parsed = parse_logical_download(url)?;
-    let file_name = parsed.logical_file_name.as_deref().unwrap_or_else(|| {
-        parsed
-            .network_url
+    let file_name = request.logical_file_name.as_deref().unwrap_or_else(|| {
+        request
+            .url
             .rsplit('/')
             .next()
             .filter(|value| !value.is_empty())
@@ -456,33 +520,32 @@ fn prefetch_one(
         })?;
     }
 
-    let skip_cache_restore = is_tfr_cookie_gated_url(&parsed.network_url);
     if !archive_path.is_file() {
         if let Some(fetch_cache) = fetch_cache {
             let layout = CacheLayout::new(&fetch_cache.root);
             if fetch_cache.mode.is_offline() {
-                if restore_cached_download(&layout, &parsed.cache_key, file_name, &archive_path)? {
+                if restore_cached_download(&layout, &request.cache_key, file_name, &archive_path)? {
                     source = "cache";
                 } else {
-                    bail!("cache miss in offline mode for {url}");
+                    bail!("cache miss in offline mode for {}", request.url);
                 }
-            } else if !skip_cache_restore
-                && fetch_cache.mode.is_cache_first()
-                && restore_cached_download(&layout, &parsed.cache_key, file_name, &archive_path)?
+            } else if fetch_cache.mode.is_cache_first()
+                && restore_cached_download(&layout, &request.cache_key, file_name, &archive_path)?
             {
                 source = "cache";
             } else {
                 source = fetch_network_with_cache(
                     &layout,
-                    &parsed.cache_key,
-                    &parsed.network_url,
+                    &request.cache_key,
+                    &request.url,
+                    request.force_http1,
                     file_name,
                     dest_dir,
                     &archive_path,
                 )?;
             }
         } else {
-            fetch_network(&parsed.network_url, file_name, dest_dir)?;
+            fetch_network(&request.url, request.force_http1, file_name, dest_dir)?;
             source = "network";
         }
     }
@@ -496,7 +559,7 @@ fn prefetch_one(
         .with_context(|| format!("failed to stat {}", archive_path.display()))?
         .len();
     if let Some(recorder) = recorder {
-        recorder.record_download(url, file_name, &sha256, size, source)?;
+        recorder.record_download(&request.url, file_name, &sha256, size, source)?;
     }
 
     if archive_path
@@ -527,6 +590,7 @@ fn fetch_network_with_cache(
     layout: &CacheLayout,
     cache_key: &str,
     network_url: &str,
+    force_http1: bool,
     file_name: &str,
     dest_dir: &Path,
     archive_path: &Path,
@@ -537,6 +601,7 @@ fn fetch_network_with_cache(
             layout,
             cache_key,
             network_url,
+            force_http1,
             file_name,
             dest_dir,
             archive_path,
@@ -557,38 +622,32 @@ fn fetch_network_with_cache_once(
     layout: &CacheLayout,
     cache_key: &str,
     network_url: &str,
+    force_http1: bool,
     file_name: &str,
     dest_dir: &Path,
     archive_path: &Path,
 ) -> anyhow::Result<&'static str> {
-    let metadata = if is_tfr_cookie_gated_url(network_url) {
-        // The FAA TFR site currently gates direct requests through a banner redirect
-        // with HTML validators. Do not validate against a previously cached banner.
-        None
-    } else {
-        read_cache_metadata(layout, cache_key)?
-    };
+    let metadata = read_cache_metadata(layout, cache_key)?;
     let temp_path = temporary_download_path(archive_path);
     let headers_path = temp_path.with_extension("headers");
     let cookies_path = temp_path.with_extension("cookies");
     let mut result = curl_download_with_status(
         network_url,
+        force_http1,
         dest_dir,
         &temp_path,
         &headers_path,
         &cookies_path,
         metadata.as_ref(),
     )?;
-    if is_tfr_cookie_gated_url(network_url)
-        && result.http_status == 200
-        && looks_like_html(&temp_path)?
-    {
+    if result.http_status == 200 && looks_like_html(&temp_path)? {
         // The first request can legitimately end at the FAA banner page while
         // setting cookies. Re-issue the original request once with the same jar.
         let _ = fs::remove_file(&temp_path);
         let _ = fs::remove_file(&headers_path);
         result = curl_download_with_status(
             network_url,
+            force_http1,
             dest_dir,
             &temp_path,
             &headers_path,
@@ -596,14 +655,11 @@ fn fetch_network_with_cache_once(
             None,
         )?;
     }
-    if is_tfr_cookie_gated_url(network_url)
-        && result.http_status == 200
-        && looks_like_html(&temp_path)?
-    {
+    if result.http_status == 200 && looks_like_html(&temp_path)? {
         let _ = fs::remove_file(&temp_path);
         let _ = fs::remove_file(&headers_path);
         let _ = fs::remove_file(&cookies_path);
-        bail!("FAA TFR site returned banner HTML instead of data for {network_url}");
+        bail!("server returned HTML instead of data for {network_url}");
     }
     if !result.success || !(result.http_status == 304 || (200..300).contains(&result.http_status)) {
         let _ = fs::remove_file(&temp_path);
@@ -651,6 +707,7 @@ struct CurlDownloadResult {
 
 fn curl_download_with_status(
     network_url: &str,
+    force_http1: bool,
     dest_dir: &Path,
     temp_path: &Path,
     headers_path: &Path,
@@ -659,9 +716,6 @@ fn curl_download_with_status(
 ) -> anyhow::Result<CurlDownloadResult> {
     let mut command = Command::new("curl");
     command
-        // Force HTTP/1.1: akamai's WAF on some FAA hosts (e.g. tfr.faa.gov)
-        // rejects curl's HTTP/2 with 403 while HTTP/1.1 is fine.
-        .arg("--http1.1")
         .arg("-L")
         .arg("--silent")
         .arg("--show-error")
@@ -674,9 +728,11 @@ fn curl_download_with_status(
         .arg("--output")
         .arg(temp_path)
         .arg("--write-out")
-        .arg("%{http_code}")
-        .arg(network_url)
-        .current_dir(dest_dir);
+        .arg("%{http_code}");
+    if force_http1 {
+        command.arg("--http1.1");
+    }
+    command.arg(network_url).current_dir(dest_dir);
     if let Some(etag) = metadata
         .and_then(|value| value.get("etag"))
         .and_then(|value| value.as_str())
@@ -707,7 +763,6 @@ fn curl_download_with_status(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LogicalDownload {
-    cache_key: String,
     network_url: String,
     logical_file_name: Option<String>,
 }
@@ -717,9 +772,14 @@ fn parse_logical_download(url: &str) -> anyhow::Result<LogicalDownload> {
         Some((base, fragment)) => (base.to_string(), Some(fragment)),
         None => (url.to_string(), None),
     };
-    let logical_file_name = fragment
-        .and_then(|value| value.strip_prefix("logical_name="))
-        .map(ToOwned::to_owned);
+    let mut logical_file_name = None;
+    if let Some(fragment) = fragment {
+        for part in fragment.split('&') {
+            if let Some(value) = part.strip_prefix("logical_name=") {
+                logical_file_name = Some(value.to_string());
+            }
+        }
+    }
     let file_name_source = logical_file_name.as_deref().unwrap_or(&network_url);
     file_name_source
         .rsplit('/')
@@ -727,16 +787,20 @@ fn parse_logical_download(url: &str) -> anyhow::Result<LogicalDownload> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow::anyhow!("failed to derive filename from {url}"))?;
     Ok(LogicalDownload {
-        cache_key: url.to_string(),
         network_url,
         logical_file_name,
     })
 }
 
-fn fetch_network(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Result<()> {
+fn fetch_network(
+    url: &str,
+    force_http1: bool,
+    file_name: &str,
+    dest_dir: &Path,
+) -> anyhow::Result<()> {
     let mut last_error = None;
     for attempt in 1..=NETWORK_FETCH_OUTER_ATTEMPTS {
-        match fetch_network_once(url, file_name, dest_dir) {
+        match fetch_network_once(url, force_http1, file_name, dest_dir) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 last_error = Some(error);
@@ -749,13 +813,17 @@ fn fetch_network(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Result<
     Err(last_error.expect("network fetch should have run at least once"))
 }
 
-fn fetch_network_once(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Result<()> {
+fn fetch_network_once(
+    url: &str,
+    force_http1: bool,
+    file_name: &str,
+    dest_dir: &Path,
+) -> anyhow::Result<()> {
     let archive_path = dest_dir.join(file_name);
     let temp_path = temporary_download_path(&archive_path);
     let cookies_path = temp_path.with_extension("cookies");
-    let status = Command::new("curl")
-        // Force HTTP/1.1 — see fetch_network_once_with_metadata above.
-        .arg("--http1.1")
+    let mut command = Command::new("curl");
+    command
         .arg("-L")
         .arg("--fail")
         .arg("--silent")
@@ -765,9 +833,12 @@ fn fetch_network_once(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Re
         .arg("--cookie")
         .arg(&cookies_path)
         .arg("--output")
-        .arg(&temp_path)
-        .arg(url)
-        .current_dir(dest_dir)
+        .arg(&temp_path);
+    if force_http1 {
+        command.arg("--http1.1");
+    }
+    command.arg(url).current_dir(dest_dir);
+    let status = command
         .status()
         .with_context(|| format!("failed to fetch {url}"))?;
     if !status.success() {
@@ -784,10 +855,6 @@ fn fetch_network_once(url: &str, file_name: &str, dest_dir: &Path) -> anyhow::Re
     })?;
     let _ = fs::remove_file(&cookies_path);
     Ok(())
-}
-
-fn is_tfr_cookie_gated_url(url: &str) -> bool {
-    url.starts_with("https://tfr.faa.gov/")
 }
 
 fn looks_like_html(path: &Path) -> anyhow::Result<bool> {
@@ -1072,7 +1139,7 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
 
     #[test]
-    fn logical_download_uses_snapshot_name_for_cache_identity() {
+    fn logical_download_uses_snapshot_name_for_cache_identity() -> anyhow::Result<()> {
         let parsed = parse_logical_download(
             "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.10.zip",
         )
@@ -1086,9 +1153,27 @@ mod tests {
             Some("obstacle_2026.04.10.zip")
         );
         assert_eq!(
-            parsed.cache_key,
-            "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.10.zip"
+            PrefetchRequest::from_legacy_url(
+                "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.10.zip",
+            )?
+            .cache_key,
+            "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP#logical_name=obstacle_2026.04.10.zip",
         );
+        Ok(())
+    }
+
+    #[test]
+    fn prefetch_request_carries_transport_outside_url() {
+        let request = PrefetchRequest::new("https://tfr.faa.gov/tfrapi/exportTfrList")
+            .with_logical_file_name("list.json")
+            .with_http1();
+        assert_eq!(request.url, "https://tfr.faa.gov/tfrapi/exportTfrList");
+        assert_eq!(
+            request.cache_key,
+            "https://tfr.faa.gov/tfrapi/exportTfrList"
+        );
+        assert_eq!(request.logical_file_name.as_deref(), Some("list.json"));
+        assert!(request.force_http1);
     }
 
     #[test]

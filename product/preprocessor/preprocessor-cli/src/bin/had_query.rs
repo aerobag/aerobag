@@ -42,8 +42,8 @@ fn query_had_dir(dir: &Path, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
 
 fn query_had_zip(path: &Path, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let mut archive = ZipArchive::new(file)
-        .with_context(|| format!("failed to read zip {}", path.display()))?;
+    let mut archive =
+        ZipArchive::new(file).with_context(|| format!("failed to read zip {}", path.display()))?;
     let root_bytes = read_zip_member(&mut archive, "root")?;
     let root = NavKvRoot::parse(&root_bytes).map_err(anyhow::Error::msg)?;
     Ok(root.extract_value(key, |page_index| {

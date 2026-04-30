@@ -45,8 +45,8 @@ use preprocessor_vectors::{
 use product_build::{
     build_cycle, build_fast_subset, build_product, default_artifact_write_path,
     explain_product_build, gc_build_cache, maybe_reexec_build_cycle_under_cgroup,
-    publish_discovery_manifest,
-    BuildCacheGcConfig, BuildCacheGcMode, ProductBuildConfig, ProductBuildProfile,
+    publish_discovery_manifest, BuildCacheGcConfig, BuildCacheGcMode, ProductBuildConfig,
+    ProductBuildProfile,
 };
 use sha2::{Digest, Sha256};
 
@@ -430,17 +430,15 @@ fn run_analyze_obstacle_thresholds_command(args: &[String]) -> anyhow::Result<()
     for row in &rows {
         println!(
             "{:>4} {:>11} {:>20} {:>12} {:>14}",
-            row.zoom,
-            row.min_agl_ft,
-            row.max_points_per_tile,
-            row.kept_points,
-            row.nonempty_tiles
+            row.zoom, row.min_agl_ft, row.max_points_per_tile, row.kept_points, row.nonempty_tiles
         );
     }
     Ok(())
 }
 
-fn run_normalize_swim_notams_command(args: &[String]) -> anyhow::Result<(PathBuf, PathBuf, PathBuf)> {
+fn run_normalize_swim_notams_command(
+    args: &[String],
+) -> anyhow::Result<(PathBuf, PathBuf, PathBuf)> {
     let mut input_jsonl = None;
     let mut output_dir = None;
     let mut version_label = None;
@@ -481,7 +479,11 @@ fn run_normalize_swim_notams_command(args: &[String]) -> anyhow::Result<(PathBuf
         version_label: version_label.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
         generated_at_utc: Utc::now(),
     })?;
-    Ok((result.manifest_path, result.structured_json_path, result.zip_path))
+    Ok((
+        result.manifest_path,
+        result.structured_json_path,
+        result.zip_path,
+    ))
 }
 
 fn read_zip_members(path: &Path) -> anyhow::Result<Vec<String>> {

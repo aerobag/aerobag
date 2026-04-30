@@ -340,37 +340,28 @@ fn fetch_url_bytes(url: &str, fetch_cache: Option<&FetchCacheConfig>) -> anyhow:
         if matches!(fetch_cache.mode, FetchCacheMode::Offline) {
             bail!("cache miss in offline mode for crawl {url}");
         }
-        let output = Command::new("curl")
-            // Force HTTP/1.1: akamai's WAF on some FAA hosts (e.g.
-            // tfr.faa.gov) returns 403 for HTTP/2 but accepts HTTP/1.1.
-            .arg("--http1.1")
-            .arg("-L")
-            .arg("--fail")
-            .arg("--silent")
-            .arg("--show-error")
-            .arg(url)
-            .output()
-            .with_context(|| format!("failed to fetch {url}"))?;
+        let output = run_curl_fetch(url).with_context(|| format!("failed to fetch {url}"))?;
         if !output.status.success() {
             bail!("curl failed for {url}");
         }
         store_cached_bytes(&layout, url, &output.stdout)?;
         return Ok(output.stdout);
     }
-    let output = Command::new("curl")
-        // Force HTTP/1.1 — see comment above.
-        .arg("--http1.1")
-        .arg("-L")
-        .arg("--fail")
-        .arg("--silent")
-        .arg("--show-error")
-        .arg(url)
-        .output()
-        .with_context(|| format!("failed to fetch {url}"))?;
+    let output = run_curl_fetch(url).with_context(|| format!("failed to fetch {url}"))?;
     if !output.status.success() {
         bail!("curl failed for {url}");
     }
     Ok(output.stdout)
+}
+
+fn run_curl_fetch(url: &str) -> anyhow::Result<std::process::Output> {
+    let mut command = Command::new("curl");
+    command
+        .arg("-L")
+        .arg("--fail")
+        .arg("--silent")
+        .arg("--show-error");
+    command.arg(url).output().context("curl execution failed")
 }
 
 fn load_cached_bytes(layout: &CacheLayout, url: &str) -> anyhow::Result<Option<Vec<u8>>> {

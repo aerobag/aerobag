@@ -10,6 +10,7 @@ use image::ImageReader;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use zip::{write::SimpleFileOptions, CompressionMethod, DateTime as ZipDateTime, ZipWriter};
 
@@ -1320,7 +1321,10 @@ fn normalize_captured_notam(
     };
 
     let xml = roxmltree::Document::parse(&body).context("failed to parse NOTAM XML body")?;
-    let notam_node = match xml.descendants().find(|node| node.tag_name().name() == "NOTAM") {
+    let notam_node = match xml
+        .descendants()
+        .find(|node| node.tag_name().name() == "NOTAM")
+    {
         Some(node) => node,
         None => return Ok(None),
     };
@@ -1336,8 +1340,10 @@ fn normalize_captured_notam(
     );
     let icao_id = property_string(&message.properties, "us_gov_dot_faa_aim_fns_nds_ICAOId");
     let source_type = property_string(&message.properties, "us_gov_dot_faa_aim_fns_nds_SourceType");
-    let notam_number_prop =
-        property_string(&message.properties, "us_gov_dot_faa_aim_fns_nds_NOTAMNumber");
+    let notam_number_prop = property_string(
+        &message.properties,
+        "us_gov_dot_faa_aim_fns_nds_NOTAMNumber",
+    );
     let notam_number = child_text(&notam_node, "number").or(notam_number_prop);
     let notam_year = child_text(&notam_node, "year");
     let notam_type = child_text(&notam_node, "type");
@@ -1346,7 +1352,10 @@ fn normalize_captured_notam(
     let xover_notam_id = find_first_text(&xml, "xovernotamID");
     let id = [
         source_type.clone(),
-        location.clone().or(location_designator.clone()).or(icao_id.clone()),
+        location
+            .clone()
+            .or(location_designator.clone())
+            .or(icao_id.clone()),
         notam_year.clone(),
         notam_type.clone(),
         notam_number.clone(),
@@ -1404,14 +1413,16 @@ fn normalize_captured_notam(
 }
 
 fn load_json_lines<T: for<'de> Deserialize<'de>>(path: &Path) -> anyhow::Result<Vec<T>> {
-    let text = fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let text =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     if let Ok(records) = text
         .lines()
         .filter(|line| !line.trim().is_empty())
         .enumerate()
         .map(|(index, line)| {
-            serde_json::from_str::<T>(line)
-                .with_context(|| format!("failed to parse line {} of {}", index + 1, path.display()))
+            serde_json::from_str::<T>(line).with_context(|| {
+                format!("failed to parse line {} of {}", index + 1, path.display())
+            })
         })
         .collect::<anyhow::Result<Vec<_>>>()
     {
@@ -1420,7 +1431,11 @@ fn load_json_lines<T: for<'de> Deserialize<'de>>(path: &Path) -> anyhow::Result<
     let mut records = Vec::new();
     let mut stream = serde_json::Deserializer::from_str(&text).into_iter::<T>();
     while let Some(value) = stream.next() {
-        records.push(value.with_context(|| format!("failed to parse concatenated JSON in {}", path.display()))?);
+        records.push(
+            value.with_context(|| {
+                format!("failed to parse concatenated JSON in {}", path.display())
+            })?,
+        );
     }
     Ok(records)
 }
@@ -1472,7 +1487,10 @@ fn text_content(node: roxmltree::Node<'_, '_>) -> Option<String> {
     }
 }
 
-fn find_translation_text(notam_node: &roxmltree::Node<'_, '_>, translation_type: &str) -> Option<String> {
+fn find_translation_text(
+    notam_node: &roxmltree::Node<'_, '_>,
+    translation_type: &str,
+) -> Option<String> {
     notam_node
         .children()
         .filter(|child| child.is_element() && child.tag_name().name() == "translation")
@@ -1495,7 +1513,9 @@ fn parse_compact_notam_timestamp(value: &str) -> anyhow::Result<String> {
     Ok(parsed.and_utc().to_rfc3339())
 }
 
-fn find_airport_position(document: &roxmltree::Document<'_>) -> anyhow::Result<Option<StructuredPoint>> {
+fn find_airport_position(
+    document: &roxmltree::Document<'_>,
+) -> anyhow::Result<Option<StructuredPoint>> {
     let pos_node = document
         .descendants()
         .find(|node| node.is_element() && node.tag_name().name() == "AirportHeliport")
@@ -1752,6 +1772,10 @@ fn load_parsed_tfr_areas(
     input_dir: &Path,
 ) -> anyhow::Result<(Vec<TfrListEntry>, Vec<ParsedTfrArea>)> {
     let entries = load_tfr_list_entries(input_dir)?;
+    let graphics_path = input_dir.join("graphics.geojson");
+    if graphics_path.is_file() {
+        return Ok((entries, parse_wfs_geojson_areas(&graphics_path)?));
+    }
     let mut parsed_areas = Vec::new();
     for entry in &entries {
         let detail_path = input_dir
@@ -1760,6 +1784,278 @@ fn load_parsed_tfr_areas(
         parsed_areas.extend(parse_detail_xml_groups(&detail_path, &entry.notam_id)?);
     }
     Ok((entries, parsed_areas))
+}
+
+fn parse_wfs_geojson_areas(path: &Path) -> anyhow::Result<Vec<ParsedTfrArea>> {
+    let value: Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    let features = value
+        .get("features")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| anyhow::anyhow!("{} did not contain GeoJSON features", path.display()))?;
+    let mut areas = Vec::new();
+    for feature in features {
+        let properties = feature.get("properties").unwrap_or(&Value::Null);
+        let notam_id = geojson_notam_id(feature, properties).ok_or_else(|| {
+            anyhow::anyhow!("TFR GeoJSON feature missing NOTAM id in {}", path.display())
+        })?;
+        let mut feature_area_index = 0;
+        for polygon in geojson_exterior_polygons(feature.get("geometry").unwrap_or(&Value::Null))? {
+            let polygon = polygon
+                .into_iter()
+                .map(geojson_lon_lat_point)
+                .collect::<anyhow::Result<Vec<_>>>()?
+                .into_iter()
+                .map(|(lon, lat)| StructuredTfrPoint { lat, lon })
+                .collect::<Vec<_>>();
+            if polygon.len() < 3 {
+                continue;
+            }
+            let schedule_fragments = tfr_schedule_fragments_from_properties(properties);
+            let upper_value_text = geojson_property_string(
+                properties,
+                &[
+                    "valDistVerUpper",
+                    "VAL_DIST_VER_UPPER",
+                    "upper_limit",
+                    "UPPER_LIMIT",
+                    "upper",
+                    "UPPER",
+                ],
+            )
+            .unwrap_or_default();
+            let upper_unit = geojson_property_string(
+                properties,
+                &[
+                    "uomDistVerUpper",
+                    "UOM_DIST_VER_UPPER",
+                    "upper_unit",
+                    "UPPER_UNIT",
+                ],
+            )
+            .unwrap_or_default();
+            let lower_value_text = geojson_property_string(
+                properties,
+                &[
+                    "valDistVerLower",
+                    "VAL_DIST_VER_LOWER",
+                    "lower_limit",
+                    "LOWER_LIMIT",
+                    "lower",
+                    "LOWER",
+                ],
+            )
+            .unwrap_or_default();
+            let lower_unit = geojson_property_string(
+                properties,
+                &[
+                    "uomDistVerLower",
+                    "UOM_DIST_VER_LOWER",
+                    "lower_unit",
+                    "LOWER_UNIT",
+                ],
+            )
+            .unwrap_or_default();
+            areas.push(ParsedTfrArea {
+                notam_id: notam_id.clone(),
+                area_index: feature_area_index,
+                avare_text: build_tfr_avare_text(
+                    &schedule_fragments,
+                    &upper_value_text,
+                    &upper_unit,
+                    &lower_value_text,
+                    &lower_unit,
+                    &polygon,
+                )?,
+                schedule_fragments,
+                upper_value_text,
+                upper_unit,
+                lower_value_text,
+                lower_unit,
+                polygon,
+            });
+            feature_area_index += 1;
+        }
+    }
+    Ok(areas)
+}
+
+fn geojson_notam_id(feature: &Value, properties: &Value) -> Option<String> {
+    geojson_property_string(
+        properties,
+        &[
+            "notam_id",
+            "NOTAM_ID",
+            "notamId",
+            "NOTAMID",
+            "NOTAM_KEY",
+            "NOTAM",
+            "notam",
+            "id",
+            "ID",
+        ],
+    )
+    .map(normalize_geojson_notam_id)
+    .or_else(|| {
+        feature
+            .get("id")
+            .and_then(value_to_string)
+            .map(normalize_geojson_notam_id)
+    })
+}
+
+fn normalize_geojson_notam_id(value: String) -> String {
+    let without_feature_prefix = value
+        .rsplit_once('.')
+        .map(|(_, suffix)| suffix.to_string())
+        .unwrap_or(value);
+    without_feature_prefix
+        .split_once('-')
+        .map(|(notam_id, _)| notam_id.to_string())
+        .unwrap_or(without_feature_prefix)
+}
+
+fn tfr_schedule_fragments_from_properties(
+    properties: &Value,
+) -> Vec<StructuredTfrScheduleFragment> {
+    let mut fragments = Vec::new();
+    if let Some(value_utc) = geojson_property_string(
+        properties,
+        &[
+            "dateEffective",
+            "DATE_EFFECTIVE",
+            "effective_date",
+            "EFFECTIVE_DATE",
+            "effective",
+            "EFFECTIVE",
+        ],
+    ) {
+        fragments.push(StructuredTfrScheduleFragment {
+            kind: "effective".to_string(),
+            value_utc,
+        });
+    }
+    if let Some(value_utc) = geojson_property_string(
+        properties,
+        &[
+            "dateExpire",
+            "DATE_EXPIRE",
+            "expiration_date",
+            "EXPIRATION_DATE",
+            "expire",
+            "EXPIRE",
+        ],
+    ) {
+        fragments.push(StructuredTfrScheduleFragment {
+            kind: "expires".to_string(),
+            value_utc,
+        });
+    }
+    fragments
+}
+
+fn geojson_property_string(properties: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| properties.get(*key).and_then(value_to_string))
+}
+
+fn value_to_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
+    .filter(|value| !value.trim().is_empty())
+}
+
+fn geojson_exterior_polygons(geometry: &Value) -> anyhow::Result<Vec<Vec<Value>>> {
+    let geometry_type = geometry
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let coordinates = geometry.get("coordinates").unwrap_or(&Value::Null);
+    match geometry_type {
+        "Polygon" => Ok(coordinates
+            .as_array()
+            .and_then(|rings| rings.first())
+            .and_then(|ring| ring.as_array())
+            .map(|ring| vec![ring.clone()])
+            .unwrap_or_default()),
+        "MultiPolygon" => Ok(coordinates
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|polygon| {
+                polygon
+                    .as_array()
+                    .and_then(|rings| rings.first())
+                    .and_then(|ring| ring.as_array())
+                    .cloned()
+            })
+            .collect()),
+        other => bail!("unsupported TFR GeoJSON geometry type {other}"),
+    }
+}
+
+fn geojson_lon_lat_point(value: Value) -> anyhow::Result<(f64, f64)> {
+    let coordinates = value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("TFR GeoJSON coordinate was not an array"))?;
+    let lon = coordinates
+        .first()
+        .and_then(Value::as_f64)
+        .ok_or_else(|| anyhow::anyhow!("TFR GeoJSON coordinate missing longitude"))?;
+    let lat = coordinates
+        .get(1)
+        .and_then(Value::as_f64)
+        .ok_or_else(|| anyhow::anyhow!("TFR GeoJSON coordinate missing latitude"))?;
+    if !(-180.0..=180.0).contains(&lon) || !(-90.0..=90.0).contains(&lat) {
+        bail!("TFR GeoJSON coordinate is not lon/lat: [{lon}, {lat}]");
+    }
+    Ok((lon, lat))
+}
+
+fn build_tfr_avare_text(
+    schedule_fragments: &[StructuredTfrScheduleFragment],
+    upper_value_text: &str,
+    upper_unit: &str,
+    lower_value_text: &str,
+    lower_unit: &str,
+    polygon: &[StructuredTfrPoint],
+) -> anyhow::Result<String> {
+    let mut text = String::from("TFR:: ");
+    if !upper_value_text.is_empty() {
+        text.push_str("Top ");
+        text.push_str(upper_value_text);
+        text.push(' ');
+        text.push_str(upper_unit);
+        text.push(' ');
+    }
+    if !lower_value_text.is_empty() {
+        text.push_str("Low ");
+        text.push_str(lower_value_text);
+        text.push(' ');
+        text.push_str(lower_unit);
+        text.push(' ');
+    }
+    for fragment in schedule_fragments {
+        match fragment.kind.as_str() {
+            "effective" => text.push_str("Eff "),
+            "expires" => text.push_str("Exp "),
+            _ => {}
+        }
+        text.push_str(&fragment.value_utc);
+        text.push(' ');
+    }
+    for point in polygon {
+        text.push(',');
+        text.push_str(&normalize_geo_number_string(&point.lat.to_string())?);
+        text.push(',');
+        text.push_str(&normalize_geo_number_string(&point.lon.to_string())?);
+    }
+    Ok(text)
 }
 
 fn parse_detail_xml_groups(path: &Path, notam_id: &str) -> anyhow::Result<Vec<ParsedTfrArea>> {
@@ -2107,6 +2403,99 @@ mod tests {
             fs::read_to_string(fixture_root.join("expected").join("TFRs"))?,
             fs::read_to_string(&result.tfr_manifest_path)?,
         );
+        Ok(())
+    }
+
+    #[test]
+    fn tfr_dataset_prefers_wfs_geojson_when_present() -> anyhow::Result<()> {
+        let temp = TempDir::new().context("failed to create temp dir")?;
+        let input_dir = temp.path().join("input");
+        fs::create_dir_all(&input_dir)?;
+        fs::write(
+            input_dir.join("list.json"),
+            r#"[{"notam_id":"6/7042","type":"VIP","facility":"ZAB","state":"NM","description":"fixture","creation_date":"04/30/2026"}]"#,
+        )?;
+        fs::write(
+            input_dir.join("graphics.geojson"),
+            r#"{
+  "type": "FeatureCollection",
+  "features": [{
+    "type": "Feature",
+    "id": "V_TFR_LOC.6/7042",
+    "properties": {
+      "dateEffective": "2026-04-30T00:00:00Z",
+      "dateExpire": "2026-05-01T00:00:00Z",
+      "valDistVerUpper": "5000",
+      "uomDistVerUpper": "FT",
+      "valDistVerLower": "SFC",
+      "uomDistVerLower": ""
+    },
+    "geometry": {
+      "type": "Polygon",
+      "coordinates": [[
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [1.0, 1.0],
+        [0.0, 0.0]
+      ]]
+    }
+  }]
+}"#,
+        )?;
+        let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-30T00:00:00Z")
+            .expect("valid fixture timestamp")
+            .with_timezone(&Utc);
+        let result = build_tfr_dataset(&BuildTfrRequest {
+            input_dir,
+            output_dir: temp.path().join("out"),
+            version_label: "fixture".to_string(),
+            generated_at_utc,
+        })?;
+
+        let dataset: Value = serde_json::from_slice(&fs::read(&result.structured_json_path)?)?;
+        assert_eq!(1, dataset["notam_count"]);
+        assert_eq!(1, dataset["area_group_count"]);
+        let area = &dataset["areas"][0];
+        assert_eq!("6/7042", area["notam_id"]);
+        assert_eq!(1.0, area["polygon"][1]["lon"]);
+        assert_eq!(1.0, area["polygon"][2]["lat"]);
+        assert_eq!("5000", area["upper_limit"]["value_text"]);
+        assert_eq!("FT", area["upper_limit"]["unit"]);
+        Ok(())
+    }
+
+    #[test]
+    fn tfr_wfs_geojson_rejects_projected_coordinates() -> anyhow::Result<()> {
+        let temp = TempDir::new().context("failed to create temp dir")?;
+        let input_dir = temp.path().join("input");
+        fs::create_dir_all(&input_dir)?;
+        fs::write(input_dir.join("list.json"), r#"[{"notam_id":"6/7042"}]"#)?;
+        fs::write(
+            input_dir.join("graphics.geojson"),
+            r#"{
+  "type": "FeatureCollection",
+  "features": [{
+    "type": "Feature",
+    "id": "V_TFR_LOC.6/7042",
+    "properties": {},
+    "geometry": {
+      "type": "Polygon",
+      "coordinates": [[[111319.49079327357, 0.0], [1.0, 0.0], [1.0, 1.0]]]
+    }
+  }]
+}"#,
+        )?;
+        let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-30T00:00:00Z")
+            .expect("valid fixture timestamp")
+            .with_timezone(&Utc);
+        let error = build_tfr_dataset(&BuildTfrRequest {
+            input_dir,
+            output_dir: temp.path().join("out"),
+            version_label: "fixture".to_string(),
+            generated_at_utc,
+        })
+        .expect_err("projected coordinates should fail loudly");
+        assert!(format!("{error:#}").contains("not lon/lat"));
         Ok(())
     }
 

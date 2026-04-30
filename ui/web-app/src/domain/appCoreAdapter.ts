@@ -414,7 +414,9 @@ export interface AppCoreAdapter {
   previewFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanEntryPreview>;
   appendFlightPlanEntry(plan: FlightPlan, input: string): Promise<FlightPlanUiMutation>;
   resolveWaypointIdentifier(identifier: string): Promise<NavRef | null>;
+  resolveNavRefPosition(navRef: NavRef): Promise<LatLon>;
   suggestWaypointIdentifiers(plan: FlightPlan, componentIndex: number, before: boolean, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
+  suggestWaypointIdentifiersNear(anchor: LatLon, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
   insertWaypointUi(plan: FlightPlan, componentIndex: number, before: boolean, waypoint: NavRef): Promise<FlightPlanUiMutation>;
   suspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
   unsuspendSequencingUi(plan: FlightPlan): Promise<FlightPlanUiMutation>;
@@ -1097,6 +1099,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     return runCoreHadOperation<NavRef | null>({ kind: "resolve_waypoint_identifier", identifier });
   }
 
+  async resolveNavRefPosition(navRef: NavRef): Promise<LatLon> {
+    return runCoreHadOperation<LatLon>({ kind: "resolve_nav_ref_position", nav_ref: navRef });
+  }
+
   async suggestWaypointIdentifiers(
     plan: FlightPlan,
     componentIndex: number,
@@ -1109,6 +1115,15 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       plan,
       component_index: componentIndex,
       before,
+      prefix,
+      limit,
+    });
+  }
+
+  async suggestWaypointIdentifiersNear(anchor: LatLon, prefix: string, limit = 8): Promise<WaypointIdentifierSuggestion[]> {
+    return runCoreHadOperation<WaypointIdentifierSuggestion[]>({
+      kind: "suggest_waypoint_identifiers_near",
+      anchor,
       prefix,
       limit,
     });

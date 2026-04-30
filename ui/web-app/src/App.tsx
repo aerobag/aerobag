@@ -1793,6 +1793,19 @@ function MapPage(props: {
   const trayGroup = useModalTrayGroup(["family", "layers"] as const);
   const [debugOpen, setDebugOpen] = useState(false);
   const [layerToggleBusyId, setLayerToggleBusyId] = useState<MapLayerId | null>(null);
+  const [chartSearch, setChartSearch] = useState<{
+    query: string;
+    open: boolean;
+    loading: boolean;
+    error: string | null;
+    suggestions: WaypointIdentifierSuggestion[];
+  }>({
+    query: "",
+    open: false,
+    loading: false,
+    error: null,
+    suggestions: [],
+  });
   const [mapOverlay, setMapOverlay] = useState<MapOverlayQueryResult>({
     needed_point_tiles: [],
     needed_airspace_ref_tiles: [],
@@ -1991,6 +2004,35 @@ function MapPage(props: {
   }, []);
 
   const center = useMemo(() => viewportCenterLatLon(viewport), [viewport]);
+  useEffect(() => {
+    const prefix = chartSearch.query.trim().toUpperCase();
+    if (!chartSearch.open || prefix.length === 0) {
+      setChartSearch((current) => ({ ...current, loading: false, error: null, suggestions: [] }));
+      return;
+    }
+    let cancelled = false;
+    setChartSearch((current) => ({ ...current, loading: true, error: null }));
+    props.appCoreAdapter
+      .suggestWaypointIdentifiersNear(center, prefix, 8)
+      .then((suggestions) => {
+        if (!cancelled) {
+          setChartSearch((current) => ({ ...current, loading: false, error: null, suggestions }));
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setChartSearch((current) => ({
+            ...current,
+            loading: false,
+            error: `Search failed: ${errorMessage(error)}`,
+            suggestions: [],
+          }));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [center, chartSearch.open, chartSearch.query, props.appCoreAdapter]);
   const [tiles, setTiles] = useState<RasterRenderTile[]>([]);
   const [rasterTileViewport, setRasterTileViewport] = useState<MapViewportState | null>(null);
   useEffect(() => {
@@ -2932,6 +2974,47 @@ function MapPage(props: {
     syncFollowStateForViewport(nextViewport);
   }
 
+  async function recenterOnNavRef(navRef: NavRef) {
+    const position = await props.appCoreAdapter.resolveNavRefPosition(navRef);
+    const centerWorld = latLonToWorld(position.lat, position.lon);
+    const nextViewport = {
+      ...viewportRef.current,
+      centerWorldX: centerWorld.x,
+      centerWorldY: centerWorld.y,
+    };
+    updateViewport(nextViewport);
+    syncFollowStateForViewport(nextViewport);
+  }
+
+  function submitChartSearch() {
+    const query = chartSearch.query.trim().toUpperCase();
+    if (!query) {
+      return;
+    }
+    const selected = chartSearch.suggestions[0] ?? null;
+    setChartSearch((current) => ({ ...current, loading: true, error: null }));
+    void (async () => {
+      const navRef = selected?.nav_ref ?? await props.appCoreAdapter.resolveWaypointIdentifier(query);
+      if (!navRef) {
+        setChartSearch((current) => ({
+          ...current,
+          loading: false,
+          error: `No waypoint match for ${query}`,
+          suggestions: [],
+        }));
+        return;
+      }
+      await recenterOnNavRef(navRef);
+      setChartSearch({ query: "", open: false, loading: false, error: null, suggestions: [] });
+    })().catch((error) => {
+      setChartSearch((current) => ({
+        ...current,
+        loading: false,
+        error: `Search failed: ${errorMessage(error)}`,
+      }));
+    });
+  }
+
   function reportFirstVisualReady() {
     if (firstVisualReadyRef.current) {
       return;
@@ -3411,6 +3494,25 @@ function MapPage(props: {
             onToggle={() => trayGroup.toggle("layers")}
             ariaLabel="Layers"
             options={layerTrayOptions}
+          />
+          <ChartSearchBox
+            state={chartSearch}
+            onQueryChange={(query) => setChartSearch((current) => ({ ...current, query, open: true }))}
+            onFocus={() => setChartSearch((current) => ({ ...current, open: true }))}
+            onClose={() => setChartSearch((current) => ({ ...current, open: false }))}
+            onSubmit={submitChartSearch}
+            onSelect={(suggestion) => {
+              setChartSearch((current) => ({ ...current, loading: true, error: null }));
+              void recenterOnNavRef(suggestion.nav_ref)
+                .then(() => setChartSearch({ query: "", open: false, loading: false, error: null, suggestions: [] }))
+                .catch((error) => {
+                  setChartSearch((current) => ({
+                    ...current,
+                    loading: false,
+                    error: `Search failed: ${errorMessage(error)}`,
+                  }));
+                });
+            }}
           />
         </div>
 
@@ -5406,6 +5508,84 @@ function TrayDock(props: {
             document.body,
           )
         : null}
+    </div>
+  );
+}
+
+function ChartSearchBox(props: {
+  state: {
+    query: string;
+    open: boolean;
+    loading: boolean;
+    error: string | null;
+    suggestions: WaypointIdentifierSuggestion[];
+  };
+  onQueryChange: (query: string) => void;
+  onFocus: () => void;
+  onClose: () => void;
+  onSubmit: () => void;
+  onSelect: (suggestion: WaypointIdentifierSuggestion) => void;
+}) {
+  const { state, onQueryChange, onFocus, onClose, onSubmit, onSelect } = props;
+  const showTray = state.open && (state.query.trim() || state.loading || state.error || state.suggestions.length > 0);
+
+  return (
+    <div className="chartSearch">
+      <input
+        className="chartSearchInput"
+        type="text"
+        value={state.query}
+        placeholder="SEARCH"
+        autoCapitalize="characters"
+        autoCorrect="off"
+        spellCheck={false}
+        onPointerDown={stopPointer}
+        onPointerUp={stopPointer}
+        onDoubleClick={stopDoubleClick}
+        onFocus={onFocus}
+        onChange={(event) => onQueryChange(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+          if (event.key === "Enter") {
+            event.preventDefault();
+            onSubmit();
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+          }
+        }}
+      />
+      {showTray ? (
+        <section
+          className="chartSearchTray"
+          aria-label="Waypoint search results"
+          onPointerDown={stopPointer}
+          onPointerUp={stopPointer}
+        >
+          {state.loading ? <div className="chartSearchStatus">Searching...</div> : null}
+          {state.error ? <div className="chartSearchStatus isError">{state.error}</div> : null}
+          {!state.loading && !state.error && state.suggestions.length === 0 ? (
+            <div className="chartSearchStatus">No matches</div>
+          ) : null}
+          {state.suggestions.map((suggestion) => (
+            <button
+              key={`${suggestion.kind}:${suggestion.identifier}`}
+              type="button"
+              className="trayButton airwayChoiceButton airportInsertSuggestion chartSearchSuggestion"
+              onPointerDown={stopPointer}
+              onPointerUp={stopPointer}
+              onDoubleClick={stopDoubleClick}
+              onClick={() => onSelect(suggestion)}
+            >
+              <span className="airportInsertSuggestionMain">
+                <span>{suggestion.identifier}</span>
+                {suggestion.display_name ? <span className="airportInsertSuggestionName">{suggestion.display_name}</span> : null}
+              </span>
+              <span className="airportInsertSuggestionMeta">{suggestion.kind.toUpperCase()} {suggestion.distance_from_anchor_nm.toFixed(1)}nm</span>
+            </button>
+          ))}
+        </section>
+      ) : null}
     </div>
   );
 }

@@ -81,6 +81,11 @@ pub enum HadOperation {
         prefix: String,
         limit: usize,
     },
+    SuggestWaypointIdentifiersNear {
+        anchor: LatLon,
+        prefix: String,
+        limit: usize,
+    },
     SuggestAirwaysNearAnchor {
         anchor: NavRef,
         limit: usize,
@@ -225,6 +230,13 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
             before,
             &prefix,
             limit,
+        )?)?,
+        HadOperation::SuggestWaypointIdentifiersNear {
+            anchor,
+            prefix,
+            limit,
+        } => serde_json::to_value(suggest_waypoint_identifiers_near(
+            store, anchor, &prefix, limit,
         )?)?,
         HadOperation::SuggestAirwaysNearAnchor { anchor, limit } => {
             serde_json::to_value(suggest_airways_near_anchor(store, &anchor, limit)?)?
@@ -800,6 +812,26 @@ fn suggest_waypoint_identifiers(
     prefix: &str,
     limit: usize,
 ) -> Result<Vec<WaypointIdentifierSuggestion>, HadReadError> {
+    let anchor = component_insert_anchor(plan, component_index, before)?;
+    let anchor_position = nav_ref_position(store, &anchor, None)?;
+    suggest_waypoint_identifier_candidates(store, &prefix, limit, anchor_position)
+}
+
+fn suggest_waypoint_identifiers_near(
+    store: &NavKvStore,
+    anchor: LatLon,
+    prefix: &str,
+    limit: usize,
+) -> Result<Vec<WaypointIdentifierSuggestion>, HadReadError> {
+    suggest_waypoint_identifier_candidates(store, prefix, limit, anchor)
+}
+
+fn suggest_waypoint_identifier_candidates(
+    store: &NavKvStore,
+    prefix: &str,
+    limit: usize,
+    anchor_position: LatLon,
+) -> Result<Vec<WaypointIdentifierSuggestion>, HadReadError> {
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -814,8 +846,6 @@ fn suggest_waypoint_identifiers(
         },
         "waypoint prefix",
     )?;
-    let anchor = component_insert_anchor(plan, component_index, before)?;
-    let anchor_position = nav_ref_position(store, &anchor, None)?;
     let mut suggestions = candidates
         .into_iter()
         .filter(|candidate| {
@@ -2371,6 +2401,40 @@ mod tests {
                 let nav_ref = serde_json::from_value::<Option<NavRef>>(result)
                     .expect("decode nav ref");
                 assert_eq!(nav_ref, Some(NavRef::Navaid("OLM".to_string())));
+            }
+            HadOperationOutcome::NeedPages { pages } => {
+                panic!("expected complete outcome, got missing pages: {pages:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn fixture_nav_kv_suggests_waypoint_identifiers_near_view_center() {
+        let store = load_fixture_nav_kv_store();
+        let outcome = run_had_operation(
+            &store,
+            HadOperation::SuggestWaypointIdentifiersNear {
+                anchor: LatLon {
+                    lat: 47.493,
+                    lon: -122.216,
+                },
+                prefix: "KR".to_string(),
+                limit: 5,
+            },
+        )
+        .expect("suggest waypoint identifiers near view center");
+        match outcome {
+            HadOperationOutcome::Complete { result } => {
+                let suggestions = serde_json::from_value::<Vec<WaypointIdentifierSuggestion>>(result)
+                    .expect("decode waypoint suggestions");
+                assert!(!suggestions.is_empty());
+                assert!(suggestions.len() <= 5);
+                assert!(suggestions
+                    .iter()
+                    .all(|suggestion| suggestion.identifier.starts_with("KR")));
+                assert!(suggestions.windows(2).all(|pair| {
+                    pair[0].distance_from_anchor_nm <= pair[1].distance_from_anchor_nm
+                }));
             }
             HadOperationOutcome::NeedPages { pages } => {
                 panic!("expected complete outcome, got missing pages: {pages:?}");

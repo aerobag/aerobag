@@ -10,6 +10,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
+import java.util.LinkedHashMap
 import androidx.annotation.DrawableRes
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.activity.ComponentActivity
@@ -261,7 +262,14 @@ private const val NexradFrameIntervalMs = 900L
 private const val TerrainAltitudeBucketFt = 200
 private const val MapLayerLogTag = "MapLayers"
 private const val TileBudgetLogTag = "AerobagTileBudget"
+private const val DecodedTileCacheMaxBytes = 96L * 1024L * 1024L
 private val VampsPosition = LatLon(47.3648944444444, -121.980275)
+
+private data class PageTilePaintTiming(
+    val id: Long,
+    val fromPage: AppPage,
+    val startedMs: Long,
+)
 
 @kotlinx.serialization.Serializable
 private data class WireRasterTilePlan(
@@ -1001,8 +1009,59 @@ private data class LoadedTileBitmap(
     val key: net.jonh.aerobag.prototype.domain.RenderTileKey,
     val bitmap: androidx.compose.ui.graphics.ImageBitmap?,
     val bytes: Int,
+    val decodedBytes: Long,
     val readMs: Long,
     val decodeMs: Long,
+)
+
+private data class DecodedTileCacheEntry(
+    val bitmap: androidx.compose.ui.graphics.ImageBitmap,
+    val decodedBytes: Long,
+)
+
+private class DecodedTileBitmapCache(
+    private val maxBytes: Long,
+) {
+    private val entries = LinkedHashMap<String, DecodedTileCacheEntry>(256, 0.75f, true)
+    private var currentBytes = 0L
+
+    @Synchronized
+    fun get(key: String): androidx.compose.ui.graphics.ImageBitmap? = entries[key]?.bitmap
+
+    @Synchronized
+    fun put(key: String, bitmap: androidx.compose.ui.graphics.ImageBitmap, decodedBytes: Long) {
+        val previous = entries.remove(key)
+        if (previous != null) {
+            currentBytes -= previous.decodedBytes
+        }
+        entries[key] = DecodedTileCacheEntry(bitmap, decodedBytes.coerceAtLeast(1L))
+        currentBytes += decodedBytes.coerceAtLeast(1L)
+        trimToBudget()
+    }
+
+    @Synchronized
+    fun clear() {
+        entries.clear()
+        currentBytes = 0L
+    }
+
+    @Synchronized
+    fun stats(): DecodedTileCacheStats =
+        DecodedTileCacheStats(entries = entries.size, bytes = currentBytes)
+
+    private fun trimToBudget() {
+        val iterator = entries.entries.iterator()
+        while (currentBytes > maxBytes && iterator.hasNext()) {
+            val eldest = iterator.next()
+            currentBytes -= eldest.value.decodedBytes
+            iterator.remove()
+        }
+    }
+}
+
+private data class DecodedTileCacheStats(
+    val entries: Int,
+    val bytes: Long,
 )
 
 private data class OverlaySurfaceUnits(
@@ -1349,6 +1408,15 @@ private fun formatTileBudgetSummary(
     return counts.entries
         .sortedBy { it.key }
         .joinToString(", ") { entry -> "${entry.key}=${entry.value}" }
+}
+
+private fun decodedTileCacheKey(tile: net.jonh.aerobag.prototype.domain.RenderTile): String {
+    val candidates = tile.candidateMapViews
+        .distinctBy { "${it.packageName}:${it.tileRoot}:${it.chartIndex}" }
+        .joinToString("|") { mapView ->
+            "${mapView.packageName}:${mapView.storageKind}:${tileRelativePath(tile, mapView)}"
+        }
+    return "${tile.zoom}:${tile.x}:${tile.yTms}:$candidates"
 }
 
 private fun projectAhead(lat: Double, lon: Double, bearingDeg: Double, distanceNm: Double): LatLon {
@@ -1817,6 +1885,10 @@ private fun AerobagApp() {
     var mapViewport by remember { mutableStateOf(createInitialSituationViewport(selectedMap.mapView)) }
     var chartViewport by remember { mutableStateOf<net.jonh.aerobag.prototype.domain.ImageViewportState?>(null) }
     var chartFolderOpen by remember { mutableStateOf(false) }
+    var pageTilePaintTiming by remember { mutableStateOf<PageTilePaintTiming?>(null) }
+    var nextPageTilePaintTimingId by remember { mutableStateOf(1L) }
+    var debugFastTiles by remember { mutableStateOf(false) }
+    val decodedTileBitmapCache = remember(fixture.navKvStore) { DecodedTileBitmapCache(DecodedTileCacheMaxBytes) }
     var playbackSourcePath by remember { mutableStateOf(DefaultPlaybackTracePath) }
     val planListState = rememberLazyListState()
     val chartAirportById = remember(derivedChartPageState.airports) { derivedChartPageState.airports.associateBy { it.id } }
@@ -1917,6 +1989,14 @@ private fun AerobagApp() {
         if (nextPage == page) {
             return
         }
+        if (nextPage == AppPage.Map) {
+            pageTilePaintTiming = PageTilePaintTiming(
+                id = nextPageTilePaintTimingId++,
+                fromPage = page,
+                startedMs = SystemClock.elapsedRealtime(),
+            )
+            Log.i(TileBudgetLogTag, "page-to-map-start id=${pageTilePaintTiming?.id} from=$page")
+        }
         pageHistory = boundedHistory(pageHistory + currentSnapshot())
         page = nextPage
     }
@@ -1964,6 +2044,15 @@ private fun AerobagApp() {
                     situationRingCandidates = situationRingCandidates,
                     selectedMapId = selectedMapId,
                     viewport = mapViewport,
+                    decodedTileBitmapCache = decodedTileBitmapCache,
+                    debugFastTiles = debugFastTiles,
+                    onDebugFastTilesChange = { debugFastTiles = it },
+                    pageTilePaintTiming = pageTilePaintTiming,
+                    onPageTilePaintTimingComplete = { completedId ->
+                        if (pageTilePaintTiming?.id == completedId) {
+                            pageTilePaintTiming = null
+                        }
+                    },
                     onViewportChange = { mapViewport = it },
                     onSessionSnapshotChange = { sessionSnapshot = it },
                     onPlaybackSourcePathChange = { playbackSourcePath = it },
@@ -3272,6 +3361,11 @@ private fun MapExplorerPage(
     situationRingCandidates: List<SituationRingCandidate>,
     selectedMapId: String,
     viewport: MapViewportState,
+    decodedTileBitmapCache: DecodedTileBitmapCache,
+    debugFastTiles: Boolean,
+    onDebugFastTilesChange: (Boolean) -> Unit,
+    pageTilePaintTiming: PageTilePaintTiming?,
+    onPageTilePaintTimingComplete: (Long) -> Unit,
     onViewportChange: (MapViewportState) -> Unit,
     onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
     onPlaybackSourcePathChange: (String) -> Unit,
@@ -3356,14 +3450,28 @@ private fun MapExplorerPage(
     val surfaceHeightPx = surfaceSize.height.toFloat()
     val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
     val surfaceHeightDp = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
-    val tiles = remember(currentViewport, surfaceSize, fixture.mapViews, uiSession) {
+    val tileDisplayMultiplier = if (debugFastTiles) 2.0 else 1.0
+    val tiles = remember(currentViewport, surfaceSize, fixture.mapViews, uiSession, tileDisplayMultiplier) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             emptyList()
         } else {
+            val planStartMs = SystemClock.elapsedRealtime()
             val mapViewsById = fixture.mapViews.associateBy { it.id }
             val plan = json.decodeFromString<WireRasterTilePlan>(
-                uiSession.queryRasterTilePlanJson(currentViewport, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble()),
+                uiSession.queryRasterTilePlanJson(
+                    currentViewport,
+                    surfaceWidthPx.toDouble(),
+                    surfaceHeightPx.toDouble(),
+                    tileDisplayMultiplier,
+                ),
             )
+            val planMs = SystemClock.elapsedRealtime() - planStartMs
+            pageTilePaintTiming?.let { timing ->
+                Log.i(
+                    TileBudgetLogTag,
+                    "page-to-map-plan id=${timing.id} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} planMs=$planMs tiles=${plan.tiles.size} fastTiles=$debugFastTiles",
+                )
+            }
             plan.tiles.mapNotNull { tile ->
                 val primaryOption = mapViewsById[tile.primary.map_view_id] ?: return@mapNotNull null
                 val candidateMapViews = (listOf(tile.primary) + tile.fallbacks)
@@ -3591,67 +3699,94 @@ private fun MapExplorerPage(
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
         }
     }
-    val tileBitmapCache = remember(selectedMap.id, installRevision) {
+    val tileBitmapCache = remember(selectedMap.id, installRevision, tileDisplayMultiplier) {
         mutableStateMapOf<net.jonh.aerobag.prototype.domain.RenderTileKey, androidx.compose.ui.graphics.ImageBitmap?>()
     }
-    LaunchedEffect(tiles, selectedMap.id, installRevision) {
+    LaunchedEffect(tiles, selectedMap.id, installRevision, tileDisplayMultiplier) {
+        var decodedCacheHits = 0
+        tiles.forEach { tile ->
+            val renderKey = renderTileKey(tile)
+            if (!tileBitmapCache.containsKey(renderKey)) {
+                val bitmap = decodedTileBitmapCache.get(decodedTileCacheKey(tile))
+                if (bitmap != null) {
+                    tileBitmapCache[renderKey] = bitmap
+                    decodedCacheHits += 1
+                }
+            }
+        }
         val missingTiles = tiles.filter { tile -> !tileBitmapCache.containsKey(renderTileKey(tile)) }
+        val decodedCacheStats = decodedTileBitmapCache.stats()
         Log.i(
             TileBudgetLogTag,
-            "visible map=${selectedMap.id} total=${tiles.size} missing=${missingTiles.size} cache=${tileBitmapCache.size} groups=[${formatTileBudgetSummary(tiles)}]",
+            "visible map=${selectedMap.id} total=${tiles.size} missing=${missingTiles.size} localCache=${tileBitmapCache.size} decodedLru=${decodedCacheStats.entries}/${decodedCacheStats.bytes}B lruHits=$decodedCacheHits fastTiles=$debugFastTiles groups=[${formatTileBudgetSummary(tiles)}]",
         )
         if (missingTiles.isEmpty()) {
+            pageTilePaintTiming?.takeIf { tiles.isNotEmpty() }?.let { timing ->
+                withFrameNanos { }
+                Log.i(
+                    TileBudgetLogTag,
+                    "page-to-map-frame id=${timing.id} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} cacheOnly=true",
+                )
+                onPageTilePaintTimingComplete(timing.id)
+            }
             return@LaunchedEffect
         }
         val loadStartMs = SystemClock.elapsedRealtime()
-        var readElapsedMs = 0L
-        var decodeElapsedMs = 0L
-        var loadedBytes = 0L
-        var loadedThisPassCount = 0
-        var firstChunkMs: Long? = null
-        missingTiles.chunked(8).forEachIndexed { chunkIndex, chunk ->
-            val chunkResults = withContext(Dispatchers.IO) {
-                chunk.map { tile ->
-                    async {
-                        val key = renderTileKey(tile)
-                        runCatching {
-                            val readStartMs = SystemClock.elapsedRealtime()
-                            val bytes = SectionalPackages.loadTileBytes(context, tile)
-                            val readMs = SystemClock.elapsedRealtime() - readStartMs
-                            if (bytes == null) {
-                                return@runCatching LoadedTileBitmap(key, null, 0, readMs, 0L)
-                            }
-                            val decodeStartMs = SystemClock.elapsedRealtime()
-                            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                            val decodeMs = SystemClock.elapsedRealtime() - decodeStartMs
-                            LoadedTileBitmap(key, bitmap?.asImageBitmap(), bytes.size, readMs, decodeMs)
-                        }.onFailure { error ->
-                            Log.w(
-                                TileBudgetLogTag,
-                                "tile load failed map=${selectedMap.id} package=${tile.mapView.packageName ?: tile.mapViewId} storage=${tile.mapView.storageKind} z=${tile.zoom} x=${tile.x} y=${tile.yTms}",
-                                error,
-                            )
-                        }.getOrNull() ?: LoadedTileBitmap(key, null, 0, 0L, 0L)
-                    }
-                }.map { it.await() }
-            }
-            val chunkLoaded = chunkResults.associate { it.key to it.bitmap }
-            tileBitmapCache.putAll(chunkLoaded)
-            readElapsedMs += chunkResults.sumOf { it.readMs }
-            decodeElapsedMs += chunkResults.sumOf { it.decodeMs }
-            loadedBytes += chunkResults.sumOf { it.bytes.toLong() }
-            loadedThisPassCount += chunkResults.count { it.bitmap != null }
-            if (firstChunkMs == null) {
-                firstChunkMs = SystemClock.elapsedRealtime() - loadStartMs
-                Log.i(
-                    TileBudgetLogTag,
-                    "first-chunk map=${selectedMap.id} chunk=${chunkIndex + 1}/${(missingTiles.size + 7) / 8} loaded=${chunkResults.count { it.bitmap != null }} bytes=${chunkResults.sumOf { it.bytes.toLong() }} elapsedMs=$firstChunkMs",
-                )
-            }
+        val tileResults = withContext(Dispatchers.IO) {
+            missingTiles.map { tile ->
+                async {
+                    val key = renderTileKey(tile)
+                    runCatching {
+                        val readStartMs = SystemClock.elapsedRealtime()
+                        val bytes = SectionalPackages.loadTileBytes(context, tile)
+                        val readMs = SystemClock.elapsedRealtime() - readStartMs
+                        if (bytes == null) {
+                            return@runCatching LoadedTileBitmap(key, null, 0, 0L, readMs, 0L)
+                        }
+                        val decodeStartMs = SystemClock.elapsedRealtime()
+                        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        val decodeMs = SystemClock.elapsedRealtime() - decodeStartMs
+                        LoadedTileBitmap(key, bitmap?.asImageBitmap(), bytes.size, bitmap?.byteCount?.toLong() ?: 0L, readMs, decodeMs)
+                    }.onFailure { error ->
+                        Log.w(
+                            TileBudgetLogTag,
+                            "tile load failed map=${selectedMap.id} package=${tile.mapView.packageName ?: tile.mapViewId} storage=${tile.mapView.storageKind} z=${tile.zoom} x=${tile.x} y=${tile.yTms}",
+                            error,
+                        )
+                    }.getOrNull() ?: LoadedTileBitmap(key, null, 0, 0L, 0L, 0L)
+                }
+            }.map { it.await() }
+        }
+        tileBitmapCache.putAll(tileResults.associate { it.key to it.bitmap })
+        missingTiles.zip(tileResults).forEach { (tile, result) ->
+            val bitmap = result.bitmap ?: return@forEach
+            decodedTileBitmapCache.put(decodedTileCacheKey(tile), bitmap, result.decodedBytes)
+        }
+        val readElapsedMs = tileResults.sumOf { it.readMs }
+        val decodeElapsedMs = tileResults.sumOf { it.decodeMs }
+        val loadedBytes = tileResults.sumOf { it.bytes.toLong() }
+        val loadedDecodedBytes = tileResults.sumOf { it.decodedBytes }
+        val loadedThisPassCount = tileResults.count { it.bitmap != null }
+        Log.i(
+            TileBudgetLogTag,
+            "batch map=${selectedMap.id} loaded=$loadedThisPassCount/${missingTiles.size} bytes=$loadedBytes decodedBytes=$loadedDecodedBytes elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs}",
+        )
+        pageTilePaintTiming?.let { timing ->
+            Log.i(
+                TileBudgetLogTag,
+                "page-to-map-cache id=${timing.id} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} loadMs=${SystemClock.elapsedRealtime() - loadStartMs} loaded=$loadedThisPassCount/${missingTiles.size}",
+            )
+            withFrameNanos { }
+            Log.i(
+                TileBudgetLogTag,
+                "page-to-map-frame id=${timing.id} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs}",
+            )
+            onPageTilePaintTimingComplete(timing.id)
         }
         val loadElapsedMs = SystemClock.elapsedRealtime() - loadStartMs
         val cacheLoadedCount = tileBitmapCache.values.count { it != null }
         val cacheMissCount = tileBitmapCache.size - cacheLoadedCount
+        val finalDecodedCacheStats = decodedTileBitmapCache.stats()
         val visibleTileByKey = tiles.associateBy { renderTileKey(it) }
         val cacheCounts = linkedMapOf<String, Int>()
         tileBitmapCache.forEach { (key, bitmap) ->
@@ -3665,7 +3800,7 @@ private fun MapExplorerPage(
             .joinToString(", ") { entry -> "${entry.key}=${entry.value}" }
         Log.i(
             TileBudgetLogTag,
-            "cache map=${selectedMap.id} entries=${tileBitmapCache.size} loaded=$cacheLoadedCount empty=$cacheMissCount fetched=$loadedThisPassCount bytes=$loadedBytes loadMs=$loadElapsedMs readMs=$readElapsedMs decodeMs=$decodeElapsedMs groups=[$cacheSummary]",
+            "cache map=${selectedMap.id} entries=${tileBitmapCache.size} loaded=$cacheLoadedCount empty=$cacheMissCount fetched=$loadedThisPassCount bytes=$loadedBytes decodedBytes=$loadedDecodedBytes loadMs=$loadElapsedMs readMs=$readElapsedMs decodeMs=$decodeElapsedMs decodedLru=${finalDecodedCacheStats.entries}/${finalDecodedCacheStats.bytes}B groups=[$cacheSummary]",
         )
     }
     val tileLabelPaint = remember {
@@ -4561,6 +4696,17 @@ private fun MapExplorerPage(
                     modifier = Modifier.size(ThumbSize * 0.36f),
                 )
                 Text("tile labels", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Checkbox(
+                    checked = debugFastTiles,
+                    onCheckedChange = onDebugFastTilesChange,
+                    modifier = Modifier.size(ThumbSize * 0.36f),
+                )
+                Text("fast tiles", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
             }
         }
     }

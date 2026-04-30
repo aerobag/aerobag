@@ -41,15 +41,14 @@ pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use map_follow::MapFollowUiState;
 pub use map_overlay::{
     airspace_feature_path, airspace_label_tile_key, airspace_ref_tile_key,
-    map_overlay_config_from_vector_manifest_json,
-    point_vector_record_to_symbol_feature, query_map_overlay, tile_key, visible_point_tile_window,
-    AirspaceDisplayLabel, AirspaceDisplayPath, AirspaceDisplayStroke, AirspaceDisplayStyle,
-    AirspaceDisplaySubpath, AirspaceFeaturePath, AirspaceFeaturePayload, AirspaceFeatureRequest,
-    AirspaceLabelRecord, AirspaceLabelTilePayload, AirspaceReferenceTilePayload,
-    AirspaceScreenPoint, MapOverlayConfig, MapOverlayQueryResult, MapOverlayWarning,
-    ObstacleOverlayContext,
-    NavSymbolFeature, PointTilePayload, PointVectorRecord, TfrAltitudeLimit, TfrAreaPayload,
-    TfrLatLonPoint, TfrProductPayload, TfrScheduleFragment, VectorTileRequest, VisibleMapFeature,
+    map_overlay_config_from_vector_manifest_json, point_vector_record_to_symbol_feature,
+    query_map_overlay, tile_key, visible_point_tile_window, AirspaceDisplayLabel,
+    AirspaceDisplayPath, AirspaceDisplayStroke, AirspaceDisplayStyle, AirspaceDisplaySubpath,
+    AirspaceFeaturePath, AirspaceFeaturePayload, AirspaceFeatureRequest, AirspaceLabelRecord,
+    AirspaceLabelTilePayload, AirspaceReferenceTilePayload, AirspaceScreenPoint, MapOverlayConfig,
+    MapOverlayQueryResult, MapOverlayWarning, NavSymbolFeature, ObstacleOverlayContext,
+    PointTilePayload, PointVectorRecord, TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint,
+    TfrProductPayload, TfrScheduleFragment, VectorTileRequest, VisibleMapFeature,
     AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 pub use navdb_types::{
@@ -70,50 +69,40 @@ pub use ownship::{
     SituationKinematics, SituationRingCandidate, SituationSample, SourceConnectionState,
 };
 pub use package_management::{
-    default_offline_package_preferences, BundleManifest, BundlePackageArtifact,
-    CurrentArtifactsBundleRef, CurrentArtifactsManifest, InstalledArtifact,
+    default_offline_package_preferences, initialize_offline_packages, plan_offline_packages,
+    reduce_offline_packages, reduce_offline_packages_controller, BundleManifest,
+    BundlePackageArtifact, CurrentArtifactsBundleRef, CurrentArtifactsManifest, InstalledArtifact,
     OfflinePackagePreferences, OfflinePackageSelection, OfflinePackagesControllerCommand,
     OfflinePackagesControllerEvent, OfflinePackagesControllerInput,
     OfflinePackagesControllerResult, OfflinePackagesControllerState,
     OfflinePackagesControllerUiState, OfflinePackagesEvent, OfflinePackagesInitInput,
     OfflinePackagesLibraryCache, OfflinePackagesReduceInput, OfflinePackagesReduceResult,
-    OfflinePackagesState, OfflinePackagesSyncSummary, OfflinePackagesUiRow,
-    OfflinePackagesUiState, OfflinePackagesWarning, PackageManagementInput,
-    PackageManagementPlan, initialize_offline_packages, plan_offline_packages,
-    reduce_offline_packages, reduce_offline_packages_controller,
+    OfflinePackagesState, OfflinePackagesSyncSummary, OfflinePackagesUiRow, OfflinePackagesUiState,
+    OfflinePackagesWarning, PackageManagementInput, PackageManagementPlan,
 };
 pub use planning::{
     activate_direct_to, activate_direct_to_leg, activate_leg, activate_next_leg,
-    active_guidance_leg, change_airway_entry, change_airway_exit,
-    change_procedure_enroute_transition, change_procedure_runway_transition, delete_component,
-    delete_waypoint_component, flatten_component_to_waypoints, insert_airport_waypoint,
+    active_guidance_leg, at_fix_requirement, basic_terminal_state, change_airway_entry,
+    change_airway_exit, change_procedure_enroute_transition, change_procedure_runway_transition,
+    common_resume_candidate_decision, delete_component, delete_waypoint_component,
+    direct_to_fix_with_course_continuation_requirement, enter_hold_requirement,
+    established_on_course_requirement, flatten_component_to_waypoints, insert_airport_waypoint,
     insert_airway_after_waypoint, insert_airway_between_waypoints,
-    insert_procedure_between_waypoints, insert_waypoint, move_component, project_ui_state,
-    remove_all_above,
-    replace_airway_component, replace_procedure_component, sequence_active_leg, suspend_sequencing,
-    unsuspend_sequencing, AirwaySegment, ConcretizedNavItem, DirectToState, DirectToUiView,
-    FlightPlan, FlightPlanUiState, GuidanceState, GuidanceUiView, LegDisplayElement,
-    LegDisplayPathStyle,
-    reconcile_handoff, HandoffDecision, LegDisplayPath, NavRef, PathTermination, PlanLeg, ProcedureDiscontinuity, ProcedureKind,
-    ProcedureLegProvenance, ProcedureSegment, ProcedureSegmentRole, ResolvedLeg, ResolvedLegSource,
+    insert_procedure_between_waypoints, insert_waypoint, intercept_course_requirement,
+    move_component, project_ui_state, reconcile_handoff, reentry_to_anchor_requirement,
+    remove_all_above, replace_airway_component, replace_procedure_component, sequence_active_leg,
+    start_requirement_from_leg_characteristics, suspend_sequencing,
+    terminal_state_with_leg_characteristics, unsuspend_sequencing,
+    yieldable_course_to_fix_requirement, AirwaySegment, CodedFixSatisfaction,
+    CommonSegmentTerminalState, ConcretizedNavItem, DirectToState, DirectToUiView, FlightPlan,
+    FlightPlanUiState, GuidanceState, GuidanceUiView, HandoffDecision, HoldTerminalState,
+    LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, NavRef, PathTermination, PlanLeg,
+    ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegment,
+    ProcedureSegmentRole, ProcedureTurnTerminalState, ResolvedLeg, ResolvedLegSource,
     ResolvedLegUiView, RouteComponent, RouteComponentUiView, RouteComponentViewKind,
-    SequencingMode, StartRequirement, TerminalState, HoldTerminalState,
-    ProcedureTurnTerminalState, CommonSegmentTerminalState, CodedFixSatisfaction,
-    basic_terminal_state, direct_to_fix_with_course_continuation_requirement,
-    yieldable_course_to_fix_requirement, reentry_to_anchor_requirement,
-    terminal_state_with_leg_characteristics,
-    at_fix_requirement, established_on_course_requirement,
-    intercept_course_requirement, enter_hold_requirement,
-    start_requirement_from_leg_characteristics,
-    common_resume_candidate_decision,
+    SequencingMode, StartRequirement, TerminalState,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
-pub use raster_tiles::{
-    raster_tile_plan, select_map_in_catalog, RasterChartCoverage, RasterDisplayGeometry,
-    RasterDisplayPolygonSet, RasterInitialViewport, RasterMapCatalog, RasterMapFamilyOption,
-    RasterMapView, RasterMapViewOption, RasterPolygon, RasterPolygonSetRef, RasterTileDraw,
-    RasterTileLevel, RasterTilePlan, RasterTileSource,
-};
 pub use procedure_geometry::{
     build_trailing_course_to_intercept_display_path, display_path_for_procedure_leg,
     display_path_for_resumed_common_cf, display_path_for_single_procedure_step,
@@ -123,25 +112,31 @@ pub use procedure_legs::{
     parse_cifp_altitude_ft, parse_cifp_tenths_value, parse_cifp_thousandths_value,
     terminal_procedure_discontinuity,
 };
+pub use raster_tiles::{
+    raster_tile_plan, raster_tile_plan_with_options, select_map_in_catalog, RasterChartCoverage,
+    RasterDisplayGeometry, RasterDisplayPolygonSet, RasterInitialViewport, RasterMapCatalog,
+    RasterMapFamilyOption, RasterMapView, RasterMapViewOption, RasterPolygon, RasterPolygonSetRef,
+    RasterTileDraw, RasterTileLevel, RasterTilePlan, RasterTilePlanOptions, RasterTileSource,
+};
 pub use session::{
     create_ui_session, create_ui_session_profiled, destroy_session,
     disengage_map_follow_in_session, engage_map_follow_in_session, get_map_overlay_in_session,
-    get_raster_tile_plan_in_session, get_session_snapshot, get_terrain_overlay_in_session, ingest_airspace_features_in_session,
+    get_raster_tile_plan_in_session, get_raster_tile_plan_in_session_with_options,
+    get_session_snapshot, get_terrain_overlay_in_session, ingest_airspace_features_in_session,
     ingest_airspace_label_tiles_in_session, ingest_airspace_ref_tiles_in_session,
     ingest_point_tiles_in_session, ingest_tfrs_in_session, load_playback_trace_in_session,
-    move_waypoint_in_session,
-    pause_playback_in_session, play_playback_in_session, push_situation_sample_in_session,
-    register_ownship_source_in_session, remove_leg_in_session,
+    move_waypoint_in_session, pause_playback_in_session, play_playback_in_session,
+    push_situation_sample_in_session, register_ownship_source_in_session, remove_leg_in_session,
     render_terrain_overlay_tile_in_session, render_terrain_overlay_tiles_in_session,
     replace_flight_plan_in_session, restore_chart_page_state_in_session, seek_playback_in_session,
-    select_map_in_session, set_raster_map_catalog_in_session,
-    set_map_layer_enabled_in_session, set_map_layer_visibility_in_session,
-    select_airport_in_session, select_chart_in_session, select_ownship_source_in_session,
-    set_guidance_leg_geometry_in_session, set_map_follow_offset_in_session,
-    set_playback_rate_in_session, set_situation_in_session, sync_map_follow_in_session,
+    select_airport_in_session, select_chart_in_session, select_map_in_session,
+    select_ownship_source_in_session, set_guidance_leg_geometry_in_session,
+    set_map_follow_offset_in_session, set_map_layer_enabled_in_session,
+    set_map_layer_visibility_in_session, set_playback_rate_in_session,
+    set_raster_map_catalog_in_session, set_situation_in_session, sync_map_follow_in_session,
     tick_playback_in_session, update_ownship_source_status_in_session, GuidanceLegGeometry,
-    UiCautionState, UiChartPageState, UiMapLayerState, UiMapLayerToggleState,
-    UiSessionInitResult, UiSessionSnapshot,
+    UiCautionState, UiChartPageState, UiMapLayerState, UiMapLayerToggleState, UiSessionInitResult,
+    UiSessionSnapshot,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{
@@ -276,7 +271,10 @@ pub(crate) fn guidance_detail_count_for_leg(leg: &ResolvedLeg) -> usize {
         .unwrap_or(1)
 }
 
-pub(crate) fn guidance_detail_id_for_leg_element(leg: &ResolvedLeg, element_index: usize) -> String {
+pub(crate) fn guidance_detail_id_for_leg_element(
+    leg: &ResolvedLeg,
+    element_index: usize,
+) -> String {
     format!("{}#{element_index}", leg.id)
 }
 
@@ -298,7 +296,10 @@ fn guidance_detail_index_for_leg_element(
     )
 }
 
-pub(crate) fn guidance_detail_id_for_index(plan: &FlightPlan, detail_index: usize) -> Option<String> {
+pub(crate) fn guidance_detail_id_for_index(
+    plan: &FlightPlan,
+    detail_index: usize,
+) -> Option<String> {
     let mut current_index = 0usize;
     for leg in &plan.resolved_legs {
         let detail_count = guidance_detail_count_for_leg(leg);
@@ -325,9 +326,9 @@ fn route_status_for_detail(
     else {
         return FlightPlanRouteSegmentStatus::Remaining;
     };
-    let active_detail_index = guidance.active_detail_index.or_else(|| {
-        guidance_detail_index_for_leg_element(plan, guidance.active_leg_index, 0)
-    });
+    let active_detail_index = guidance
+        .active_detail_index
+        .or_else(|| guidance_detail_index_for_leg_element(plan, guidance.active_leg_index, 0));
     let Some(active_detail_index) = active_detail_index else {
         return FlightPlanRouteSegmentStatus::Remaining;
     };
@@ -340,7 +341,9 @@ fn route_status_for_detail(
     }
 }
 
-fn guidance_route_geometry_from_display_element(element: &LegDisplayElement) -> GuidanceRouteGeometry {
+fn guidance_route_geometry_from_display_element(
+    element: &LegDisplayElement,
+) -> GuidanceRouteGeometry {
     match element {
         LegDisplayElement::Segment { start, end } => GuidanceRouteGeometry::Segment {
             start: *start,
@@ -1338,7 +1341,8 @@ fn chained_approach_transition_segments(
         let Some(next_transition) = next_transition else {
             break;
         };
-        if filter_procedure_records(legs, airport_id, procedure_id, "A", &next_transition).is_empty()
+        if filter_procedure_records(legs, airport_id, procedure_id, "A", &next_transition)
+            .is_empty()
         {
             break;
         }
@@ -1366,7 +1370,8 @@ fn resolve_procedure_materialization_legs_with_provenance(
     let mut previous_leg_to: Option<NavRef> = None;
     let mut heading_checks = Vec::<DisplayElementHeadingSignature>::new();
     let mut next_heading_step_index = 0usize;
-    let required_procedure_turn_sequences = required_procedure_turn_sequences_for_segments(segments);
+    let required_procedure_turn_sequences =
+        required_procedure_turn_sequences_for_segments(segments);
 
     for (segment_index, (role, leg_records, _, reversed)) in segments.iter().enumerate() {
         let next_segment_records = segments
@@ -1406,7 +1411,8 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     next_segment_records,
                     resolved_last: resolved.last().cloned(),
                 },
-            )? else {
+            )?
+            else {
                 continue;
             };
             let initial_position_override = if window_link.inherit_previous_state {
@@ -1432,7 +1438,8 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     initial_position_override,
                     initial_course_override,
                 )
-            } else if window_link.display_leg_start.sequence == window_link.effective_leg_end.sequence
+            } else if window_link.display_leg_start.sequence
+                == window_link.effective_leg_end.sequence
                 && matches!(
                     window_link.display_leg_start.path_termination.trim(),
                     "PI" | "RF"
@@ -1506,16 +1513,15 @@ fn resolve_procedure_materialization_legs_with_provenance(
         if fix_records.len() == 1 {
             let standalone = fix_records[0];
             if standalone.path_termination.trim() == "PI" {
-                let standalone_plan =
-                    plan_standalone_pi_window(
-                        standalone,
-                        TailPlanningContext {
-                            leg_records,
-                            previous_display_path: previous_display_path.as_ref(),
-                            previous_leg_to: previous_leg_to.as_ref(),
-                            next_segment_records,
-                        },
-                    )?;
+                let standalone_plan = plan_standalone_pi_window(
+                    standalone,
+                    TailPlanningContext {
+                        leg_records,
+                        previous_display_path: previous_display_path.as_ref(),
+                        previous_leg_to: previous_leg_to.as_ref(),
+                        next_segment_records,
+                    },
+                )?;
                 let Some(tail_link) = standalone_plan else {
                     continue;
                 };
@@ -1573,23 +1579,27 @@ fn required_procedure_turn_sequences_for_segments(
     let mut required = std::collections::BTreeSet::<i32>::new();
 
     for (segment_index, (role, leg_records, _, _)) in segments.iter().enumerate() {
-        let chained_leading_pi_is_redundant = matches!(role, MaterializedSegmentRole::EnrouteTransition)
-            && segment_index > 0
-            && matches!(
-                segments.get(segment_index - 1).map(|(prev_role, _, _, _)| prev_role),
-                Some(MaterializedSegmentRole::EnrouteTransition)
-            )
-            && leg_records
-                .first()
-                .filter(|record| record.path_termination.trim() == "PI")
-                .zip(
+        let chained_leading_pi_is_redundant =
+            matches!(role, MaterializedSegmentRole::EnrouteTransition)
+                && segment_index > 0
+                && matches!(
                     segments
                         .get(segment_index - 1)
-                        .and_then(|(_, previous_records, _, _)| previous_records.last()),
+                        .map(|(prev_role, _, _, _)| prev_role),
+                    Some(MaterializedSegmentRole::EnrouteTransition)
                 )
-                .is_some_and(|(first_record, previous_record)| {
-                    first_record.nav_ref.is_some() && first_record.nav_ref == previous_record.nav_ref
-                });
+                && leg_records
+                    .first()
+                    .filter(|record| record.path_termination.trim() == "PI")
+                    .zip(
+                        segments
+                            .get(segment_index - 1)
+                            .and_then(|(_, previous_records, _, _)| previous_records.last()),
+                    )
+                    .is_some_and(|(first_record, previous_record)| {
+                        first_record.nav_ref.is_some()
+                            && first_record.nav_ref == previous_record.nav_ref
+                    });
 
         for record in leg_records {
             if record.path_termination.trim() != "PI" {
@@ -1949,8 +1959,11 @@ fn validate_heading_continuity_checks(
     if !validate_heading_continuity {
         return Ok(());
     }
-    let mut worst_gap: Option<(f64, &DisplayElementHeadingSignature, &DisplayElementHeadingSignature)> =
-        None;
+    let mut worst_gap: Option<(
+        f64,
+        &DisplayElementHeadingSignature,
+        &DisplayElementHeadingSignature,
+    )> = None;
     let mut worst_violation: Option<(
         f64,
         f64,
@@ -2055,8 +2068,7 @@ fn validate_heading_continuity_checks(
 }
 
 fn positions_nearly_equal(a: LatLon, b: LatLon) -> bool {
-    (a.lat - b.lat).abs() < POSITION_EPSILON_DEG
-        && (a.lon - b.lon).abs() < POSITION_EPSILON_DEG
+    (a.lat - b.lat).abs() < POSITION_EPSILON_DEG && (a.lon - b.lon).abs() < POSITION_EPSILON_DEG
 }
 
 fn continuity_heading_tolerance_deg(
@@ -2066,9 +2078,7 @@ fn continuity_heading_tolerance_deg(
     if previous.in_procedure_turn_context && current.in_procedure_turn_context {
         return 180.0;
     }
-    if let Some(allowed_delta_deg) =
-        published_acute_turn_heading_tolerance_deg(previous, current)
-    {
+    if let Some(allowed_delta_deg) = published_acute_turn_heading_tolerance_deg(previous, current) {
         return allowed_delta_deg;
     }
     for hold_fix in [previous.hold_fix_position, current.hold_fix_position]
@@ -2261,7 +2271,12 @@ fn should_skip_reconciliation_anchor_leg(
         return false;
     }
     reentry_terminal_state(previous_display_path, previous_leg_to).is_some_and(|terminal_state| {
-        reentry_candidate_skips(terminal_state, current_from_record, current_from, current_to)
+        reentry_candidate_skips(
+            terminal_state,
+            current_from_record,
+            current_from,
+            current_to,
+        )
     })
 }
 
@@ -2404,7 +2419,9 @@ fn terminal_state_for_resolved_leg(leg: &ResolvedLeg) -> Option<TerminalState> {
 #[cfg(test)]
 fn start_requirement_for_resolved_leg(leg: &ResolvedLeg) -> Option<StartRequirement> {
     let provenance = leg.procedure_provenance.as_ref()?;
-    let anchor_position = Some(terminal_position_for_nav_ref(provenance.display_path.as_ref())?);
+    let anchor_position = Some(terminal_position_for_nav_ref(
+        provenance.display_path.as_ref(),
+    )?);
     let terminal_course_deg = provenance
         .display_path
         .as_ref()
@@ -2418,9 +2435,7 @@ fn start_requirement_for_resolved_leg(leg: &ResolvedLeg) -> Option<StartRequirem
 }
 
 #[cfg(test)]
-fn terminal_position_for_nav_ref(
-    display_path: Option<&LegDisplayPath>,
-) -> Option<LatLon> {
+fn terminal_position_for_nav_ref(display_path: Option<&LegDisplayPath>) -> Option<LatLon> {
     display_path.and_then(previous_display_path_terminal_position)
 }
 
@@ -2445,9 +2460,9 @@ fn start_requirement_for_direct_to_fix_with_following_course(
     Some(direct_to_fix_with_course_continuation_requirement(
         direct_to_fix_record.nav_ref.clone()?,
         direct_to_fix_record.nav_position,
-        following_course_record
-            .magnetic_course_deg
-            .map(|course| course + record_magnetic_variation_deg(following_course_record).unwrap_or(0.0)),
+        following_course_record.magnetic_course_deg.map(|course| {
+            course + record_magnetic_variation_deg(following_course_record).unwrap_or(0.0)
+        }),
         following_course_record.nav_ref.clone(),
         following_course_record.nav_position,
     ))
@@ -2460,9 +2475,9 @@ fn start_requirement_for_feeder_course_to_fix_with_common_resume(
     Some(yieldable_course_to_fix_requirement(
         feeder_course_to_fix_record.nav_ref.clone()?,
         feeder_course_to_fix_record.nav_position,
-        resumed_common_record
-            .magnetic_course_deg
-            .map(|course| course + record_magnetic_variation_deg(resumed_common_record).unwrap_or(0.0)),
+        resumed_common_record.magnetic_course_deg.map(|course| {
+            course + record_magnetic_variation_deg(resumed_common_record).unwrap_or(0.0)
+        }),
         resumed_common_record.nav_ref.clone(),
         resumed_common_record.nav_position,
     ))
@@ -2586,21 +2601,27 @@ fn previous_window_context(
         terminal_position: previous_display_path.and_then(previous_display_path_terminal_position),
         terminal_course: previous_display_path.and_then(final_course_of_display_path),
         previous_was_course_to_intercept: resolved_last.is_some_and(|previous| {
-            previous.procedure_provenance.as_ref().is_some_and(|provenance| {
-                matches!(
-                    &provenance.path_termination,
-                    PathTermination::Other(label) if label.trim() == "CI"
-                )
-            })
+            previous
+                .procedure_provenance
+                .as_ref()
+                .is_some_and(|provenance| {
+                    matches!(
+                        &provenance.path_termination,
+                        PathTermination::Other(label) if label.trim() == "CI"
+                    )
+                })
         }),
         previous_leg_consumed_same_pi: resolved_last.is_some_and(|previous| {
-            previous.procedure_provenance.as_ref().is_some_and(|provenance| {
-                provenance.leg_sequence == current_pair_start.sequence
-                    && matches!(
-                        &provenance.path_termination,
-                        PathTermination::Other(label) if label.trim() == "PI"
-                    )
-            })
+            previous
+                .procedure_provenance
+                .as_ref()
+                .is_some_and(|provenance| {
+                    provenance.leg_sequence == current_pair_start.sequence
+                        && matches!(
+                            &provenance.path_termination,
+                            PathTermination::Other(label) if label.trim() == "PI"
+                        )
+                })
         }),
     }
 }
@@ -2739,20 +2760,28 @@ fn record_with_inferred_anchor_position(
     }
 
     let mut inferred = record.clone();
-    let sources = leg_records
-        .iter()
-        .chain(next_segment_records.into_iter().flat_map(|records| records.iter()));
+    let sources = leg_records.iter().chain(
+        next_segment_records
+            .into_iter()
+            .flat_map(|records| records.iter()),
+    );
 
     if inferred.nav_position.is_none() {
         inferred.nav_position = sources
             .clone()
-            .find(|candidate| candidate.nav_ref == record.nav_ref && candidate.nav_position.is_some())
+            .find(|candidate| {
+                candidate.nav_ref == record.nav_ref && candidate.nav_position.is_some()
+            })
             .and_then(|candidate| candidate.nav_position);
     }
     if inferred.defining_nav_position.is_none() {
         inferred.defining_nav_position = leg_records
             .iter()
-            .chain(next_segment_records.into_iter().flat_map(|records| records.iter()))
+            .chain(
+                next_segment_records
+                    .into_iter()
+                    .flat_map(|records| records.iter()),
+            )
             .find(|candidate| {
                 candidate.defining_nav_ref == record.defining_nav_ref
                     && candidate.defining_nav_position.is_some()
@@ -2807,7 +2836,11 @@ fn resolve_procedure_window<'a>(
     previous: PreviousWindowContext,
     leg_records: &[ProcedureLegMaterializationRecord],
     role: ProcedureSegmentRole,
-) -> (&'a ProcedureLegMaterializationRecord, Option<&'a ProcedureLegMaterializationRecord>, &'a ProcedureLegMaterializationRecord) {
+) -> (
+    &'a ProcedureLegMaterializationRecord,
+    Option<&'a ProcedureLegMaterializationRecord>,
+    &'a ProcedureLegMaterializationRecord,
+) {
     let df_following_cf_record = if pair[1].path_termination.trim() == "DF" {
         fix_records
             .get(current_window_index + 2)
@@ -2890,7 +2923,8 @@ impl ProcedureWindowContinuationPolicy {
             && hold_record.is_some()
             && pair[0].path_termination.trim() == "CF"
             && pair[1].path_termination.trim() == "TF"
-            && previous.terminal_position
+            && previous
+                .terminal_position
                 .zip(pair[0].nav_position)
                 .is_some_and(|(previous_end, anchor_position)| {
                     great_circle_distance_nm(previous_end, anchor_position) <= 0.05
@@ -2899,14 +2933,14 @@ impl ProcedureWindowContinuationPolicy {
             && pair[0].path_termination.trim() == "FA"
             && previous_leg_to.is_some_and(|previous_to| previous_to == from)
             && previous.terminal_position.is_some();
-        let continuing_from_previous_anchor = previous.terminal_position
+        let continuing_from_previous_anchor = previous
+            .terminal_position
             .zip(pair[0].nav_position)
             .is_some_and(|(previous_end, anchor_position)| {
                 great_circle_distance_nm(previous_end, anchor_position) <= 0.05
             });
-        let resume_common_cf_from_previous_path =
-            role == ProcedureSegmentRole::Common
-                && traversal_policy.resumes_common_on_window(current_window_index);
+        let resume_common_cf_from_previous_path = role == ProcedureSegmentRole::Common
+            && traversal_policy.resumes_common_on_window(current_window_index);
         Self {
             continuing_if_to_cf_join,
             continuing_same_anchor_window,
@@ -2960,9 +2994,7 @@ fn determine_procedure_window_link<'a>(
         && previous.previous_leg_consumed_same_pi
     {
         pair[1]
-    } else if pair[0].path_termination.trim() == "RF"
-        && policy.continuing_from_previous_anchor
-    {
+    } else if pair[0].path_termination.trim() == "RF" && policy.continuing_from_previous_anchor {
         pair[1]
     } else if policy.resume_common_cf_from_previous_path {
         pair[1]
@@ -2970,7 +3002,8 @@ fn determine_procedure_window_link<'a>(
         pair[0]
     };
     let render_as_empty_join = policy.continuing_if_to_cf_join
-        && previous.terminal_position
+        && previous
+            .terminal_position
             .zip(pair[1].nav_position)
             .is_some_and(|(start, end)| great_circle_distance_nm(start, end) <= 0.05);
     ProcedureWindowLinkBehavior {
@@ -3115,7 +3148,9 @@ fn plan_trailing_procedure_window<'a>(
         })
     } else if tail_state.common_resume_skips_trailing_cf {
         None
-    } else if last_fix.path_termination.trim() == "PI" && trailing_record.path_termination.trim() == "CF" {
+    } else if last_fix.path_termination.trim() == "PI"
+        && trailing_record.path_termination.trim() == "CF"
+    {
         display_path_for_procedure_leg(
             planning.leg_records,
             trailing_record,
@@ -3145,17 +3180,23 @@ fn plan_standalone_pi_window<'a>(
     standalone: &'a ProcedureLegMaterializationRecord,
     planning: TailPlanningContext<'a>,
 ) -> AppResult<Option<ProcedureTailLink<'a>>> {
-    let standalone_with_position =
-        record_with_inferred_anchor_position(standalone, planning.leg_records, planning.next_segment_records);
+    let standalone_with_position = record_with_inferred_anchor_position(
+        standalone,
+        planning.leg_records,
+        planning.next_segment_records,
+    );
     let enriched_leg_records =
         leg_records_with_replaced_record(planning.leg_records, &standalone_with_position);
-    let nav_ref = standalone_with_position.nav_ref.clone().ok_or_else(|| AppError {
-        kind: AppErrorKind::InvalidFlightPlan,
-        message: format!(
-            "standalone PI leg materialization encountered missing nav_ref at sequence {}",
-            standalone.sequence
-        ),
-    })?;
+    let nav_ref = standalone_with_position
+        .nav_ref
+        .clone()
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!(
+                "standalone PI leg materialization encountered missing nav_ref at sequence {}",
+                standalone.sequence
+            ),
+        })?;
     let previous_path_state = previous_display_path_state(planning.previous_display_path);
     let display_path = display_path_for_procedure_leg(
         &enriched_leg_records,
@@ -3316,12 +3357,12 @@ fn common_resume_candidate<'a>(
         .get(index.saturating_sub(1))
         .and_then(|prior_record| {
             let prior_fix = prior_record.nav_position?;
-            let prior_course_deg = prior_record
-                .magnetic_course_deg
-                .map(|course| course + record_magnetic_variation_deg(prior_record).unwrap_or(0.0))?;
+            let prior_course_deg = prior_record.magnetic_course_deg.map(|course| {
+                course + record_magnetic_variation_deg(prior_record).unwrap_or(0.0)
+            })?;
             (positions_nearly_equal(current_position, prior_fix)
                 && positions_nearly_equal(current_position, course_anchor))
-                .then_some(prior_course_deg)
+            .then_some(prior_course_deg)
         })
         .or(Some(current_course_deg));
     Some(CommonResumeCandidate {
@@ -3408,12 +3449,15 @@ fn segment_traversal_policy<'a>(
     fix_records: &[&'a ProcedureLegMaterializationRecord],
 ) -> SegmentTraversalPolicy<'a> {
     let previous_was_hold_like = resolved_last.is_some_and(|previous| {
-        previous.procedure_provenance.as_ref().is_some_and(|provenance| {
-            matches!(
-                &provenance.path_termination,
-                PathTermination::Other(label) if matches!(label.trim(), "HF" | "HM")
-            )
-        })
+        previous
+            .procedure_provenance
+            .as_ref()
+            .is_some_and(|provenance| {
+                matches!(
+                    &provenance.path_termination,
+                    PathTermination::Other(label) if matches!(label.trim(), "HF" | "HM")
+                )
+            })
     });
     SegmentTraversalPolicy {
         common_resume_target: resumed_common_target(
@@ -3436,7 +3480,7 @@ fn project_terminal_state_through_intervening_climbs(
     preceding_anchor_record: &ProcedureLegMaterializationRecord,
     direct_to_fix_record: &ProcedureLegMaterializationRecord,
     segment_records: &[ProcedureLegMaterializationRecord],
- ) -> (Option<LatLon>, Option<f64>) {
+) -> (Option<LatLon>, Option<f64>) {
     let (Some(mut current_position), Some(mut current_course_deg)) =
         (current_position, current_course_deg)
     else {
@@ -3444,7 +3488,8 @@ fn project_terminal_state_through_intervening_climbs(
     };
     let mut current_altitude_ft = preceding_anchor_record.altitude_1_ft;
     for record in segment_records.iter().filter(|record| {
-        record.sequence > preceding_anchor_record.sequence && record.sequence < direct_to_fix_record.sequence
+        record.sequence > preceding_anchor_record.sequence
+            && record.sequence < direct_to_fix_record.sequence
     }) {
         if record.path_termination.trim() != "CA" {
             continue;
@@ -3456,7 +3501,8 @@ fn project_terminal_state_through_intervening_climbs(
         else {
             continue;
         };
-        let (Some(start_alt_ft), Some(target_alt_ft)) = (current_altitude_ft, record.altitude_1_ft) else {
+        let (Some(start_alt_ft), Some(target_alt_ft)) = (current_altitude_ft, record.altitude_1_ft)
+        else {
             current_course_deg = course_deg;
             continue;
         };
@@ -3478,13 +3524,14 @@ fn should_yield_direct_to_fix_to_following_course(
     following_course_record: &ProcedureLegMaterializationRecord,
     common_segment: bool,
 ) -> bool {
-    let (projected_position, projected_course_deg) = project_terminal_state_through_intervening_climbs(
-        current_position,
-        current_course_deg,
-        preceding_anchor_record,
-        direct_to_fix_record,
-        segment_records,
-    );
+    let (projected_position, projected_course_deg) =
+        project_terminal_state_through_intervening_climbs(
+            current_position,
+            current_course_deg,
+            preceding_anchor_record,
+            direct_to_fix_record,
+            segment_records,
+        );
     terminal_state_for_handoff(
         projected_position,
         projected_course_deg,
@@ -3511,10 +3558,12 @@ fn should_yield_feeder_course_to_fix_to_resumed_common_segment(
     resumed_common_record: &ProcedureLegMaterializationRecord,
 ) -> bool {
     terminal_state_for_handoff(current_position, current_course_deg, current_anchor, false)
-        .zip(start_requirement_for_feeder_course_to_fix_with_common_resume(
-            feeder_course_to_fix_record,
-            resumed_common_record,
-        ))
+        .zip(
+            start_requirement_for_feeder_course_to_fix_with_common_resume(
+                feeder_course_to_fix_record,
+                resumed_common_record,
+            ),
+        )
         .is_some_and(|(terminal_state, start_requirement)| {
             matches!(
                 reconcile_handoff(&terminal_state, &start_requirement),
@@ -4182,12 +4231,13 @@ mod tests {
         })
         .expect("seeded plan");
 
-        let route = project_flight_plan_route_with_resolver(&plan, |nav_ref, procedure_airport_id| {
-            let airport_id = procedure_airport_id.unwrap_or("");
-            nav_ref_position_from_store(&store, airport_id, nav_ref)
-                .ok_or_else(|| format!("missing position for {nav_ref:?} airport={airport_id}"))
-        })
-        .expect("project seeded route");
+        let route =
+            project_flight_plan_route_with_resolver(&plan, |nav_ref, procedure_airport_id| {
+                let airport_id = procedure_airport_id.unwrap_or("");
+                nav_ref_position_from_store(&store, airport_id, nav_ref)
+                    .ok_or_else(|| format!("missing position for {nav_ref:?} airport={airport_id}"))
+            })
+            .expect("project seeded route");
 
         assert_eq!(route.len(), 3);
         assert_eq!(route[0].leg_id, "component-0-1");
@@ -4369,8 +4419,8 @@ mod tests {
         output_stem: &str,
         emit_steps: bool,
     ) {
-        let selected_enroute_transition = (!enroute_transition.trim().is_empty())
-            .then(|| enroute_transition.trim().to_string());
+        let selected_enroute_transition =
+            (!enroute_transition.trim().is_empty()).then(|| enroute_transition.trim().to_string());
         let output_dir = std::env::var("AEROBAG_PROCEDURE_PLOT_DIR")
             .unwrap_or_else(|_| "/tmp/procedure-plots".to_string());
         fs::create_dir_all(&output_dir).expect("create procedure plot output dir");
@@ -4769,7 +4819,9 @@ mod tests {
         new_in_current: usize,
     }
 
-    fn capture_resolved_legs(materialized: &MaterializedProcedure) -> Vec<ApproachCaptureResolvedLeg> {
+    fn capture_resolved_legs(
+        materialized: &MaterializedProcedure,
+    ) -> Vec<ApproachCaptureResolvedLeg> {
         materialized
             .resolved_legs
             .iter()
@@ -4883,8 +4935,9 @@ mod tests {
             .unwrap_or_else(|err| panic!("read capture jsonl {}: {err}", path.display()));
         let mut rows = HashMap::new();
         for line in text.lines().filter(|line| !line.trim().is_empty()) {
-            let record: ApproachCaptureRecord = serde_json::from_str(line)
-                .unwrap_or_else(|err| panic!("decode capture json line from {}: {err}", path.display()));
+            let record: ApproachCaptureRecord = serde_json::from_str(line).unwrap_or_else(|err| {
+                panic!("decode capture json line from {}: {err}", path.display())
+            });
             rows.insert(capture_case_key(&record), line.to_string());
         }
         rows
@@ -5284,7 +5337,10 @@ mod tests {
         Vec::new()
     }
 
-    fn parse_runway_procedure_suffix(procedure_id: &str, prefix: char) -> Option<(String, Option<char>)> {
+    fn parse_runway_procedure_suffix(
+        procedure_id: &str,
+        prefix: char,
+    ) -> Option<(String, Option<char>)> {
         let remainder = procedure_id.strip_prefix(prefix)?;
         if remainder.is_empty() {
             return None;
@@ -5703,7 +5759,9 @@ mod tests {
         let err = validate_heading_continuity_checks(&checks, true, "VOR-A").unwrap_err();
 
         assert_eq!(err.kind, AppErrorKind::InvalidFlightPlan);
-        assert!(err.message.contains("procedure heading continuity violated for VOR-A"));
+        assert!(err
+            .message
+            .contains("procedure heading continuity violated for VOR-A"));
     }
 
     #[test]
@@ -6218,11 +6276,9 @@ mod tests {
                                 ) {
                                     let distance_to_fix_nm =
                                         great_circle_distance_nm(start_position, fix_position);
-                                    let climb_minutes = ((target_altitude_ft - start_altitude_ft)
-                                        .max(0.0))
-                                        / 500.0;
-                                    let climb_distance_nm =
-                                        90.0 * (climb_minutes / 60.0);
+                                    let climb_minutes =
+                                        ((target_altitude_ft - start_altitude_ft).max(0.0)) / 500.0;
+                                    let climb_distance_nm = 90.0 * (climb_minutes / 60.0);
                                     let overshoot_nm =
                                         (climb_distance_nm - distance_to_fix_nm).max(0.0);
                                     if overshoot_nm > 0.1 {
@@ -6341,7 +6397,10 @@ mod tests {
         for line in &matches {
             eprintln!("{line}");
         }
-        assert!(!matches.is_empty(), "expected at least one VR approach example");
+        assert!(
+            !matches.is_empty(),
+            "expected at least one VR approach example"
+        );
     }
 
     #[test]
@@ -6463,7 +6522,10 @@ mod tests {
         for line in &matches {
             eprintln!("{line}");
         }
-        assert!(!matches.is_empty(), "expected at least one CI approach example");
+        assert!(
+            !matches.is_empty(),
+            "expected at least one CI approach example"
+        );
     }
 
     #[test]
@@ -6584,15 +6646,17 @@ mod tests {
         for line in &matches {
             eprintln!("{line}");
         }
-        assert!(!matches.is_empty(), "expected at least one CD approach example");
+        assert!(
+            !matches.is_empty(),
+            "expected at least one CD approach example"
+        );
     }
 
     #[test]
     #[ignore = "manual audit for selected CD records"]
     fn audit_selected_cd_records() {
         let store = load_snapshot_nav_kv_store();
-        for (airport_id, procedure_id) in [("KBFI", "I14R"), ("KBFI", "I32L"), ("KVNY", "I16RZ")]
-        {
+        for (airport_id, procedure_id) in [("KBFI", "I14R"), ("KBFI", "I32L"), ("KVNY", "I16RZ")] {
             let records = read_required_from_store::<Vec<ProcedureLegMaterializationRecord>>(
                 &store,
                 crate::NavKvQuery::ProcedureMaterializationRows {
@@ -6658,7 +6722,6 @@ mod tests {
             }
         }
     }
-
 
     #[test]
     #[ignore = "manual audit for selected zero-length arc records"]
@@ -6756,9 +6819,18 @@ mod tests {
             .filter(|record| record.key.route_type.trim() == "I")
             .cloned()
             .collect::<Vec<_>>();
-        let leg_start = i_records.iter().find(|record| record.sequence == 50).unwrap();
-        let leg_end = i_records.iter().find(|record| record.sequence == 60).unwrap();
-        let hold_record = i_records.iter().find(|record| record.sequence == 70).unwrap();
+        let leg_start = i_records
+            .iter()
+            .find(|record| record.sequence == 50)
+            .unwrap();
+        let leg_end = i_records
+            .iter()
+            .find(|record| record.sequence == 60)
+            .unwrap();
+        let hold_record = i_records
+            .iter()
+            .find(|record| record.sequence == 70)
+            .unwrap();
         let path = display_path_for_procedure_leg(
             &i_records,
             leg_start,
@@ -6791,9 +6863,18 @@ mod tests {
             .filter(|record| record.key.route_type.trim() == "S")
             .cloned()
             .collect::<Vec<_>>();
-        let leg_start = s_records.iter().find(|record| record.sequence == 50).unwrap();
-        let leg_end = s_records.iter().find(|record| record.sequence == 60).unwrap();
-        let hold_record = s_records.iter().find(|record| record.sequence == 70).unwrap();
+        let leg_start = s_records
+            .iter()
+            .find(|record| record.sequence == 50)
+            .unwrap();
+        let leg_end = s_records
+            .iter()
+            .find(|record| record.sequence == 60)
+            .unwrap();
+        let hold_record = s_records
+            .iter()
+            .find(|record| record.sequence == 70)
+            .unwrap();
         let path = display_path_for_procedure_leg(
             &s_records,
             leg_start,
@@ -6831,9 +6912,17 @@ mod tests {
             })
             .cloned()
             .collect::<Vec<_>>();
-        let pi_record = a_records.iter().find(|record| record.sequence == 40).unwrap();
-        let cf_record = a_records.iter().find(|record| record.sequence == 50).unwrap();
-        let pi_path = display_path_for_procedure_leg(&a_records, pi_record, pi_record, None, None, None).unwrap();
+        let pi_record = a_records
+            .iter()
+            .find(|record| record.sequence == 40)
+            .unwrap();
+        let cf_record = a_records
+            .iter()
+            .find(|record| record.sequence == 50)
+            .unwrap();
+        let pi_path =
+            display_path_for_procedure_leg(&a_records, pi_record, pi_record, None, None, None)
+                .unwrap();
         let initial_position_override = previous_display_path_terminal_position(&pi_path);
         let initial_course_override = final_course_of_display_path(&pi_path);
         eprintln!("pi terminal position={initial_position_override:?}");
@@ -6908,7 +6997,12 @@ mod tests {
         let common_route_type = approach_common_route_type(&rows).unwrap();
         let common_legs = filter_procedure_records(&legs, "KMCC", "I16", &common_route_type, "");
         let common_items = concretize_procedure_materialization_legs(&common_legs, false);
-        segments.push((MaterializedSegmentRole::Common, common_legs, common_items, false));
+        segments.push((
+            MaterializedSegmentRole::Common,
+            common_legs,
+            common_items,
+            false,
+        ));
         let resolved = resolve_procedure_materialization_legs_with_provenance(
             "KMCC",
             "I16",
@@ -7401,14 +7495,16 @@ mod tests {
 
         let mut changed_output = String::new();
         for line in changed_lines {
-            changed_output.push_str(
-                &serde_json::to_string(&line).expect("serialize changed capture line"),
-            );
+            changed_output
+                .push_str(&serde_json::to_string(&line).expect("serialize changed capture line"));
             changed_output.push('\n');
         }
         fs::write(&changed_jsonl_path, changed_output).expect("write changed captures jsonl");
 
-        assert_eq!(summary.missing_from_current, 0, "missing cases from current capture");
+        assert_eq!(
+            summary.missing_from_current, 0,
+            "missing cases from current capture"
+        );
         assert_eq!(summary.new_in_current, 0, "new cases in current capture");
     }
 
@@ -7579,7 +7675,12 @@ mod tests {
         let common_route_type = approach_common_route_type(&rows).expect("common route type");
         let common_legs = filter_procedure_records(&legs, "KHLN", "I27-Y", &common_route_type, "");
         let common_items = concretize_procedure_materialization_legs(&common_legs, false);
-        segments.push((MaterializedSegmentRole::Common, common_legs, common_items, false));
+        segments.push((
+            MaterializedSegmentRole::Common,
+            common_legs,
+            common_items,
+            false,
+        ));
         let transition_leg_records = &segments[0].1;
         let common_leg_records = &segments[1].1;
         let previous_path = display_path_for_procedure_leg(
@@ -7596,9 +7697,12 @@ mod tests {
             None,
             None,
         );
-        let previous_terminal_position =
-            previous_path.as_ref().and_then(previous_display_path_terminal_position);
-        let previous_terminal_course = previous_path.as_ref().and_then(final_course_of_display_path);
+        let previous_terminal_position = previous_path
+            .as_ref()
+            .and_then(previous_display_path_terminal_position);
+        let previous_terminal_course = previous_path
+            .as_ref()
+            .and_then(final_course_of_display_path);
         if let (Some(current_position), Some(current_course_deg), Some(if_fix), Some(next_fix)) = (
             previous_terminal_position,
             previous_terminal_course,
@@ -7621,9 +7725,7 @@ mod tests {
                 .expect("I-20 course anchor");
             let course_deg = common_cf
                 .magnetic_course_deg
-                .map(|course| {
-                    course + record_magnetic_variation_deg(common_cf).unwrap_or(0.0)
-                })
+                .map(|course| course + record_magnetic_variation_deg(common_cf).unwrap_or(0.0))
                 .expect("I-20 course");
             let offset = local_to_en(course_anchor, current_position);
             let course_unit = course_unit_vector(course_deg);
@@ -7645,12 +7747,8 @@ mod tests {
         }
         eprintln!(
             "common_segment_resume_target_index={:?}",
-            resumed_common_target(
-                previous_path.as_ref(),
-                true,
-                common_leg_records,
-            )
-            .map(|target| target.index)
+            resumed_common_target(previous_path.as_ref(), true, common_leg_records,)
+                .map(|target| target.index)
         );
         let resolved = resolve_procedure_materialization_legs_with_provenance(
             "KHLN",
@@ -7715,7 +7813,12 @@ mod tests {
         let common_route_type = approach_common_route_type(&rows).expect("common route type");
         let common_legs = filter_procedure_records(&legs, "KMCC", "I16", &common_route_type, "");
         let common_items = concretize_procedure_materialization_legs(&common_legs, false);
-        segments.push((MaterializedSegmentRole::Common, common_legs, common_items, false));
+        segments.push((
+            MaterializedSegmentRole::Common,
+            common_legs,
+            common_items,
+            false,
+        ));
 
         let transition_leg_records = &segments[0].1;
         let common_leg_records = &segments[1].1;
@@ -7733,9 +7836,12 @@ mod tests {
             None,
             None,
         );
-        let previous_terminal_position =
-            previous_path.as_ref().and_then(previous_display_path_terminal_position);
-        let previous_terminal_course = previous_path.as_ref().and_then(final_course_of_display_path);
+        let previous_terminal_position = previous_path
+            .as_ref()
+            .and_then(previous_display_path_terminal_position);
+        let previous_terminal_course = previous_path
+            .as_ref()
+            .and_then(final_course_of_display_path);
         eprintln!("previous_terminal_position={previous_terminal_position:?}");
         eprintln!("previous_terminal_course={previous_terminal_course:?}");
         eprintln!("common rows:");
@@ -7774,9 +7880,7 @@ mod tests {
                     .expect("cf anchor");
                 let course_deg = record
                     .magnetic_course_deg
-                    .map(|course| {
-                        course + record_magnetic_variation_deg(record).unwrap_or(0.0)
-                    })
+                    .map(|course| course + record_magnetic_variation_deg(record).unwrap_or(0.0))
                     .expect("cf course");
                 let offset = local_to_en(course_anchor, current_position);
                 let course_unit = course_unit_vector(course_deg);
@@ -7892,7 +7996,9 @@ mod tests {
             .expect("expected hold display path")
             .elements;
         assert!(
-            elements.iter().any(|element| matches!(element, LegDisplayElement::Arc { .. })),
+            elements
+                .iter()
+                .any(|element| matches!(element, LegDisplayElement::Arc { .. })),
             "expected ISOGE hold leg to include hold-turn arc geometry"
         );
     }

@@ -7,15 +7,15 @@ use crate::planning::FlightPlanRowActionId;
 use crate::{
     chart_page::{airport_ids_from_plan, derive_chart_page_state_from_airports},
     describe_plate_procedure_load_options, describe_procedure_options_from_rows,
-    describe_show_plate_for_procedure, flight_leg_distance_nm,
-    enrich_procedure_materialization_records_from_store, insert_airway_after_waypoint,
-    insert_waypoint, materialize_procedure_from_records, prepare_airway_presentation,
-    project_flight_plan_route_with_resolver, AirwayAutoSelection,
-    AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate, AirwayPresentationPlan, AirwaySegment,
+    describe_show_plate_for_procedure, enrich_procedure_materialization_records_from_store,
+    flight_leg_distance_nm, insert_airway_after_waypoint, insert_waypoint,
+    materialize_procedure_from_records, prepare_airway_presentation,
+    project_flight_plan_route_with_resolver, AirwayAutoSelection, AirwayBranch,
+    AirwayEntryCandidate, AirwayExitCandidate, AirwayPresentationPlan, AirwaySegment,
     AirwaySpatialPoint, AirwaySuggestion, AppError, AppErrorKind, AppResult, CifpTppMatchRow,
     FlightPlan, FlightPlanRouteSegment, FlightPlanUiMutation, FlightPlanUiState, LatLon,
-    MaterializedProcedure, NavKvLookup, NavKvQuery, NavKvStore, NavRef, PolygonRecord,
-    NavSymbolFeature, PlateProcedureLoadCandidateInput, ProcedureDistinctRow, ProcedureKind,
+    MaterializedProcedure, NavKvLookup, NavKvQuery, NavKvStore, NavRef, NavSymbolFeature,
+    PlateProcedureLoadCandidateInput, PolygonRecord, ProcedureDistinctRow, ProcedureKind,
     ProcedureLegMaterializationRecord, ProcedureLoadOption, ProcedureOptions, ProcedureSummary,
     ResolvedLeg, ResolvedLegSource, RouteComponent, WaypointIdentifierRecord,
     WaypointIdentifierSuggestion,
@@ -166,9 +166,9 @@ pub fn run_had_operation(store: &NavKvStore, op: HadOperation) -> AppResult<HadO
 fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value, HadReadError> {
     let value = match op {
         HadOperation::ChartCatalog => serde_json::to_value(chart_catalog(store)?)?,
-        HadOperation::MapSelectorState { selected_map_id } => serde_json::to_value(
-            map_selector_state(store, selected_map_id.as_deref())?,
-        )?,
+        HadOperation::MapSelectorState { selected_map_id } => {
+            serde_json::to_value(map_selector_state(store, selected_map_id.as_deref())?)?
+        }
         HadOperation::ChartPageState {
             plan,
             recent_airport_ids,
@@ -528,7 +528,9 @@ fn flight_plan_ui_state(
                 if let Some(first_segment) = matching_segments.next() {
                     row.distance_nm = Some(
                         first_segment.distance_nm
-                            + matching_segments.map(|segment| segment.distance_nm).sum::<f64>(),
+                            + matching_segments
+                                .map(|segment| segment.distance_nm)
+                                .sum::<f64>(),
                     );
                     row.course_deg = Some(first_segment.course_deg);
                 }
@@ -608,10 +610,11 @@ fn map_selector_state(
         .as_ref()
         .map(|view| view.map_view.chart_family.as_str())
         .unwrap_or("sec");
-    let displayed_maps: Vec<MapViewOptionRecord> = displayed_family_maps(&map_views, selected_family_id)
-        .into_iter()
-        .cloned()
-        .collect();
+    let displayed_maps: Vec<MapViewOptionRecord> =
+        displayed_family_maps(&map_views, selected_family_id)
+            .into_iter()
+            .cloned()
+            .collect();
     let geometry = displayed_geometry(store, &displayed_maps)?;
     let selected_region_id = selected_map.as_ref().map(|view| view.region_id.as_str());
     let family_options = supported_chart_families()
@@ -1384,7 +1387,11 @@ fn append_flight_plan_entry(
     }
     let appended = append_flight_plan_tokens(plan, &evaluated)?;
     Ok(FlightPlanUiMutation {
-        ui_state: flight_plan_ui_state(store, appended.clone(), crate::project_ui_state(&appended))?,
+        ui_state: flight_plan_ui_state(
+            store,
+            appended.clone(),
+            crate::project_ui_state(&appended),
+        )?,
         plan: appended,
     })
 }
@@ -1490,7 +1497,9 @@ fn validate_flight_plan_entry(
         };
         match recognized {
             RecognizedInputToken::Waypoint(nav_ref) => {
-                if let Some((airway_index, origin_anchor, airway_name, branches)) = pending_airway.take() {
+                if let Some((airway_index, origin_anchor, airway_name, branches)) =
+                    pending_airway.take()
+                {
                     if exact_airway_materialization(
                         &airway_name,
                         &branches,
@@ -1503,14 +1512,21 @@ fn validate_flight_plan_entry(
                         issues.push(FlightPlanEntryIssue {
                             start: tokens[airway_index].parsed.start,
                             end: token.parsed.end,
-                            message: format!("{} not on {}", nav_ref_display_label(nav_ref), airway_name),
+                            message: format!(
+                                "{} not on {}",
+                                nav_ref_display_label(nav_ref),
+                                airway_name
+                            ),
                         });
                         break;
                     }
                 }
                 current_anchor = Some(nav_ref.clone());
             }
-            RecognizedInputToken::Airway { airway_name, branches } => {
+            RecognizedInputToken::Airway {
+                airway_name,
+                branches,
+            } => {
                 let Some(origin_anchor) = current_anchor.clone() else {
                     issues.push(FlightPlanEntryIssue {
                         start: token.parsed.start,
@@ -1527,7 +1543,8 @@ fn validate_flight_plan_entry(
                     });
                     break;
                 }
-                pending_airway = Some((index, origin_anchor, airway_name.clone(), branches.clone()));
+                pending_airway =
+                    Some((index, origin_anchor, airway_name.clone(), branches.clone()));
             }
         }
     }
@@ -1612,7 +1629,9 @@ fn append_flight_plan_tokens(
 fn append_waypoint_tail(plan: &FlightPlan, waypoint: NavRef) -> Result<FlightPlan, HadReadError> {
     if plan.route_components.is_empty() {
         let mut next_plan = plan.clone();
-        next_plan.route_components.push(RouteComponent::Waypoint { waypoint });
+        next_plan
+            .route_components
+            .push(RouteComponent::Waypoint { waypoint });
         next_plan.resolved_legs.clear();
         return Ok(next_plan.normalized());
     }
@@ -1773,9 +1792,12 @@ impl From<serde_json::Error> for HadReadError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use app_fixtures::load_fixture_nav_kv_pages;
     use crate::{planning::NavElementUiView, AirportId, NavKvRoot, ProcedureKind, SequencingMode};
-    use std::{fs, path::{Path, PathBuf}};
+    use app_fixtures::load_fixture_nav_kv_pages;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
 
     #[test]
     fn operation_reports_page_faults_instead_of_exposing_query_keys() {
@@ -2072,7 +2094,11 @@ mod tests {
         };
         let mut current_ui_state =
             crate::project_ui_state(&crate::build_flight_plan(plan.clone()).expect("build plan"));
-        current_ui_state.guidance.as_mut().expect("guidance").nav_element = NavElementUiView {
+        current_ui_state
+            .guidance
+            .as_mut()
+            .expect("guidance")
+            .nav_element = NavElementUiView {
             active_leg_summary: "LIVE".to_string(),
             cdi_indicator_dots: Some(2.5),
             cdi_offscale_readout: Some("R".to_string()),
@@ -2125,7 +2151,12 @@ mod tests {
             .charts
             .iter()
             .find(|chart| chart.label == "VOR-A")
-            .unwrap_or_else(|| panic!("expected KPAE VOR-A chart in generated catalog: {:?}", kpae.charts))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected KPAE VOR-A chart in generated catalog: {:?}",
+                    kpae.charts
+                )
+            })
             .clone();
         assert!(
             vor_a.asset_path.to_uppercase().contains("VOR-A"),
@@ -2211,7 +2242,10 @@ mod tests {
         println!("generated chart catalog regions: {regions:?}");
         println!("generated chart catalog ids: {ids:?}");
 
-        assert!(regions.len() > 1, "expected multi-region chart catalog, got {regions:?}");
+        assert!(
+            regions.len() > 1,
+            "expected multi-region chart catalog, got {regions:?}"
+        );
     }
 
     #[test]
@@ -2230,7 +2264,9 @@ mod tests {
                     .expect("decode generated map selector state")
             }
             HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete generated map selector state, got missing pages: {pages:?}");
+                panic!(
+                    "expected complete generated map selector state, got missing pages: {pages:?}"
+                );
             }
         };
 
@@ -2274,14 +2310,15 @@ mod tests {
             tac_sc.coverage,
             Some(ChartCoverageRecord::PolygonSetRef(_))
         ));
+        assert!(state
+            .geometry
+            .polygon_sets
+            .iter()
+            .any(|set| set.id == "chart-coverage:tac:sc"));
         assert!(
-            state
-                .geometry
-                .polygon_sets
-                .iter()
-                .any(|set| set.id == "chart-coverage:tac:sc")
+            displayed_regions.len() > 1,
+            "expected multi-region displayed maps, got {displayed_regions:?}"
         );
-        assert!(displayed_regions.len() > 1, "expected multi-region displayed maps, got {displayed_regions:?}");
     }
 
     #[test]
@@ -2300,7 +2337,9 @@ mod tests {
                     .expect("decode generated map selector state")
             }
             HadOperationOutcome::NeedPages { pages } => {
-                panic!("expected complete generated map selector state, got missing pages: {pages:?}");
+                panic!(
+                    "expected complete generated map selector state, got missing pages: {pages:?}"
+                );
             }
         };
 
@@ -2309,9 +2348,9 @@ mod tests {
             let max_latitude = 85.05112878f64;
             let clamped_lat = lat.max(-max_latitude).min(max_latitude);
             let world_x = ((lon + 180.0) / 360.0) * world_size;
-            let world_y =
-                ((1.0 - clamped_lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0)
-                    * world_size;
+            let world_y = ((1.0 - clamped_lat.to_radians().tan().asinh() / std::f64::consts::PI)
+                / 2.0)
+                * world_size;
             let scale = 2.0f64.powf(zoom);
             let x_xyz = (world_x * scale / world_size).floor() as i64;
             let y_xyz = (world_y * scale / world_size).floor() as i64;
@@ -2332,20 +2371,22 @@ mod tests {
                 .levels
                 .iter()
                 .find(|level| level.zoom == 10)
-                .unwrap_or_else(|| panic!("missing zoom-10 level for {map_id}: {:?}", view.map_view.levels));
+                .unwrap_or_else(|| {
+                    panic!(
+                        "missing zoom-10 level for {map_id}: {:?}",
+                        view.map_view.levels
+                    )
+                });
             let (x, y_tms) = lat_lon_to_tile_tms(kmsy_lat, kmsy_lon, level.zoom as f64);
             println!(
                 "{map_id} zoom {} tile x={} y_tms={} bounds x={}..={} y={}..={}",
-                level.zoom,
-                x,
-                y_tms,
-                level.x_min,
-                level.x_max,
-                level.y_tms_min,
-                level.y_tms_max
+                level.zoom, x, y_tms, level.x_min, level.x_max, level.y_tms_min, level.y_tms_max
             );
             assert!(
-                x >= level.x_min && x <= level.x_max && y_tms >= level.y_tms_min && y_tms <= level.y_tms_max,
+                x >= level.x_min
+                    && x <= level.x_max
+                    && y_tms >= level.y_tms_min
+                    && y_tms <= level.y_tms_max,
                 "{map_id} does not cover KMSY at zoom {}",
                 level.zoom
             );
@@ -2398,8 +2439,8 @@ mod tests {
         .expect("resolve OLM through fixture nav_kv");
         match outcome {
             HadOperationOutcome::Complete { result } => {
-                let nav_ref = serde_json::from_value::<Option<NavRef>>(result)
-                    .expect("decode nav ref");
+                let nav_ref =
+                    serde_json::from_value::<Option<NavRef>>(result).expect("decode nav ref");
                 assert_eq!(nav_ref, Some(NavRef::Navaid("OLM".to_string())));
             }
             HadOperationOutcome::NeedPages { pages } => {
@@ -2528,13 +2569,31 @@ mod tests {
         };
 
         assert_eq!(materialized.airway.name, "V2");
-        assert_eq!(materialized.selection.entry.nav_ref, NavRef::Navaid("SEA".to_string()));
-        assert_eq!(materialized.selection.exit.nav_ref, NavRef::Fix("VAMPS".to_string()));
-        assert_eq!(materialized.airway.entry, materialized.selection.entry.nav_ref);
-        assert_eq!(materialized.airway.exit, materialized.selection.exit.nav_ref);
+        assert_eq!(
+            materialized.selection.entry.nav_ref,
+            NavRef::Navaid("SEA".to_string())
+        );
+        assert_eq!(
+            materialized.selection.exit.nav_ref,
+            NavRef::Fix("VAMPS".to_string())
+        );
+        assert_eq!(
+            materialized.airway.entry,
+            materialized.selection.entry.nav_ref
+        );
+        assert_eq!(
+            materialized.airway.exit,
+            materialized.selection.exit.nav_ref
+        );
         assert!(!materialized.resolved_legs.is_empty());
-        assert_eq!(materialized.resolved_legs.first().unwrap().from, materialized.airway.entry);
-        assert_eq!(materialized.resolved_legs.last().unwrap().to, materialized.airway.exit);
+        assert_eq!(
+            materialized.resolved_legs.first().unwrap().from,
+            materialized.airway.entry
+        );
+        assert_eq!(
+            materialized.resolved_legs.last().unwrap().to,
+            materialized.airway.exit
+        );
     }
 
     #[test]
@@ -2577,9 +2636,18 @@ mod tests {
 
         assert!(!preview.can_commit);
         assert_eq!(preview.tokens.len(), 3);
-        assert_eq!(preview.tokens[0].state, FlightPlanEntryTokenState::Recognized);
-        assert_eq!(preview.tokens[1].state, FlightPlanEntryTokenState::Recognized);
-        assert_eq!(preview.tokens[2].state, FlightPlanEntryTokenState::Recognized);
+        assert_eq!(
+            preview.tokens[0].state,
+            FlightPlanEntryTokenState::Recognized
+        );
+        assert_eq!(
+            preview.tokens[1].state,
+            FlightPlanEntryTokenState::Recognized
+        );
+        assert_eq!(
+            preview.tokens[2].state,
+            FlightPlanEntryTokenState::Recognized
+        );
         assert_eq!(preview.issues.len(), 1);
         assert!(preview.issues[0].message.contains("V112"));
         assert_eq!(preview.issues[0].start, 4);
@@ -2616,8 +2684,10 @@ mod tests {
         )
         .expect("append route entry")
         {
-            HadOperationOutcome::Complete { result } => serde_json::from_value::<FlightPlanUiMutation>(result)
-                .expect("decode append mutation"),
+            HadOperationOutcome::Complete { result } => {
+                serde_json::from_value::<FlightPlanUiMutation>(result)
+                    .expect("decode append mutation")
+            }
             HadOperationOutcome::NeedPages { pages } => {
                 panic!("expected complete append, got missing pages: {pages:?}");
             }
@@ -2670,8 +2740,10 @@ mod tests {
         )
         .expect("append route entry to empty plan")
         {
-            HadOperationOutcome::Complete { result } => serde_json::from_value::<FlightPlanUiMutation>(result)
-                .expect("decode append mutation"),
+            HadOperationOutcome::Complete { result } => {
+                serde_json::from_value::<FlightPlanUiMutation>(result)
+                    .expect("decode append mutation")
+            }
             HadOperationOutcome::NeedPages { pages } => {
                 panic!("expected complete append, got missing pages: {pages:?}");
             }

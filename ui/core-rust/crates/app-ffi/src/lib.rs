@@ -114,10 +114,7 @@ pub fn activate_direct_to_leg_ui_json(
     serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
-pub fn replace_flight_plan_state_json(
-    state_json: &str,
-    plan_json: &str,
-) -> Result<String, String> {
+pub fn replace_flight_plan_state_json(state_json: &str, plan_json: &str) -> Result<String, String> {
     let state: app_core::AppState =
         serde_json::from_str(state_json).map_err(|err| err.to_string())?;
     let plan: app_core::FlightPlan =
@@ -639,7 +636,10 @@ pub fn set_raster_map_catalog_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-pub fn select_map_in_session_json(handle: u64, selected_map_id_json: &str) -> Result<String, String> {
+pub fn select_map_in_session_json(
+    handle: u64,
+    selected_map_id_json: &str,
+) -> Result<String, String> {
     let selected_map_id: String =
         serde_json::from_str(selected_map_id_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::select_map_in_session(handle as u32, &selected_map_id)
@@ -751,8 +751,31 @@ pub fn get_raster_tile_plan_in_session_json(
 ) -> Result<String, String> {
     let viewport: app_core::MapViewport =
         serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
-    let plan = app_core::get_raster_tile_plan_in_session(handle as u32, viewport, width_px, height_px)
-        .map_err(|err| err.to_string())?;
+    let plan =
+        app_core::get_raster_tile_plan_in_session(handle as u32, viewport, width_px, height_px)
+            .map_err(|err| err.to_string())?;
+    serde_json::to_string(&plan).map_err(|err| err.to_string())
+}
+
+pub fn get_raster_tile_plan_in_session_with_options_json(
+    handle: u64,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+    max_tile_display_multiplier: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let plan = app_core::get_raster_tile_plan_in_session_with_options(
+        handle as u32,
+        viewport,
+        width_px,
+        height_px,
+        app_core::RasterTilePlanOptions {
+            max_tile_display_multiplier,
+        },
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
 
@@ -761,8 +784,12 @@ pub fn render_terrain_overlay_tile_in_session_bytes(
     tile_bytes: &[u8],
     aircraft_altitude_ft: Option<f64>,
 ) -> Result<Vec<u8>, String> {
-    app_core::render_terrain_overlay_tile_in_session(handle as u32, tile_bytes, aircraft_altitude_ft)
-        .map_err(|err| err.to_string())
+    app_core::render_terrain_overlay_tile_in_session(
+        handle as u32,
+        tile_bytes,
+        aircraft_altitude_ft,
+    )
+    .map_err(|err| err.to_string())
 }
 
 pub fn render_terrain_overlay_tiles_in_session_bytes(
@@ -939,11 +966,17 @@ enum OfflinePackagesControllerEventWire {
     EnsureLibrary,
     RefreshLibraryRequested,
     LibraryRefreshSucceeded(OfflinePackagesControllerLibraryRefreshSucceededWire),
-    LibraryRefreshFailed { message: String },
+    LibraryRefreshFailed {
+        message: String,
+    },
     InstalledArtifactHealthObserved(OfflinePackagesControllerInstalledArtifactHealthObservedWire),
-    PackagesEvent { event: app_core::OfflinePackagesEvent },
+    PackagesEvent {
+        event: app_core::OfflinePackagesEvent,
+    },
     SyncRequested,
-    SyncFinished { summary: app_core::OfflinePackagesSyncSummary },
+    SyncFinished {
+        summary: app_core::OfflinePackagesSyncSummary,
+    },
 }
 
 #[derive(Deserialize)]
@@ -1106,8 +1139,8 @@ pub fn dispatch_offline_packages_controller_json(
             app_core::OfflinePackagesControllerEvent::SyncFinished { summary }
         }
     };
-    let result = app_core::reduce_offline_packages_controller(
-        &app_core::OfflinePackagesControllerInput {
+    let result =
+        app_core::reduce_offline_packages_controller(&app_core::OfflinePackagesControllerInput {
             state: Some(state),
             package_source_base_url: input.package_source_base_url,
             discovery_filenames: input.discovery_filenames,
@@ -1116,8 +1149,7 @@ pub fn dispatch_offline_packages_controller_json(
             now_epoch_ms: input.now_epoch_ms,
             installed: input.installed,
             event,
-        },
-    );
+        });
     controllers.insert(handle as u32, result.state.clone());
     serde_json::to_string(&OfflinePackagesControllerResultWire {
         packages_state_json: result
@@ -2134,6 +2166,29 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_get
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_getRasterTilePlanInSessionWithOptionsJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    viewport_json: JString,
+    width_px: f64,
+    height_px: f64,
+    max_tile_display_multiplier: f64,
+) -> jstring {
+    let result = (|| {
+        let viewport = get_java_string(&mut env, viewport_json)?;
+        get_raster_tile_plan_in_session_with_options_json(
+            handle as u64,
+            &viewport,
+            width_px,
+            height_px,
+            max_tile_display_multiplier,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_renderTerrainOverlayTileInSession(
     mut env: JNIEnv,
     _class: JClass,
@@ -2227,9 +2282,8 @@ pub extern "system" fn Java_net_jonh_aerobag_prototype_domain_NativeBindings_nav
     page_index: i32,
     page_bytes: JByteArray,
 ) {
-    let result = get_java_byte_array(&mut env, page_bytes).and_then(|bytes| {
-        nav_kv_insert_page_bytes(handle as u64, page_index as u32, &bytes)
-    });
+    let result = get_java_byte_array(&mut env, page_bytes)
+        .and_then(|bytes| nav_kv_insert_page_bytes(handle as u64, page_index as u32, &bytes));
     if let Err(message) = result {
         let _ = env.throw_new("java/lang/RuntimeException", message);
     }
@@ -2304,11 +2358,8 @@ mod tests {
 
     #[test]
     fn replace_flight_plan_state_json_sets_active_plan() {
-        let next_json = replace_flight_plan_state_json(
-            &empty_state_json(),
-            &sample_plan_json(),
-        )
-        .unwrap();
+        let next_json =
+            replace_flight_plan_state_json(&empty_state_json(), &sample_plan_json()).unwrap();
         let next: app_core::AppState = serde_json::from_str(&next_json).unwrap();
 
         assert!(next.active_plan.is_some());
@@ -2316,11 +2367,8 @@ mod tests {
 
     #[test]
     fn replace_flight_plan_ui_state_json_returns_projected_app_view() {
-        let next_json = replace_flight_plan_ui_state_json(
-            &empty_state_json(),
-            &sample_plan_json(),
-        )
-        .unwrap();
+        let next_json =
+            replace_flight_plan_ui_state_json(&empty_state_json(), &sample_plan_json()).unwrap();
         let next: app_core::AppUiState = serde_json::from_str(&next_json).unwrap();
 
         assert!(next.active_plan.is_some());
@@ -2371,11 +2419,8 @@ mod tests {
 
     #[test]
     fn stream_allowed_policy_survives_json_boundary() {
-        let with_plan_json = replace_flight_plan_state_json(
-            &empty_state_json(),
-            &sample_plan_json(),
-        )
-        .unwrap();
+        let with_plan_json =
+            replace_flight_plan_state_json(&empty_state_json(), &sample_plan_json()).unwrap();
 
         let web_state_json = set_content_policy_state_json(
             &with_plan_json,
@@ -2395,7 +2440,10 @@ mod tests {
         .unwrap();
 
         let refreshed: app_core::AppState = serde_json::from_str(&refreshed_json).unwrap();
-        assert_eq!(refreshed.content_policy, app_core::ContentPolicy::StreamAllowed);
+        assert_eq!(
+            refreshed.content_policy,
+            app_core::ContentPolicy::StreamAllowed
+        );
         assert!(refreshed.last_content_report.is_none());
     }
 }

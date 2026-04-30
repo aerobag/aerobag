@@ -2,7 +2,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{geometry::LatLon, great_circle_distance_nm, AppError, AppErrorKind, AppResult, MapViewport};
+use crate::{
+    geometry::LatLon, great_circle_distance_nm, AppError, AppErrorKind, AppResult, MapViewport,
+};
 
 pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 500;
 pub const AIRSPACE_DISPLAY_FEATURE_LIMIT: usize = 700;
@@ -412,8 +414,12 @@ fn obstacle_layer_config_from_manifest(
                 .to_string(),
         });
     }
-    let min_zoom = manifest.min_zoom.unwrap_or(*available_zooms.first().unwrap());
-    let max_zoom = manifest.max_zoom.unwrap_or(*available_zooms.last().unwrap());
+    let min_zoom = manifest
+        .min_zoom
+        .unwrap_or(*available_zooms.first().unwrap());
+    let max_zoom = manifest
+        .max_zoom
+        .unwrap_or(*available_zooms.last().unwrap());
     if min_zoom > max_zoom {
         return Err(AppError {
             kind: AppErrorKind::InvalidManifest,
@@ -498,7 +504,8 @@ fn visible_obstacle_tile_window(
         return Vec::new();
     }
     let display_zoom = nearest_available_zoom(config, viewport.zoom.floor() as u32);
-    let mut requests = visible_layer_tile_window("obstacle", display_zoom, viewport, width_px, height_px);
+    let mut requests =
+        visible_layer_tile_window("obstacle", display_zoom, viewport, width_px, height_px);
     let Some(context) = obstacle_context else {
         return requests;
     };
@@ -514,11 +521,13 @@ fn visible_obstacle_tile_window(
     let center = context
         .track_deg_true
         .filter(|value| value.is_finite())
-        .map(|track_deg| destination_point(
-            context.position,
-            track_deg,
-            diameter_nm * OBSTACLE_LOOKAHEAD_CENTER_OFFSET_DIAMETER_RATIO,
-        ))
+        .map(|track_deg| {
+            destination_point(
+                context.position,
+                track_deg,
+                diameter_nm * OBSTACLE_LOOKAHEAD_CENTER_OFFSET_DIAMETER_RATIO,
+            )
+        })
         .unwrap_or(context.position);
     let mut seen = requests
         .iter()
@@ -618,7 +627,13 @@ fn tile_intersects_circle(zoom: u32, x: u32, y: u32, center: LatLon, radius_nm: 
     let tile_bounds = tile_bounds_xyz(zoom, x, y);
     let closest_lat = center.lat.clamp(tile_bounds.south, tile_bounds.north);
     let closest_lon = center.lon.clamp(tile_bounds.west, tile_bounds.east);
-    great_circle_distance_nm(center, LatLon { lat: closest_lat, lon: closest_lon }) <= radius_nm
+    great_circle_distance_nm(
+        center,
+        LatLon {
+            lat: closest_lat,
+            lon: closest_lon,
+        },
+    ) <= radius_nm
 }
 
 fn tile_bounds_xyz(zoom: u32, x: u32, y: u32) -> TileBounds {
@@ -656,7 +671,8 @@ pub fn query_map_overlay(
     airspace_label_tile_cache: &HashMap<String, AirspaceLabelTilePayload>,
     tfr_payload: Option<&TfrProductPayload>,
 ) -> MapOverlayQueryResult {
-    let tile_window = visible_point_tile_window(config, viewport, width_px, height_px, obstacle_context);
+    let tile_window =
+        visible_point_tile_window(config, viewport, width_px, height_px, obstacle_context);
     let mut needed_point_tiles = Vec::new();
     let mut visible_features = Vec::new();
     let mut limit_hit = false;
@@ -687,7 +703,10 @@ pub fn query_map_overlay(
                     lon: record.lon,
                 },
             );
-            let Some(symbol) = point_vector_record_to_symbol_feature(record, obstacle_context.and_then(|context| context.altitude_ft)) else {
+            let Some(symbol) = point_vector_record_to_symbol_feature(
+                record,
+                obstacle_context.and_then(|context| context.altitude_ft),
+            ) else {
                 continue;
             };
             visible_features.push(VisibleMapFeature {
@@ -824,12 +843,21 @@ fn query_tfr_overlay(
                 y: point.y,
             })
             .collect::<Vec<_>>();
-        if let Some(label_point) =
-            tfr_label_screen_point(area, &projected_points, center_world, scale, width_px, height_px)
-        {
+        if let Some(label_point) = tfr_label_screen_point(
+            area,
+            &projected_points,
+            center_world,
+            scale,
+            width_px,
+            height_px,
+        ) {
             labels.push(AirspaceDisplayLabel {
                 feature_id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
-                text: format!("{}/{}", tfr_limit_label(&area.upper_limit), tfr_limit_label(&area.lower_limit)),
+                text: format!(
+                    "{}/{}",
+                    tfr_limit_label(&area.upper_limit),
+                    tfr_limit_label(&area.lower_limit)
+                ),
                 style_key: "tfr".to_string(),
                 screen_x: label_point.x,
                 screen_y: label_point.y,
@@ -919,12 +947,12 @@ fn tfr_polygon_centroid(area: &TfrAreaPayload) -> Option<LatLon> {
         centroid_lat += (current.lat + next.lat) * cross;
     }
     if twice_signed_area.abs() < f64::EPSILON {
-        let (sum_lat, sum_lon, count) = area
-            .polygon
-            .iter()
-            .fold((0.0, 0.0, 0usize), |(sum_lat, sum_lon, count), point| {
-                (sum_lat + point.lat, sum_lon + point.lon, count + 1)
-            });
+        let (sum_lat, sum_lon, count) =
+            area.polygon
+                .iter()
+                .fold((0.0, 0.0, 0usize), |(sum_lat, sum_lon, count), point| {
+                    (sum_lat + point.lat, sum_lon + point.lon, count + 1)
+                });
         if count == 0 {
             return None;
         }
@@ -1325,9 +1353,7 @@ fn parse_airspace_interior_side(
 fn airspace_feather_style(style_key: &str) -> Option<(String, f64)> {
     match style_key {
         "moa" | "alert" => Some(("class_c_magenta".to_string(), 1.4)),
-        "restricted" | "prohibited" | "warning" => {
-            Some(("class_b_d_blue".to_string(), 1.4))
-        }
+        "restricted" | "prohibited" | "warning" => Some(("class_b_d_blue".to_string(), 1.4)),
         _ => None,
     }
 }
@@ -1597,13 +1623,11 @@ pub fn point_vector_record_to_symbol_feature_unfiltered(
         } else {
             style_class = "obstacle-caution".to_string();
         }
-        obstacle_variant = Some(
-            if obstacle.is_tall {
-                "tall".to_string()
-            } else {
-                "short".to_string()
-            },
-        );
+        obstacle_variant = Some(if obstacle.is_tall {
+            "tall".to_string()
+        } else {
+            "short".to_string()
+        });
         label.clear();
     }
     Some(NavSymbolFeature {
@@ -1738,8 +1762,7 @@ fn destination_point(origin: LatLon, bearing_deg: f64, distance_nm: f64) -> LatL
     let sin_ad = angular_distance.sin();
     let cos_ad = angular_distance.cos();
     let lat2 = (sin_lat1 * cos_ad + cos_lat1 * sin_ad * bearing.cos()).asin();
-    let lon2 =
-        lon1 + (bearing.sin() * sin_ad * cos_lat1).atan2(cos_ad - sin_lat1 * lat2.sin());
+    let lon2 = lon1 + (bearing.sin() * sin_ad * cos_lat1).atan2(cos_ad - sin_lat1 * lat2.sin());
     LatLon {
         lat: lat2.to_degrees(),
         lon: ((lon2.to_degrees() + 540.0) % 360.0) - 180.0,
@@ -1750,8 +1773,8 @@ fn destination_point(origin: LatLon, bearing_deg: f64, distance_nm: f64) -> LatL
 mod tests {
     use super::*;
     use app_fixtures::fixture_vector_tile_root as app_fixture_vector_tile_root;
-    use std::sync::OnceLock;
     use std::fs;
+    use std::sync::OnceLock;
 
     fn test_map_overlay_config() -> MapOverlayConfig {
         MapOverlayConfig {
@@ -1797,7 +1820,8 @@ mod tests {
             rotation_deg: 0.0,
             pitch_deg: 0.0,
         };
-        let tiles = visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None);
+        let tiles =
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None);
         assert!(tiles.iter().any(|tile| tile.layer == "airport"));
         assert!(!tiles.iter().any(|tile| tile.layer == "fix"));
         assert!(tiles.iter().any(|tile| tile.layer == "nav"));
@@ -2346,7 +2370,8 @@ mod tests {
             rotation_deg: 0.0,
             pitch_deg: 0.0,
         };
-        let window = visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None);
+        let window =
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None);
         let first = window
             .iter()
             .find(|tile| tile.layer == "fix")
@@ -2398,24 +2423,27 @@ mod tests {
 
     #[test]
     fn vor_symbol_labels_omit_frequency() {
-        let feature = point_vector_record_to_symbol_feature(&PointVectorRecord {
-            id: "nav:ELN:VOR".to_string(),
-            kind: "VORTAC".to_string(),
-            lat: 47.024,
-            lon: -120.459,
-            label: "ELLENSBURG 117.9".to_string(),
-            style_class: "nav".to_string(),
-            towered: None,
-            fuel_available: None,
-            public_use: None,
-            private_use: None,
-            has_paved_runway: None,
-            heliport: None,
-            has_water_runway: None,
-            longest_runway_length_ft: None,
-            longest_runway_heading_true_deg: None,
-            obstacle: None,
-        }, None)
+        let feature = point_vector_record_to_symbol_feature(
+            &PointVectorRecord {
+                id: "nav:ELN:VOR".to_string(),
+                kind: "VORTAC".to_string(),
+                lat: 47.024,
+                lon: -120.459,
+                label: "ELLENSBURG 117.9".to_string(),
+                style_class: "nav".to_string(),
+                towered: None,
+                fuel_available: None,
+                public_use: None,
+                private_use: None,
+                has_paved_runway: None,
+                heliport: None,
+                has_water_runway: None,
+                longest_runway_length_ft: None,
+                longest_runway_heading_true_deg: None,
+                obstacle: None,
+            },
+            None,
+        )
         .expect("VORTAC should be displayed");
 
         assert_eq!(feature.label, "ELN");
@@ -2503,7 +2531,9 @@ mod tests {
         let tile_root = fixture_vector_tile_root();
         let mut cache = HashMap::new();
 
-        for tile in visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None) {
+        for tile in
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None)
+        {
             if tile.layer != "fix" {
                 continue;
             }
@@ -2544,10 +2574,11 @@ mod tests {
             rotation_deg: 0.0,
             pitch_deg: 0.0,
         };
-        let airport_tile = visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None)
-            .into_iter()
-            .find(|tile| tile.layer == "airport")
-            .expect("expected airport tile");
+        let airport_tile =
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0, None)
+                .into_iter()
+                .find(|tile| tile.layer == "airport")
+                .expect("expected airport tile");
         let mut cache = HashMap::new();
         cache.insert(
             tile_key(
@@ -2654,6 +2685,7 @@ mod tests {
 
     fn fixture_vector_tile_root() -> &'static std::path::Path {
         static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
-        ROOT.get_or_init(|| app_fixture_vector_tile_root("fix", 9)).as_path()
+        ROOT.get_or_init(|| app_fixture_vector_tile_root("fix", 9))
+            .as_path()
     }
 }

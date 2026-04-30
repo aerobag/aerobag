@@ -807,9 +807,24 @@ class NativeUiSession internal constructor(
         return json.decodeFromString<WireTerrainOverlayQueryResult>(resultJson).toUi()
     }
 
-    fun queryRasterTilePlanJson(viewport: MapViewportState, widthPx: Double, heightPx: Double): String {
+    fun queryRasterTilePlanJson(
+        viewport: MapViewportState,
+        widthPx: Double,
+        heightPx: Double,
+        maxTileDisplayMultiplier: Double = 1.0,
+    ): String {
         val viewportJson = json.encodeToString(viewport.toWire())
-        return bridge.getRasterTilePlanInSessionJson(handle, viewportJson, widthPx, heightPx)
+        return if (maxTileDisplayMultiplier == 1.0) {
+            bridge.getRasterTilePlanInSessionJson(handle, viewportJson, widthPx, heightPx)
+        } else {
+            bridge.getRasterTilePlanInSessionWithOptionsJson(
+                handle,
+                viewportJson,
+                widthPx,
+                heightPx,
+                maxTileDisplayMultiplier,
+            )
+        }
     }
 
     fun renderTerrainOverlayTile(tileBytes: ByteArray, aircraftAltitudeFt: Double): ByteArray =

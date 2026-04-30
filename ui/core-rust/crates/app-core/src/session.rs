@@ -10,19 +10,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     chart_page::airport_ids_from_plan,
+    guidance_detail_id_for_index,
     map_follow::{MapFollowSessionState, MapFollowUiState},
-    map_overlay_config_from_vector_manifest_json,
-    move_flight_plan_waypoint,
+    map_overlay_config_from_vector_manifest_json, move_flight_plan_waypoint,
     planning::NavElementUiView,
     playback::PlaybackSessionState,
     query_map_overlay, remove_flight_plan_leg, state, AirspaceFeaturePayload,
     AirspaceLabelTilePayload, AirspaceReferenceTilePayload, AppError, AppErrorKind, AppEvent,
-    AppResult, AppState, AppUiState, FlightPlan,
-    LatLon, MapOverlayConfig, MapOverlayQueryResult, MapViewport, NavRef, PlanLeg,
-    PlaybackUiState, PointTilePayload, SequencingMode, TerrainOverlayQueryResult,
-    TfrProductPayload,
-    RasterMapCatalog, RasterTilePlan,
-    UiSnapshotAppState, guidance_detail_id_for_index,
+    AppResult, AppState, AppUiState, FlightPlan, LatLon, MapOverlayConfig, MapOverlayQueryResult,
+    MapViewport, NavRef, PlanLeg, PlaybackUiState, PointTilePayload, RasterMapCatalog,
+    RasterTilePlan, SequencingMode, TerrainOverlayQueryResult, TfrProductPayload,
+    UiSnapshotAppState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -209,10 +207,10 @@ fn create_ui_session_inner(
         playback_ui_state,
         map_follow_ui_state,
         map_follow_target_viewport,
-            chart_page_state: chart_page_state.clone(),
-            map_layer_state: map_layer_state.clone(),
-            caution_state: default_caution_state(),
-        };
+        chart_page_state: chart_page_state.clone(),
+        map_layer_state: map_layer_state.clone(),
+        caution_state: default_caution_state(),
+    };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     sessions().lock().expect("session store poisoned").insert(
         handle,
@@ -236,10 +234,7 @@ fn create_ui_session_inner(
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_store_session");
     }
-    Ok(UiSessionInitResult {
-        handle,
-        snapshot,
-    })
+    Ok(UiSessionInitResult { handle, snapshot })
 }
 
 pub fn remove_leg_in_session(handle: u32, index: usize) -> AppResult<UiSessionSnapshot> {
@@ -302,6 +297,22 @@ pub fn get_raster_tile_plan_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<RasterTilePlan> {
+    get_raster_tile_plan_in_session_with_options(
+        handle,
+        viewport,
+        width_px,
+        height_px,
+        crate::RasterTilePlanOptions::default(),
+    )
+}
+
+pub fn get_raster_tile_plan_in_session_with_options(
+    handle: u32,
+    viewport: MapViewport,
+    width_px: f64,
+    height_px: f64,
+    options: crate::RasterTilePlanOptions,
+) -> AppResult<RasterTilePlan> {
     let sessions = sessions().lock().expect("session store poisoned");
     let session = session_ref(&sessions, handle)?;
     let Some(catalog) = session.raster_map_catalog.as_ref() else {
@@ -310,7 +321,9 @@ pub fn get_raster_tile_plan_in_session(
             message: "session missing raster map catalog".to_string(),
         });
     };
-    Ok(crate::raster_tile_plan(catalog, &viewport, width_px, height_px))
+    Ok(crate::raster_tile_plan_with_options(
+        catalog, &viewport, width_px, height_px, options,
+    ))
 }
 
 pub fn set_map_layer_enabled_in_session(
@@ -378,12 +391,8 @@ pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<UiS
             .filter(|id| id.as_str() != airport_id)
             .cloned(),
     );
-    session.chart_page_state = derive_compact_chart_page_state(
-        &plan,
-        &recent_airport_ids,
-        Some(airport_id),
-        None,
-    );
+    session.chart_page_state =
+        derive_compact_chart_page_state(&plan, &recent_airport_ids, Some(airport_id), None);
     Ok(snapshot_for_session(session))
 }
 
@@ -1129,8 +1138,8 @@ fn cdi_dots_for_leg(from: LatLon, to: LatLon, position: LatLon) -> f32 {
 }
 
 fn cdi_dots_for_guidance_geometry(geometry: &GuidanceLegGeometry, position: LatLon) -> f32 {
-    let (from, to) = nearest_guidance_segment(geometry, position)
-        .unwrap_or((geometry.from, geometry.to));
+    let (from, to) =
+        nearest_guidance_segment(geometry, position).unwrap_or((geometry.from, geometry.to));
     cdi_dots_for_leg(from, to, position)
 }
 
@@ -1272,25 +1281,39 @@ fn derive_compact_chart_page_state(
 ) -> UiChartPageState {
     let mut ordered_airport_ids = Vec::new();
     for airport_id in airport_ids_from_plan(plan) {
-        if !ordered_airport_ids.iter().any(|existing| existing == &airport_id) {
+        if !ordered_airport_ids
+            .iter()
+            .any(|existing| existing == &airport_id)
+        {
             ordered_airport_ids.push(airport_id);
         }
     }
     let mut recent_airport_ids = Vec::new();
     for airport_id in stored_recent_airport_ids {
-        if ordered_airport_ids.iter().any(|existing| existing == airport_id)
-            && !recent_airport_ids.iter().any(|existing| existing == airport_id)
+        if ordered_airport_ids
+            .iter()
+            .any(|existing| existing == airport_id)
+            && !recent_airport_ids
+                .iter()
+                .any(|existing| existing == airport_id)
         {
             recent_airport_ids.push(airport_id.clone());
         }
     }
     for airport_id in &ordered_airport_ids {
-        if !recent_airport_ids.iter().any(|existing| existing == airport_id) {
+        if !recent_airport_ids
+            .iter()
+            .any(|existing| existing == airport_id)
+        {
             recent_airport_ids.push(airport_id.clone());
         }
     }
     let selected_airport_id = candidate_airport_id
-        .filter(|airport_id| ordered_airport_ids.iter().any(|existing| existing == *airport_id))
+        .filter(|airport_id| {
+            ordered_airport_ids
+                .iter()
+                .any(|existing| existing == *airport_id)
+        })
         .map(str::to_string)
         .or_else(|| recent_airport_ids.first().cloned())
         .or_else(|| ordered_airport_ids.first().cloned())

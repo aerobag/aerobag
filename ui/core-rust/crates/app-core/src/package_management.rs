@@ -316,14 +316,19 @@ where
     }
 }
 
-pub fn initialize_offline_packages(input: &OfflinePackagesInitInput) -> OfflinePackagesReduceResult {
+pub fn initialize_offline_packages(
+    input: &OfflinePackagesInitInput,
+) -> OfflinePackagesReduceResult {
     let state = OfflinePackagesState {
         preferences: normalize_preferences(
             input.state.as_ref().map(|state| &state.preferences),
             &input.region_ids,
             &input.product_ids,
         ),
-        now_override_epoch_ms: input.state.as_ref().and_then(|state| state.now_override_epoch_ms),
+        now_override_epoch_ms: input
+            .state
+            .as_ref()
+            .and_then(|state| state.now_override_epoch_ms),
     };
     let effective_now_epoch_ms = effective_now_epoch_ms(&state, input.now_epoch_ms);
     let bundle = resolve_cycle_bundle_manifest(
@@ -426,12 +431,20 @@ pub fn reduce_offline_packages_controller(
     input: &OfflinePackagesControllerInput,
 ) -> OfflinePackagesControllerResult {
     let mut state = input.state.clone().unwrap_or_default();
-    let package_source_base_url = input.package_source_base_url.trim().trim_end_matches('/').to_string();
+    let package_source_base_url = input
+        .package_source_base_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
     let mut command = None;
 
     match &input.event {
         OfflinePackagesControllerEvent::EnsureLibrary => {
-            if library_refresh_needed(state.library_cache.as_ref(), &package_source_base_url, input.now_epoch_ms) {
+            if library_refresh_needed(
+                state.library_cache.as_ref(),
+                &package_source_base_url,
+                input.now_epoch_ms,
+            ) {
                 state.library_loading = true;
                 state.library_error_message = None;
                 command = Some(OfflinePackagesControllerCommand::RefreshLibrary {
@@ -474,7 +487,8 @@ pub fn reduce_offline_packages_controller(
         }
         OfflinePackagesControllerEvent::PackagesEvent { event } => {
             let Some(library_cache) = state.library_cache.as_ref() else {
-                state.library_error_message = Some("offline packages library is not loaded".to_string());
+                state.library_error_message =
+                    Some("offline packages library is not loaded".to_string());
                 return OfflinePackagesControllerResult {
                     ui_state: project_offline_packages_controller_ui_state(
                         &state,
@@ -494,7 +508,10 @@ pub fn reduce_offline_packages_controller(
                 discovery_manifests: library_cache.discovery_manifests.clone(),
                 bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
                 installed: effective_installed_artifacts(&state, &input.installed),
-                forced_gc_installed_filenames: forced_gc_installed_filenames(&state, &input.installed),
+                forced_gc_installed_filenames: forced_gc_installed_filenames(
+                    &state,
+                    &input.installed,
+                ),
                 suppressed_fetch_filenames: state
                     .suppressed_fetch_filename_messages
                     .keys()
@@ -514,7 +531,8 @@ pub fn reduce_offline_packages_controller(
         }
         OfflinePackagesControllerEvent::SyncRequested => {
             let Some(library_cache) = state.library_cache.as_ref() else {
-                state.library_error_message = Some("offline packages library is not loaded".to_string());
+                state.library_error_message =
+                    Some("offline packages library is not loaded".to_string());
                 return OfflinePackagesControllerResult {
                     ui_state: project_offline_packages_controller_ui_state(
                         &state,
@@ -533,7 +551,10 @@ pub fn reduce_offline_packages_controller(
                 discovery_manifests: library_cache.discovery_manifests.clone(),
                 bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
                 installed: effective_installed_artifacts(&state, &input.installed),
-                forced_gc_installed_filenames: forced_gc_installed_filenames(&state, &input.installed),
+                forced_gc_installed_filenames: forced_gc_installed_filenames(
+                    &state,
+                    &input.installed,
+                ),
                 suppressed_fetch_filenames: state
                     .suppressed_fetch_filename_messages
                     .keys()
@@ -689,7 +710,10 @@ fn project_offline_packages_controller_ui_state(
 }
 
 fn format_offline_packages_sync_summary(summary: &OfflinePackagesSyncSummary) -> String {
-    let base = format!("SYNC fetched {}, GC {}", summary.fetched_count, summary.gc_count);
+    let base = format!(
+        "SYNC fetched {}, GC {}",
+        summary.fetched_count, summary.gc_count
+    );
     if summary.warnings.is_empty() {
         return base;
     }
@@ -736,7 +760,11 @@ fn format_offline_packages_sync_summary(summary: &OfflinePackagesSyncSummary) ->
             .unwrap_or_default();
         parts.push(format!("core packages: {core_ids}{more}"));
     }
-    format!("{base}. WARN {}: {}", summary.warnings.len(), parts.join(" | "))
+    format!(
+        "{base}. WARN {}: {}",
+        summary.warnings.len(),
+        parts.join(" | ")
+    )
 }
 
 pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagementPlan {
@@ -752,23 +780,26 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
         .iter()
         .map(|artifact| (artifact.filename.clone(), artifact))
         .collect();
-    let forced_gc_filenames: BTreeSet<String> =
-        input.forced_gc_installed_filenames.iter().cloned().collect();
-    let effective_installed_by_filename: BTreeMap<String, &InstalledArtifact> = installed_by_filename
+    let forced_gc_filenames: BTreeSet<String> = input
+        .forced_gc_installed_filenames
         .iter()
-        .filter(|(filename, _)| !forced_gc_filenames.contains(*filename))
-        .map(|(filename, artifact)| (filename.clone(), *artifact))
+        .cloned()
         .collect();
+    let effective_installed_by_filename: BTreeMap<String, &InstalledArtifact> =
+        installed_by_filename
+            .iter()
+            .filter(|(filename, _)| !forced_gc_filenames.contains(*filename))
+            .map(|(filename, artifact)| (filename.clone(), *artifact))
+            .collect();
     let suppressed_fetch_filenames: BTreeSet<String> =
         input.suppressed_fetch_filenames.iter().cloned().collect();
-    let effective_installed_filenames_for_artifact_id =
-        |artifact_id: &str| -> Vec<String> {
-            effective_installed_by_filename
-                .values()
-                .filter(|installed| installed.artifact_id == artifact_id)
-                .map(|installed| installed.filename.clone())
-                .collect()
-        };
+    let effective_installed_filenames_for_artifact_id = |artifact_id: &str| -> Vec<String> {
+        effective_installed_by_filename
+            .values()
+            .filter(|installed| installed.artifact_id == artifact_id)
+            .map(|installed| installed.filename.clone())
+            .collect()
+    };
     let mut fetch = BTreeSet::new();
     let mut retain_installed = BTreeSet::new();
     let mut protected_by_pause = BTreeSet::new();
@@ -776,7 +807,8 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
     let mut stale_selected_installed = Vec::new();
 
     for artifact in &available_artifacts {
-        let matching_installed_filenames = effective_installed_filenames_for_artifact_id(&artifact.artifact_id);
+        let matching_installed_filenames =
+            effective_installed_filenames_for_artifact_id(&artifact.artifact_id);
         let desired_filename_installed = matching_installed_filenames
             .iter()
             .any(|filename| filename == &artifact.filename);
@@ -872,8 +904,18 @@ fn project_offline_packages_ui_state(
     OfflinePackagesUiState {
         summary_text: format!(
             "{} regions playing, {} products playing",
-            state.preferences.regions.values().filter(|&&s| s == OfflinePackageSelection::Play).count(),
-            state.preferences.products.values().filter(|&&s| s == OfflinePackageSelection::Play).count(),
+            state
+                .preferences
+                .regions
+                .values()
+                .filter(|&&s| s == OfflinePackageSelection::Play)
+                .count(),
+            state
+                .preferences
+                .products
+                .values()
+                .filter(|&&s| s == OfflinePackageSelection::Play)
+                .count(),
         ),
         clock_label: clock_label(now_epoch_ms, state.now_override_epoch_ms),
         clock_options: clock_options(discovery_manifests, state.now_override_epoch_ms),
@@ -886,7 +928,9 @@ fn project_offline_packages_ui_state(
             let mut ids = BTreeSet::new();
             for pkg in &active_bundle.packages {
                 if pkg.region_id.is_none()
-                    && !product_ids.iter().any(|product_id| product_id == &pkg.family_id)
+                    && !product_ids
+                        .iter()
+                        .any(|product_id| product_id == &pkg.family_id)
                 {
                     ids.insert(pkg.family_id.clone());
                 }
@@ -915,9 +959,15 @@ fn project_offline_packages_ui_state(
                     .get(id)
                     .copied()
                     .unwrap_or(OfflinePackageSelection::Play),
-                fetch_count: counts.regions.get(id).map_or(0, |counts| counts.fetch_count),
+                fetch_count: counts
+                    .regions
+                    .get(id)
+                    .map_or(0, |counts| counts.fetch_count),
                 gc_count: counts.regions.get(id).map_or(0, |counts| counts.gc_count),
-                pause_count: counts.regions.get(id).map_or(0, |counts| counts.pause_count),
+                pause_count: counts
+                    .regions
+                    .get(id)
+                    .map_or(0, |counts| counts.pause_count),
             })
             .collect(),
         products: product_ids
@@ -930,9 +980,15 @@ fn project_offline_packages_ui_state(
                     .get(id)
                     .copied()
                     .unwrap_or(OfflinePackageSelection::Play),
-                fetch_count: counts.products.get(id).map_or(0, |counts| counts.fetch_count),
+                fetch_count: counts
+                    .products
+                    .get(id)
+                    .map_or(0, |counts| counts.fetch_count),
                 gc_count: counts.products.get(id).map_or(0, |counts| counts.gc_count),
-                pause_count: counts.products.get(id).map_or(0, |counts| counts.pause_count),
+                pause_count: counts
+                    .products
+                    .get(id)
+                    .map_or(0, |counts| counts.pause_count),
             })
             .collect(),
     }
@@ -1028,25 +1084,42 @@ fn plan_counts_by_dimension_from_packages(
         if let Some(region_id) = &pkg.region_id {
             mutate(counts.regions.entry(region_id.clone()).or_default());
         } else {
-            mutate(counts.core_products.entry(pkg.family_id.clone()).or_default());
+            mutate(
+                counts
+                    .core_products
+                    .entry(pkg.family_id.clone())
+                    .or_default(),
+            );
         }
         mutate(counts.products.entry(pkg.family_id.clone()).or_default());
     }
 
     for artifact_id in &plan.fetch {
-        apply(&mut counts, &packages_by_id, artifact_id, |counts| counts.fetch_count += 1);
+        apply(&mut counts, &packages_by_id, artifact_id, |counts| {
+            counts.fetch_count += 1
+        });
     }
     for filename in &plan.gc {
         let Some(installed) = installed_by_filename.get(filename.as_str()) else {
             continue;
         };
-        apply(&mut counts, &packages_by_id, &installed.artifact_id, |counts| counts.gc_count += 1);
+        apply(
+            &mut counts,
+            &packages_by_id,
+            &installed.artifact_id,
+            |counts| counts.gc_count += 1,
+        );
     }
     for filename in &plan.protected_by_pause {
         let Some(installed) = installed_by_filename.get(filename.as_str()) else {
             continue;
         };
-        apply(&mut counts, &packages_by_id, &installed.artifact_id, |counts| counts.pause_count += 1);
+        apply(
+            &mut counts,
+            &packages_by_id,
+            &installed.artifact_id,
+            |counts| counts.pause_count += 1,
+        );
     }
 
     counts
@@ -1126,12 +1199,19 @@ fn resolve_cycle_bundle_manifest(
     let discovery = discovery_manifests
         .iter()
         .filter_map(|manifest| {
-            Some((as_of_utc_to_epoch_ms(manifest.as_of_utc.as_deref()?)?, manifest))
+            Some((
+                as_of_utc_to_epoch_ms(manifest.as_of_utc.as_deref()?)?,
+                manifest,
+            ))
         })
         .filter(|(as_of_epoch_ms, _)| *as_of_epoch_ms <= now_epoch_ms)
         .max_by_key(|(as_of_epoch_ms, _)| *as_of_epoch_ms)
         .map(|(_, manifest)| manifest)
-        .or_else(|| discovery_manifests.iter().max_by_key(|manifest| manifest.as_of_utc.as_deref()))
+        .or_else(|| {
+            discovery_manifests
+                .iter()
+                .max_by_key(|manifest| manifest.as_of_utc.as_deref())
+        })
         .unwrap_or_else(|| panic!("no discovery manifests available for offline packages"));
 
     let mut merged_packages = Vec::new();
@@ -1155,11 +1235,12 @@ fn resolve_cycle_bundle_manifest(
     }
 }
 
-fn cycle_selection(
-    selections: &mut BTreeMap<String, OfflinePackageSelection>,
-    id: &str,
-) {
-    let next = match selections.get(id).copied().unwrap_or(OfflinePackageSelection::Play) {
+fn cycle_selection(selections: &mut BTreeMap<String, OfflinePackageSelection>, id: &str) {
+    let next = match selections
+        .get(id)
+        .copied()
+        .unwrap_or(OfflinePackageSelection::Play)
+    {
         OfflinePackageSelection::Play => OfflinePackageSelection::Pause,
         OfflinePackageSelection::Pause => OfflinePackageSelection::Unselected,
         OfflinePackageSelection::Unselected => OfflinePackageSelection::Play,
@@ -1176,7 +1257,10 @@ fn bundle_package_to_artifact(pkg: &BundlePackageArtifact) -> Option<AvailablePa
             product_id: pkg.family_id.clone(),
             region_id: pkg.region_id.clone(),
             effective_at_epoch_ms: pkg.effective_date.as_deref().and_then(ymd_date_to_epoch_ms),
-            expires_at_epoch_ms: pkg.expiration_date.as_deref().and_then(ymd_date_to_epoch_ms),
+            expires_at_epoch_ms: pkg
+                .expiration_date
+                .as_deref()
+                .and_then(ymd_date_to_epoch_ms),
         }),
         _ => None,
     }
@@ -1360,8 +1444,20 @@ mod tests {
             preferences: default_offline_package_preferences(["nw"], ["sec"]),
             bundle: BundleManifest {
                 packages: vec![
-                    pkg("NW_SEC_2603", "sec", Some("nw"), Some("2026-03-19"), Some("1970-01-01")),
-                    pkg("NW_SEC_2604", "sec", Some("nw"), Some("2026-04-16"), Some("2099-01-01")),
+                    pkg(
+                        "NW_SEC_2603",
+                        "sec",
+                        Some("nw"),
+                        Some("2026-03-19"),
+                        Some("1970-01-01"),
+                    ),
+                    pkg(
+                        "NW_SEC_2604",
+                        "sec",
+                        Some("nw"),
+                        Some("2026-04-16"),
+                        Some("2099-01-01"),
+                    ),
                 ],
             },
             installed: vec![installed("NW_SEC_2603")],
@@ -1383,8 +1479,20 @@ mod tests {
             preferences: default_offline_package_preferences(["nw"], ["sec"]),
             bundle: BundleManifest {
                 packages: vec![
-                    pkg("NW_SEC_2603", "sec", Some("nw"), Some("2026-03-19"), Some("1970-01-01")),
-                    pkg("NW_SEC_2604", "sec", Some("nw"), Some("2026-04-16"), Some("2099-01-01")),
+                    pkg(
+                        "NW_SEC_2603",
+                        "sec",
+                        Some("nw"),
+                        Some("2026-03-19"),
+                        Some("1970-01-01"),
+                    ),
+                    pkg(
+                        "NW_SEC_2604",
+                        "sec",
+                        Some("nw"),
+                        Some("2026-04-16"),
+                        Some("2099-01-01"),
+                    ),
                 ],
             },
             installed: vec![installed("NW_SEC_2603"), installed("NW_SEC_2604")],
@@ -1403,8 +1511,20 @@ mod tests {
     fn multiple_not_yet_expired_cycles_in_one_selected_slot_are_all_desired() {
         let manifest = BundleManifest {
             packages: vec![
-                pkg("NW_SEC_2603", "sec", Some("nw"), Some("2026-03-19"), Some("2099-01-01")),
-                pkg("NW_SEC_2604", "sec", Some("nw"), Some("2099-04-16"), Some("2099-05-14")),
+                pkg(
+                    "NW_SEC_2603",
+                    "sec",
+                    Some("nw"),
+                    Some("2026-03-19"),
+                    Some("2099-01-01"),
+                ),
+                pkg(
+                    "NW_SEC_2604",
+                    "sec",
+                    Some("nw"),
+                    Some("2099-04-16"),
+                    Some("2099-05-14"),
+                ),
             ],
         };
         let preferences = default_offline_package_preferences(["nw"], ["sec"]);
@@ -1449,8 +1569,20 @@ mod tests {
             },
             bundle: BundleManifest {
                 packages: vec![
-                    pkg("NW_SEC_2604", "sec", Some("nw"), Some("2026-04-16"), Some("2099-01-01")),
-                    pkg("NW_SEC_2603", "sec", Some("nw"), Some("2026-03-19"), Some("1970-01-01")),
+                    pkg(
+                        "NW_SEC_2604",
+                        "sec",
+                        Some("nw"),
+                        Some("2026-04-16"),
+                        Some("2099-01-01"),
+                    ),
+                    pkg(
+                        "NW_SEC_2603",
+                        "sec",
+                        Some("nw"),
+                        Some("2026-03-19"),
+                        Some("1970-01-01"),
+                    ),
                 ],
             },
             installed: vec![installed("NW_SEC_2603")],
@@ -1521,7 +1653,10 @@ mod tests {
         let result = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
             state: Some(OfflinePackagesControllerState {
                 packages_state: Some(OfflinePackagesState {
-                    preferences: default_offline_package_preferences(Vec::<String>::new(), ["nav-db"]),
+                    preferences: default_offline_package_preferences(
+                        Vec::<String>::new(),
+                        ["nav-db"],
+                    ),
                     now_override_epoch_ms: Some(1_774_401_600_000),
                 }),
                 library_cache: Some(OfflinePackagesLibraryCache {
@@ -1604,7 +1739,10 @@ mod tests {
         let result = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
             state: Some(OfflinePackagesControllerState {
                 packages_state: Some(OfflinePackagesState {
-                    preferences: default_offline_package_preferences(Vec::<String>::new(), ["nav-db"]),
+                    preferences: default_offline_package_preferences(
+                        Vec::<String>::new(),
+                        ["nav-db"],
+                    ),
                     now_override_epoch_ms: Some(1_777_120_000_000),
                 }),
                 library_cache: Some(OfflinePackagesLibraryCache {
@@ -1685,7 +1823,13 @@ mod tests {
         let bundles = BTreeMap::from([(
             "bundle_cycle_2604.json".to_string(),
             BundleManifest {
-                packages: vec![pkg("NW_SEC_2604", "sec", Some("nw"), None, Some("2099-01-01"))],
+                packages: vec![pkg(
+                    "NW_SEC_2604",
+                    "sec",
+                    Some("nw"),
+                    None,
+                    Some("2099-01-01"),
+                )],
             },
         )]);
         let init = initialize_offline_packages(&OfflinePackagesInitInput {
@@ -1700,12 +1844,20 @@ mod tests {
             suppressed_fetch_filenames: vec![],
         });
 
-        assert_eq!(init.ui_state.regions[0].selection, OfflinePackageSelection::Play);
-        assert_eq!(init.ui_state.summary_text, "1 regions playing, 1 products playing");
+        assert_eq!(
+            init.ui_state.regions[0].selection,
+            OfflinePackageSelection::Play
+        );
+        assert_eq!(
+            init.ui_state.summary_text,
+            "1 regions playing, 1 products playing"
+        );
 
         let paused = reduce_offline_packages(&OfflinePackagesReduceInput {
             state: init.state,
-            event: OfflinePackagesEvent::CycleRegion { id: "nw".to_string() },
+            event: OfflinePackagesEvent::CycleRegion {
+                id: "nw".to_string(),
+            },
             region_ids: vec!["nw".to_string()],
             product_ids: vec!["sec".to_string()],
             now_epoch_ms: 200,
@@ -1716,8 +1868,14 @@ mod tests {
             suppressed_fetch_filenames: vec![],
         });
 
-        assert_eq!(paused.ui_state.regions[0].selection, OfflinePackageSelection::Pause);
-        assert_eq!(paused.ui_state.summary_text, "0 regions playing, 1 products playing");
+        assert_eq!(
+            paused.ui_state.regions[0].selection,
+            OfflinePackageSelection::Pause
+        );
+        assert_eq!(
+            paused.ui_state.summary_text,
+            "0 regions playing, 1 products playing"
+        );
     }
 
     #[test]

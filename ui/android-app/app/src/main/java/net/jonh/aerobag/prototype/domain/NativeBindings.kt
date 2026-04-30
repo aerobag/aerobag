@@ -264,6 +264,14 @@ interface NativeBridge {
         heightPx: Double,
     ): String
 
+    fun getRasterTilePlanInSessionWithOptionsJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+        maxTileDisplayMultiplier: Double,
+    ): String
+
     fun renderTerrainOverlayTileInSession(
         handle: Long,
         tileBytes: ByteArray,
@@ -573,6 +581,14 @@ object NativeBindings : NativeBridge {
         viewportJson: String,
         widthPx: Double,
         heightPx: Double,
+    ): String
+
+    external override fun getRasterTilePlanInSessionWithOptionsJson(
+        handle: Long,
+        viewportJson: String,
+        widthPx: Double,
+        heightPx: Double,
+        maxTileDisplayMultiplier: Double,
     ): String
 
     external override fun renderTerrainOverlayTileInSession(

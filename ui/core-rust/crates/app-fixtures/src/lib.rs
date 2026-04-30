@@ -93,8 +93,8 @@ pub fn fixture_nav_db_package_zip_path() -> PathBuf {
 
 pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
     let zip_path = fixture_nav_db_package_zip_path();
-    let file =
-        fs::File::open(&zip_path).unwrap_or_else(|err| panic!("open {}: {err}", zip_path.display()));
+    let file = fs::File::open(&zip_path)
+        .unwrap_or_else(|err| panic!("open {}: {err}", zip_path.display()));
     let mut archive = zip::ZipArchive::new(file)
         .unwrap_or_else(|err| panic!("parse {} as zip: {err}", zip_path.display()));
 
@@ -102,7 +102,9 @@ pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
     for index in 0..archive.len() {
         let name = archive
             .by_index(index)
-            .unwrap_or_else(|err| panic!("read zip entry {index} from {}: {err}", zip_path.display()))
+            .unwrap_or_else(|err| {
+                panic!("read zip entry {index} from {}: {err}", zip_path.display())
+            })
             .name()
             .to_string();
         if name == "root" {
@@ -134,21 +136,9 @@ pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
         let mut page_bytes = Vec::new();
         archive
             .by_name(&entry_name)
-            .unwrap_or_else(|err| {
-                panic!(
-                    "open {} in {}: {err}",
-                    entry_name,
-                    zip_path.display()
-                )
-            })
+            .unwrap_or_else(|err| panic!("open {} in {}: {err}", entry_name, zip_path.display()))
             .read_to_end(&mut page_bytes)
-            .unwrap_or_else(|err| {
-                panic!(
-                    "read {} in {}: {err}",
-                    entry_name,
-                    zip_path.display()
-                )
-            });
+            .unwrap_or_else(|err| panic!("read {} in {}: {err}", entry_name, zip_path.display()));
         pages.push(page_bytes);
     }
     (root_bytes, pages)

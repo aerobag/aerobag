@@ -156,6 +156,12 @@ function aviationThemeColor(colorKey: string): string {
 
 type AppPage = "map" | "plan" | "charts" | "home";
 
+type WebPageTilePaintTiming = {
+  id: number;
+  fromPage: AppPage;
+  startedAt: number;
+};
+
 type ChartAsset = NonNullable<ChartPageData["airports"][number]>["charts"][number];
 type TrayOption = {
   id: string;
@@ -566,13 +572,13 @@ type RasterRenderTile = {
   fallbacks: RasterTileDraw["fallbacks"];
 };
 
-function renderTileFromCore(tile: RasterTileDraw): RasterRenderTile {
+function renderTileFromCore(tile: RasterTileDraw, cssScale = 1): RasterRenderTile {
   return {
     x: tile.x,
     yTms: tile.y_tms,
-    left: tile.left_px,
-    top: tile.top_px,
-    size: tile.size_px,
+    left: tile.left_px * cssScale,
+    top: tile.top_px * cssScale,
+    size: tile.size_px * cssScale,
     zoom: tile.source_zoom,
     zIndex: tile.z_order,
     src: tile.primary.url,
@@ -881,6 +887,8 @@ export default function App() {
   const [adapterDetail, setAdapterDetail] = useState<string>("loading");
   const [sessionInitError, setSessionInitError] = useState<string | null>(null);
   const startupVisualReadyRef = useRef(false);
+  const pageTilePaintTimingRef = useRef<WebPageTilePaintTiming | null>(null);
+  const nextPageTilePaintTimingIdRef = useRef(1);
   const highLatencyWarningsSuppressedRef = useRef(true);
   const highLatencyWarningTimerRef = useRef<number | null>(null);
   const [mapSelectorState, setMapSelectorState] = useState<DerivedMapSelectorState>({
@@ -1312,6 +1320,22 @@ export default function App() {
     if (nextPage === page) {
       return;
     }
+    if (nextPage === "map") {
+      const timing = {
+        id: nextPageTilePaintTimingIdRef.current++,
+        fromPage: page,
+        startedAt: performance.now(),
+      };
+      pageTilePaintTimingRef.current = timing;
+      debugLog("web.page-to-map.start", { id: timing.id, from_page: timing.fromPage });
+      requestAnimationFrame(() => {
+        debugLog("web.page-to-map.visible_frame", {
+          id: timing.id,
+          from_page: timing.fromPage,
+          elapsed_ms: Math.round(performance.now() - timing.startedAt),
+        });
+      });
+    }
     const nextHistory = boundedHistory([...pageHistory, currentSnapshot()]);
     setPageHistory(nextHistory);
     setPage(nextPage);
@@ -1421,6 +1445,12 @@ export default function App() {
           selectedFamily={selectedFamily}
           familyOptions={mapSelectorState.family_options}
           viewport={mapViewport}
+          pageTilePaintTiming={pageTilePaintTimingRef.current}
+          onPageTilePaintTimingComplete={(id) => {
+            if (pageTilePaintTimingRef.current?.id === id) {
+              pageTilePaintTimingRef.current = null;
+            }
+          }}
           onViewportChange={setMapViewport}
           onSelectMapId={(mapId) => {
             pushViewSnapshot({
@@ -1736,6 +1766,8 @@ function MapPage(props: {
   selectedFamily: DerivedMapSelectorState["family_options"][number] | null;
   familyOptions: DerivedMapSelectorState["family_options"];
   viewport: MapViewportState;
+  pageTilePaintTiming: WebPageTilePaintTiming | null;
+  onPageTilePaintTimingComplete: (id: number) => void;
   onViewportChange: (next: MapViewportState) => void;
   onSelectMapId: (mapId: string) => void;
   onSelectPage: (page: AppPage) => void;
@@ -1772,6 +1804,8 @@ function MapPage(props: {
     selectedFamily,
     familyOptions,
     viewport,
+    pageTilePaintTiming,
+    onPageTilePaintTimingComplete,
     onViewportChange,
     onSelectMapId,
     onSelectPage,
@@ -2035,6 +2069,27 @@ function MapPage(props: {
   }, [center, chartSearch.open, chartSearch.query, props.appCoreAdapter]);
   const [tiles, setTiles] = useState<RasterRenderTile[]>([]);
   const [rasterTileViewport, setRasterTileViewport] = useState<MapViewportState | null>(null);
+  const loadedRasterTileKeysRef = useRef<Set<string>>(new Set());
+  const completedPageTilePaintTimingIdsRef = useRef<Set<number>>(new Set());
+  const rasterTileKey = useCallback((tile: RasterRenderTile) =>
+    `${tile.chartFamily}-${tile.packageName ?? tile.mapViewId}-${tile.zoom}-${tile.x}-${tile.yTms}`,
+  []);
+  const completePageTilePaintTiming = useCallback((timing: WebPageTilePaintTiming, phase: "frame" | "images") => {
+    if (completedPageTilePaintTimingIdsRef.current.has(timing.id)) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      completedPageTilePaintTimingIdsRef.current.add(timing.id);
+      debugLog("web.page-to-map.frame", {
+        id: timing.id,
+        from_page: timing.fromPage,
+        phase,
+        elapsed_ms: Math.round(performance.now() - timing.startedAt),
+        tiles: tiles.length,
+      });
+      onPageTilePaintTimingComplete(timing.id);
+    });
+  }, [onPageTilePaintTimingComplete, tiles.length]);
   useEffect(() => {
     let cancelled = false;
     if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -2042,10 +2097,29 @@ function MapPage(props: {
       setRasterTileViewport(null);
       return;
     }
-    uiSession.queryRasterTilePlan(viewport, surfaceSize.width, surfaceSize.height)
+    const planStartedAt = performance.now();
+    const devicePixelRatio = window.devicePixelRatio || 1;
+    const deviceViewport = {
+      ...viewport,
+      zoom: viewport.zoom + Math.log2(devicePixelRatio),
+    };
+    uiSession.queryRasterTilePlan(
+      deviceViewport,
+      surfaceSize.width * devicePixelRatio,
+      surfaceSize.height * devicePixelRatio,
+    )
       .then((plan) => {
         if (!cancelled) {
-          setTiles(plan.tiles.map(renderTileFromCore));
+          pageTilePaintTiming && debugLog("web.page-to-map.plan", {
+            id: pageTilePaintTiming.id,
+            from_page: pageTilePaintTiming.fromPage,
+            elapsed_ms: Math.round(performance.now() - pageTilePaintTiming.startedAt),
+            plan_ms: Math.round(performance.now() - planStartedAt),
+            tiles: plan.tiles.length,
+            device_pixel_ratio: devicePixelRatio,
+          });
+          loadedRasterTileKeysRef.current = new Set();
+          setTiles(plan.tiles.map((tile) => renderTileFromCore(tile, 1 / devicePixelRatio)));
           setRasterTileViewport(viewport);
         }
       })
@@ -2059,7 +2133,18 @@ function MapPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+  }, [pageTilePaintTiming, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+  useEffect(() => {
+    if (page !== "map" || !pageTilePaintTiming || tiles.length === 0) {
+      return;
+    }
+    const loadedKeys = loadedRasterTileKeysRef.current;
+    const tileKeys = tiles.map(rasterTileKey);
+    const allAlreadyLoaded = tileKeys.length > 0 && tileKeys.every((key) => loadedKeys.has(key));
+    if (allAlreadyLoaded) {
+      completePageTilePaintTiming(pageTilePaintTiming, "frame");
+    }
+  }, [completePageTilePaintTiming, page, pageTilePaintTiming, rasterTileKey, tiles]);
   const mapIsVisible = page === "map";
   const situationRingCandidates = useMemo(() => appCoreAdapter.situationRingCandidates(), [appCoreAdapter]);
   const situationOverlay = useMemo(
@@ -3023,6 +3108,28 @@ function MapPage(props: {
     onFirstVisualReady();
   }
 
+  function reportRasterTileLoaded(tile: RasterRenderTile) {
+    reportFirstVisualReady();
+    const key = rasterTileKey(tile);
+    loadedRasterTileKeysRef.current.add(key);
+    const timing = pageTilePaintTiming;
+    if (!timing || page !== "map" || tiles.length === 0) {
+      return;
+    }
+    const loadedKeys = loadedRasterTileKeysRef.current;
+    const allLoaded = tiles.every((entry) => loadedKeys.has(rasterTileKey(entry)));
+    if (!allLoaded) {
+      return;
+    }
+    debugLog("web.page-to-map.images", {
+      id: timing.id,
+      from_page: timing.fromPage,
+      elapsed_ms: Math.round(performance.now() - timing.startedAt),
+      tiles: tiles.length,
+    });
+    completePageTilePaintTiming(timing, "images");
+  }
+
   function reportRasterTileError(tile: RasterRenderTile) {
     debugLog("map.raster.tile.error", {
       selected_map_id: selectedMap.id,
@@ -3093,7 +3200,7 @@ function MapPage(props: {
         >
           {tiles.map((tile) => (
             <div
-              key={`${tile.chartFamily}-${tile.packageName ?? tile.mapViewId}-${tile.zoom}-${tile.x}-${tile.yTms}`}
+              key={rasterTileKey(tile)}
               className="mapTile"
               style={{
                 left: `${tile.left}px`,
@@ -3109,7 +3216,7 @@ function MapPage(props: {
                 src={tile.src}
                 alt=""
                 draggable={false}
-                onLoad={reportFirstVisualReady}
+                onLoad={() => reportRasterTileLoaded(tile)}
                 onError={() => reportRasterTileError(tile)}
               />
               {debugTileLabels ? (

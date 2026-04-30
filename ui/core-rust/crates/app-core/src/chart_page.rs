@@ -68,7 +68,8 @@ pub fn derive_chart_page_state_from_airports(
     candidate_chart_id: Option<&str>,
 ) -> DerivedChartPageState {
     let recent_airport_ids = merge_recent_airport_ids(&airports, stored_recent_airport_ids);
-    let selected_airport_id = resolve_airport_id(&airports, candidate_airport_id, &recent_airport_ids);
+    let selected_airport_id =
+        resolve_airport_id(&airports, candidate_airport_id, &recent_airport_ids);
     let selected_chart_id = resolve_chart_id(&airports, &selected_airport_id, candidate_chart_id);
     DerivedChartPageState {
         airports,

@@ -87,15 +87,24 @@ mod tests {
         let from = LatLon { lat: 0.0, lon: 0.0 };
         let to = LatLon { lat: 0.0, lon: 1.0 };
         let left = LatLon { lat: 0.1, lon: 0.5 };
-        let right = LatLon { lat: -0.1, lon: 0.5 };
+        let right = LatLon {
+            lat: -0.1,
+            lon: 0.5,
+        };
         assert!(cross_track_left_nm(from, to, left) > 0.0);
         assert!(cross_track_left_nm(from, to, right) < 0.0);
     }
 
     #[test]
     fn display_path_densifies_long_legs() {
-        let from = LatLon { lat: 37.62, lon: -122.38 };
-        let to = LatLon { lat: 35.55, lon: 139.78 };
+        let from = LatLon {
+            lat: 37.62,
+            lon: -122.38,
+        };
+        let to = LatLon {
+            lat: 35.55,
+            lon: 139.78,
+        };
         let path = great_circle_display_path(from, to);
         assert!(path.len() > 10);
         assert_eq!(path.first(), Some(&from));

@@ -453,12 +453,14 @@ pub fn terminal_state_with_leg_characteristics(
         established_course_deg: logical_terminal_course_deg,
         incoming_course_to_anchor_deg: drawn_terminal_course_deg,
         outgoing_course_from_anchor_deg: logical_terminal_course_deg,
-        hold_state: if matches!(path_termination, PathTermination::Other(code) if matches!(code.trim(), "HF" | "HM")) {
+        hold_state: if matches!(path_termination, PathTermination::Other(code) if matches!(code.trim(), "HF" | "HM"))
+        {
             HoldTerminalState::HoldLeg
         } else {
             HoldTerminalState::None
         },
-        procedure_turn_state: if matches!(path_termination, PathTermination::Other(code) if code.trim() == "PI") {
+        procedure_turn_state: if matches!(path_termination, PathTermination::Other(code) if code.trim() == "PI")
+        {
             ProcedureTurnTerminalState::ProcedureTurnLeg
         } else {
             ProcedureTurnTerminalState::None
@@ -472,10 +474,7 @@ pub fn terminal_state_with_leg_characteristics(
     }
 }
 
-pub fn at_fix_requirement(
-    anchor: NavRef,
-    anchor_position: Option<LatLon>,
-) -> StartRequirement {
+pub fn at_fix_requirement(anchor: NavRef, anchor_position: Option<LatLon>) -> StartRequirement {
     StartRequirement::AtFix {
         anchor,
         anchor_position,
@@ -672,13 +671,16 @@ pub fn reconcile_handoff(
             if angular_difference_degrees(current_course_deg, *continuation_course_deg) > 25.0 {
                 return HandoffDecision::ContinueAsDrawn;
             }
-            let bearing_to_continuation =
-                initial_course_deg(terminal_state.terminal_position, *continuation_anchor_position);
+            let bearing_to_continuation = initial_course_deg(
+                terminal_state.terminal_position,
+                *continuation_anchor_position,
+            );
             if angular_difference_degrees(bearing_to_continuation, *continuation_course_deg) > 45.0
             {
                 return HandoffDecision::ContinueAsDrawn;
             }
-            let bearing_to_direct_fix = initial_course_deg(terminal_state.terminal_position, *direct_fix);
+            let bearing_to_direct_fix =
+                initial_course_deg(terminal_state.terminal_position, *direct_fix);
             let reciprocal_course_deg = normalize_bearing_degrees(*continuation_course_deg + 180.0);
             if angular_difference_degrees(bearing_to_direct_fix, reciprocal_course_deg) <= 45.0 {
                 HandoffDecision::SkipStaleFix
@@ -711,15 +713,19 @@ pub fn reconcile_handoff(
             if continuation_anchor
                 .as_ref()
                 .zip(terminal_state.terminal_anchor.as_ref())
-                .is_some_and(|(continuation_anchor, terminal_anchor)| continuation_anchor == terminal_anchor)
+                .is_some_and(|(continuation_anchor, terminal_anchor)| {
+                    continuation_anchor == terminal_anchor
+                })
             {
                 return HandoffDecision::YieldToFollowingCourse;
             }
             let Some(continuation_anchor_position) = continuation_anchor_position else {
                 return HandoffDecision::ContinueAsDrawn;
             };
-            let bearing_to_continuation =
-                initial_course_deg(terminal_state.terminal_position, *continuation_anchor_position);
+            let bearing_to_continuation = initial_course_deg(
+                terminal_state.terminal_position,
+                *continuation_anchor_position,
+            );
             if angular_difference_degrees(bearing_to_continuation, *continuation_course_deg) <= 45.0
             {
                 HandoffDecision::YieldToFollowingCourse
@@ -768,14 +774,14 @@ pub fn reconcile_handoff(
             if cross_track_nm > 0.5 {
                 return HandoffDecision::ContinueAsDrawn;
             }
-            let anchored_at_course_anchor = positions_nearly_equal(
-                terminal_state.terminal_position,
-                *course_anchor_position,
-            ) && terminal_state
-                .incoming_course_to_anchor_deg
-                .is_some_and(|incoming_course_deg| {
-                    angular_difference_degrees(current_course_deg, incoming_course_deg) <= 20.0
-                });
+            let anchored_at_course_anchor =
+                positions_nearly_equal(terminal_state.terminal_position, *course_anchor_position)
+                    && terminal_state.incoming_course_to_anchor_deg.is_some_and(
+                        |incoming_course_deg| {
+                            angular_difference_degrees(current_course_deg, incoming_course_deg)
+                                <= 20.0
+                        },
+                    );
             if terminal_state.hold_state != HoldTerminalState::HoldLeg
                 && !anchored_at_course_anchor
                 && angular_difference_degrees(current_course_deg, *course_deg) > 20.0
@@ -1259,7 +1265,10 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
             {
                 Some(resume_leg_index) => GuidanceState {
                     active_leg_index: resume_leg_index,
-                    active_detail_index: first_guidance_detail_index_for_leg(&plan, resume_leg_index),
+                    active_detail_index: first_guidance_detail_index_for_leg(
+                        &plan,
+                        resume_leg_index,
+                    ),
                     display_split_leg_id: plan
                         .resolved_legs
                         .get(resume_leg_index)
@@ -1279,7 +1288,9 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                     active_detail_index: direct_to
                         .target_leg_id
                         .as_deref()
-                        .and_then(|target_leg_id| leg_index_by_id(&plan.resolved_legs, target_leg_id))
+                        .and_then(|target_leg_id| {
+                            leg_index_by_id(&plan.resolved_legs, target_leg_id)
+                        })
                         .and_then(|index| first_guidance_detail_index_for_leg(&plan, index))
                         .or(guidance.active_detail_index),
                     display_split_leg_id: direct_to
@@ -1304,11 +1315,13 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                 .active_detail_index
                 .or_else(|| first_guidance_detail_index_for_leg(&plan, guidance.active_leg_index))
                 .unwrap_or(0);
-            let active_detail = guidance_detail_ref_by_index(&plan, active_detail_index).ok_or_else(|| AppError {
-                kind: AppErrorKind::InvalidFlightPlan,
-                message: format!("guidance detail index out of bounds: {active_detail_index}"),
-            })?;
-            if let Some(next_detail) = guidance_detail_ref_by_index(&plan, active_detail_index + 1) {
+            let active_detail = guidance_detail_ref_by_index(&plan, active_detail_index)
+                .ok_or_else(|| AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: format!("guidance detail index out of bounds: {active_detail_index}"),
+                })?;
+            if let Some(next_detail) = guidance_detail_ref_by_index(&plan, active_detail_index + 1)
+            {
                 if next_detail.leg_index == active_detail.leg_index {
                     GuidanceState {
                         active_leg_index: guidance.active_leg_index,
@@ -3218,9 +3231,8 @@ fn revalidate_guidance_after_plan_edit(
         if leg_index == guidance.active_leg_index {
             first_detail_for_active_leg = Some(current_detail_index);
             if let Some(active_detail_index) = guidance.active_detail_index {
-                active_detail_still_valid =
-                    active_detail_index >= current_detail_index
-                        && active_detail_index < current_detail_index + detail_count;
+                active_detail_still_valid = active_detail_index >= current_detail_index
+                    && active_detail_index < current_detail_index + detail_count;
             }
         }
         current_detail_index += detail_count;
@@ -5015,7 +5027,10 @@ mod tests {
         let guidance = inserted.guidance.as_ref().expect("guidance preserved");
         assert_eq!(guidance.active_leg_index, 0);
         assert_eq!(guidance.active_detail_index, Some(0));
-        assert_eq!(guidance.display_split_leg_id.as_deref(), Some("component-0-1"));
+        assert_eq!(
+            guidance.display_split_leg_id.as_deref(),
+            Some("component-0-1")
+        );
         let active_leg = active_guidance_leg(&inserted).expect("active leg preserved");
         assert_eq!(active_leg.from, NavRef::Airport("KRNT".to_string()));
         assert_eq!(active_leg.to, NavRef::Airport("KUAO".to_string()));

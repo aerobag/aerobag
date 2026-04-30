@@ -108,6 +108,19 @@ pub struct RasterTilePlan {
     pub tiles: Vec<RasterTileDraw>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RasterTilePlanOptions {
+    pub max_tile_display_multiplier: f64,
+}
+
+impl Default for RasterTilePlanOptions {
+    fn default() -> Self {
+        Self {
+            max_tile_display_multiplier: 1.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RasterTileDraw {
     pub draw_key: String,
@@ -156,7 +169,11 @@ struct TileBounds {
 type PolygonSetLookup = HashMap<String, Vec<Vec<[f64; 2]>>>;
 
 pub fn select_map_in_catalog(catalog: &mut RasterMapCatalog, selected_map_id: &str) {
-    if catalog.displayed_maps.iter().any(|view| view.id == selected_map_id) {
+    if catalog
+        .displayed_maps
+        .iter()
+        .any(|view| view.id == selected_map_id)
+    {
         catalog.selected_map_id = selected_map_id.to_string();
         catalog.selected_map = catalog
             .displayed_maps
@@ -171,6 +188,22 @@ pub fn raster_tile_plan(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
+) -> RasterTilePlan {
+    raster_tile_plan_with_options(
+        catalog,
+        viewport,
+        width_px,
+        height_px,
+        RasterTilePlanOptions::default(),
+    )
+}
+
+pub fn raster_tile_plan_with_options(
+    catalog: &RasterMapCatalog,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    options: RasterTilePlanOptions,
 ) -> RasterTilePlan {
     if width_px <= 0.0 || height_px <= 0.0 {
         return RasterTilePlan {
@@ -200,6 +233,7 @@ pub fn raster_tile_plan(
             width_px,
             height_px,
             selected_region_id,
+            options,
         ));
     }
     let mut tiles = dedupe_tiles(planned)
@@ -226,6 +260,7 @@ fn render_tiles_for_family(
     width_px: f64,
     height_px: f64,
     selected_region_id: Option<&str>,
+    options: RasterTilePlanOptions,
 ) -> Vec<PlannedTile> {
     let family_full_coverage_zoom = family_views
         .iter()
@@ -241,16 +276,16 @@ fn render_tiles_for_family(
 
     for (map_view_id, option) in family_views {
         let map_view = &option.map_view;
-        let levels = levels_for_map_view(map_view, viewport.zoom);
+        let levels = levels_for_map_view(map_view, viewport.zoom, options);
         for level in levels {
-            let is_full_coverage_level = family_full_coverage_zoom
-                .is_some_and(|zoom| (level.zoom as f64) <= zoom);
+            let is_full_coverage_level =
+                family_full_coverage_zoom.is_some_and(|zoom| (level.zoom as f64) <= zoom);
             let tile_world_size = WORLD_SIZE / 2_f64.powi(level.zoom as i32);
             let tile_screen_size = tile_world_size * scale;
             let x_start = (min_world_x / tile_world_size).floor() as i64;
-            let x_end = (max_world_x / tile_world_size).floor() as i64;
+            let x_end = (max_world_x / tile_world_size).ceil() as i64 - 1;
             let y_start = (min_world_y / tile_world_size).floor() as i64;
-            let y_end = (max_world_y / tile_world_size).floor() as i64;
+            let y_end = (max_world_y / tile_world_size).ceil() as i64 - 1;
             let level_scale = 2_i64.pow(level.zoom as u32);
 
             for y_xyz in y_start..=y_end {
@@ -280,12 +315,31 @@ fn render_tiles_for_family(
                         if representative_id != *map_view_id {
                             continue;
                         }
-                        full_coverage_candidates(family_views, polygon_sets, level.zoom, x, y_tms, map_view_id, map_view)
+                        full_coverage_candidates(
+                            family_views,
+                            polygon_sets,
+                            level.zoom,
+                            x,
+                            y_tms,
+                            map_view_id,
+                            map_view,
+                        )
                     } else {
                         vec![(map_view_id.clone(), map_view.clone())]
                     };
-                    let left_px = (x as f64 * tile_world_size - center_world.0) * scale + width_px / 2.0;
-                    let top_px = (y_xyz as f64 * tile_world_size - center_world.1) * scale + height_px / 2.0;
+                    let left_px =
+                        (x as f64 * tile_world_size - center_world.0) * scale + width_px / 2.0;
+                    let top_px =
+                        (y_xyz as f64 * tile_world_size - center_world.1) * scale + height_px / 2.0;
+                    if !screen_rect_intersects_viewport(
+                        left_px,
+                        top_px,
+                        tile_screen_size,
+                        width_px,
+                        height_px,
+                    ) {
+                        continue;
+                    }
                     tiles.push(PlannedTile {
                         x,
                         y_tms,
@@ -304,6 +358,16 @@ fn render_tiles_for_family(
     tiles
 }
 
+fn screen_rect_intersects_viewport(
+    left_px: f64,
+    top_px: f64,
+    size_px: f64,
+    width_px: f64,
+    height_px: f64,
+) -> bool {
+    left_px < width_px && top_px < height_px && left_px + size_px > 0.0 && top_px + size_px > 0.0
+}
+
 fn full_coverage_representative(
     family_views: &[(String, RasterMapViewOption)],
     polygon_sets: &PolygonSetLookup,
@@ -316,7 +380,9 @@ fn full_coverage_representative(
         .iter()
         .filter(|(_, option)| {
             let map_view = &option.map_view;
-            map_view.full_coverage_zoom.is_some_and(|full_zoom| (zoom as f64) <= full_zoom)
+            map_view
+                .full_coverage_zoom
+                .is_some_and(|full_zoom| (zoom as f64) <= full_zoom)
                 && level_contains(map_view, zoom, x, y_tms)
                 && tile_intersects_coverage(option, polygon_sets, zoom, x, y_tms)
         })
@@ -342,10 +408,18 @@ fn full_coverage_candidates(
 ) -> Vec<(String, RasterMapView)> {
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
-    push_candidate(&mut candidates, &mut seen, primary_id.to_string(), primary.clone());
+    push_candidate(
+        &mut candidates,
+        &mut seen,
+        primary_id.to_string(),
+        primary.clone(),
+    );
     for (map_view_id, option) in family_views {
         let map_view = &option.map_view;
-        if map_view.full_coverage_zoom.is_none_or(|full_zoom| (zoom as f64) > full_zoom) {
+        if map_view
+            .full_coverage_zoom
+            .is_none_or(|full_zoom| (zoom as f64) > full_zoom)
+        {
             continue;
         }
         if !level_contains(map_view, zoom, x, y_tms) {
@@ -354,7 +428,12 @@ fn full_coverage_candidates(
         if !tile_intersects_coverage(option, polygon_sets, zoom, x, y_tms) {
             continue;
         }
-        push_candidate(&mut candidates, &mut seen, map_view_id.clone(), map_view.clone());
+        push_candidate(
+            &mut candidates,
+            &mut seen,
+            map_view_id.clone(),
+            map_view.clone(),
+        );
     }
     candidates
 }
@@ -380,10 +459,18 @@ fn planned_tile_to_draw(tile: PlannedTile) -> RasterTileDraw {
     let mut sources = tile
         .candidate_map_views
         .iter()
-        .map(|(map_view_id, map_view)| tile_source(map_view_id, map_view, tile.zoom, tile.x, tile.y_tms))
+        .map(|(map_view_id, map_view)| {
+            tile_source(map_view_id, map_view, tile.zoom, tile.x, tile.y_tms)
+        })
         .collect::<Vec<_>>();
     if sources.is_empty() {
-        sources.push(tile_source(&tile.map_view_id, &tile.map_view, tile.zoom, tile.x, tile.y_tms));
+        sources.push(tile_source(
+            &tile.map_view_id,
+            &tile.map_view,
+            tile.zoom,
+            tile.x,
+            tile.y_tms,
+        ));
     }
     let primary = sources.remove(0);
     RasterTileDraw {
@@ -412,7 +499,11 @@ fn tile_source(
     y_tms: i64,
 ) -> RasterTileSource {
     let relative_path = tile_relative_path(map_view, zoom, x, y_tms);
-    let url = format!("{}/{}", map_view.tile_url_root.trim_end_matches('/'), relative_path);
+    let url = format!(
+        "{}/{}",
+        map_view.tile_url_root.trim_end_matches('/'),
+        relative_path
+    );
     RasterTileSource {
         map_view_id: map_view_id.to_string(),
         package_name: map_view.package_name.clone(),
@@ -437,7 +528,10 @@ fn tile_relative_path(map_view: &RasterMapView, zoom: i64, x: i64, y_tms: i64) -
 fn dedupe_tiles(tiles: Vec<PlannedTile>) -> Vec<PlannedTile> {
     let mut by_key: HashMap<String, PlannedTile> = HashMap::new();
     for tile in tiles {
-        let key = format!("{}:{}:{}:{}", tile.map_view_id, tile.zoom, tile.x, tile.y_tms);
+        let key = format!(
+            "{}:{}:{}:{}",
+            tile.map_view_id, tile.zoom, tile.x, tile.y_tms
+        );
         if let Some(existing) = by_key.get_mut(&key) {
             let mut seen = existing
                 .candidate_map_views
@@ -461,29 +555,41 @@ fn dedupe_tiles(tiles: Vec<PlannedTile>) -> Vec<PlannedTile> {
     by_key.into_values().collect()
 }
 
-fn levels_for_map_view(map_view: &RasterMapView, zoom: f64) -> Vec<RasterTileLevel> {
-    let Some(desired_level) = pick_level(map_view, zoom) else {
+fn levels_for_map_view(
+    map_view: &RasterMapView,
+    zoom: f64,
+    options: RasterTilePlanOptions,
+) -> Vec<RasterTileLevel> {
+    let Some(desired_level) = pick_level(map_view, zoom, options) else {
         return Vec::new();
     };
-    if map_view.storage_kind == "static_product" {
-        return vec![desired_level.clone()];
-    }
-    let mut levels = map_view
-        .levels
-        .iter()
-        .filter(|level| level.zoom <= desired_level.zoom)
-        .cloned()
-        .collect::<Vec<_>>();
-    levels.sort_by_key(|level| level.zoom);
-    levels
+    vec![desired_level.clone()]
 }
 
-fn pick_level(map_view: &RasterMapView, zoom: f64) -> Option<&RasterTileLevel> {
-    map_view.levels.iter().min_by(|left, right| {
-        ((left.zoom as f64) - zoom)
-            .abs()
-            .total_cmp(&(((right.zoom as f64) - zoom).abs()))
-    })
+fn pick_level(
+    map_view: &RasterMapView,
+    zoom: f64,
+    options: RasterTilePlanOptions,
+) -> Option<&RasterTileLevel> {
+    let multiplier = if options.max_tile_display_multiplier.is_finite() {
+        options.max_tile_display_multiplier.max(1.0)
+    } else {
+        1.0
+    };
+    let max_display_size = if map_view.tile_size > 0 {
+        map_view.tile_size as f64
+    } else {
+        WORLD_SIZE
+    } * multiplier;
+    map_view
+        .levels
+        .iter()
+        .filter(|level| {
+            let tile_world_size = WORLD_SIZE / 2_f64.powi(level.zoom as i32);
+            tile_world_size * scale_for_zoom(zoom) <= max_display_size
+        })
+        .min_by_key(|level| level.zoom)
+        .or_else(|| map_view.levels.iter().max_by_key(|level| level.zoom))
 }
 
 fn level_contains(map_view: &RasterMapView, zoom: i64, x: i64, y_tms: i64) -> bool {
@@ -552,7 +658,10 @@ fn tile_bounds_for(zoom: i64, x: i64, y_tms: i64) -> TileBounds {
     let y_xyz = (level_scale - 1) - y_tms;
     let tile_world_size = WORLD_SIZE / level_scale as f64;
     let northwest = world_to_lat_lon(x as f64 * tile_world_size, y_xyz as f64 * tile_world_size);
-    let southeast = world_to_lat_lon((x + 1) as f64 * tile_world_size, (y_xyz + 1) as f64 * tile_world_size);
+    let southeast = world_to_lat_lon(
+        (x + 1) as f64 * tile_world_size,
+        (y_xyz + 1) as f64 * tile_world_size,
+    );
     TileBounds {
         south: northwest.lat.min(southeast.lat),
         north: northwest.lat.max(southeast.lat),
@@ -562,7 +671,9 @@ fn tile_bounds_for(zoom: i64, x: i64, y_tms: i64) -> TileBounds {
 }
 
 fn polygon_intersects_rect(polygon: &[[f64; 2]], rect: TileBounds) -> bool {
-    polygon.iter().any(|point| point_in_rect(point[0], point[1], rect))
+    polygon
+        .iter()
+        .any(|point| point_in_rect(point[0], point[1], rect))
         || rect_corners(rect)
             .iter()
             .any(|point| point_in_polygon(point[0], point[1], polygon))
@@ -641,8 +752,8 @@ fn segments_intersect(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> boo
 fn lat_lon_to_world(point: LatLon) -> (f64, f64) {
     let clamped_lat = point.lat.clamp(-MAX_LATITUDE, MAX_LATITUDE);
     let x = ((point.lon + 180.0) / 360.0) * WORLD_SIZE;
-    let y = ((1.0 - clamped_lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0)
-        * WORLD_SIZE;
+    let y =
+        ((1.0 - clamped_lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0) * WORLD_SIZE;
     (x, y)
 }
 
@@ -671,7 +782,12 @@ mod tests {
         }
     }
 
-    fn option(id: &str, family: &str, package: &str, levels: Vec<RasterTileLevel>) -> RasterMapViewOption {
+    fn option(
+        id: &str,
+        family: &str,
+        package: &str,
+        levels: Vec<RasterTileLevel>,
+    ) -> RasterMapViewOption {
         RasterMapViewOption {
             id: id.to_string(),
             label: id.to_string(),
@@ -706,10 +822,48 @@ mod tests {
             selected_map_id: "tac:nw".to_string(),
             selected_map: None,
             displayed_maps: vec![
-                option("sec:ak", "sec", "AK_SEC", vec![level(0, 0, 0, 0, 0), level(1, 0, 1, 0, 1), level(2, 0, 3, 0, 3)]),
-                option("tac:ak", "tac", "AK_TAC", vec![level(0, 0, 0, 0, 0), level(1, 0, 1, 0, 1), level(2, 0, 3, 0, 3)]),
-                option("sec:nw", "sec", "NW_SEC", vec![level(0, 0, 0, 0, 0), level(1, 0, 1, 0, 1), level(2, 0, 3, 0, 3), level(7, 18, 23, 76, 81)]),
-                option("tac:nw", "tac", "NW_TAC", vec![level(0, 0, 0, 0, 0), level(1, 0, 1, 0, 1), level(2, 0, 3, 0, 3), level(7, 18, 23, 76, 81)]),
+                option(
+                    "sec:ak",
+                    "sec",
+                    "AK_SEC",
+                    vec![
+                        level(0, 0, 0, 0, 0),
+                        level(1, 0, 1, 0, 1),
+                        level(2, 0, 3, 0, 3),
+                    ],
+                ),
+                option(
+                    "tac:ak",
+                    "tac",
+                    "AK_TAC",
+                    vec![
+                        level(0, 0, 0, 0, 0),
+                        level(1, 0, 1, 0, 1),
+                        level(2, 0, 3, 0, 3),
+                    ],
+                ),
+                option(
+                    "sec:nw",
+                    "sec",
+                    "NW_SEC",
+                    vec![
+                        level(0, 0, 0, 0, 0),
+                        level(1, 0, 1, 0, 1),
+                        level(2, 0, 3, 0, 3),
+                        level(7, 18, 23, 76, 81),
+                    ],
+                ),
+                option(
+                    "tac:nw",
+                    "tac",
+                    "NW_TAC",
+                    vec![
+                        level(0, 0, 0, 0, 0),
+                        level(1, 0, 1, 0, 1),
+                        level(2, 0, 3, 0, 3),
+                        level(7, 18, 23, 76, 81),
+                    ],
+                ),
             ],
             geometry: RasterDisplayGeometry::default(),
             family_options: Vec::new(),
@@ -728,9 +882,216 @@ mod tests {
             786.0,
             708.0,
         );
-        assert!(plan.tiles.iter().any(|tile| tile.primary.package_name.as_deref() == Some("NW_SEC")));
-        assert!(plan.tiles.iter().any(|tile| tile.primary.package_name.as_deref() == Some("NW_TAC")));
-        assert!(!plan.tiles.iter().any(|tile| tile.primary.package_name.as_deref() == Some("AK_SEC")));
-        assert!(!plan.tiles.iter().any(|tile| tile.primary.package_name.as_deref() == Some("AK_TAC")));
+        assert!(plan
+            .tiles
+            .iter()
+            .any(|tile| tile.primary.package_name.as_deref() == Some("NW_SEC")));
+        assert!(plan
+            .tiles
+            .iter()
+            .any(|tile| tile.primary.package_name.as_deref() == Some("NW_TAC")));
+        assert!(!plan
+            .tiles
+            .iter()
+            .any(|tile| tile.primary.package_name.as_deref() == Some("AK_SEC")));
+        assert!(!plan
+            .tiles
+            .iter()
+            .any(|tile| tile.primary.package_name.as_deref() == Some("AK_TAC")));
+    }
+
+    #[test]
+    fn chart_packages_plan_only_one_retina_appropriate_zoom_level() {
+        let catalog = RasterMapCatalog {
+            selected_map_id: "sec:nw".to_string(),
+            selected_map: None,
+            displayed_maps: vec![option(
+                "sec:nw",
+                "sec",
+                "NW_SEC",
+                vec![
+                    level(0, 0, 0, 0, 0),
+                    level(1, 0, 1, 0, 1),
+                    level(2, 0, 3, 0, 3),
+                    level(7, 18, 23, 76, 81),
+                ],
+            )],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+        let plan = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 38.13483035117734,
+                    lon: -121.95686691849119,
+                },
+                zoom: 7.3,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            786.0,
+            708.0,
+        );
+        assert!(!plan.tiles.is_empty());
+        assert!(plan.tiles.iter().all(|tile| tile.source_zoom == 7));
+    }
+
+    #[test]
+    fn tiles_touching_viewport_edge_do_not_count_as_visible() {
+        let catalog = RasterMapCatalog {
+            selected_map_id: "sec:nw".to_string(),
+            selected_map: None,
+            displayed_maps: vec![option(
+                "sec:nw",
+                "sec",
+                "NW_SEC",
+                vec![level(1, 0, 1, 0, 1)],
+            )],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+        let plan = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 0.0,
+                    lon: -90.0,
+                },
+                zoom: 1.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            256.0,
+            128.0,
+        );
+
+        assert!(!plan.tiles.is_empty());
+        assert!(plan.tiles.iter().all(|tile| tile.x == 0));
+        assert!(plan.tiles.iter().all(|tile| {
+            tile.left_px < 256.0
+                && tile.top_px < 128.0
+                && tile.left_px + tile.size_px > 0.0
+                && tile.top_px + tile.size_px > 0.0
+        }));
+    }
+
+    #[test]
+    fn tile_size_allows_lower_source_zoom_until_it_would_blur() {
+        let catalog = RasterMapCatalog {
+            selected_map_id: "sec:nw".to_string(),
+            selected_map: None,
+            displayed_maps: vec![option(
+                "sec:nw",
+                "sec",
+                "NW_SEC",
+                vec![
+                    level(8, 40, 43, 155, 158),
+                    level(9, 80, 86, 310, 316),
+                    level(10, 160, 172, 620, 632),
+                ],
+            )],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+        let plan_at_integer_zoom = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 38.13483035117734,
+                    lon: -121.95686691849119,
+                },
+                zoom: 10.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            786.0,
+            708.0,
+        );
+        assert!(!plan_at_integer_zoom.tiles.is_empty());
+        assert!(plan_at_integer_zoom
+            .tiles
+            .iter()
+            .all(|tile| { tile.source_zoom == 9 && tile.size_px <= 512.0 }));
+
+        let plan_when_zoomed_in = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 38.13483035117734,
+                    lon: -121.95686691849119,
+                },
+                zoom: 10.1,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            786.0,
+            708.0,
+        );
+        assert!(!plan_when_zoomed_in.tiles.is_empty());
+        assert!(plan_when_zoomed_in
+            .tiles
+            .iter()
+            .all(|tile| { tile.source_zoom == 10 && tile.size_px <= 512.0 }));
+    }
+
+    #[test]
+    fn fast_tile_option_allows_two_x_overscaling_before_next_zoom() {
+        let catalog = RasterMapCatalog {
+            selected_map_id: "sec:nw".to_string(),
+            selected_map: None,
+            displayed_maps: vec![option(
+                "sec:nw",
+                "sec",
+                "NW_SEC",
+                vec![
+                    level(8, 40, 43, 155, 158),
+                    level(9, 80, 86, 310, 316),
+                    level(10, 160, 172, 620, 632),
+                ],
+            )],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+        let normal = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 38.13483035117734,
+                    lon: -121.95686691849119,
+                },
+                zoom: 10.1,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            786.0,
+            708.0,
+        );
+        assert!(!normal.tiles.is_empty());
+        assert!(normal.tiles.iter().all(|tile| tile.source_zoom == 10));
+
+        let fast = raster_tile_plan_with_options(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 38.13483035117734,
+                    lon: -121.95686691849119,
+                },
+                zoom: 10.1,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            786.0,
+            708.0,
+            RasterTilePlanOptions {
+                max_tile_display_multiplier: 2.0,
+            },
+        );
+        assert!(!fast.tiles.is_empty());
+        assert!(fast
+            .tiles
+            .iter()
+            .all(|tile| tile.source_zoom == 9 && tile.size_px <= 1024.0));
+        assert!(fast.tiles.len() < normal.tiles.len());
     }
 }

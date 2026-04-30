@@ -1,8 +1,8 @@
 use crate::planning::LegDisplayPathStyle;
 use crate::{
-    heading_signature_for_element, reconcile_handoff, HandoffDecision, LatLon,
-    LegDisplayElement, LegDisplayPath, ProcedureLegMaterializationRecord,
     basic_terminal_state, direct_to_fix_with_course_continuation_requirement,
+    heading_signature_for_element, reconcile_handoff, HandoffDecision, LatLon, LegDisplayElement,
+    LegDisplayPath, ProcedureLegMaterializationRecord,
 };
 
 macro_rules! debug_source {
@@ -35,7 +35,10 @@ macro_rules! push_arc {
     }};
 }
 
-fn solid_path(elements: Vec<LegDisplayElement>, debug_element_sources: Vec<String>) -> LegDisplayPath {
+fn solid_path(
+    elements: Vec<LegDisplayElement>,
+    debug_element_sources: Vec<String>,
+) -> LegDisplayPath {
     LegDisplayPath {
         style: LegDisplayPathStyle::Solid,
         elements,
@@ -44,7 +47,10 @@ fn solid_path(elements: Vec<LegDisplayElement>, debug_element_sources: Vec<Strin
     }
 }
 
-fn dashed_path(elements: Vec<LegDisplayElement>, debug_element_sources: Vec<String>) -> LegDisplayPath {
+fn dashed_path(
+    elements: Vec<LegDisplayElement>,
+    debug_element_sources: Vec<String>,
+) -> LegDisplayPath {
     LegDisplayPath {
         style: LegDisplayPathStyle::Dashed,
         elements,
@@ -143,12 +149,7 @@ pub fn display_path_for_resumed_common_cf(
             0.0,
             missed_approach_turn_radius_nm(),
         );
-        extend_sources_for_new_elements(
-            &mut debug_sources,
-            prior_len,
-            &elements,
-            debug_source!(),
-        );
+        extend_sources_for_new_elements(&mut debug_sources, prior_len, &elements, debug_source!());
         current_position = turn_end;
     }
 
@@ -192,13 +193,12 @@ pub fn build_trailing_course_to_intercept_display_path(
     let intercept_step = next_segment_records
         .iter()
         .find(|record| record.path_termination.trim() == "CF")?;
-    let (mut elements, intercept, _flown_course_deg) =
-        course_to_intercept_path(
-            trailing_record,
-            start,
-            initial_course_override,
-            Some(intercept_step),
-        )?;
+    let (mut elements, intercept, _flown_course_deg) = course_to_intercept_path(
+        trailing_record,
+        start,
+        initial_course_override,
+        Some(intercept_step),
+    )?;
     let mut altitude_ft = trailing_record.altitude_1_ft;
     let mut debug_sources = Vec::new();
     let _ = append_course_track_path(
@@ -483,10 +483,13 @@ fn build_procedure_leg_display_path(
             }
             "IF" => {
                 if let Some(fix) = step.nav_position {
-                    if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
+                    if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM
+                    {
                         let direct_course_deg = bearing_from(current_position, fix);
                         if let Some(current_heading_deg) = current_course_deg {
-                            if angular_difference_degrees(current_heading_deg, direct_course_deg) > 5.0 {
+                            if angular_difference_degrees(current_heading_deg, direct_course_deg)
+                                > 5.0
+                            {
                                 let prior_len = elements.len();
                                 let turn_end = append_heading_change(
                                     &mut elements,
@@ -506,7 +509,9 @@ fn build_procedure_leg_display_path(
                                 current_position = turn_end;
                             }
                         }
-                        if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
+                        if distance_between_points_nm(current_position, fix)
+                            > MIN_GEOMETRY_DISTANCE_NM
+                        {
                             push_segment!(elements, debug_sources, current_position, fix);
                         }
                         current_course_deg = Some(direct_course_deg);
@@ -517,8 +522,10 @@ fn build_procedure_leg_display_path(
                             if next_step.path_termination.trim() == "CF" {
                                 if let Some(next_fix) = next_step.nav_position {
                                     let direct_course_deg = bearing_from(fix, next_fix);
-                                    if angular_difference_degrees(current_heading_deg, direct_course_deg)
-                                        > 5.0
+                                    if angular_difference_degrees(
+                                        current_heading_deg,
+                                        direct_course_deg,
+                                    ) > 5.0
                                     {
                                         let prior_len = elements.len();
                                         let turn_end = append_heading_change(
@@ -614,7 +621,8 @@ fn build_procedure_leg_display_path(
                 let distance_nm = parse_distance_tenths_nm(step.route_distance_or_time.as_deref())?;
                 if distance_nm > MIN_GEOMETRY_DISTANCE_NM {
                     let end = destination_point(current_position, course_deg, distance_nm);
-                    if distance_between_points_nm(current_position, end) > MIN_GEOMETRY_DISTANCE_NM {
+                    if distance_between_points_nm(current_position, end) > MIN_GEOMETRY_DISTANCE_NM
+                    {
                         push_segment!(elements, debug_sources, current_position, end);
                     }
                     current_position = end;
@@ -670,11 +678,8 @@ fn build_procedure_leg_display_path(
                 }
             }
             "VD" => {
-                let (vd_elements, end, course_deg) = heading_to_dme_distance_path(
-                    step,
-                    current_position,
-                    current_course_deg,
-                )?;
+                let (vd_elements, end, course_deg) =
+                    heading_to_dme_distance_path(step, current_position, current_course_deg)?;
                 extend_elements_with_sources(
                     &mut elements,
                     &mut debug_sources,
@@ -686,11 +691,8 @@ fn build_procedure_leg_display_path(
                 current_course_deg = Some(course_deg);
             }
             "VR" => {
-                let (vr_elements, end, course_deg) = heading_to_radial_termination_path(
-                    step,
-                    current_position,
-                    current_course_deg,
-                )?;
+                let (vr_elements, end, course_deg) =
+                    heading_to_radial_termination_path(step, current_position, current_course_deg)?;
                 extend_elements_with_sources(
                     &mut elements,
                     &mut debug_sources,
@@ -706,7 +708,10 @@ fn build_procedure_leg_display_path(
                 if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
                     let path = arc_to_fix_path_from_start(current_position, step)?;
                     current_position = fix;
-                    current_course_deg = path.elements.last().and_then(display_element_end_course_deg);
+                    current_course_deg = path
+                        .elements
+                        .last()
+                        .and_then(display_element_end_course_deg);
                     extend_elements_with_sources(
                         &mut elements,
                         &mut debug_sources,
@@ -721,7 +726,10 @@ fn build_procedure_leg_display_path(
             "RF" => {
                 let path = radius_to_fix_path_from_start(current_position, step)?;
                 current_position = step.nav_position?;
-                current_course_deg = path.elements.last().and_then(display_element_end_course_deg);
+                current_course_deg = path
+                    .elements
+                    .last()
+                    .and_then(display_element_end_course_deg);
                 extend_elements_with_sources(
                     &mut elements,
                     &mut debug_sources,
@@ -750,8 +758,12 @@ fn build_procedure_leg_display_path(
                 if let (Some(current_heading_deg), Some(first_element)) =
                     (current_course_deg, path.elements.first_mut())
                 {
-                    if let Some((_, outbound_course_deg, _, _)) = heading_signature_for_element(first_element) {
-                        if angular_difference_degrees(current_heading_deg, outbound_course_deg) > 5.0 {
+                    if let Some((_, outbound_course_deg, _, _)) =
+                        heading_signature_for_element(first_element)
+                    {
+                        if angular_difference_degrees(current_heading_deg, outbound_course_deg)
+                            > 5.0
+                        {
                             let prior_len = elements.len();
                             let turn_clockwise =
                                 shortest_turn_clockwise(current_heading_deg, outbound_course_deg);
@@ -774,8 +786,11 @@ fn build_procedure_leg_display_path(
                         }
                     }
                 }
-                current_course_deg = next_cf_course_deg
-                    .or_else(|| path.elements.last().and_then(display_element_end_course_deg));
+                current_course_deg = next_cf_course_deg.or_else(|| {
+                    path.elements
+                        .last()
+                        .and_then(display_element_end_course_deg)
+                });
                 extend_elements_with_sources(
                     &mut elements,
                     &mut debug_sources,
@@ -866,13 +881,15 @@ fn build_procedure_leg_display_path(
                                 NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT,
                                 climb_minutes,
                             )
-                                .min(distance_between_points_nm(current_position, fix));
+                            .min(distance_between_points_nm(current_position, fix));
                             let climb_end = destination_point(
                                 current_position,
                                 current_heading_deg,
                                 climb_distance_nm,
                             );
-                            if distance_between_points_nm(current_position, climb_end) > MIN_GEOMETRY_DISTANCE_NM {
+                            if distance_between_points_nm(current_position, climb_end)
+                                > MIN_GEOMETRY_DISTANCE_NM
+                            {
                                 push_segment!(elements, debug_sources, current_position, climb_end);
                                 current_position = climb_end;
                             }
@@ -893,7 +910,8 @@ fn build_procedure_leg_display_path(
                 } else {
                     let direct_course_deg = bearing_from(current_position, fix);
                     if let Some(current_heading_deg) = current_course_deg {
-                        if angular_difference_degrees(current_heading_deg, direct_course_deg) > 5.0 {
+                        if angular_difference_degrees(current_heading_deg, direct_course_deg) > 5.0
+                        {
                             let turn_prior_len = elements.len();
                             let turn_end = append_heading_change(
                                 &mut elements,
@@ -912,13 +930,18 @@ fn build_procedure_leg_display_path(
                                 &elements,
                                 debug_source!(),
                             );
-                            if distance_between_points_nm(turn_end, fix) > MIN_GEOMETRY_DISTANCE_NM {
+                            if distance_between_points_nm(turn_end, fix) > MIN_GEOMETRY_DISTANCE_NM
+                            {
                                 push_segment!(elements, debug_sources, turn_end, fix);
                             }
-                        } else if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
+                        } else if distance_between_points_nm(current_position, fix)
+                            > MIN_GEOMETRY_DISTANCE_NM
+                        {
                             push_segment!(elements, debug_sources, current_position, fix);
                         }
-                    } else if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
+                    } else if distance_between_points_nm(current_position, fix)
+                        > MIN_GEOMETRY_DISTANCE_NM
+                    {
                         push_segment!(elements, debug_sources, current_position, fix);
                     }
                     current_position = fix;
@@ -935,9 +958,13 @@ fn build_procedure_leg_display_path(
                     fix
                 };
                 let outbound_course_deg = bearing_from(current_position, effective_fix);
-                if distance_between_points_nm(current_position, effective_fix) > MIN_GEOMETRY_DISTANCE_NM {
+                if distance_between_points_nm(current_position, effective_fix)
+                    > MIN_GEOMETRY_DISTANCE_NM
+                {
                     if let Some(current_heading_deg) = current_course_deg {
-                        if angular_difference_degrees(current_heading_deg, outbound_course_deg) > 5.0 {
+                        if angular_difference_degrees(current_heading_deg, outbound_course_deg)
+                            > 5.0
+                        {
                             let prior_len = elements.len();
                             let turn_clockwise =
                                 shortest_turn_clockwise(current_heading_deg, outbound_course_deg);
@@ -956,7 +983,9 @@ fn build_procedure_leg_display_path(
                                 &elements,
                                 debug_source!(),
                             );
-                            if distance_between_points_nm(turn_end, effective_fix) > MIN_GEOMETRY_DISTANCE_NM {
+                            if distance_between_points_nm(turn_end, effective_fix)
+                                > MIN_GEOMETRY_DISTANCE_NM
+                            {
                                 push_segment!(elements, debug_sources, turn_end, effective_fix);
                             }
                             current_course_deg = Some(outbound_course_deg);
@@ -965,7 +994,9 @@ fn build_procedure_leg_display_path(
                         }
                     }
                 }
-                if distance_between_points_nm(current_position, effective_fix) > MIN_GEOMETRY_DISTANCE_NM {
+                if distance_between_points_nm(current_position, effective_fix)
+                    > MIN_GEOMETRY_DISTANCE_NM
+                {
                     push_segment!(elements, debug_sources, current_position, effective_fix);
                 }
                 current_course_deg = if distance_between_points_nm(current_position, effective_fix)
@@ -986,9 +1017,12 @@ fn build_procedure_leg_display_path(
                         .last()
                         .and_then(display_element_end_position)
                         .unwrap_or(current_position);
-                    current_course_deg = hold_path
-                        .effective_terminal_course_deg
-                        .or_else(|| hold_path.elements.last().and_then(display_element_end_course_deg));
+                    current_course_deg = hold_path.effective_terminal_course_deg.or_else(|| {
+                        hold_path
+                            .elements
+                            .last()
+                            .and_then(display_element_end_course_deg)
+                    });
                     extend_elements_with_sources(
                         &mut elements,
                         &mut debug_sources,
@@ -1070,12 +1104,10 @@ fn set_display_element_start_position(element: &mut LegDisplayElement, start: La
 fn set_display_element_end_position(element: &mut LegDisplayElement, end: LatLon) {
     match element {
         LegDisplayElement::Segment {
-            end: element_end,
-            ..
+            end: element_end, ..
         } => *element_end = end,
         LegDisplayElement::Arc {
-            end: element_end,
-            ..
+            end: element_end, ..
         } => *element_end = end,
     }
 }
@@ -1166,14 +1198,12 @@ fn append_course_track_path(
             && angular_difference_degrees(current_heading_deg, course_deg) <= 20.0
         {
             current_position
-        } else
-        if current_position_is_on_track(
+        } else if current_position_is_on_track(
             current_position,
             course_anchor,
             course_deg,
             on_track_tolerance_nm,
-        )
-            && angular_difference_degrees(current_heading_deg, course_deg) <= 5.0
+        ) && angular_difference_degrees(current_heading_deg, course_deg) <= 5.0
         {
             current_position
         } else if matches!(termination, TrackTermination::ToAltitude(_)) {
@@ -1264,7 +1294,10 @@ fn append_course_track_path(
                                 current_position,
                                 current_heading_deg,
                                 direct_to_fix_course_deg,
-                                shortest_turn_clockwise(current_heading_deg, direct_to_fix_course_deg),
+                                shortest_turn_clockwise(
+                                    current_heading_deg,
+                                    direct_to_fix_course_deg,
+                                ),
                                 0.0,
                                 missed_approach_turn_radius_nm(),
                             );
@@ -1318,8 +1351,12 @@ fn append_course_track_path(
             }
             TrackTermination::ToAltitude(_) => return None,
             TrackTermination::ToDme { center, radius_nm } => {
-                let end =
-                    forward_heading_circle_intersection(current_position, course_deg, center, radius_nm)?;
+                let end = forward_heading_circle_intersection(
+                    current_position,
+                    course_deg,
+                    center,
+                    radius_nm,
+                )?;
                 if distance_between_points_nm(current_position, end) > MIN_GEOMETRY_DISTANCE_NM {
                     push_segment!(elements, debug_sources, current_position, end);
                 }
@@ -1348,7 +1385,8 @@ fn append_course_track_path(
             target_altitude_ft,
         ),
         TrackTermination::ToDme { center, radius_nm } => {
-            let end = forward_heading_circle_intersection(track_start, course_deg, center, radius_nm)?;
+            let end =
+                forward_heading_circle_intersection(track_start, course_deg, center, radius_nm)?;
             if distance_between_points_nm(track_start, end) > MIN_GEOMETRY_DISTANCE_NM {
                 push_segment!(elements, debug_sources, track_start, end);
             }
@@ -1372,9 +1410,10 @@ fn best_nominal_intercept_track_join(
         normalize_bearing_degrees(course_deg - NOMINAL_COURSE_INTERCEPT_ANGLE_DEG),
         normalize_bearing_degrees(course_deg + NOMINAL_COURSE_INTERCEPT_ANGLE_DEG),
     ] {
-        let turn_clockwise =
-            forced_turn_clockwise.unwrap_or_else(|| shortest_turn_clockwise(current_heading_deg, intercept_heading_deg));
-        let sweep = heading_sweep_degrees(current_heading_deg, intercept_heading_deg, turn_clockwise);
+        let turn_clockwise = forced_turn_clockwise
+            .unwrap_or_else(|| shortest_turn_clockwise(current_heading_deg, intercept_heading_deg));
+        let sweep =
+            heading_sweep_degrees(current_heading_deg, intercept_heading_deg, turn_clockwise);
         if sweep < 1.0 || sweep > 270.0 {
             continue;
         }
@@ -1423,10 +1462,12 @@ fn extend_climb_segment(
     current_altitude_ft: &mut Option<f64>,
     target_altitude_ft: Option<f64>,
 ) -> LatLon {
-    let (Some(start_alt_ft), Some(target_alt_ft)) = (*current_altitude_ft, target_altitude_ft) else {
+    let (Some(start_alt_ft), Some(target_alt_ft)) = (*current_altitude_ft, target_altitude_ft)
+    else {
         return current_position;
     };
-    let climb_minutes = ((target_alt_ft - start_alt_ft).max(0.0)) / NOMINAL_MISSED_APPROACH_CLIMB_FTPM;
+    let climb_minutes =
+        ((target_alt_ft - start_alt_ft).max(0.0)) / NOMINAL_MISSED_APPROACH_CLIMB_FTPM;
     let climb_distance_nm =
         distance_nm_for_minutes_at_speed_kt(NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT, climb_minutes);
     if climb_distance_nm <= MIN_GEOMETRY_DISTANCE_NM {
@@ -1465,7 +1506,8 @@ fn append_heading_leg_path(
             let next_magnetic_course_deg = next_step.magnetic_course_deg?;
             let next_course_deg =
                 next_step.magnetic_course_deg? + course_reference_variation_deg(next_step);
-            if angular_difference_degrees(step.magnetic_course_deg?, next_magnetic_course_deg) <= 1.0
+            if angular_difference_degrees(step.magnetic_course_deg?, next_magnetic_course_deg)
+                <= 1.0
             {
                 target_heading_deg = intercept_heading_for_course(
                     next_course_deg,
@@ -1487,7 +1529,8 @@ fn append_heading_leg_path(
         if heading_delta_deg > 1.0 {
             let mut extra_straight_nm = 0.0;
             if let Some(next_step) = next_step {
-                if next_step.path_termination.trim() == "CF" && next_step.defining_nav_position.is_some()
+                if next_step.path_termination.trim() == "CF"
+                    && next_step.defining_nav_position.is_some()
                 {
                     let next_fix = next_step.nav_position?;
                     let next_course_deg =
@@ -1586,8 +1629,12 @@ fn heading_to_dme_distance_path(
         }
     }
 
-    let end =
-        forward_heading_circle_intersection(path_position, target_heading_deg, center, target_radius_nm)?;
+    let end = forward_heading_circle_intersection(
+        path_position,
+        target_heading_deg,
+        center,
+        target_radius_nm,
+    )?;
     if distance_between_points_nm(path_position, end) <= MIN_GEOMETRY_DISTANCE_NM {
         return None;
     }
@@ -2003,17 +2050,16 @@ fn directed_track_join_elements(
     if !directed_join_connector_is_reasonable(turn_end_from_center, turn_end, course_deg) {
         return None;
     }
-    let returned_turn_end = if distance_between_points_nm(turn_end_from_center, turn_end)
-        > MIN_GEOMETRY_DISTANCE_NM
-    {
-        elements.push(LegDisplayElement::Segment {
-            start: turn_end_from_center,
-            end: turn_end,
-        });
-        turn_end
-    } else {
-        turn_end_from_center
-    };
+    let returned_turn_end =
+        if distance_between_points_nm(turn_end_from_center, turn_end) > MIN_GEOMETRY_DISTANCE_NM {
+            elements.push(LegDisplayElement::Segment {
+                start: turn_end_from_center,
+                end: turn_end,
+            });
+            turn_end
+        } else {
+            turn_end_from_center
+        };
     Some((elements, returned_turn_end))
 }
 
@@ -2053,15 +2099,14 @@ fn best_near_reciprocal_track_join(
             let on_course_distance_nm = track_limit
                 .map(|limit| distance_between_points_nm(candidate.intercept, limit))
                 .unwrap_or(0.0);
-            let final_segment_heading_deg = if distance_between_points_nm(
-                candidate.turn_end,
-                candidate.intercept,
-            ) > MIN_GEOMETRY_DISTANCE_NM
-            {
-                bearing_from(candidate.turn_end, candidate.intercept)
-            } else {
-                intercept_heading_deg
-            };
+            let final_segment_heading_deg =
+                if distance_between_points_nm(candidate.turn_end, candidate.intercept)
+                    > MIN_GEOMETRY_DISTANCE_NM
+                {
+                    bearing_from(candidate.turn_end, candidate.intercept)
+                } else {
+                    intercept_heading_deg
+                };
             let course_alignment_penalty =
                 angular_difference_degrees(final_segment_heading_deg, course_deg) * 10.0;
             let intercept_heading_penalty =
@@ -2122,13 +2167,7 @@ fn build_track_join_candidate(
         course_anchor,
         course_deg,
     )?;
-    if !track_intercept_is_reasonable(
-        turn_end,
-        intercept,
-        course_anchor,
-        course_deg,
-        track_limit,
-    ) {
+    if !track_intercept_is_reasonable(turn_end, intercept, course_anchor, course_deg, track_limit) {
         return None;
     }
     let mut elements = Vec::new();
@@ -2150,17 +2189,16 @@ fn build_track_join_candidate(
             turn_clockwise,
         ),
     });
-    let returned_intercept = if distance_between_points_nm(turn_end, intercept)
-        > MIN_GEOMETRY_DISTANCE_NM
-    {
-        elements.push(LegDisplayElement::Segment {
-            start: turn_end,
-            end: intercept,
-        });
-        intercept
-    } else {
-        turn_end
-    };
+    let returned_intercept =
+        if distance_between_points_nm(turn_end, intercept) > MIN_GEOMETRY_DISTANCE_NM {
+            elements.push(LegDisplayElement::Segment {
+                start: turn_end,
+                end: intercept,
+            });
+            intercept
+        } else {
+            turn_end
+        };
     Some(TrackJoinCandidate {
         elements,
         turn_end,
@@ -2180,8 +2218,11 @@ fn directed_join_connector_is_reasonable(
     if angular_difference_degrees(connector_heading_deg, course_deg) > 45.0 {
         return false;
     }
-    projection_along_course_nm(connector_start, connector_end, bearing_unit_vector(course_deg))
-        >= -MIN_GEOMETRY_DISTANCE_NM
+    projection_along_course_nm(
+        connector_start,
+        connector_end,
+        bearing_unit_vector(course_deg),
+    ) >= -MIN_GEOMETRY_DISTANCE_NM
 }
 
 fn track_intercept_is_reasonable(
@@ -2195,7 +2236,8 @@ fn track_intercept_is_reasonable(
         return true;
     };
     let course_unit = bearing_unit_vector(course_deg);
-    let current_projection = projection_along_course_nm(defining_nav, current_position, course_unit);
+    let current_projection =
+        projection_along_course_nm(defining_nav, current_position, course_unit);
     let intercept_projection = projection_along_course_nm(defining_nav, intercept, course_unit);
     let fix_projection = projection_along_course_nm(defining_nav, fix, course_unit);
     let lower_bound = current_projection.min(fix_projection) - MIN_GEOMETRY_DISTANCE_NM;
@@ -2519,18 +2561,10 @@ fn hold_entry_elements(
                 return Vec::new();
             }
             let outbound_course_deg = normalize_bearing_degrees(inbound_course_deg + 180.0);
-            let turn_center = turn_center_for_heading_change(
-                fix,
-                arrival_course_deg,
-                clockwise,
-                turn_radius_nm,
-            );
-            let turn_end = point_on_turn_center(
-                turn_center,
-                outbound_course_deg,
-                clockwise,
-                turn_radius_nm,
-            );
+            let turn_center =
+                turn_center_for_heading_change(fix, arrival_course_deg, clockwise, turn_radius_nm);
+            let turn_end =
+                point_on_turn_center(turn_center, outbound_course_deg, clockwise, turn_radius_nm);
             vec![LegDisplayElement::Arc {
                 center: turn_center,
                 radius_nm: turn_radius_nm,
@@ -2783,8 +2817,7 @@ fn distance_between_points_nm(from: LatLon, to: LatLon) -> f64 {
 }
 
 fn positions_nearly_equal_for_geometry(a: LatLon, b: LatLon) -> bool {
-    (a.lat - b.lat).abs() < POSITION_EPSILON_DEG
-        && (a.lon - b.lon).abs() < POSITION_EPSILON_DEG
+    (a.lat - b.lat).abs() < POSITION_EPSILON_DEG && (a.lon - b.lon).abs() < POSITION_EPSILON_DEG
 }
 
 fn prune_degenerate_display_elements_with_sources(

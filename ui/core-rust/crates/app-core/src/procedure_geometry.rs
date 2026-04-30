@@ -44,6 +44,7 @@ fn solid_path(
         elements,
         effective_terminal_course_deg: None,
         debug_element_sources,
+        debug_element_roles: Vec::new(),
     }
 }
 
@@ -56,6 +57,7 @@ fn dashed_path(
         elements,
         effective_terminal_course_deg: None,
         debug_element_sources,
+        debug_element_roles: Vec::new(),
     }
 }
 
@@ -88,6 +90,8 @@ fn extend_sources_for_new_elements(
 const NOMINAL_HOLD_GROUND_SPEED_KT: f64 = 120.0;
 const STANDARD_RATE_TURN_DEG_PER_SEC: f64 = 3.0;
 const NOMINAL_PROCEDURE_TURN_INITIAL_OUTBOUND_DISTANCE_NM: f64 = 5.0;
+const HOLD_ENTRY_ELEMENT_ROLE: &str = "hold_entry";
+const HOLD_RACETRACK_ELEMENT_ROLE: &str = "hold_racetrack";
 const NOMINAL_PROCEDURE_TURN_GROUND_SPEED_KT: f64 = 120.0;
 const NOMINAL_PROCEDURE_TURN_BARB_TIME_MIN: f64 = 2.0;
 const NOMINAL_MANUAL_TERMINATION_DISTANCE_NM: f64 = 4.0;
@@ -120,6 +124,35 @@ pub fn display_path_for_procedure_leg(
         terminal_record,
         initial_position_override,
         initial_course_override,
+        None,
+    )
+}
+
+pub fn display_path_for_procedure_leg_before_following_segment(
+    segment_records: &[ProcedureLegMaterializationRecord],
+    leg_start: &ProcedureLegMaterializationRecord,
+    leg_end: &ProcedureLegMaterializationRecord,
+    hold_record: Option<&ProcedureLegMaterializationRecord>,
+    initial_position_override: Option<LatLon>,
+    initial_course_override: Option<f64>,
+    following_segment_records: &[ProcedureLegMaterializationRecord],
+) -> Option<LegDisplayPath> {
+    let terminal_record = if leg_start.sequence == leg_end.sequence {
+        segment_records
+            .iter()
+            .filter(|record| record.sequence > leg_start.sequence)
+            .max_by_key(|record| record.sequence)
+            .unwrap_or(leg_end)
+    } else {
+        hold_record.unwrap_or(leg_end)
+    };
+    build_procedure_leg_display_path(
+        segment_records,
+        leg_start,
+        terminal_record,
+        initial_position_override,
+        initial_course_override,
+        Some(following_segment_records),
     )
 }
 
@@ -162,7 +195,135 @@ pub fn display_path_for_resumed_common_cf(
         elements,
         effective_terminal_course_deg: None,
         debug_element_sources: debug_sources,
+        debug_element_roles: Vec::new(),
     })
+}
+
+fn following_common_course_for_terminal_tf_to_if(
+    step: &ProcedureLegMaterializationRecord,
+    steps: &[&ProcedureLegMaterializationRecord],
+    index: usize,
+) -> Option<f64> {
+    if step.path_termination.trim() != "TF" {
+        return None;
+    }
+    let next = steps.get(index + 1).copied()?;
+    if next.path_termination.trim() == "CF" {
+        return Some(next.magnetic_course_deg? + course_reference_variation_deg(next));
+    }
+    if next.path_termination.trim() != "IF" || next.nav_ref != step.nav_ref {
+        return None;
+    }
+    let following_cf = steps
+        .iter()
+        .skip(index + 2)
+        .copied()
+        .find(|record| record.path_termination.trim() == "CF")?;
+    Some(following_cf.magnetic_course_deg? + course_reference_variation_deg(following_cf))
+}
+
+fn following_common_course_from_segment_start(
+    records: &[ProcedureLegMaterializationRecord],
+) -> Option<f64> {
+    let first = records.first()?;
+    if first.path_termination.trim() == "CF" {
+        return Some(first.magnetic_course_deg? + course_reference_variation_deg(first));
+    }
+    if first.path_termination.trim() != "IF" {
+        return None;
+    }
+    let following_cf = records
+        .iter()
+        .skip(1)
+        .find(|record| record.path_termination.trim() == "CF")?;
+    Some(following_cf.magnetic_course_deg? + course_reference_variation_deg(following_cf))
+}
+
+fn append_arrival_turn_to_fix_course(
+    elements: &mut Vec<LegDisplayElement>,
+    debug_sources: &mut Vec<String>,
+    current_position: LatLon,
+    current_heading_deg: f64,
+    fix: LatLon,
+    target_course_deg: f64,
+) -> Option<()> {
+    let direct_course_deg = bearing_from(current_position, fix);
+    if angular_difference_degrees(direct_course_deg, target_course_deg) <= 12.0 {
+        // TF fixes are normally fly-by unless coded otherwise. Until we have a
+        // later filleting pass, prefer the non-overshooting direct leg when it
+        // already satisfies the following common course (KMCI I01L WARMM).
+        push_segment!(elements, debug_sources, current_position, fix);
+        return Some(());
+    }
+
+    let turn_clockwise = shortest_turn_clockwise(current_heading_deg, target_course_deg);
+    let turn_radius_nm = missed_approach_turn_radius_nm();
+    let turn_center = turn_center_for_heading_change(
+        current_position,
+        current_heading_deg,
+        turn_clockwise,
+        turn_radius_nm,
+    );
+    let (_, rejoin_course_deg) = tangent_rejoin_from_turn_matching_course(
+        turn_center,
+        turn_radius_nm,
+        current_heading_deg,
+        turn_clockwise,
+        fix,
+        target_course_deg,
+    )?;
+    if angular_difference_degrees(rejoin_course_deg, target_course_deg) > 10.0 {
+        return None;
+    }
+    let prior_len = elements.len();
+    let turn_end = append_heading_change(
+        elements,
+        current_position,
+        current_heading_deg,
+        rejoin_course_deg,
+        turn_clockwise,
+        0.0,
+        turn_radius_nm,
+    );
+    extend_sources_for_new_elements(debug_sources, prior_len, elements, debug_source!());
+    if distance_between_points_nm(turn_end, fix) > MIN_GEOMETRY_DISTANCE_NM {
+        push_segment!(elements, debug_sources, turn_end, fix);
+    }
+    Some(())
+}
+
+pub fn display_path_for_terminal_tf_to_following_common_course(
+    step: &ProcedureLegMaterializationRecord,
+    initial_position_override: Option<LatLon>,
+    initial_course_override: Option<f64>,
+    next_segment_records: &[ProcedureLegMaterializationRecord],
+) -> Option<LegDisplayPath> {
+    if step.path_termination.trim() != "TF" {
+        return None;
+    }
+    let current_position = initial_position_override?;
+    let current_heading_deg = initial_course_override?;
+    let fix = step.nav_position?;
+    let target_course_deg = following_common_course_from_segment_start(next_segment_records)?;
+    let mut elements = Vec::new();
+    let mut debug_sources = Vec::new();
+    if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
+        append_arrival_turn_to_fix_course(
+            &mut elements,
+            &mut debug_sources,
+            current_position,
+            current_heading_deg,
+            fix,
+            target_course_deg,
+        )?;
+    }
+    if elements.is_empty() {
+        None
+    } else {
+        let mut path = solid_path(elements, debug_sources);
+        path.effective_terminal_course_deg = Some(target_course_deg);
+        Some(path)
+    }
 }
 
 pub fn display_path_for_single_procedure_step(
@@ -177,6 +338,7 @@ pub fn display_path_for_single_procedure_step(
         step,
         initial_position_override,
         initial_course_override,
+        None,
     )
 }
 
@@ -430,12 +592,20 @@ fn nominal_procedure_turn_barb_distance_nm() -> f64 {
 const NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT: f64 = 90.0;
 const NOMINAL_MISSED_APPROACH_CLIMB_FTPM: f64 = 500.0;
 const NOMINAL_COURSE_INTERCEPT_ANGLE_DEG: f64 = 30.0;
+const DIRECT_TO_FIX_COURSE_SATISFIES_CF_TOLERANCE_DEG: f64 = 10.0;
 const MAX_EXTRA_STRAIGHT_BEFORE_VI_TURN_NM: f64 = 2.0;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum TrackTermination {
     ToFix(LatLon),
     ToAltitude(Option<f64>),
     ToDme { center: LatLon, radius_nm: f64 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CourseToFixStartDecision {
+    DirectToFixAlreadySatisfiesCourse,
+    JoinPublishedCourse,
 }
 
 fn build_procedure_leg_display_path(
@@ -444,6 +614,7 @@ fn build_procedure_leg_display_path(
     terminal_record: &ProcedureLegMaterializationRecord,
     initial_position_override: Option<LatLon>,
     initial_course_override: Option<f64>,
+    following_segment_records: Option<&[ProcedureLegMaterializationRecord]>,
 ) -> Option<LegDisplayPath> {
     let mut current_position = initial_position_override.or(leg_start.nav_position)?;
     let mut current_course_deg = initial_course_override.or_else(|| {
@@ -562,6 +733,10 @@ fn build_procedure_leg_display_path(
                 }
             }
             "CA" => {
+                if ca_is_altitude_note_before_climbing_turn(step, steps.get(index + 1).copied()) {
+                    current_course_deg = Some(current_or_step_course_deg(step, current_course_deg)?);
+                    continue;
+                }
                 let course_deg = current_or_step_course_deg(step, current_course_deg)?;
                 let prior_len = elements.len();
                 current_position = extend_climb_segment(
@@ -962,6 +1137,32 @@ fn build_procedure_leg_display_path(
                     > MIN_GEOMETRY_DISTANCE_NM
                 {
                     if let Some(current_heading_deg) = current_course_deg {
+                        if let Some(target_course_deg) =
+                            following_common_course_for_terminal_tf_to_if(step, &steps, index)
+                                .or_else(|| {
+                                    if step.sequence == terminal_record.sequence {
+                                        following_segment_records
+                                            .and_then(following_common_course_from_segment_start)
+                                    } else {
+                                        None
+                                    }
+                                })
+                        {
+                            if append_arrival_turn_to_fix_course(
+                                &mut elements,
+                                &mut debug_sources,
+                                current_position,
+                                current_heading_deg,
+                                effective_fix,
+                                target_course_deg,
+                            )
+                            .is_some()
+                            {
+                                current_course_deg = Some(target_course_deg);
+                                current_position = effective_fix;
+                                continue;
+                            }
+                        }
                         if angular_difference_degrees(current_heading_deg, outbound_course_deg)
                             > 5.0
                         {
@@ -1152,6 +1353,14 @@ fn append_course_track_path(
     }
     let course_anchor = step.defining_nav_position.or(step.nav_position)?;
     let track_limit = track_limit_position(&termination);
+    let course_to_fix_start_decision = course_to_fix_start_decision(
+        current_position,
+        step,
+        termination,
+        course_anchor,
+        course_deg,
+        track_limit,
+    );
     let on_track_tolerance_nm = match termination {
         TrackTermination::ToDme { .. } => 0.5,
         _ => MIN_GEOMETRY_DISTANCE_NM,
@@ -1194,7 +1403,11 @@ fn append_course_track_path(
             current_position
         }
     } else if let Some(current_heading_deg) = current_course_deg {
-        if matches!(termination, TrackTermination::ToDme { .. })
+        if course_to_fix_start_decision
+            == CourseToFixStartDecision::DirectToFixAlreadySatisfiesCourse
+        {
+            current_position
+        } else if matches!(termination, TrackTermination::ToDme { .. })
             && angular_difference_degrees(current_heading_deg, course_deg) <= 20.0
         {
             current_position
@@ -1394,6 +1607,59 @@ fn append_course_track_path(
         }
     };
     Some((final_position, course_deg))
+}
+
+fn course_to_fix_start_decision(
+    current_position: LatLon,
+    step: &ProcedureLegMaterializationRecord,
+    termination: TrackTermination,
+    course_anchor: LatLon,
+    course_deg: f64,
+    track_limit: Option<LatLon>,
+) -> CourseToFixStartDecision {
+    let TrackTermination::ToFix(fix) = termination else {
+        return CourseToFixStartDecision::JoinPublishedCourse;
+    };
+    if cf_turn_direction(step).is_some() {
+        return CourseToFixStartDecision::JoinPublishedCourse;
+    }
+    if distance_between_points_nm(current_position, fix) <= MIN_GEOMETRY_DISTANCE_NM {
+        return CourseToFixStartDecision::DirectToFixAlreadySatisfiesCourse;
+    }
+
+    let direct_to_fix_course_deg = bearing_from(current_position, fix);
+    if angular_difference_degrees(direct_to_fix_course_deg, course_deg)
+        > DIRECT_TO_FIX_COURSE_SATISFIES_CF_TOLERANCE_DEG
+    {
+        return CourseToFixStartDecision::JoinPublishedCourse;
+    }
+    if !track_intercept_is_reasonable(current_position, fix, course_anchor, course_deg, track_limit)
+    {
+        return CourseToFixStartDecision::JoinPublishedCourse;
+    }
+    CourseToFixStartDecision::DirectToFixAlreadySatisfiesCourse
+}
+
+fn ca_is_altitude_note_before_climbing_turn(
+    ca_step: &ProcedureLegMaterializationRecord,
+    next_step: Option<&ProcedureLegMaterializationRecord>,
+) -> bool {
+    if ca_step.path_termination.trim() != "CA" {
+        return false;
+    }
+    let Some(next_step) = next_step else {
+        return false;
+    };
+    if next_step.path_termination.trim() != "CF" || cf_turn_direction(next_step).is_none() {
+        return false;
+    }
+    if next_step.defining_nav_position.is_none() || next_step.nav_position.is_none() {
+        return false;
+    }
+    match (ca_step.altitude_1_ft, next_step.altitude_1_ft) {
+        (Some(ca_altitude_ft), Some(next_altitude_ft)) => next_altitude_ft > ca_altitude_ft,
+        _ => false,
+    }
 }
 
 fn best_nominal_intercept_track_join(
@@ -1772,14 +2038,20 @@ fn delayed_turn_start_for_track_capture(
 }
 
 fn course_reference_variation_deg(leg: &ProcedureLegMaterializationRecord) -> f64 {
-    if matches!(leg.defining_nav_ref, Some(crate::NavRef::Navaid(_))) {
+    if matches!(
+        leg.defining_nav_ref,
+        Some(crate::NavRef::Navaid(_) | crate::NavRef::ArincNavaid { .. })
+    ) {
         return leg
             .defining_nav_magnetic_variation_deg
             .or(leg.nav_magnetic_variation_deg)
             .or(leg.airport_magnetic_variation_deg)
             .unwrap_or(0.0);
     }
-    if matches!(leg.nav_ref, Some(crate::NavRef::Navaid(_))) {
+    if matches!(
+        leg.nav_ref,
+        Some(crate::NavRef::Navaid(_) | crate::NavRef::ArincNavaid { .. })
+    ) {
         return leg
             .nav_magnetic_variation_deg
             .or(leg.airport_magnetic_variation_deg)
@@ -1945,6 +2217,55 @@ fn tangent_rejoin_from_turn(
             Some((turn_end, rejoin_course_deg, sweep_degrees))
         })
         .max_by(|left, right| {
+            left.2
+                .partial_cmp(&right.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(turn_end, rejoin_course_deg, _)| (turn_end, rejoin_course_deg))
+}
+
+fn tangent_rejoin_from_turn_matching_course(
+    turn_center: LatLon,
+    radius_nm: f64,
+    initial_course_deg: f64,
+    clockwise: bool,
+    fix: LatLon,
+    target_course_deg: f64,
+) -> Option<(LatLon, f64)> {
+    let fix_en = to_local_en(turn_center, fix);
+    let distance_sq = fix_en.0 * fix_en.0 + fix_en.1 * fix_en.1;
+    if distance_sq <= radius_nm * radius_nm {
+        return None;
+    }
+    let scale = (radius_nm * radius_nm) / distance_sq;
+    let offset_scale = radius_nm * (distance_sq - radius_nm * radius_nm).sqrt() / distance_sq;
+    let candidates = [
+        (
+            scale * fix_en.0 - offset_scale * fix_en.1,
+            scale * fix_en.1 + offset_scale * fix_en.0,
+        ),
+        (
+            scale * fix_en.0 + offset_scale * fix_en.1,
+            scale * fix_en.1 - offset_scale * fix_en.0,
+        ),
+    ];
+    candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let turn_end = offset_latlon(turn_center, candidate.0, candidate.1);
+            let rejoin_course_deg = bearing_from(turn_end, fix);
+            let sweep_degrees =
+                heading_sweep_degrees(initial_course_deg, rejoin_course_deg, clockwise);
+            if sweep_degrees < 1.0 {
+                return None;
+            }
+            Some((
+                turn_end,
+                rejoin_course_deg,
+                angular_difference_degrees(rejoin_course_deg, target_course_deg),
+            ))
+        })
+        .min_by(|left, right| {
             left.2
                 .partial_cmp(&right.2)
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -2462,7 +2783,7 @@ fn build_hold_display_path(
     let entry_kind = arrival_course_deg.map(|arrival_course_deg| {
         classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise)
     });
-    let mut elements = hold_entry_elements(
+    let (mut elements, mut element_roles) = hold_entry_elements(
         fix,
         inbound_course_deg,
         clockwise,
@@ -2508,7 +2829,14 @@ fn build_hold_display_path(
     );
     if stop_when_established_inbound {
         if !matches!(entry_kind, Some(HoldEntryKind::Direct) | None) {
+            prune_degenerate_display_elements_with_sources_and_roles(
+                &mut elements,
+                &mut debug_sources,
+                &mut element_roles,
+            );
+            tag_hold_debug_sources(&mut debug_sources, &element_roles);
             let mut path = solid_path(elements, debug_sources);
+            path.debug_element_roles = element_roles;
             path.effective_terminal_course_deg = Some(inbound_course_deg);
             return path;
         }
@@ -2524,8 +2852,10 @@ fn build_hold_display_path(
             clockwise,
             180.0
         );
+        element_roles.push(HOLD_RACETRACK_ELEMENT_ROLE.to_string());
     }
     push_segment!(elements, debug_sources, outbound_start, outbound_end);
+    element_roles.push(HOLD_RACETRACK_ELEMENT_ROLE.to_string());
     push_arc!(
         elements,
         debug_sources,
@@ -2536,12 +2866,33 @@ fn build_hold_display_path(
         clockwise,
         180.0
     );
+    element_roles.push(HOLD_RACETRACK_ELEMENT_ROLE.to_string());
     push_segment!(elements, debug_sources, inbound_rejoin, inbound_end);
+    element_roles.push(HOLD_RACETRACK_ELEMENT_ROLE.to_string());
 
     snap_nearby_display_element_boundaries(&mut elements);
-    prune_degenerate_display_elements_with_sources(&mut elements, &mut debug_sources);
+    prune_degenerate_display_elements_with_sources_and_roles(
+        &mut elements,
+        &mut debug_sources,
+        &mut element_roles,
+    );
+    tag_hold_debug_sources(&mut debug_sources, &element_roles);
 
-    solid_path(elements, debug_sources)
+    let mut path = solid_path(elements, debug_sources);
+    path.debug_element_roles = element_roles;
+    path
+}
+
+fn tag_hold_debug_sources(debug_sources: &mut [String], element_roles: &[String]) {
+    for (source, role) in debug_sources.iter_mut().zip(element_roles) {
+        if matches!(
+            role.as_str(),
+            HOLD_ENTRY_ELEMENT_ROLE | HOLD_RACETRACK_ELEMENT_ROLE
+        ) && !source.starts_with("hold_")
+        {
+            *source = format!("{role}@{source}");
+        }
+    }
 }
 
 fn hold_entry_elements(
@@ -2551,14 +2902,14 @@ fn hold_entry_elements(
     arrival_course_deg: Option<f64>,
     leg_length_nm: f64,
     turn_radius_nm: f64,
-) -> Vec<LegDisplayElement> {
+) -> (Vec<LegDisplayElement>, Vec<String>) {
     let Some(arrival_course_deg) = arrival_course_deg else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
-    match classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise) {
+    let elements = match classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise) {
         HoldEntryKind::Direct => {
             if angular_difference_degrees(arrival_course_deg, inbound_course_deg) <= 5.0 {
-                return Vec::new();
+                return (Vec::new(), Vec::new());
             }
             let outbound_course_deg = normalize_bearing_degrees(inbound_course_deg + 180.0);
             let turn_center =
@@ -2596,7 +2947,7 @@ fn hold_entry_elements(
                 entry_turn_clockwise,
                 fix,
             ) else {
-                return Vec::new();
+                return (Vec::new(), Vec::new());
             };
             let mut elements = vec![LegDisplayElement::Segment {
                 start: fix,
@@ -2646,7 +2997,7 @@ fn hold_entry_elements(
                 clockwise,
                 fix,
             ) else {
-                return Vec::new();
+                return (Vec::new(), Vec::new());
             };
             let mut elements = vec![LegDisplayElement::Segment {
                 start: fix,
@@ -2674,7 +3025,9 @@ fn hold_entry_elements(
             }
             elements
         }
-    }
+    };
+    let roles = vec![HOLD_ENTRY_ELEMENT_ROLE.to_string(); elements.len()];
+    (elements, roles)
 }
 
 fn nominal_hold_entry_distance_nm(leg_length_nm: f64) -> f64 {
@@ -2824,8 +3177,18 @@ fn prune_degenerate_display_elements_with_sources(
     elements: &mut Vec<LegDisplayElement>,
     debug_sources: &mut Vec<String>,
 ) {
+    let mut roles = Vec::new();
+    prune_degenerate_display_elements_with_sources_and_roles(elements, debug_sources, &mut roles);
+}
+
+fn prune_degenerate_display_elements_with_sources_and_roles(
+    elements: &mut Vec<LegDisplayElement>,
+    debug_sources: &mut Vec<String>,
+    debug_roles: &mut Vec<String>,
+) {
     let original_elements = std::mem::take(elements);
     let original_sources = std::mem::take(debug_sources);
+    let original_roles = std::mem::take(debug_roles);
     for (index, element) in original_elements.into_iter().enumerate() {
         let keep = match &element {
             LegDisplayElement::Segment { start, end } => {
@@ -2851,6 +3214,7 @@ fn prune_degenerate_display_elements_with_sources(
                     .cloned()
                     .unwrap_or_else(|| "unknown".to_string()),
             );
+            debug_roles.push(original_roles.get(index).cloned().unwrap_or_default());
         }
     }
 }

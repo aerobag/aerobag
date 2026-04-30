@@ -1024,6 +1024,7 @@ fn nav_ref_kind_order(nav_ref: &NavRef) -> usize {
     match nav_ref {
         NavRef::Airport(_) => 0,
         NavRef::Navaid(_) => 1,
+        NavRef::ArincNavaid { .. } => 1,
         NavRef::Fix(_) => 2,
         NavRef::LatLon(_) => 3,
     }
@@ -1961,6 +1962,7 @@ fn trailing_component_anchor(plan: &FlightPlan) -> Option<NavRef> {
 fn nav_ref_display_label(nav_ref: &NavRef) -> String {
     match nav_ref {
         NavRef::Airport(value) | NavRef::Navaid(value) | NavRef::Fix(value) => value.clone(),
+        NavRef::ArincNavaid { identifier, .. } => identifier.clone(),
         NavRef::LatLon(value) => format!("{:.3},{:.3}", value.lat, value.lon),
     }
 }

@@ -227,6 +227,8 @@ pub struct LegDisplayPath {
     pub effective_terminal_course_deg: Option<f64>,
     #[serde(default)]
     pub debug_element_sources: Vec<String>,
+    #[serde(default)]
+    pub debug_element_roles: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1066,6 +1068,12 @@ pub struct DirectToUiView {
 pub enum NavRef {
     Airport(String),
     Navaid(String),
+    ArincNavaid {
+        identifier: String,
+        icao_code: String,
+        section_code: String,
+        subsection_code: String,
+    },
     Fix(String),
     LatLon(LatLon),
 }
@@ -3692,6 +3700,7 @@ fn active_component_index_for_guidance(
 fn nav_ref_label(nav_ref: &NavRef) -> String {
     match nav_ref {
         NavRef::Airport(code) | NavRef::Navaid(code) | NavRef::Fix(code) => code.clone(),
+        NavRef::ArincNavaid { identifier, .. } => identifier.clone(),
         NavRef::LatLon(position) => format!("{:.4},{:.4}", position.lat, position.lon),
     }
 }

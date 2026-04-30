@@ -75,7 +75,11 @@ pub fn fixture_nav_db_package_zip_path() -> PathBuf {
                     .is_some_and(|name| name.starts_with("nav_db_") && name.ends_with(".zip"))
         })
         .collect::<Vec<_>>();
-    matches.sort();
+    matches.sort_by_key(|path| {
+        fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
     assert!(
         !matches.is_empty(),
         "expected at least one nav_db zip under {}, found 0",

@@ -281,6 +281,15 @@ impl NavKvStore {
         }
         Ok(pages.into_iter().collect())
     }
+
+    pub fn keys_with_prefix(&self, prefix: &str) -> Vec<String> {
+        (0..self.root.len())
+            .filter_map(|index| {
+                let key = std::str::from_utf8(self.root.key_at(index)).ok()?;
+                key.starts_with(prefix).then(|| key.to_string())
+            })
+            .collect()
+    }
 }
 
 pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
@@ -379,6 +388,18 @@ fn nav_ref_position_key(nav_ref: &NavRef, procedure_airport_id: Option<&str>) ->
     match nav_ref {
         NavRef::Airport(id) => Some(format!("navref/position/airport/{}", upper_component(id))),
         NavRef::Navaid(id) => Some(format!("navref/position/navaid/{}", upper_component(id))),
+        NavRef::ArincNavaid {
+            identifier,
+            icao_code,
+            section_code,
+            subsection_code,
+        } => Some(format!(
+            "navref/position/arinc-navaid/{}/{}/{}/{}",
+            upper_component(section_code),
+            upper_component(subsection_code),
+            upper_component(icao_code),
+            upper_component(identifier)
+        )),
         NavRef::Fix(id)
             if procedure_airport_id.is_some() && id.trim().to_uppercase().starts_with("RW") =>
         {
@@ -397,6 +418,9 @@ fn nav_ref_symbol_key(nav_ref: &NavRef) -> Option<String> {
     match nav_ref {
         NavRef::Airport(id) => Some(format!("navref/symbol/airport/{}", upper_component(id))),
         NavRef::Navaid(id) => Some(format!("navref/symbol/navaid/{}", upper_component(id))),
+        NavRef::ArincNavaid { identifier, .. } => {
+            Some(format!("navref/symbol/navaid/{}", upper_component(identifier)))
+        }
         NavRef::Fix(id) => Some(format!("navref/symbol/fix/{}", upper_component(id))),
         NavRef::LatLon(_) => None,
     }

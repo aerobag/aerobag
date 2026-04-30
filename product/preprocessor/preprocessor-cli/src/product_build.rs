@@ -7586,67 +7586,27 @@ fn build_tfrs_product(
     let source_fingerprint = hash_tree(&input_dir)?;
     let version_label = fast_product_version_label(&source_fingerprint);
     let inputs = fast_product_node_inputs("tfrs", &source_fingerprint)?;
-    let prepared = prepare_node_at(
-        &build_shared_node_dir(config, "fast-tfrs")?,
-        "fast-tfrs",
-        &inputs,
-    )?;
-    let output_dir = prepared.dir.join("output");
-    let structured_json_path = output_dir.join("tfrs.json");
-    let manifest_path = output_dir.join(format!("tfrs_{version_label}.manifest.json"));
-    let zip_path = output_dir.join(format!("tfrs_{version_label}.zip"));
-    let _build_lock = match claim_or_wait_for_node(
-        &prepared,
-        &[
-            structured_json_path.clone(),
-            manifest_path.clone(),
-            zip_path.clone(),
-        ],
-    )? {
-        NodeCacheState::CacheHit(record) => {
-            let source_generated_at_utc =
-                fast_product_source_generated_at("tfrs", &structured_json_path, &manifest_path)?;
-            return Ok((zip_path, source_generated_at_utc, record));
-        }
-        NodeCacheState::Build(lock) => lock,
-    };
-    let started_at_utc = utc_now_string();
-    let started = Instant::now();
-    let result = build_tfr_dataset(&BuildTfrRequest {
-        input_dir,
-        output_dir,
-        version_label,
-        generated_at_utc,
-    })?;
-    let source_generated_at_utc = fast_product_source_generated_at(
+    let build_version_label = version_label.clone();
+    run_fast_structured_product_node(
+        config,
         "tfrs",
-        &result.structured_json_path,
-        &result.manifest_path,
-    )?;
-    let outputs = BTreeMap::from([
-        (
-            "manifest".to_string(),
-            relative_artifact_path(&result.manifest_path, &config.build_root),
-        ),
-        (
-            "structured_json".to_string(),
-            relative_artifact_path(&result.structured_json_path, &config.build_root),
-        ),
-        (
-            "zip".to_string(),
-            relative_artifact_path(&result.zip_path, &config.build_root),
-        ),
-    ]);
-    let record = write_node_record(
-        prepared,
+        "fast-tfrs",
+        &version_label,
         inputs,
-        outputs,
-        false,
-        started_at_utc,
-        utc_now_string(),
-        started.elapsed().as_millis() as u64,
-    )?;
-    Ok((result.zip_path, source_generated_at_utc, record))
+        move |output_dir| {
+            let result = build_tfr_dataset(&BuildTfrRequest {
+                input_dir,
+                output_dir,
+                version_label: build_version_label,
+                generated_at_utc,
+            })?;
+            Ok(FastStructuredProductOutputs {
+                manifest_path: result.manifest_path,
+                structured_json_path: result.structured_json_path,
+                zip_path: result.zip_path,
+            })
+        },
+    )
 }
 
 fn build_metars_product(
@@ -7712,67 +7672,27 @@ fn build_metars_product(
     let content_fingerprint = metar_content_fingerprint(&input_xml_path)?;
     let version_label = fast_product_version_label(&content_fingerprint);
     let inputs = fast_product_node_inputs("metars", &source_fingerprint)?;
-    let prepared = prepare_node_at(
-        &build_shared_node_dir(config, "fast-metars")?,
-        "fast-metars",
-        &inputs,
-    )?;
-    let output_dir = prepared.dir.join("output");
-    let structured_json_path = output_dir.join("metars.json");
-    let manifest_path = output_dir.join(format!("metars_{version_label}.manifest.json"));
-    let zip_path = output_dir.join(format!("metars_{version_label}.zip"));
-    let _build_lock = match claim_or_wait_for_node(
-        &prepared,
-        &[
-            structured_json_path.clone(),
-            manifest_path.clone(),
-            zip_path.clone(),
-        ],
-    )? {
-        NodeCacheState::CacheHit(record) => {
-            let source_generated_at_utc =
-                fast_product_source_generated_at("metars", &structured_json_path, &manifest_path)?;
-            return Ok((zip_path, source_generated_at_utc, record));
-        }
-        NodeCacheState::Build(lock) => lock,
-    };
-    let started_at_utc = utc_now_string();
-    let started = Instant::now();
-    let result = build_metar_dataset(&BuildMetarRequest {
-        input_xml_path,
-        output_dir,
-        version_label,
-        generated_at_utc,
-    })?;
-    let source_generated_at_utc = fast_product_source_generated_at(
+    let build_version_label = version_label.clone();
+    run_fast_structured_product_node(
+        config,
         "metars",
-        &result.structured_json_path,
-        &result.manifest_path,
-    )?;
-    let outputs = BTreeMap::from([
-        (
-            "manifest".to_string(),
-            relative_artifact_path(&result.manifest_path, &config.build_root),
-        ),
-        (
-            "structured_json".to_string(),
-            relative_artifact_path(&result.structured_json_path, &config.build_root),
-        ),
-        (
-            "zip".to_string(),
-            relative_artifact_path(&result.zip_path, &config.build_root),
-        ),
-    ]);
-    let record = write_node_record(
-        prepared,
+        "fast-metars",
+        &version_label,
         inputs,
-        outputs,
-        false,
-        started_at_utc,
-        utc_now_string(),
-        started.elapsed().as_millis() as u64,
-    )?;
-    Ok((result.zip_path, source_generated_at_utc, record))
+        move |output_dir| {
+            let result = build_metar_dataset(&BuildMetarRequest {
+                input_xml_path,
+                output_dir,
+                version_label: build_version_label,
+                generated_at_utc,
+            })?;
+            Ok(FastStructuredProductOutputs {
+                manifest_path: result.manifest_path,
+                structured_json_path: result.structured_json_path,
+                zip_path: result.zip_path,
+            })
+        },
+    )
 }
 
 fn build_nexrad_product(
@@ -7874,67 +7794,27 @@ fn build_nexrad_product(
     let source_fingerprint = hash_tree(&input_dir)?;
     let version_label = fast_product_version_label(&source_fingerprint);
     let inputs = fast_product_node_inputs("nexrad", &source_fingerprint)?;
-    let prepared = prepare_node_at(
-        &build_shared_node_dir(config, "fast-nexrad")?,
-        "fast-nexrad",
-        &inputs,
-    )?;
-    let output_dir = prepared.dir.join("output");
-    let structured_json_path = output_dir.join("nexrad.json");
-    let manifest_path = output_dir.join(format!("nexrad_{version_label}.manifest.json"));
-    let zip_path = output_dir.join(format!("nexrad_{version_label}.zip"));
-    let _build_lock = match claim_or_wait_for_node(
-        &prepared,
-        &[
-            structured_json_path.clone(),
-            manifest_path.clone(),
-            zip_path.clone(),
-        ],
-    )? {
-        NodeCacheState::CacheHit(record) => {
-            let source_generated_at_utc =
-                fast_product_source_generated_at("nexrad", &structured_json_path, &manifest_path)?;
-            return Ok((zip_path, source_generated_at_utc, record));
-        }
-        NodeCacheState::Build(lock) => lock,
-    };
-    let started_at_utc = utc_now_string();
-    let started = Instant::now();
-    let result = build_nexrad_dataset(&BuildNexradRequest {
-        input_dir,
-        output_dir,
-        version_label,
-        generated_at_utc,
-    })?;
-    let source_generated_at_utc = fast_product_source_generated_at(
+    let build_version_label = version_label.clone();
+    run_fast_structured_product_node(
+        config,
         "nexrad",
-        &result.structured_json_path,
-        &result.manifest_path,
-    )?;
-    let outputs = BTreeMap::from([
-        (
-            "manifest".to_string(),
-            relative_artifact_path(&result.manifest_path, &config.build_root),
-        ),
-        (
-            "structured_json".to_string(),
-            relative_artifact_path(&result.structured_json_path, &config.build_root),
-        ),
-        (
-            "zip".to_string(),
-            relative_artifact_path(&result.zip_path, &config.build_root),
-        ),
-    ]);
-    let record = write_node_record(
-        prepared,
+        "fast-nexrad",
+        &version_label,
         inputs,
-        outputs,
-        false,
-        started_at_utc,
-        utc_now_string(),
-        started.elapsed().as_millis() as u64,
-    )?;
-    Ok((result.zip_path, source_generated_at_utc, record))
+        move |output_dir| {
+            let result = build_nexrad_dataset(&BuildNexradRequest {
+                input_dir,
+                output_dir,
+                version_label: build_version_label,
+                generated_at_utc,
+            })?;
+            Ok(FastStructuredProductOutputs {
+                manifest_path: result.manifest_path,
+                structured_json_path: result.structured_json_path,
+                zip_path: result.zip_path,
+            })
+        },
+    )
 }
 
 fn build_geo_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf, String, NodeRecord)> {
@@ -7997,6 +7877,82 @@ fn build_geo_product(config: &ProductBuildConfig) -> anyhow::Result<(PathBuf, St
         started.elapsed().as_millis() as u64,
     )?;
     Ok((result.zip_path, version_label, record))
+}
+
+struct FastStructuredProductOutputs {
+    manifest_path: PathBuf,
+    structured_json_path: PathBuf,
+    zip_path: PathBuf,
+}
+
+fn run_fast_structured_product_node<BuildProduct>(
+    config: &ProductBuildConfig,
+    product_id: &str,
+    node_name: &str,
+    version_label: &str,
+    inputs: BTreeMap<String, String>,
+    build_product: BuildProduct,
+) -> anyhow::Result<(PathBuf, String, NodeRecord)>
+where
+    BuildProduct: FnOnce(PathBuf) -> anyhow::Result<FastStructuredProductOutputs>,
+{
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, node_name)?,
+        node_name,
+        &inputs,
+    )?;
+    let output_dir = prepared.dir.join("output");
+    let structured_json_path = output_dir.join(format!("{product_id}.json"));
+    let manifest_path = output_dir.join(format!("{product_id}_{version_label}.manifest.json"));
+    let zip_path = output_dir.join(format!("{product_id}_{version_label}.zip"));
+    let expected_outputs = [
+        structured_json_path.clone(),
+        manifest_path.clone(),
+        zip_path.clone(),
+    ];
+    let _build_lock = match claim_or_wait_for_node(&prepared, &expected_outputs)? {
+        NodeCacheState::CacheHit(record) => {
+            let source_generated_at_utc = fast_product_source_generated_at(
+                product_id,
+                &structured_json_path,
+                &manifest_path,
+            )?;
+            return Ok((zip_path, source_generated_at_utc, record));
+        }
+        NodeCacheState::Build(lock) => lock,
+    };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    let result = build_product(output_dir)?;
+    let source_generated_at_utc = fast_product_source_generated_at(
+        product_id,
+        &result.structured_json_path,
+        &result.manifest_path,
+    )?;
+    let outputs = BTreeMap::from([
+        (
+            "manifest".to_string(),
+            relative_artifact_path(&result.manifest_path, &config.build_root),
+        ),
+        (
+            "structured_json".to_string(),
+            relative_artifact_path(&result.structured_json_path, &config.build_root),
+        ),
+        (
+            "zip".to_string(),
+            relative_artifact_path(&result.zip_path, &config.build_root),
+        ),
+    ]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((result.zip_path, source_generated_at_utc, record))
 }
 
 fn build_terrain_product(

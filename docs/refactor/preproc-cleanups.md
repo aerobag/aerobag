@@ -24,9 +24,11 @@ Reduce copy/paste in the preprocessor build pipeline without changing published 
    - Moved the duplicated `sanitize_label` helper into `preprocessor-tools`.
    - Left recursive copy, tree hashing, and zip member helpers in place because the current call sites are not identical utilities.
 
-5. Centralize deterministic zip writing.
-   - Several crates write ZIPs independently with different timestamp/compression behavior.
-   - Because package filenames are content-addressed, deterministic ZIP behavior should be the default utility, with explicit opt-outs.
+5. Done: Centralize deterministic zip writing.
+   - Added `preprocessor-zip::write_deterministic_zip`.
+   - Migrated fast-product, vector, data, and static tile ZIP writers to the shared helper.
+   - Kept ZIP utilities out of `preprocessor-tools` so ZIP-only changes do not spoil TPP/CSUP render caches.
+   - Left raw ZIP writer usage in tests where it creates small fixture archives.
 
 ## Execution Notes
 

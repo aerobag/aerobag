@@ -1,15 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
+use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use rusqlite::Connection;
 use serde::Serialize;
-use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
+use zip::ZipArchive;
 
 const POINT_LAYER_ZOOM_POLICY: &[(&str, u8)] =
     &[("airport", 9), ("fix", 9), ("nav", 9), ("awos", 9)];
@@ -3395,23 +3396,11 @@ fn write_airspace_feature(
 }
 
 fn write_zip(path: &Path, members: &[(String, PathBuf)]) -> anyhow::Result<()> {
-    if path.exists() {
-        fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))?;
-    }
-    let file =
-        fs::File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
-    let mut zip = ZipWriter::new(file);
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    for (member_name, source_path) in members {
-        zip.start_file(member_name, options)?;
-        let mut source = fs::File::open(source_path)
-            .with_context(|| format!("failed to open {}", source_path.display()))?;
-        let mut bytes = Vec::new();
-        source.read_to_end(&mut bytes)?;
-        zip.write_all(&bytes)?;
-    }
-    zip.finish()?;
-    Ok(())
+    let members = members
+        .iter()
+        .map(|(member_name, source_path)| ZipSource::new(member_name.clone(), source_path.clone()))
+        .collect::<Vec<_>>();
+    write_deterministic_zip(path, &members)
 }
 
 #[cfg(test)]

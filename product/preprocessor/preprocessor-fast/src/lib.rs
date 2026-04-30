@@ -1,18 +1,16 @@
 use std::fs;
-use std::fs::File;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use image::ImageReader;
+use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use zip::{write::SimpleFileOptions, CompressionMethod, DateTime as ZipDateTime, ZipWriter};
 
 #[derive(Debug, Clone)]
 pub struct BuildTfrRequest {
@@ -2309,26 +2307,11 @@ fn write_json_pretty(path: &Path, value: &impl Serialize) -> anyhow::Result<()> 
 }
 
 fn write_zip(path: &Path, members: &[(&str, &Path)]) -> anyhow::Result<()> {
-    let file =
-        File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
-    let mut writer = ZipWriter::new(file);
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
-        .last_modified_time(ZipDateTime::default());
-    for (name, source_path) in members {
-        writer
-            .start_file(name, options)
-            .with_context(|| format!("failed to add {name} to {}", path.display()))?;
-        let bytes = fs::read(source_path)
-            .with_context(|| format!("failed to read {}", source_path.display()))?;
-        writer
-            .write_all(&bytes)
-            .with_context(|| format!("failed to write {name} to {}", path.display()))?;
-    }
-    writer
-        .finish()
-        .with_context(|| format!("failed to finish {}", path.display()))?;
-    Ok(())
+    let members = members
+        .iter()
+        .map(|(member_name, source_path)| ZipSource::new(*member_name, *source_path))
+        .collect::<Vec<_>>();
+    write_deterministic_zip(path, &members)
 }
 
 fn run_command(program: &str, args: &[&str]) -> anyhow::Result<()> {

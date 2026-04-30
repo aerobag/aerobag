@@ -1,17 +1,18 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
     sync::LazyLock,
 };
 
 use anyhow::{Context, Result};
 use preprocessor_core::{PackageAssetManifest, PACKAGE_ASSET_MANIFEST_NAME};
+use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use regex::Regex;
 use rusqlite::Connection;
 use serde::Serialize;
-use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
+use zip::ZipArchive;
 
 use crate::INTERMEDIATE_SQLITE_BASENAME;
 
@@ -1205,23 +1206,13 @@ pub fn build_data_package_with_tpp_matches(
     let zip_path = request
         .output_dir
         .join(format!("{}.zip", request.artifact_stem));
-    if zip_path.exists() {
-        fs::remove_file(&zip_path)
-            .with_context(|| format!("failed to remove {}", zip_path.display()))?;
-    }
-    let zip_file = fs::File::create(&zip_path)
-        .with_context(|| format!("failed to create {}", zip_path.display()))?;
-    let mut zip = ZipWriter::new(zip_file);
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    zip.start_file("databases", options)?;
-    zip.write_all(&manifest_bytes)?;
-    zip.start_file(INTERMEDIATE_SQLITE_BASENAME, options)?;
-    let mut db_file =
-        fs::File::open(&main_db).with_context(|| format!("failed to open {}", main_db.display()))?;
-    let mut db_bytes = Vec::new();
-    db_file.read_to_end(&mut db_bytes)?;
-    zip.write_all(&db_bytes)?;
-    zip.finish()?;
+    write_deterministic_zip(
+        &zip_path,
+        &[
+            ZipSource::new("databases", &manifest_path),
+            ZipSource::new(INTERMEDIATE_SQLITE_BASENAME, &main_db),
+        ],
+    )?;
 
     Ok(DataTppMatchResult {
         main_db,

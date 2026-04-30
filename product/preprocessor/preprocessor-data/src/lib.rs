@@ -1,14 +1,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
 use anyhow::{bail, Context};
+use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use quick_xml::{events::Event, Reader};
 use rusqlite::{params, Connection};
-use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 mod tpp_cifp_matching;
 
@@ -1488,24 +1487,13 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
     )
     .with_context(|| format!("failed to write {}", manifest_path.display()))?;
     let zip_path = request.output_dir.join(format!("{artifact_stem}.zip"));
-    if zip_path.exists() {
-        fs::remove_file(&zip_path)
-            .with_context(|| format!("failed to remove {}", zip_path.display()))?;
-    }
-    let zip_file = fs::File::create(&zip_path)
-        .with_context(|| format!("failed to create {}", zip_path.display()))?;
-    let mut zip = ZipWriter::new(zip_file);
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    for (name, path) in [("databases", &manifest_path), (INTERMEDIATE_SQLITE_BASENAME, &main_db)]
-    {
-        zip.start_file(name, options)?;
-        let mut file =
-            fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        zip.write_all(&bytes)?;
-    }
-    zip.finish()?;
+    write_deterministic_zip(
+        &zip_path,
+        &[
+            ZipSource::new("databases", &manifest_path),
+            ZipSource::new(INTERMEDIATE_SQLITE_BASENAME, &main_db),
+        ],
+    )?;
 
     Ok(DataBuildResult {
         main_db,

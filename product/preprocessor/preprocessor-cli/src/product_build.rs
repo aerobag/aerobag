@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     fs::{File, OpenOptions},
-    io::{Read, Write},
+    io::Write,
     os::unix::fs::PermissionsExt,
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
@@ -46,11 +46,10 @@ use preprocessor_tpp::{package_native_tpp_versioned, render_native_tpp, NativeTp
 use preprocessor_vectors::{
     build_obstacle_dataset, build_vectors_dataset, BuildObstacleDatasetRequest, BuildVectorsRequest,
 };
+use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zip::{
-    write::SimpleFileOptions, CompressionMethod, DateTime as ZipDateTime, ZipArchive, ZipWriter,
-};
+use zip::ZipArchive;
 
 use crate::emit_source_urls::{cycle_effective_date, discover_published_cycles, emit_source_urls};
 
@@ -9658,37 +9657,18 @@ fn zip_directory_deterministic(
     for entry in entries {
         collect_zip_files(root, &root.join(entry), &mut files)?;
     }
-    files.sort_by(|left, right| left.0.cmp(&right.0));
-    let file = File::create(zip_path)
-        .with_context(|| format!("failed to create {}", zip_path.display()))?;
-    let mut writer = ZipWriter::new(file);
-    for (name, path) in files {
-        let compression =
+    let members = files
+        .into_iter()
+        .map(|(name, path)| {
+            let source = ZipSource::new(name.clone(), path);
             if name.ends_with(".terrain") || name.ends_with(".png") || name.ends_with(".webp") {
-                CompressionMethod::Stored
+                source.stored()
             } else {
-                CompressionMethod::Deflated
-            };
-        let options = SimpleFileOptions::default()
-            .compression_method(compression)
-            .last_modified_time(ZipDateTime::default());
-        writer.start_file(name, options).with_context(|| {
-            format!("failed to add {} to {}", path.display(), zip_path.display())
-        })?;
-        let mut input =
-            File::open(&path).with_context(|| format!("failed to open {}", path.display()))?;
-        let mut bytes = Vec::new();
-        input
-            .read_to_end(&mut bytes)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        writer
-            .write_all(&bytes)
-            .with_context(|| format!("failed to write {}", path.display()))?;
-    }
-    writer
-        .finish()
-        .with_context(|| format!("failed to finish {}", zip_path.display()))?;
-    Ok(())
+                source
+            }
+        })
+        .collect::<Vec<_>>();
+    write_deterministic_zip(zip_path, &members)
 }
 
 fn collect_zip_files(

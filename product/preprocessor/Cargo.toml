@@ -10,6 +10,7 @@ members = [ "preprocessor-charts",
   "preprocessor-tpp",
   "preprocessor-tools",
   "preprocessor-vectors",
+  "preprocessor-zip",
 ]
 resolver = "2"
 

@@ -694,6 +694,7 @@ dependencies = [
  "preprocessor-tools",
  "preprocessor-tpp",
  "preprocessor-vectors",
+ "preprocessor-zip",
  "rusqlite",
  "serde",
  "serde_json",
@@ -730,6 +731,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "preprocessor-core",
+ "preprocessor-zip",
  "quick-xml",
  "regex",
  "rusqlite",
@@ -746,13 +748,13 @@ dependencies = [
  "anyhow",
  "chrono",
  "image",
+ "preprocessor-zip",
  "quick-xml",
  "roxmltree",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
- "zip",
 ]
 
 [[package]]
@@ -817,10 +819,19 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "geo",
+ "preprocessor-zip",
  "quick-xml",
  "rusqlite",
  "serde",
  "serde_json",
+ "zip",
+]
+
+[[package]]
+name = "preprocessor-zip"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "zip",
 ]
 

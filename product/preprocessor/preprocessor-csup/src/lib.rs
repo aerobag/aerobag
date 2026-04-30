@@ -14,7 +14,9 @@ use preprocessor_fetch::{
     copy_source_urls_provenance, prefetch_archives_with_provenance, read_source_urls_jsonl,
     FetchCacheConfig,
 };
-use preprocessor_tools::{append_pngs_vertical, write_thumbnail_from_png, ToolInvocation};
+use preprocessor_tools::{
+    append_pngs_vertical, sanitize_label, write_thumbnail_from_png, ToolInvocation,
+};
 
 mod package;
 
@@ -464,13 +466,6 @@ pub(crate) fn calculate_cycle(future: i64, now: DateTime<Utc>) -> (u32, u32) {
         let (_, prior_56) = calculate_cycle(future - 1, now);
         (combined, prior_56)
     }
-}
-
-fn sanitize_label(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect()
 }
 
 pub(crate) fn remove_if_exists(path: &Path) -> anyhow::Result<()> {

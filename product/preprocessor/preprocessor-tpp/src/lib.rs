@@ -17,7 +17,9 @@ use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
     read_source_urls_jsonl, FetchCacheConfig,
 };
-use preprocessor_tools::{append_pngs_vertical, flatten_png_onto_white, ToolInvocation};
+use preprocessor_tools::{
+    append_pngs_vertical, flatten_png_onto_white, sanitize_label, ToolInvocation,
+};
 
 mod package;
 use package::{package_region, package_region_versioned};
@@ -1488,13 +1490,6 @@ fn calculate_cycle(future: i64, now: DateTime<Utc>) -> (u32, u32) {
         let (_, prior_56) = calculate_cycle(future - 1, now);
         (combined, prior_56)
     }
-}
-
-fn sanitize_label(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect()
 }
 
 fn compact_path_label(path: &Path) -> String {

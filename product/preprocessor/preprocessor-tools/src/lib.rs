@@ -22,6 +22,13 @@ pub fn comparison_targets(entry: &CaptureEntry) -> Vec<&'static str> {
     targets
 }
 
+pub fn sanitize_label(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolInvocation {
     pub program: String,

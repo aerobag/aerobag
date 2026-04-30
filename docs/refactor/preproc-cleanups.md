@@ -20,9 +20,9 @@ Reduce copy/paste in the preprocessor build pipeline without changing published 
    - TFR, METAR, and NEXRAD repeat timestamped private-work setup, provenance writing, fetch-cache wiring, node-cache wrapping, and output tuple creation.
    - Desired helper: common fast-product workspace/provenance/cache wrapper while keeping product-specific URL selection and parsing separate.
 
-4. Move small shared utilities out of product crates.
-   - Duplicates include `sanitize_label`, recursive copy helpers, tree hashing, and zip member collection.
-   - Likely home: `preprocessor-tools` or a small artifact utility crate.
+4. Done: Move small shared utilities out of product crates.
+   - Moved the duplicated `sanitize_label` helper into `preprocessor-tools`.
+   - Left recursive copy, tree hashing, and zip member helpers in place because the current call sites are not identical utilities.
 
 5. Centralize deterministic zip writing.
    - Several crates write ZIPs independently with different timestamp/compression behavior.

@@ -18,7 +18,7 @@ use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives, prefetch_archives_with_provenance,
     read_source_urls_jsonl, write_package_outputs_jsonl, FetchCacheConfig, PackageOutputRecord,
 };
-use preprocessor_tools::{ToolInvocation, ToolOutcome};
+use preprocessor_tools::{sanitize_label, ToolInvocation, ToolOutcome};
 
 pub const FULL_COVERAGE_ZOOM: u32 = 7;
 
@@ -977,13 +977,6 @@ fn package_region_records_from_spec(
     }
 
     Ok(package_records)
-}
-
-fn sanitize_label(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect()
 }
 
 fn collect_tile_paths_glob(work_dir: &Path, tile_index: &str) -> anyhow::Result<Vec<String>> {

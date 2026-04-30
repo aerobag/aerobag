@@ -9,6 +9,7 @@ use crate::{
 pub const VECTOR_DISPLAY_FEATURE_LIMIT: usize = 500;
 pub const AIRSPACE_DISPLAY_FEATURE_LIMIT: usize = 700;
 pub const AIRSPACE_FEATHER_LIMIT: usize = 5_000;
+const LABEL_COLLISION_PADDING_PX: f64 = 3.0;
 const POINT_TILE_ZOOM: u32 = 9;
 const AIRSPACE_MIN_DISPLAY_ZOOM: f64 = 6.0;
 const AIRPORT_MIN_DISPLAY_ZOOM: f64 = 8.0;
@@ -765,6 +766,13 @@ pub fn query_map_overlay(
         tfr_payload,
     );
 
+    let mut airspace_labels = {
+        let mut labels = airspace.labels;
+        labels.extend(tfrs.labels);
+        labels
+    };
+    suppress_overlapping_vector_labels(&mut visible_features, &mut airspace_labels);
+
     MapOverlayQueryResult {
         needed_point_tiles,
         needed_airspace_ref_tiles: airspace.needed_ref_tiles,
@@ -774,12 +782,128 @@ pub fn query_map_overlay(
         visible_features,
         airspace_paths: airspace.paths,
         tfr_paths: tfrs.paths,
-        airspace_labels: {
-            let mut labels = airspace.labels;
-            labels.extend(tfrs.labels);
-            labels
-        },
+        airspace_labels,
         warnings,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LabelRect {
+    left: f64,
+    right: f64,
+    top: f64,
+    bottom: f64,
+}
+
+impl LabelRect {
+    fn padded(self, padding: f64) -> Self {
+        Self {
+            left: self.left - padding,
+            right: self.right + padding,
+            top: self.top - padding,
+            bottom: self.bottom + padding,
+        }
+    }
+
+    fn overlaps(self, other: Self) -> bool {
+        self.left < other.right
+            && self.right > other.left
+            && self.top < other.bottom
+            && self.bottom > other.top
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LabelRef {
+    Airspace(usize),
+    Point(usize),
+}
+
+fn suppress_overlapping_vector_labels(
+    visible_features: &mut [VisibleMapFeature],
+    airspace_labels: &mut Vec<AirspaceDisplayLabel>,
+) {
+    let mut candidates = Vec::<(LabelRef, LabelRect)>::new();
+    for (index, label) in airspace_labels.iter().enumerate() {
+        if let Some(rect) = airspace_label_rect(label) {
+            candidates.push((LabelRef::Airspace(index), rect.padded(LABEL_COLLISION_PADDING_PX)));
+        }
+    }
+    for (index, feature) in visible_features.iter().enumerate() {
+        if let Some(rect) = point_feature_label_rect(feature) {
+            candidates.push((LabelRef::Point(index), rect.padded(LABEL_COLLISION_PADDING_PX)));
+        }
+    }
+
+    let mut occupied = Vec::<LabelRect>::new();
+    let mut keep_airspace = vec![true; airspace_labels.len()];
+    let mut keep_point = vec![true; visible_features.len()];
+
+    for (label_ref, rect) in candidates.into_iter().rev() {
+        if occupied.iter().any(|kept| rect.overlaps(*kept)) {
+            match label_ref {
+                LabelRef::Airspace(index) => keep_airspace[index] = false,
+                LabelRef::Point(index) => keep_point[index] = false,
+            }
+        } else {
+            occupied.push(rect);
+        }
+    }
+
+    for (index, feature) in visible_features.iter_mut().enumerate() {
+        if !keep_point[index] {
+            feature.label.clear();
+        }
+    }
+    let mut index = 0usize;
+    airspace_labels.retain(|_| {
+        let keep = keep_airspace[index];
+        index += 1;
+        keep
+    });
+}
+
+fn airspace_label_rect(label: &AirspaceDisplayLabel) -> Option<LabelRect> {
+    let text = label.text.trim();
+    if text.is_empty() || !label.screen_x.is_finite() || !label.screen_y.is_finite() {
+        return None;
+    }
+    let (width, height) = if let Some((upper, lower)) = text.split_once('/') {
+        let width = upper.trim().chars().count().max(lower.trim().chars().count()) as f64 * 8.2 + 10.0;
+        (width, 30.0)
+    } else {
+        (text.chars().count() as f64 * 8.2 + 8.0, 18.0)
+    };
+    Some(centered_rect(label.screen_x, label.screen_y, width, height))
+}
+
+fn point_feature_label_rect(feature: &VisibleMapFeature) -> Option<LabelRect> {
+    let text = feature.label.trim();
+    if text.is_empty() || !feature.screen_x.is_finite() || !feature.screen_y.is_finite() {
+        return None;
+    }
+    let style = feature.style_class.to_ascii_lowercase();
+    let kind = feature.kind.to_ascii_lowercase();
+    let label_y = if style == "airport" || kind == "airport" {
+        -24.0
+    } else if style == "nav" || kind.contains("vor") {
+        -24.0
+    } else if style.starts_with("obstacle") || kind == "obs" || kind == "obstacle" {
+        -14.0
+    } else {
+        -15.0
+    };
+    let font_px = if style.starts_with("obstacle") { 12.0 } else { 14.0 };
+    let width = text.chars().count() as f64 * font_px * 0.64 + 8.0;
+    Some(centered_rect(feature.screen_x, feature.screen_y + label_y, width, font_px + 6.0))
+}
+
+fn centered_rect(center_x: f64, center_y: f64, width: f64, height: f64) -> LabelRect {
+    LabelRect {
+        left: center_x - width / 2.0,
+        right: center_x + width / 2.0,
+        top: center_y - height / 2.0,
+        bottom: center_y + height / 2.0,
     }
 }
 
@@ -2422,6 +2546,44 @@ mod tests {
     }
 
     #[test]
+    fn suppresses_lower_drawn_overlapping_point_labels() {
+        let mut features = vec![
+            test_visible_feature("airports:KABC", "airport", "airport", "KABC", 100.0, 100.0),
+            test_visible_feature("nav:ABC:VOR", "VORTAC", "nav", "ABC", 100.0, 100.0),
+        ];
+        let mut airspace_labels = Vec::new();
+
+        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels);
+
+        assert_eq!(features[0].label, "");
+        assert_eq!(features[1].label, "ABC");
+    }
+
+    #[test]
+    fn suppresses_airspace_label_under_point_label() {
+        let mut features = vec![test_visible_feature(
+            "nav:ABC:VOR",
+            "VORTAC",
+            "nav",
+            "ABC",
+            100.0,
+            124.0,
+        )];
+        let mut airspace_labels = vec![AirspaceDisplayLabel {
+            feature_id: "airspace:a".to_string(),
+            text: "100/50".to_string(),
+            style_key: "class_b".to_string(),
+            screen_x: 100.0,
+            screen_y: 100.0,
+        }];
+
+        suppress_overlapping_vector_labels(&mut features, &mut airspace_labels);
+
+        assert!(airspace_labels.is_empty());
+        assert_eq!(features[0].label, "ABC");
+    }
+
+    #[test]
     fn vor_symbol_labels_omit_frequency() {
         let feature = point_vector_record_to_symbol_feature(
             &PointVectorRecord {
@@ -2687,5 +2849,31 @@ mod tests {
         static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
         ROOT.get_or_init(|| app_fixture_vector_tile_root("fix", 9))
             .as_path()
+    }
+
+    fn test_visible_feature(
+        id: &str,
+        kind: &str,
+        style_class: &str,
+        label: &str,
+        screen_x: f64,
+        screen_y: f64,
+    ) -> VisibleMapFeature {
+        VisibleMapFeature {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            label: label.to_string(),
+            style_class: style_class.to_string(),
+            obstacle_variant: None,
+            screen_x,
+            screen_y,
+            towered: false,
+            fuel_available: false,
+            has_paved_runway: None,
+            heliport: None,
+            has_water_runway: None,
+            runway_length_ratio: 0.0,
+            longest_runway_heading_true_deg: None,
+        }
     }
 }

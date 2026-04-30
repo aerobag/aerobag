@@ -11832,31 +11832,18 @@ fn build_source_urls_node(config: &ProductBuildConfig) -> anyhow::Result<(PathBu
         output_dir.join("tpp-se/source_urls.jsonl"),
         output_dir.join("data/source_urls.jsonl"),
     ];
-    let _build_lock = match claim_or_wait_for_node(&prepared, &expected)? {
-        NodeCacheState::CacheHit(record) => return Ok((output_dir, record)),
-        NodeCacheState::Build(lock) => lock,
-    };
-    let started_at_utc = utc_now_string();
-    let started = Instant::now();
-    fs::create_dir_all(&output_dir)?;
-    emit_source_urls(
-        &output_dir,
-        Some(&resolved_cycle),
-        Some(&fetch_cache_config(config)?),
-    )?;
-    let outputs = BTreeMap::from([(
-        "output_dir".to_string(),
-        relative_artifact_path(&output_dir, &config.build_root),
-    )]);
-    let record = write_node_record(
-        prepared,
-        inputs,
-        outputs,
-        false,
-        started_at_utc,
-        utc_now_string(),
-        started.elapsed().as_millis() as u64,
-    )?;
+    let record = run_cached_node(prepared, inputs, &expected, |_prepared| {
+        fs::create_dir_all(&output_dir)?;
+        emit_source_urls(
+            &output_dir,
+            Some(&resolved_cycle),
+            Some(&fetch_cache_config(config)?),
+        )?;
+        Ok(BTreeMap::from([(
+            "output_dir".to_string(),
+            relative_artifact_path(&output_dir, &config.build_root),
+        )]))
+    })?;
     Ok((output_dir, record))
 }
 
@@ -11917,30 +11904,17 @@ fn build_overridden_source_urls_node(
         output_dir.join("tpp-se/source_urls.jsonl"),
         output_dir.join("data/source_urls.jsonl"),
     ];
-    let _build_lock = match claim_or_wait_for_node(&prepared, &expected)? {
-        NodeCacheState::CacheHit(record) => return Ok((output_dir, record)),
-        NodeCacheState::Build(lock) => lock,
-    };
-    if output_dir.exists() {
-        fs::remove_dir_all(&output_dir)
-            .with_context(|| format!("failed to remove {}", output_dir.display()))?;
-    }
-    let started_at_utc = utc_now_string();
-    let started = Instant::now();
-    copy_dir_recursive(override_root, &output_dir)?;
-    let outputs = BTreeMap::from([(
-        "output_dir".to_string(),
-        relative_artifact_path(&output_dir, &config.build_root),
-    )]);
-    let record = write_node_record(
-        prepared,
-        inputs,
-        outputs,
-        false,
-        started_at_utc,
-        utc_now_string(),
-        started.elapsed().as_millis() as u64,
-    )?;
+    let record = run_cached_node(prepared, inputs, &expected, |_prepared| {
+        if output_dir.exists() {
+            fs::remove_dir_all(&output_dir)
+                .with_context(|| format!("failed to remove {}", output_dir.display()))?;
+        }
+        copy_dir_recursive(override_root, &output_dir)?;
+        Ok(BTreeMap::from([(
+            "output_dir".to_string(),
+            relative_artifact_path(&output_dir, &config.build_root),
+        )]))
+    })?;
     Ok((output_dir, record))
 }
 
@@ -11962,50 +11936,37 @@ fn build_chart_render_node(
     )?;
     let work_dir = prepared.dir.join("work").join(family.capture_label());
     let tiles_root = work_dir.join("tiles");
-    let _build_lock = match claim_or_wait_for_node(&prepared, &[tiles_root.clone()])? {
-        NodeCacheState::CacheHit(record) => return Ok(record),
-        NodeCacheState::Build(lock) => lock,
-    };
-    let started_at_utc = utc_now_string();
-    let started = Instant::now();
-    let work_dir = stage_work_dir(family, source_repo, &prepared.dir)?;
-    let provenance_dir = prepared
-        .dir
-        .join("meta")
-        .join("provenance")
-        .join(format!("charts-{family_id}"));
-    fs::create_dir_all(&provenance_dir)?;
-    copy_source_urls_provenance(source_urls, &provenance_dir)?;
-    let urls = read_source_urls_jsonl(source_urls)?;
-    prefetch_archives_with_provenance(
-        &urls,
-        &work_dir,
-        fetch_jobs,
-        Some(&static_source_fetch_cache_config(config)?),
-        &provenance_dir,
-        family.capture_label(),
-    )?;
-    build_family_vrts(family, &work_dir, cpu_jobs)?;
-    build_family_tiles(family, &work_dir, cpu_jobs)?;
-    let outputs = BTreeMap::from([
-        (
-            "work_dir".to_string(),
-            relative_artifact_path(&work_dir, &config.build_root),
-        ),
-        (
-            "tiles_root".to_string(),
-            relative_artifact_path(&tiles_root, &config.build_root),
-        ),
-    ]);
-    write_node_record(
-        prepared,
-        inputs,
-        outputs,
-        false,
-        started_at_utc,
-        utc_now_string(),
-        started.elapsed().as_millis() as u64,
-    )
+    run_cached_node(prepared, inputs, &[tiles_root.clone()], |prepared| {
+        let work_dir = stage_work_dir(family, source_repo, &prepared.dir)?;
+        let provenance_dir = prepared
+            .dir
+            .join("meta")
+            .join("provenance")
+            .join(format!("charts-{family_id}"));
+        fs::create_dir_all(&provenance_dir)?;
+        copy_source_urls_provenance(source_urls, &provenance_dir)?;
+        let urls = read_source_urls_jsonl(source_urls)?;
+        prefetch_archives_with_provenance(
+            &urls,
+            &work_dir,
+            fetch_jobs,
+            Some(&static_source_fetch_cache_config(config)?),
+            &provenance_dir,
+            family.capture_label(),
+        )?;
+        build_family_vrts(family, &work_dir, cpu_jobs)?;
+        build_family_tiles(family, &work_dir, cpu_jobs)?;
+        Ok(BTreeMap::from([
+            (
+                "work_dir".to_string(),
+                relative_artifact_path(&work_dir, &config.build_root),
+            ),
+            (
+                "tiles_root".to_string(),
+                relative_artifact_path(&tiles_root, &config.build_root),
+            ),
+        ]))
+    })
 }
 
 fn build_chart_package_nodes(
@@ -12220,32 +12181,25 @@ fn build_csup_render_node(
         ".render-complete-{}",
         region.code().to_ascii_lowercase()
     ));
-    let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&marker))? {
-        NodeCacheState::CacheHit(record) => return Ok(record),
-        NodeCacheState::Build(lock) => lock,
-    };
-    let started_at_utc = utc_now_string();
-    let started = Instant::now();
-    render_csup_region(work_dir, region, render_jobs)?;
-    fs::write(&marker, b"ok").with_context(|| format!("failed to write {}", marker.display()))?;
-    let outputs = BTreeMap::from([
-        (
-            "work_dir".to_string(),
-            relative_artifact_path(work_dir, &config.build_root),
-        ),
-        (
-            "marker".to_string(),
-            relative_artifact_path(&marker, &config.build_root),
-        ),
-    ]);
-    write_node_record(
+    run_cached_node(
         prepared,
         inputs,
-        outputs,
-        false,
-        started_at_utc,
-        utc_now_string(),
-        started.elapsed().as_millis() as u64,
+        std::slice::from_ref(&marker),
+        |_prepared| {
+            render_csup_region(work_dir, region, render_jobs)?;
+            fs::write(&marker, b"ok")
+                .with_context(|| format!("failed to write {}", marker.display()))?;
+            Ok(BTreeMap::from([
+                (
+                    "work_dir".to_string(),
+                    relative_artifact_path(work_dir, &config.build_root),
+                ),
+                (
+                    "marker".to_string(),
+                    relative_artifact_path(&marker, &config.build_root),
+                ),
+            ]))
+        },
     )
 }
 
@@ -12263,49 +12217,42 @@ fn build_csup_stage_node(
     )?;
     let work_root = prepared.dir.clone();
     let marker = work_root.join(".stage-complete");
-    let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&marker))? {
-        NodeCacheState::CacheHit(record) => return Ok(record),
-        NodeCacheState::Build(lock) => lock,
-    };
-    let started_at_utc = utc_now_string();
-    let started = Instant::now();
-    let work_dir = stage_work_dir_for_product(source_repo, &work_root)?;
-    let provenance_dir = work_root.join("meta").join("provenance").join("csup");
-    fs::create_dir_all(&provenance_dir)?;
-    copy_source_urls_provenance(source_urls, &provenance_dir)?;
-    let urls = read_source_urls_jsonl(source_urls)?;
-    prefetch_archives_with_provenance(
-        &urls,
-        &work_dir,
-        fetch_jobs,
-        Some(&static_source_fetch_cache_config(config)?),
-        &provenance_dir,
-        "csup",
-    )?;
-    prepare_csup_inputs(&work_dir)?;
-    fs::write(&marker, b"ok").with_context(|| format!("failed to write {}", marker.display()))?;
-    let outputs = BTreeMap::from([
-        (
-            "work_dir".to_string(),
-            relative_artifact_path(&work_dir, &config.build_root),
-        ),
-        (
-            "provenance_dir".to_string(),
-            relative_artifact_path(&provenance_dir, &config.build_root),
-        ),
-        (
-            "marker".to_string(),
-            relative_artifact_path(&marker, &config.build_root),
-        ),
-    ]);
-    write_node_record(
+    run_cached_node(
         prepared,
         inputs,
-        outputs,
-        false,
-        started_at_utc,
-        utc_now_string(),
-        started.elapsed().as_millis() as u64,
+        std::slice::from_ref(&marker),
+        |_prepared| {
+            let work_dir = stage_work_dir_for_product(source_repo, &work_root)?;
+            let provenance_dir = work_root.join("meta").join("provenance").join("csup");
+            fs::create_dir_all(&provenance_dir)?;
+            copy_source_urls_provenance(source_urls, &provenance_dir)?;
+            let urls = read_source_urls_jsonl(source_urls)?;
+            prefetch_archives_with_provenance(
+                &urls,
+                &work_dir,
+                fetch_jobs,
+                Some(&static_source_fetch_cache_config(config)?),
+                &provenance_dir,
+                "csup",
+            )?;
+            prepare_csup_inputs(&work_dir)?;
+            fs::write(&marker, b"ok")
+                .with_context(|| format!("failed to write {}", marker.display()))?;
+            Ok(BTreeMap::from([
+                (
+                    "work_dir".to_string(),
+                    relative_artifact_path(&work_dir, &config.build_root),
+                ),
+                (
+                    "provenance_dir".to_string(),
+                    relative_artifact_path(&provenance_dir, &config.build_root),
+                ),
+                (
+                    "marker".to_string(),
+                    relative_artifact_path(&marker, &config.build_root),
+                ),
+            ]))
+        },
     )
 }
 
@@ -12488,37 +12435,29 @@ fn build_tpp_render_node(
     )?;
     let run_root = prepared.dir.clone();
     let plates_root = run_root.join(format!("work/tpp-{region_id}/plates"));
-    let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&plates_root))? {
-        NodeCacheState::CacheHit(record) => return Ok(record),
-        NodeCacheState::Build(lock) => lock,
-    };
-    let started_at_utc = utc_now_string();
-    let started = Instant::now();
-    let mut request = request.clone();
-    request.run_root = run_root;
-    let result = render_native_tpp(&request)?;
-    let outputs = BTreeMap::from([
-        (
-            "work_dir".to_string(),
-            relative_artifact_path(&result.work_dir, &config.build_root),
-        ),
-        (
-            "provenance_dir".to_string(),
-            relative_artifact_path(&result.provenance_dir, &config.build_root),
-        ),
-        (
-            "plates_root".to_string(),
-            relative_artifact_path(&plates_root, &config.build_root),
-        ),
-    ]);
-    write_node_record(
+    run_cached_node(
         prepared,
         inputs,
-        outputs,
-        false,
-        started_at_utc,
-        utc_now_string(),
-        started.elapsed().as_millis() as u64,
+        std::slice::from_ref(&plates_root),
+        |_prepared| {
+            let mut request = request.clone();
+            request.run_root = run_root;
+            let result = render_native_tpp(&request)?;
+            Ok(BTreeMap::from([
+                (
+                    "work_dir".to_string(),
+                    relative_artifact_path(&result.work_dir, &config.build_root),
+                ),
+                (
+                    "provenance_dir".to_string(),
+                    relative_artifact_path(&result.provenance_dir, &config.build_root),
+                ),
+                (
+                    "plates_root".to_string(),
+                    relative_artifact_path(&plates_root, &config.build_root),
+                ),
+            ]))
+        },
     )
 }
 
@@ -13413,6 +13352,33 @@ fn claim_or_wait_for_node(
             }
         }
     }
+}
+
+fn run_cached_node<F>(
+    prepared: PreparedNode,
+    inputs: BTreeMap<String, String>,
+    expected_outputs: &[PathBuf],
+    build: F,
+) -> anyhow::Result<NodeRecord>
+where
+    F: FnOnce(&PreparedNode) -> anyhow::Result<BTreeMap<String, String>>,
+{
+    let _build_lock = match claim_or_wait_for_node(&prepared, expected_outputs)? {
+        NodeCacheState::CacheHit(record) => return Ok(record),
+        NodeCacheState::Build(lock) => lock,
+    };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    let outputs = build(&prepared)?;
+    write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )
 }
 
 fn reset_node_dir_for_rebuild(prepared: &PreparedNode) -> anyhow::Result<()> {

@@ -872,6 +872,7 @@ export default function App() {
   const [debugTileLabels, setDebugTileLabels] = useState(
     () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugTiles"),
   );
+  const [debugPlaybackVisible, setDebugPlaybackVisible] = useState(false);
   const persistedUiState = useMemo(readPersistedWebUiState, []);
   const [page, setPage] = useState<AppPage>(persistedUiState.page ?? "map");
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
@@ -1410,6 +1411,8 @@ export default function App() {
           uptimeLabel={uptimeLabel}
           debugTileLabels={debugTileLabels}
           onDebugTileLabelsChange={setDebugTileLabels}
+          debugPlaybackVisible={debugPlaybackVisible}
+          onDebugPlaybackVisibleChange={setDebugPlaybackVisible}
           mapLayerState={sessionSnapshot.map_layer_state}
           selectedMapId={selectedMapId}
           selectedMap={selectedMap}
@@ -1693,6 +1696,8 @@ export default function App() {
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
           onPlaybackSnapshotChange={setSessionSnapshot}
+          debugPlaybackVisible={debugPlaybackVisible}
+          onDebugPlaybackVisibleChange={setDebugPlaybackVisible}
           uiSession={uiSession}
           debugWarningActive={debugWarningActive}
           onFirstVisualReady={reportStartupVisualReady}
@@ -1721,6 +1726,8 @@ function MapPage(props: {
   uptimeLabel: string;
   debugTileLabels: boolean;
   onDebugTileLabelsChange: (enabled: boolean) => void;
+  debugPlaybackVisible: boolean;
+  onDebugPlaybackVisibleChange: (enabled: boolean) => void;
   mapLayerState: UiMapLayerState;
   selectedMapId: string;
   selectedMap: MapViewOptionJson;
@@ -1753,6 +1760,8 @@ function MapPage(props: {
     appCoreAdapter,
     debugTileLabels,
     onDebugTileLabelsChange,
+    debugPlaybackVisible,
+    onDebugPlaybackVisibleChange,
     mapLayerState,
     page,
     pageHistory,
@@ -3397,15 +3406,17 @@ function MapPage(props: {
           onClick={onOpenPlan}
         />
 
-        <PlaybackWidget
-          uiSession={uiSession}
-          playbackUiState={props.playbackUiState}
-          sourcePath={props.playbackSourcePath}
-          onSourcePathChange={props.onPlaybackSourcePathChange}
-          onSnapshotChange={props.onPlaybackSnapshotChange}
-          surfaceWidth={surfaceSize.width}
-          dock="left"
-        />
+        {debugPlaybackVisible ? (
+          <PlaybackWidget
+            uiSession={uiSession}
+            playbackUiState={props.playbackUiState}
+            sourcePath={props.playbackSourcePath}
+            onSourcePathChange={props.onPlaybackSourcePathChange}
+            onSnapshotChange={props.onPlaybackSnapshotChange}
+            surfaceWidth={surfaceSize.width}
+            dock="left"
+          />
+        ) : null}
 
         <button
           type="button"
@@ -3439,6 +3450,14 @@ function MapPage(props: {
                 onChange={(event) => onDebugTileLabelsChange(event.currentTarget.checked)}
               />
               tile labels
+            </label>
+            <label className="debugToggle">
+              <input
+                type="checkbox"
+                checked={debugPlaybackVisible}
+                onChange={(event) => onDebugPlaybackVisibleChange(event.currentTarget.checked)}
+              />
+              playback
             </label>
           </DebugDock>
         </div>
@@ -5391,6 +5410,8 @@ function ChartsPage(props: {
   playbackSourcePath: string;
   onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
+  debugPlaybackVisible: boolean;
+  onDebugPlaybackVisibleChange: (enabled: boolean) => void;
   uiSession: UiSession | null;
   ownship: OwnshipRenderState;
   debugWarningActive: boolean;
@@ -5908,20 +5929,30 @@ function ChartsPage(props: {
           onClick={onOpenPlan}
         />
 
-        <PlaybackWidget
-          uiSession={props.uiSession}
-          playbackUiState={props.playbackUiState}
-          sourcePath={props.playbackSourcePath}
-          onSourcePathChange={props.onPlaybackSourcePathChange}
-          onSnapshotChange={props.onPlaybackSnapshotChange}
-          surfaceWidth={surfaceSize.width}
-          dock="left"
-        />
+        {props.debugPlaybackVisible ? (
+          <PlaybackWidget
+            uiSession={props.uiSession}
+            playbackUiState={props.playbackUiState}
+            sourcePath={props.playbackSourcePath}
+            onSourcePathChange={props.onPlaybackSourcePathChange}
+            onSnapshotChange={props.onPlaybackSnapshotChange}
+            surfaceWidth={surfaceSize.width}
+            dock="left"
+          />
+        ) : null}
 
         <div className="debugDock">
           <DebugDock open={debugOpen} warn={props.debugWarningActive} onToggle={() => setDebugOpen((open) => !open)}>
             <div className="debugLine">up: {uptimeLabel}</div>
             <div className="debugLine">{viewport ? `z${viewport.zoom.toFixed(2)}` : "viewport (none)"}</div>
+            <label className="debugToggle">
+              <input
+                type="checkbox"
+                checked={props.debugPlaybackVisible}
+                onChange={(event) => props.onDebugPlaybackVisibleChange(event.currentTarget.checked)}
+              />
+              playback
+            </label>
           </DebugDock>
         </div>
 

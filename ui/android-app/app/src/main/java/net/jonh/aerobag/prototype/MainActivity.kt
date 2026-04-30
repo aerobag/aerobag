@@ -3451,7 +3451,7 @@ private fun MapExplorerPage(
     val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
     val surfaceHeightDp = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
     val tileDisplayMultiplier = if (debugFastTiles) 2.0 else 1.0
-    val tiles = remember(currentViewport, surfaceSize, fixture.mapViews, uiSession, tileDisplayMultiplier) {
+    val tiles = remember(selectedMap.id, currentViewport, surfaceSize, fixture.mapViews, uiSession, tileDisplayMultiplier) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             emptyList()
         } else {

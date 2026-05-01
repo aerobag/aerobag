@@ -13215,7 +13215,11 @@ fn claim_or_wait_for_node(
             return Ok(NodeCacheState::CacheHit(record));
         }
 
-        set_tree_readonly(&prepared.dir, false)?;
+        // Do not recursively chmod before attempting the lock. Another build may already own
+        // this node and be creating/removing renderer scratch files; walking that active tree
+        // can race with transient ImageMagick files such as `*.png~`. We only need the node
+        // root writable here so the lock file can be created or a stale lock can be removed.
+        set_path_readonly(&prepared.dir, false)?;
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)

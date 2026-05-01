@@ -151,6 +151,7 @@ pub fn render_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<Native
 
     let render_start = Instant::now();
     render_tpp_region(&work_dir, request.region, request.render_jobs)?;
+    clean_tpp_transient_work_files(&work_dir)?;
     let render_elapsed_ms = render_start.elapsed().as_millis();
 
     Ok(NativeTppRenderResult {

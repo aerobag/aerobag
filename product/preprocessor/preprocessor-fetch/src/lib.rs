@@ -258,6 +258,7 @@ pub struct PrefetchRequest {
     pub cache_key: String,
     pub logical_file_name: Option<String>,
     pub force_http1: bool,
+    pub allow_html: bool,
 }
 
 impl PrefetchRequest {
@@ -268,6 +269,7 @@ impl PrefetchRequest {
             url,
             logical_file_name: None,
             force_http1: false,
+            allow_html: false,
         }
     }
 
@@ -281,6 +283,11 @@ impl PrefetchRequest {
         self
     }
 
+    pub fn allow_html(mut self) -> Self {
+        self.allow_html = true;
+        self
+    }
+
     fn from_legacy_url(url: &str) -> anyhow::Result<Self> {
         let parsed = parse_logical_download(url)?;
         Ok(Self {
@@ -288,6 +295,7 @@ impl PrefetchRequest {
             url: parsed.network_url,
             logical_file_name: parsed.logical_file_name,
             force_http1: false,
+            allow_html: false,
         })
     }
 }
@@ -539,6 +547,7 @@ fn prefetch_one(
                     &request.cache_key,
                     &request.url,
                     request.force_http1,
+                    request.allow_html,
                     file_name,
                     dest_dir,
                     &archive_path,
@@ -591,6 +600,7 @@ fn fetch_network_with_cache(
     cache_key: &str,
     network_url: &str,
     force_http1: bool,
+    allow_html: bool,
     file_name: &str,
     dest_dir: &Path,
     archive_path: &Path,
@@ -602,6 +612,7 @@ fn fetch_network_with_cache(
             cache_key,
             network_url,
             force_http1,
+            allow_html,
             file_name,
             dest_dir,
             archive_path,
@@ -623,6 +634,7 @@ fn fetch_network_with_cache_once(
     cache_key: &str,
     network_url: &str,
     force_http1: bool,
+    allow_html: bool,
     file_name: &str,
     dest_dir: &Path,
     archive_path: &Path,
@@ -640,7 +652,7 @@ fn fetch_network_with_cache_once(
         &cookies_path,
         metadata.as_ref(),
     )?;
-    if result.http_status == 200 && looks_like_html(&temp_path)? {
+    if !allow_html && result.http_status == 200 && looks_like_html(&temp_path)? {
         // The first request can legitimately end at the FAA banner page while
         // setting cookies. Re-issue the original request once with the same jar.
         let _ = fs::remove_file(&temp_path);
@@ -655,7 +667,7 @@ fn fetch_network_with_cache_once(
             None,
         )?;
     }
-    if result.http_status == 200 && looks_like_html(&temp_path)? {
+    if !allow_html && result.http_status == 200 && looks_like_html(&temp_path)? {
         let _ = fs::remove_file(&temp_path);
         let _ = fs::remove_file(&headers_path);
         let _ = fs::remove_file(&cookies_path);

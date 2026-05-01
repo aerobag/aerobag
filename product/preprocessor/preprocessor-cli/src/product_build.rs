@@ -7553,17 +7553,15 @@ fn build_tfrs_product(
         "maxFeatures=300&outputFormat=application/json&srsname=EPSG:4326"
     );
     let source_requests = vec![
-        PrefetchRequest::new(list_url)
-            .with_logical_file_name("list.json")
-            .with_http1(),
-        PrefetchRequest::new(graphics_url)
-            .with_logical_file_name("graphics.geojson")
-            .with_http1(),
+        // HTTP/1.1 was a temporary TFR workaround for an FAA edge block. FAA reports that
+        // block fixed; leave the opt-in visibly disabled so we can restore it if needed.
+        PrefetchRequest::new(list_url).with_logical_file_name("list.json"),
+        PrefetchRequest::new(graphics_url).with_logical_file_name("graphics.geojson"),
     ];
     let mut source_urls_jsonl = String::new();
     for request in &source_requests {
         source_urls_jsonl.push_str(&format!(
-            "{{\"event\":\"source_url\",\"http_version\":\"1.1\",\"label\":\"tfrs\",\"url\":\"{}\"}}\n",
+            "{{\"event\":\"source_url\",\"label\":\"tfrs\",\"url\":\"{}\"}}\n",
             request.url
         ));
     }
@@ -7725,14 +7723,15 @@ fn build_nexrad_product(
     fs::create_dir_all(&provenance_dir)
         .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
 
-    let index_url =
-        "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/#logical_name=index.html"
-            .to_string();
+    let index_url = "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/";
+    let index_request = PrefetchRequest::new(index_url)
+        .with_logical_file_name("index.html")
+        .allow_html();
     fs::write(
         provenance_dir.join("source_urls.jsonl"),
         format!(
             "{{\"event\":\"source_url\",\"label\":\"nexrad-index\",\"url\":\"{}\"}}\n",
-            index_url
+            index_request.url
         ),
     )
     .with_context(|| {
@@ -7741,8 +7740,8 @@ fn build_nexrad_product(
             provenance_dir.join("source_urls.jsonl").display()
         )
     })?;
-    prefetch_archives_with_provenance(
-        std::slice::from_ref(&index_url),
+    prefetch_requests_with_provenance(
+        std::slice::from_ref(&index_request),
         &input_dir,
         config.fetch_jobs,
         Some(&fetch_cache),

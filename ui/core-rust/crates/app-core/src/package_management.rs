@@ -120,6 +120,30 @@ pub struct OfflinePackagesUiRow {
     pub fetch_count: usize,
     pub gc_count: usize,
     pub pause_count: usize,
+    #[serde(default)]
+    pub plan_entries: Vec<OfflinePackagesUiPlanEntry>,
+    #[serde(default)]
+    pub installed_size_label: String,
+    #[serde(default)]
+    pub planned_delta_label: String,
+    #[serde(default)]
+    pub planned_total_size_label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
+#[serde(rename_all = "snake_case")]
+pub enum OfflinePackagesUiPlanAction {
+    Delete,
+    Keep,
+    Pause,
+    Fetch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfflinePackagesUiPlanEntry {
+    pub action: OfflinePackagesUiPlanAction,
+    pub count: usize,
+    pub cycles: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -507,7 +531,7 @@ pub fn reduce_offline_packages_controller(
                 now_epoch_ms: input.now_epoch_ms,
                 discovery_manifests: library_cache.discovery_manifests.clone(),
                 bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
-                installed: effective_installed_artifacts(&state, &input.installed),
+                installed: input.installed.clone(),
                 forced_gc_installed_filenames: forced_gc_installed_filenames(
                     &state,
                     &input.installed,
@@ -550,7 +574,7 @@ pub fn reduce_offline_packages_controller(
                 now_epoch_ms: input.now_epoch_ms,
                 discovery_manifests: library_cache.discovery_manifests.clone(),
                 bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
-                installed: effective_installed_artifacts(&state, &input.installed),
+                installed: input.installed.clone(),
                 forced_gc_installed_filenames: forced_gc_installed_filenames(
                     &state,
                     &input.installed,
@@ -590,7 +614,6 @@ pub fn reduce_offline_packages_controller(
         }
     }
 
-    let effective_installed = effective_installed_artifacts(&state, &input.installed);
     let forced_gc_installed_filenames = forced_gc_installed_filenames(&state, &input.installed);
     let planner_ui_state = replan_controller_ui_state(
         &mut state,
@@ -598,7 +621,7 @@ pub fn reduce_offline_packages_controller(
         &input.region_ids,
         &input.product_ids,
         input.now_epoch_ms,
-        &effective_installed,
+        &input.installed,
         &forced_gc_installed_filenames,
     );
     OfflinePackagesControllerResult {
@@ -627,21 +650,6 @@ fn library_refresh_needed(
         return true;
     }
     now_epoch_ms - cache.fetched_at_epoch_ms > 60 * 60 * 1000
-}
-
-fn effective_installed_artifacts(
-    state: &OfflinePackagesControllerState,
-    installed: &[InstalledArtifact],
-) -> Vec<InstalledArtifact> {
-    installed
-        .iter()
-        .filter(|artifact| {
-            !state
-                .tombstoned_installed_filename_messages
-                .contains_key(&artifact.filename)
-        })
-        .cloned()
-        .collect()
 }
 
 fn forced_gc_installed_filenames(
@@ -893,12 +901,21 @@ fn project_offline_packages_ui_state(
         forced_gc_installed_filenames: forced_gc_installed_filenames.to_vec(),
         suppressed_fetch_filenames: suppressed_fetch_filenames.to_vec(),
     });
-    let counts = plan_counts_by_dimension(
+    let rows = plan_rows_by_dimension(
+        &PackageManagementInput {
+            now_epoch_ms,
+            preferences: state.preferences.clone(),
+            bundle: resolve_cycle_bundle_manifest(
+                discovery_manifests,
+                bundle_manifests_by_filename,
+                now_epoch_ms,
+            ),
+            installed: installed.to_vec(),
+            forced_gc_installed_filenames: forced_gc_installed_filenames.to_vec(),
+            suppressed_fetch_filenames: suppressed_fetch_filenames.to_vec(),
+        },
         &plan,
-        discovery_manifests,
         bundle_manifests_by_filename,
-        now_epoch_ms,
-        installed,
     );
 
     OfflinePackagesUiState {
@@ -935,60 +952,42 @@ fn project_offline_packages_ui_state(
                     ids.insert(pkg.family_id.clone());
                 }
             }
-            ids.extend(counts.core_products.keys().cloned());
+            ids.extend(rows.core_products.keys().cloned());
             ids.into_iter()
                 .map(|id| {
-                    let counts = counts.core_products.get(&id);
-                    OfflinePackagesUiRow {
-                        id,
-                        selection: OfflinePackageSelection::Play,
-                        fetch_count: counts.map_or(0, |counts| counts.fetch_count),
-                        gc_count: counts.map_or(0, |counts| counts.gc_count),
-                        pause_count: counts.map_or(0, |counts| counts.pause_count),
-                    }
+                    let row = rows.core_products.get(&id);
+                    offline_packages_ui_row(id, OfflinePackageSelection::Play, row)
                 })
                 .collect()
         },
         regions: region_ids
             .iter()
-            .map(|id| OfflinePackagesUiRow {
-                id: id.clone(),
-                selection: state
-                    .preferences
-                    .regions
-                    .get(id)
-                    .copied()
-                    .unwrap_or(OfflinePackageSelection::Play),
-                fetch_count: counts
-                    .regions
-                    .get(id)
-                    .map_or(0, |counts| counts.fetch_count),
-                gc_count: counts.regions.get(id).map_or(0, |counts| counts.gc_count),
-                pause_count: counts
-                    .regions
-                    .get(id)
-                    .map_or(0, |counts| counts.pause_count),
+            .map(|id| {
+                offline_packages_ui_row(
+                    id.clone(),
+                    state
+                        .preferences
+                        .regions
+                        .get(id)
+                        .copied()
+                        .unwrap_or(OfflinePackageSelection::Play),
+                    rows.regions.get(id),
+                )
             })
             .collect(),
         products: product_ids
             .iter()
-            .map(|id| OfflinePackagesUiRow {
-                id: id.clone(),
-                selection: state
-                    .preferences
-                    .products
-                    .get(id)
-                    .copied()
-                    .unwrap_or(OfflinePackageSelection::Play),
-                fetch_count: counts
-                    .products
-                    .get(id)
-                    .map_or(0, |counts| counts.fetch_count),
-                gc_count: counts.products.get(id).map_or(0, |counts| counts.gc_count),
-                pause_count: counts
-                    .products
-                    .get(id)
-                    .map_or(0, |counts| counts.pause_count),
+            .map(|id| {
+                offline_packages_ui_row(
+                    id.clone(),
+                    state
+                        .preferences
+                        .products
+                        .get(id)
+                        .copied()
+                        .unwrap_or(OfflinePackageSelection::Play),
+                    rows.products.get(id),
+                )
             })
             .collect(),
     }
@@ -1052,101 +1051,355 @@ fn clock_options(
 }
 
 #[derive(Default)]
-struct DimensionCounts {
+struct DimensionPlanDetails {
     fetch_count: usize,
     gc_count: usize,
     pause_count: usize,
+    installed_size_bytes: u64,
+    planned_download_bytes: u64,
+    planned_gc_bytes: u64,
+    plan_groups: BTreeMap<OfflinePackagesUiPlanAction, PlanEntryAccumulator>,
 }
 
 #[derive(Default)]
-struct PlanCountsByDimension {
-    core_products: BTreeMap<String, DimensionCounts>,
-    regions: BTreeMap<String, DimensionCounts>,
-    products: BTreeMap<String, DimensionCounts>,
+struct PlanEntryAccumulator {
+    count: usize,
+    cycles: BTreeSet<String>,
 }
 
-fn plan_counts_by_dimension_from_packages(
-    plan: &PackageManagementPlan,
-    packages_by_id: &BTreeMap<&str, &BundlePackageArtifact>,
-    installed_by_filename: &BTreeMap<&str, &InstalledArtifact>,
-) -> PlanCountsByDimension {
-    let mut counts = PlanCountsByDimension::default();
-
-    fn apply(
-        counts: &mut PlanCountsByDimension,
-        packages_by_id: &BTreeMap<&str, &BundlePackageArtifact>,
-        artifact_id: &str,
-        mutate: impl Fn(&mut DimensionCounts),
-    ) {
-        let Some(pkg) = packages_by_id.get(artifact_id) else {
-            return;
-        };
-        if let Some(region_id) = &pkg.region_id {
-            mutate(counts.regions.entry(region_id.clone()).or_default());
-        } else {
-            mutate(
-                counts
-                    .core_products
-                    .entry(pkg.family_id.clone())
-                    .or_default(),
-            );
-        }
-        mutate(counts.products.entry(pkg.family_id.clone()).or_default());
-    }
-
-    for artifact_id in &plan.fetch {
-        apply(&mut counts, &packages_by_id, artifact_id, |counts| {
-            counts.fetch_count += 1
-        });
-    }
-    for filename in &plan.gc {
-        let Some(installed) = installed_by_filename.get(filename.as_str()) else {
-            continue;
-        };
-        apply(
-            &mut counts,
-            &packages_by_id,
-            &installed.artifact_id,
-            |counts| counts.gc_count += 1,
-        );
-    }
-    for filename in &plan.protected_by_pause {
-        let Some(installed) = installed_by_filename.get(filename.as_str()) else {
-            continue;
-        };
-        apply(
-            &mut counts,
-            &packages_by_id,
-            &installed.artifact_id,
-            |counts| counts.pause_count += 1,
-        );
-    }
-
-    counts
+#[derive(Default)]
+struct PlanRowsByDimension {
+    core_products: BTreeMap<String, DimensionPlanDetails>,
+    regions: BTreeMap<String, DimensionPlanDetails>,
+    products: BTreeMap<String, DimensionPlanDetails>,
 }
 
-fn plan_counts_by_dimension(
+fn offline_packages_ui_row(
+    id: String,
+    selection: OfflinePackageSelection,
+    details: Option<&DimensionPlanDetails>,
+) -> OfflinePackagesUiRow {
+    let plan_entries = details.map_or_else(Vec::new, |details| {
+        [
+            OfflinePackagesUiPlanAction::Delete,
+            OfflinePackagesUiPlanAction::Keep,
+            OfflinePackagesUiPlanAction::Pause,
+            OfflinePackagesUiPlanAction::Fetch,
+        ]
+        .into_iter()
+        .filter_map(|action| {
+            let group = details.plan_groups.get(&action)?;
+            if group.count == 0 {
+                return None;
+            }
+            Some(OfflinePackagesUiPlanEntry {
+                action,
+                count: group.count,
+                cycles: group.cycles.iter().cloned().collect(),
+            })
+        })
+        .collect()
+    });
+    let installed_size_bytes = details.map_or(0, |details| details.installed_size_bytes);
+    let planned_download_bytes = details.map_or(0, |details| details.planned_download_bytes);
+    let planned_gc_bytes = details.map_or(0, |details| details.planned_gc_bytes);
+    let planned_delta_bytes = planned_download_bytes as i128 - planned_gc_bytes as i128;
+    let planned_total_size_bytes = installed_size_bytes
+        .saturating_add(planned_download_bytes)
+        .saturating_sub(planned_gc_bytes);
+    OfflinePackagesUiRow {
+        id,
+        selection,
+        fetch_count: details.map_or(0, |details| details.fetch_count),
+        gc_count: details.map_or(0, |details| details.gc_count),
+        pause_count: details.map_or(0, |details| details.pause_count),
+        plan_entries,
+        installed_size_label: format_package_size_label(installed_size_bytes),
+        planned_delta_label: format_signed_package_size_label(planned_delta_bytes),
+        planned_total_size_label: format_package_size_label(planned_total_size_bytes),
+    }
+}
+
+fn plan_rows_by_dimension(
+    input: &PackageManagementInput,
     plan: &PackageManagementPlan,
-    discovery_manifests: &[CurrentArtifactsManifest],
     bundle_manifests_by_filename: &BTreeMap<String, BundleManifest>,
-    now_epoch_ms: i64,
-    installed: &[InstalledArtifact],
-) -> PlanCountsByDimension {
-    let _ = resolve_cycle_bundle_manifest(
-        discovery_manifests,
-        bundle_manifests_by_filename,
-        now_epoch_ms,
-    );
+) -> PlanRowsByDimension {
+    let mut rows = PlanRowsByDimension::default();
     let packages_by_id: BTreeMap<&str, &BundlePackageArtifact> = bundle_manifests_by_filename
         .values()
         .flat_map(|bundle| bundle.packages.iter())
+        .chain(input.bundle.packages.iter())
         .map(|pkg| (pkg.id.as_str(), pkg))
         .collect();
-    let installed_by_filename: BTreeMap<&str, &InstalledArtifact> = installed
+    let active_packages_by_id: BTreeMap<&str, &BundlePackageArtifact> = input
+        .bundle
+        .packages
+        .iter()
+        .map(|pkg| (pkg.id.as_str(), pkg))
+        .collect();
+    let installed_by_filename: BTreeMap<&str, &InstalledArtifact> = input
+        .installed
         .iter()
         .map(|artifact| (artifact.filename.as_str(), artifact))
         .collect();
-    plan_counts_by_dimension_from_packages(plan, &packages_by_id, &installed_by_filename)
+    let mut active_package_by_filename: BTreeMap<&str, &BundlePackageArtifact> = BTreeMap::new();
+    for pkg in &input.bundle.packages {
+        active_package_by_filename.insert(pkg.filename.as_str(), pkg);
+    }
+
+    for installed in &input.installed {
+        let pkg = packages_by_id.get(installed.artifact_id.as_str()).copied();
+        apply_installed_size(&mut rows, pkg, installed);
+    }
+
+    for artifact_id in &plan.fetch {
+        let Some(pkg) = active_packages_by_id.get(artifact_id.as_str()).copied() else {
+            continue;
+        };
+        apply_plan_action(&mut rows, pkg, OfflinePackagesUiPlanAction::Fetch, 1);
+        let size = package_size_bytes(pkg, None);
+        apply_size(&mut rows, pkg, |details| {
+            details.fetch_count += 1;
+            details.planned_download_bytes = details.planned_download_bytes.saturating_add(size);
+        });
+    }
+
+    for filename in &plan.gc {
+        let Some(installed) = installed_by_filename.get(filename.as_str()).copied() else {
+            continue;
+        };
+        let pkg = packages_by_id.get(installed.artifact_id.as_str()).copied();
+        let size = package_size_bytes_opt(pkg, Some(installed));
+        apply_installed_action(
+            &mut rows,
+            pkg,
+            installed,
+            OfflinePackagesUiPlanAction::Delete,
+        );
+        apply_size_opt(&mut rows, pkg, installed, |details| {
+            details.gc_count += 1;
+            details.planned_gc_bytes = details.planned_gc_bytes.saturating_add(size);
+        });
+    }
+
+    let protected_by_pause: BTreeSet<&str> =
+        plan.protected_by_pause.iter().map(String::as_str).collect();
+    for filename in &plan.retain_installed {
+        if protected_by_pause.contains(filename.as_str()) {
+            continue;
+        }
+        let Some(installed) = installed_by_filename.get(filename.as_str()).copied() else {
+            continue;
+        };
+        let pkg = packages_by_id.get(installed.artifact_id.as_str()).copied();
+        apply_installed_action(&mut rows, pkg, installed, OfflinePackagesUiPlanAction::Keep);
+    }
+
+    for filename in &plan.protected_by_pause {
+        let Some(installed) = installed_by_filename.get(filename.as_str()).copied() else {
+            continue;
+        };
+        let pkg = packages_by_id.get(installed.artifact_id.as_str()).copied();
+        apply_installed_action(
+            &mut rows,
+            pkg,
+            installed,
+            OfflinePackagesUiPlanAction::Pause,
+        );
+        apply_size_opt(&mut rows, pkg, installed, |details| {
+            details.pause_count += 1
+        });
+    }
+
+    for pkg in &input.bundle.packages {
+        let Some(artifact) = bundle_package_to_artifact(pkg) else {
+            continue;
+        };
+        if artifact_policy(input, &artifact) != ArtifactPolicy::ProtectedByPause {
+            continue;
+        }
+        if active_package_by_filename.contains_key(pkg.filename.as_str())
+            && input
+                .installed
+                .iter()
+                .any(|installed| installed.filename == pkg.filename)
+        {
+            continue;
+        }
+        apply_plan_action(&mut rows, pkg, OfflinePackagesUiPlanAction::Pause, 1);
+        apply_size(&mut rows, pkg, |details| details.pause_count += 1);
+    }
+
+    rows
+}
+
+fn apply_installed_size(
+    rows: &mut PlanRowsByDimension,
+    pkg: Option<&BundlePackageArtifact>,
+    installed: &InstalledArtifact,
+) {
+    let size = package_size_bytes_opt(pkg, Some(installed));
+    apply_size_opt(rows, pkg, installed, |details| {
+        details.installed_size_bytes = details.installed_size_bytes.saturating_add(size);
+    });
+}
+
+fn apply_installed_action(
+    rows: &mut PlanRowsByDimension,
+    pkg: Option<&BundlePackageArtifact>,
+    installed: &InstalledArtifact,
+    action: OfflinePackagesUiPlanAction,
+) {
+    let cycle = pkg
+        .and_then(|pkg| pkg.cycle.clone())
+        .unwrap_or_else(|| cycle_from_artifact_id(&installed.artifact_id));
+    apply_to_package_dimensions_opt(rows, pkg, installed, |details| {
+        add_plan_group(details, action, cycle.clone());
+    });
+}
+
+fn apply_plan_action(
+    rows: &mut PlanRowsByDimension,
+    pkg: &BundlePackageArtifact,
+    action: OfflinePackagesUiPlanAction,
+    count: usize,
+) {
+    let cycle = package_cycle_label(pkg);
+    apply_size(rows, pkg, |details| {
+        let group = details.plan_groups.entry(action).or_default();
+        group.count += count;
+        group.cycles.insert(cycle.clone());
+    });
+}
+
+fn add_plan_group(
+    details: &mut DimensionPlanDetails,
+    action: OfflinePackagesUiPlanAction,
+    cycle: String,
+) {
+    let group = details.plan_groups.entry(action).or_default();
+    group.count += 1;
+    group.cycles.insert(cycle);
+}
+
+fn apply_size(
+    rows: &mut PlanRowsByDimension,
+    pkg: &BundlePackageArtifact,
+    mutate: impl Fn(&mut DimensionPlanDetails),
+) {
+    apply_to_package_dimensions(rows, pkg, mutate);
+}
+
+fn apply_size_opt(
+    rows: &mut PlanRowsByDimension,
+    pkg: Option<&BundlePackageArtifact>,
+    installed: &InstalledArtifact,
+    mutate: impl Fn(&mut DimensionPlanDetails),
+) {
+    apply_to_package_dimensions_opt(rows, pkg, installed, mutate);
+}
+
+fn apply_to_package_dimensions(
+    rows: &mut PlanRowsByDimension,
+    pkg: &BundlePackageArtifact,
+    mutate: impl Fn(&mut DimensionPlanDetails),
+) {
+    if let Some(region_id) = &pkg.region_id {
+        mutate(rows.regions.entry(region_id.clone()).or_default());
+    } else {
+        mutate(rows.core_products.entry(pkg.family_id.clone()).or_default());
+    }
+    mutate(rows.products.entry(pkg.family_id.clone()).or_default());
+}
+
+fn apply_to_package_dimensions_opt(
+    rows: &mut PlanRowsByDimension,
+    pkg: Option<&BundlePackageArtifact>,
+    installed: &InstalledArtifact,
+    mutate: impl Fn(&mut DimensionPlanDetails),
+) {
+    if let Some(pkg) = pkg {
+        apply_to_package_dimensions(rows, pkg, mutate);
+        return;
+    }
+    mutate(
+        rows.products
+            .entry(installed.artifact_id.clone())
+            .or_default(),
+    );
+}
+
+fn package_size_bytes(pkg: &BundlePackageArtifact, installed: Option<&InstalledArtifact>) -> u64 {
+    installed
+        .and_then(|installed| installed.size_bytes)
+        .or(pkg.size_bytes)
+        .unwrap_or(0)
+}
+
+fn package_size_bytes_opt(
+    pkg: Option<&BundlePackageArtifact>,
+    installed: Option<&InstalledArtifact>,
+) -> u64 {
+    match pkg {
+        Some(pkg) => package_size_bytes(pkg, installed),
+        None => installed
+            .and_then(|installed| installed.size_bytes)
+            .unwrap_or(0),
+    }
+}
+
+fn package_cycle_label(pkg: &BundlePackageArtifact) -> String {
+    pkg.cycle.clone().unwrap_or_else(|| "static".to_string())
+}
+
+fn cycle_from_artifact_id(artifact_id: &str) -> String {
+    artifact_id
+        .split('_')
+        .find(|part| part.len() == 4 && part.chars().all(|ch| ch.is_ascii_digit()))
+        .unwrap_or("static")
+        .to_string()
+}
+
+fn format_package_size_label(bytes: u64) -> String {
+    if bytes == 0 {
+        return "0M".to_string();
+    }
+    let abs_bytes = bytes as f64;
+    let (value, suffix) = if bytes >= 1_000_000_000 {
+        (abs_bytes / 1_000_000_000.0, "G")
+    } else {
+        (abs_bytes / 1_000_000.0, "M")
+    };
+    let value = round_to_sigfigs(value, 2);
+    format!(
+        "{value:.precision$}{suffix}",
+        precision = size_label_precision(value)
+    )
+}
+
+fn format_signed_package_size_label(bytes: i128) -> String {
+    let sign = if bytes >= 0 { "+" } else { "-" };
+    let magnitude = bytes.unsigned_abs().min(u64::MAX as u128) as u64;
+    format!("{sign}{}", format_package_size_label(magnitude))
+}
+
+fn size_label_precision(value: f64) -> usize {
+    if value >= 10.0 {
+        0
+    } else if value >= 1.0 {
+        1
+    } else {
+        2
+    }
+}
+
+fn round_to_sigfigs(value: f64, sigfigs: i32) -> f64 {
+    if value == 0.0 {
+        return 0.0;
+    }
+    let scale = 10_f64.powi(sigfigs - 1 - value.abs().log10().floor() as i32);
+    (value * scale).round() / scale
 }
 
 fn normalize_preferences(
@@ -1437,6 +1690,25 @@ mod tests {
         }
     }
 
+    fn with_cycle_and_size(
+        mut pkg: BundlePackageArtifact,
+        cycle: &str,
+        size_bytes: u64,
+    ) -> BundlePackageArtifact {
+        pkg.cycle = Some(cycle.to_string());
+        pkg.size_bytes = Some(size_bytes);
+        pkg
+    }
+
+    fn installed_with_size(id: &str, size_bytes: u64) -> InstalledArtifact {
+        InstalledArtifact {
+            artifact_id: id.to_string(),
+            filename: format!("{id}.zip"),
+            size_bytes: Some(size_bytes),
+            checksum_sha256: None,
+        }
+    }
+
     #[test]
     fn selected_expired_package_is_retained_until_replacement_is_installed() {
         let input = PackageManagementInput {
@@ -1596,6 +1868,128 @@ mod tests {
         assert_eq!(plan.retain_installed, vec!["NW_SEC_2603.zip"]);
         assert!(plan.gc.is_empty());
         assert_eq!(plan.protected_by_pause, vec!["NW_SEC_2603.zip"]);
+    }
+
+    #[test]
+    fn offline_package_ui_rows_project_actions_cycles_and_sizes() {
+        let old_sec = with_cycle_and_size(
+            pkg(
+                "NW_SEC_2603",
+                "sec",
+                Some("nw"),
+                Some("2026-03-19"),
+                Some("2026-04-16"),
+            ),
+            "2603",
+            3_000,
+        );
+        let current_sec = with_cycle_and_size(
+            pkg(
+                "NW_SEC_2604",
+                "sec",
+                Some("nw"),
+                Some("2026-04-16"),
+                Some("2099-01-01"),
+            ),
+            "2604",
+            1_000,
+        );
+        let next_sec = with_cycle_and_size(
+            pkg(
+                "NW_SEC_2605",
+                "sec",
+                Some("nw"),
+                Some("2026-05-14"),
+                Some("2099-01-01"),
+            ),
+            "2605",
+            2_000,
+        );
+        let paused_tac = with_cycle_and_size(
+            pkg(
+                "NW_TAC_2605",
+                "tac",
+                Some("nw"),
+                Some("2026-05-14"),
+                Some("2099-01-01"),
+            ),
+            "2605",
+            4_000,
+        );
+        let input = PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences: OfflinePackagePreferences {
+                regions: BTreeMap::from([("nw".to_string(), OfflinePackageSelection::Play)]),
+                products: BTreeMap::from([
+                    ("sec".to_string(), OfflinePackageSelection::Play),
+                    ("tac".to_string(), OfflinePackageSelection::Pause),
+                ]),
+            },
+            bundle: BundleManifest {
+                packages: vec![current_sec.clone(), next_sec.clone(), paused_tac.clone()],
+            },
+            installed: vec![
+                installed_with_size("NW_SEC_2603", 3_100),
+                installed_with_size("NW_SEC_2604", 1_100),
+            ],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
+        };
+        let plan = plan_offline_packages(&input);
+        let rows = plan_rows_by_dimension(
+            &input,
+            &plan,
+            &BTreeMap::from([(
+                "bundle_cycle_2603.json".to_string(),
+                BundleManifest {
+                    packages: vec![old_sec, current_sec, next_sec, paused_tac],
+                },
+            )]),
+        );
+        let nw = offline_packages_ui_row(
+            "nw".to_string(),
+            OfflinePackageSelection::Play,
+            rows.regions.get("nw"),
+        );
+
+        assert_eq!(nw.installed_size_label, "0.00M");
+        assert_eq!(nw.planned_delta_label, "-0.00M");
+        assert_eq!(nw.planned_total_size_label, "0.00M");
+        assert_eq!(
+            nw.plan_entries,
+            vec![
+                OfflinePackagesUiPlanEntry {
+                    action: OfflinePackagesUiPlanAction::Delete,
+                    count: 1,
+                    cycles: vec!["2603".to_string()],
+                },
+                OfflinePackagesUiPlanEntry {
+                    action: OfflinePackagesUiPlanAction::Keep,
+                    count: 1,
+                    cycles: vec!["2604".to_string()],
+                },
+                OfflinePackagesUiPlanEntry {
+                    action: OfflinePackagesUiPlanAction::Pause,
+                    count: 1,
+                    cycles: vec!["2605".to_string()],
+                },
+                OfflinePackagesUiPlanEntry {
+                    action: OfflinePackagesUiPlanAction::Fetch,
+                    count: 1,
+                    cycles: vec!["2605".to_string()],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn package_size_labels_are_two_significant_digits_in_m_or_g() {
+        assert_eq!(format_package_size_label(458_000_000), "460M");
+        assert_eq!(format_package_size_label(3_640_000_000), "3.6G");
+        assert_eq!(format_package_size_label(42_400_000), "42M");
+        assert_eq!(format_package_size_label(4_240_000), "4.2M");
+        assert_eq!(format_package_size_label(424_000), "0.42M");
+        assert_eq!(format_signed_package_size_label(-458_000_000), "-460M");
     }
 
     #[test]

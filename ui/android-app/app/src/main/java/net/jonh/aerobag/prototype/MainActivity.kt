@@ -44,6 +44,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -644,6 +645,33 @@ private data class OfflinePackagesUiRowWire(
     val gcCount: Int = 0,
     @SerialName("pause_count")
     val pauseCount: Int = 0,
+    @SerialName("plan_entries")
+    val planEntries: List<OfflinePackagesUiPlanEntryWire> = emptyList(),
+    @SerialName("installed_size_label")
+    val installedSizeLabel: String = "0M",
+    @SerialName("planned_delta_label")
+    val plannedDeltaLabel: String = "+0M",
+    @SerialName("planned_total_size_label")
+    val plannedTotalSizeLabel: String = "0M",
+)
+
+@Serializable
+private enum class OfflinePackagesUiPlanActionWire {
+    @SerialName("delete")
+    Delete,
+    @SerialName("keep")
+    Keep,
+    @SerialName("pause")
+    Pause,
+    @SerialName("fetch")
+    Fetch,
+}
+
+@Serializable
+private data class OfflinePackagesUiPlanEntryWire(
+    val action: OfflinePackagesUiPlanActionWire,
+    val count: Int = 0,
+    val cycles: List<String> = emptyList(),
 )
 
 @Serializable
@@ -2882,46 +2910,11 @@ private fun OfflinePackageCoreSection(
             color = uiTheme.controls.panelMuted,
         )
         rows.forEach { row ->
-            OfflinePackageCoreRow(
+            OfflinePackagePlanRow(
                 label = labelById[row.id] ?: row.id.uppercase(),
                 row = row,
-            )
-        }
-    }
-}
-
-@Composable
-private fun OfflinePackageCoreRow(
-    label: String,
-    row: OfflinePackagesUiRowWire,
-) {
-    val uiTheme = LocalAerobagUiTheme.current
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(ThumbSize * 0.82f)
-            .clip(RoundedCornerShape(ThumbRadius))
-            .background(uiTheme.controls.buttonBg)
-            .padding(horizontal = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Text(
-            text = label,
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.labelLarge,
-            color = uiTheme.controls.buttonFg,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        val planLabel = row.label()
-        if (planLabel.isNotBlank()) {
-            Text(
-                text = planLabel,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.ExtraBold,
-                color = uiTheme.controls.panelFg,
-                maxLines = 1,
+                enabled = false,
+                onCycleClick = null,
             )
         }
     }
@@ -2934,12 +2927,22 @@ private fun OfflinePackageSelectionRow(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
+    OfflinePackagePlanRow(
+        label = label,
+        row = row,
+        enabled = enabled,
+        onCycleClick = onClick,
+    )
+}
+
+@Composable
+private fun OfflinePackagePlanRow(
+    label: String,
+    row: OfflinePackagesUiRowWire,
+    enabled: Boolean,
+    onCycleClick: (() -> Unit)?,
+) {
     val uiTheme = LocalAerobagUiTheme.current
-    val accent = when (row.selection) {
-        OfflinePackageSelection.Play -> Color(0xFF38BDA7)
-        OfflinePackageSelection.Pause -> Color(0xFFD98B38)
-        OfflinePackageSelection.Unselected -> uiTheme.controls.panelMuted
-    }
     val background = when (row.selection) {
         OfflinePackageSelection.Play -> lerp(uiTheme.controls.buttonBg, Color.White, 0.14f)
         OfflinePackageSelection.Pause -> lerp(uiTheme.controls.buttonBg, Color(0xFFFFC166), 0.18f)
@@ -2948,63 +2951,204 @@ private fun OfflinePackageSelectionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(ThumbSize * 0.82f)
+            .height(ThumbSize)
             .clip(RoundedCornerShape(ThumbRadius))
             .background(background)
-            .then(
-                if (enabled) {
-                    Modifier.clickable(
-                        indication = null,
-                        interactionSource = remember { MutableInteractionSource() },
-                    ) { onClick() }
-                } else {
-                    Modifier.alpha(0.6f)
-                },
-            )
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(
-            text = row.selection.label(),
-            style = MaterialTheme.typography.labelMedium,
-            color = accent,
-            fontWeight = FontWeight.ExtraBold,
-            maxLines = 1,
-        )
+        Box(
+            modifier = Modifier
+                .size(ThumbSize * 0.46f)
+                .clip(CircleShape)
+                .then(
+                    if (enabled && onCycleClick != null) {
+                        Modifier.clickable(
+                            indication = null,
+                            interactionSource = remember { MutableInteractionSource() },
+                        ) { onCycleClick() }
+                    } else {
+                        Modifier.alpha(0.58f)
+                    },
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            OfflinePackageSelectionIcon(selection = row.selection, modifier = Modifier.fillMaxSize())
+        }
         Text(
             text = label,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.width(ThumbSize * 1.72f),
             style = MaterialTheme.typography.labelLarge,
             color = uiTheme.controls.buttonFg,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        val planLabel = row.label()
-        if (planLabel.isNotBlank()) {
-            Text(
-                text = planLabel,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.ExtraBold,
-                color = uiTheme.controls.panelFg,
-                maxLines = 1,
-            )
+        OfflinePackagePlanSummary(
+            entries = row.planEntries,
+            modifier = Modifier.weight(1f),
+        )
+        OfflinePackageSizeSummary(
+            row = row,
+            modifier = Modifier.width(ThumbSize * 0.88f),
+        )
+    }
+}
+
+@Composable
+private fun OfflinePackagePlanSummary(
+    entries: List<OfflinePackagesUiPlanEntryWire>,
+    modifier: Modifier = Modifier,
+) {
+    val visibleEntries = entries.filter { it.count > 0 }.ifEmpty {
+        listOf(OfflinePackagesUiPlanEntryWire(OfflinePackagesUiPlanActionWire.Keep, 0, emptyList()))
+    }
+    Column(
+        modifier = modifier.fillMaxHeight(),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        val visibleLines = offlinePackagePlanLines(visibleEntries).let { lines ->
+            lines + List(2 - lines.size) { emptyList() }
+        }
+        visibleLines.forEachIndexed { lineIndex, lineEntries ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                lineEntries.forEach { entry ->
+                    OfflinePackagePlanActionIcon(
+                        action = entry.action,
+                        modifier = Modifier.size(15.dp),
+                    )
+                    Text(
+                        text = if (entry.count > 0) {
+                            "${entry.count} ${entry.cycles.joinToString(", ")}"
+                        } else {
+                            "ready"
+                        },
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = offlinePackagePlanActionColor(entry.action),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (lineIndex == 1 && visibleEntries.size > 4) {
+                    Text(
+                        text = "...",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = LocalAerobagUiTheme.current.controls.panelMuted,
+                    )
+                }
+            }
         }
     }
 }
 
-private fun OfflinePackageSelection.label(): String = when (this) {
-    OfflinePackageSelection.Play -> "PLAY"
-    OfflinePackageSelection.Pause -> "PAUSE"
-    OfflinePackageSelection.Unselected -> "OFF"
+private fun offlinePackagePlanLines(
+    entries: List<OfflinePackagesUiPlanEntryWire>,
+): List<List<OfflinePackagesUiPlanEntryWire>> =
+    if (entries.size <= 2) {
+        entries.map { listOf(it) }
+    } else {
+        entries.chunked(2).take(2)
+    }
+
+@Composable
+private fun OfflinePackageSizeSummary(
+    row: OfflinePackagesUiRowWire,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.End,
+    ) {
+        Text(
+            text = row.installedSizeLabel,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White,
+            fontWeight = FontWeight.ExtraBold,
+            maxLines = 1,
+        )
+        Text(
+            text = row.plannedDeltaLabel,
+            style = MaterialTheme.typography.labelSmall,
+            color = OfflinePackageMagenta,
+            fontWeight = FontWeight.ExtraBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = "=${row.plannedTotalSizeLabel}",
+            style = MaterialTheme.typography.labelSmall,
+            color = OfflinePackageMagenta,
+            fontWeight = FontWeight.ExtraBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
 
-private fun OfflinePackagesUiRowWire.label(): String =
-    listOfNotNull(
-        fetchCount.takeIf { it > 0 }?.let { "Fetch $it" },
-        gcCount.takeIf { it > 0 }?.let { "GC $it" },
-        pauseCount.takeIf { it > 0 }?.let { "Pause $it" },
-    ).joinToString("   ")
+@Composable
+private fun OfflinePackageSelectionIcon(selection: OfflinePackageSelection, modifier: Modifier = Modifier) {
+    val action = when (selection) {
+        OfflinePackageSelection.Play -> OfflinePackagesUiPlanActionWire.Fetch
+        OfflinePackageSelection.Pause -> OfflinePackagesUiPlanActionWire.Pause
+        OfflinePackageSelection.Unselected -> OfflinePackagesUiPlanActionWire.Delete
+    }
+    OfflinePackagePlanActionIcon(action = action, modifier = modifier)
+}
+
+@Composable
+private fun OfflinePackagePlanActionIcon(
+    action: OfflinePackagesUiPlanActionWire,
+    modifier: Modifier = Modifier,
+) {
+    val color = offlinePackagePlanActionColor(action)
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        when (action) {
+            OfflinePackagesUiPlanActionWire.Fetch -> {
+                val path = Path().apply {
+                    moveTo(w * 0.28f, h * 0.18f)
+                    lineTo(w * 0.28f, h * 0.82f)
+                    lineTo(w * 0.82f, h * 0.5f)
+                    close()
+                }
+                drawPath(path, color)
+            }
+            OfflinePackagesUiPlanActionWire.Pause -> {
+                drawRect(color, topLeft = Offset(w * 0.25f, h * 0.18f), size = Size(w * 0.16f, h * 0.64f))
+                drawRect(color, topLeft = Offset(w * 0.59f, h * 0.18f), size = Size(w * 0.16f, h * 0.64f))
+            }
+            OfflinePackagesUiPlanActionWire.Delete -> {
+                drawCircle(color, radius = minOf(w, h) * 0.36f, center = Offset(w * 0.5f, h * 0.5f), style = Stroke(width = minOf(w, h) * 0.11f))
+                drawLine(color, Offset(w * 0.26f, h * 0.74f), Offset(w * 0.74f, h * 0.26f), strokeWidth = minOf(w, h) * 0.12f, cap = StrokeCap.Round)
+            }
+            OfflinePackagesUiPlanActionWire.Keep -> {
+                drawCircle(color, radius = minOf(w, h) * 0.32f, center = Offset(w * 0.5f, h * 0.5f))
+            }
+        }
+    }
+}
+
+private val OfflinePackageMagenta = Color(0xFFFF3DCE)
+private val OfflinePackageOrange = Color(0xFFFFA12B)
+private val OfflinePackageRed = Color(0xFFFF4D5E)
+
+private fun offlinePackagePlanActionColor(action: OfflinePackagesUiPlanActionWire): Color = when (action) {
+    OfflinePackagesUiPlanActionWire.Delete -> OfflinePackageRed
+    OfflinePackagesUiPlanActionWire.Keep -> Color.White
+    OfflinePackagesUiPlanActionWire.Pause -> OfflinePackageOrange
+    OfflinePackagesUiPlanActionWire.Fetch -> OfflinePackageMagenta
+}
 
 private fun readPackageSourceBaseUrl(
     context: Context,

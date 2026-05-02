@@ -44,6 +44,7 @@ const OBSTACLE_MIN_AGL_BY_ZOOM: &[(u8, i32)] = &[
 const AIRSPACE_REF_MIN_ZOOM: u8 = 0;
 const AIRSPACE_REF_MAX_ZOOM: u8 = 12;
 const AIRSPACE_REF_MIN_PIXEL_SPAN: f64 = 30.0;
+const NATIONAL_SECURITY_AIRSPACE_REF_MIN_PIXEL_SPAN: f64 = 10.0;
 const MOA_REF_MIN_ZOOM: u8 = 8;
 const CONTROLLED_AIRSPACE_DETAIL_MIN_PIXEL_SPAN: f64 = 20.0;
 const CONTROLLED_AIRSPACE_OUTLINE_MAX_ZOOM: u8 = 8;
@@ -1347,6 +1348,25 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
              WHERE printf('%.6f,%.6f', ARPLatitude, ARPLongitude) IN (
                  SELECT DISTINCT printf('%.6f,%.6f', Latitude, Longitude)
                  FROM airways_branch
+             )
+             OR trim(LocationID) IN (
+                 SELECT DISTINCT trim(fix_identifier)
+                 FROM cifp_sid_star_app
+                 WHERE trim(fix_identifier) <> ''
+                 AND (
+                     (section_code = 'P' AND subsection_code IN ('D', 'E'))
+                     OR (
+                         section_code = 'P'
+                         AND subsection_code = 'F'
+                         AND route_type = 'A'
+                         AND trim(transition_identifier) <> ''
+                     )
+                 )
+             )
+             OR trim(LocationID) IN (
+                 SELECT DISTINCT trim(LocationID)
+                 FROM fix_usage
+                 WHERE Usage IN ('ENROUTE HIGH', 'ENROUTE LOW')
              )",
             "fix",
         ),
@@ -1363,7 +1383,12 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
             let id: String = row.get(0)?;
             let lat: f64 = parse_f64_cell(row, 1)?;
             let lon: f64 = parse_f64_cell(row, 2)?;
-            let label: String = row.get::<_, String>(3)?;
+            let source_label: String = row.get::<_, String>(3)?;
+            let label = if table_name == "fix" {
+                id.trim().to_string()
+            } else {
+                source_label
+            };
             let kind: String = row.get::<_, String>(4)?;
             let (towered, fuel_available, public_use, private_use, heliport) =
                 if table_name == "airports" {
@@ -1732,7 +1757,9 @@ fn controlled_airspace_uses_outline_at_zoom(feature: &AirspaceFeature, zoom: u8)
 }
 
 fn airspace_ref_min_pixel_span(feature: &AirspaceFeature) -> f64 {
-    if is_controlled_airspace_detail(feature) {
+    if feature.airspace_class.eq_ignore_ascii_case("NSA") {
+        NATIONAL_SECURITY_AIRSPACE_REF_MIN_PIXEL_SPAN
+    } else if is_controlled_airspace_detail(feature) {
         CONTROLLED_AIRSPACE_DETAIL_MIN_PIXEL_SPAN
     } else {
         AIRSPACE_REF_MIN_PIXEL_SPAN

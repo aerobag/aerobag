@@ -14484,6 +14484,10 @@ mod tests {
                     ARPLatitude REAL,
                     ARPLongitude REAL
                 );
+                CREATE TABLE fix_usage (
+                    LocationID TEXT,
+                    Usage TEXT
+                );
                 CREATE TABLE airportrunways (
                     LocationID TEXT,
                     LEIdent TEXT,

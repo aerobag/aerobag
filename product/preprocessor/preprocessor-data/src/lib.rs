@@ -260,6 +260,7 @@ CREATE TABLE airportrunways(LocationID Text,Length Text,Width Text,Surface Text,
 CREATE TABLE nav(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text,Variation TinyInt,Class Text,Hiwas Text,Elevation Text);
 CREATE TABLE arinc_navaids(identifier Text,icao_code Text,section_code Text,subsection_code Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text,Variation float,Elevation Text,UNIQUE(identifier,icao_code,section_code,subsection_code));
 CREATE TABLE fix(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text);
+CREATE TABLE fix_usage(LocationID Text,Usage Text);
 CREATE TABLE awos(LocationID Text, Type Text, Status Text, Latitude float,Longitude float, Elevation Text, Frequency1 Text, Frequency2 Text, Telephone1 Text, Telephone2 Text, Remark Text);
 CREATE TABLE saa(designator TEXT,name TEXT,upperlimit TEXT,lowerlimit TEXT,begintime TEXT,endtime TEXT,timeref TEXT,beginday TEXT,endday TEXT,day TEXT,FreqTx TEXT,FreqRx TEXT,lat FLOAT,lon FLOAT);
 -- `recommended_navaid` / `recd_nav_*` are inherited ARINC-style names from the CIFP
@@ -564,6 +565,26 @@ fn insert_fix(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
         let lat = nav_fix_lat(trim(field(raw, 66, 13)));
         let lon = nav_fix_lon(trim(field(raw, 80, 14)));
         stmt.execute(params![id, lat, lon, kind, name])?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn insert_fix_usage(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
+    let path = input_dir.join("FIX.txt");
+    let text = read_text_lossy(&path)?;
+    let mut stmt = conn.prepare("INSERT INTO fix_usage VALUES (?1, ?2)")?;
+    let mut count = 0;
+    for raw in text.lines() {
+        if !raw.starts_with("FIX5") {
+            continue;
+        }
+        let id = trim(field(raw, 4, 6)).to_string();
+        let usage = trim(field(raw, 66, 30)).to_string();
+        if id.is_empty() || usage.is_empty() {
+            continue;
+        }
+        stmt.execute(params![id, usage])?;
         count += 1;
     }
     Ok(count)
@@ -1440,6 +1461,10 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
     );
     row_counts.insert("nav".to_string(), insert_nav(&tx, &request.input_dir)?);
     row_counts.insert("fix".to_string(), insert_fix(&tx, &request.input_dir)?);
+    row_counts.insert(
+        "fix_usage".to_string(),
+        insert_fix_usage(&tx, &request.input_dir)?,
+    );
     if request.mode == DataBuildMode::LegacyAvare {
         row_counts.insert("obs".to_string(), insert_obs(&tx, &request.input_dir)?);
     }
@@ -1618,6 +1643,24 @@ mod tests {
         let mut line = vec![b' '; 260];
         put_field(&mut line, 0, 5, "AWOS2");
         put_field(&mut line, 19, remark.len(), remark);
+        String::from_utf8(line).unwrap()
+    }
+
+    fn build_fix1_line(id: &str) -> String {
+        let mut line = vec![b' '; 240];
+        put_field(&mut line, 0, 4, "FIX1");
+        put_field(&mut line, 4, 6, id);
+        put_field(&mut line, 66, 13, "47-33-35.420N");
+        put_field(&mut line, 80, 14, "122-37-45.220W");
+        put_field(&mut line, 212, 15, "YWAYPOINT");
+        String::from_utf8(line).unwrap()
+    }
+
+    fn build_fix5_line(id: &str, usage: &str) -> String {
+        let mut line = vec![b' '; 120];
+        put_field(&mut line, 0, 4, "FIX5");
+        put_field(&mut line, 4, 6, id);
+        put_field(&mut line, 66, usage.len(), usage);
         String::from_utf8(line).unwrap()
     }
 
@@ -1807,6 +1850,58 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cifp_id, "KSEA");
+    }
+
+    #[test]
+    fn build_data_package_imports_fix5_usage_records() {
+        let dir = tempdir().unwrap();
+        let input_dir = dir.path().join("input");
+        let output_dir = dir.path().join("output");
+        fs::create_dir_all(&input_dir).unwrap();
+
+        for name in [
+            "APT.txt",
+            "TWR.txt",
+            "AWOS.txt",
+            "FAACIFP18",
+            "NAV.txt",
+            "DOF.DAT",
+            "AWY.txt",
+        ] {
+            write_empty(&input_dir.join(name));
+        }
+        fs::write(
+            input_dir.join("FIX.txt"),
+            format!(
+                "{}\n{}\n{}\n",
+                build_fix1_line("PERLL"),
+                build_fix5_line("PERLL", "ENROUTE LOW"),
+                build_fix5_line("PERLL", "CONTROLLER LOW")
+            ),
+        )
+        .unwrap();
+
+        let request = DataBuildRequest {
+            input_dir,
+            output_dir,
+            manifest_version: "2604".to_string(),
+            mode: DataBuildMode::Production,
+            artifact_stem: None,
+        };
+        let result = build_data_package(&request).unwrap();
+        let conn = Connection::open(result.main_db).unwrap();
+
+        let usages = conn
+            .prepare("SELECT Usage FROM fix_usage WHERE LocationID='PERLL' ORDER BY Usage")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            usages,
+            vec!["CONTROLLER LOW".to_string(), "ENROUTE LOW".to_string()]
+        );
     }
 
     #[test]
